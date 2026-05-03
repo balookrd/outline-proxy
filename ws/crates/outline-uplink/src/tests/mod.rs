@@ -837,10 +837,14 @@ async fn global_scope_switches_only_on_probe_confirmed_failure_when_probe_enable
 }
 
 #[tokio::test]
-async fn global_scope_ignores_penalty_in_selection_score() {
+async fn global_scope_ignores_penalty_in_selection_score_when_auto_failback() {
+    // With auto_failback=true, the global selection score uses raw EWMA so
+    // that an inflated active-uplink EWMA does not starve failback.  A large
+    // decayed penalty on the primary must NOT push selection to the backup.
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
+    config.auto_failback = true;
     let manager = UplinkManager::new_for_test(
         "test",
         vec![
@@ -870,6 +874,47 @@ async fn global_scope_ignores_penalty_in_selection_score() {
     let target = TargetAddr::Domain("example.com".to_string(), 443);
     let candidates = manager.tcp_candidates(&target).await;
     assert_eq!(candidates[0].uplink.name, "primary");
+}
+
+#[tokio::test]
+async fn global_scope_includes_penalty_in_selection_score_without_auto_failback() {
+    // With auto_failback=false (default), the global selection score includes
+    // the decayed failure penalty so that initial selection / failover does
+    // not bounce onto an uplink that just failed.  Primary has a large penalty
+    // and must lose to a clean backup.
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    config.auto_failback = false;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    set_tcp_status(&manager, 0, true, 20).await;
+    set_tcp_status(&manager, 1, true, 30).await;
+    set_udp_status(&manager, 0, true, 40).await;
+    set_udp_status(&manager, 1, true, 50).await;
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.penalty = PenaltyState {
+            value_secs: 20.0,
+            updated_at: Some(Instant::now()),
+        };
+        status.udp.penalty = PenaltyState {
+            value_secs: 20.0,
+            updated_at: Some(Instant::now()),
+        };
+    });
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let candidates = manager.tcp_candidates(&target).await;
+    assert_eq!(candidates[0].uplink.name, "backup");
 }
 
 #[tokio::test]

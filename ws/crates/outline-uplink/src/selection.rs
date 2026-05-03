@@ -159,17 +159,35 @@ pub(crate) fn selection_score(
 pub(crate) fn global_selection_score_latency(
     status: &UplinkStatus,
     weight: f64,
-    _now: Instant,
-    _config: &LoadBalancingConfig,
+    now: Instant,
+    config: &LoadBalancingConfig,
 ) -> Option<Duration> {
-    let tcp_score = base_score_latency(status, weight, TransportKind::Tcp);
-    let udp_score = base_score_latency(status, weight, TransportKind::Udp);
+    // Global routing should primarily follow TCP quality.
+    // UDP only acts as a weak tie-breaker and should not dominate selection.
+    //
+    // Penalty inclusion is gated on `auto_failback`:
+    //   * `auto_failback = true`  → raw EWMA only.  Failback to a higher-priority
+    //     primary is gated separately by weight + consecutive probe successes
+    //     (see candidates.rs); under load the active uplink's EWMA inflates while
+    //     the idle backup keeps a low probe-derived EWMA, so a decayed penalty
+    //     would make the active look permanently worse and starve failback.
+    //   * `auto_failback = false` → include decayed failure penalty.  In this
+    //     mode the active is sticky as long as it is healthy, so the score is
+    //     only consulted to pick a backup on failover; including the penalty
+    //     prevents bouncing onto a backup that itself just failed.
+    let (tcp_score, udp_score) = if config.auto_failback {
+        (
+            base_score_latency(status, weight, TransportKind::Tcp),
+            base_score_latency(status, weight, TransportKind::Udp),
+        )
+    } else {
+        (
+            score_latency(status, weight, TransportKind::Tcp, now, config),
+            score_latency(status, weight, TransportKind::Udp, now, config),
+        )
+    };
 
     match (tcp_score, udp_score) {
-        // Global routing should primarily follow TCP quality.
-        // UDP only acts as a weak tie-breaker and should not dominate selection.
-        // Penalties are intentionally excluded here; strict global switching should
-        // be driven by cooldown/failover rather than decayed score history.
         (Some(tcp), Some(udp)) => {
             Some(Duration::from_secs_f64(tcp.as_secs_f64() + udp.as_secs_f64() * 0.05))
         },
