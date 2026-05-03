@@ -152,6 +152,16 @@ pub(crate) struct PerTransportStatus {
     /// `probe.min_failures` consecutive runtime failures, without waiting
     /// for the next probe cycle.
     pub(crate) consecutive_runtime_failures: u32,
+    /// Timestamp of the previous runtime failure on this transport.
+    /// Used to time-decay [`Self::consecutive_runtime_failures`]: when a new
+    /// runtime failure arrives more than
+    /// [`LoadBalancingConfig::runtime_failure_window`] after this timestamp,
+    /// the counter is reset to 1 (start of a fresh streak) instead of
+    /// incrementing. Without decay, sparse transient errors on a low-traffic
+    /// uplink stack indefinitely (the counter only resets on a successful
+    /// data transfer or a successful probe), causing eventual spurious
+    /// `healthy = Some(false)` flips and active-uplink flapping.
+    pub(crate) last_runtime_failure_at: Option<Instant>,
     /// When set, connections must use a lower-rank carrier than the
     /// configured one until this instant because the configured one
     /// (H3, raw QUIC, XHTTP-H3, XHTTP-H2) produced repeated transport

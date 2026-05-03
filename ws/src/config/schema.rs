@@ -252,6 +252,12 @@ pub(super) struct UplinkGroupSection {
     /// H3 → H2) is still accepted. Default: 60.
     #[serde(alias = "h3_downgrade_secs")]
     pub(super) mode_downgrade_secs: Option<u64>,
+    /// Window over which consecutive runtime (data-plane) failures are
+    /// counted toward the health-flip escalation. A new failure arriving
+    /// later than this window after the previous one resets the streak to
+    /// 1 instead of incrementing. `0` disables decay (legacy behaviour).
+    /// Default: 60.
+    pub(super) runtime_failure_window_secs: Option<u64>,
     pub(super) udp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,
@@ -346,6 +352,12 @@ pub(super) struct LoadBalancingSection {
     /// H3 → H2) is still accepted. Default: 60.
     #[serde(alias = "h3_downgrade_secs")]
     pub(super) mode_downgrade_secs: Option<u64>,
+    /// Window over which consecutive runtime (data-plane) failures are
+    /// counted toward the health-flip escalation. A new failure arriving
+    /// later than this window after the previous one resets the streak to
+    /// 1 instead of incrementing. `0` disables decay (legacy behaviour).
+    /// Default: 60.
+    pub(super) runtime_failure_window_secs: Option<u64>,
     pub(super) udp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,

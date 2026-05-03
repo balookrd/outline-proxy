@@ -146,6 +146,17 @@ impl UplinkManager {
         // operator expectations consistent: "after N failed attempts the uplink
         // is considered down" applies to both signals.
         let runtime_failure_threshold = self.inner.probe.min_failures.max(1) as u32;
+        // Time-decay for the runtime-failure streak: a new failure that arrives
+        // more than `runtime_failure_window` after the previous one starts a
+        // fresh streak (counter reset to 1) instead of stacking onto an old
+        // one. Without this, sparse transient errors on a low-traffic uplink
+        // accumulate indefinitely (the counter only resets on real data
+        // transfer or a successful probe), so two unrelated errors minutes
+        // apart escalate to a spurious `healthy = Some(false)` flip and the
+        // active uplink flaps through the whole pool.
+        // `Duration::ZERO` disables decay (legacy behaviour) for callers that
+        // explicitly want it.
+        let runtime_failure_window = self.inner.load_balancing.runtime_failure_window;
         // Data-plane failures only escalate to a health flip when the probe is
         // the authoritative signal AND we are in strict global mode — that is
         // the configuration where `should_keep` ignores cooldown, so without an
@@ -195,8 +206,18 @@ impl UplinkManager {
                     // back-to-back failures, without waiting up to two probe
                     // cycles for the slow signal to confirm what every new
                     // connection is already observing.
-                    status.tcp.consecutive_runtime_failures =
-                        status.tcp.consecutive_runtime_failures.saturating_add(1);
+                    let stale_streak = !runtime_failure_window.is_zero()
+                        && status
+                            .tcp
+                            .last_runtime_failure_at
+                            .is_some_and(|t| now.saturating_duration_since(t) > runtime_failure_window);
+                    if stale_streak {
+                        status.tcp.consecutive_runtime_failures = 1;
+                    } else {
+                        status.tcp.consecutive_runtime_failures =
+                            status.tcp.consecutive_runtime_failures.saturating_add(1);
+                    }
+                    status.tcp.last_runtime_failure_at = Some(now);
                     if runtime_health_escalation
                         && status.tcp.consecutive_runtime_failures >= runtime_failure_threshold
                     {
@@ -223,8 +244,18 @@ impl UplinkManager {
                     if !probe_enabled {
                         status.udp.healthy = Some(false);
                     }
-                    status.udp.consecutive_runtime_failures =
-                        status.udp.consecutive_runtime_failures.saturating_add(1);
+                    let stale_streak = !runtime_failure_window.is_zero()
+                        && status
+                            .udp
+                            .last_runtime_failure_at
+                            .is_some_and(|t| now.saturating_duration_since(t) > runtime_failure_window);
+                    if stale_streak {
+                        status.udp.consecutive_runtime_failures = 1;
+                    } else {
+                        status.udp.consecutive_runtime_failures =
+                            status.udp.consecutive_runtime_failures.saturating_add(1);
+                    }
+                    status.udp.last_runtime_failure_at = Some(now);
                     if runtime_health_escalation
                         && status.udp.consecutive_runtime_failures >= runtime_failure_threshold
                     {

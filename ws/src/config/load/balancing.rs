@@ -37,6 +37,9 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         mode_downgrade_duration: Duration::from_secs(
             lb.and_then(|l| l.mode_downgrade_secs).unwrap_or(60),
         ),
+        runtime_failure_window: Duration::from_secs(
+            lb.and_then(|l| l.runtime_failure_window_secs).unwrap_or(60),
+        ),
         udp_ws_keepalive_interval: lb
             .and_then(|l| l.udp_ws_keepalive_secs)
             .map(Duration::from_secs)
