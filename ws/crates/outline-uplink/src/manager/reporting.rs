@@ -2,7 +2,7 @@ use tracing::info;
 
 use super::super::types::UplinkManager;
 
-/// Collect the unique names of uplinks attempted during TCP chunk-0 phase-1
+/// Collect the unique names of uplinks attempted during TCP chunk-0
 /// failover, in attempt order.  Accepts an iterator of names from previous
 /// failures plus the currently-active uplink name, and returns a deduplicated
 /// list.  Used by the dispatch layer to annotate failover log lines and to

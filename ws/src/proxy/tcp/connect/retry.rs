@@ -10,7 +10,7 @@
 //!   few hundred ms; bounded same-uplink retries with a short backoff recover
 //!   the session faster than jumping straight to cross-uplink failover.
 //!
-//! The orchestration loop in `phase1.rs` decides *when* to apply each policy;
+//! The orchestration loop in `chunk0_failover.rs` decides *when* to apply each policy;
 //! the constants, the RST-retry predicate, and the shared
 //! "redial → replace → replay → half-close" sequence live here so those two
 //! retry branches share their recovery path instead of duplicating it.
@@ -53,8 +53,8 @@ pub(super) fn should_retry_rst_on_current_uplink(
 }
 
 /// Reconnects the currently-active uplink candidate with a fresh dial and
-/// rewinds the buffered client state onto the new transport so the phase-1
-/// loop can continue as if the flap had never happened.
+/// rewinds the buffered client state onto the new transport so the
+/// chunk-0-failover loop can continue as if the flap had never happened.
 pub(super) async fn redial_current_uplink_and_replay(
     uplinks: &UplinkManager,
     active: &mut ActiveTcpUplink,

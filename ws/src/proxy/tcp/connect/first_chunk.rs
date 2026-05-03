@@ -1,10 +1,10 @@
 //! Reads the first upstream response chunk while concurrently forwarding
 //! client bytes onto the current uplink.
 //!
-//! This is the inner loop of phase-1 that keeps running until either an
-//! upstream byte arrives, the upstream closes, the client read errors, or the
-//! per-attempt deadline expires.  Extracting it keeps phase1's outer loop
-//! focused on retry/failover policy.
+//! This is the inner loop of chunk-0 failover that keeps running until either
+//! an upstream byte arrives, the upstream closes, the client read errors, or
+//! the per-attempt deadline expires.  Extracting it keeps the outer
+//! chunk-0-failover loop focused on retry/failover policy.
 
 use std::time::Duration;
 
@@ -33,7 +33,7 @@ pub(super) struct FirstChunkCtx<'a> {
 /// Drives the uplink-read / client-forward select until a chunk0 outcome is
 /// decided for the current attempt.
 ///
-/// `client_half_closed` is tracked across attempts by the outer phase-1 loop —
+/// `client_half_closed` is tracked across attempts by the outer chunk-0-failover loop —
 /// it is both read (to take the read-only path once the client has already
 /// EOF'd) and written (when this call observes the EOF for the first time).
 pub(super) async fn await_first_upstream_chunk(

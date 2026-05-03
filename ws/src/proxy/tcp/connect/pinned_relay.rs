@@ -47,7 +47,7 @@ async fn read_client_or_keepalive<R: AsyncRead + Unpin>(
 }
 
 /// Drives the long-lived bidirectional relay between the SOCKS client and the
-/// pinned upstream after phase 1 has completed successfully.
+/// pinned upstream after chunk-0 failover has completed successfully.
 ///
 /// Spawns an uplink task (client→upstream) and a downlink task
 /// (upstream→client), wires them through an idle watcher, and reports any
@@ -63,7 +63,7 @@ pub(super) async fn run_relay(
     mut client_write: OwnedWriteHalf,
     timeouts: &TcpTimeouts,
 ) -> Result<()> {
-    // Once phase 1 completed and we received the first upstream bytes, this
+    // Once chunk-0 failover completed and we received the first upstream bytes, this
     // SOCKS TCP session is pinned to the uplink that completed setup.
     // Strict active-uplink reselection only affects new sessions and
     // chunk-0 failover; established TCP tunnels are not migrated
@@ -246,5 +246,5 @@ pub(super) async fn run_relay(
 }
 
 #[cfg(test)]
-#[path = "tests/phase2.rs"]
+#[path = "tests/pinned_relay.rs"]
 mod tests;
