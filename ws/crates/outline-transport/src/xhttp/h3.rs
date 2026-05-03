@@ -30,10 +30,11 @@ use crate::guards::AbortOnDrop;
 use crate::resumption::SessionId;
 use crate::TransportOperation;
 
+use super::stream::io_ws_err;
 use super::{
     INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
     RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, XhttpStream, XhttpSubmode,
-    XhttpTarget, generate_session_id, io_ws_err,
+    XhttpTarget, generate_session_id,
 };
 
 /// Same dial budget the h2 path uses — keeps fallback windows

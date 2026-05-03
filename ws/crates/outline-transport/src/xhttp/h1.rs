@@ -46,11 +46,12 @@ use crate::guards::AbortOnDrop;
 use crate::resumption::SessionId;
 use crate::connect_tcp_socket;
 
+use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
 use super::{
-    BoxedIo, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
+    INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
     RESUME_REQUEST_HEADER, RequestBody, XhttpStream, XhttpSubmode, XhttpTarget,
-    default_port_for, drain_hyper_body, empty_request_body, full_request_body,
-    generate_session_id, io_ws_err, parse_session_response,
+    default_port_for, empty_request_body, full_request_body, generate_session_id,
+    parse_session_response,
 };
 
 /// Same dial budget as the h2/h3 paths — keeps fallback windows
