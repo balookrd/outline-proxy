@@ -264,9 +264,39 @@ install_binary() {
     backup_path="${INSTALL_PATH}.bak.$(date +%Y%m%d%H%M%S)"
     log "Делаю backup старого бинаря: ${backup_path}"
     cp -a "$INSTALL_PATH" "$backup_path"
+    prune_old_backups
   fi
 
   install -m 0755 "$extracted" "$INSTALL_PATH"
+}
+
+# Оставляет 3 последних backup-файла бинарника (по timestamp в имени),
+# остальные удаляет. Имя формата ${INSTALL_PATH}.bak.YYYYMMDDHHMMSS —
+# лексикографическая сортировка совпадает с хронологической.
+prune_old_backups() {
+  local keep=3
+  local dir base pattern
+  dir="$(dirname "$INSTALL_PATH")"
+  base="$(basename "$INSTALL_PATH")"
+  pattern="${base}.bak.*"
+
+  local -a backups=()
+  while IFS= read -r -d '' f; do
+    backups+=("$f")
+  done < <(find "$dir" -maxdepth 1 -type f -name "$pattern" -print0 2>/dev/null \
+            | sort -z)
+
+  local total=${#backups[@]}
+  if (( total <= keep )); then
+    return
+  fi
+
+  local remove=$(( total - keep ))
+  local i
+  for (( i = 0; i < remove; i++ )); do
+    log "Удаляю старый backup: ${backups[i]}"
+    rm -f "${backups[i]}"
+  done
 }
 
 download_unit_files() {
