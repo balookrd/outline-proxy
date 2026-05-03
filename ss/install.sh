@@ -482,16 +482,6 @@ save_release_commit() {
   fi
 }
 
-migrate_state_dir() {
-  # DynamicUser=true + StateDirectory= требует, чтобы /var/lib/... не существовало как
-  # обычная директория: systemd создаёт /var/lib/private/... и ставит на это место symlink.
-  # Если там стоит plain-директория (created by root), EEXIST блокирует старт.
-  if [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then
-    log "Удаляю устаревшую plain-директорию ${STATE_DIR} (systemd создаст symlink через StateDirectory=)"
-    rm -rf "$STATE_DIR"
-  fi
-}
-
 remember_service_state() {
   if systemctl is-active --quiet "$SERVICE_NAME"; then
     SERVICE_WAS_ACTIVE=1
@@ -561,7 +551,6 @@ main() {
   remember_service_state
   ensure_user_group
   install_dirs
-  migrate_state_dir
   install_binary
   install_config_if_missing
   install_systemd_unit
