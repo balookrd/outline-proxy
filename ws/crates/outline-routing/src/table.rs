@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, watch};
 use tracing::{info, warn};
 
 use crate::config::{RouteRule, RouteTarget, RoutingTableConfig};
@@ -153,12 +153,35 @@ async fn build_cidr_set(rule: &RouteRule) -> Result<CidrSet> {
     CidrSet::parse(&prefixes)
 }
 
+/// Guard returned by [`spawn_route_watchers`]. Dropping it signals every
+/// spawned watcher task to exit on its next poll cycle (or immediately if
+/// it is currently sleeping). Without this guard the tasks would live for
+/// the full process lifetime and keep `Arc<RoutingTable>` alive, which
+/// would leak tasks/tables on any future routing hot-reload.
+#[must_use = "dropping the guard cancels the route watcher tasks"]
+pub struct RouteWatchersGuard {
+    shutdown: watch::Sender<bool>,
+}
+
+impl Drop for RouteWatchersGuard {
+    fn drop(&mut self) {
+        let _ = self.shutdown.send(true);
+    }
+}
+
 /// Spawn a file watcher for every rule that has at least one `files` entry.
 /// On mtime change in any of the rule's files the whole CIDR set is rebuilt
 /// (inline + all files) and swapped atomically, then
 /// [`RoutingTable::version`] is bumped so per-association caches that hold
 /// stale resolutions re-resolve on the next hit.
-pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
+///
+/// Returns a [`RouteWatchersGuard`] that cancels all spawned tasks on drop.
+/// The caller must keep the guard alive for as long as the watchers should
+/// run; dropping it before process exit (e.g. on a routing hot-reload) lets
+/// the old `Arc<RoutingTable>` and its `Arc<RwLock<CidrSet>>` references be
+/// released.
+pub fn spawn_route_watchers(table: Arc<RoutingTable>) -> RouteWatchersGuard {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     for (index, rule) in table.rules.iter().enumerate() {
         if rule.files.is_empty() {
             continue;
@@ -169,6 +192,7 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
         let poll = rule.file_poll;
         let invert = rule.invert;
         let table_for_version = Arc::clone(&table);
+        let mut shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
             // Seed from each file's current mtime so the first poll cycle
             // does not reload files that haven't changed since compile() read
@@ -184,7 +208,17 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
                 );
             }
             loop {
-                tokio::time::sleep(poll).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(poll) => {},
+                    res = shutdown.changed() => {
+                        // Either an explicit shutdown signal (Ok with `true`)
+                        // or the sender was dropped (Err). Both mean exit.
+                        if res.is_err() || *shutdown.borrow() {
+                            break;
+                        }
+                        continue;
+                    }
+                }
                 let mut changed = false;
                 for (i, f) in files.iter().enumerate() {
                     let mtime = tokio::fs::metadata(f)
@@ -239,6 +273,7 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
             }
         });
     }
+    RouteWatchersGuard { shutdown: shutdown_tx }
 }
 
 async fn reload_rule_cidrs(files: &[PathBuf], inline: &[String]) -> Result<CidrSet> {

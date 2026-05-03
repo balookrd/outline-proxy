@@ -212,7 +212,7 @@ async fn watcher_reloads_cidr_file_and_bumps_version() {
         RouteTarget::Group("main".into())
     );
 
-    spawn_route_watchers(std::sync::Arc::clone(&table));
+    let watchers = spawn_route_watchers(std::sync::Arc::clone(&table));
 
     // Let the watcher task start and seed its initial mtime (one poll cycle).
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -240,6 +240,10 @@ async fn watcher_reloads_cidr_file_and_bumps_version() {
         table.resolve(&v4(1, 2, 3, 4)).await.primary,
         RouteTarget::Group("main".into())
     );
+
+    // Drop the guard explicitly to cancel the watcher task before the test
+    // exits, exercising the shutdown path.
+    drop(watchers);
 
     let _ = tokio::fs::remove_file(&tmp).await;
 }
