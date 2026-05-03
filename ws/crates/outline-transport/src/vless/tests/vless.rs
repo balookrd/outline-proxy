@@ -1,4 +1,13 @@
-use super::*;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use socks5_proto::TargetAddr;
+
+use super::header::{
+    VLESS_ATYP_DOMAIN, VLESS_ATYP_IPV4, VLESS_CMD_TCP, VLESS_CMD_UDP, build_request_header,
+};
+use super::parse_uuid;
+use super::udp_mux::{VlessUdpSessionSlot, evict_lru_populated_session};
 
 #[test]
 fn parse_uuid_roundtrip() {
