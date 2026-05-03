@@ -31,6 +31,7 @@ fn lb() -> LoadBalancingConfig {
         failure_penalty_max: Duration::from_secs(30),
         failure_penalty_halflife: Duration::from_secs(60),
         mode_downgrade_duration: Duration::from_secs(60),
+        runtime_failure_window: Duration::from_secs(60),
         udp_ws_keepalive_interval: None,
         tcp_ws_keepalive_interval: None,
         tcp_ws_standby_keepalive_interval: None,
@@ -1103,6 +1104,115 @@ async fn initialize_strict_global_active_selection_does_not_override_existing_ac
     manager.initialize_strict_active_selection().await;
 
     assert_eq!(manager.global_active_uplink_index().await, Some(0));
+}
+
+// Regression: on a low-traffic strict_global+probe-enabled uplink, two
+// transient runtime failures spaced beyond `runtime_failure_window` must not
+// stack into a `consecutive_runtime_failures = 2` health-flip escalation.
+// Without the time-decay reset, sparse errors accumulate indefinitely (the
+// counter only resets on real data transfer or a successful probe), and the
+// active uplink flaps through the entire pool every few minutes even when
+// each individual error is transient.
+#[tokio::test]
+async fn sparse_runtime_failures_do_not_escalate_to_health_flip() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    // Short window so the test can wait past it without artificial clocks.
+    config.runtime_failure_window = Duration::from_millis(50);
+    // Cooldown shorter than the window to prove cooldown-gating is not what
+    // suppresses the second failure — only the decay reset is.
+    config.failure_cooldown = Duration::from_millis(10);
+    let mut probe = probe_disabled();
+    probe.ws.enabled = true;
+    probe.min_failures = 2;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe,
+        config,
+    )
+    .unwrap();
+    set_tcp_status(&manager, 0, true, 20).await;
+    set_tcp_status(&manager, 1, true, 30).await;
+    manager
+        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed")
+        .await;
+
+    // First failure starts a fresh streak.
+    manager
+        .report_runtime_failure(0, TransportKind::Tcp, &anyhow!("first failure"))
+        .await;
+
+    // Sleep past `runtime_failure_window` AND past `failure_cooldown` so the
+    // second failure is observed outside both windows.
+    tokio::time::sleep(Duration::from_millis(80)).await;
+
+    // Second failure arrives outside the window — counter must reset to 1
+    // instead of climbing to 2, so health must NOT flip.
+    manager
+        .report_runtime_failure(0, TransportKind::Tcp, &anyhow!("second failure"))
+        .await;
+
+    let status = manager.inner.read_status(0);
+    assert_eq!(
+        status.tcp.consecutive_runtime_failures, 1,
+        "stale streak older than runtime_failure_window must reset to a fresh start, not stack"
+    );
+    assert_eq!(
+        status.tcp.healthy,
+        Some(true),
+        "two sparse failures must not escalate to a probe-authoritative health flip"
+    );
+}
+
+// Counter-regression: the legacy behaviour (no decay) is preserved when
+// `runtime_failure_window` is zero — two failures, no matter how spaced, do
+// stack and trigger the health flip after `min_failures` of them.
+#[tokio::test]
+async fn sparse_runtime_failures_still_escalate_when_window_is_zero() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    config.runtime_failure_window = Duration::ZERO; // legacy behaviour
+    config.failure_cooldown = Duration::from_millis(10);
+    let mut probe = probe_disabled();
+    probe.ws.enabled = true;
+    probe.min_failures = 2;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe,
+        config,
+    )
+    .unwrap();
+    set_tcp_status(&manager, 0, true, 20).await;
+    set_tcp_status(&manager, 1, true, 30).await;
+    manager
+        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed")
+        .await;
+
+    manager
+        .report_runtime_failure(0, TransportKind::Tcp, &anyhow!("first failure"))
+        .await;
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    manager
+        .report_runtime_failure(0, TransportKind::Tcp, &anyhow!("second failure"))
+        .await;
+
+    let status = manager.inner.read_status(0);
+    assert_eq!(status.tcp.consecutive_runtime_failures, 2);
+    assert_eq!(
+        status.tcp.healthy,
+        Some(false),
+        "with decay disabled, two sparse failures still flip health to false"
+    );
 }
 
 #[tokio::test]

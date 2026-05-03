@@ -147,6 +147,13 @@ rtt_ewma_alpha = 0.3
 failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60
+# Window over which consecutive runtime (data-plane) failures count toward the
+# health-flip escalation. A new failure arriving later than this window after
+# the previous one resets the streak instead of stacking — important on
+# low-traffic uplinks where two unrelated transient errors minutes apart would
+# otherwise reach `probe.min_failures` and force a spurious failover.
+# Set to 0 to disable decay (legacy behaviour). Default: 60.
+runtime_failure_window_secs = 60
 # VLESS UDP session-mux bounds (applied only to `transport = "vless"` uplinks).
 # vless_udp_max_sessions = 256
 # vless_udp_session_idle_secs = 60

@@ -244,6 +244,15 @@ pub struct LoadBalancingConfig {
     pub failure_penalty_halflife: Duration,
     /// How long to downgrade from H3 to H2 after an H3 runtime error.
     pub mode_downgrade_duration: Duration,
+    /// Time window over which consecutive runtime (data-plane) failures are
+    /// counted toward the `runtime_failure_threshold = probe.min_failures`
+    /// health-flip escalation. A new runtime failure arriving more than
+    /// `runtime_failure_window` after the previous one resets the streak to
+    /// `1` instead of incrementing — so two transient errors spaced minutes
+    /// apart on an idle uplink no longer escalate to a spurious health flip.
+    /// Setting this to `Duration::ZERO` keeps the legacy behaviour (no decay,
+    /// counter only resets on successful traffic or successful probe).
+    pub runtime_failure_window: Duration,
     /// Interval at which WS ping frames are sent on idle UDP data-path connections
     /// to prevent NAT/firewall timeout disconnections. None disables keepalive.
     pub udp_ws_keepalive_interval: Option<Duration>,
