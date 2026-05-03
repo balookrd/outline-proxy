@@ -477,13 +477,20 @@ function switchReasons(u) {
 }
 function weightCell(u) {
   const w = typeof u.weight === 'number' ? u.weight : '—';
+  // Show smoothed per-transport probe RTT (operator-facing). The
+  // `selection_score` fields are intentionally not shown here: in global
+  // routing scope `selection_score` returns one combined value for the
+  // uplink (TCP base + 0.05·UDP base), so `tcp_score_ms` and `udp_score_ms`
+  // are deliberately equal for every uplink — confusing in a column the
+  // operator reads as "TCP latency vs UDP latency". The raw EWMA fields
+  // already differ between transports and are what people expect to see.
   const parts = [];
-  if (u.tcp_score_ms != null) parts.push(`tcp: ${u.tcp_score_ms}ms`);
-  if (u.udp_score_ms != null) parts.push(`udp: ${u.udp_score_ms}ms`);
-  const score = parts.length
+  if (u.tcp_rtt_ewma_ms != null) parts.push(`tcp: ${u.tcp_rtt_ewma_ms}ms`);
+  if (u.udp_rtt_ewma_ms != null) parts.push(`udp: ${u.udp_rtt_ewma_ms}ms`);
+  const rtt = parts.length
     ? `<span class="switch-reason">${escapeHtml(parts.join(' · '))}</span>`
     : '';
-  return `<div class="role-cell"><span>${escapeHtml(String(w))}</span>${score}</div>`;
+  return `<div class="role-cell"><span>${escapeHtml(String(w))}</span>${rtt}</div>`;
 }
 function uplinkRoleCell(u) {
   const reasons = switchReasons(u);

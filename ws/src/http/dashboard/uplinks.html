@@ -305,11 +305,16 @@ function renderGroups() {
       if (cfg.vless_mode) chips.push(`<span class="meta-chip">VLESS mode <strong>${escapeHtml(cfg.vless_mode)}</strong></span>`);
       if (cfg.method) chips.push(`<span class="meta-chip">${escapeHtml(cfg.method)}</span>`);
       if (cfg.weight != null) chips.push(`<span class="meta-chip">w=${escapeHtml(cfg.weight)}</span>`);
-      if (u.tcp_score_ms != null || u.udp_score_ms != null) {
+      // Smoothed per-transport probe RTT (raw EWMA). Score fields are not
+      // shown here because in global routing scope `selection_score` is a
+      // single combined value, so `tcp_score_ms` and `udp_score_ms` end up
+      // identical for every uplink — confusing. RTT EWMA is what the
+      // operator wants to see anyway.
+      if (u.tcp_rtt_ewma_ms != null || u.udp_rtt_ewma_ms != null) {
         const sp = [];
-        if (u.tcp_score_ms != null) sp.push(`tcp: ${u.tcp_score_ms}ms`);
-        if (u.udp_score_ms != null) sp.push(`udp: ${u.udp_score_ms}ms`);
-        chips.push(`<span class="meta-chip">score <strong>${escapeHtml(sp.join(' · '))}</strong></span>`);
+        if (u.tcp_rtt_ewma_ms != null) sp.push(`tcp: ${u.tcp_rtt_ewma_ms}ms`);
+        if (u.udp_rtt_ewma_ms != null) sp.push(`udp: ${u.udp_rtt_ewma_ms}ms`);
+        chips.push(`<span class="meta-chip">rtt <strong>${escapeHtml(sp.join(' · '))}</strong></span>`);
       }
       if (cfg.fwmark != null) chips.push(`<span class="meta-chip">fwmark=${escapeHtml(cfg.fwmark)}</span>`);
       const row = document.createElement("div");
