@@ -1,4 +1,14 @@
-use super::*;
+use toml_edit::{DocumentMut, Item, Value};
+
+use crate::config::validate_uplink_section;
+
+use super::UplinkPayload;
+use super::mutate::{
+    count_uplinks_in_group, find_group_mut, find_outline_uplink_index, get_or_init_outline_uplinks,
+};
+use super::payload::{
+    merge_patch_into_table, payload_to_section, payload_to_table, table_to_json,
+};
 
 fn sample_config() -> &'static str {
     r#"# Test config
