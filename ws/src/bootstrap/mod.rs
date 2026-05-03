@@ -3,6 +3,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
+#[cfg(any(feature = "control", feature = "dashboard", feature = "metrics"))]
+use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::config::{AppConfig, Args};
@@ -138,9 +140,18 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     );
     listener::warn_about_tcp_probe_target(&config);
     log_registry_summary(&registry);
+    // Collect handles for the embedded HTTP listeners so we can await their
+    // graceful drain after the SOCKS accept loop returns. Each listener
+    // observes `shutdown_rx` internally and bounds its drain window.
+    #[cfg(any(feature = "control", feature = "dashboard", feature = "metrics"))]
+    let mut http_servers: Vec<JoinHandle<()>> = Vec::new();
     #[cfg(feature = "metrics")]
     if let Some(metrics) = config.metrics.clone() {
-        spawn_metrics_server(metrics, registry.clone());
+        http_servers.push(spawn_metrics_server(
+            metrics,
+            registry.clone(),
+            shutdown_rx.clone(),
+        ));
     }
     #[cfg(feature = "control")]
     if let Some(control) = config.control.clone() {
@@ -154,13 +165,18 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
                 lock: tokio::sync::Mutex::new(()),
             })
         });
-        spawn_control_server(control, registry.clone(), apply);
+        http_servers.push(spawn_control_server(
+            control,
+            registry.clone(),
+            apply,
+            shutdown_rx.clone(),
+        ));
     }
     #[cfg(not(feature = "control"))]
     let _ = args; // suppress unused-when-feature-disabled warning
     #[cfg(feature = "dashboard")]
     if let Some(dashboard) = config.dashboard.clone() {
-        spawn_dashboard_server(dashboard);
+        http_servers.push(spawn_dashboard_server(dashboard, shutdown_rx.clone()));
     }
 
     // Build the thin proxy-layer config slice from the fully-resolved AppConfig.
@@ -176,12 +192,24 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
         tcp_timeouts: config.tcp_timeouts,
     });
 
-    let Some(listener) = listener else {
+    let accept_result = if let Some(listener) = listener {
+        listener::run_accept_loop(listener, proxy_config, registry, shutdown_rx.clone()).await
+    } else {
         // TUN-only mode: no TCP listener; block until shutdown signal.
-        let mut rx = shutdown_rx;
+        let mut rx = shutdown_rx.clone();
         let _ = rx.wait_for(|&v| v).await;
-        return Ok(());
+        Ok(())
     };
 
-    listener::run_accept_loop(listener, proxy_config, registry, shutdown_rx).await
+    // Wait for the embedded HTTP listeners to finish their own drain. Each
+    // listener already bounds drain via its internal timeout, so just await
+    // the JoinHandles — they return promptly once the watch flips.
+    #[cfg(any(feature = "control", feature = "dashboard", feature = "metrics"))]
+    for handle in http_servers {
+        if let Err(error) = handle.await {
+            warn!(error = %error, "HTTP listener join failed");
+        }
+    }
+
+    accept_result
 }

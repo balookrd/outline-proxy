@@ -12,21 +12,27 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, watch};
+use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::config::MetricsConfig;
+use crate::http::serve::{ServeConfig, serve_with_shutdown};
 use outline_metrics::{record_metrics_http_request, render_prometheus};
 use outline_uplink::UplinkRegistry;
 
 type MetricsResponse = Response<Full<Bytes>>;
 
-pub fn spawn_metrics_server(config: MetricsConfig, uplinks: UplinkRegistry) {
+pub fn spawn_metrics_server(
+    config: MetricsConfig,
+    uplinks: UplinkRegistry,
+    shutdown: watch::Receiver<bool>,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(error) = run_metrics_server(config, uplinks).await {
+        if let Err(error) = run_metrics_server(config, uplinks, shutdown).await {
             warn!(error = %format!("{error:#}"), "metrics server stopped");
         }
-    });
+    })
 }
 
 /// Cap concurrent in-flight observability requests. Metrics is usually
@@ -38,6 +44,10 @@ const MAX_CONCURRENT_METRICS_CONNECTIONS: usize = 64;
 /// Hard cap on how long a client may take to send its request headers.
 /// Prevents slowloris-style idle holds against the observability plane.
 const METRICS_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Window for an in-flight scrape to finish on SIGTERM before the listener
+/// returns. Scrapes are short and the next one will arrive on a fresh process.
+const METRICS_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Time window during which a rendered Prometheus body is reused instead of
 /// rebuilt. Bounds snapshot/render cost to ~1 Hz regardless of how many
@@ -53,31 +63,33 @@ struct RenderCache {
 /// mutex: within one TTL the first rebuilds, the rest return the cached body.
 type SharedCache = Arc<Mutex<RenderCache>>;
 
-async fn run_metrics_server(config: MetricsConfig, uplinks: UplinkRegistry) -> Result<()> {
+async fn run_metrics_server(
+    config: MetricsConfig,
+    uplinks: UplinkRegistry,
+    shutdown: watch::Receiver<bool>,
+) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("failed to bind metrics listener {}", config.listen))?;
     info!(listen = %config.listen, "metrics server started");
 
-    let conn_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_METRICS_CONNECTIONS));
     let cache: SharedCache = Arc::new(Mutex::new(RenderCache::default()));
 
-    loop {
-        let (stream, peer) = listener.accept().await.context("metrics accept failed")?;
-        let uplinks = uplinks.clone();
-        let cache = cache.clone();
-        let permit = conn_sem
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore closed");
-        tokio::spawn(async move {
-            let _permit = permit;
-            if let Err(error) = handle_connection(stream, uplinks, cache).await {
-                warn!(%peer, error = %format!("{error:#}"), "metrics request failed");
-            }
-        });
-    }
+    serve_with_shutdown(
+        listener,
+        ServeConfig {
+            server_name: "metrics",
+            max_concurrent: MAX_CONCURRENT_METRICS_CONNECTIONS,
+            drain_timeout: METRICS_DRAIN_TIMEOUT,
+        },
+        shutdown,
+        move |stream, _peer| {
+            let uplinks = uplinks.clone();
+            let cache = cache.clone();
+            async move { handle_connection(stream, uplinks, cache).await }
+        },
+    )
+    .await
 }
 
 async fn handle_connection(
