@@ -10,13 +10,15 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use outline_metrics::record_metrics_http_request;
 use outline_uplink::UplinkRegistry;
 
 use crate::config::ControlConfig;
+use crate::http::serve::{ServeConfig, serve_with_shutdown};
 use super::apply::{ApplyHandle, handle_apply};
 use super::handlers::{handle_activate, handle_summary, handle_switch, handle_topology};
 use super::uplinks_crud::handle_uplinks;
@@ -49,11 +51,17 @@ const MAX_CONCURRENT_CONTROL_CONNECTIONS: usize = 16;
 /// headers, so an unauthenticated peer can otherwise stall us.
 const CONTROL_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Window for in-flight control requests to finish on SIGTERM before the
+/// listener gives up and returns. Control endpoints are short-lived
+/// (config writes, switches), so a couple of seconds is ample.
+const CONTROL_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub fn spawn_control_server(
     config: ControlConfig,
     uplinks: UplinkRegistry,
     apply: Option<Arc<ApplyHandle>>,
-) {
+    shutdown: watch::Receiver<bool>,
+) -> JoinHandle<()> {
     let state = Arc::new(ControlState {
         token: config.token,
         uplinks,
@@ -63,31 +71,36 @@ pub fn spawn_control_server(
     });
     let listen = config.listen;
     tokio::spawn(async move {
-        if let Err(error) = run_control_server(listen, state).await {
+        if let Err(error) = run_control_server(listen, state, shutdown).await {
             warn!(error = %format!("{error:#}"), "control server stopped");
         }
-    });
+    })
 }
 
-async fn run_control_server(listen: std::net::SocketAddr, state: Arc<ControlState>) -> Result<()> {
+async fn run_control_server(
+    listen: std::net::SocketAddr,
+    state: Arc<ControlState>,
+    shutdown: watch::Receiver<bool>,
+) -> Result<()> {
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("failed to bind control listener {listen}"))?;
     info!(%listen, "control server started");
 
-    let conn_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_CONTROL_CONNECTIONS));
-
-    loop {
-        let (stream, peer) = listener.accept().await.context("control accept failed")?;
-        let state = Arc::clone(&state);
-        let permit = conn_sem.clone().acquire_owned().await.expect("semaphore closed");
-        tokio::spawn(async move {
-            let _permit = permit;
-            if let Err(error) = handle_connection(stream, state).await {
-                warn!(%peer, error = %format!("{error:#}"), "control request failed");
-            }
-        });
-    }
+    serve_with_shutdown(
+        listener,
+        ServeConfig {
+            server_name: "control",
+            max_concurrent: MAX_CONCURRENT_CONTROL_CONNECTIONS,
+            drain_timeout: CONTROL_DRAIN_TIMEOUT,
+        },
+        shutdown,
+        move |stream, _peer| {
+            let state = Arc::clone(&state);
+            async move { handle_connection(stream, state).await }
+        },
+    )
+    .await
 }
 
 pub(crate) async fn handle_connection(stream: TcpStream, state: Arc<ControlState>) -> Result<()> {

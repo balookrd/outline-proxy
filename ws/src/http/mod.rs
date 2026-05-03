@@ -11,3 +11,6 @@ pub mod control;
 pub mod dashboard;
 #[cfg(feature = "metrics")]
 pub mod metrics;
+
+#[cfg(any(feature = "control", feature = "dashboard", feature = "metrics"))]
+pub(crate) mod serve;
