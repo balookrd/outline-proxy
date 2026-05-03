@@ -154,6 +154,13 @@ failure_penalty_halflife_secs = 60
 # otherwise reach `probe.min_failures` and force a spurious failover.
 # Set to 0 to disable decay (legacy behaviour). Default: 60.
 runtime_failure_window_secs = 60
+# In `routing_scope = "global"`, gate the active uplink on UDP health alongside
+# TCP. Default `false` — UDP-unhealthy on the active uplink does not kick it
+# out as long as TCP is healthy (UDP probe failures are informational and
+# surfaced in metrics / role badges). Set to `true` to restore pre-1.4.x
+# strict gating, which can cause cascade flapping when UDP is flaky on the
+# network path (XHTTP/H3 over QUIC-blocking carriers, broken UDP NAT, etc.).
+# global_udp_strict_health = false
 # VLESS UDP session-mux bounds (applied only to `transport = "vless"` uplinks).
 # vless_udp_max_sessions = 256
 # vless_udp_session_idle_secs = 60

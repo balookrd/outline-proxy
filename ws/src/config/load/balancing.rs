@@ -40,6 +40,9 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         runtime_failure_window: Duration::from_secs(
             lb.and_then(|l| l.runtime_failure_window_secs).unwrap_or(60),
         ),
+        global_udp_strict_health: lb
+            .and_then(|l| l.global_udp_strict_health)
+            .unwrap_or(false),
         udp_ws_keepalive_interval: lb
             .and_then(|l| l.udp_ws_keepalive_secs)
             .map(Duration::from_secs)

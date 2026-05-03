@@ -244,6 +244,20 @@ pub struct LoadBalancingConfig {
     pub failure_penalty_halflife: Duration,
     /// How long to downgrade from H3 to H2 after an H3 runtime error.
     pub mode_downgrade_duration: Duration,
+    /// In `routing_scope = "global"`, controls whether UDP health gates the
+    /// active uplink alongside TCP health. When `false` (default), UDP probe
+    /// failures and UDP cooldown are informational only — used in score
+    /// ranking and surfaced in metrics, but they do not kick the active
+    /// uplink as long as TCP is healthy. When `true`, the legacy strict
+    /// behaviour is preserved: any UDP-unhealthy state on the active uplink
+    /// drops it from selection (as in pre-1.4.x builds).
+    ///
+    /// The lenient default matches the existing documented intent of global
+    /// scope ("global routing should primarily follow TCP quality"; UDP is a
+    /// "weak tie-breaker") and stops the cascade-flap mode where flaky UDP
+    /// paths (e.g. XHTTP/H3 on a network that drops QUIC) repeatedly demoted
+    /// the active uplink even though TCP and the bulk of traffic were fine.
+    pub global_udp_strict_health: bool,
     /// Time window over which consecutive runtime (data-plane) failures are
     /// counted toward the `runtime_failure_threshold = probe.min_failures`
     /// health-flip escalation. A new runtime failure arriving more than
