@@ -10,4 +10,6 @@ pub mod table;
 
 pub use cidr::{CidrSet, read_prefixes_from_file};
 pub use config::{RouteRule, RouteTarget, RoutingTableConfig};
-pub use table::{CompiledRule, RouteDecision, RoutingTable, spawn_route_watchers};
+pub use table::{
+    CompiledRule, RouteDecision, RouteWatchersGuard, RoutingTable, spawn_route_watchers,
+};

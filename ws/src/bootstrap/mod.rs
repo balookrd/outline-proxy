@@ -83,17 +83,20 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     registry.spawn_shared_connection_gc_loop();
 
     // Compile the policy routing table (if user declared [[route]]) and
-    // spawn per-rule file watchers for hot-reload.
-    let routing_table = if let Some(routing_cfg) = config.routing.clone() {
+    // spawn per-rule file watchers for hot-reload. The guard is held until
+    // the end of `run_with_config` so the watcher tasks live for the whole
+    // process lifetime; on a future routing reload it would be dropped to
+    // cancel the old watchers before installing the replacement table.
+    let (routing_table, _route_watchers) = if let Some(routing_cfg) = config.routing.clone() {
         let table = Arc::new(
             outline_routing::RoutingTable::compile(&routing_cfg)
                 .await
                 .context("failed to compile routing table")?,
         );
-        outline_routing::spawn_route_watchers(Arc::clone(&table));
-        Some(table)
+        let guard = outline_routing::spawn_route_watchers(Arc::clone(&table));
+        (Some(table), Some(guard))
     } else {
-        None
+        (None, None)
     };
 
     // TUN dispatches through the policy routing table, falling back to the

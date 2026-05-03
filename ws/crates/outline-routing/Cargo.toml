@@ -7,8 +7,9 @@ edition = "2024"
 anyhow = "1.0"
 socks5-proto = { path = "../socks5-proto" }
 # `rt` + `time` are required by the file-poll task (tokio::spawn +
-# tokio::time::sleep) used by `compile_routing_table`.
-tokio = { version = "1.44", features = ["fs", "rt", "sync", "time"] }
+# tokio::time::sleep) used by `compile_routing_table`. `macros` is needed
+# for `tokio::select!` in the watcher cancellation path.
+tokio = { version = "1.44", features = ["fs", "macros", "rt", "sync", "time"] }
 tracing = "0.1"
 
 [dev-dependencies]
