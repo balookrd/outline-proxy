@@ -6,10 +6,38 @@
 //! global (transport ignored too).  Both the sticky map and the strict-route
 //! pinning use the helpers here so the semantics stay aligned.
 
+use std::fmt;
+
 use socks5_proto::TargetAddr;
 
 use crate::config::RoutingScope;
-use crate::types::{RoutingKey, TransportKind};
+use crate::types::TransportKind;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum RoutingKey {
+    Global,
+    TransportGlobal(TransportKind),
+    Target {
+        transport: TransportKind,
+        target: TargetAddr,
+    },
+    Default(TransportKind),
+}
+
+impl fmt::Display for RoutingKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Global => write!(f, "global"),
+            Self::TransportGlobal(transport) => {
+                write!(f, "{}:global", transport_key_prefix(*transport))
+            },
+            Self::Target { transport, target } => {
+                write!(f, "{}:{target}", transport_key_prefix(*transport))
+            },
+            Self::Default(transport) => write!(f, "{}:default", transport_key_prefix(*transport)),
+        }
+    }
+}
 
 pub(crate) fn routing_key(
     transport: TransportKind,

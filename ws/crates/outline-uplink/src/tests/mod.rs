@@ -12,7 +12,8 @@ use crate::config::{
 };
 use crate::probe::build_http_probe_request;
 use crate::selection::{effective_latency, score_latency};
-use crate::types::{PenaltyState, PerTransportStatus, TransportKind, UplinkManager, UplinkStatus};
+use crate::manager::status::{PenaltyState, PerTransportStatus, UplinkStatus};
+use crate::types::{TransportKind, UplinkManager};
 use outline_transport::connect_websocket_with_source;
 use tokio::time::Instant;
 

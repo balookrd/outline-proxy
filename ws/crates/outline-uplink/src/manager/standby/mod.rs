@@ -16,7 +16,7 @@ use outline_transport::{
 };
 
 use crate::config::UplinkTransport;
-use crate::types::PerTransportStatus;
+use crate::manager::status::PerTransportStatus;
 use outline_transport::collections::maybe_shrink_vecdeque;
 
 /// Resolve `(deadline, cap)` from a per-transport status snapshot

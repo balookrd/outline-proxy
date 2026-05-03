@@ -1,13 +1,36 @@
+use std::time::Duration;
+
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use crate::config::{LoadBalancingConfig, UplinkTransport, TransportMode};
 
 use super::super::super::penalty::{add_penalty, update_rtt_ewma};
-use super::super::super::types::{
-    PerTransportStatus, ProbeOutcome, TransportKind, Uplink, UplinkManager,
-};
+use super::super::super::types::{TransportKind, Uplink, UplinkManager};
+use super::super::status::PerTransportStatus;
 use super::super::mode_downgrade::ModeDowngradeTrigger;
+
+#[derive(Debug)]
+pub(crate) struct ProbeOutcome {
+    pub(crate) tcp_ok: bool,
+    /// false when the uplink has no `udp_ws_url` — means "UDP not applicable",
+    /// not "UDP probe failed".  Health and standby tracking are skipped in
+    /// this case so that Grafana shows empty (unknown) rather than red (0).
+    pub(crate) udp_ok: bool,
+    pub(crate) udp_applicable: bool,
+    pub(crate) tcp_latency: Option<Duration>,
+    pub(crate) udp_latency: Option<Duration>,
+    /// `Some(requested)` when any TCP probe sub-attempt produced a stream
+    /// at a lower mode than asked for (host-level `ws_mode_cache` clamp or
+    /// inline H3→H2/H1 fallback inside `connect_websocket_with_resume`).
+    /// `None` when the dial path matched the requested mode. Surfaced from
+    /// the probe layer so the manager mirrors the downgrade into the
+    /// per-uplink `mode_downgrade_until` window even when the probe itself
+    /// succeeded — without this, `effective_*_ws_mode` would silently lag
+    /// behind the actual transport state.
+    pub(crate) tcp_downgraded_from: Option<TransportMode>,
+    pub(crate) udp_downgraded_from: Option<TransportMode>,
+}
 
 fn record_transport_failure(
     status: &mut PerTransportStatus,

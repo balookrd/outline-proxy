@@ -12,7 +12,17 @@ use super::super::selection::{
     cooldown_active, cooldown_remaining, score_latency, selection_health, selection_score,
     strict_gate_transport, supports_transport_for_scope,
 };
-use super::super::types::{CandidateState, TransportKind, UplinkCandidate, UplinkManager};
+use super::super::types::{TransportKind, Uplink, UplinkCandidate, UplinkManager};
+use super::status::UplinkStatus;
+
+#[derive(Clone)]
+pub(crate) struct CandidateState {
+    pub(crate) index: usize,
+    pub(crate) uplink: Uplink,
+    pub(crate) healthy: bool,
+    pub(crate) score: Option<Duration>,
+    pub(crate) status: UplinkStatus,
+}
 
 fn higher_weight_first(left_weight: f64, right_weight: f64) -> Ordering {
     right_weight.partial_cmp(&left_weight).unwrap_or(Ordering::Equal)
@@ -30,7 +40,7 @@ fn transport_reason_label(transport: TransportKind) -> &'static str {
 }
 
 fn transport_failover_detail(
-    status: &super::super::types::UplinkStatus,
+    status: &UplinkStatus,
     transport: TransportKind,
     now: Instant,
     include_probe_health: bool,

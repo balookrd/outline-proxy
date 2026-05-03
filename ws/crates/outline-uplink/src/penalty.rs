@@ -9,7 +9,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::config::LoadBalancingConfig;
-use crate::types::PenaltyState;
+use crate::manager::status::PenaltyState;
 
 pub(crate) fn update_rtt_ewma(
     current: &mut Option<Duration>,

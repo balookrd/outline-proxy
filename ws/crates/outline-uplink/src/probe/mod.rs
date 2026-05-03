@@ -30,7 +30,7 @@ use self::http::run_http_probe;
 use self::metrics::record_attempt;
 use self::tcp_tunnel::run_tcp_tunnel_probe;
 use self::ws::{run_quic_handshake_probe, run_tcp_socket_probe, run_udp_socket_probe, run_ws_probe};
-use super::types::ProbeOutcome;
+use super::manager::probe::outcome::ProbeOutcome;
 
 #[cfg(test)]
 pub(crate) use self::http::build_http_probe_request;

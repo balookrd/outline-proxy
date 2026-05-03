@@ -1,11 +1,14 @@
-mod candidates;
+pub(crate) mod candidates;
 mod failures;
 mod mode_downgrade;
-mod probe;
+pub(crate) mod probe;
 mod reporting;
 mod snapshot;
-mod standby;
-mod sticky;
+pub(crate) mod standby;
+pub(crate) mod standby_pool;
+pub(crate) mod state;
+pub(crate) mod status;
+pub(crate) mod sticky;
 #[cfg(any(test, feature = "test-helpers"))]
 #[path = "tests/test_helpers.rs"]
 mod test_helpers;
@@ -22,10 +25,10 @@ use tokio::sync::{watch, Notify, RwLock, Semaphore};
 use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
 
 use super::state::StateStore;
-use super::types::{
-    ActiveUplinks, StandbyPool, TransportKind, Uplink, UplinkManager, UplinkManagerInner,
-    UplinkStatus,
-};
+use super::types::{TransportKind, Uplink, UplinkManager};
+use self::standby_pool::StandbyPool;
+use self::state::{ActiveUplinks, UplinkManagerInner};
+use self::status::UplinkStatus;
 
 impl UplinkManager {
     pub async fn initialize_strict_active_selection(&self) {
