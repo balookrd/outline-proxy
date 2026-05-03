@@ -44,8 +44,9 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     // Shared DNS cache used by every transport resolve path. Built here
     // (not stored in AppConfig) so the runtime paths receive the same
     // Arc<DnsCache> without a two-phase init on the declarative config.
-    let dns_cache = Arc::new(outline_transport::DnsCache::new(
+    let dns_cache = Arc::new(outline_transport::DnsCache::with_capacity(
         outline_transport::DEFAULT_DNS_CACHE_TTL,
+        outline_transport::DEFAULT_DNS_CACHE_CAPACITY,
     ));
 
     // Wire the per-host `ws_mode_cache` TTL to the configured

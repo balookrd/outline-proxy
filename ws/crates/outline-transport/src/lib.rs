@@ -175,7 +175,7 @@ pub use tls::install_test_tls_root;
 
 // DNS cache: shared by every resolve path in the main binary.
 pub use dns::resolve_host_with_preference;
-pub use dns_cache::{DEFAULT_DNS_CACHE_TTL, DnsCache};
+pub use dns_cache::{DEFAULT_DNS_CACHE_CAPACITY, DEFAULT_DNS_CACHE_TTL, DnsCache};
 
 // Entry points — connection constructors for TCP/UDP/WebSocket transports.
 pub use udp_transport::{
