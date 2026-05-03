@@ -62,6 +62,13 @@ struct ControlUplinkTopology {
     weight: f64,
     tcp_score_ms: Option<u128>,
     udp_score_ms: Option<u128>,
+    /// Smoothed per-transport probe RTT (EWMA over `rtt_ewma_alpha`).
+    /// Independent of `selection_score`, which in `routing_scope = "global"`
+    /// is one combined value per uplink and is therefore equal across
+    /// transports. The dashboard surfaces these so the operator sees real
+    /// per-transport latency.
+    tcp_rtt_ewma_ms: Option<u128>,
+    udp_rtt_ewma_ms: Option<u128>,
     tcp_healthy: Option<bool>,
     udp_healthy: Option<bool>,
     last_error: Option<String>,
@@ -204,6 +211,8 @@ fn build_uplink_topology(
         weight: uplink.weight,
         tcp_score_ms: uplink.tcp_score_ms,
         udp_score_ms: uplink.udp_score_ms,
+        tcp_rtt_ewma_ms: uplink.tcp_rtt_ewma_ms,
+        udp_rtt_ewma_ms: uplink.udp_rtt_ewma_ms,
         tcp_healthy: uplink.tcp_healthy,
         udp_healthy: uplink.udp_healthy,
         last_error: uplink.last_error.clone(),
