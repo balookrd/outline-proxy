@@ -1,11 +1,11 @@
-//! Cross-uplink failover step for phase-1.
+//! Cross-uplink failover step for chunk-0 failover.
 //!
 //! When same-uplink recovery (see `connect/retry.rs`) has been exhausted and
-//! we still have not received the first upstream byte, the phase-1 loop
-//! switches the active connection to a different uplink candidate.  This
+//! we still have not received the first upstream byte, the chunk-0-failover
+//! loop switches the active connection to a different uplink candidate.  This
 //! module owns the "pick next candidate → dial → confirm selection →
 //! metrics/logging → switch active" sequence so the orchestration loop in
-//! `phase1.rs` can focus on retry policy and replay.
+//! `chunk0_failover.rs` can focus on retry policy and replay.
 
 use std::collections::HashSet;
 
@@ -24,7 +24,7 @@ pub(super) enum FailoverStep {
     /// half-close onto the new transport.
     Switched,
     /// No untried failover candidate remains.  The caller should terminate
-    /// phase-1 with the original error.
+    /// chunk-0 failover with the original error.
     NoCandidate,
 }
 
@@ -33,7 +33,7 @@ pub(super) enum FailoverStep {
 /// the new transport.
 ///
 /// On connect error the chosen candidate is immediately reported as a runtime
-/// failure and the error is wrapped with a phase-1-specific context before
+/// failure and the error is wrapped with a chunk-0-specific context before
 /// being propagated; the caller does not need to attribute that failure
 /// itself.
 pub(super) async fn failover_to_next_candidate(
@@ -98,7 +98,7 @@ pub(super) async fn failover_to_next_candidate(
 /// Replays buffered client bytes and, if the client has already half-closed,
 /// re-emits the half-close onto the newly-switched transport.  Shared between
 /// the cross-uplink failover step and any future post-switch recovery that
-/// needs to reach a steady state before the phase-1 loop continues.
+/// needs to reach a steady state before the chunk-0-failover loop continues.
 pub(super) async fn replay_after_failover(
     active: &mut ActiveTcpUplink,
     replay: &super::replay::ReplayBufState,

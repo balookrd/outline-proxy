@@ -22,10 +22,10 @@ use super::retry::{
 };
 use crate::proxy::TcpTimeouts;
 
-/// Static inputs for a phase-1 run.  Bundled so the retry/failover loop can
-/// pass them around without swelling individual function signatures.
+/// Static inputs for a chunk-0 failover run.  Bundled so the retry/failover
+/// loop can pass them around without swelling individual function signatures.
 #[derive(Clone, Copy)]
-pub(super) struct Phase1Params<'a> {
+pub(super) struct Chunk0FailoverParams<'a> {
     pub uplinks: &'a UplinkManager,
     pub target: &'a TargetAddr,
     pub strict_transport: bool,
@@ -33,7 +33,7 @@ pub(super) struct Phase1Params<'a> {
     pub timeouts: &'a TcpTimeouts,
 }
 
-/// Records a phase-1 chunk-0 failure that has not yet been attributed,
+/// Records a chunk-0 failure that has not yet been attributed,
 /// pending proof (via successful failover) that the uplink — not the
 /// remote target — was at fault.
 pub(super) struct DeferredFailure {
@@ -47,7 +47,7 @@ pub(super) struct DeferredFailure {
 /// every candidate stalls before the first response byte; once exceeded the
 /// oldest record is dropped (its uplink is still listed via `tried_indexes`,
 /// it just won't be back-attributed if a later uplink succeeds).
-pub(super) const DEFERRED_PHASE1_FAILURES_CAP: usize = 10;
+pub(super) const DEFERRED_CHUNK0_FAILURES_CAP: usize = 10;
 
 /// Waits for the first upstream response chunk while forwarding client data,
 /// transparently failing over to alternative uplinks (and replaying buffered
@@ -58,14 +58,14 @@ pub(super) const DEFERRED_PHASE1_FAILURES_CAP: usize = 10;
 /// that case `client_write` has already been shut down and the caller should
 /// return `Ok(())` immediately.
 pub(super) async fn try_uplinks(
-    params: &Phase1Params<'_>,
+    params: &Chunk0FailoverParams<'_>,
     active: &mut ActiveTcpUplink,
     tried_indexes: &mut HashSet<usize>,
     client_read: &mut OwnedReadHalf,
     client_write: &mut OwnedWriteHalf,
     replay: &mut ReplayBufState,
 ) -> Result<Option<Vec<u8>>> {
-    let Phase1Params {
+    let Chunk0FailoverParams {
         uplinks,
         target,
         strict_transport,
@@ -73,12 +73,12 @@ pub(super) async fn try_uplinks(
         timeouts,
     } = *params;
     let mut client_half_closed = false;
-    let mut deferred_phase1_failures: VecDeque<DeferredFailure> =
-        VecDeque::with_capacity(DEFERRED_PHASE1_FAILURES_CAP);
+    let mut deferred_failures: VecDeque<DeferredFailure> =
+        VecDeque::with_capacity(DEFERRED_CHUNK0_FAILURES_CAP);
     // Counts transparent same-uplink retries after a chunk-0 WS reset.
     // Reset to 0 whenever we switch to a different uplink.
     let mut rst_retries_on_current_uplink: u8 = 0;
-    // Single scratch buffer reused across every phase-1 failover attempt.
+    // Single scratch buffer reused across every chunk-0 failover attempt.
     // Allocated once here so a chunk-0 failover does not re-allocate 64 KiB
     // per retry.
     let mut rbuf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
@@ -129,7 +129,7 @@ pub(super) async fn try_uplinks(
                 // Flush deferred failure records now that we have proof the
                 // session is alive via a different uplink.
                 for DeferredFailure { index, uplink, error } in
-                    deferred_phase1_failures.drain(..)
+                    deferred_failures.drain(..)
                 {
                     debug!(
                         uplink = %uplink,
@@ -147,13 +147,13 @@ pub(super) async fn try_uplinks(
                 debug!(
                     uplink = %active.name,
                     error = %format!("{e:#}"),
-                    "upstream closed before sending any data (phase 1)"
+                    "upstream closed before sending any data (chunk-0 failover)"
                 );
                 client_write.shutdown().await.context("client shutdown failed")?;
                 return Ok(None);
             }
             Err(e) => {
-                let mut phase1_error = e;
+                let mut chunk0_error = e;
 
                 // ── Warm-standby stale-socket retry ─────────────────────────
                 // If the connection came from the standby pool, try once more
@@ -161,8 +161,8 @@ pub(super) async fn try_uplinks(
                 if active.source == TcpUplinkSource::Standby {
                     debug!(
                         uplink = %active.name,
-                        error = %format!("{phase1_error:#}"),
-                        "TCP phase-1 failure on warm-standby socket; retrying same uplink with a fresh dial"
+                        error = %format!("{chunk0_error:#}"),
+                        "TCP chunk-0 failure on warm-standby socket; retrying same uplink with a fresh dial"
                     );
                     match redial_current_uplink_and_replay(
                         uplinks,
@@ -177,8 +177,8 @@ pub(super) async fn try_uplinks(
                     {
                         Ok(()) => continue,
                         Err(connect_err) => {
-                            phase1_error = connect_err
-                                .context("fresh dial retry after warm-standby phase-1 failure failed");
+                            chunk0_error = connect_err
+                                .context("fresh dial retry after warm-standby chunk-0 failure failed");
                         }
                     }
                 }
@@ -195,7 +195,7 @@ pub(super) async fn try_uplinks(
                 if should_retry_rst_on_current_uplink(
                     active.source,
                     rst_retries_on_current_uplink,
-                    &phase1_error,
+                    &chunk0_error,
                 ) {
                     let attempt_num = rst_retries_on_current_uplink + 1;
                     debug!(
@@ -203,7 +203,7 @@ pub(super) async fn try_uplinks(
                         target = %target,
                         retry = attempt_num,
                         max_retries = CHUNK0_RST_MAX_RETRIES,
-                        error = %format!("{phase1_error:#}"),
+                        error = %format!("{chunk0_error:#}"),
                         "TCP chunk-0 transport reset; silently retrying same uplink before failover"
                     );
                     tokio::time::sleep(CHUNK0_RST_RETRY_BACKOFF).await;
@@ -223,15 +223,15 @@ pub(super) async fn try_uplinks(
                             continue;
                         }
                         Err(connect_err) => {
-                            phase1_error = connect_err
+                            chunk0_error = connect_err
                                 .context("fresh dial retry after chunk-0 transport reset failed");
                         }
                     }
                 }
 
-                let error_text = format!("{phase1_error:#}");
+                let error_text = format!("{chunk0_error:#}");
                 let attempted_uplinks = outline_uplink::deduplicate_attempted_uplink_names(
-                    deferred_phase1_failures.iter().map(|f| f.uplink.as_ref()),
+                    deferred_failures.iter().map(|f| f.uplink.as_ref()),
                     &active.name,
                 );
                 warn!(
@@ -247,13 +247,13 @@ pub(super) async fn try_uplinks(
                     attribute_terminal_chunk0_failure(
                         uplinks,
                         active,
-                        &phase1_error,
-                        &deferred_phase1_failures,
+                        &chunk0_error,
+                        &deferred_failures,
                         &attempted_uplinks,
                         &error_text,
                     )
                     .await;
-                    return Err(phase1_error);
+                    return Err(chunk0_error);
                 }
 
                 // ── Cross-uplink failover ─────────────────────────────────────
@@ -262,17 +262,17 @@ pub(super) async fn try_uplinks(
 
                 match failover_to_next_candidate(uplinks, active, target, tried_indexes).await? {
                     FailoverStep::NoCandidate => {
-                        return Err(phase1_error
+                        return Err(chunk0_error
                             .context("no alternative uplink available for chunk-0 failover"));
                     },
                     FailoverStep::Switched => {
-                        if deferred_phase1_failures.len() == DEFERRED_PHASE1_FAILURES_CAP {
-                            deferred_phase1_failures.pop_front();
+                        if deferred_failures.len() == DEFERRED_CHUNK0_FAILURES_CAP {
+                            deferred_failures.pop_front();
                         }
-                        deferred_phase1_failures.push_back(DeferredFailure {
+                        deferred_failures.push_back(DeferredFailure {
                             index: failed_index,
                             uplink: failed_uplink,
-                            error: phase1_error,
+                            error: chunk0_error,
                         });
                         rst_retries_on_current_uplink = 0;
                         replay_after_failover(active, replay, client_half_closed).await?;

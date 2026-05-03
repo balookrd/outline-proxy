@@ -1,8 +1,8 @@
 mod attribution;
+mod chunk0_failover;
 mod failover_step;
 mod first_chunk;
-mod phase1;
-mod phase2;
+mod pinned_relay;
 mod replay;
 mod retry;
 
@@ -25,8 +25,8 @@ use super::direct::relay_tcp_direct;
 use super::failover::{ActiveTcpUplink, connect_tcp_uplink};
 use crate::proxy::TcpTimeouts;
 
-use phase1::{Phase1Params, try_uplinks};
-use phase2::run_relay;
+use chunk0_failover::{Chunk0FailoverParams, try_uplinks};
+use pinned_relay::run_relay;
 use replay::ReplayBufState;
 
 pub async fn serve_tcp_connect(
@@ -115,8 +115,8 @@ pub async fn serve_tcp_connect(
         let (mut client_read, mut client_write) = client.into_split();
         let mut replay = ReplayBufState::new();
 
-        // ── Phase 1: chunk-0 failover ────────────────────────────────────────
-        let phase1_params = Phase1Params {
+        // ── Chunk-0 failover ─────────────────────────────────────────────────
+        let chunk0_params = Chunk0FailoverParams {
             uplinks: &uplinks,
             target: &target,
             strict_transport,
@@ -124,7 +124,7 @@ pub async fn serve_tcp_connect(
             timeouts: &timeouts,
         };
         let first_chunk = match try_uplinks(
-            &phase1_params,
+            &chunk0_params,
             &mut active,
             &mut tried_indexes,
             &mut client_read,
@@ -137,11 +137,11 @@ pub async fn serve_tcp_connect(
             None => return Ok(()),
         };
 
-        // Phase-1 replay buffer is no longer needed; release memory before
-        // the long-lived phase-2 tasks take over.
+        // Chunk-0 replay buffer is no longer needed; release memory before
+        // the long-lived pinned-relay tasks take over.
         drop(replay);
 
-        // ── Phase 2: bidirectional relay ─────────────────────────────────────
+        // ── Pinned bidirectional relay ───────────────────────────────────────
         let target_label: Arc<str> = Arc::from(target.to_string());
         run_relay(
             uplinks,

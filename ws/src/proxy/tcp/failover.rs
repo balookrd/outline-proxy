@@ -28,7 +28,7 @@ pub(super) struct ConnectedTcpUplink {
 }
 
 /// All mutable state that tracks the currently-active uplink during the
-/// phase-1 failover loop.  Consolidates what were previously five separate
+/// chunk-0 failover loop.  Consolidates what were previously five separate
 /// local variables (`active_candidate`, `active_uplink_name`, `active_index`,
 /// `active_source`, plus the `writer`/`reader` pair).  Keeping them together
 /// makes it impossible to forget a field when switching to a new uplink.

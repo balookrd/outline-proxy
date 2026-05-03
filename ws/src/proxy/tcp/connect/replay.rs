@@ -5,7 +5,7 @@ use outline_transport::TcpWriter;
 
 use super::super::failover::MAX_CHUNK0_FAILOVER_BUF;
 
-/// Accumulates client→upstream bytes during the phase-1 failover window so
+/// Accumulates client→upstream bytes during the chunk-0 failover window so
 /// they can be replayed verbatim to a replacement uplink if the first one
 /// fails before returning any response data.
 ///
