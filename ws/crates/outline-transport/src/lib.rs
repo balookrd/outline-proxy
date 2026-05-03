@@ -170,7 +170,10 @@ pub use xhttp::XhttpSubmode;
 
 // Test-only TLS knob: cross-repo integration tests in `outline-ss-rust`
 // (which spin up an in-process self-signed server) call this before
-// dialing so XHTTP h2/h3 trust their cert. Production code never calls it.
+// dialing so XHTTP h2/h3 trust their cert. Gated behind the `test-tls`
+// feature so the symbol is absent from production builds; tests opt in
+// via `outline-transport = { features = ["test-tls"] }`.
+#[cfg(any(test, feature = "test-tls"))]
 pub use tls::install_test_tls_root;
 
 // DNS cache: shared by every resolve path in the main binary.
