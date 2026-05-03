@@ -1,647 +1,39 @@
-//! VLESS client primitives (iteration 1: WS transport only, TCP + UDP,
-//! no Mux, no flow/xtls).
+//! Lazy per-target VLESS-UDP session multiplexer that exposes a
+//! Shadowsocks-shaped (SOCKS5-framed) datagram API.
 //!
-//! Wire format — request (client → server), emitted once on the first
-//! WebSocket binary frame:
+//! Shadowsocks UDP multiplexes all destinations through one encrypted session
+//! (the target address is carried as a SOCKS-style atyp prefix in every
+//! datagram). VLESS UDP has no such prefix: the target is locked into the
+//! request header at session open, so each destination needs its own
+//! WebSocket session. `VlessUdpSessionMux` provides an SS-shaped API
+//! (`send_packet(socks5_framed_payload)` / `read_packet() -> socks5_framed`)
+//! on top of a lazy map of per-target VLESS sessions.
 //!
-//! ```text
-//!   version(1) = 0x00
-//!   uuid(16)
-//!   addons_len(1) = 0x00
-//!   command(1): TCP=0x01, UDP=0x02
-//!   port(2 BE)
-//!   atyp(1): 0x01=IPv4, 0x02=Domain(len+bytes), 0x03=IPv6
-//!   addr(...)
-//! ```
-//!
-//! For TCP the header may be immediately followed by the first chunk of
-//! client payload in the same frame; subsequent frames carry raw bytes.
-//!
-//! For UDP the header is followed by `len(2 BE) || payload` repeated per
-//! datagram; subsequent frames carry the same length-prefixed stream.
-//!
-//! Response (server → client) — first binary frame begins with
-//! `[version=0x00, addons_len=0x00]`, followed by raw TCP bytes or the same
-//! length-prefixed UDP stream.
+//! The on-wire framing delta is absorbed by stripping the SOCKS5 UDP header
+//! on send (to select/open the session and forward the raw payload) and
+//! prepending it on receive (so the caller's existing `TargetAddr::from_wire_bytes`
+//! parse still works).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::{Mutex as SyncMutex, RwLock as SyncRwLock};
-
-use anyhow::{Context, Result, anyhow, bail};
-use bytes::{BufMut, Bytes, BytesMut};
+use anyhow::{Context, Result};
+use bytes::{Bytes, BytesMut};
+use parking_lot::RwLock as SyncRwLock;
 use socks5_proto::TargetAddr;
-use tokio::sync::{Mutex as AsyncMutex, OnceCell, mpsc, oneshot, watch};
+use tokio::sync::{Mutex as AsyncMutex, OnceCell, mpsc, watch};
 use tracing::debug;
 use url::Url;
 
 use crate::{
     AbortOnDrop, DnsCache, TransportOperation, UpstreamTransportGuard, WsClosed,
-    TransportStream, config::TransportMode, connect_websocket_with_resume,
-    connect_websocket_with_source, frame_io_ws::WS_READ_IDLE_TIMEOUT,
-    resumption::SessionId,
+    config::TransportMode, resumption::SessionId,
 };
 
-const VLESS_VERSION: u8 = 0x00;
-const VLESS_CMD_TCP: u8 = 0x01;
-const VLESS_CMD_UDP: u8 = 0x02;
+use super::udp::VlessUdpWsTransport;
 
-/// VLESS Addons opcode: client advertises resumption support.
-/// Length 1, value `0x01`.
-const ADDON_TAG_RESUME_CAPABLE: u8 = 0x10;
-/// VLESS Addons opcode: client requests resumption of the named
-/// Session ID. Length 16.
-const ADDON_TAG_RESUME_ID: u8 = 0x11;
-/// Server response opcode: assigned Session ID. Length 16. Tag is the
-/// same as `RESUME_CAPABLE` but lives in the response Addons block,
-/// per docs/SESSION-RESUMPTION.md.
-const ADDON_TAG_SESSION_ID: u8 = 0x10;
-const VLESS_ATYP_IPV4: u8 = 0x01;
-const VLESS_ATYP_DOMAIN: u8 = 0x02;
-const VLESS_ATYP_IPV6: u8 = 0x03;
-
-const MAX_VLESS_UDP_PAYLOAD: usize = 64 * 1024;
-
-/// Parse a VLESS UUID in hex/dashed form into 16 raw bytes.
-pub fn parse_uuid(input: &str) -> Result<[u8; 16]> {
-    let mut hex = [0_u8; 32];
-    let mut len = 0;
-    for byte in input.bytes() {
-        if byte == b'-' {
-            continue;
-        }
-        if len == hex.len() || !byte.is_ascii_hexdigit() {
-            bail!("invalid vless uuid: {input}");
-        }
-        hex[len] = byte;
-        len += 1;
-    }
-    if len != hex.len() {
-        bail!("invalid vless uuid length: {input}");
-    }
-    let mut out = [0_u8; 16];
-    for i in 0..16 {
-        out[i] = (hex_val(hex[i * 2])? << 4) | hex_val(hex[i * 2 + 1])?;
-    }
-    Ok(out)
-}
-
-fn hex_val(byte: u8) -> Result<u8> {
-    match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => bail!("invalid vless uuid hex: {byte}"),
-    }
-}
-
-/// Build the standard VLESS UDP request header. Exposed so transports
-/// that bypass the WebSocket layer (raw QUIC) can write it directly to
-/// the underlying control stream.
-pub fn build_vless_udp_request_header(uuid: &[u8; 16], target: &TargetAddr) -> Vec<u8> {
-    build_request_header(uuid, VLESS_CMD_UDP, target, &[])
-}
-
-/// Build the standard VLESS TCP request header. Same exposure rationale.
-pub fn build_vless_tcp_request_header(uuid: &[u8; 16], target: &TargetAddr) -> Vec<u8> {
-    build_request_header(uuid, VLESS_CMD_TCP, target, &[])
-}
-
-/// Build a VLESS TCP request header with the resumption Addons opcodes
-/// populated. `resume_capable=true` advertises support so a feature-
-/// enabled server mints a Session ID; `resume_id` (when set) asks the
-/// server to re-attach a parked upstream. Used by the raw-QUIC client
-/// path; WS-based callers get the same result via the
-/// `X-Outline-*` HTTP headers.
-pub fn build_vless_tcp_request_header_with_resume(
-    uuid: &[u8; 16],
-    target: &TargetAddr,
-    resume_capable: bool,
-    resume_id: Option<&[u8; 16]>,
-) -> Vec<u8> {
-    let addons = encode_request_addons(resume_capable, resume_id);
-    build_request_header(uuid, VLESS_CMD_TCP, target, &addons)
-}
-
-fn encode_request_addons(resume_capable: bool, resume_id: Option<&[u8; 16]>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(if resume_capable { 3 } else { 0 } + if resume_id.is_some() { 18 } else { 0 });
-    if resume_capable {
-        out.push(ADDON_TAG_RESUME_CAPABLE);
-        out.push(1);
-        out.push(0x01);
-    }
-    if let Some(id) = resume_id {
-        out.push(ADDON_TAG_RESUME_ID);
-        out.push(16);
-        out.extend_from_slice(id);
-    }
-    out
-}
-
-/// Walk a server response Addons block and pull out the assigned
-/// `SESSION_ID` opcode (`0x10`, length 16). Returns `None` if the
-/// block is empty / unknown tags only / a feature-disabled server
-/// emitted the legacy zero-length Addons. The `RESUME_RESULT` opcode
-/// is recognised but currently discarded — callers infer hit/miss
-/// from observable side-effects (counter on the upstream target).
-fn parse_response_addons_session_id(block: &[u8]) -> Option<SessionId> {
-    let mut i = 0;
-    while i + 2 <= block.len() {
-        let tag = block[i];
-        let len = block[i + 1] as usize;
-        let value_start = i + 2;
-        let value_end = value_start + len;
-        if value_end > block.len() {
-            return None;
-        }
-        let value = &block[value_start..value_end];
-        if tag == ADDON_TAG_SESSION_ID
-            && let Ok(arr) = <[u8; 16]>::try_from(value)
-        {
-            return Some(SessionId::from_bytes(arr));
-        }
-        i = value_end;
-    }
-    None
-}
-
-fn build_request_header(
-    uuid: &[u8; 16],
-    command: u8,
-    target: &TargetAddr,
-    addons: &[u8],
-) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + 16 + 1 + addons.len() + 1 + 2 + 1 + 256);
-    out.push(VLESS_VERSION);
-    out.extend_from_slice(uuid);
-    out.push(addons.len() as u8); // addons_len
-    out.extend_from_slice(addons);
-    out.push(command);
-    match target {
-        TargetAddr::IpV4(addr, port) => {
-            out.extend_from_slice(&port.to_be_bytes());
-            out.push(VLESS_ATYP_IPV4);
-            out.extend_from_slice(&addr.octets());
-        },
-        TargetAddr::IpV6(addr, port) => {
-            out.extend_from_slice(&port.to_be_bytes());
-            out.push(VLESS_ATYP_IPV6);
-            out.extend_from_slice(&addr.octets());
-        },
-        TargetAddr::Domain(host, port) => {
-            out.extend_from_slice(&port.to_be_bytes());
-            out.push(VLESS_ATYP_DOMAIN);
-            out.push(host.len() as u8);
-            out.extend_from_slice(host.as_bytes());
-        },
-    }
-    out
-}
-
-// ── TCP writer ─────────────────────────────────────────────────────────────
-
-/// VLESS TCP writer. Emits the request header on the first `send_chunk`
-/// concatenated with the payload into a single frame; subsequent frames
-/// are raw client bytes. Decoupled from the underlying transport via
-/// [`crate::frame_io::FrameSink`] — works identically over WS or QUIC.
-pub struct VlessTcpWriter {
-    sink: Option<Box<dyn crate::frame_io::FrameSink>>,
-    pending_header: Option<Vec<u8>>,
-    _lifetime: Arc<UpstreamTransportGuard>,
-}
-
-impl VlessTcpWriter {
-    /// Build over an arbitrary [`crate::frame_io::FrameSink`].
-    pub fn with_sink(
-        sink: Box<dyn crate::frame_io::FrameSink>,
-        uuid: &[u8; 16],
-        target: &TargetAddr,
-        lifetime: Arc<UpstreamTransportGuard>,
-    ) -> Self {
-        let header = build_request_header(uuid, VLESS_CMD_TCP, target, &[]);
-        Self {
-            sink: Some(sink),
-            pending_header: Some(header),
-            _lifetime: lifetime,
-        }
-    }
-
-    /// Same as [`Self::with_sink`] but emits a populated Addons block
-    /// carrying `RESUME_CAPABLE` and (optionally) `RESUME_ID`. Used by
-    /// raw-QUIC callers — WS callers reach the same negotiation via
-    /// HTTP headers in `connect_websocket_with_resume`.
-    pub fn with_sink_and_resume(
-        sink: Box<dyn crate::frame_io::FrameSink>,
-        uuid: &[u8; 16],
-        target: &TargetAddr,
-        lifetime: Arc<UpstreamTransportGuard>,
-        resume_id: Option<&[u8; 16]>,
-    ) -> Self {
-        let header =
-            build_vless_tcp_request_header_with_resume(uuid, target, true, resume_id);
-        Self {
-            sink: Some(sink),
-            pending_header: Some(header),
-            _lifetime: lifetime,
-        }
-    }
-
-    pub fn supports_half_close(&self) -> bool {
-        false
-    }
-
-    pub async fn send_chunk(&mut self, payload: &[u8]) -> Result<()> {
-        let frame = if let Some(mut header) = self.pending_header.take() {
-            header.extend_from_slice(payload);
-            header
-        } else if payload.is_empty() {
-            return Ok(());
-        } else {
-            payload.to_vec()
-        };
-        self.sink
-            .as_mut()
-            .ok_or_else(|| anyhow!("vless writer already closed"))?
-            .send_frame(Bytes::from(frame))
-            .await
-    }
-
-    /// VLESS has no framing-layer keepalive of its own; the underlying
-    /// transport (WS Ping, QUIC PING) handles this. No-op here.
-    pub async fn send_keepalive(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    pub async fn close(&mut self) -> Result<()> {
-        if let Some(mut sink) = self.sink.take() {
-            sink.close().await?;
-        }
-        Ok(())
-    }
-}
-
-// ── TCP reader ─────────────────────────────────────────────────────────────
-
-/// VLESS TCP reader. Strips the `[version, addons_len(, addons…)]` prefix
-/// off the first response frame; subsequent frames are returned as raw
-/// bytes. Buffering is only used when the first frame is smaller than the
-/// response header or carries addons. Decoupled from the underlying
-/// transport via [`crate::frame_io::FrameSource`].
-pub struct VlessTcpReader {
-    source: Box<dyn crate::frame_io::FrameSource>,
-    pending_header: bool,
-    header_buf: Vec<u8>,
-    /// Optional one-shot sink that receives the parsed `SESSION_ID`
-    /// opcode (or `None` on a feature-disabled server) the moment the
-    /// VLESS response header is first read. Used by resumption-aware
-    /// callers (raw-QUIC dial path) to stash the freshly issued Session
-    /// ID in the global ResumeCache without blocking the dial on a
-    /// server round-trip — the dial returns immediately and the sink
-    /// fires lazily on the first inbound frame.
-    session_id_sink: Option<oneshot::Sender<Option<SessionId>>>,
-    _lifetime: Arc<UpstreamTransportGuard>,
-}
-
-impl VlessTcpReader {
-    pub fn with_source(
-        source: Box<dyn crate::frame_io::FrameSource>,
-        lifetime: Arc<UpstreamTransportGuard>,
-    ) -> Self {
-        Self {
-            source,
-            pending_header: true,
-            header_buf: Vec::new(),
-            session_id_sink: None,
-            _lifetime: lifetime,
-        }
-    }
-
-    /// Same as [`Self::with_source`] but installs a one-shot sink that
-    /// fires with the server-assigned `SESSION_ID` (or `None`) the
-    /// moment the response header is parsed by the first
-    /// [`Self::read_chunk`] call. Lets the dial path return without
-    /// waiting for the server's handshake response — saves one full
-    /// RTT per VLESS-TCP-over-QUIC dial.
-    pub fn with_source_and_resume_sink(
-        source: Box<dyn crate::frame_io::FrameSource>,
-        lifetime: Arc<UpstreamTransportGuard>,
-        sink: oneshot::Sender<Option<SessionId>>,
-    ) -> Self {
-        Self {
-            source,
-            pending_header: true,
-            header_buf: Vec::new(),
-            session_id_sink: Some(sink),
-            _lifetime: lifetime,
-        }
-    }
-
-    /// Whether the stream EOF / Close was a clean teardown vs runtime
-    /// fault — surfaced from the underlying source.
-    pub fn closed_cleanly(&self) -> bool {
-        self.source.closed_cleanly()
-    }
-
-    pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
-        loop {
-            let bytes = match self.source.recv_frame().await? {
-                None => return Err(anyhow::Error::from(WsClosed)),
-                Some(b) => b,
-            };
-            if self.pending_header {
-                self.header_buf.extend_from_slice(&bytes);
-                if self.header_buf.len() < 2 {
-                    continue;
-                }
-                let version = self.header_buf[0];
-                if version != VLESS_VERSION {
-                    bail!("vless bad response version {version:#x}");
-                }
-                let addons_len = self.header_buf[1] as usize;
-                let need = 2 + addons_len;
-                if self.header_buf.len() < need {
-                    continue;
-                }
-                // Resumption-aware reader: pull SESSION_ID out of the
-                // response Addons block and notify the dial-side sink.
-                // Non-resumption readers skip this — the sink is None.
-                if let Some(sink) = self.session_id_sink.take() {
-                    let session_id =
-                        parse_response_addons_session_id(&self.header_buf[2..need]);
-                    let _ = sink.send(session_id);
-                }
-                let tail = self.header_buf.split_off(need);
-                self.header_buf.clear();
-                self.pending_header = false;
-                if !tail.is_empty() {
-                    return Ok(tail);
-                }
-                continue;
-            }
-            return Ok(bytes.into());
-        }
-    }
-}
-
-// ── WS convenience constructor ─────────────────────────────────────────────
-
-/// Build a VLESS TCP writer/reader pair over a WebSocket stream.
-/// Convenience wrapper around `frame_io_ws::from_ws_frames` +
-/// [`VlessTcpWriter::with_sink`] / [`VlessTcpReader::with_source`].
-///
-/// `keepalive_interval` enables WS Ping frames on the active session to
-/// defeat NAT/middlebox idle-timeout drops; pass `None` to disable.
-pub fn vless_tcp_pair_from_ws(
-    ws_stream: TransportStream,
-    uuid: &[u8; 16],
-    target: &TargetAddr,
-    lifetime: Arc<UpstreamTransportGuard>,
-    diag: crate::WsReadDiag,
-    keepalive_interval: Option<Duration>,
-) -> (VlessTcpWriter, VlessTcpReader) {
-    let (sink, source) = crate::frame_io_ws::from_ws_frames(
-        ws_stream,
-        Some(WS_READ_IDLE_TIMEOUT),
-        keepalive_interval,
-    );
-    let source = source.with_diag(diag.uplink, diag.target);
-    let writer = VlessTcpWriter::with_sink(Box::new(sink), uuid, target, Arc::clone(&lifetime));
-    let reader = VlessTcpReader::with_source(Box::new(source), lifetime);
-    (writer, reader)
-}
-
-// ── UDP transport ──────────────────────────────────────────────────────────
-
-/// VLESS UDP datagram transport. Each outbound packet is sent as
-/// `len(2 BE) || payload`, with the VLESS request header bundled ahead of
-/// the first one. Inbound: the first datagram begins with the response
-/// header `[version, addons_len, addons…]`, followed by `len || payload`
-/// records (one or more per underlying datagram).
-///
-/// Decoupled from the underlying transport via [`DatagramChannel`] —
-/// works identically over WS Binary frames or QUIC datagrams.
-pub struct VlessUdpTransport {
-    chan: Arc<dyn crate::frame_io::DatagramChannel>,
-    pending_header: SyncMutex<Option<Vec<u8>>>,
-    /// Reader-side state. Single mutex covers both the in-progress
-    /// reassembly buffer and the "saw response header yet?" flag — they
-    /// are touched together and `read_packet` is serialized by the caller
-    /// (one outstanding read at a time per session).
-    recv_state: SyncMutex<VlessUdpRecvState>,
-    _lifetime: Arc<UpstreamTransportGuard>,
-}
-
-struct VlessUdpRecvState {
-    pending_header: bool,
-    buf: BytesMut,
-}
-
-/// Public alias kept for backwards compatibility with the previous
-/// `VlessUdpWsTransport` name. New code should use `VlessUdpTransport`.
-pub type VlessUdpWsTransport = VlessUdpTransport;
-
-impl VlessUdpTransport {
-    pub fn from_websocket(
-        ws_stream: TransportStream,
-        uuid: &[u8; 16],
-        target: &TargetAddr,
-        source: &'static str,
-        keepalive_interval: Option<Duration>,
-    ) -> Self {
-        let chan: Arc<dyn crate::frame_io::DatagramChannel> =
-            Arc::new(crate::frame_io_ws::from_ws_datagrams(
-                ws_stream,
-                Some(WS_READ_IDLE_TIMEOUT),
-                keepalive_interval,
-            ));
-        Self::from_channel(chan, uuid, target, source)
-    }
-
-    /// Build a VLESS UDP transport over an arbitrary [`DatagramChannel`].
-    /// The channel is opaque to the protocol layer.
-    pub fn from_channel(
-        chan: Arc<dyn crate::frame_io::DatagramChannel>,
-        uuid: &[u8; 16],
-        target: &TargetAddr,
-        source: &'static str,
-    ) -> Self {
-        let header = build_request_header(uuid, VLESS_CMD_UDP, target, &[]);
-        Self {
-            chan,
-            pending_header: SyncMutex::new(Some(header)),
-            recv_state: SyncMutex::new(VlessUdpRecvState {
-                pending_header: true,
-                buf: BytesMut::new(),
-            }),
-            _lifetime: UpstreamTransportGuard::new(source, "udp"),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub async fn connect(
-        cache: &DnsCache,
-        url: &Url,
-        mode: TransportMode,
-        uuid: &[u8; 16],
-        target: &TargetAddr,
-        fwmark: Option<u32>,
-        ipv6_first: bool,
-        source: &'static str,
-        keepalive_interval: Option<Duration>,
-    ) -> Result<Self> {
-        let ws_stream = connect_websocket_with_source(cache, url, mode, fwmark, ipv6_first, source)
-            .await
-            .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
-        Ok(Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval))
-    }
-
-    /// Same as [`Self::connect`] but participates in cross-transport
-    /// session resumption: presents `resume_request` (if any) as the
-    /// `X-Outline-Resume` header on the WebSocket Upgrade and surfaces
-    /// the Session ID the server assigned via `X-Outline-Session` so
-    /// the caller can stash it for the next reconnect.
-    ///
-    /// Returns `(transport, issued_session_id, downgraded_from)`:
-    /// - `issued_session_id` is `Some` iff the server's WS Upgrade response
-    ///   carried `X-Outline-Session`.
-    /// - `downgraded_from` is `Some(requested_mode)` iff the underlying
-    ///   `connect_websocket_with_resume` produced a stream at a lower mode
-    ///   than requested (clamp via `ws_mode_cache` or inline H3→H2/H1
-    ///   fallback). The `VlessUdpSessionMux` reports this through its
-    ///   `on_downgrade` hook so the uplink-manager mirrors the downgrade
-    ///   into its per-uplink `mode_downgrade_until` window.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn connect_with_resume(
-        cache: &DnsCache,
-        url: &Url,
-        mode: TransportMode,
-        uuid: &[u8; 16],
-        target: &TargetAddr,
-        fwmark: Option<u32>,
-        ipv6_first: bool,
-        source: &'static str,
-        keepalive_interval: Option<Duration>,
-        resume_request: Option<SessionId>,
-    ) -> Result<(Self, Option<SessionId>, Option<TransportMode>)> {
-        let ws_stream = connect_websocket_with_resume(
-            cache,
-            url,
-            mode,
-            fwmark,
-            ipv6_first,
-            source,
-            resume_request,
-        )
-        .await
-        .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
-        // Snapshot the assigned Session ID and downgrade marker before
-        // the VLESS framing layer takes ownership of the stream — both
-        // sit on the WS Upgrade response, not on the inner VLESS handshake.
-        let issued = ws_stream.issued_session_id();
-        let downgraded_from = ws_stream.downgraded_from();
-        let transport = Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval);
-        Ok((transport, issued, downgraded_from))
-    }
-
-    pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
-        if payload.len() > MAX_VLESS_UDP_PAYLOAD {
-            outline_metrics::record_dropped_oversized_udp_packet("outgoing");
-            bail!(crate::OversizedUdpDatagram {
-                transport: "vless-udp",
-                payload_len: payload.len(),
-                limit: MAX_VLESS_UDP_PAYLOAD,
-            });
-        }
-        let mut frame: Vec<u8> = {
-            let mut header = self.pending_header.lock();
-            header.take().unwrap_or_default()
-        };
-        let need = 2 + payload.len();
-        frame.reserve(need);
-        frame.put_u16(payload.len() as u16);
-        frame.extend_from_slice(payload);
-        self.chan.send_datagram(Bytes::from(frame)).await
-    }
-
-    pub async fn read_packet(&self) -> Result<Bytes> {
-        loop {
-            // First try to extract a full record from the buffer without
-            // touching the wire — handles the (uncommon) case of a single
-            // underlying datagram carrying multiple len-prefixed records.
-            {
-                let mut state = self.recv_state.lock();
-                if !state.pending_header
-                    && let Some(payload) = try_split_packet(&mut state.buf)?
-                {
-                    return Ok(payload);
-                }
-            }
-            let next = self
-                .chan
-                .recv_datagram()
-                .await?
-                .ok_or_else(|| anyhow::Error::from(WsClosed))?;
-            let mut state = self.recv_state.lock();
-            state.buf.extend_from_slice(&next);
-            if state.pending_header {
-                if state.buf.len() < 2 {
-                    continue;
-                }
-                let version = state.buf[0];
-                if version != VLESS_VERSION {
-                    bail!("vless bad udp response version {version:#x}");
-                }
-                let addons_len = state.buf[1] as usize;
-                if state.buf.len() < 2 + addons_len {
-                    continue;
-                }
-                let _ = state.buf.split_to(2 + addons_len);
-                state.pending_header = false;
-            }
-            if let Some(payload) = try_split_packet(&mut state.buf)? {
-                return Ok(payload);
-            }
-        }
-    }
-
-    pub async fn close(&self) -> Result<()> {
-        self.chan.close().await;
-        Ok(())
-    }
-}
-
-fn try_split_packet(buf: &mut BytesMut) -> Result<Option<Bytes>> {
-    if buf.len() < 2 {
-        return Ok(None);
-    }
-    let len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
-    if len > MAX_VLESS_UDP_PAYLOAD {
-        bail!("vless udp datagram too large: {len}");
-    }
-    if buf.len() < 2 + len {
-        return Ok(None);
-    }
-    let _ = buf.split_to(2);
-    Ok(Some(buf.split_to(len).freeze()))
-}
-
-// ── UDP session mux ────────────────────────────────────────────────────────
-
-/// Shadowsocks UDP multiplexes all destinations through one encrypted session
-/// (the target address is carried as a SOCKS-style atyp prefix in every
-/// datagram). VLESS UDP has no such prefix: the target is locked into the
-/// request header at session open, so each destination needs its own
-/// WebSocket session. `VlessUdpSessionMux` provides an SS-shaped API
-/// (`send_packet(socks5_framed_payload)` / `read_packet() -> socks5_framed`)
-/// on top of a lazy map of per-target VLESS sessions.
-///
-/// The on-wire framing delta is absorbed by stripping the SOCKS5 UDP header
-/// on send (to select/open the session and forward the raw payload) and
-/// prepending it on receive (so the caller's existing `TargetAddr::from_wire_bytes`
-/// parse still works).
 /// Tuning parameters for the per-target session map. Defaults are picked
 /// for a SOCKS/TUN client handling typical desktop workloads — DNS fan-out,
 /// browser UDP, occasional QUIC/P2P.
@@ -785,17 +177,17 @@ impl VlessUdpSessionEntry {
 /// `created` is captured at slot insertion so the LRU comparator and
 /// idle-session janitor have a meaningful "age" for in-flight slots
 /// whose `cell` has not been populated yet.
-struct VlessUdpSessionSlot {
+pub(super) struct VlessUdpSessionSlot {
     cell: OnceCell<Arc<VlessUdpSessionEntry>>,
-    created: Instant,
+    pub(super) created: Instant,
 }
 
 impl VlessUdpSessionSlot {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self { cell: OnceCell::new(), created: Instant::now() }
     }
 
-    fn entry(&self) -> Option<&Arc<VlessUdpSessionEntry>> {
+    pub(super) fn entry(&self) -> Option<&Arc<VlessUdpSessionEntry>> {
         self.cell.get()
     }
 
@@ -803,7 +195,7 @@ impl VlessUdpSessionSlot {
     /// in-flight (cell-empty) slots so the eviction scan still has a
     /// totally-ordered key over the whole map; populated slots use
     /// the entry's lock-free atomic stamp.
-    fn last_use(&self) -> Instant {
+    pub(super) fn last_use(&self) -> Instant {
         self.cell.get().map(|e| e.last_use()).unwrap_or(self.created)
     }
 }
@@ -1101,7 +493,7 @@ impl VlessUdpSessionMux {
 /// In the pathological case where every slot is in-flight at once, no
 /// eviction happens and the map briefly exceeds `max_sessions`; this
 /// resolves on its own as soon as one of the dials completes.
-fn evict_lru_populated_session(
+pub(super) fn evict_lru_populated_session(
     guard: &mut HashMap<TargetAddr, Arc<VlessUdpSessionSlot>>,
 ) -> Option<Arc<VlessUdpSessionEntry>> {
     let oldest_key = guard
@@ -1244,6 +636,3 @@ fn spawn_vless_udp_session_reader(
     }))
 }
 
-#[cfg(test)]
-#[path = "tests/vless.rs"]
-mod tests;
