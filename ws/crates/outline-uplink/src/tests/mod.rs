@@ -32,6 +32,7 @@ fn lb() -> LoadBalancingConfig {
         failure_penalty_halflife: Duration::from_secs(60),
         mode_downgrade_duration: Duration::from_secs(60),
         runtime_failure_window: Duration::from_secs(60),
+        global_udp_strict_health: false,
         udp_ws_keepalive_interval: None,
         tcp_ws_keepalive_interval: None,
         tcp_ws_standby_keepalive_interval: None,
@@ -648,10 +649,11 @@ async fn global_scope_prioritizes_tcp_quality_over_udp_quality() {
 }
 
 #[tokio::test]
-async fn global_scope_switches_udp_away_from_tcp_selected_uplink_when_udp_is_down() {
+async fn global_scope_with_strict_udp_switches_udp_away_from_tcp_selected_uplink_when_udp_is_down() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
+    config.global_udp_strict_health = true;
     let manager = UplinkManager::new_for_test(
         "test",
         vec![
@@ -673,11 +675,47 @@ async fn global_scope_switches_udp_away_from_tcp_selected_uplink_when_udp_is_dow
     assert_eq!(udp_candidates[0].uplink.name, "backup");
 }
 
+// Default lenient behaviour: in global scope, UDP-unhealthy on the active
+// uplink does NOT kick the active out as long as TCP remains healthy. UDP
+// traffic still routes through the active (and surfaces failures naturally
+// at the data plane), but the active uplink does not flap through the pool
+// because of UDP probe noise.
 #[tokio::test]
-async fn global_scope_switches_when_active_udp_probe_is_unhealthy() {
+async fn global_scope_keeps_active_when_udp_unhealthy_by_default() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
+    // global_udp_strict_health defaults to false in lb().
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    set_tcp_status(&manager, 0, true, 20).await;
+    set_tcp_status(&manager, 1, true, 60).await;
+    set_udp_status(&manager, 0, false, 500).await;
+    set_udp_status(&manager, 1, true, 10).await;
+
+    let udp_target = TargetAddr::IpV4("1.1.1.1".parse().unwrap(), 53);
+    let udp_candidates = manager.udp_candidates(Some(&udp_target)).await;
+    assert_eq!(
+        udp_candidates[0].uplink.name, "primary",
+        "lenient default: TCP-healthy active stays selected for UDP even when its UDP probe is unhealthy"
+    );
+}
+
+#[tokio::test]
+async fn global_scope_with_strict_udp_switches_when_active_udp_probe_is_unhealthy() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    config.global_udp_strict_health = true;
     let manager = UplinkManager::new_for_test(
         "test",
         vec![
@@ -716,10 +754,11 @@ async fn global_scope_switches_when_active_udp_probe_is_unhealthy() {
 }
 
 #[tokio::test]
-async fn global_scope_switches_when_active_udp_runtime_cooldown_is_active() {
+async fn global_scope_with_strict_udp_switches_when_active_udp_runtime_cooldown_is_active() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
+    config.global_udp_strict_health = true;
     let manager = UplinkManager::new_for_test(
         "test",
         vec![

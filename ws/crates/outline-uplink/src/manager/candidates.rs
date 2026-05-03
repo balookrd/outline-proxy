@@ -174,7 +174,14 @@ impl UplinkManager {
             .filter(|(_, u)| supports_transport_for_scope(u, transport, scope))
             .any(|(index, _)| {
                 let status = self.inner.read_status(index);
-                selection_health(&status, &self.inner.uplinks[index], transport, now, scope)
+                selection_health(
+                    &status,
+                    &self.inner.uplinks[index],
+                    transport,
+                    now,
+                    scope,
+                    &self.inner.load_balancing,
+                )
             })
     }
 
@@ -301,7 +308,14 @@ impl UplinkManager {
                 CandidateState {
                     index,
                     uplink: uplink.clone(),
-                    healthy: selection_health(&status, uplink, transport, now, scope),
+                    healthy: selection_health(
+                        &status,
+                        uplink,
+                        transport,
+                        now,
+                        scope,
+                        &self.inner.load_balancing,
+                    ),
                     score: selection_score(
                         &status,
                         uplink.weight,

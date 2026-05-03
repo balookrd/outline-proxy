@@ -38,13 +38,31 @@ pub(crate) fn selection_health(
     transport: TransportKind,
     now: Instant,
     scope: RoutingScope,
+    config: &LoadBalancingConfig,
 ) -> bool {
     match scope {
         RoutingScope::Global => {
-            effective_health(status, TransportKind::Tcp, now)
-                && (!uplink.supports_udp()
-                    || status.udp.healthy != Some(false)
-                        && !cooldown_active(status, TransportKind::Udp, now))
+            // Global routing is primarily driven by TCP quality (see
+            // `global_selection_score_latency` — UDP only acts as a weak
+            // tie-breaker). Gate the active uplink on TCP health alone by
+            // default: a flaky UDP path (XHTTP/H3 over a network that drops
+            // QUIC, broken UDP NAT, etc.) must not cascade-flap the active
+            // uplink while TCP and the bulk of traffic on it are fine.
+            //
+            // Operators that want the legacy strict behaviour — UDP-unhealthy
+            // on the active drops it from selection — can set
+            // `global_udp_strict_health = true` in their load_balancing
+            // config block.
+            let tcp_ok = effective_health(status, TransportKind::Tcp, now);
+            if !tcp_ok {
+                return false;
+            }
+            if !config.global_udp_strict_health {
+                return true;
+            }
+            !uplink.supports_udp()
+                || (status.udp.healthy != Some(false)
+                    && !cooldown_active(status, TransportKind::Udp, now))
         },
         _ => effective_health(status, transport, now),
     }

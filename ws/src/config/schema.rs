@@ -258,6 +258,11 @@ pub(super) struct UplinkGroupSection {
     /// 1 instead of incrementing. `0` disables decay (legacy behaviour).
     /// Default: 60.
     pub(super) runtime_failure_window_secs: Option<u64>,
+    /// In `routing_scope = "global"`, gate the active uplink on UDP health
+    /// alongside TCP health. Default: `false` — UDP failures are
+    /// informational and do not kick the active. `true` restores pre-1.4.x
+    /// strict behaviour.
+    pub(super) global_udp_strict_health: Option<bool>,
     pub(super) udp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,
@@ -358,6 +363,11 @@ pub(super) struct LoadBalancingSection {
     /// 1 instead of incrementing. `0` disables decay (legacy behaviour).
     /// Default: 60.
     pub(super) runtime_failure_window_secs: Option<u64>,
+    /// In `routing_scope = "global"`, gate the active uplink on UDP health
+    /// alongside TCP health. Default: `false` — UDP failures are
+    /// informational and do not kick the active. `true` restores pre-1.4.x
+    /// strict behaviour.
+    pub(super) global_udp_strict_health: Option<bool>,
     pub(super) udp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,

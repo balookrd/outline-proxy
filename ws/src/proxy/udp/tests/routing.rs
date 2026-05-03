@@ -63,6 +63,7 @@ async fn classify_decision_unknown_group_falls_back_to_default() {
         failure_penalty_halflife: Duration::from_secs(60),
         mode_downgrade_duration: Duration::from_secs(60),
         runtime_failure_window: Duration::from_secs(60),
+        global_udp_strict_health: false,
         udp_ws_keepalive_interval: None,
         tcp_ws_keepalive_interval: None,
         tcp_ws_standby_keepalive_interval: None,
