@@ -9,5 +9,5 @@
 //!   (or extends) the downgrade window.
 
 mod h3_recovery;
-mod outcome;
+pub(crate) mod outcome;
 mod scheduler;

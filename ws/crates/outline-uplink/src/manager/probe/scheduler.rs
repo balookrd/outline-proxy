@@ -10,7 +10,9 @@ use crate::config::{ProbeConfig, TransportMode};
 
 use super::super::super::probe::probe_uplink;
 use super::super::super::selection::cooldown_active;
-use super::super::super::types::{ProbeOutcome, TransportKind, Uplink, UplinkManager, UplinkStatus};
+use super::super::super::types::{TransportKind, Uplink, UplinkManager};
+use super::super::status::UplinkStatus;
+use super::outcome::ProbeOutcome;
 
 pub(super) fn should_skip_probe_cycle_for_recent_activity(
     status: &UplinkStatus,

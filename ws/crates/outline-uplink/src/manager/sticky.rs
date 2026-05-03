@@ -5,8 +5,16 @@ use tokio::time::{Instant, sleep};
 use crate::config::{LoadBalancingMode, RoutingScope};
 use outline_transport::collections::maybe_shrink_hash_map;
 
+use super::super::routing_key::RoutingKey;
 use super::super::selection::score_latency;
-use super::super::types::{CandidateState, RoutingKey, StickyRoute, TransportKind, UplinkManager};
+use super::super::types::{TransportKind, UplinkManager};
+use super::candidates::CandidateState;
+
+#[derive(Clone, Debug)]
+pub(crate) struct StickyRoute {
+    pub(crate) uplink_index: usize,
+    pub(crate) expires_at: Instant,
+}
 
 /// Lower bound for the background sticky-route prune cadence. Keeps the sweep
 /// bounded when `sticky_ttl` is very small (or zero, which disables per-flow

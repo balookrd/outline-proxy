@@ -10,7 +10,8 @@ use outline_metrics as metrics;
 use outline_transport::TransportStream;
 
 use crate::config::TransportMode;
-use crate::types::{TrackedDeque, TransportKind, Uplink, UplinkManager};
+use crate::manager::standby_pool::TrackedDeque;
+use crate::types::{TransportKind, Uplink, UplinkManager};
 
 pub(super) const STANDBY_WS_PEEK_TIMEOUT: Duration = Duration::from_millis(1);
 

@@ -4,8 +4,9 @@ use tokio::time::Instant;
 
 use crate::config::{LoadBalancingConfig, RoutingScope};
 
+use super::manager::status::UplinkStatus;
 use super::penalty::current_penalty;
-use super::types::{TransportKind, Uplink, UplinkStatus};
+use super::types::{TransportKind, Uplink};
 
 pub(crate) fn effective_health(
     status: &UplinkStatus,
