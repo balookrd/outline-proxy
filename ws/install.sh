@@ -340,21 +340,6 @@ apply_config_ownership() {
   find "$CONFIG_DIR" -type f -exec chmod 0640 {} +
 }
 
-migrate_state_dir_from_dynamic_user() {
-  # Старые установки с DynamicUser=true держали state под /var/lib/private/…
-  # c приватным UID. После перехода на фиксированного юзера перекладываем
-  # данные в обычный /var/lib/outline-ws-rust и чиним владельца.
-  local private="/var/lib/private/outline-ws-rust"
-  if [[ -d "$private" && ! -L "$STATE_DIR" ]]; then
-    log "Миграция state из ${private} → ${STATE_DIR}"
-    mkdir -p "$STATE_DIR"
-    cp -a "${private}/." "${STATE_DIR}/"
-  fi
-  if [[ -e "$STATE_DIR" ]]; then
-    chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$STATE_DIR" || true
-  fi
-}
-
 download_default_config_if_missing() {
   if [[ ! -f "${CONFIG_DIR}/config.toml" ]]; then
     log "Скачивание default config"
@@ -435,15 +420,6 @@ main() {
   mkdir -p "$TMP_DIR" "$CONFIG_DIR" "${CONFIG_DIR}/instances"
 
   ensure_service_user
-
-  # Если в системе остался symlink от старой DynamicUser-установки
-  # (/var/lib/outline-ws-rust → /var/lib/private/outline-ws-rust),
-  # убираем его: теперь state пишется обычным путём под фиксированным юзером.
-  if [[ -L "$STATE_DIR" ]]; then
-    log "Удаление устаревшего symlink ${STATE_DIR} (DynamicUser=true больше не используется)"
-    rm -f "$STATE_DIR"
-  fi
-  migrate_state_dir_from_dynamic_user
 
   log "Архитектура: $(uname -m)"
   log "Target: ${target}"
