@@ -61,7 +61,7 @@ tokio-tungstenite = "0.28"
 # against this server (sibling repo, not published). The path dep
 # only kicks in for `cargo test` / `cargo check --tests`; the
 # release binary does not build it.
-outline-transport = { path = "../outline-ws-rust/crates/outline-transport", features = ["h3"] }
+outline-transport = { path = "../outline-ws-rust/crates/outline-transport", features = ["h3", "test-tls"] }
 url = "2.5"
 
 [profile.release]
