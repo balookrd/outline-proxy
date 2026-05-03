@@ -17,6 +17,7 @@
 
 use std::sync::{Arc, RwLock};
 
+#[cfg(any(test, feature = "test-tls"))]
 use rustls::pki_types::CertificateDer;
 use rustls::{ClientConfig, RootCertStore};
 use webpki_roots::TLS_SERVER_ROOTS;
@@ -61,13 +62,15 @@ static TEST_TLS_OVERRIDE_ROOTS: RwLock<Option<Arc<RootCertStore>>> = RwLock::new
 ///
 /// Intended exclusively for cross-repo integration tests in
 /// `outline-ss-rust` (and any future fixture that brings up a
-/// self-signed in-process server). Production callers should leave
-/// the override unset so dials fall back to the system webpki list.
+/// self-signed in-process server). Gated behind the `test-tls` Cargo
+/// feature; production builds omit the symbol entirely so dials always
+/// fall back to the system webpki list.
 ///
 /// Calls are idempotent and last-writer-wins; the override applies
 /// to all subsequent dials in the current process. ALPN-cached
 /// configs (e.g. `XHTTP_H3_TLS_CONFIG`) capture the override on
 /// their first build, so install before the first dial.
+#[cfg(any(test, feature = "test-tls"))]
 pub fn install_test_tls_root(cert_der: CertificateDer<'static>) {
     let mut roots = RootCertStore::empty();
     roots
