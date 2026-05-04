@@ -4489,6 +4489,109 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "ws_bytes_out{transport=tcp,direction=out} minus (tcp_payload_target_to_client + tcp_aead_overhead_target_to_client). Should sit on zero. A non-zero residual means bytes are being placed onto the WS data channel without going through the per-user accounting in `relay_upstream_to_client` — historically the symptom of idle-evicted counter handles. Filter intentionally ignores $user (ws_bytes_out has no user label).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#E02F44",
+            "mode": "fixed"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": true,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 145,
+        "w": 24,
+        "h": 7
+      },
+      "id": 70,
+      "options": {
+        "legend": {
+          "calcs": [
+            "max"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "editorMode": "code",
+          "expr": "(\n  sum by (short_instance, app_protocol, protocol) (\n    label_replace(\n      rate(outline_ss_websocket_bytes_total{instance=~\"$instance\",transport=\"tcp\",direction=\"out\",app_protocol=~\"$app_protocol\"}[5m]),\n      \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"\n    )\n  )\n)\n-\n(\n  sum by (short_instance, app_protocol, protocol) (\n    label_replace(\n      rate(outline_ss_tcp_payload_bytes_total{instance=~\"$instance\",direction=\"target_to_client\",app_protocol=~\"$app_protocol\"}[5m]),\n      \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"\n    )\n  )\n  +\n  sum by (short_instance, app_protocol, protocol) (\n    label_replace(\n      rate(outline_ss_tcp_aead_overhead_bytes_total{instance=~\"$instance\",direction=\"target_to_client\",app_protocol=~\"$app_protocol\"}[5m]),\n      \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"\n    )\n  )\n) * 8",
+          "legendFormat": "{{short_instance}} {{app_protocol}} {{protocol}} residual",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "TCP WS-out reconciliation residual (should be 0)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {

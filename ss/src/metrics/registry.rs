@@ -141,6 +141,13 @@ pub(super) fn register_descriptions() {
         "outline_ss_tcp_payload_bytes_total",
         "Plain TCP payload bytes relayed after Shadowsocks decryption."
     );
+    describe_counter!(
+        "outline_ss_tcp_aead_overhead_bytes_total",
+        "AEAD framing overhead (response salt + per-chunk length frame + tag) \
+         emitted alongside each plaintext chunk in the upstream→client direction. \
+         payload + overhead reconciles with outline_ss_websocket_bytes_total \
+         {transport=\"tcp\",direction=\"out\"} for the same labels."
+    );
     describe_counter!("outline_ss_udp_requests_total", "UDP relay requests by result.");
     describe_histogram!(
         "outline_ss_udp_relay_duration_seconds",

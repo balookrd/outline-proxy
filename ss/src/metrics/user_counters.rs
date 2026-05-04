@@ -27,6 +27,7 @@ type CounterMatrix = [[Counter; PROTOCOL_VARIANTS]; APP_PROTOCOL_VARIANTS];
 pub struct PerUserCounters {
     tcp_payload_client_to_target: CounterMatrix,
     tcp_payload_target_to_client: CounterMatrix,
+    tcp_aead_overhead_target_to_client: CounterMatrix,
     udp_payload_client_to_target: CounterMatrix,
     udp_payload_target_to_client: CounterMatrix,
 }
@@ -41,6 +42,11 @@ impl PerUserCounters {
             ),
             tcp_payload_target_to_client: build_payload_matrix(
                 "outline_ss_tcp_payload_bytes_total",
+                &user_id,
+                "target_to_client",
+            ),
+            tcp_aead_overhead_target_to_client: build_payload_matrix(
+                "outline_ss_tcp_aead_overhead_bytes_total",
                 &user_id,
                 "target_to_client",
             ),
@@ -65,6 +71,15 @@ impl PerUserCounters {
     #[inline]
     pub fn tcp_out(&self, app_protocol: AppProtocol, protocol: Protocol) -> &Counter {
         &self.tcp_payload_target_to_client[app_protocol.as_index()][protocol.as_index()]
+    }
+
+    /// AEAD framing overhead emitted on the wire per `tcp_out` chunk —
+    /// salt+tag+length envelope produced by `AeadStreamEncryptor`.
+    /// Together with `tcp_out` this lets `ws_bytes_total{direction="out"}`
+    /// be reconciled against the per-user accounting without a residual.
+    #[inline]
+    pub fn tcp_aead_out(&self, app_protocol: AppProtocol, protocol: Protocol) -> &Counter {
+        &self.tcp_aead_overhead_target_to_client[app_protocol.as_index()][protocol.as_index()]
     }
 
     #[inline]
