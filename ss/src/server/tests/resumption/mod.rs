@@ -125,6 +125,7 @@ async fn spawn_echo_target() -> Result<(SocketAddr, Arc<AtomicUsize>)> {
 struct ResumptionTestServer {
     listen_addr: SocketAddr,
     task: JoinHandle<Result<()>>,
+    metrics: Arc<Metrics>,
 }
 
 impl Drop for ResumptionTestServer {
@@ -184,9 +185,14 @@ async fn spawn_test_server(
         http_root_realm: "Authorization required".into(),
     });
     let app = build_app(routes, services, auth, None);
+    let metrics_for_handle = Arc::clone(&metrics);
     let task =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
-    Ok(ResumptionTestServer { listen_addr, task })
+    Ok(ResumptionTestServer {
+        listen_addr,
+        task,
+        metrics: metrics_for_handle,
+    })
 }
 
 // ── Client helpers ────────────────────────────────────────────────────────────
