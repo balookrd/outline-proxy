@@ -368,6 +368,24 @@ async fn ss_h1_round_trip_increments_target_to_client_payload_counter() -> Resul
          the same per-protocol skew observed in production (~280x)"
     );
 
+    // Strict reconciliation: ws_bytes_out must equal payload + aead_overhead
+    // exactly. Any residual means there is a code path putting binary
+    // frames on the WS data channel without going through
+    // `relay_upstream_to_client` (or vice versa), which is what the
+    // overhead counter exists to surface.
+    let aead_overhead = sum_metric(&rendered, |line| {
+        line.starts_with("outline_ss_tcp_aead_overhead_bytes_total")
+            && line.contains(r#"protocol="http1""#)
+            && line.contains(r#"direction="target_to_client""#)
+            && line.contains(r#"app_protocol="shadowsocks""#)
+    });
+    assert_eq!(
+        ws_out_bytes,
+        target_bytes + aead_overhead,
+        "wire-side ws_bytes_out ({ws_out_bytes}) must equal payload ({target_bytes}) + \
+         aead_overhead ({aead_overhead}); residual indicates an unattributed byte path"
+    );
+
     socket.close(None).await?;
     Ok(())
 }
@@ -443,6 +461,18 @@ async fn ss_h1_park_resume_round_trip_keeps_target_to_client_in_sync_with_ws_out
         ws_out <= target_to_client * 2 + 256,
         "ws-out={ws_out} far exceeds tcp_payload target_to_client={target_to_client} after park+resume \
          — matches the production skew on protocol=http1"
+    );
+    let aead_overhead = sum_metric(&rendered, |line| {
+        line.starts_with("outline_ss_tcp_aead_overhead_bytes_total")
+            && line.contains(r#"protocol="http1""#)
+            && line.contains(r#"direction="target_to_client""#)
+            && line.contains(r#"app_protocol="shadowsocks""#)
+    });
+    assert_eq!(
+        ws_out,
+        target_to_client + aead_overhead,
+        "ws_bytes_out ({ws_out}) must equal payload ({target_to_client}) + \
+         aead_overhead ({aead_overhead}) after park+resume too"
     );
 
     socket2.close(None).await?;

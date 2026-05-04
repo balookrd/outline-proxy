@@ -84,6 +84,7 @@ where
 {
     let user_counters = metrics.user_counters(&user_id);
     let target_to_client = user_counters.tcp_out(app_protocol, protocol);
+    let aead_overhead_out = user_counters.tcp_aead_out(app_protocol, protocol);
     let mut buffer = ScratchBuf::take();
     let mut out_buf = BytesMut::with_capacity(MAX_CHUNK_SIZE);
     let mut saw_payload = false;
@@ -147,6 +148,8 @@ where
                 target_to_client.increment(read as u64);
                 encryptor.encrypt_chunk(&buffer, &mut out_buf)?;
                 let ciphertext = out_buf.split().freeze();
+                aead_overhead_out
+                    .increment((ciphertext.len() as u64).saturating_sub(read as u64));
                 sink.on_chunk_encrypted(read, ciphertext.len());
                 sink.send_ciphertext(ciphertext).await?;
             }
