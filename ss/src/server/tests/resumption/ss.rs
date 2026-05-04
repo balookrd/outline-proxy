@@ -304,6 +304,161 @@ async fn ss_resume_after_ttl_expiry_falls_through_to_fresh() -> Result<()> {
     Ok(())
 }
 
+/// Reproducer for the production observation that
+/// `outline_ss_tcp_payload_bytes_total{direction="target_to_client"}`
+/// stays at zero for SS-over-WS HTTP/1 sessions even when significant
+/// upstream→client traffic flows (visible in `outline_ss_websocket_bytes_total
+/// {direction="out"}`). On http3 sessions in production both directions
+/// register correctly.
+///
+/// The test exercises the simplest possible round-trip (echo target,
+/// one binary frame in, one binary frame back) over HTTP/1
+/// WebSocket, then scrapes the in-process Prometheus rendering and
+/// asserts that the per-user `target_to_client` line for `protocol="http1"`
+/// is present with a non-zero value.
+#[tokio::test]
+async fn ss_h1_round_trip_increments_target_to_client_payload_counter() -> Result<()> {
+    let (target_addr, _accepts) = spawn_echo_target().await?;
+    let (server, user) = spawn_ss_resumption_server(|_| {}).await?;
+
+    let (mut socket, _issued) = connect_ws_h1(server.listen_addr, "/tcp", None, false).await?;
+    socket
+        .send(WsMessage::Binary(ss_handshake_frame(&user, target_addr, b"ping-h1")?))
+        .await?;
+    let _reply = expect_binary_reply(&mut socket).await?;
+
+    // Give the relay task one scheduling tick to settle the increment
+    // before scraping. The increment happens before send_ciphertext so
+    // by the time the client has read the encrypted reply this should
+    // be a no-op, but in CI under load a fresh yield is cheap insurance.
+    tokio::task::yield_now().await;
+
+    let rendered = server.metrics.render_prometheus();
+    let target_line = rendered.lines().find(|line| {
+        line.starts_with("outline_ss_tcp_payload_bytes_total")
+            && line.contains(r#"protocol="http1""#)
+            && line.contains(r#"direction="target_to_client""#)
+            && line.contains(r#"app_protocol="shadowsocks""#)
+    });
+    let target_line = target_line.unwrap_or_else(|| {
+        panic!(
+            "missing target_to_client series for shadowsocks/http1 after a successful round-trip; full /metrics:\n{rendered}"
+        )
+    });
+    let target_bytes = parse_metric_value(target_line);
+    assert!(
+        target_bytes > 0,
+        "target_to_client counter is registered but zero after round-trip; line: {target_line}"
+    );
+
+    // Invariant: WS-out (encrypted) must NEVER exceed plaintext + a
+    // generous AEAD framing margin. The production observation was the
+    // opposite (ws-out 280x larger than tcp_payload-out) — if the same
+    // skew shows up on this round-trip we want a hard failure here.
+    let ws_out_bytes = sum_metric(&rendered, |line| {
+        line.starts_with("outline_ss_websocket_bytes_total")
+            && line.contains(r#"transport="tcp""#)
+            && line.contains(r#"direction="out""#)
+            && line.contains(r#"app_protocol="shadowsocks""#)
+            && line.contains(r#"protocol="http1""#)
+    });
+    assert!(
+        ws_out_bytes <= target_bytes * 2 + 256,
+        "ws_bytes (out)={ws_out_bytes} far exceeds tcp_payload (target_to_client)={target_bytes} — \
+         the same per-protocol skew observed in production (~280x)"
+    );
+
+    socket.close(None).await?;
+    Ok(())
+}
+
+/// Stresses the park-on-drop / resume-on-auth race that we suspect of
+/// dropping `target_to_client` increments in production: open an
+/// HTTP/1 SS-WS session, send the target address but NO payload yet,
+/// drop the socket (forces park), reconnect with the same Session ID
+/// (forces resume), then drive a real request/response so upstream has
+/// data to send back. After the second round-trip the
+/// `target_to_client` counter must still be > 0 and within AEAD-framing
+/// distance of `ws_bytes_total{direction="out"}`.
+#[tokio::test]
+async fn ss_h1_park_resume_round_trip_keeps_target_to_client_in_sync_with_ws_out() -> Result<()> {
+    let (target_addr, _accepts) = spawn_echo_target().await?;
+    let (server, user) = spawn_ss_resumption_server(|_| {}).await?;
+
+    // Session #1: capable, send empty SS handshake (target address, no
+    // payload), then immediately drop. The relay spawns
+    // `relay_upstream_to_client`, then park-on-drop fires
+    // `cancel.notify_one()` before any upstream byte has had a chance
+    // to arrive — the suspected window where the counter increment can
+    // be skipped on resume.
+    let (mut socket, issued) = connect_ws_h1(server.listen_addr, "/tcp", None, true).await?;
+    let session_id = issued.ok_or_else(|| {
+        anyhow::anyhow!("server did not issue X-Outline-Session despite Resume-Capable")
+    })?;
+    socket
+        .send(WsMessage::Binary(ss_handshake_frame(&user, target_addr, b"")?))
+        .await?;
+    socket.close(None).await?;
+    drop(socket);
+
+    // Wait for park-on-drop to settle (cancel-notify has to land and
+    // the relay task has to return Cancelled before the entry is
+    // inserted into the registry).
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Session #2: resume with the same id and send a real payload so
+    // upstream actually has data to echo back. After this round-trip
+    // the ws-out wire counter and the per-user tcp_payload counter
+    // must both reflect the response.
+    let (mut socket2, _) =
+        connect_ws_h1(server.listen_addr, "/tcp", Some(session_id), true).await?;
+    socket2
+        .send(WsMessage::Binary(ss_handshake_frame(&user, target_addr, b"after-resume")?))
+        .await?;
+    let _reply = expect_binary_reply(&mut socket2).await?;
+    tokio::task::yield_now().await;
+
+    let rendered = server.metrics.render_prometheus();
+    let target_to_client = sum_metric(&rendered, |line| {
+        line.starts_with("outline_ss_tcp_payload_bytes_total")
+            && line.contains(r#"protocol="http1""#)
+            && line.contains(r#"direction="target_to_client""#)
+            && line.contains(r#"app_protocol="shadowsocks""#)
+    });
+    let ws_out = sum_metric(&rendered, |line| {
+        line.starts_with("outline_ss_websocket_bytes_total")
+            && line.contains(r#"transport="tcp""#)
+            && line.contains(r#"direction="out""#)
+            && line.contains(r#"protocol="http1""#)
+            && line.contains(r#"app_protocol="shadowsocks""#)
+    });
+
+    assert!(
+        target_to_client > 0,
+        "target_to_client is zero after park+resume round-trip — \
+         relay_upstream_to_client did not run on the resumed session. \
+         ws_out={ws_out}; full /metrics:\n{rendered}"
+    );
+    assert!(
+        ws_out <= target_to_client * 2 + 256,
+        "ws-out={ws_out} far exceeds tcp_payload target_to_client={target_to_client} after park+resume \
+         — matches the production skew on protocol=http1"
+    );
+
+    socket2.close(None).await?;
+    Ok(())
+}
+
+fn parse_metric_value(line: &str) -> u64 {
+    line.rsplit_once(' ')
+        .and_then(|(_, v)| v.parse().ok())
+        .unwrap_or_else(|| panic!("could not parse counter value from line: {line}"))
+}
+
+fn sum_metric(rendered: &str, predicate: impl Fn(&str) -> bool) -> u64 {
+    rendered.lines().filter(|l| predicate(l)).map(parse_metric_value).sum()
+}
+
 // ── SS-UDP tests ─────────────────────────────────────────────────────────────
 
 #[tokio::test]

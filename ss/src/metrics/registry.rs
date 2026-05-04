@@ -51,7 +51,17 @@ pub(super) fn build_recorder(idle_timeout: Duration) -> (PrometheusRecorder, Pro
             WS_DATA_CHANNEL_FILL_BUCKETS,
         )
         .expect("invalid WS data channel fill bucket config")
-        .idle_timeout(MetricKindMask::ALL, Some(idle_timeout))
+        // Only evict idle histograms. Counters in Prometheus are monotonic
+        // by contract: evicting and re-creating one between scrapes appears
+        // to PromQL as a `rate()` reset, dropping every accumulated value.
+        // The previous `MetricKindMask::ALL` setting made per-user payload
+        // counters disappear after `idle_timeout` of inactivity even though
+        // the underlying traffic was being relayed (and ws-side counters,
+        // which are not user-keyed, kept reflecting it) — burst users would
+        // lose `target_to_client` series entirely while sustained-traffic
+        // users kept theirs. Histograms keep idle eviction because their
+        // per-bucket storage actually does compound the cardinality cost.
+        .idle_timeout(MetricKindMask::HISTOGRAM, Some(idle_timeout))
         .build_recorder();
     let handle = recorder.handle();
     (recorder, handle)
