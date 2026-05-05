@@ -18,9 +18,10 @@ use tokio::time::sleep;
 use tracing::debug;
 
 use crate::config::UplinkTransport;
+use crate::penalty::update_rtt_ewma;
 use crate::probe::dns::build_dns_query;
 use crate::probe::http::build_http_probe_request;
-use crate::types::UplinkManager;
+use crate::types::{TransportKind, UplinkManager};
 
 use super::warm_tcp;
 use super::warm_udp;
@@ -118,39 +119,49 @@ impl UplinkManager {
             // UDP keepalive. The Vless and Ws variants of the warm slot
             // both consume the same `query` bytes (transaction id +
             // question section); the SS variant additionally needs the
-            // SS-UDP target prefix, supplied via `ss_payload`.
+            // SS-UDP target prefix, supplied via `ss_payload`. Successful
+            // round-trips feed the `latency` and `rtt_ewma` fields on
+            // status so dashboards see fresh measurements even when the
+            // regular probe loop is skipping cycles for active uplinks
+            // (see `should_skip_probe_cycle_for_recent_activity`).
             if let (Some(query), Some(ss_payload)) =
                 (dns_query.as_ref(), ss_udp_payload.as_ref())
             {
                 let slot = self.inner.warm_udp_probe_slot(index);
-                let kept = tokio::time::timeout(
+                let rtt = tokio::time::timeout(
                     keepalive_per_tick_timeout(probe.timeout),
                     warm_udp::keepalive_tick(slot, query, ss_payload),
                 )
                 .await
-                .unwrap_or(false);
+                .unwrap_or(None);
+                if let Some(rtt) = rtt {
+                    self.record_keepalive_latency(index, TransportKind::Udp, rtt);
+                }
                 debug!(
                     uplink = %uplink.name,
                     transport = "udp",
                     probe = "warm_keepalive",
-                    kept,
+                    rtt_ms = rtt.map(|d| d.as_millis() as u64),
                     "warm UDP probe keepalive tick"
                 );
             }
             // TCP keepalive.
             if let Some(request) = http_request.as_ref() {
                 let slot = self.inner.warm_tcp_probe_slot(index);
-                let kept = tokio::time::timeout(
+                let rtt = tokio::time::timeout(
                     keepalive_per_tick_timeout(probe.timeout),
                     warm_tcp::keepalive_tick(slot, request),
                 )
                 .await
-                .unwrap_or(false);
+                .unwrap_or(None);
+                if let Some(rtt) = rtt {
+                    self.record_keepalive_latency(index, TransportKind::Tcp, rtt);
+                }
                 debug!(
                     uplink = %uplink.name,
                     transport = "tcp",
                     probe = "warm_keepalive",
-                    kept,
+                    rtt_ms = rtt.map(|d| d.as_millis() as u64),
                     "warm TCP probe keepalive tick"
                 );
             }
@@ -166,5 +177,30 @@ fn keepalive_per_tick_timeout(probe_timeout: Duration) -> Duration {
         Duration::from_secs(5)
     } else {
         probe_timeout
+    }
+}
+
+impl UplinkManager {
+    /// Stamp a successful keepalive round-trip into the per-transport
+    /// `latency` / `rtt_ewma` fields. Mirrors what `process_probe_ok`
+    /// does after a regular probe so the dashboard surface (snapshot
+    /// JSON, Prometheus gauges via metrics that read from status) sees
+    /// fresh values even when the real probe loop has skipped this
+    /// uplink for the last N cycles.
+    fn record_keepalive_latency(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        rtt: Duration,
+    ) {
+        let alpha = self.inner.load_balancing.rtt_ewma_alpha;
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            per.latency = Some(rtt);
+            update_rtt_ewma(&mut per.rtt_ewma, Some(rtt), alpha);
+        });
     }
 }
