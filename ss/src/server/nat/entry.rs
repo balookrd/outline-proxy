@@ -9,7 +9,8 @@ use std::{
 use anyhow::Result;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
-use tokio::{net::UdpSocket, sync::Mutex};
+use parking_lot::Mutex;
+use tokio::net::UdpSocket;
 
 use crate::server::abort::AbortOnDrop;
 use crate::{
@@ -129,13 +130,13 @@ impl NatEntry {
     /// shadowsocks plain-UDP session). It is matched by
     /// [`Self::detach_session_for_stream`] so a stream's park-on-drop
     /// only clears the slot when we are still the registered owner.
-    pub(crate) async fn register_session(
+    pub(crate) fn register_session(
         &self,
         sender: UdpResponseSender,
         session: UdpCipherMode,
         stream_id: u64,
     ) {
-        *self.active.lock().await = Some(ActiveSession { sender, session, stream_id });
+        *self.active.lock() = Some(ActiveSession { sender, session, stream_id });
     }
 
     /// Atomically clears the active session slot iff its `stream_id`
@@ -143,8 +144,8 @@ impl NatEntry {
     /// SS-UDP-over-WS park path to release the entry's response sender
     /// without disrupting other streams that may have taken over
     /// in the meantime.
-    pub(crate) async fn detach_session_for_stream(&self, expected: u64) -> bool {
-        let mut guard = self.active.lock().await;
+    pub(crate) fn detach_session_for_stream(&self, expected: u64) -> bool {
+        let mut guard = self.active.lock();
         match guard.as_ref() {
             Some(active) if active.stream_id == expected => {
                 *guard = None;
