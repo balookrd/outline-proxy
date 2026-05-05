@@ -363,6 +363,86 @@ Snapshot fields:
 | VLESS / WS / H3       | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (`#tcp`)      | shared with TCP carrier   |
 | VLESS / XHTTP / H3    | `xhttp_h3 → xhttp_h2→ xhttp_h1` | `xhttp_h3 → xhttp_h2 → xhttp_h1` | yes (`#tcp`) | shared with TCP carrier   |
 
+## Per-group probe overrides
+
+`[outline.probe]` is a template inherited by every `[[uplink_group]]`.
+Individual groups can override probe parameters via `[uplink_group.probe]`,
+which is bound to the **most recently declared** `[[uplink_group]]` table —
+place the override block immediately after the group it should apply to and
+before the next `[[uplink_group]]`.
+
+Merge rules:
+
+- **Scalar fields** (`interval_secs`, `timeout_secs`, `max_concurrent`,
+  `max_dials`, `min_failures`, `attempts`) are merged field-by-field with
+  the template — fields not set in the override fall back to
+  `[outline.probe]`.
+- **Sub-tables** (`ws` / `http` / `dns` / `tcp`) are replaced wholesale.
+  If a group sets `[uplink_group.probe.http]`, the template's
+  `[outline.probe.http]` is dropped for that group — repeat every field
+  you still want.
+- **Activation requires at least one of `ws` / `http` / `dns`** in the
+  resulting (post-merge) probe config; otherwise the probe loop will not
+  start for that group.
+
+Example — the `backup` group probes less aggressively, swaps the HTTP
+target, and reuses the template's WS / DNS sub-tables:
+
+```toml
+[outline.probe]
+interval_secs  = 30
+timeout_secs   = 10
+max_concurrent = 4
+max_dials      = 2
+
+[outline.probe.ws]
+enabled = true
+
+[outline.probe.http]
+url = "http://example.com/"
+
+[outline.probe.dns]
+server = "1.1.1.1"
+port   = 53
+name   = "example.com"
+
+
+[[uplink_group]]
+name = "main"
+mode = "active_active"
+# … inherits [outline.probe] verbatim …
+
+
+[[uplink_group]]
+name = "backup"
+mode = "active_passive"
+routing_scope = "global"
+
+# Override applies to "backup" (the most recent [[uplink_group]] above):
+[uplink_group.probe]
+interval_secs = 60   # poll the fallback path less often
+min_failures  = 2    # tolerate a single transient blip
+
+# Replaces [outline.probe.http] entirely for this group:
+[uplink_group.probe.http]
+url = "http://backup-canary.example.net/"
+
+# [uplink_group.probe.ws] / .dns are not overridden, so the group inherits
+# the template's `ws` and `dns` sub-tables unchanged.
+```
+
+**Disabling a probe type in a single group:**
+
+- `ws`: set `[uplink_group.probe.ws] enabled = false` in the override —
+  `WsProbeConfig` carries an explicit `enabled` flag.
+- `http` / `dns` / `tcp`: cannot be disabled per group. The merge uses
+  `override.or(template)` ([groups.rs:160](src/config/load/groups.rs:160)),
+  so an omitted sub-table inherits the template's value, and there is no
+  syntax for "explicit none". To run a group without one of these probes
+  while another group keeps it, remove the sub-table from
+  `[outline.probe]` and re-declare it only inside the groups that need
+  it via `[uplink_group.probe.<kind>]`.
+
 ## Downgrade window mechanics
 
 Recorded in two layers:

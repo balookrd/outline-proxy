@@ -363,6 +363,85 @@ dial снимает блок раньше срока.
 | VLESS / WS / H3       | `ws_h3 → ws_h2 → ws_h1`   | `ws_h3 → ws_h2 → ws_h1`                  | да (`#tcp`)     | вместе с TCP carrier'ом     |
 | VLESS / XHTTP / H3    | `xhttp_h3 → xhttp_h2 → xhttp_h1` | `xhttp_h3 → xhttp_h2 → xhttp_h1` | да (`#tcp`) | вместе с TCP carrier'ом     |
 
+## Переопределение проб для конкретной группы
+
+`[outline.probe]` — шаблон, который наследует каждая `[[uplink_group]]`.
+Любая группа может переопределить параметры проб через
+`[uplink_group.probe]`. Эта таблица привязывается к **последней объявленной
+выше** `[[uplink_group]]` — ставьте блок override сразу после нужной
+группы и до объявления следующей `[[uplink_group]]`.
+
+Правила слияния:
+
+- **Скалярные поля** (`interval_secs`, `timeout_secs`, `max_concurrent`,
+  `max_dials`, `min_failures`, `attempts`) мержатся пофилдово — поля,
+  не указанные в override, наследуются из `[outline.probe]`.
+- **Саб-таблицы** (`ws` / `http` / `dns` / `tcp`) заменяются целиком.
+  Если группа задаёт `[uplink_group.probe.http]`, шаблонная
+  `[outline.probe.http]` для этой группы отбрасывается полностью —
+  все нужные поля надо повторить.
+- **Чтобы пробы запустились**, в результирующей (после мержа)
+  конфигурации должна остаться хотя бы одна из `ws` / `http` / `dns`,
+  иначе probe-loop для группы не стартует.
+
+Пример: группа `backup` пробит реже, использует свой HTTP-таргет, а WS
+и DNS-саб-таблицы наследует из шаблона:
+
+```toml
+[outline.probe]
+interval_secs  = 30
+timeout_secs   = 10
+max_concurrent = 4
+max_dials      = 2
+
+[outline.probe.ws]
+enabled = true
+
+[outline.probe.http]
+url = "http://example.com/"
+
+[outline.probe.dns]
+server = "1.1.1.1"
+port   = 53
+name   = "example.com"
+
+
+[[uplink_group]]
+name = "main"
+mode = "active_active"
+# … наследует [outline.probe] без изменений …
+
+
+[[uplink_group]]
+name = "backup"
+mode = "active_passive"
+routing_scope = "global"
+
+# Override относится к "backup" — последней объявленной выше [[uplink_group]]:
+[uplink_group.probe]
+interval_secs = 60   # резервный путь пробим реже
+min_failures  = 2    # терпимее к одиночному фейлу
+
+# Заменяет [outline.probe.http] целиком для этой группы:
+[uplink_group.probe.http]
+url = "http://backup-canary.example.net/"
+
+# [uplink_group.probe.ws] / .dns не переопределены, так что группа
+# наследует шаблонные саб-таблицы `ws` и `dns` без изменений.
+```
+
+**Выключение типа пробы для одной группы:**
+
+- `ws`: задайте `[uplink_group.probe.ws] enabled = false` в override —
+  у `WsProbeConfig` есть явное поле `enabled`.
+- `http` / `dns` / `tcp`: выключить per-group нельзя. Мерж использует
+  `override.or(template)` ([groups.rs:160](src/config/load/groups.rs:160)),
+  поэтому пропущенная саб-таблица наследует значение из шаблона, и
+  способа задать «явное None» нет. Если нужно, чтобы одна группа
+  работала без какой-то из этих проб, а другая — с ней, уберите
+  саб-таблицу из `[outline.probe]` и объявите её только в нужных
+  группах через `[uplink_group.probe.<тип>]`.
+
 ## Механика окна даунгрейда
 
 Записывается в двух слоях:
