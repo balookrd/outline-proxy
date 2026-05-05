@@ -13,6 +13,7 @@ use crate::routing_key::RoutingKey;
 use crate::state::StateStore;
 use crate::types::Uplink;
 
+use super::probe::warm_tcp::WarmTcpProbeSlot;
 use super::probe::warm_udp::WarmUdpProbeSlot;
 use super::standby_pool::StandbyPool;
 use super::status::UplinkStatus;
@@ -67,6 +68,10 @@ pub(crate) struct UplinkManagerInner {
     /// extension makes the cached carrier stale, or on first error.
     /// Empty for non-VLESS uplinks (the slot is never populated for SS).
     pub(crate) probe_warm_udp: Box<[WarmUdpProbeSlot]>,
+    /// Per-uplink slot caching one open VLESS TCP probe pipe (writer + reader)
+    /// so the HTTP probe can reuse it across cycles via HTTP keep-alive.
+    /// Same lifecycle rules as `probe_warm_udp`. Empty for non-VLESS uplinks.
+    pub(crate) probe_warm_tcp: Box<[WarmTcpProbeSlot]>,
     pub(crate) active_uplinks: RwLock<ActiveUplinks>,
     pub(crate) sticky_routes: RwLock<HashMap<RoutingKey, StickyRoute>>,
     pub(crate) standby_pools: Vec<StandbyPool>,
@@ -108,6 +113,11 @@ impl UplinkManagerInner {
     /// `Arc::clone` the inner handle into a spawned probe task.
     pub(crate) fn warm_udp_probe_slot(&self, index: usize) -> &WarmUdpProbeSlot {
         &self.probe_warm_udp[index]
+    }
+
+    /// Per-uplink warm-TCP-probe slot.
+    pub(crate) fn warm_tcp_probe_slot(&self, index: usize) -> &WarmTcpProbeSlot {
+        &self.probe_warm_tcp[index]
     }
 
     /// Clone every uplink status into a flat Vec for multi-index iteration.

@@ -90,7 +90,7 @@ fn http_probe_uses_head_request() {
     let request = build_http_probe_request("example.com", 80, "/healthz?full=1");
     assert!(request.starts_with("HEAD /healthz?full=1 HTTP/1.1\r\n"));
     assert!(request.contains("\r\nHost: example.com\r\n"));
-    assert!(request.ends_with("\r\nConnection: close\r\n\r\n"));
+    assert!(request.ends_with("\r\nConnection: keep-alive\r\n\r\n"));
 }
 
 #[test]
