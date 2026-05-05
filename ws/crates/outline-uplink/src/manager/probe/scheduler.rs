@@ -13,6 +13,7 @@ use super::super::super::selection::cooldown_active;
 use super::super::super::types::{TransportKind, Uplink, UplinkManager};
 use super::super::status::UplinkStatus;
 use super::outcome::ProbeOutcome;
+use super::warm_tcp::WarmTcpProbeSlot;
 use super::warm_udp::WarmUdpProbeSlot;
 
 pub(super) fn should_skip_probe_cycle_for_recent_activity(
@@ -38,6 +39,7 @@ pub(super) async fn run_probe_attempt_with_timeout(
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: TransportMode,
     effective_udp_mode: TransportMode,
+    warm_tcp_slot: Option<WarmTcpProbeSlot>,
     warm_udp_slot: Option<WarmUdpProbeSlot>,
 ) -> Result<ProbeOutcome> {
     let tcp_budget = (probe.ws.enabled || probe.http.is_some() || probe.tcp.is_some()) as u32;
@@ -56,6 +58,7 @@ pub(super) async fn run_probe_attempt_with_timeout(
             dial_limit,
             effective_tcp_mode,
             effective_udp_mode,
+            warm_tcp_slot,
             warm_udp_slot,
         )
         .await
@@ -151,16 +154,19 @@ impl UplinkManager {
             // ping/pong at the connection level).
             let effective_tcp_mode = self.effective_tcp_mode(index).await;
             let effective_udp_mode = self.effective_udp_mode(index).await;
-            // Only VLESS uplinks reuse a warm UDP probe transport. SS-UDP
-            // probes still dial fresh — the slot is unused there and
-            // passing `None` keeps the probe code path identical.
-            let warm_udp_slot: Option<WarmUdpProbeSlot> = if matches!(
-                uplink.transport,
-                crate::config::UplinkTransport::Vless
-            ) {
-                Some(Arc::clone(self.inner.warm_udp_probe_slot(index)))
+            // Only VLESS uplinks reuse warm probe pipes. SS probes still dial
+            // fresh — the slot is unused there and passing `None` keeps the
+            // probe code path identical.
+            let (warm_tcp_slot, warm_udp_slot): (
+                Option<WarmTcpProbeSlot>,
+                Option<WarmUdpProbeSlot>,
+            ) = if matches!(uplink.transport, crate::config::UplinkTransport::Vless) {
+                (
+                    Some(Arc::clone(self.inner.warm_tcp_probe_slot(index))),
+                    Some(Arc::clone(self.inner.warm_udp_probe_slot(index))),
+                )
             } else {
-                None
+                (None, None)
             };
             tasks.spawn(async move {
                 let _permit = execution_limit
@@ -183,6 +189,7 @@ impl UplinkManager {
                         Arc::clone(&dial_limit),
                         effective_tcp_mode,
                         effective_udp_mode,
+                        warm_tcp_slot.clone(),
                         warm_udp_slot.clone(),
                     )
                     .await;

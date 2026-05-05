@@ -36,11 +36,10 @@ impl UplinkManager {
                     TransportKind::Tcp => (TransportMode::WsH3, uplink.udp_mode),
                     TransportKind::Udp => (uplink.tcp_mode, TransportMode::WsH3),
                 };
-                // H3 recovery deliberately bypasses the warm-UDP slot:
-                // the cached transport (if any) was dialled at the
-                // capped mode, but recovery probes need to test the
-                // un-capped H3 carrier. Passing `None` forces a fresh
-                // dial.
+                // H3 recovery deliberately bypasses both warm slots:
+                // the cached pipes (if any) were dialled at the capped
+                // mode, but recovery probes need to test the un-capped
+                // H3 carrier. Passing `None`/`None` forces a fresh dial.
                 let outcome = run_probe_attempt_with_timeout(
                     Arc::clone(&dns_cache),
                     group_name,
@@ -49,6 +48,7 @@ impl UplinkManager {
                     dial_limit,
                     eff_tcp,
                     eff_udp,
+                    None,
                     None,
                 )
                 .await;

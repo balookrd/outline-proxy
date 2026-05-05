@@ -26,7 +26,7 @@ async fn vless_http_probe_does_not_prefix_socks5_target() {
     )
     .await
     .expect("exchange_http_probe failed");
-    assert!(result, "fake server returned 200; probe should report Ok(true)");
+    assert!(result.status_ok, "fake server returned 200; probe should report status_ok");
 
     // Drop the writer so the server task observes a clean EOF and the
     // capture future resolves.
