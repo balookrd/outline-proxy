@@ -154,13 +154,17 @@ impl UplinkManager {
             // ping/pong at the connection level).
             let effective_tcp_mode = self.effective_tcp_mode(index).await;
             let effective_udp_mode = self.effective_udp_mode(index).await;
-            // Only VLESS uplinks reuse warm probe pipes. SS probes still dial
-            // fresh — the slot is unused there and passing `None` keeps the
-            // probe code path identical.
+            // VLESS and Shadowsocks-over-WS uplinks reuse warm probe pipes.
+            // Plain Shadowsocks (direct sockets, no WS handshake) still
+            // dials fresh — there is no handshake to amortize and passing
+            // `None` keeps the probe code path identical.
             let (warm_tcp_slot, warm_udp_slot): (
                 Option<WarmTcpProbeSlot>,
                 Option<WarmUdpProbeSlot>,
-            ) = if matches!(uplink.transport, crate::config::UplinkTransport::Vless) {
+            ) = if matches!(
+                uplink.transport,
+                crate::config::UplinkTransport::Vless | crate::config::UplinkTransport::Ws,
+            ) {
                 (
                     Some(Arc::clone(self.inner.warm_tcp_probe_slot(index))),
                     Some(Arc::clone(self.inner.warm_udp_probe_slot(index))),

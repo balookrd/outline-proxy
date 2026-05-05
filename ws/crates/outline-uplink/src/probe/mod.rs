@@ -105,7 +105,7 @@ async fn run_tcp_probe(
     // exists to avoid. Skip it; the HTTP sub-probe below still validates
     // the data path through the warm pipe.
     let ws_warm_elided = probe.ws.enabled
-        && matches!(uplink.transport, UplinkTransport::Vless)
+        && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ws)
         && warm_tcp_slot
             .as_ref()
             .is_some_and(|slot| {

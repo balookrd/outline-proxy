@@ -65,15 +65,18 @@ pub(super) async fn run_http_probe(
     let needs_socks5_target = uplink.transport != UplinkTransport::Vless;
     let target_wire = target.to_wire_bytes()?;
 
-    // Try to reuse a warm pipe from a previous probe cycle. Only VLESS is
-    // eligible: SS-TCP probes don't get a warm slot (slot is `None`) and a
-    // reused SS pipe would also need to re-send the SOCKS5 target prefix on
-    // the first byte of every request, which the server treats as a fresh
-    // session. VLESS bakes the target into the dial-time handshake, so the
-    // tunnel itself is stateful and reusable.
+    // Try to reuse a warm pipe from a previous probe cycle. VLESS and SS-
+    // over-WS are both eligible: VLESS bakes the target into the dial-time
+    // handshake (stateful tunnel), and SS-over-WS keeps the upstream TCP
+    // alive via HTTP keep-alive — the SOCKS5 target prefix is only sent
+    // once per cached pipe lifetime (gated by `dialed_fresh` below) so the
+    // server's tunnel stays bound to the probe target across cycles.
+    // Plain Shadowsocks (direct UDP socket) gets `None` — no slot is
+    // populated for it.
     let warm_taken = warm_slot.and_then(|slot| warm_tcp::take_if_matches(slot, effective_tcp_mode));
     let (mut writer, mut reader, downgraded_from, dialed_fresh) = match warm_taken {
-        Some(WarmTcpProbe::Vless { writer, reader, .. }) => (writer, reader, None, false),
+        Some(WarmTcpProbe::Vless { writer, reader, .. })
+        | Some(WarmTcpProbe::Ws { writer, reader, .. }) => (writer, reader, None, false),
         None => {
             let (w, r, downgraded) = connect_probe_tcp(
                 cache,
@@ -110,11 +113,12 @@ pub(super) async fn run_http_probe(
     let status_ok = result.as_ref().map(|r| r.status_ok).unwrap_or(false);
     let probe_err = result.err();
 
-    // Stash for the next cycle iff: no error, status ok, server intends to
-    // keep the connection open, and we're VLESS (only path that has a slot).
-    // A downgrade marker also disqualifies — `effective_tcp_mode` for the
-    // next cycle will be different and `take_if_matches` would reject it
-    // anyway; close now so the upstream socket goes away promptly.
+    // Stash for the next cycle iff: no error, status ok, server intends
+    // to keep the connection open, and the uplink kind has a warm slot
+    // (VLESS or SS-over-WS). A downgrade marker also disqualifies —
+    // `effective_tcp_mode` for the next cycle will be different and
+    // `take_if_matches` would reject it anyway; close now so the upstream
+    // socket goes away promptly.
     let keep_warm = probe_err.is_none()
         && status_ok
         && !server_will_close
@@ -122,10 +126,26 @@ pub(super) async fn run_http_probe(
         && warm_slot.is_some();
     if keep_warm {
         if let Some(slot) = warm_slot {
-            warm_tcp::put_back(
-                slot,
-                WarmTcpProbe::Vless { writer, reader, mode: effective_tcp_mode },
-            );
+            let warm = match uplink.transport {
+                UplinkTransport::Vless => {
+                    WarmTcpProbe::Vless { writer, reader, mode: effective_tcp_mode }
+                },
+                UplinkTransport::Ws => {
+                    WarmTcpProbe::Ws { writer, reader, mode: effective_tcp_mode }
+                },
+                // Slot is only populated for Vless / Ws. Direct
+                // Shadowsocks should never reach this branch because
+                // `warm_slot.is_some()` would be false. Defend against
+                // misuse by closing instead of mis-tagging.
+                UplinkTransport::Shadowsocks => {
+                    close_probe_tcp_writer(&uplink.name, "http", &mut writer).await;
+                    return match probe_err {
+                        Some(err) => Err(err),
+                        None => Ok((status_ok, downgraded_from)),
+                    };
+                },
+            };
+            warm_tcp::put_back(slot, warm);
         }
     } else {
         debug!(

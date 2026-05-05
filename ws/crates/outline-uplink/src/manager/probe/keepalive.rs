@@ -84,6 +84,15 @@ impl UplinkManager {
             .dns
             .as_ref()
             .map(|cfg| Arc::new(build_dns_query(&cfg.name)));
+        // SS-over-WS UDP additionally needs the target wire form
+        // prefixed to every datagram (per SS-UDP framing). Build it
+        // once and pass alongside the bare DNS query.
+        let ss_udp_payload: Option<Arc<Vec<u8>>> = probe.dns.as_ref().and_then(|cfg| {
+            let target = cfg.target_addr().ok()?;
+            let mut payload = target.to_wire_bytes().ok()?;
+            payload.extend_from_slice(&build_dns_query(&cfg.name));
+            Some(Arc::new(payload))
+        });
         let http_request: Option<Arc<Vec<u8>>> = probe.http.as_ref().and_then(|cfg| {
             let host = cfg.url.host_str()?;
             let port = cfg.url.port_or_known_default().unwrap_or(80);
@@ -100,15 +109,23 @@ impl UplinkManager {
         });
 
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
-            if !matches!(uplink.transport, UplinkTransport::Vless) {
+            if !matches!(
+                uplink.transport,
+                UplinkTransport::Vless | UplinkTransport::Ws,
+            ) {
                 continue;
             }
-            // UDP keepalive.
-            if let Some(query) = dns_query.as_ref() {
+            // UDP keepalive. The Vless and Ws variants of the warm slot
+            // both consume the same `query` bytes (transaction id +
+            // question section); the SS variant additionally needs the
+            // SS-UDP target prefix, supplied via `ss_payload`.
+            if let (Some(query), Some(ss_payload)) =
+                (dns_query.as_ref(), ss_udp_payload.as_ref())
+            {
                 let slot = self.inner.warm_udp_probe_slot(index);
                 let kept = tokio::time::timeout(
                     keepalive_per_tick_timeout(probe.timeout),
-                    warm_udp::keepalive_tick(slot, query),
+                    warm_udp::keepalive_tick(slot, query, ss_payload),
                 )
                 .await
                 .unwrap_or(false);

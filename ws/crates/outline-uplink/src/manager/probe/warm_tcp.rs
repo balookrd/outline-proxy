@@ -24,17 +24,23 @@ use crate::config::TransportMode;
 
 /// Cached TCP probe pipe.
 ///
-/// `Vless` covers both VLESS/WS and VLESS/XHTTP carriers; the difference is
-/// only in the `mode` field which [`take_if_matches`] uses to discard a
-/// stale clamp.
+/// `Vless` covers both VLESS/WS and VLESS/XHTTP carriers; the difference
+/// is only in the `mode` field which [`take_if_matches`] uses to discard
+/// a stale clamp.
+///
+/// `Ws` covers Shadowsocks-over-WebSocket. Reuse there relies on HTTP
+/// keep-alive on the upstream HEAD request and on the SOCKS5 target
+/// prefix being sent only on the first request of the cached pipe's
+/// lifetime (already gated by the `dialed_fresh` flag in the probe path).
 pub(crate) enum WarmTcpProbe {
     Vless { writer: TcpWriter, reader: TcpReader, mode: TransportMode },
+    Ws { writer: TcpWriter, reader: TcpReader, mode: TransportMode },
 }
 
 impl WarmTcpProbe {
     fn mode(&self) -> TransportMode {
         match self {
-            Self::Vless { mode, .. } => *mode,
+            Self::Vless { mode, .. } | Self::Ws { mode, .. } => *mode,
         }
     }
 }
@@ -103,7 +109,10 @@ pub(crate) async fn keepalive_tick(
         Some(w) => w,
         None => return false,
     };
-    let WarmTcpProbe::Vless { mut writer, mut reader, mode } = warm;
+    let (mut writer, mut reader, mode, is_vless) = match warm {
+        WarmTcpProbe::Vless { writer, reader, mode } => (writer, reader, mode, true),
+        WarmTcpProbe::Ws { writer, reader, mode } => (writer, reader, mode, false),
+    };
     let outcome = async {
         writer.send_chunk(request).await.ok()?;
         const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -157,7 +166,12 @@ pub(crate) async fn keepalive_tick(
     }
     .await;
     if outcome.is_some() {
-        put_back(slot, WarmTcpProbe::Vless { writer, reader, mode });
+        let warm = if is_vless {
+            WarmTcpProbe::Vless { writer, reader, mode }
+        } else {
+            WarmTcpProbe::Ws { writer, reader, mode }
+        };
+        put_back(slot, warm);
         true
     } else {
         let _ = writer.close().await;
