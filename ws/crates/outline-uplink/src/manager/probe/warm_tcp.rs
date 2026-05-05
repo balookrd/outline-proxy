@@ -73,6 +73,14 @@ pub(crate) fn put_back(slot: &WarmTcpProbeSlot, warm: WarmTcpProbe) {
     }
 }
 
+/// True when the slot holds a transport whose carrier mode matches
+/// `expected_mode`. Used by the WS sub-probe to skip a redundant
+/// fresh WS handshake when a cached pipe (which is itself proof the
+/// WS layer is working) is already on hand.
+pub(crate) fn peek_matches(slot: &WarmTcpProbeSlot, expected_mode: TransportMode) -> bool {
+    matches!(slot.lock().as_ref(), Some(w) if w.mode() == expected_mode)
+}
+
 /// Drop the cached pipe (UDP `mode_downgrade` analog for TCP).
 pub(crate) fn clear(slot: &WarmTcpProbeSlot) {
     *slot.lock() = None;
