@@ -101,14 +101,15 @@ pub(crate) fn clear(slot: &WarmTcpProbeSlot) {
 /// Returns `true` if the slot was non-empty and the request succeeded
 /// with a status the regular probe would have accepted *and* the server
 /// signalled keep-alive. Otherwise the cached pipe is closed.
+/// Returns `Some(rtt)` on a successful round-trip, `None` if the slot was
+/// empty or the request failed. See `warm_udp::keepalive_tick` for why the
+/// timing is surfaced.
 pub(crate) async fn keepalive_tick(
     slot: &WarmTcpProbeSlot,
     request: &[u8],
-) -> bool {
-    let warm = match slot.lock().take() {
-        Some(w) => w,
-        None => return false,
-    };
+) -> Option<std::time::Duration> {
+    let warm = slot.lock().take()?;
+    let started = std::time::Instant::now();
     let (mut writer, mut reader, mode, is_vless) = match warm {
         WarmTcpProbe::Vless { writer, reader, mode } => (writer, reader, mode, true),
         WarmTcpProbe::Ws { writer, reader, mode } => (writer, reader, mode, false),
@@ -166,15 +167,16 @@ pub(crate) async fn keepalive_tick(
     }
     .await;
     if outcome.is_some() {
+        let rtt = started.elapsed();
         let warm = if is_vless {
             WarmTcpProbe::Vless { writer, reader, mode }
         } else {
             WarmTcpProbe::Ws { writer, reader, mode }
         };
         put_back(slot, warm);
-        true
+        Some(rtt)
     } else {
         let _ = writer.close().await;
-        false
+        None
     }
 }

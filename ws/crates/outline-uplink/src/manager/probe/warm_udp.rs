@@ -119,34 +119,40 @@ pub(crate) fn clear(slot: &WarmUdpProbeSlot) {
 /// the cached transport, and the next regular probe will dial fresh.
 /// The caller logs the outcome at debug level. Returns `true` if the
 /// slot was non-empty and the round-trip succeeded.
+/// Returns `Some(rtt)` if the slot held a transport and the round-trip
+/// succeeded, where `rtt` is the wall-clock send→validated-recv time.
+/// Returns `None` if the slot was empty or the round-trip failed.
+/// Callers feed the rtt into the status `latency` / `rtt_ewma` fields so
+/// the dashboard sees fresh measurements even when the regular probe
+/// cycle is skipped because real traffic shows the uplink is alive.
 pub(crate) async fn keepalive_tick(
     slot: &WarmUdpProbeSlot,
     query: &[u8],
     ss_payload: &[u8],
-) -> bool {
-    let warm = match slot.lock().take() {
-        Some(w) => w,
-        None => return false,
-    };
+) -> Option<std::time::Duration> {
+    let warm = slot.lock().take()?;
+    let started = std::time::Instant::now();
     match warm {
         WarmUdpProbe::Vless { transport, mode } => {
             let ok = vless_round_trip(&transport, query).await;
             if ok {
+                let rtt = started.elapsed();
                 put_back(slot, WarmUdpProbe::Vless { transport, mode });
-                true
+                Some(rtt)
             } else {
                 let _ = transport.close().await;
-                false
+                None
             }
         },
         WarmUdpProbe::Ws { transport, mode } => {
             let ok = ws_round_trip(&transport, ss_payload, query).await;
             if ok {
+                let rtt = started.elapsed();
                 put_back(slot, WarmUdpProbe::Ws { transport, mode });
-                true
+                Some(rtt)
             } else {
                 let _ = transport.close().await;
-                false
+                None
             }
         },
     }
