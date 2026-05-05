@@ -1,0 +1,98 @@
+//! Long-lived UDP transport reused across DNS probe cycles.
+//!
+//! The DNS probe used to dial a fresh `VlessUdpWsTransport` for every cycle,
+//! which on the server side meant: bind a new NAT socket, spawn a new reader
+//! task, and pay a cold DNS resolve for the probe target. With one probe
+//! every few seconds those costs dominate the measured latency and skew
+//! UDP probe RTT well above what the data path actually exhibits.
+//!
+//! This module owns one slot per uplink that caches a single open VLESS UDP
+//! transport. The DNS probe takes the transport out, sends + reads through
+//! it, and puts it back if both halves succeeded. On any error — or when
+//! the manager records a UDP `mode_downgrade` (the cached carrier is no
+//! longer the one fresh dials would pick) — the slot is cleared so the
+//! next probe re-establishes from scratch.
+//!
+//! Scope is intentionally narrow: only the VLESS-XHTTP/WS family uses the
+//! warm slot. Plain Shadowsocks and raw-QUIC paths still dial fresh; the
+//! cost profile there differs and is not the bottleneck this module
+//! targets.
+
+use std::sync::Arc;
+
+use parking_lot::Mutex;
+
+use outline_transport::VlessUdpWsTransport;
+
+use crate::config::TransportMode;
+
+/// Cached UDP transport reused by the DNS probe.
+///
+/// The variant stores the carrier mode the transport was dialled with;
+/// [`take_if_matches`] discards it if the next probe would request a
+/// different mode (a `mode_downgrade` clamp shifted the effective carrier
+/// while the slot was idle).
+///
+/// `VlessUdpWsTransport` underlies both VLESS/WS and VLESS/XHTTP carriers
+/// (the type alias name is a historical leftover from the WS-only era); a
+/// single variant covers both because the only thing that distinguishes
+/// them at this layer is `mode`.
+pub(crate) enum WarmUdpProbe {
+    Vless { transport: VlessUdpWsTransport, mode: TransportMode },
+}
+
+impl WarmUdpProbe {
+    fn mode(&self) -> TransportMode {
+        match self {
+            Self::Vless { mode, .. } => *mode,
+        }
+    }
+}
+
+/// Per-uplink slot guarding at most one cached transport.
+///
+/// `Arc` so the scheduler can clone it into the spawned probe task without
+/// holding a borrow on `UplinkManagerInner`.
+pub(crate) type WarmUdpProbeSlot = Arc<Mutex<Option<WarmUdpProbe>>>;
+
+pub(crate) fn new_slot() -> WarmUdpProbeSlot {
+    Arc::new(Mutex::new(None))
+}
+
+/// Take the cached transport iff it was dialled with `expected_mode`.
+///
+/// A mode mismatch drops the cached transport on the floor — its carrier
+/// is no longer the one fresh dials should use, so reusing it would defeat
+/// the point of the downgrade window.
+pub(crate) fn take_if_matches(
+    slot: &WarmUdpProbeSlot,
+    expected_mode: TransportMode,
+) -> Option<WarmUdpProbe> {
+    let mut guard = slot.lock();
+    match guard.as_ref().map(WarmUdpProbe::mode) {
+        Some(mode) if mode == expected_mode => guard.take(),
+        Some(_) => {
+            *guard = None;
+            None
+        },
+        None => None,
+    }
+}
+
+/// Re-insert the transport after a successful probe round-trip.
+///
+/// If the slot already holds a value (a concurrent probe attempt put one
+/// back first) this drops the newer transport — single-flight semantics
+/// are sufficient here.
+pub(crate) fn put_back(slot: &WarmUdpProbeSlot, warm: WarmUdpProbe) {
+    let mut guard = slot.lock();
+    if guard.is_none() {
+        *guard = Some(warm);
+    }
+}
+
+/// Clear the slot (e.g. after a UDP `mode_downgrade` so the next probe
+/// re-dials on the new effective carrier).
+pub(crate) fn clear(slot: &WarmUdpProbeSlot) {
+    *slot.lock() = None;
+}

@@ -17,6 +17,7 @@ use outline_transport::{
 use outline_transport::{connect_ss_udp_quic, connect_vless_udp_session_quic};
 
 use crate::config::{DnsProbeConfig, TargetAddr, UplinkConfig, UplinkTransport, TransportMode};
+use crate::manager::probe::warm_udp::{self, WarmUdpProbe, WarmUdpProbeSlot};
 
 use super::metrics::BytesRecorder;
 
@@ -27,6 +28,7 @@ pub(super) async fn run_dns_probe(
     probe: &DnsProbeConfig,
     dial_limit: Arc<Semaphore>,
     effective_udp_mode: TransportMode,
+    warm_slot: Option<&WarmUdpProbeSlot>,
 ) -> Result<(bool, Option<TransportMode>)> {
     let dns_server = probe.target_addr()?;
     let query = build_dns_query(&probe.name);
@@ -240,30 +242,49 @@ pub(super) async fn run_dns_probe(
                 }
             }
 
-            // Use `connect_with_resume(..., None)` so the WS-mode downgrade
-            // marker propagates the same way as the SS branch above. DNS
-            // probes do not participate in cross-transport session
-            // resumption — the SessionId tuple element is discarded.
-            let (transport, downgraded_from) = {
-                let _permit =
-                    dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
-                let (t, _issued, downgraded) = VlessUdpWsTransport::connect_with_resume(
-                    cache,
-                    udp_ws_url,
-                    effective_udp_mode,
-                    uuid,
-                    &dns_server,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    "probe_dns",
-                    None,
-                    None,
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!("DNS probe VLESS websocket for uplink {}", uplink.name),
-                })?;
-                (t, downgraded)
+            // Try to reuse a transport cached from a previous probe cycle.
+            // Same uplink + same effective mode + same probe target ⇒ the
+            // server-side NAT entry, reader task, and DNS resolve for the
+            // probe target stay hot. A fresh dial pays all three on every
+            // probe, which dominates UDP-probe latency vs. TCP.
+            let warm_taken = warm_slot
+                .and_then(|slot| warm_udp::take_if_matches(slot, effective_udp_mode));
+
+            let (transport, downgraded_from, dialed_fresh) = match warm_taken {
+                Some(WarmUdpProbe::Vless { transport, .. }) => (transport, None, false),
+                None => {
+                    // Use `connect_with_resume(..., None)` so the WS-mode downgrade
+                    // marker propagates the same way as the SS branch above. DNS
+                    // probes do not participate in cross-transport session
+                    // resumption — the SessionId tuple element is discarded.
+                    let (t, downgraded) = {
+                        let _permit = dial_limit
+                            .acquire_owned()
+                            .await
+                            .expect("probe dial semaphore closed");
+                        let (t, _issued, downgraded) = VlessUdpWsTransport::connect_with_resume(
+                            cache,
+                            udp_ws_url,
+                            effective_udp_mode,
+                            uuid,
+                            &dns_server,
+                            uplink.fwmark,
+                            uplink.ipv6_first,
+                            "probe_dns",
+                            None,
+                            None,
+                        )
+                        .await
+                        .with_context(|| TransportOperation::Connect {
+                            target: format!(
+                                "DNS probe VLESS websocket for uplink {}",
+                                uplink.name
+                            ),
+                        })?;
+                        (t, downgraded)
+                    };
+                    (t, downgraded, true)
+                },
             };
 
             let result = async {
@@ -282,20 +303,39 @@ pub(super) async fn run_dns_probe(
             }
             .await;
 
-            debug!(
-                uplink = %uplink.name,
-                transport = "udp",
-                probe = "dns",
-                "closing probe transport after DNS probe"
-            );
-            if let Err(error) = transport.close().await {
+            // On success: stash the transport for the next cycle. On error:
+            // drop it (the underlying stream may be half-broken). A fresh-
+            // dial result that produced a downgrade marker is also dropped
+            // — `effective_udp_mode` for the next cycle will reflect the
+            // new clamp, so a cached transport at the old mode would just
+            // be discarded by `take_if_matches` anyway; closing it now
+            // releases the server-side NAT entry promptly.
+            let keep_warm =
+                result.is_ok() && downgraded_from.is_none() && warm_slot.is_some();
+            if keep_warm {
+                if let Some(slot) = warm_slot {
+                    warm_udp::put_back(
+                        slot,
+                        WarmUdpProbe::Vless { transport, mode: effective_udp_mode },
+                    );
+                }
+            } else {
                 debug!(
                     uplink = %uplink.name,
                     transport = "udp",
                     probe = "dns",
-                    error = %format!("{error:#}"),
-                    "probe transport close returned error during teardown"
+                    dialed_fresh,
+                    "closing probe transport after DNS probe"
                 );
+                if let Err(error) = transport.close().await {
+                    debug!(
+                        uplink = %uplink.name,
+                        transport = "udp",
+                        probe = "dns",
+                        error = %format!("{error:#}"),
+                        "probe transport close returned error during teardown"
+                    );
+                }
             }
             result.map(|ok| (ok, downgraded_from))
         },
