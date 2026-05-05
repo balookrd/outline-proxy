@@ -214,7 +214,22 @@ async fn run_udp_probe(
 
     let started = Instant::now();
     let mut downgraded_from: Option<TransportMode> = None;
-    if probe.ws.enabled {
+    // Symmetric to the TCP-side WS-elide: when a warm UDP slot already
+    // holds a transport at the same effective carrier mode, that pipe is
+    // itself proof the UDP-side WS handshake (or QUIC handshake) still
+    // works. Re-dialling a fresh handshake here is redundant and pays
+    // exactly the cost the warm slot exists to avoid — it dominates
+    // the measured UDP probe latency for VLESS uplinks once the DNS
+    // sub-probe path is cheap (e.g. local dnsmasq cache on the server).
+    let ws_warm_elided = probe.ws.enabled
+        && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ws)
+        && warm_udp_slot
+            .as_ref()
+            .is_some_and(|slot| {
+                use crate::manager::probe::warm_udp::peek_matches;
+                peek_matches(slot, effective_udp_mode)
+            });
+    if probe.ws.enabled && !ws_warm_elided {
         let ws_attempt = async {
             match uplink.transport {
                 UplinkTransport::Ws | UplinkTransport::Vless => {
