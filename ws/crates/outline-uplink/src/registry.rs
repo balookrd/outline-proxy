@@ -141,6 +141,14 @@ impl UplinkRegistry {
         }
     }
 
+    /// Spawn one warm-probe keepalive loop per group. No-op for groups
+    /// whose `load_balancing.warm_probe_keepalive_interval` is `None`.
+    pub fn spawn_warm_probe_keepalive_loops(&self) {
+        for group in self.state.load().groups.iter() {
+            group.manager.spawn_warm_probe_keepalive_loop();
+        }
+    }
+
     pub fn spawn_standby_keepalive_loops(&self) {
         for group in self.state.load().groups.iter() {
             group.manager.spawn_standby_keepalive_loop();
@@ -261,6 +269,7 @@ impl UplinkRegistry {
             group.manager.spawn_probe_loop();
             group.manager.spawn_warm_standby_loop();
             group.manager.spawn_standby_keepalive_loop();
+            group.manager.spawn_warm_probe_keepalive_loop();
             group.manager.spawn_sticky_prune_loop();
         }
         // Prime strict active-uplink selection on the new managers.

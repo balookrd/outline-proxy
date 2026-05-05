@@ -9,6 +9,7 @@
 //!   (or extends) the downgrade window.
 
 mod h3_recovery;
+mod keepalive;
 pub(crate) mod outcome;
 mod scheduler;
 pub(crate) mod warm_tcp;

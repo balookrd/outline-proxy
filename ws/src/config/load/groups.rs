@@ -189,6 +189,7 @@ fn load_balancing_config_from_group(section: &UplinkGroupSection) -> Result<outl
         tcp_ws_keepalive_secs: section.tcp_ws_keepalive_secs,
         tcp_ws_standby_keepalive_secs: section.tcp_ws_standby_keepalive_secs,
         tcp_active_keepalive_secs: section.tcp_active_keepalive_secs,
+        warm_probe_keepalive_secs: section.warm_probe_keepalive_secs,
         auto_failback: section.auto_failback,
         vless_udp_max_sessions: section.vless_udp_max_sessions,
         vless_udp_session_idle_secs: section.vless_udp_session_idle_secs,

@@ -287,6 +287,15 @@ pub struct LoadBalancingConfig {
     /// session-level `socks_upstream_idle` watcher; only real payload bytes do.
     /// None disables per-session keepalive (relies solely on OS TCP keepalive).
     pub tcp_active_keepalive_interval: Option<Duration>,
+    /// How often to ping the cached probe pipes (warm-UDP/TCP slots used to
+    /// reuse a VLESS DNS/HTTP probe transport across cycles) so the
+    /// upstream server-side NAT entry / HTTP keep-alive socket does not
+    /// time out between probe cycles. The keepalive runs the same DNS
+    /// query / HEAD request the regular probe would, but only against
+    /// already-cached pipes — empty slots are left alone for the next
+    /// regular probe to fill. None disables the keepalive (cached pipes
+    /// then survive only if `probe.interval` is short enough on its own).
+    pub warm_probe_keepalive_interval: Option<Duration>,
     /// When false (default), the active uplink is only replaced when it fails.
     /// When true, traffic returns to the highest-priority healthy uplink once it
     /// has been stable for `min_failures` consecutive probe cycles.

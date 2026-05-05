@@ -342,7 +342,7 @@ pub(super) async fn run_dns_probe(
     }
 }
 
-fn validate_dns_response(dns: &[u8], query: &[u8]) -> Result<()> {
+pub(crate) fn validate_dns_response(dns: &[u8], query: &[u8]) -> Result<()> {
     if dns.len() < 12 {
         bail!("DNS probe response is too short");
     }
@@ -355,7 +355,7 @@ fn validate_dns_response(dns: &[u8], query: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn build_dns_query(name: &str) -> Vec<u8> {
+pub(crate) fn build_dns_query(name: &str) -> Vec<u8> {
     let txid = 0x5353u16.to_be_bytes();
     let mut out = Vec::with_capacity(64);
     out.extend_from_slice(&txid);
