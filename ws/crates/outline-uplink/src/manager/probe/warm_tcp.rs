@@ -77,3 +77,82 @@ pub(crate) fn put_back(slot: &WarmTcpProbeSlot, warm: WarmTcpProbe) {
 pub(crate) fn clear(slot: &WarmTcpProbeSlot) {
     *slot.lock() = None;
 }
+
+/// Send a HEAD/keep-alive request through the cached pipe (if any) and
+/// re-stash it on success. Used by the keepalive loop so the upstream
+/// HTTP server's keep-alive idle timer (and the VLESS tunnel's WS-level
+/// keepalive) does not lapse between regular probe cycles. An empty slot
+/// is left empty — keepalive does not dial.
+///
+/// Returns `true` if the slot was non-empty and the request succeeded
+/// with a status the regular probe would have accepted *and* the server
+/// signalled keep-alive. Otherwise the cached pipe is closed.
+pub(crate) async fn keepalive_tick(
+    slot: &WarmTcpProbeSlot,
+    request: &[u8],
+) -> bool {
+    let warm = match slot.lock().take() {
+        Some(w) => w,
+        None => return false,
+    };
+    let WarmTcpProbe::Vless { mut writer, mut reader, mode } = warm;
+    let outcome = async {
+        writer.send_chunk(request).await.ok()?;
+        const MAX_HEADER_BYTES: usize = 16 * 1024;
+        let mut accum: Vec<u8> = Vec::with_capacity(256);
+        loop {
+            let chunk = reader.read_chunk().await.ok()?;
+            if chunk.is_empty() {
+                return None;
+            }
+            accum.extend_from_slice(&chunk);
+            if accum.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+            if accum.len() >= MAX_HEADER_BYTES {
+                return None;
+            }
+        }
+        // Status check: 2xx/3xx is acceptable.
+        let head = String::from_utf8_lossy(&accum);
+        let mut lines = head.split("\r\n");
+        let status_line = lines.next()?;
+        let mut status_parts = status_line.split_whitespace();
+        let version = status_parts.next().unwrap_or("");
+        let status = status_parts.next().and_then(|s| s.parse::<u16>().ok())?;
+        if !(200..400).contains(&status) {
+            return None;
+        }
+        // Keep-alive check.
+        let mut explicit_close = false;
+        let mut explicit_keepalive = false;
+        for line in lines {
+            if let Some((name, value)) = line.split_once(':') {
+                if name.trim().eq_ignore_ascii_case("connection") {
+                    let v = value.trim();
+                    if v.eq_ignore_ascii_case("close") {
+                        explicit_close = true;
+                    } else if v.eq_ignore_ascii_case("keep-alive") {
+                        explicit_keepalive = true;
+                    }
+                }
+            }
+        }
+        let server_will_close = if explicit_close {
+            true
+        } else if explicit_keepalive {
+            false
+        } else {
+            !version.eq_ignore_ascii_case("HTTP/1.1")
+        };
+        if server_will_close { None } else { Some(()) }
+    }
+    .await;
+    if outcome.is_some() {
+        put_back(slot, WarmTcpProbe::Vless { writer, reader, mode });
+        true
+    } else {
+        let _ = writer.close().await;
+        false
+    }
+}

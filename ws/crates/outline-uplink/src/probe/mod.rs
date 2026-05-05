@@ -4,8 +4,8 @@
 //! submodules (`ws`, `http`, `tcp_tunnel`, `dns`) and the shared Shadowsocks
 //! TCP setup lives in `transport`.
 
-mod dns;
-mod http;
+pub(crate) mod dns;
+pub(crate) mod http;
 mod metrics;
 mod tcp_tunnel;
 mod transport;

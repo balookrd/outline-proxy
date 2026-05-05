@@ -96,3 +96,39 @@ pub(crate) fn put_back(slot: &WarmUdpProbeSlot, warm: WarmUdpProbe) {
 pub(crate) fn clear(slot: &WarmUdpProbeSlot) {
     *slot.lock() = None;
 }
+
+/// Send a single DNS query through the cached transport (if any) and
+/// re-stash it on success. Used by the keepalive loop to keep the
+/// server-side NAT entry's `last_active_secs` ticking between regular
+/// probe cycles. An empty slot is left empty — keepalive does not dial.
+///
+/// Errors are intentionally swallowed: a failed keepalive just drops
+/// the cached transport, and the next regular probe will dial fresh.
+/// The caller logs the outcome at debug level. Returns `true` if the
+/// slot was non-empty and the round-trip succeeded.
+pub(crate) async fn keepalive_tick(slot: &WarmUdpProbeSlot, query: &[u8]) -> bool {
+    let warm = match slot.lock().take() {
+        Some(w) => w,
+        None => return false,
+    };
+    let WarmUdpProbe::Vless { transport, mode } = warm;
+    let validated = async {
+        transport.send_packet(query).await.ok()?;
+        let response = transport.read_packet().await.ok()?;
+        // Accept the same wire validation as the regular DNS probe
+        // (transaction id match + rcode == 0). Inlined to avoid a
+        // dependency on the probe-internal helper.
+        if response.len() < 4 || response[..2] != query[..2] || response[3] & 0x0f != 0 {
+            return None;
+        }
+        Some(())
+    }
+    .await;
+    if validated.is_some() {
+        put_back(slot, WarmUdpProbe::Vless { transport, mode });
+        true
+    } else {
+        let _ = transport.close().await;
+        false
+    }
+}

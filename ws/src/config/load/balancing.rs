@@ -75,6 +75,17 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
                 Some(Duration::from_secs(secs))
             }
         },
+        // Default: 20 s — short enough to comfortably beat typical NAT
+        // (30 s) and HTTP keep-alive (15-60 s) idle timeouts, long enough
+        // that the extra traffic on idle uplinks stays negligible. Set to
+        // 0 to disable (cached probe pipes then rely solely on a fast
+        // probe.interval to stay warm).
+        warm_probe_keepalive_interval: {
+            let secs = lb
+                .and_then(|l| l.warm_probe_keepalive_secs)
+                .unwrap_or(20);
+            if secs == 0 { None } else { Some(Duration::from_secs(secs)) }
+        },
         auto_failback: lb.and_then(|l| l.auto_failback).unwrap_or(false),
         vless_udp_mux_limits: {
             let defaults = VlessUdpMuxLimits::default();

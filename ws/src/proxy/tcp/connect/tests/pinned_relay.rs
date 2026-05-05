@@ -50,6 +50,7 @@ fn lb(keepalive_interval: Duration) -> LoadBalancingConfig {
         tcp_ws_keepalive_interval: None,
         tcp_ws_standby_keepalive_interval: None,
         tcp_active_keepalive_interval: Some(keepalive_interval),
+        warm_probe_keepalive_interval: None,
         auto_failback: false,
         vless_udp_mux_limits: VlessUdpMuxLimits::default(),
     }

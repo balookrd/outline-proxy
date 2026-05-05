@@ -81,6 +81,7 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     registry.spawn_probe_loops();
     registry.spawn_warm_standby_loops();
     registry.spawn_standby_keepalive_loops();
+    registry.spawn_warm_probe_keepalive_loops();
     registry.spawn_sticky_prune_loops();
     registry.spawn_shared_connection_gc_loop();
 
