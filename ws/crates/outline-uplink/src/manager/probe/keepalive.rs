@@ -94,20 +94,25 @@ impl UplinkManager {
             payload.extend_from_slice(&build_dns_query(&cfg.name));
             Some(Arc::new(payload))
         });
-        let http_request: Option<Arc<Vec<u8>>> = probe.http.as_ref().and_then(|cfg| {
-            let host = cfg.url.host_str()?;
-            let port = cfg.url.port_or_known_default().unwrap_or(80);
-            let mut path = if cfg.url.path().is_empty() {
+        // The HTTP request is rebuilt per-uplink so the rotation cursor on
+        // `HttpProbeConfig` advances once per keepalive target — mirroring
+        // the regular probe loop, where each call yields the next URL in
+        // the configured list.
+        let build_http_request = |cfg: &crate::config::HttpProbeConfig| -> Option<Arc<Vec<u8>>> {
+            let url = cfg.next_url();
+            let host = url.host_str()?;
+            let port = url.port_or_known_default().unwrap_or(80);
+            let mut path = if url.path().is_empty() {
                 "/".to_string()
             } else {
-                cfg.url.path().to_string()
+                url.path().to_string()
             };
-            if let Some(q) = cfg.url.query() {
+            if let Some(q) = url.query() {
                 path.push('?');
                 path.push_str(q);
             }
             Some(Arc::new(build_http_probe_request(host, port, &path).into_bytes()))
-        });
+        };
 
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
             if !matches!(
@@ -146,11 +151,11 @@ impl UplinkManager {
                 );
             }
             // TCP keepalive.
-            if let Some(request) = http_request.as_ref() {
+            if let Some(request) = probe.http.as_ref().and_then(&build_http_request) {
                 let slot = self.inner.warm_tcp_probe_slot(index);
                 let rtt = tokio::time::timeout(
                     keepalive_per_tick_timeout(probe.timeout),
-                    warm_tcp::keepalive_tick(slot, request),
+                    warm_tcp::keepalive_tick(slot, &request),
                 )
                 .await
                 .unwrap_or(None);

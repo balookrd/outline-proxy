@@ -322,7 +322,13 @@ pub(super) struct WsProbeSection {
 
 #[derive(Debug, Deserialize, Clone)]
 pub(super) struct HttpProbeSection {
-    pub(super) url: Url,
+    /// Single URL form (legacy / convenience). Either `url` or `urls` must
+    /// be set; if both are set, `urls` wins.
+    pub(super) url: Option<Url>,
+    /// Rotation list. The probe advances through this list one entry per
+    /// cycle so each cycle hits a different endpoint, surfacing per-site
+    /// outages and spreading load.
+    pub(super) urls: Option<Vec<Url>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

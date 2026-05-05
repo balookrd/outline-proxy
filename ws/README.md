@@ -575,10 +575,21 @@ min_failures = 1
 enabled = true
 
 [outline.probe.http]
-url = "http://example.com/"
+# Single URL:
+#   url = "http://example.com/"
+# Or a rotation list — one URL per probe call, advancing through the list.
+# Spreading probe load across multiple endpoints surfaces per-site outages
+# instead of masking them behind one always-reachable target. The cursor is
+# shared across all uplinks in the group, so consecutive probe calls within
+# a cycle hit consecutive entries.
+urls = [
+    "http://example.com/",
+    "http://www.iana.org/",
+]
 
 # `outline.probe.http` sends an HTTP `HEAD` request (not `GET`), so health
-# checks do not download response bodies through the uplink.
+# checks do not download response bodies through the uplink. Any HTTP status
+# in the `200..400` range counts as success — `301`/`302` redirects are fine.
 
 [outline.probe.dns]
 server = "1.1.1.1"
