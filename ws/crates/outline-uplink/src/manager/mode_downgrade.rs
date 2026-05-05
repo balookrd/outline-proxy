@@ -153,6 +153,15 @@ impl UplinkManager {
                 }
                 per.mode_downgrade_capped_to = Some(updated_cap);
             });
+            // The cached UDP probe transport (if any) was dialled with the
+            // old effective mode; the next probe will request the new
+            // capped carrier, so a stale cached transport would either
+            // mismatch and be discarded anyway or — worse — keep the
+            // probe pinned to the failing carrier. Clear it now so the
+            // refresh is unambiguous.
+            if matches!(transport, TransportKind::Udp) {
+                super::probe::warm_udp::clear(self.inner.warm_udp_probe_slot(index));
+            }
         }
 
         let downgrade_secs = duration.as_secs();

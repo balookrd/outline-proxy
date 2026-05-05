@@ -162,6 +162,10 @@ impl UplinkManager {
                     .map(|_| parking_lot::Mutex::new(UplinkStatus::default()))
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
+                probe_warm_udp: (0..count)
+                    .map(|_| self::probe::warm_udp::new_slot())
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
                 active_uplinks,
                 sticky_routes: RwLock::new(HashMap::new()),
                 standby_pools: (0..count).map(|_| StandbyPool::new()).collect(),

@@ -13,6 +13,7 @@ use crate::routing_key::RoutingKey;
 use crate::state::StateStore;
 use crate::types::Uplink;
 
+use super::probe::warm_udp::WarmUdpProbeSlot;
 use super::standby_pool::StandbyPool;
 use super::status::UplinkStatus;
 use super::sticky::StickyRoute;
@@ -60,6 +61,12 @@ pub(crate) struct UplinkManagerInner {
     /// mutation touch only the affected index in O(1) instead of cloning the
     /// entire Vec. Critical sections are short and never cross `.await`.
     pub(crate) statuses: Box<[SyncMutex<UplinkStatus>]>,
+    /// Per-uplink slot caching one open VLESS UDP transport for the DNS
+    /// probe. The probe takes the transport out, send/recv through it,
+    /// puts it back on success. Cleared when a UDP `mode_downgrade`
+    /// extension makes the cached carrier stale, or on first error.
+    /// Empty for non-VLESS uplinks (the slot is never populated for SS).
+    pub(crate) probe_warm_udp: Box<[WarmUdpProbeSlot]>,
     pub(crate) active_uplinks: RwLock<ActiveUplinks>,
     pub(crate) sticky_routes: RwLock<HashMap<RoutingKey, StickyRoute>>,
     pub(crate) standby_pools: Vec<StandbyPool>,
@@ -95,6 +102,12 @@ impl UplinkManagerInner {
     /// Read-only snapshot of a single uplink status.
     pub(crate) fn read_status(&self, index: usize) -> UplinkStatus {
         self.statuses[index].lock().clone()
+    }
+
+    /// Per-uplink warm-UDP-probe slot. Returned by reference so callers can
+    /// `Arc::clone` the inner handle into a spawned probe task.
+    pub(crate) fn warm_udp_probe_slot(&self, index: usize) -> &WarmUdpProbeSlot {
+        &self.probe_warm_udp[index]
     }
 
     /// Clone every uplink status into a flat Vec for multi-index iteration.

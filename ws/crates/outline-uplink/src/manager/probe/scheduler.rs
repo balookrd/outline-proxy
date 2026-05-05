@@ -13,6 +13,7 @@ use super::super::super::selection::cooldown_active;
 use super::super::super::types::{TransportKind, Uplink, UplinkManager};
 use super::super::status::UplinkStatus;
 use super::outcome::ProbeOutcome;
+use super::warm_udp::WarmUdpProbeSlot;
 
 pub(super) fn should_skip_probe_cycle_for_recent_activity(
     status: &UplinkStatus,
@@ -37,6 +38,7 @@ pub(super) async fn run_probe_attempt_with_timeout(
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: TransportMode,
     effective_udp_mode: TransportMode,
+    warm_udp_slot: Option<WarmUdpProbeSlot>,
 ) -> Result<ProbeOutcome> {
     let tcp_budget = (probe.ws.enabled || probe.http.is_some() || probe.tcp.is_some()) as u32;
     let udp_budget = (uplink.supports_udp() && (probe.ws.enabled || probe.dns.is_some())) as u32;
@@ -54,6 +56,7 @@ pub(super) async fn run_probe_attempt_with_timeout(
             dial_limit,
             effective_tcp_mode,
             effective_udp_mode,
+            warm_udp_slot,
         )
         .await
     });
@@ -148,6 +151,17 @@ impl UplinkManager {
             // ping/pong at the connection level).
             let effective_tcp_mode = self.effective_tcp_mode(index).await;
             let effective_udp_mode = self.effective_udp_mode(index).await;
+            // Only VLESS uplinks reuse a warm UDP probe transport. SS-UDP
+            // probes still dial fresh — the slot is unused there and
+            // passing `None` keeps the probe code path identical.
+            let warm_udp_slot: Option<WarmUdpProbeSlot> = if matches!(
+                uplink.transport,
+                crate::config::UplinkTransport::Vless
+            ) {
+                Some(Arc::clone(self.inner.warm_udp_probe_slot(index)))
+            } else {
+                None
+            };
             tasks.spawn(async move {
                 let _permit = execution_limit
                     .acquire_owned()
@@ -169,6 +183,7 @@ impl UplinkManager {
                         Arc::clone(&dial_limit),
                         effective_tcp_mode,
                         effective_udp_mode,
+                        warm_udp_slot.clone(),
                     )
                     .await;
                     if outcome.is_ok() {

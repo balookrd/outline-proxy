@@ -31,6 +31,7 @@ use self::metrics::record_attempt;
 use self::tcp_tunnel::run_tcp_tunnel_probe;
 use self::ws::{run_quic_handshake_probe, run_tcp_socket_probe, run_udp_socket_probe, run_ws_probe};
 use super::manager::probe::outcome::ProbeOutcome;
+use super::manager::probe::warm_udp::WarmUdpProbeSlot;
 
 #[cfg(test)]
 pub(crate) use self::http::build_http_probe_request;
@@ -47,6 +48,7 @@ pub(crate) async fn probe_uplink(
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: crate::config::TransportMode,
     effective_udp_mode: crate::config::TransportMode,
+    warm_udp_slot: Option<WarmUdpProbeSlot>,
 ) -> Result<ProbeOutcome> {
     let (tcp_ok, tcp_latency, tcp_downgraded_from) = timeout(
         probe.timeout,
@@ -56,7 +58,7 @@ pub(crate) async fn probe_uplink(
     .map_err(|_| anyhow!("tcp probe timed out after {:?}", probe.timeout))??;
     let (udp_ok, udp_applicable, udp_latency, udp_downgraded_from) = timeout(
         probe.timeout,
-        run_udp_probe(cache, group, uplink, probe, dial_limit, effective_udp_mode),
+        run_udp_probe(cache, group, uplink, probe, dial_limit, effective_udp_mode, warm_udp_slot),
     )
     .await
     .map_err(|_| anyhow!("udp probe timed out after {:?}", probe.timeout))??;
@@ -175,6 +177,7 @@ async fn run_udp_probe(
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
     effective_udp_mode: crate::config::TransportMode,
+    warm_udp_slot: Option<WarmUdpProbeSlot>,
 ) -> Result<(bool, bool, Option<Duration>, Option<TransportMode>)> {
     if !uplink.supports_udp() {
         return Ok((false, false, None, None));
@@ -237,6 +240,7 @@ async fn run_udp_probe(
                 dns_probe,
                 Arc::clone(&dial_limit),
                 effective_udp_mode,
+                warm_udp_slot.as_ref(),
             ),
         )
         .await?;
