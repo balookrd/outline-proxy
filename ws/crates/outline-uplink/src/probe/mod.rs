@@ -95,7 +95,24 @@ async fn run_tcp_probe(
 ) -> Result<(bool, Option<Duration>, Option<TransportMode>)> {
     let started = Instant::now();
     let mut downgraded_from: Option<TransportMode> = None;
-    if probe.ws.enabled {
+    // The WS sub-probe verifies that the TCP+TLS+WebSocket-upgrade
+    // (or QUIC handshake) pipeline can still be established. When a
+    // warm-TCP slot already holds a pipe at the same effective carrier
+    // mode, *that pipe is itself proof the same pipeline succeeded on
+    // the previous cycle and is still alive* (the keepalive loop and/or
+    // the next HTTP sub-probe will exercise it). Re-dialling a fresh WS
+    // handshake here is redundant and pays the very cost the warm slot
+    // exists to avoid. Skip it; the HTTP sub-probe below still validates
+    // the data path through the warm pipe.
+    let ws_warm_elided = probe.ws.enabled
+        && matches!(uplink.transport, UplinkTransport::Vless)
+        && warm_tcp_slot
+            .as_ref()
+            .is_some_and(|slot| {
+                use crate::manager::probe::warm_tcp::peek_matches;
+                peek_matches(slot, effective_tcp_mode)
+            });
+    if probe.ws.enabled && !ws_warm_elided {
         let ws_attempt = async {
             match uplink.transport {
                 UplinkTransport::Ws | UplinkTransport::Vless => {
