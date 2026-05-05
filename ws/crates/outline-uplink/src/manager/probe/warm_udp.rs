@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use outline_transport::VlessUdpWsTransport;
+use outline_transport::{UdpWsTransport, VlessUdpWsTransport};
 
 use crate::config::TransportMode;
 
@@ -35,16 +35,21 @@ use crate::config::TransportMode;
 ///
 /// `VlessUdpWsTransport` underlies both VLESS/WS and VLESS/XHTTP carriers
 /// (the type alias name is a historical leftover from the WS-only era); a
-/// single variant covers both because the only thing that distinguishes
-/// them at this layer is `mode`.
+/// single `Vless` variant covers both because the only thing that
+/// distinguishes them at this layer is `mode`.
+///
+/// `Ws` covers Shadowsocks-over-WebSocket UDP. The wire form already
+/// encodes the target on every datagram (per SS-UDP framing), so reuse
+/// is just "keep the WS open" — no per-session prefix to worry about.
 pub(crate) enum WarmUdpProbe {
     Vless { transport: VlessUdpWsTransport, mode: TransportMode },
+    Ws { transport: UdpWsTransport, mode: TransportMode },
 }
 
 impl WarmUdpProbe {
     fn mode(&self) -> TransportMode {
         match self {
-            Self::Vless { mode, .. } => *mode,
+            Self::Vless { mode, .. } | Self::Ws { mode, .. } => *mode,
         }
     }
 }
@@ -106,29 +111,69 @@ pub(crate) fn clear(slot: &WarmUdpProbeSlot) {
 /// the cached transport, and the next regular probe will dial fresh.
 /// The caller logs the outcome at debug level. Returns `true` if the
 /// slot was non-empty and the round-trip succeeded.
-pub(crate) async fn keepalive_tick(slot: &WarmUdpProbeSlot, query: &[u8]) -> bool {
+pub(crate) async fn keepalive_tick(
+    slot: &WarmUdpProbeSlot,
+    query: &[u8],
+    ss_payload: &[u8],
+) -> bool {
     let warm = match slot.lock().take() {
         Some(w) => w,
         None => return false,
     };
-    let WarmUdpProbe::Vless { transport, mode } = warm;
-    let validated = async {
+    match warm {
+        WarmUdpProbe::Vless { transport, mode } => {
+            let ok = vless_round_trip(&transport, query).await;
+            if ok {
+                put_back(slot, WarmUdpProbe::Vless { transport, mode });
+                true
+            } else {
+                let _ = transport.close().await;
+                false
+            }
+        },
+        WarmUdpProbe::Ws { transport, mode } => {
+            let ok = ws_round_trip(&transport, ss_payload, query).await;
+            if ok {
+                put_back(slot, WarmUdpProbe::Ws { transport, mode });
+                true
+            } else {
+                let _ = transport.close().await;
+                false
+            }
+        },
+    }
+}
+
+async fn vless_round_trip(transport: &VlessUdpWsTransport, query: &[u8]) -> bool {
+    async {
         transport.send_packet(query).await.ok()?;
         let response = transport.read_packet().await.ok()?;
-        // Accept the same wire validation as the regular DNS probe
-        // (transaction id match + rcode == 0). Inlined to avoid a
-        // dependency on the probe-internal helper.
-        if response.len() < 4 || response[..2] != query[..2] || response[3] & 0x0f != 0 {
-            return None;
-        }
-        Some(())
+        validate_dns_response_inline(&response, query)
     }
-    .await;
-    if validated.is_some() {
-        put_back(slot, WarmUdpProbe::Vless { transport, mode });
-        true
+    .await
+    .is_some()
+}
+
+async fn ws_round_trip(transport: &UdpWsTransport, ss_payload: &[u8], query: &[u8]) -> bool {
+    use crate::config::TargetAddr;
+    async {
+        transport.send_packet(ss_payload).await.ok()?;
+        let response = transport.read_packet().await.ok()?;
+        // SS-UDP framing prefixes upstream replies with the source
+        // address; strip it before validating the DNS payload.
+        let (_, consumed) = TargetAddr::from_wire_bytes(&response).ok()?;
+        validate_dns_response_inline(&response[consumed..], query)
+    }
+    .await
+    .is_some()
+}
+
+/// Inline `transaction id match + rcode == 0` check. Avoids depending on
+/// the probe-internal helper from this manager-side module.
+fn validate_dns_response_inline(dns: &[u8], query: &[u8]) -> Option<()> {
+    if dns.len() < 4 || dns[..2] != query[..2] || dns[3] & 0x0f != 0 {
+        None
     } else {
-        let _ = transport.close().await;
-        false
+        Some(())
     }
 }
