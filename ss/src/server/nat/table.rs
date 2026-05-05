@@ -9,10 +9,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use dashmap::DashMap;
-use tokio::{
-    net::UdpSocket,
-    sync::{Mutex, OnceCell},
-};
+use parking_lot::Mutex;
+use tokio::{net::UdpSocket, sync::OnceCell};
 use tracing::debug;
 
 use crate::{

@@ -7,7 +7,8 @@ use std::{
 };
 
 use bytes::Bytes;
-use tokio::{net::UdpSocket, sync::Mutex};
+use parking_lot::Mutex;
+use tokio::net::UdpSocket;
 use tracing::{debug, warn};
 
 use crate::{
@@ -58,7 +59,7 @@ pub(super) async fn nat_reader_task(ctx: NatReaderCtx) {
 
         // Snapshot the active session so encryption picks up the latest
         // client_session_id after a reconnect.
-        let (sender, session) = match active.lock().await.as_ref() {
+        let (sender, session) = match active.lock().as_ref() {
             Some(a) => (a.sender.clone(), a.session.clone()),
             None => {
                 // Intentionally do NOT touch last_active here: otherwise a

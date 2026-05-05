@@ -290,9 +290,7 @@ where
     // Stream identity is irrelevant here because nothing ever calls
     // `detach_session_for_stream` against this entry; the constant
     // `0` makes that intent explicit.
-    entry
-        .register_session(make_sender(), packet.session.clone(), 0)
-        .await;
+    entry.register_session(make_sender(), packet.session.clone(), 0);
 
     entry
         .user_counters()

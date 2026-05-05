@@ -161,8 +161,7 @@ async fn attempt_ss_udp_resume(
         match server.nat_table.try_get(&key) {
             Some(entry) => {
                 entry
-                    .register_session(sender.clone(), udp_session.clone(), session.stream_id)
-                    .await;
+                    .register_session(sender.clone(), udp_session.clone(), session.stream_id);
                 keys_for_self.push(key);
                 reattached += 1;
             },
@@ -327,13 +326,11 @@ where
         .await;
     }
 
-    entry
-        .register_session(
-            response_sender,
-            packet.session.clone(),
-            session.stream_id,
-        )
-        .await;
+    entry.register_session(
+        response_sender,
+        packet.session.clone(),
+        session.stream_id,
+    );
     // Track the NAT key as one this stream owns, for park-on-drop.
     // `HashSet::insert` is a no-op on duplicates and avoids the linear
     // scan that the prior `Vec` form paid on every datagram.
@@ -567,7 +564,7 @@ async fn park_ss_udp_stream_on_drop(
     let mut keys_to_park = Vec::with_capacity(nat_keys.len());
     for key in nat_keys {
         if let Some(entry) = server.nat_table.try_get(&key) {
-            let detached = entry.detach_session_for_stream(session.stream_id).await;
+            let detached = entry.detach_session_for_stream(session.stream_id);
             if detached {
                 keys_to_park.push(key);
             } else {
