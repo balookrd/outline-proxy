@@ -120,7 +120,15 @@ max_dials = 2
 enabled = true
 
 [outline.probe.http]
-url = "http://example.com/"
+# Single URL:
+#   url = "http://example.com/"
+# Or a rotation list — one URL per probe cycle, advancing through the list.
+# Spreading load across endpoints surfaces per-site outages instead of masking
+# them behind one always-reachable target.
+urls = [
+    "http://example.com/",
+    "http://www.iana.org/",
+]
 
 [outline.probe.dns]
 server = "1.1.1.1"

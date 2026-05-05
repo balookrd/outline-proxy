@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing::warn;
 
 use outline_uplink::{
@@ -12,7 +12,17 @@ use super::super::schema::ProbeSection;
 pub(super) fn load_probe_config(probe: Option<&ProbeSection>) -> Result<ProbeConfig> {
     let http = probe
         .and_then(|p| p.http.as_ref())
-        .map(|http| HttpProbeConfig { url: http.url.clone() });
+        .map(|http| {
+            let urls = match (&http.urls, &http.url) {
+                (Some(list), _) if !list.is_empty() => list.clone(),
+                (_, Some(single)) => vec![single.clone()],
+                _ => return Err(anyhow::anyhow!(
+                    "[probe.http] requires `url = \"...\"` or `urls = [...]`"
+                )),
+            };
+            HttpProbeConfig::new(urls).context("invalid [probe.http]")
+        })
+        .transpose()?;
     let dns = probe.and_then(|p| p.dns.as_ref()).map(|dns| DnsProbeConfig {
         server: dns.server.clone(),
         port: dns.port.unwrap_or(53),

@@ -66,7 +66,8 @@ fn merge_template_fills_unset_override_fields() {
 fn merge_override_sub_table_replaces_template_not_merges() {
     let mut t = probe(Some(60), Some(5));
     t.http = Some(HttpProbeSection {
-        url: "http://template.example.com/probe".parse().unwrap(),
+        url: Some("http://template.example.com/probe".parse().unwrap()),
+        urls: None,
     });
     t.dns = Some(DnsProbeSection {
         server: "8.8.8.8".to_string(),
@@ -76,13 +77,14 @@ fn merge_override_sub_table_replaces_template_not_merges() {
 
     let mut o = probe(None, None);
     o.http = Some(HttpProbeSection {
-        url: "http://override.example.com/probe".parse().unwrap(),
+        url: Some("http://override.example.com/probe".parse().unwrap()),
+        urls: None,
     });
     // o.dns is not set — template's dns must survive
 
     let r = merge_probe_section(Some(&t), Some(&o)).unwrap();
     assert_eq!(
-        r.http.unwrap().url.as_str(),
+        r.http.unwrap().url.as_ref().unwrap().as_str(),
         "http://override.example.com/probe",
         "override http must replace template http"
     );

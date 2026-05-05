@@ -1,7 +1,9 @@
 use std::net::IpAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use url::Url;
 
@@ -195,7 +197,27 @@ pub struct WsProbeConfig {
 
 #[derive(Debug, Clone)]
 pub struct HttpProbeConfig {
-    pub url: Url,
+    pub urls: Vec<Url>,
+    cursor: Arc<AtomicUsize>,
+}
+
+impl HttpProbeConfig {
+    pub fn new(urls: Vec<Url>) -> Result<Self> {
+        if urls.is_empty() {
+            return Err(anyhow!("http probe requires at least one URL"));
+        }
+        Ok(Self { urls, cursor: Arc::new(AtomicUsize::new(0)) })
+    }
+
+    /// Atomically advance the rotation cursor and return the next URL. Each
+    /// call yields the next entry in the configured list, wrapping at the
+    /// end so probes spread their load across endpoints rather than hammering
+    /// a single one — this also makes per-site outages visible instead of
+    /// being masked by a single still-reachable URL.
+    pub fn next_url(&self) -> &Url {
+        let i = self.cursor.fetch_add(1, Ordering::Relaxed) % self.urls.len();
+        &self.urls[i]
+    }
 }
 
 #[derive(Debug, Clone)]

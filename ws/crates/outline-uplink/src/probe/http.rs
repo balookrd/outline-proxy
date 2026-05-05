@@ -26,15 +26,15 @@ pub(super) async fn run_http_probe(
     effective_tcp_mode: TransportMode,
     warm_slot: Option<&WarmTcpProbeSlot>,
 ) -> Result<(bool, Option<TransportMode>)> {
-    if probe.url.scheme() != "http" {
+    let url = probe.next_url();
+    if url.scheme() != "http" {
         bail!("only http:// probe URLs are currently supported");
     }
 
-    let host = probe
-        .url
+    let host = url
         .host_str()
-        .ok_or_else(|| anyhow!("http probe URL is missing host: {}", probe.url))?;
-    let port = probe.url.port_or_known_default().unwrap_or(80);
+        .ok_or_else(|| anyhow!("http probe URL is missing host: {}", url))?;
+    let port = url.port_or_known_default().unwrap_or(80);
     let target = if let Ok(ip) = host.parse::<IpAddr>() {
         match ip {
             IpAddr::V4(v4) => TargetAddr::IpV4(v4, port),
@@ -45,12 +45,12 @@ pub(super) async fn run_http_probe(
     };
 
     let path = {
-        let mut path = if probe.url.path().is_empty() {
+        let mut path = if url.path().is_empty() {
             "/".to_string()
         } else {
-            probe.url.path().to_string()
+            url.path().to_string()
         };
-        if let Some(query) = probe.url.query() {
+        if let Some(query) = url.query() {
             path.push('?');
             path.push_str(query);
         }
@@ -152,7 +152,7 @@ pub(super) async fn run_http_probe(
             uplink = %uplink.name,
             transport = "tcp",
             probe = "http",
-            url = %probe.url,
+            url = %url,
             dialed_fresh,
             server_will_close,
             "closing probe transport after HTTP probe"
