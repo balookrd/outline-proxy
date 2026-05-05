@@ -44,6 +44,24 @@ impl UplinkManager {
         if probe.dns.is_none() && probe.http.is_none() {
             return;
         }
+        // Auto-disable when the regular probe cycle is already tight
+        // enough to keep the cached pipes hot on its own. A keepalive
+        // tick that fires more rarely than the probe loop is pure
+        // overhead — every probe cycle already exercises the same
+        // send/recv path the keepalive would. The threshold matches
+        // the keepalive interval itself: as long as the probe cadence
+        // is at least as fast, no extra ticks are needed. A short log
+        // line at startup makes the auto-skip discoverable so users
+        // do not waste time hunting for a dormant background task.
+        if probe.interval <= interval {
+            tracing::debug!(
+                group = %self.inner.group_name,
+                probe_interval_ms = probe.interval.as_millis(),
+                keepalive_interval_ms = interval.as_millis(),
+                "warm-probe keepalive loop skipped: probe.interval is already tight enough"
+            );
+            return;
+        }
         let manager = self.clone();
         let mut shutdown = self.shutdown_rx();
         tokio::spawn(async move {
