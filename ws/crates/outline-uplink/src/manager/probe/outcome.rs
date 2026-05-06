@@ -46,6 +46,44 @@ fn record_transport_failure(
     }
 }
 
+/// Symmetric pair of `record_transport_success`'s early-failback block:
+/// when the probe (which always targets the primary wire in this
+/// iteration) has failed `min_failures` consecutive times AND the
+/// uplink has at least one fallback configured AND the active wire is
+/// still primary, advance `active_wire` to the first fallback and pin
+/// it for `pin_duration`.
+///
+/// Critical for `active_passive` groups where the *passive* uplinks
+/// receive probes but no client traffic — without this, their
+/// `active_wire` state machine never moves (only dial-loop failures
+/// drive it through `record_wire_outcome`), so the very first session
+/// after the passive uplink gets promoted to active would still try
+/// the dead primary and only learn through chunk-0 stall.
+///
+/// Skipped when `total_wires <= 1` (single-wire uplinks have nowhere
+/// to advance) or `active_wire != 0` (already on a fallback — the
+/// dial loop's per-wire state machine owns further transitions).
+fn advance_active_wire_on_probe_failure(
+    status: &mut PerTransportStatus,
+    total_wires: usize,
+    min_failures: u32,
+    now: Instant,
+    pin_duration: std::time::Duration,
+) {
+    if total_wires <= 1 {
+        return;
+    }
+    if status.active_wire != 0 {
+        return;
+    }
+    if status.consecutive_failures < min_failures.max(1) {
+        return;
+    }
+    status.active_wire = 1;
+    status.active_wire_pinned_until = Some(now + pin_duration);
+    status.active_wire_streak = 0;
+}
+
 fn record_transport_success(status: &mut PerTransportStatus, min_failures: u32) {
     status.consecutive_failures = 0;
     status.consecutive_successes = status.consecutive_successes.saturating_add(1);
@@ -107,6 +145,11 @@ impl UplinkManager {
         let min_failures = self.inner.probe.min_failures as u32;
         let rtt_ewma_alpha = self.inner.load_balancing.rtt_ewma_alpha;
         let load_balancing = self.inner.load_balancing.clone();
+        let pin_duration = self.inner.load_balancing.mode_downgrade_duration;
+        // Total wires on this uplink: 1 (primary) + configured fallbacks.
+        // Used to gate probe-driven active-wire advance: only move active
+        // off primary when there's at least one fallback to move to.
+        let uplink_total_wires = 1 + uplink.fallbacks.len();
         let mut needs_h3_tcp_recovery = false;
         let mut needs_h3_udp_recovery = false;
         self.inner.with_status_mut(index, |status| {
@@ -117,6 +160,23 @@ impl UplinkManager {
             update_rtt_ewma(&mut status.udp.rtt_ewma, result.udp_latency, rtt_ewma_alpha);
             if !result.tcp_ok {
                 record_transport_failure(&mut status.tcp, now, min_failures, &load_balancing);
+                // Probe-driven failover: when the primary wire has failed
+                // `min_failures` consecutive probes and a fallback exists,
+                // advance `active_wire` so the next session that lands on
+                // this uplink lands on the fallback directly. Critical for
+                // active_passive groups where the passive uplinks get
+                // probed but no client traffic; without this their
+                // `active_wire` state machine never moves (only dial-loop
+                // failures drive it through `record_wire_outcome`), so the
+                // first session after promotion would still try the dead
+                // primary and only learn through chunk-0 stall.
+                advance_active_wire_on_probe_failure(
+                    &mut status.tcp,
+                    uplink_total_wires,
+                    min_failures,
+                    now,
+                    pin_duration,
+                );
             } else {
                 record_transport_success(&mut status.tcp, min_failures);
                 // Do NOT clear h3_tcp_downgrade_until here.  The probe uses the
@@ -135,6 +195,13 @@ impl UplinkManager {
             if result.udp_applicable {
                 if !result.udp_ok {
                     record_transport_failure(&mut status.udp, now, min_failures, &load_balancing);
+                    advance_active_wire_on_probe_failure(
+                        &mut status.udp,
+                        uplink_total_wires,
+                        min_failures,
+                        now,
+                        pin_duration,
+                    );
                 } else {
                     record_transport_success(&mut status.udp, min_failures);
                     // Schedule UDP H3 recovery re-probe — mirror of the TCP
