@@ -67,6 +67,28 @@ pub(crate) struct PerTransportStatus {
     /// Timestamp of the most recent early probe wakeup caused by a runtime
     /// failure. Rate-limits wakeups to one per `PROBE_WAKEUP_MIN_INTERVAL`.
     pub(crate) last_probe_wakeup: Option<Instant>,
+    /// Index into the uplink's `[primary, fallbacks[0], fallbacks[1], ...]`
+    /// list of the currently active wire. `0` is primary; `1..=N` selects
+    /// `fallbacks[i-1]`. Defaults to `0` for uplinks with no fallbacks
+    /// configured (the value is read but never advances). When fallbacks are
+    /// declared, the dial loop reads this to start the per-session attempt
+    /// chain at the active wire instead of always retrying primary first.
+    pub(crate) active_wire: u8,
+    /// Auto-failback deadline. When set and in the future, the active wire
+    /// stays pinned (a session whose dial fails on the active wire still
+    /// advances inside the wire chain, but new sessions keep starting at
+    /// `active_wire`). When the deadline passes, [`Self::active_wire`] is
+    /// reset to 0 and this field is cleared so the next session retries the
+    /// primary wire. Sized to share the existing
+    /// `LoadBalancingConfig::mode_downgrade_duration` knob — one timer for
+    /// both per-wire mode downgrades and per-uplink active-wire pinning.
+    pub(crate) active_wire_pinned_until: Option<Instant>,
+    /// Consecutive dial failures on [`Self::active_wire`]. Reset on a
+    /// successful dial of the same wire; reset when the active-wire pin
+    /// expires. Once this reaches `probe.min_failures` (or the runtime-
+    /// failure threshold equivalent), the dial-loop bumps `active_wire` to
+    /// the next configured wire and starts a fresh streak there.
+    pub(crate) active_wire_streak: u32,
 }
 
 #[derive(Clone, Debug, Default)]
