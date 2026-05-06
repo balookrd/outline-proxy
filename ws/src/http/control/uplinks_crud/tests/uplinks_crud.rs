@@ -3,6 +3,7 @@ use toml_edit::{DocumentMut, Item, Value};
 use crate::config::validate_uplink_section;
 
 use super::UplinkPayload;
+use super::payload::FallbackPayload;
 use super::mutate::{
     count_uplinks_in_group, find_group_mut, find_outline_uplink_index, get_or_init_outline_uplinks,
 };
@@ -246,4 +247,229 @@ fn validation_rejects_missing_password_for_shadowsocks() {
     };
     let section = payload_to_section(&payload, Some("core")).unwrap();
     assert!(validate_uplink_section(&section, 0).is_err());
+}
+
+// ── Fallbacks via CRUD ──────────────────────────────────────────────────────
+
+#[test]
+fn payload_with_fallbacks_round_trips_through_section() {
+    let payload = UplinkPayload {
+        name: Some("edge".into()),
+        transport: Some("vless".into()),
+        vless_xhttp_url: Some("https://cdn.example.com/SECRET/xhttp".into()),
+        vless_mode: Some("xhttp_h3".into()),
+        vless_id: Some("00000000-0000-0000-0000-000000000000".into()),
+        method: Some("chacha20-ietf-poly1305".into()),
+        password: Some("some-long-password".into()),
+        fallbacks: Some(vec![
+            FallbackPayload {
+                transport: "ws".into(),
+                tcp_ws_url: Some("wss://ws.example.com/tcp".into()),
+                tcp_mode: Some("ws_h2".into()),
+                udp_ws_url: Some("wss://ws.example.com/udp".into()),
+                udp_mode: Some("ws_h1".into()),
+                ..Default::default()
+            },
+            FallbackPayload {
+                transport: "shadowsocks".into(),
+                tcp_addr: Some("1.2.3.4:8388".into()),
+                udp_addr: Some("1.2.3.4:8389".into()),
+                ..Default::default()
+            },
+        ]),
+        ..Default::default()
+    };
+    let section = payload_to_section(&payload, Some("core")).unwrap();
+    let fbs = section.fallbacks.as_ref().expect("fallbacks must round-trip");
+    assert_eq!(fbs.len(), 2);
+    assert_eq!(format!("{:?}", fbs[0].transport), "Ws");
+    assert_eq!(fbs[0].tcp_ws_url.as_ref().unwrap().as_str(), "wss://ws.example.com/tcp");
+    assert_eq!(format!("{:?}", fbs[1].transport), "Shadowsocks");
+    // Validation walks the same pipeline as the TOML loader.
+    validate_uplink_section(&section, 0).unwrap();
+}
+
+#[test]
+fn rendered_toml_inserted_into_document_includes_fallbacks_array() {
+    // `Table::to_string()` doesn't render nested ArrayOfTables without a
+    // surrounding document context (the array needs the parent's path to
+    // generate `[[parent.fallbacks]]` headers). We verify the array shape
+    // by inserting our payload-built table into a real document — the
+    // same path the create handler uses.
+    let payload = UplinkPayload {
+        name: Some("edge".into()),
+        transport: Some("vless".into()),
+        vless_ws_url: Some("wss://primary.example.com/v".into()),
+        vless_mode: Some("ws_h2".into()),
+        vless_id: Some("00000000-0000-0000-0000-000000000000".into()),
+        fallbacks: Some(vec![FallbackPayload {
+            transport: "ws".into(),
+            tcp_ws_url: Some("wss://ws.example.com/tcp".into()),
+            tcp_mode: Some("ws_h1".into()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut doc = r#"
+[[uplink_group]]
+name = "core"
+"#
+    .parse::<DocumentMut>()
+    .unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    arr.push(payload_to_table(&payload));
+    let rendered = doc.to_string();
+    assert!(
+        rendered.contains("[[outline.uplinks.fallbacks]]"),
+        "rendered TOML must contain fallbacks array-of-tables:\n{rendered}",
+    );
+    assert!(rendered.contains("transport = \"ws\""));
+    assert!(rendered.contains("tcp_ws_url = \"wss://ws.example.com/tcp\""));
+}
+
+#[test]
+fn patch_replaces_fallbacks_when_present() {
+    let mut doc = r#"
+[[uplink_group]]
+name = "core"
+
+[[outline.uplinks]]
+name = "edge"
+group = "core"
+transport = "vless"
+vless_ws_url = "wss://primary.example.com/v"
+vless_mode = "ws_h2"
+vless_id = "00000000-0000-0000-0000-000000000000"
+method = "chacha20-ietf-poly1305"
+password = "some-long-password"
+
+[[outline.uplinks.fallbacks]]
+transport = "shadowsocks"
+tcp_addr = "old.example.com:8388"
+"#
+    .parse::<DocumentMut>()
+    .unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let idx = find_outline_uplink_index(arr, "core", "edge").unwrap();
+    let tbl = arr.get_mut(idx).unwrap();
+    let patch = UplinkPayload {
+        fallbacks: Some(vec![FallbackPayload {
+            transport: "ws".into(),
+            tcp_ws_url: Some("wss://newws.example.com/tcp".into()),
+            tcp_mode: Some("ws_h1".into()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    merge_patch_into_table(tbl, &patch);
+    // Render the full document — `Table::to_string()` doesn't surface
+    // nested ArrayOfTables without a parent path, so we ask the
+    // document (which knows the path) to render the patched state.
+    let rendered = doc.to_string();
+    assert!(rendered.contains("wss://newws.example.com/tcp"));
+    assert!(
+        !rendered.contains("old.example.com"),
+        "patch must replace the existing fallbacks list:\n{rendered}",
+    );
+}
+
+#[test]
+fn empty_patch_array_clears_fallbacks() {
+    let mut doc = r#"
+[[uplink_group]]
+name = "core"
+
+[[outline.uplinks]]
+name = "edge"
+group = "core"
+transport = "vless"
+vless_ws_url = "wss://primary.example.com/v"
+vless_mode = "ws_h2"
+vless_id = "00000000-0000-0000-0000-000000000000"
+method = "chacha20-ietf-poly1305"
+password = "some-long-password"
+
+[[outline.uplinks.fallbacks]]
+transport = "shadowsocks"
+tcp_addr = "old.example.com:8388"
+"#
+    .parse::<DocumentMut>()
+    .unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let idx = find_outline_uplink_index(arr, "core", "edge").unwrap();
+    let tbl = arr.get_mut(idx).unwrap();
+    let patch = UplinkPayload {
+        fallbacks: Some(Vec::new()),
+        ..Default::default()
+    };
+    merge_patch_into_table(tbl, &patch);
+    let rendered = tbl.to_string();
+    assert!(
+        !rendered.contains("fallbacks"),
+        "empty array in patch must clear all fallbacks:\n{rendered}",
+    );
+}
+
+#[test]
+fn omitting_fallbacks_in_patch_preserves_existing() {
+    let mut doc = r#"
+[[uplink_group]]
+name = "core"
+
+[[outline.uplinks]]
+name = "edge"
+group = "core"
+transport = "vless"
+vless_ws_url = "wss://primary.example.com/v"
+vless_mode = "ws_h2"
+vless_id = "00000000-0000-0000-0000-000000000000"
+method = "chacha20-ietf-poly1305"
+password = "some-long-password"
+
+[[outline.uplinks.fallbacks]]
+transport = "shadowsocks"
+tcp_addr = "kept.example.com:8388"
+"#
+    .parse::<DocumentMut>()
+    .unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let idx = find_outline_uplink_index(arr, "core", "edge").unwrap();
+    let tbl = arr.get_mut(idx).unwrap();
+    // Patch touches an unrelated field; fallbacks left out (None).
+    let patch = UplinkPayload {
+        password: Some("new-password".into()),
+        ..Default::default()
+    };
+    merge_patch_into_table(tbl, &patch);
+    let rendered = doc.to_string();
+    assert!(rendered.contains("password = \"new-password\""));
+    assert!(
+        rendered.contains("kept.example.com"),
+        "fallbacks must survive a patch that doesn't mention them:\n{rendered}",
+    );
+}
+
+#[test]
+fn payload_rejects_same_transport_fallback_as_parent() {
+    // Validator-level catch: a fallback whose `transport` matches the
+    // parent's primary is invalid. Same rule the TOML loader enforces.
+    let payload = UplinkPayload {
+        name: Some("edge".into()),
+        transport: Some("ws".into()),
+        tcp_ws_url: Some("wss://primary.example.com/tcp".into()),
+        method: Some("chacha20-ietf-poly1305".into()),
+        password: Some("some-long-password".into()),
+        fallbacks: Some(vec![FallbackPayload {
+            transport: "ws".into(),
+            tcp_ws_url: Some("wss://other.example.com/tcp".into()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let section = payload_to_section(&payload, Some("core")).unwrap();
+    let err = validate_uplink_section(&section, 0).unwrap_err().to_string();
+    assert!(
+        err.contains("matches the parent uplink's primary transport"),
+        "got: {err}",
+    );
 }
