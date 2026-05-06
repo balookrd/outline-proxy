@@ -423,3 +423,58 @@ fn wire_dial_order_is_singleton_when_no_fallbacks() {
     manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 1);
     assert_eq!(manager.active_wire(0, TransportKind::Tcp), 0);
 }
+
+#[test]
+fn record_wire_outcome_stamps_last_any_wire_success() {
+    use crate::manager::status::UplinkStatus;
+    use crate::selection::any_wire_recent_success;
+
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let lb = make_lb(std::time::Duration::from_secs(60));
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![cfg.clone()],
+        make_probe(2),
+        lb.clone(),
+    )
+    .unwrap();
+
+    // Before any outcome: liveness override returns false.
+    let snap_initial: UplinkStatus = manager.read_status_for_test(0);
+    let now = tokio::time::Instant::now();
+    let uplink_handle = &manager.uplinks()[0];
+    assert!(!any_wire_recent_success(
+        &snap_initial,
+        uplink_handle,
+        TransportKind::Tcp,
+        now,
+        &lb,
+    ));
+
+    // After a successful primary dial: liveness override returns true.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, true, 2);
+    let snap_after: UplinkStatus = manager.read_status_for_test(0);
+    let now = tokio::time::Instant::now();
+    assert!(any_wire_recent_success(
+        &snap_after,
+        uplink_handle,
+        TransportKind::Tcp,
+        now,
+        &lb,
+    ));
+
+    // Single-wire uplink: liveness override always false (no fallbacks).
+    let single_cfg = ss_tcp_only_primary();
+    let single_mgr =
+        UplinkManager::new_for_test("solo", vec![single_cfg], make_probe(1), lb.clone()).unwrap();
+    single_mgr.record_wire_outcome(0, TransportKind::Tcp, 0, true, 1);
+    let snap = single_mgr.read_status_for_test(0);
+    assert!(!any_wire_recent_success(
+        &snap,
+        &single_mgr.uplinks()[0],
+        TransportKind::Tcp,
+        tokio::time::Instant::now(),
+        &lb,
+    ));
+}

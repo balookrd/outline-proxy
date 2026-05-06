@@ -16,6 +16,40 @@ pub(crate) fn effective_health(
     status.of(transport).healthy == Some(true) && !cooldown_active(status, transport, now)
 }
 
+/// Liveness override for uplinks with `[[outline.uplinks.fallbacks]]`
+/// configured: when the parent's primary wire has been marked unhealthy
+/// by probe but a *fallback* wire has dialed successfully within the
+/// runtime-failure window, the uplink stays in the candidate set so the
+/// active-wire dial loop can keep using the working fallback.
+///
+/// Without this, probe health on the primary wire would gate the entire
+/// uplink out of selection (`selection_health` → `effective_health` → false)
+/// and the fallback wire would never get a chance — defeating the point
+/// of declaring a fallback in the first place. Returns `false` for
+/// single-wire uplinks (where no fallback exists, the override would
+/// give false-positive liveness based on stale primary successes).
+pub(crate) fn any_wire_recent_success(
+    status: &UplinkStatus,
+    uplink: &Uplink,
+    transport: TransportKind,
+    now: Instant,
+    config: &LoadBalancingConfig,
+) -> bool {
+    if uplink.fallbacks.is_empty() {
+        return false;
+    }
+    let st = status.of(transport);
+    let last = match st.last_any_wire_success {
+        Some(t) => t,
+        None => return false,
+    };
+    // Reuse the existing runtime-failure-window knob: it already shapes
+    // "how recent does runtime activity have to be to count as a signal".
+    // Operators tune it once and both the failure-streak decay and this
+    // liveness override use the same window.
+    now.duration_since(last) <= config.runtime_failure_window
+}
+
 pub(crate) fn supports_transport_for_scope(
     uplink: &Uplink,
     transport: TransportKind,
@@ -59,7 +93,8 @@ pub(crate) fn selection_health(
             // on the active drops it from selection — can set
             // `global_udp_strict_health = true` in their load_balancing
             // config block.
-            let tcp_ok = effective_health(status, TransportKind::Tcp, now);
+            let tcp_ok = effective_health(status, TransportKind::Tcp, now)
+                || any_wire_recent_success(status, uplink, TransportKind::Tcp, now, config);
             if !tcp_ok {
                 return false;
             }
@@ -70,7 +105,10 @@ pub(crate) fn selection_health(
                 || (status.udp.healthy != Some(false)
                     && !cooldown_active(status, TransportKind::Udp, now))
         },
-        _ => effective_health(status, transport, now),
+        _ => {
+            effective_health(status, transport, now)
+                || any_wire_recent_success(status, uplink, transport, now, config)
+        },
     }
 }
 
