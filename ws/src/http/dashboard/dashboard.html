@@ -190,12 +190,25 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .proto-pill .proto-submode .proto-dg { margin: 0 1px; }
 .fb-chain { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 4px; font-size: 10.5px; }
 .fb-chain .fb-link { padding: 1px 6px; border-radius: 4px; background: var(--soft); color: var(--muted); border: 1px solid var(--line); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
-.fb-chain .fb-link.fb-active { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); font-weight: 800; }
-/* Active chip painted in the transport's protocol palette so the chain
- * "currently working" cue matches the colour the operator already
- * associates with that transport elsewhere on the page. The class
- * combination `.fb-active.proto-*` overrides the default green
- * fb-active background. */
+/* Active chip mirrors the dimensions / shape of the legacy top pill so
+ * the chain's "currently working" chip reads at the same visual weight
+ * as the rest of the protocol pills elsewhere on the page (probe
+ * attribution, summary cards). Inactive chain chips keep the compact
+ * fb-link style — they're chain markers, not full descriptors. */
+.fb-chain .fb-link.fb-active {
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: .02em;
+  background: var(--green-soft);
+  color: var(--green-strong);
+  border-color: var(--chip-fb-border);
+}
+/* Per-transport palette overrides — match `proto-vless` / `proto-ws` /
+ * `proto-shadowsocks` so the chain colour ties back to the transport
+ * the operator sees elsewhere. */
 .fb-chain .fb-link.fb-active.proto-vless { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
 .fb-chain .fb-link.fb-active.proto-shadowsocks { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
 .fb-chain .fb-link.fb-active.proto-ws { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
@@ -582,14 +595,18 @@ function fallbackChainPill(uplink) {
         cls += " fb-failed";
       } else if (isActive) {
         cls += " fb-active";
-        // Tag the active chip with the transport's proto class so the
-        // CSS overrides paint it in the protocol palette (VLESS violet,
-        // WS green, SS — its own colour) instead of the generic
-        // fb-active green. Matches the colour the old top pill used and
-        // ties the chain back to the rest of the dashboard's palette.
         const t = w.transport;
         if (t === "vless" || t === "shadowsocks" || t === "ws") cls += ` proto-${t}`;
       }
+      // Leg label ("TCP" / "UDP") sits inside the active chip — matches
+      // the legacy `legPill` layout where the leg tag was the first
+      // element inside the pill rather than a separate `<span>` floated
+      // before the chain. We only render it on the active chip; inactive
+      // chips don't need to be tagged with the leg (the chain itself is
+      // already split into per-leg lines).
+      const legTagInline = (isActive && legLabel)
+        ? `<span class="proto-leg">${legLabel}</span>`
+        : "";
       // Submode + downgrade decorations follow the **active** wire so the
       // active chip carries the same level of detail the (now-removed)
       // top pill used to surface — submode badge, ↘ auto-downgrade arrow,
@@ -607,6 +624,10 @@ function fallbackChainPill(uplink) {
       const downMark = (isActive && allDown)
         ? '<span class="fb-down" title="active wire failing — nothing is up on this leg">✕</span>'
         : "";
+      // Pin badge ("⏱ 17s") rides inside the active chip rather than as a
+      // separate element next to it — keeps everything for the active
+      // wire (label + submode + arrow + DOWN + pin) inside one rounded
+      // pill, matching the legacy top-pill layout.
       const pin = (isActive && i !== 0 && typeof pinMs === "number")
         ? `<span class="fb-pin" title="auto-failback in">⏱ ${(pinMs / 1000).toFixed(0)}s</span>`
         : "";
@@ -622,10 +643,9 @@ function fallbackChainPill(uplink) {
       const titleParts = [`wire #${i}: ${fullLabel}`];
       if (i === activeIdx && deco.dg) titleParts.push("auto-downgraded from configured carrier");
       const title = titleParts.join(" · ");
-      return `<span class="${cls}" title="${escapeHtml(title)}">${escapeHtml(visible)}${submodeHtml}${dgArrow}${downMark}</span>${pin}`;
+      return `<span class="${cls}" title="${escapeHtml(title)}">${legTagInline}${escapeHtml(visible)}${submodeHtml}${dgArrow}${downMark}${pin}</span>`;
     }).join('<span class="fb-arrow">›</span>');
-    const legTag = legLabel ? `<span class="proto-leg">${legLabel}</span>` : "";
-    return `<div class="fb-chain">${legTag}${links}</div>`;
+    return `<div class="fb-chain">${links}</div>`;
   };
   // Compose a per-leg "everything is up vs nothing is up" verdict for
   // the DOWN marker on the active chip. When the legs diverge we use
@@ -726,8 +746,15 @@ function weightCell(u) {
   // operator reads as "TCP latency vs UDP latency". The raw EWMA fields
   // already differ between transports and are what people expect to see.
   const parts = [];
-  if (u.tcp_rtt_ewma_ms != null) parts.push(`tcp: ${u.tcp_rtt_ewma_ms}ms`);
-  if (u.udp_rtt_ewma_ms != null) parts.push(`udp: ${u.udp_rtt_ewma_ms}ms`);
+  // Prefer active-wire EWMA so the cell shows the latency of the wire
+  // actually carrying traffic — primary's `tcp_rtt_ewma_ms` is null when
+  // primary's probe never produced a sample (e.g. server disabled XHTTP
+  // and the dial loop has moved onto the WS fallback). Falls back to
+  // primary's value for older snapshots / single-wire uplinks.
+  const tcpRtt = u.tcp_active_wire_rtt_ewma_ms ?? u.tcp_rtt_ewma_ms;
+  const udpRtt = u.udp_active_wire_rtt_ewma_ms ?? u.udp_rtt_ewma_ms;
+  if (tcpRtt != null) parts.push(`tcp: ${tcpRtt}ms`);
+  if (udpRtt != null) parts.push(`udp: ${udpRtt}ms`);
   const rtt = parts.length
     ? `<span class="switch-reason">${escapeHtml(parts.join(' · '))}</span>`
     : '';

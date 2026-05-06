@@ -221,6 +221,14 @@ impl UplinkManager {
                 udp_latency_ms: status.udp.latency.map(|v| v.as_millis()),
                 tcp_rtt_ewma_ms: status.tcp.rtt_ewma.map(|v| v.as_millis()),
                 udp_rtt_ewma_ms: status.udp.rtt_ewma.map(|v| v.as_millis()),
+                tcp_active_wire_rtt_ewma_ms: status
+                    .tcp
+                    .active_wire_rtt_ewma()
+                    .map(|v| v.as_millis()),
+                udp_active_wire_rtt_ewma_ms: status
+                    .udp
+                    .active_wire_rtt_ewma()
+                    .map(|v| v.as_millis()),
                 tcp_penalty_ms: duration_to_millis_option(tcp_penalty),
                 udp_penalty_ms: duration_to_millis_option(udp_penalty),
                 tcp_effective_latency_ms: duration_to_millis_option(tcp_effective_latency),
