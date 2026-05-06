@@ -508,53 +508,59 @@ function fallbackChainPill(uplink) {
   const fallbacks = Array.isArray(uplink.configured_fallbacks) ? uplink.configured_fallbacks : [];
   if (!fallbacks.length) return "";
   // Prefer the fully-resolved per-wire chain (transport + per-leg mode)
-  // when the backend emits it; falls back to the legacy
-  // `configured_fallbacks` transport-only list for older snapshots so
-  // mid-rolling-deploy clients don't see broken rows.
+  // when the backend emits it; falls back to the legacy transport-only
+  // list for older snapshots so mid-rolling-deploy clients don't see
+  // broken rows.
   const wireChain = Array.isArray(uplink.configured_wire_chain) ? uplink.configured_wire_chain : [];
-  const wires = wireChain.length
-    ? wireChain.map(w => ({
+  const buildWires = (legKey) => {
+    if (wireChain.length) {
+      return wireChain.map(w => ({
         transport: String((w && w.transport) || "?").toLowerCase(),
-        mode: w ? (w.tcp_mode || w.udp_mode || null) : null,
-      }))
-    : [
-        { transport: String(uplink.transport || "?").toLowerCase(), mode: uplink.tcp_mode || uplink.udp_mode || null },
-        ...fallbacks.map(t => ({ transport: String(t).toLowerCase(), mode: null })),
-      ];
+        // Pick the leg-specific mode so the TCP and UDP chains show
+        // their own carrier shapes when they diverge (a WS uplink with
+        // tcp_mode=ws_h3 + udp_mode=ws_h2, say). Falls back to the other
+        // leg's mode when one is missing — VLESS wires share the same
+        // mode for both legs anyway, so this is just safe.
+        mode: w ? (w[legKey] || w.tcp_mode || w.udp_mode || null) : null,
+      }));
+    }
+    const primaryMode = legKey === "tcp_mode"
+      ? (uplink.tcp_mode || uplink.udp_mode || null)
+      : (uplink.udp_mode || uplink.tcp_mode || null);
+    return [
+      { transport: String(uplink.transport || "?").toLowerCase(), mode: primaryMode },
+      ...fallbacks.map(t => ({ transport: String(t).toLowerCase(), mode: null })),
+    ];
+  };
   const tcpActive = uplink.tcp_active_wire || 0;
   const udpActive = uplink.udp_active_wire || 0;
   const tcpPinMs = uplink.tcp_active_wire_pin_remaining_ms;
   const udpPinMs = uplink.udp_active_wire_pin_remaining_ms;
-  // Primary wire is "failed" (red) when the probe-only verdict on the
-  // primary is `false` for the leg under consideration. We surface this
-  // on the chip itself (rather than only on the top pill) so the chain
-  // visualises "what's broken vs. what's serving traffic" — the failed
-  // primary stays red even when the active wire has flipped onto a
-  // working fallback.
-  // Top-pill decorations now live on the chain chips. For wire 0 we
-  // borrow the uplink-level submode / downgrade fields (those track
-  // primary's mode state, so they apply only to the primary chip).
-  // Wire 1+ chips don't have per-wire submode info exposed in the
-  // snapshot yet — they render as plain transport/mode.
-  const tcpSm = uplink.tcp_xhttp_submode || null;
-  const udpSm = uplink.udp_xhttp_submode || null;
-  const tcpSmEff = uplink.tcp_xhttp_submode_effective || tcpSm;
-  const udpSmEff = uplink.udp_xhttp_submode_effective || udpSm;
-  const tcpSmDg = !!uplink.tcp_xhttp_submode_downgrade_active && tcpSm !== tcpSmEff;
-  const udpSmDg = !!uplink.udp_xhttp_submode_downgrade_active && udpSm !== udpSmEff;
-  // The original mode (configured) vs effective mode delta on primary —
-  // surfaces the carrier auto-downgrade arrow inline on the wire 0 chip.
-  const primaryTcpDg = !!uplink.tcp_downgrade_active && uplink.tcp_mode && uplink.tcp_mode !== uplink.tcp_mode_effective;
-  const primaryUdpDg = !!uplink.udp_downgrade_active && uplink.udp_mode && uplink.udp_mode !== uplink.udp_mode_effective;
-  const primaryDg = primaryTcpDg || primaryUdpDg;
   // Effective health on either leg false == nothing is up, including the
   // active wire — paint the active chip with a DOWN marker so the chain
   // alone communicates "everything has failed", since the top pill that
   // used to surface this state is gone.
   const tcpEff = legHealth(uplink, 'tcp');
   const udpEff = legHealth(uplink, 'udp');
-  const allDown = tcpEff === false && udpEff === false;
-  const renderOne = (legLabel, activeIdx, pinMs, primaryFailed) => {
+  // Per-leg primary submode + downgrade decorations. These live on the
+  // wire 0 chip — the uplink-level submode/downgrade fields are
+  // primary-bound. Wire 1+ chips don't have per-wire submode info
+  // exposed in the snapshot yet — they render as plain transport/mode.
+  const decorations = (legKey) => {
+    const sm = uplink[`${legKey}_xhttp_submode`] || null;
+    const smEff = uplink[`${legKey}_xhttp_submode_effective`] || sm;
+    const smDg = !!uplink[`${legKey}_xhttp_submode_downgrade_active`] && sm !== smEff;
+    const carrierMode = uplink[`${legKey}_mode`];
+    const carrierEff = uplink[`${legKey}_mode_effective`];
+    const dg = !!uplink[`${legKey}_downgrade_active`] && carrierMode && carrierMode !== carrierEff;
+    return { sm, smEff, smDg, dg, carrierMode, carrierEff };
+  };
+  // `legKey` selects which leg's mode + submode/downgrade fields drive
+  // the chain. For the combined (sameLine) line we prefer TCP — that
+  // matches the rest of the dashboard's collapsed-leg conventions.
+  const renderOne = (legLabel, legKey, activeIdx, pinMs, primaryFailed, allDown) => {
+    const wires = buildWires(`${legKey}_mode`);
+    const deco = decorations(legKey);
     const links = wires.map((w, i) => {
       const isActive = i === activeIdx;
       let cls = "fb-link";
@@ -563,14 +569,8 @@ function fallbackChainPill(uplink) {
       } else if (isActive) {
         cls += " fb-active";
       }
-      // Submode chip ((S) / (P)) and downgrade arrow only attach to the
-      // wire 0 chip — the uplink-level submode/downgrade fields are
-      // primary-bound. The arrow + tooltip preserve the auto-downgrade
-      // hint that the operator used to read on the top pill.
-      const submodeHtml = (i === 0)
-        ? submodeSuffix(tcpSm, tcpSmEff, tcpSmDg)[0]
-        : "";
-      const dgArrow = (i === 0 && primaryDg)
+      const submodeHtml = (i === 0) ? submodeSuffix(deco.sm, deco.smEff, deco.smDg)[0] : "";
+      const dgArrow = (i === 0 && deco.dg)
         ? '<span class="fb-dg" title="carrier auto-downgraded (configured H3/QUIC unreachable)">↘</span>'
         : "";
       const downMark = (isActive && allDown)
@@ -581,24 +581,40 @@ function fallbackChainPill(uplink) {
         : "";
       const label = stackLabel(w.transport, w.mode);
       const titleParts = [`wire #${i}: ${label}`];
-      if (i === 0 && primaryDg) titleParts.push("auto-downgraded from configured carrier");
+      if (i === 0 && deco.dg) titleParts.push("auto-downgraded from configured carrier");
       const title = titleParts.join(" · ");
       return `<span class="${cls}" title="${escapeHtml(title)}">${escapeHtml(label)}${submodeHtml}${dgArrow}${downMark}</span>${pin}`;
     }).join('<span class="fb-arrow">›</span>');
     const legTag = legLabel ? `<span class="proto-leg">${legLabel}</span>` : "";
     return `<div class="fb-chain">${legTag}${links}</div>`;
   };
-  // Single combined line when TCP and UDP are at the same active wire and
-  // no asymmetric pin is in flight; two lines otherwise so the operator
-  // can tell them apart at a glance.
-  const sameLine = tcpActive === udpActive && (tcpPinMs == null) === (udpPinMs == null);
+  // Compose a per-leg "everything is up vs nothing is up" verdict for
+  // the DOWN marker on the active chip. When the legs diverge we use
+  // the leg-specific verdict; for the combined line we OR them so the
+  // marker shows whenever ANY leg is fully down (matches what the
+  // top-pill DOWN used to surface).
+  const tcpAllDown = tcpEff === false;
+  const udpAllDown = udpEff === false;
+  // Decide whether to render one or two lines. Diverge on:
+  //   * which wire is active per leg,
+  //   * presence of an asymmetric pin,
+  //   * configured TCP vs UDP modes anywhere in the chain (a WS uplink
+  //     with `tcp_mode != udp_mode` per wire shows two visibly different
+  //     carrier shapes — collapsing them would hide that).
+  const tcpWires = buildWires("tcp_mode");
+  const udpWires = buildWires("udp_mode");
+  const wiresDiverge = tcpWires.length !== udpWires.length
+    || tcpWires.some((w, i) => w.transport !== udpWires[i].transport || w.mode !== udpWires[i].mode);
+  const sameLine = tcpActive === udpActive
+    && (tcpPinMs == null) === (udpPinMs == null)
+    && !wiresDiverge;
   const tcpFailed = uplink.tcp_healthy === false;
   const udpFailed = uplink.udp_healthy === false;
   if (sameLine) {
-    return renderOne("", tcpActive, tcpPinMs ?? udpPinMs, tcpFailed || udpFailed);
+    return renderOne("", "tcp", tcpActive, tcpPinMs ?? udpPinMs, tcpFailed || udpFailed, tcpAllDown && udpAllDown);
   }
-  return renderOne("TCP", tcpActive, tcpPinMs, tcpFailed)
-       + renderOne("UDP", udpActive, udpPinMs, udpFailed);
+  return renderOne("TCP", "tcp", tcpActive, tcpPinMs, tcpFailed, tcpAllDown)
+       + renderOne("UDP", "udp", udpActive, udpPinMs, udpFailed, udpAllDown);
 }
 function activeProtocolChip(group) {
   const byName = new Map((group.uplinks || []).map(u => [u.name, u]));
