@@ -1256,7 +1256,6 @@ Useful overrides:
 - `INSTALL_PATH=/path`: install the binary outside `/usr/local/bin`
 - `CONFIG_DIR=/path`: keep configuration outside `/etc/outline-ws-rust`
 - `STATE_DIR=/path`: use a different state directory
-- `GITHUB_TOKEN=...`: GitHub token to avoid API rate limits
 
 `VERSION` and `CHANNEL=nightly` are mutually exclusive.
 
