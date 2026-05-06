@@ -7,10 +7,12 @@ use tracing::{debug, warn};
 use outline_transport::{
     TcpReader, TcpWriter,
     TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
-    connect_shadowsocks_tcp_with_source,
+    connect_shadowsocks_tcp_with_source, connect_websocket_with_source,
 };
 use socks5_proto::TargetAddr;
-use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager, UplinkTransport};
+use outline_uplink::{
+    FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
+};
 
 pub(super) const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 
@@ -80,7 +82,85 @@ impl ActiveTcpUplink {
     }
 }
 
+/// Dials a TCP uplink and, when the primary transport fails, transparently
+/// retries each configured `[[outline.uplinks.fallbacks]]` entry on the same
+/// uplink before propagating the error to the cross-uplink failover loop.
+///
+/// The primary error is surfaced via `anyhow::Error::context` chaining when
+/// every fallback has also failed; a successful fallback returns an opaque
+/// `ConnectedTcpUplink` indistinguishable from a primary success.
+///
+/// Per-fallback dial errors are logged at warn-level (so an operator can see
+/// which wire took us down to the next fallback) but are not surfaced as a
+/// `report_runtime_failure` against the parent uplink — the parent's runtime-
+/// failure counter is bumped only by the *outer* dial loop and only when
+/// every wire on this uplink (primary + all fallbacks) has been exhausted.
 pub(super) async fn connect_tcp_uplink(
+    uplinks: &UplinkManager,
+    candidate: &UplinkCandidate,
+    target: &TargetAddr,
+) -> Result<ConnectedTcpUplink> {
+    let primary_err = match connect_tcp_uplink_primary(uplinks, candidate, target).await {
+        Ok(connected) => return Ok(connected),
+        Err(error) => {
+            if candidate.uplink.fallbacks.is_empty() {
+                return Err(error);
+            }
+            error
+        },
+    };
+
+    warn!(
+        uplink = %candidate.uplink.name,
+        target = %target,
+        primary_transport = %candidate.uplink.transport,
+        fallbacks = candidate.uplink.fallbacks.len(),
+        error = %format!("{primary_err:#}"),
+        "TCP primary dial failed; trying configured fallbacks on same uplink",
+    );
+
+    let mut last_err = primary_err;
+    for (idx, fallback) in candidate.uplink.fallbacks.iter().enumerate() {
+        match connect_tcp_fallback_fresh(uplinks, candidate, fallback, target).await {
+            Ok(connected) => {
+                outline_metrics::record_uplink_selected(
+                    "tcp",
+                    uplinks.group_name(),
+                    &candidate.uplink.name,
+                );
+                debug!(
+                    uplink = %candidate.uplink.name,
+                    target = %target,
+                    fallback_index = idx,
+                    fallback_transport = %fallback.transport,
+                    "TCP fallback dial succeeded",
+                );
+                return Ok(connected);
+            },
+            Err(error) => {
+                warn!(
+                    uplink = %candidate.uplink.name,
+                    target = %target,
+                    fallback_index = idx,
+                    fallback_transport = %fallback.transport,
+                    error = %format!("{error:#}"),
+                    "TCP fallback dial failed",
+                );
+                last_err = error.context(format!(
+                    "uplink {} fallback[{idx}] (transport={}) failed",
+                    candidate.uplink.name, fallback.transport,
+                ));
+            },
+        }
+    }
+    Err(last_err.context(format!(
+        "uplink {}: primary and all {} fallback(s) failed",
+        candidate.uplink.name,
+        candidate.uplink.fallbacks.len(),
+    )))
+}
+
+async fn connect_tcp_uplink_primary(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
     target: &TargetAddr,
@@ -99,8 +179,9 @@ pub(super) async fn connect_tcp_uplink(
             "socks_tcp",
         )
         .await?;
+        let setup = WireSetup::from_uplink(&candidate.uplink);
         let (writer, reader) =
-            do_tcp_ss_setup_socket(stream, &candidate.uplink, target, "socks_tcp").await?;
+            do_tcp_ss_setup_socket(stream, &setup, target, "socks_tcp").await?;
         return Ok(ConnectedTcpUplink {
             writer,
             reader,
@@ -114,7 +195,8 @@ pub(super) async fn connect_tcp_uplink(
     // stale (fails before any server bytes arrive), discard it silently and
     // retry with a fresh on-demand dial — without recording a runtime failure.
     if let Some(ws) = uplinks.try_take_tcp_standby(candidate).await {
-        match do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp", keepalive_interval).await {
+        let setup = WireSetup::from_uplink(&candidate.uplink);
+        match do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval).await {
             Ok((writer, reader)) => {
                 return Ok(ConnectedTcpUplink {
                     writer,
@@ -183,8 +265,9 @@ pub(super) async fn connect_tcp_uplink_fresh(
     }
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "socks_tcp").await?;
+    let setup = WireSetup::from_uplink(&candidate.uplink);
     let (writer, reader) =
-        do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp", keepalive_interval).await?;
+        do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval).await?;
     Ok(ConnectedTcpUplink {
         writer,
         reader,
@@ -192,9 +275,144 @@ pub(super) async fn connect_tcp_uplink_fresh(
     })
 }
 
+/// Dial one fallback transport on the parent uplink. Returns a fully-set-up
+/// `ConnectedTcpUplink` indistinguishable from the primary path.
+///
+/// Bypasses the standby pool, mode-downgrade window, RTT-EWMA feed, and
+/// cross-transport resume cache — those structures are keyed on the parent's
+/// uplink index and primary transport, so a fallback dial must not pollute
+/// them. (Active-wire-aware probing and stat tracking are Phase 2.)
+///
+/// The DNS cache and per-uplink fingerprint scope (which is identity-level,
+/// not transport-level) **are** preserved.
+pub(super) async fn connect_tcp_fallback_fresh(
+    uplinks: &UplinkManager,
+    parent: &UplinkCandidate,
+    fallback: &FallbackTransport,
+    target: &TargetAddr,
+) -> Result<ConnectedTcpUplink> {
+    let cache = uplinks.dns_cache();
+    let setup = WireSetup::from_fallback(&parent.uplink.name, fallback);
+    let source = "socks_tcp_fb";
+
+    if fallback.transport == UplinkTransport::Shadowsocks {
+        let addr = fallback
+            .tcp_addr
+            .as_ref()
+            .ok_or_else(|| anyhow!(
+                "uplink {} fallback (transport=shadowsocks) missing tcp_addr",
+                parent.uplink.name,
+            ))?;
+        let stream = connect_shadowsocks_tcp_with_source(
+            cache,
+            addr,
+            fallback.fwmark,
+            fallback.ipv6_first,
+            source,
+        )
+        .await?;
+        let (writer, reader) = do_tcp_ss_setup_socket(stream, &setup, target, source).await?;
+        debug!(
+            uplink = %parent.uplink.name,
+            target = %target,
+            transport = "shadowsocks",
+            wire = "fallback",
+            "opened fallback TCP uplink",
+        );
+        return Ok(ConnectedTcpUplink {
+            writer,
+            reader,
+            source: TcpUplinkSource::DirectSocket,
+        });
+    }
+
+    // WS / VLESS dial — both ride the same WS-family primitives. Mode is
+    // taken from the fallback's configured value (no per-fallback downgrade
+    // tracking yet — Phase 2). Resume cache is intentionally bypassed.
+    let url = fallback
+        .tcp_dial_url()
+        .ok_or_else(|| anyhow!(
+            "uplink {} fallback ({}) missing TCP dial URL",
+            parent.uplink.name,
+            fallback.transport,
+        ))?;
+    let mode = fallback.tcp_dial_mode();
+    let ws = connect_websocket_with_source(
+        cache,
+        url,
+        mode,
+        fallback.fwmark,
+        fallback.ipv6_first,
+        source,
+    )
+    .await
+    .with_context(|| format!(
+        "fallback dial to {} (uplink {}, transport={}) failed",
+        url,
+        parent.uplink.name,
+        fallback.transport,
+    ))?;
+    let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+    let (writer, reader) = do_tcp_ss_setup(ws, &setup, target, source, keepalive_interval).await?;
+    debug!(
+        uplink = %parent.uplink.name,
+        target = %target,
+        transport = %fallback.transport,
+        wire = "fallback",
+        "opened fallback TCP uplink",
+    );
+    Ok(ConnectedTcpUplink {
+        writer,
+        reader,
+        source: TcpUplinkSource::FreshDial,
+    })
+}
+
+/// Lightweight projection of the wire-credential fields needed by the
+/// SS / VLESS setup helpers. Lets the helpers take both an
+/// [`UplinkConfig`] (primary path) and a [`FallbackTransport`] (fallback
+/// path) by reference without an `&UplinkConfig` synthesis.
+///
+/// `name` is the **parent uplink's** display name in both cases — the
+/// fallback shares identity with its parent for logging / metrics
+/// purposes. The wire family / cipher / password / vless_id come from
+/// whichever side is actually being dialed.
+pub(super) struct WireSetup<'a> {
+    pub(super) name: &'a str,
+    pub(super) transport: UplinkTransport,
+    pub(super) cipher: outline_uplink::CipherKind,
+    pub(super) password: &'a str,
+    pub(super) vless_id: Option<&'a [u8; 16]>,
+}
+
+impl<'a> WireSetup<'a> {
+    pub(super) fn from_uplink(uplink: &'a outline_uplink::UplinkConfig) -> Self {
+        Self {
+            name: &uplink.name,
+            transport: uplink.transport,
+            cipher: uplink.cipher,
+            password: &uplink.password,
+            vless_id: uplink.vless_id.as_ref(),
+        }
+    }
+
+    pub(super) fn from_fallback(
+        parent_name: &'a str,
+        fallback: &'a outline_uplink::FallbackTransport,
+    ) -> Self {
+        Self {
+            name: parent_name,
+            transport: fallback.transport,
+            cipher: fallback.cipher,
+            password: &fallback.password,
+            vless_id: fallback.vless_id.as_ref(),
+        }
+    }
+}
+
 async fn do_tcp_ss_setup(
     ws_stream: outline_transport::TransportStream,
-    uplink: &outline_uplink::UplinkConfig,
+    setup: &WireSetup<'_>,
     target: &TargetAddr,
     source: &'static str,
     keepalive_interval: Option<std::time::Duration>,
@@ -204,15 +422,14 @@ async fn do_tcp_ss_setup(
     let diag = outline_transport::WsReadDiag {
         conn_id: shared_conn_info.map(|(id, _)| id),
         mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
-        uplink: uplink.name.clone(),
+        uplink: setup.name.to_string(),
         target: target.to_string(),
     };
 
-    if uplink.transport == UplinkTransport::Vless {
-        let uuid = uplink
+    if setup.transport == UplinkTransport::Vless {
+        let uuid = setup
             .vless_id
-            .as_ref()
-            .ok_or_else(|| anyhow!("uplink {} missing vless_id", uplink.name))?;
+            .ok_or_else(|| anyhow!("uplink {} missing vless_id", setup.name))?;
         let (writer, reader) = outline_transport::vless::vless_tcp_pair_from_ws(
             ws_stream,
             uuid,
@@ -222,7 +439,7 @@ async fn do_tcp_ss_setup(
             keepalive_interval,
         );
         debug!(
-            uplink = %uplink.name,
+            uplink = %setup.name,
             target = %target,
             transport = "ws",
             protocol = "vless",
@@ -232,44 +449,44 @@ async fn do_tcp_ss_setup(
     }
 
     let (ws_sink, ws_stream) = ws_stream.split();
-    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
+    let master_key = setup.cipher.derive_master_key(setup.password)?;
     let (writer, ctrl_tx) =
-        TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
+        TcpShadowsocksWriter::connect(ws_sink, setup.cipher, &master_key, Arc::clone(&lifetime))
             .await?;
-    let reader = TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx);
+    let reader = TcpShadowsocksReader::new(ws_stream, setup.cipher, &master_key, lifetime, ctrl_tx);
     let mut writer = TcpWriter::Ws(writer);
     let reader = TcpReader::Ws(reader)
         .with_request_salt(writer.request_salt())
         .with_diag(diag);
-    send_initial_ss_target(&mut writer, uplink, target, "ws").await?;
+    send_initial_ss_target(&mut writer, setup, target, "ws").await?;
     Ok((writer, reader))
 }
 
 async fn do_tcp_ss_setup_socket(
     stream: tokio::net::TcpStream,
-    uplink: &outline_uplink::UplinkConfig,
+    setup: &WireSetup<'_>,
     target: &TargetAddr,
     source: &'static str,
 ) -> Result<(TcpWriter, TcpReader)> {
     let (reader_half, writer_half) = stream.into_split();
-    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
+    let master_key = setup.cipher.derive_master_key(setup.password)?;
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
     let writer = TcpShadowsocksWriter::connect_socket(
         writer_half,
-        uplink.cipher,
+        setup.cipher,
         &master_key,
         Arc::clone(&lifetime),
     )?;
-    let reader = TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime);
+    let reader = TcpShadowsocksReader::new_socket(reader_half, setup.cipher, &master_key, lifetime);
     let mut writer = TcpWriter::Socket(writer);
     let reader = TcpReader::Socket(reader).with_request_salt(writer.request_salt());
-    send_initial_ss_target(&mut writer, uplink, target, "socket").await?;
+    send_initial_ss_target(&mut writer, setup, target, "socket").await?;
     Ok((writer, reader))
 }
 
 async fn send_initial_ss_target(
     writer: &mut TcpWriter,
-    uplink: &outline_uplink::UplinkConfig,
+    setup: &WireSetup<'_>,
     target: &TargetAddr,
     transport: &'static str,
 ) -> Result<()> {
@@ -279,11 +496,11 @@ async fn send_initial_ss_target(
         .await
         .context("failed to send target address")?;
     debug!(
-        uplink = %uplink.name,
+        uplink = %setup.name,
         target = %target,
         target_wire_len = target_wire.len(),
         transport = transport,
-        ss2022 = uplink.cipher.is_ss2022(),
+        ss2022 = setup.cipher.is_ss2022(),
         "sent initial Shadowsocks target header to uplink"
     );
     Ok(())
