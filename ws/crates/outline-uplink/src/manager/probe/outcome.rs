@@ -63,25 +63,32 @@ fn record_transport_failure(
 /// Skipped when `total_wires <= 1` (single-wire uplinks have nowhere
 /// to advance) or `active_wire != 0` (already on a fallback — the
 /// dial loop's per-wire state machine owns further transitions).
+///
+/// Returns `true` iff `active_wire` actually transitioned from 0 to 1
+/// in this call. The caller uses this to schedule a warm-standby drain:
+/// the pool today only ever holds primary-wire sockets, and once we've
+/// declared primary failed enough to flip active away, those sockets
+/// are stale-suspect.
 fn advance_active_wire_on_probe_failure(
     status: &mut PerTransportStatus,
     total_wires: usize,
     min_failures: u32,
     now: Instant,
     pin_duration: std::time::Duration,
-) {
+) -> bool {
     if total_wires <= 1 {
-        return;
+        return false;
     }
     if status.active_wire != 0 {
-        return;
+        return false;
     }
     if status.consecutive_failures < min_failures.max(1) {
-        return;
+        return false;
     }
     status.active_wire = 1;
     status.active_wire_pinned_until = Some(now + pin_duration);
     status.active_wire_streak = 0;
+    true
 }
 
 fn record_transport_success(status: &mut PerTransportStatus, min_failures: u32) {
@@ -152,6 +159,10 @@ impl UplinkManager {
         let uplink_total_wires = 1 + uplink.fallbacks.len();
         let mut needs_h3_tcp_recovery = false;
         let mut needs_h3_udp_recovery = false;
+        // Capture transitions so we can fire the warm-standby drain after
+        // the sync status critical section ends (drain is async).
+        let mut tcp_transitioned_to_fallback = false;
+        let mut udp_transitioned_to_fallback = false;
         self.inner.with_status_mut(index, |status| {
             status.last_checked = Some(now);
             status.tcp.latency = result.tcp_latency;
@@ -170,7 +181,7 @@ impl UplinkManager {
                 // failures drive it through `record_wire_outcome`), so the
                 // first session after promotion would still try the dead
                 // primary and only learn through chunk-0 stall.
-                advance_active_wire_on_probe_failure(
+                tcp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
                     &mut status.tcp,
                     uplink_total_wires,
                     min_failures,
@@ -195,7 +206,7 @@ impl UplinkManager {
             if result.udp_applicable {
                 if !result.udp_ok {
                     record_transport_failure(&mut status.udp, now, min_failures, &load_balancing);
-                    advance_active_wire_on_probe_failure(
+                    udp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
                         &mut status.udp,
                         uplink_total_wires,
                         min_failures,
@@ -220,6 +231,27 @@ impl UplinkManager {
                 status.last_error = None;
             }
         });
+        // Drain warm-standby pools when active just moved off primary as a
+        // result of probe-confirmed failure. Spawned tasks because we're
+        // outside the sync `with_status_mut` closure but still inside a
+        // `pub(crate) fn` (not async), and `drain_standby_pool` is async.
+        // `try_current` guards the unit-test path that drives
+        // `process_probe_ok` from a sync `#[test]` body without a tokio
+        // runtime; in production this is always called from the probe
+        // scheduler on a tokio task.
+        let runtime_present = tokio::runtime::Handle::try_current().is_ok();
+        if tcp_transitioned_to_fallback && runtime_present {
+            let manager = self.clone();
+            tokio::spawn(async move {
+                manager.drain_standby_pool(index, TransportKind::Tcp).await;
+            });
+        }
+        if udp_transitioned_to_fallback && runtime_present {
+            let manager = self.clone();
+            tokio::spawn(async move {
+                manager.drain_standby_pool(index, TransportKind::Udp).await;
+            });
+        }
         // Route transport-level probe failures through the unified H3 downgrade
         // helper (no-op for non-WS / non-H3 uplinks).  This prevents flapping:
         // without downgrade, intermittent H3 probe failures alternate pass/fail
