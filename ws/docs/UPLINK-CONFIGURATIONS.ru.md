@@ -363,6 +363,154 @@ dial снимает блок раньше срока.
 | VLESS / WS / H3       | `ws_h3 → ws_h2 → ws_h1`   | `ws_h3 → ws_h2 → ws_h1`                  | да (`#tcp`)     | вместе с TCP carrier'ом     |
 | VLESS / XHTTP / H3    | `xhttp_h3 → xhttp_h2 → xhttp_h1` | `xhttp_h3 → xhttp_h2 → xhttp_h1` | да (`#tcp`) | вместе с TCP carrier'ом     |
 
+## Структура секции `[outline]`
+
+Таблица `[outline]` собирает всё, что относится к проксирующему движку —
+транспорты, аплинки, пробинг, балансировку — отдельно от обвязки хоста
+(`[socks5]`, `[metrics]`, `[control]`, `[dashboard]`, `[tcp_timeouts]`,
+`[tun]`, `[[route]]`). Поддерживаются две формы конфигурации.
+
+**1. Inline-стенограмма для одного аплинка.** Если поля `transport`,
+`tcp_ws_url`, `udp_ws_url`, `vless_ws_url`, `vless_xhttp_url`,
+`tcp_mode` / `udp_mode` / `vless_mode`, `link`, `tcp_addr`, `udp_addr`,
+`method`, `password`, `fwmark`, `ipv6_first` написаны прямо под
+`[outline]` (или, для обратной совместимости, на верхнем уровне) —
+описан один неявный аплинк. CLI-флаги (`--tcp-ws-url`, `--password`, …)
+работают именно с этой формой. Удобно для тривиальных деплойментов; не
+сочетается с `[[outline.uplinks]]` / `[[uplink_group]]`.
+
+```toml
+[outline]
+transport = "ws"                  # "ws" (по умолчанию; alias "websocket") | "shadowsocks" | "vless"
+tcp_ws_url = "wss://example.com/SECRET/tcp"
+udp_ws_url = "wss://example.com/SECRET/udp"
+tcp_mode = "h3"
+udp_mode = "h3"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
+```
+
+`outline.transport` принимает:
+
+| значение      | форма канала                                                                       |
+|---------------|------------------------------------------------------------------------------------|
+| `ws`          | Shadowsocks AEAD-фрейминг внутри WebSocket-носителя (по умолчанию; alias `websocket`) |
+| `shadowsocks` | «Голый» Shadowsocks поверх сырых TCP/UDP-сокетов — см. § 1                         |
+| `vless`       | VLESS поверх WebSocket или XHTTP (h1/h2/h3) — см. §§ 4–7                           |
+
+**2. Multi-uplink + группы (продакшен-форма).** `[[outline.uplinks]]`
+объявляет аплинки; `[[uplink_group]]` (на верхнем уровне, *не* под
+`[outline]`) объявляет группы; каждый аплинк указывает свою группу через
+`group = "..."`. В этой форме у каждого аплинка собственное поле
+`transport`, поэтому inline-`outline.transport` не используется.
+
+## Справочник балансировки нагрузки
+
+Две эквивалентные поверхности, выбирается по форме конфига:
+
+- **`[outline.load_balancing]`** — применяется в inline-форме (когда
+  `[[uplink_group]]` не объявлены). При загрузке сворачивается в
+  неявную «default» группу
+  ([groups.rs:21](src/config/load/groups.rs:21)).
+- **Поля прямо под `[[uplink_group]]`** — применяются на каждой группе,
+  если используются группы (блок `[outline.load_balancing]` в этой
+  форме молча игнорируется;
+  [groups.rs:171](src/config/load/groups.rs:171)).
+
+Имена полей и значения по умолчанию идентичны на обеих поверхностях.
+Все поля опциональны; пропущенные подставляются дефолтами из таблицы.
+
+| поле                                 | дефолт             | ед.   | назначение                                                                                       |
+|--------------------------------------|--------------------|-------|--------------------------------------------------------------------------------------------------|
+| `mode`                               | `"active_active"`  | enum  | `active_active` распределяет нагрузку (per-flow / per-uplink); `active_passive` держит один активным, остальные — резерв |
+| `routing_scope`                      | `"per_flow"`       | enum  | `per_flow` (выбор аплинка на сессию) / `per_uplink` (sticky по host:port) / `global` (один активный на весь инстанс) |
+| `sticky_ttl_secs`                    | `300`              | с     | как долго `(host, port)` залипает за выбранным аплинком                                          |
+| `hysteresis_ms`                      | `50`               | мс    | минимальный интервал между двумя сменами `active`; гасит флаппинг                                |
+| `failure_cooldown_secs`              | `10`               | с     | как долго после провала аплинк исключается из выборки                                            |
+| `tcp_chunk0_failover_timeout_secs`   | `10`               | с     | сколько ждать первого байта от origin'а перед тем, как уйти на следующий аплинк                  |
+| `auto_failback`                      | `false`            | bool  | возвращаться на исходно-предпочтительный аплинк после восстановления                             |
+| `warm_standby_tcp`                   | `0`                | int   | сколько прогретых TCP-соединений держать на резервных аплинках                                   |
+| `warm_standby_udp`                   | `0`                | int   | то же для UDP                                                                                    |
+| `warm_probe_keepalive_secs`          | `20`               | с     | период keepalive для кэшированных warm-probe-каналов (`0` отключает)                             |
+| `rtt_ewma_alpha`                     | `0.3`              | (0,1] | коэффициент сглаживания EWMA для per-uplink RTT, используемого в скоринге выбора                 |
+| `failure_penalty_ms`                 | `500`              | мс    | стартовый штраф к RTT при свежем runtime-провале                                                 |
+| `failure_penalty_max_ms`             | `30000`            | мс    | потолок суммарного штрафа за провалы                                                             |
+| `failure_penalty_halflife_secs`      | `60`               | с     | период полураспада экспоненциального затухания штрафа                                            |
+| `runtime_failure_window_secs`        | `60`               | с     | окно, в котором подряд идущие data-plane провалы складываются к health flip; `0` = legacy без затухания |
+| `mode_downgrade_secs`                | `60`               | с     | cooldown перед повтором настроенного «продвинутого» режима (H3 / QUIC / `xhttp_h{2,3}`) после фолбэка. Legacy alias: `h3_downgrade_secs` |
+| `global_udp_strict_health`           | `false`            | bool  | в `routing_scope = "global"` дополнительно гейтить активный аплинк по UDP-здоровью; по умолчанию мягко — UDP-провалы информативные |
+| `udp_ws_keepalive_secs`              | `60`               | с     | период WS Ping на простаивающих UDP-WS-сокетах (`0` отключает)                                   |
+| `tcp_ws_keepalive_secs`              | `60`               | с     | период WS Ping на простаивающих VLESS-over-WS TCP-сессиях (`0` отключает; SS-over-WS игнорирует) |
+| `tcp_ws_standby_keepalive_secs`      | `20`               | с     | период WS Ping на warm-standby TCP-сокетах (`0` отключает)                                       |
+| `tcp_active_keepalive_secs`          | `20`               | с     | период SS2022 0-байтного keepalive на активных SOCKS TCP-сессиях (`0` отключает; SS1 игнорирует) |
+| `vless_udp_max_sessions`             | `256`              | int   | жёсткий лимит на одновременные VLESS UDP-сессии (LRU-вытеснение при переполнении)                |
+| `vless_udp_session_idle_secs`        | `60`               | с     | вытеснять VLESS UDP-сессии, простаивавшие дольше этого (`0` отключает вытеснение)                |
+| `vless_udp_janitor_interval_secs`    | `15`               | с     | как часто janitor сканирует idle-сессии VLESS UDP                                                |
+
+Источник дефолтов:
+[`src/config/load/balancing.rs`](src/config/load/balancing.rs); запасные
+значения для `vless_udp_*` — из
+[`crates/outline-transport/src/vless/udp_mux.rs`](crates/outline-transport/src/vless/udp_mux.rs).
+
+Шпаргалка по `routing_scope`:
+
+- **`per_flow`** — рекомендуемый дефолт. Каждая новая SOCKS/TUN-сессия
+  выбирает аплинк по весу, RTT EWMA и текущим штрафам; существующие
+  сессии остаются на своём аплинке весь поток. Лучшая параллельность,
+  минимальный blast radius.
+- **`per_uplink`** — потоки с общим `(host, port)` назначаются на один
+  аплинк на `sticky_ttl_secs`. Полезно, когда origin чувствителен к
+  смене source IP (анти-фрод, sticky session cookies, привязанные к
+  клиентскому IP).
+- **`global`** — ровно один аплинк `active` на весь инстанс; failover
+  гейтится `hysteresis_ms` + `failure_cooldown_secs`. Подходит для
+  чистой дашборд-семантики на устройствах, которые «должны выглядеть»
+  как одна точка egress (роутеры, узкоспециализированные домашние
+  шлюзы).
+
+Взаимодействие mode × scope:
+
+- `active_active` + `per_flow` — единственная комбинация, реально
+  использующая взвешенное распределение.
+- `active_passive` + `global` — классический primary/backup: один
+  аплинк несёт всё, остальные ждут.
+- `active_passive` + `per_flow` допустимо, но смысл скуднее: пассивные
+  аплинки работают только как failover-цели, не как взвешенные
+  «соседи».
+
+Пример — `[outline.load_balancing]` для inline-формы и те же поля,
+вынесенные на группу:
+
+```toml
+# Inline-форма
+[outline.load_balancing]
+mode = "active_active"
+routing_scope = "per_flow"
+sticky_ttl_secs = 300
+hysteresis_ms = 50
+failure_cooldown_secs = 10
+warm_standby_tcp = 1
+warm_standby_udp = 1
+rtt_ewma_alpha = 0.3
+failure_penalty_ms = 500
+failure_penalty_max_ms = 30000
+failure_penalty_halflife_secs = 60
+mode_downgrade_secs = 60
+runtime_failure_window_secs = 60
+global_udp_strict_health = false
+auto_failback = false
+
+# Эквивалент для multi-group формы — те же имена полей прямо на группе:
+[[uplink_group]]
+name = "main"
+mode = "active_active"
+routing_scope = "per_flow"
+sticky_ttl_secs = 300
+hysteresis_ms = 50
+warm_standby_tcp = 1
+# … и т.д.
+```
+
 ## Переопределение проб для конкретной группы
 
 `[outline.probe]` — шаблон, который наследует каждая `[[uplink_group]]`.
