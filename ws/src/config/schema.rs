@@ -225,6 +225,39 @@ pub(crate) struct UplinkSection {
     /// that must keep a byte-identical xray-style wire shape while
     /// siblings on the same `host:port` opt into per-host-stable.
     pub(crate) fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
+    /// Optional list of fallback transports tried when the primary
+    /// transport on this uplink fails to dial / chunk-0 in a single
+    /// session. Each entry carries its own wire-shape fields; identity
+    /// (name / weight / group) stays with the parent uplink. See
+    /// [`FallbackSection`] for the accepted fields and
+    /// `docs/UPLINK-CONFIGURATIONS.md` for the rationale.
+    pub(crate) fallbacks: Option<Vec<FallbackSection>>,
+}
+
+/// One `[[outline.uplinks.fallbacks]]` entry. Mirrors the wire-shape
+/// subset of [`UplinkSection`] — no `name` / `weight` / `group` / `link`
+/// (those are parent-level) and `transport` is required (no implicit
+/// default; the whole point of a fallback is to switch the wire family).
+/// `cipher` / `password` / `fwmark` / `ipv6_first` / `fingerprint_profile`
+/// are optional and inherited from the parent uplink at validation time.
+#[derive(Debug, Deserialize, Clone)]
+pub(crate) struct FallbackSection {
+    pub(crate) transport: UplinkTransport,
+    pub(crate) tcp_ws_url: Option<Url>,
+    pub(crate) tcp_mode: Option<TransportMode>,
+    pub(crate) udp_ws_url: Option<Url>,
+    pub(crate) udp_mode: Option<TransportMode>,
+    pub(crate) vless_ws_url: Option<Url>,
+    pub(crate) vless_xhttp_url: Option<Url>,
+    pub(crate) vless_mode: Option<TransportMode>,
+    pub(crate) tcp_addr: Option<ServerAddr>,
+    pub(crate) udp_addr: Option<ServerAddr>,
+    pub(crate) method: Option<CipherKind>,
+    pub(crate) password: Option<String>,
+    pub(crate) fwmark: Option<u32>,
+    pub(crate) ipv6_first: Option<bool>,
+    pub(crate) vless_id: Option<String>,
+    pub(crate) fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
 }
 
 /// New: explicit uplink group with its own LB config and probe override.

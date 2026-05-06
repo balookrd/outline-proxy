@@ -2,11 +2,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use url::Url;
 
 use outline_transport::{ServerAddr, TransportMode};
-use outline_uplink::{UplinkConfig, UplinkTransport, VlessShareLink};
+use outline_uplink::{FallbackTransport, UplinkConfig, UplinkTransport, VlessShareLink};
 use shadowsocks_crypto::CipherKind;
 
 use super::super::args::Args;
-use super::super::schema::{OutlineSection, UplinkSection};
+use super::super::schema::{FallbackSection, OutlineSection, UplinkSection};
 
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedUplinkInput {
@@ -35,6 +35,9 @@ pub(super) struct ResolvedUplinkInput {
     /// inherit the top-level config knob. Threaded all the way to the
     /// `UplinkConfig.fingerprint_profile` field.
     pub(super) fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
+    /// Optional list of fallback transports parsed from
+    /// `[[outline.uplinks.fallbacks]]`. Validated at TryFrom time.
+    pub(super) fallbacks: Vec<FallbackSection>,
 }
 
 impl ResolvedUplinkInput {
@@ -97,6 +100,9 @@ impl ResolvedUplinkInput {
             // the TOML, where multiple uplinks coexist. CLI builds a single
             // anonymous uplink, so inheriting the top-level value is fine.
             fingerprint_profile: None,
+            // CLI does not yet expose fallback transports either — declare
+            // them via `[[outline.uplinks.fallbacks]]` in the TOML.
+            fallbacks: Vec::new(),
         }
     }
 
@@ -121,6 +127,7 @@ impl ResolvedUplinkInput {
             vless_id: uplink.vless_id.clone(),
             link: uplink.link.clone(),
             fingerprint_profile: uplink.fingerprint_profile,
+            fallbacks: uplink.fallbacks.clone().unwrap_or_default(),
         }
     }
 
@@ -130,6 +137,10 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
     type Error = anyhow::Error;
 
     fn try_from(input: ResolvedUplinkInput) -> Result<Self> {
+        // The `fallbacks` field is consumed by name later (after `parent` is
+        // built); destructure everything else here so the rest of the body
+        // can stay shape-compatible with the pre-fallback form.
+        let input_fallbacks = input.fallbacks.clone();
         let ResolvedUplinkInput {
             name,
             transport,
@@ -150,6 +161,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             mut vless_id,
             link,
             fingerprint_profile,
+            fallbacks: _,
         } = input;
 
         // `link = "vless://..."` populates the VLESS fields from a single
@@ -367,7 +379,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                 },
             };
 
-        Ok(UplinkConfig {
+        let parent = UplinkConfig {
             name,
             transport,
             tcp_ws_url,
@@ -386,13 +398,260 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             ipv6_first: ipv6_first.unwrap_or(false),
             vless_id,
             fingerprint_profile,
-            // Fallbacks are not yet wired through the schema → resolved →
-            // UplinkConfig pipeline. The struct field exists so downstream
-            // code can be written against the runtime shape; TOML parsing
-            // for `[[outline.uplinks.fallbacks]]` lands in a follow-up commit.
             fallbacks: Vec::new(),
-        })
+        };
+
+        // ── Fallback transports ─────────────────────────────────────────────
+        // Validated against the now-resolved primary so error messages can
+        // refer to the parent's `name` and reject same-transport entries
+        // before we reach the dial loop.
+        let mut fallbacks: Vec<FallbackTransport> = Vec::with_capacity(input_fallbacks.len());
+        for (idx, section) in input_fallbacks.iter().enumerate() {
+            let fb = resolve_fallback(&parent, section, idx)?;
+            // Disallow duplicates per `transport`; one fallback per kind is
+            // already enough for the only sane chain shape (vless → ws → ss).
+            if fallbacks.iter().any(|existing| existing.transport == fb.transport) {
+                bail!(
+                    "uplink {}: fallbacks[{}] declares transport={} a second time; \
+                     each fallback transport must be unique",
+                    parent.name,
+                    idx,
+                    fb.transport,
+                );
+            }
+            fallbacks.push(fb);
+        }
+        Ok(UplinkConfig { fallbacks, ..parent })
     }
+}
+
+/// Validate a single `[[outline.uplinks.fallbacks]]` entry against the parent's
+/// resolved shape. Inheritance: `cipher` / `password` / `fwmark` / `ipv6_first`
+/// / `fingerprint_profile` default to the parent's value when omitted; URLs /
+/// addrs / `vless_id` are not inherited (they are inherently per-wire).
+fn resolve_fallback(
+    parent: &UplinkConfig,
+    section: &FallbackSection,
+    idx: usize,
+) -> Result<FallbackTransport> {
+    let parent_name = &parent.name;
+    let transport = section.transport;
+
+    if transport == parent.transport {
+        bail!(
+            "uplink {parent_name}: fallbacks[{idx}] declares transport={transport} which \
+             matches the parent uplink's primary transport — a fallback must use a \
+             different wire family"
+        );
+    }
+
+    // Inherited fields (parent → fallback default).
+    let cipher = section.method.unwrap_or(parent.cipher);
+    let fwmark = section.fwmark.or(parent.fwmark);
+    let ipv6_first = section.ipv6_first.unwrap_or(parent.ipv6_first);
+    let fingerprint_profile = section.fingerprint_profile.or(parent.fingerprint_profile);
+    let password_inherited = section.password.clone().unwrap_or_else(|| parent.password.clone());
+
+    let mut tcp_ws_url = section.tcp_ws_url.clone();
+    let mut tcp_mode = section.tcp_mode;
+    let mut udp_ws_url = section.udp_ws_url.clone();
+    let mut udp_mode = section.udp_mode;
+    let mut vless_ws_url = section.vless_ws_url.clone();
+    let mut vless_xhttp_url = section.vless_xhttp_url.clone();
+    let mut vless_mode = section.vless_mode;
+    let mut tcp_addr = section.tcp_addr.clone();
+    let mut udp_addr = section.udp_addr.clone();
+
+    // Per-transport gating: each wire family owns a disjoint subset of the
+    // fields. Cross-population is rejected at parse time so misconfiguration
+    // surfaces as a clear error rather than a confusing dial-time failure.
+    let (final_password, final_vless_id) = match transport {
+        UplinkTransport::Ws => {
+            if vless_ws_url.is_some() || vless_xhttp_url.is_some() || vless_mode.is_some() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=ws) must not set \
+                     `vless_ws_url`/`vless_xhttp_url`/`vless_mode`"
+                );
+            }
+            if tcp_addr.is_some() || udp_addr.is_some() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=ws) must not set \
+                     `tcp_addr`/`udp_addr`"
+                );
+            }
+            if section.vless_id.is_some() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=ws) must not set \
+                     `vless_id`"
+                );
+            }
+            if tcp_ws_url.is_none() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=ws) requires \
+                     `tcp_ws_url`"
+                );
+            }
+            tcp_mode = Some(tcp_mode.unwrap_or_default());
+            udp_mode = Some(udp_mode.unwrap_or_default());
+            vless_mode = Some(TransportMode::default());
+            // Validate password against cipher (skipped on inherit-only path
+            // when parent already validated).
+            cipher
+                .derive_master_key(&password_inherited)
+                .with_context(|| {
+                    format!(
+                        "uplink {parent_name}: fallbacks[{idx}] invalid password/PSK \
+                         for cipher {cipher}"
+                    )
+                })?;
+            (password_inherited, None)
+        },
+        UplinkTransport::Vless => {
+            if tcp_ws_url.is_some()
+                || tcp_mode.is_some()
+                || udp_ws_url.is_some()
+                || udp_mode.is_some()
+            {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=vless) must not set \
+                     `tcp_ws_url`/`tcp_mode`/`udp_ws_url`/`udp_mode`; use \
+                     `vless_ws_url`/`vless_xhttp_url`/`vless_mode`"
+                );
+            }
+            if tcp_addr.is_some() || udp_addr.is_some() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=vless) must not set \
+                     `tcp_addr`/`udp_addr`"
+                );
+            }
+            let mode = vless_mode.unwrap_or_default();
+            #[cfg(not(feature = "h3"))]
+            if matches!(
+                mode,
+                TransportMode::XhttpH3 | TransportMode::WsH3 | TransportMode::Quic
+            ) {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] mode={mode} requires the \
+                     `h3` feature"
+                );
+            }
+            let needs_xhttp_url = matches!(
+                mode,
+                TransportMode::XhttpH1 | TransportMode::XhttpH2 | TransportMode::XhttpH3
+            );
+            if needs_xhttp_url && vless_xhttp_url.is_none() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=vless mode={mode}) \
+                     requires `vless_xhttp_url`"
+                );
+            }
+            if !needs_xhttp_url && vless_ws_url.is_none() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=vless mode={mode}) \
+                     requires `vless_ws_url`"
+                );
+            }
+            // VLESS uuid is per-wire-credential and *not* inherited from
+            // the parent (different VLESS endpoints use different uuids).
+            let raw = section.vless_id.as_deref().ok_or_else(|| {
+                anyhow!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=vless) requires \
+                     `vless_id` (it is not inherited from the parent uplink)"
+                )
+            })?;
+            let parsed_id = outline_transport::vless::parse_uuid(raw).with_context(|| {
+                format!("uplink {parent_name}: fallbacks[{idx}] invalid vless_id")
+            })?;
+            vless_mode = Some(mode);
+            tcp_mode = Some(TransportMode::default());
+            udp_mode = Some(TransportMode::default());
+            // VLESS has no shared secret; password is irrelevant on this wire.
+            (String::new(), Some(parsed_id))
+        },
+        UplinkTransport::Shadowsocks => {
+            if tcp_ws_url.is_some()
+                || tcp_mode.is_some()
+                || udp_ws_url.is_some()
+                || udp_mode.is_some()
+                || vless_ws_url.is_some()
+                || vless_xhttp_url.is_some()
+                || vless_mode.is_some()
+            {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=shadowsocks) must not \
+                     set websocket fields; use `tcp_addr`/`udp_addr`"
+                );
+            }
+            if section.vless_id.is_some() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=shadowsocks) must not \
+                     set `vless_id`"
+                );
+            }
+            if tcp_addr.is_none() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=shadowsocks) requires \
+                     `tcp_addr`"
+                );
+            }
+            tcp_mode = Some(TransportMode::default());
+            udp_mode = Some(TransportMode::default());
+            vless_mode = Some(TransportMode::default());
+            // Shadowsocks needs the shared key validated against the cipher
+            // (mirrors the primary-path check).
+            cipher
+                .derive_master_key(&password_inherited)
+                .with_context(|| {
+                    format!(
+                        "uplink {parent_name}: fallbacks[{idx}] invalid password/PSK \
+                         for cipher {cipher}"
+                    )
+                })?;
+            (password_inherited, None)
+        },
+    };
+
+    // Field nulling for fields that don't apply to the chosen transport,
+    // mirroring the post-validation shape `UplinkConfig` carries.
+    match transport {
+        UplinkTransport::Ws => {
+            vless_ws_url = None;
+            vless_xhttp_url = None;
+            tcp_addr = None;
+            udp_addr = None;
+        },
+        UplinkTransport::Vless => {
+            tcp_ws_url = None;
+            udp_ws_url = None;
+            tcp_addr = None;
+            udp_addr = None;
+        },
+        UplinkTransport::Shadowsocks => {
+            tcp_ws_url = None;
+            udp_ws_url = None;
+            vless_ws_url = None;
+            vless_xhttp_url = None;
+        },
+    }
+
+    Ok(FallbackTransport {
+        transport,
+        tcp_ws_url,
+        tcp_mode: tcp_mode.unwrap_or_default(),
+        udp_ws_url,
+        udp_mode: udp_mode.unwrap_or_default(),
+        vless_ws_url,
+        vless_xhttp_url,
+        vless_mode: vless_mode.unwrap_or_default(),
+        vless_id: final_vless_id,
+        tcp_addr,
+        udp_addr,
+        cipher,
+        password: final_password,
+        fwmark,
+        ipv6_first,
+        fingerprint_profile,
+    })
 }
 
 pub(super) fn load_uplinks(
