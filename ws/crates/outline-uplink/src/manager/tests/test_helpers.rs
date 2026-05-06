@@ -53,17 +53,31 @@ impl UplinkManager {
     }
 
     /// Test helper: snapshot of full UplinkStatus for uplink `index`.
+    /// Visibility is `pub(crate)` because `UplinkStatus` itself is
+    /// crate-private; the helper is only consumed by inline tests in
+    /// this crate. `allow(dead_code)` because it isn't called in the
+    /// non-test lib build (test_helpers.rs is included via cfg-gated
+    /// `#[path]` for both `cfg(test)` and `feature = "test-helpers"`,
+    /// and the latter activates without Rust knowing the inline tests
+    /// will pick up the helpers).
     #[doc(hidden)]
-    pub fn read_status_for_test(&self, index: usize) -> crate::manager::status::UplinkStatus {
+    #[allow(dead_code)]
+    pub(crate) fn read_status_for_test(
+        &self,
+        index: usize,
+    ) -> crate::manager::status::UplinkStatus {
         self.inner.read_status(index)
     }
 
     /// Test helper: feed a synthetic [`ProbeOutcome`] through the same path
     /// the scheduler uses, so probe-driven side effects (health flip,
     /// streak counters, mode-downgrade window, early active-wire failback)
-    /// run without spinning up real probe targets.
+    /// run without spinning up real probe targets. `pub(crate)` for the
+    /// same reason as `read_status_for_test` — `ProbeOutcome` is
+    /// crate-private, the helper is only used by inline tests.
     #[doc(hidden)]
-    pub fn test_apply_probe_outcome_for_test(
+    #[allow(dead_code)]
+    pub(crate) fn test_apply_probe_outcome_for_test(
         &self,
         index: usize,
         outcome: crate::manager::probe::outcome::ProbeOutcome,

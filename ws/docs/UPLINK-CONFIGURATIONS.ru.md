@@ -800,7 +800,7 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
 
 | Поле | Обязательно для | Заметки |
 |---|---|---|
-| `transport` | всегда | `ws` / `shadowsocks` / `vless`; должен отличаться от primary родителя; каждый транспорт может встречаться в списке fallback'ов одного аплинка не более одного раза. |
+| `transport` | всегда | `ws` / `shadowsocks` / `vless`. **Ограничений по уникальности нет** — same-transport-as-parent и duplicate-transport entries разрешены явно. Самая распространённая кросс-family форма: VLESS primary на `xhttp_h*` плюс VLESS fallback на `ws_h*` (тот же `transport = "vless"`, другая carrier-семья, другой dial URL); два SS fallback'а на разные хосты (belt-and-suspenders) тоже работают. Dial-loop и per-wire mode tracking трактуют каждый fallback как собственный wire независимо от `transport`. |
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ws"` | `tcp_ws_url` обязателен; `udp_ws_url` опционален (UDP-fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL должен соответствовать `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws/quic → `vless_ws_url`). `vless_id` per-wire и **не наследуется** от родителя — у разных VLESS-эндпоинтов разные uuid'ы. |
 | `tcp_addr`, `udp_addr` | `transport = "shadowsocks"` | `tcp_addr` обязателен; `udp_addr` опционален. |

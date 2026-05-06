@@ -2,8 +2,7 @@ use toml_edit::{DocumentMut, Item, Value};
 
 use crate::config::validate_uplink_section;
 
-use super::UplinkPayload;
-use super::payload::FallbackPayload;
+use super::payload::{FallbackPayload, UplinkPayload};
 use super::mutate::{
     count_uplinks_in_group, find_group_mut, find_outline_uplink_index, get_or_init_outline_uplinks,
 };
@@ -450,26 +449,33 @@ tcp_addr = "kept.example.com:8388"
 }
 
 #[test]
-fn payload_rejects_same_transport_fallback_as_parent() {
-    // Validator-level catch: a fallback whose `transport` matches the
-    // parent's primary is invalid. Same rule the TOML loader enforces.
+fn payload_accepts_vless_xhttp_primary_with_vless_ws_fallback() {
+    // The validator no longer rejects same-transport fallbacks: the most
+    // common shape is a VLESS-XHTTP primary that wants a VLESS-WS
+    // fallback (same `transport = "vless"`, different carrier family).
+    // This test pins that the CRUD pipeline accepts the configuration
+    // end-to-end and produces an UplinkConfig with the fallback wired.
     let payload = UplinkPayload {
         name: Some("edge".into()),
-        transport: Some("ws".into()),
-        tcp_ws_url: Some("wss://primary.example.com/tcp".into()),
+        transport: Some("vless".into()),
+        vless_xhttp_url: Some("https://cdn.example.com/SECRET/xhttp".into()),
+        vless_mode: Some("xhttp_h3".into()),
+        vless_id: Some("00000000-0000-0000-0000-000000000000".into()),
         method: Some("chacha20-ietf-poly1305".into()),
         password: Some("some-long-password".into()),
         fallbacks: Some(vec![FallbackPayload {
-            transport: "ws".into(),
-            tcp_ws_url: Some("wss://other.example.com/tcp".into()),
+            transport: "vless".into(),
+            vless_ws_url: Some("wss://vless-ws.example.com/v".into()),
+            vless_mode: Some("ws_h3".into()),
+            vless_id: Some("11111111-2222-3333-4444-555555555555".into()),
             ..Default::default()
         }]),
         ..Default::default()
     };
     let section = payload_to_section(&payload, Some("core")).unwrap();
-    let err = validate_uplink_section(&section, 0).unwrap_err().to_string();
-    assert!(
-        err.contains("matches the parent uplink's primary transport"),
-        "got: {err}",
-    );
+    let cfg = validate_uplink_section(&section, 0).unwrap();
+    assert_eq!(cfg.fallbacks.len(), 1);
+    assert!(matches!(cfg.fallbacks[0].transport, outline_uplink::UplinkTransport::Vless));
+    // Different carrier family from primary's xhttp_h3.
+    assert!(matches!(cfg.fallbacks[0].vless_mode, outline_uplink::TransportMode::WsH3));
 }
