@@ -100,64 +100,83 @@ pub(super) async fn connect_tcp_uplink(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<ConnectedTcpUplink> {
-    let primary_err = match connect_tcp_uplink_primary(uplinks, candidate, target).await {
-        Ok(connected) => return Ok(connected),
-        Err(error) => {
-            if candidate.uplink.fallbacks.is_empty() {
-                return Err(error);
-            }
-            error
-        },
-    };
+    let total_wires = 1 + candidate.uplink.fallbacks.len();
+    let dial_order =
+        uplinks.wire_dial_order(candidate.index, TransportKind::Tcp, total_wires);
 
-    warn!(
-        uplink = %candidate.uplink.name,
-        target = %target,
-        primary_transport = %candidate.uplink.transport,
-        fallbacks = candidate.uplink.fallbacks.len(),
-        error = %format!("{primary_err:#}"),
-        "TCP primary dial failed; trying configured fallbacks on same uplink",
-    );
+    // Fast path: no fallbacks — preserve the previous error-propagation
+    // semantics (no extra context wrapping when only the primary exists).
+    if total_wires == 1 {
+        return connect_tcp_uplink_primary(uplinks, candidate, target).await;
+    }
 
-    let mut last_err = primary_err;
-    for (idx, fallback) in candidate.uplink.fallbacks.iter().enumerate() {
-        match connect_tcp_fallback_fresh(uplinks, candidate, fallback, target).await {
+    let mut last_err: Option<anyhow::Error> = None;
+    for &wire_index in &dial_order {
+        let attempt = if wire_index == 0 {
+            connect_tcp_uplink_primary(uplinks, candidate, target).await
+        } else {
+            let fallback = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
+            connect_tcp_fallback_fresh(uplinks, candidate, fallback, target).await
+        };
+        match attempt {
             Ok(connected) => {
-                outline_metrics::record_uplink_selected(
-                    "tcp",
-                    uplinks.group_name(),
-                    &candidate.uplink.name,
+                uplinks.record_wire_outcome(
+                    candidate.index,
+                    TransportKind::Tcp,
+                    wire_index,
+                    true,
+                    total_wires,
                 );
-                debug!(
-                    uplink = %candidate.uplink.name,
-                    target = %target,
-                    fallback_index = idx,
-                    fallback_transport = %fallback.transport,
-                    "TCP fallback dial succeeded",
-                );
+                if wire_index != 0 {
+                    outline_metrics::record_uplink_selected(
+                        "tcp",
+                        uplinks.group_name(),
+                        &candidate.uplink.name,
+                    );
+                    debug!(
+                        uplink = %candidate.uplink.name,
+                        target = %target,
+                        wire_index,
+                        "TCP fallback wire dial succeeded",
+                    );
+                }
                 return Ok(connected);
             },
             Err(error) => {
+                uplinks.record_wire_outcome(
+                    candidate.index,
+                    TransportKind::Tcp,
+                    wire_index,
+                    false,
+                    total_wires,
+                );
+                let wire_label = if wire_index == 0 {
+                    format!("primary ({})", candidate.uplink.transport)
+                } else {
+                    let fb = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
+                    format!("fallback[{}] ({})", wire_index - 1, fb.transport)
+                };
                 warn!(
                     uplink = %candidate.uplink.name,
                     target = %target,
-                    fallback_index = idx,
-                    fallback_transport = %fallback.transport,
+                    wire = %wire_label,
                     error = %format!("{error:#}"),
-                    "TCP fallback dial failed",
+                    "TCP wire dial failed",
                 );
-                last_err = error.context(format!(
-                    "uplink {} fallback[{idx}] (transport={}) failed",
-                    candidate.uplink.name, fallback.transport,
-                ));
+                last_err = Some(error.context(format!(
+                    "uplink {} {wire_label} failed",
+                    candidate.uplink.name,
+                )));
             },
         }
     }
-    Err(last_err.context(format!(
-        "uplink {}: primary and all {} fallback(s) failed",
-        candidate.uplink.name,
-        candidate.uplink.fallbacks.len(),
-    )))
+    Err(last_err
+        .unwrap_or_else(|| anyhow!("uplink {}: no wires available", candidate.uplink.name))
+        .context(format!(
+            "uplink {}: primary and all {} fallback(s) failed",
+            candidate.uplink.name,
+            candidate.uplink.fallbacks.len(),
+        )))
 }
 
 async fn connect_tcp_uplink_primary(

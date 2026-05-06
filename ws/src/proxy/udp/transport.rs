@@ -36,66 +36,97 @@ async fn acquire_udp_with_fallbacks(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
 ) -> Result<UdpSessionTransport> {
-    let primary_err = match uplinks.acquire_udp_standby_or_connect(candidate, "socks_udp").await {
-        Ok(transport) => return Ok(transport),
-        Err(error) => {
-            if candidate.uplink.fallbacks.is_empty() {
-                return Err(error);
-            }
-            error
-        },
-    };
+    let total_wires = 1 + candidate.uplink.fallbacks.len();
 
-    warn!(
-        uplink = %candidate.uplink.name,
-        primary_transport = %candidate.uplink.transport,
-        fallbacks = candidate.uplink.fallbacks.len(),
-        error = %format!("{primary_err:#}"),
-        "UDP primary dial failed; trying configured fallbacks on same uplink",
-    );
+    // Fast path: no fallbacks — preserve the previous error-propagation
+    // semantics (no extra context wrapping when only the primary exists).
+    if total_wires == 1 {
+        return uplinks.acquire_udp_standby_or_connect(candidate, "socks_udp").await;
+    }
 
-    let mut last_err = primary_err;
-    for (idx, fallback) in candidate.uplink.fallbacks.iter().enumerate() {
-        if !fallback.supports_udp() {
-            // Skip fallbacks whose configured wire-shape doesn't expose a UDP
-            // path (e.g. WS fallback without `udp_ws_url`). Not an error per
-            // se — UDP-only sessions just don't see this wire.
+    let dial_order =
+        uplinks.wire_dial_order(candidate.index, TransportKind::Udp, total_wires);
+    let mut last_err: Option<anyhow::Error> = None;
+
+    for &wire_index in &dial_order {
+        let wire_label = if wire_index == 0 {
+            format!("primary ({})", candidate.uplink.transport)
+        } else {
+            let fb = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
+            format!("fallback[{}] ({})", wire_index - 1, fb.transport)
+        };
+
+        // Skip a fallback wire that has no UDP transport configured. Don't
+        // record an outcome — this wire never even ran a dial. The primary
+        // is always allowed to attempt (its UDP shape is governed by the
+        // primary supports_udp filter at the candidate level).
+        if wire_index != 0
+            && !candidate.uplink.fallbacks[(wire_index - 1) as usize].supports_udp()
+        {
+            debug!(
+                uplink = %candidate.uplink.name,
+                wire = %wire_label,
+                "skipping wire with no UDP path configured",
+            );
             continue;
         }
-        match dial_udp_fallback(uplinks, candidate, fallback).await {
+
+        let attempt = if wire_index == 0 {
+            uplinks.acquire_udp_standby_or_connect(candidate, "socks_udp").await
+        } else {
+            let fallback = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
+            dial_udp_fallback(uplinks, candidate, fallback).await
+        };
+        match attempt {
             Ok(transport) => {
-                outline_metrics::record_uplink_selected(
-                    "udp",
-                    uplinks.group_name(),
-                    &candidate.uplink.name,
+                uplinks.record_wire_outcome(
+                    candidate.index,
+                    TransportKind::Udp,
+                    wire_index,
+                    true,
+                    total_wires,
                 );
-                debug!(
-                    uplink = %candidate.uplink.name,
-                    fallback_index = idx,
-                    fallback_transport = %fallback.transport,
-                    "UDP fallback dial succeeded",
-                );
+                if wire_index != 0 {
+                    outline_metrics::record_uplink_selected(
+                        "udp",
+                        uplinks.group_name(),
+                        &candidate.uplink.name,
+                    );
+                    debug!(
+                        uplink = %candidate.uplink.name,
+                        wire = %wire_label,
+                        "UDP fallback wire dial succeeded",
+                    );
+                }
                 return Ok(transport);
             },
             Err(error) => {
+                uplinks.record_wire_outcome(
+                    candidate.index,
+                    TransportKind::Udp,
+                    wire_index,
+                    false,
+                    total_wires,
+                );
                 warn!(
                     uplink = %candidate.uplink.name,
-                    fallback_index = idx,
-                    fallback_transport = %fallback.transport,
+                    wire = %wire_label,
                     error = %format!("{error:#}"),
-                    "UDP fallback dial failed",
+                    "UDP wire dial failed",
                 );
-                last_err = error.context(format!(
-                    "uplink {} fallback[{idx}] (transport={}) failed",
-                    candidate.uplink.name, fallback.transport,
-                ));
+                last_err = Some(error.context(format!(
+                    "uplink {} {wire_label} failed",
+                    candidate.uplink.name,
+                )));
             },
         }
     }
-    Err(last_err.context(format!(
-        "uplink {}: primary and all UDP-capable fallback(s) failed",
-        candidate.uplink.name,
-    )))
+    Err(last_err
+        .unwrap_or_else(|| anyhow!("uplink {}: no UDP-capable wires available", candidate.uplink.name))
+        .context(format!(
+            "uplink {}: primary and all UDP-capable fallback(s) failed",
+            candidate.uplink.name,
+        )))
 }
 
 async fn dial_udp_fallback(

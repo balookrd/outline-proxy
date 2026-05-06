@@ -226,3 +226,200 @@ fn supports_udp_any_unaffected_when_primary_already_supports_udp() {
         "primary's UDP support already satisfies supports_udp_any"
     );
 }
+
+// ── Active-wire state machine ────────────────────────────────────────────────
+//
+// These pin the per-transport sticky-fallback behaviour: `wire_dial_order`
+// starts at the active wire and wraps; `record_wire_outcome` advances active
+// only on consecutive failures of the active wire and only after `min_failures`
+// such failures have stacked; `active_wire` snaps back to primary on auto-
+// failback timer expiry.
+
+use crate::config::{
+    LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, VlessUdpMuxLimits,
+    WsProbeConfig,
+};
+use crate::types::{TransportKind, UplinkManager};
+
+fn make_lb(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig {
+    LoadBalancingConfig {
+        mode: LoadBalancingMode::ActiveActive,
+        routing_scope: RoutingScope::PerFlow,
+        sticky_ttl: std::time::Duration::from_secs(300),
+        hysteresis: std::time::Duration::from_millis(50),
+        failure_cooldown: std::time::Duration::from_secs(10),
+        tcp_chunk0_failover_timeout: std::time::Duration::from_secs(10),
+        warm_standby_tcp: 0,
+        warm_standby_udp: 0,
+        rtt_ewma_alpha: 0.25,
+        failure_penalty: std::time::Duration::from_millis(500),
+        failure_penalty_max: std::time::Duration::from_secs(30),
+        failure_penalty_halflife: std::time::Duration::from_secs(60),
+        mode_downgrade_duration,
+        runtime_failure_window: std::time::Duration::from_secs(60),
+        global_udp_strict_health: false,
+        udp_ws_keepalive_interval: None,
+        tcp_ws_keepalive_interval: None,
+        tcp_ws_standby_keepalive_interval: None,
+        tcp_active_keepalive_interval: None,
+        warm_probe_keepalive_interval: None,
+        auto_failback: false,
+        vless_udp_mux_limits: VlessUdpMuxLimits::default(),
+    }
+}
+
+fn make_probe(min_failures: usize) -> ProbeConfig {
+    ProbeConfig {
+        interval: std::time::Duration::from_secs(30),
+        timeout: std::time::Duration::from_secs(5),
+        max_concurrent: 1,
+        max_dials: 1,
+        min_failures,
+        attempts: 1,
+        ws: WsProbeConfig { enabled: false },
+        http: None,
+        dns: None,
+        tcp: None,
+    }
+}
+
+fn manager_with_uplink(uplink: UplinkConfig, min_failures: usize) -> UplinkManager {
+    UplinkManager::new_for_test(
+        "test",
+        vec![uplink],
+        make_probe(min_failures),
+        make_lb(std::time::Duration::from_secs(60)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn wire_dial_order_starts_at_primary_when_active_is_zero() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    let manager = manager_with_uplink(cfg, 2);
+    let order = manager.wire_dial_order(0, TransportKind::Tcp, 3);
+    assert_eq!(order, vec![0, 1, 2]);
+}
+
+#[test]
+fn wire_dial_order_wraps_when_active_is_a_fallback() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Bump active to fallback[0] (index 1) by recording a primary-wire
+    // failure with min_failures=1.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 3);
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 1);
+
+    let order = manager.wire_dial_order(0, TransportKind::Tcp, 3);
+    assert_eq!(order, vec![1, 2, 0], "wraps so primary is still tried last");
+}
+
+#[test]
+fn record_wire_outcome_does_not_advance_below_min_failures() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 3);
+
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        0,
+        "two failures on min_failures=3 must not advance active",
+    );
+
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        1,
+        "third failure crosses the threshold",
+    );
+}
+
+#[test]
+fn record_wire_outcome_resets_streak_on_success() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 3);
+
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, true, 2);
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        0,
+        "success in the middle resets the streak so threshold is not reached",
+    );
+}
+
+#[test]
+fn record_wire_outcome_ignores_failures_on_non_active_wire() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    let manager = manager_with_uplink(cfg, 2);
+
+    // Active stays 0 throughout — failures on wire 1 (a session-local
+    // fallback churn) must not influence the sticky state.
+    for _ in 0..10 {
+        manager.record_wire_outcome(0, TransportKind::Tcp, 1, false, 3);
+    }
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 0);
+}
+
+#[test]
+fn tcp_and_udp_active_wires_advance_independently() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(true)];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Fail TCP primary once → TCP active advances.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 1);
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Udp),
+        0,
+        "UDP active untouched by TCP failure",
+    );
+
+    manager.record_wire_outcome(0, TransportKind::Udp, 0, false, 2);
+    assert_eq!(manager.active_wire(0, TransportKind::Udp), 1);
+}
+
+#[test]
+fn active_wire_snaps_back_to_primary_on_pin_expiry() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let very_short_pin = std::time::Duration::from_millis(50);
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![cfg],
+        make_probe(1),
+        make_lb(very_short_pin),
+    )
+    .unwrap();
+
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 1);
+
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        0,
+        "expired pin snaps active back to primary",
+    );
+}
+
+#[test]
+fn wire_dial_order_is_singleton_when_no_fallbacks() {
+    let cfg = vless_xhttp_primary();
+    let manager = manager_with_uplink(cfg, 1);
+    assert_eq!(manager.wire_dial_order(0, TransportKind::Tcp, 1), vec![0]);
+    // Recording an outcome with total_wires=1 is a no-op.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 1);
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 0);
+}
