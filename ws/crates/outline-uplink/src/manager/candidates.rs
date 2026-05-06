@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use tokio::time::Instant;
 
-use crate::config::{LoadBalancingMode, RoutingScope};
+use crate::config::{LoadBalancingMode, RoutingScope, UplinkTransport};
 use socks5_proto::TargetAddr;
 
 use super::super::routing_key::{routing_key, strict_route_key};
@@ -55,23 +55,51 @@ fn transport_failover_detail(
     }
 }
 
+/// Re-orders an already-ordered candidate list so that all candidates of the
+/// transport kind appearing first are tried before any of the next transport
+/// kind, preserving the relative ordering inside each group.
+///
+/// Why: callers (chunk-0 failover, UDP dial loop, initial TCP selection)
+/// iterate the list with a shared `tried_indexes` set and only move to the
+/// next element when the current one fails. Without grouping, an unhealthy
+/// VLESS endpoint and a Shadowsocks endpoint may be interleaved by health/
+/// weight/score, and a chunk-0 stall on the first VLESS would jump straight
+/// to Shadowsocks even though a second VLESS endpoint is still untried.
+/// Grouping lets the operator's transport-level fallback (vless → ss/ws)
+/// fall out of the configured set automatically: exhaust the active
+/// transport before switching to the next.
+fn group_candidates_by_transport(candidates: Vec<UplinkCandidate>) -> Vec<UplinkCandidate> {
+    let mut groups: Vec<(UplinkTransport, Vec<UplinkCandidate>)> = Vec::new();
+    for candidate in candidates {
+        let transport = candidate.uplink.transport;
+        if let Some(group) = groups.iter_mut().find(|(kind, _)| *kind == transport) {
+            group.1.push(candidate);
+        } else {
+            groups.push((transport, vec![candidate]));
+        }
+    }
+    groups.into_iter().flat_map(|(_, list)| list).collect()
+}
+
 impl UplinkManager {
     pub async fn tcp_candidates(&self, target: &TargetAddr) -> Vec<UplinkCandidate> {
-        if self.strict_active_uplink_for(TransportKind::Tcp) {
-            return self
-                .strict_transport_candidates(TransportKind::Tcp, Some(target), None, true)
-                .await;
-        }
-        self.ordered_candidates(TransportKind::Tcp, Some(target)).await
+        let candidates = if self.strict_active_uplink_for(TransportKind::Tcp) {
+            self.strict_transport_candidates(TransportKind::Tcp, Some(target), None, true)
+                .await
+        } else {
+            self.ordered_candidates(TransportKind::Tcp, Some(target)).await
+        };
+        group_candidates_by_transport(candidates)
     }
 
     pub async fn udp_candidates(&self, target: Option<&TargetAddr>) -> Vec<UplinkCandidate> {
-        if self.strict_active_uplink_for(TransportKind::Udp) {
-            return self
-                .strict_transport_candidates(TransportKind::Udp, target, None, true)
-                .await;
-        }
-        self.ordered_candidates(TransportKind::Udp, target).await
+        let candidates = if self.strict_active_uplink_for(TransportKind::Udp) {
+            self.strict_transport_candidates(TransportKind::Udp, target, None, true)
+                .await
+        } else {
+            self.ordered_candidates(TransportKind::Udp, target).await
+        };
+        group_candidates_by_transport(candidates)
     }
 
     pub async fn tcp_failover_candidates(
@@ -79,17 +107,18 @@ impl UplinkManager {
         target: &TargetAddr,
         failed_active_index: usize,
     ) -> Vec<UplinkCandidate> {
-        if self.strict_active_uplink_for(TransportKind::Tcp) {
-            return self
-                .strict_transport_candidates(
-                    TransportKind::Tcp,
-                    Some(target),
-                    Some(failed_active_index),
-                    false,
-                )
-                .await;
-        }
-        self.ordered_candidates(TransportKind::Tcp, Some(target)).await
+        let candidates = if self.strict_active_uplink_for(TransportKind::Tcp) {
+            self.strict_transport_candidates(
+                TransportKind::Tcp,
+                Some(target),
+                Some(failed_active_index),
+                false,
+            )
+            .await
+        } else {
+            self.ordered_candidates(TransportKind::Tcp, Some(target)).await
+        };
+        group_candidates_by_transport(candidates)
     }
 
     pub fn strict_global_active_uplink(&self) -> bool {
