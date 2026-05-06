@@ -887,6 +887,20 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
   probe-only гейтинг (никаких false-positive liveness из устаревших
   primary-успехов). Это мост до per-wire probe walks — полное
   per-wire тестирование остаётся отдельной задачей.
+- **Bootstrap pass-through.** Override по recent-success нуждается
+  хотя бы в одном предыдущем успешном дайле, чтобы зацепиться. Если
+  primary помечен probe'ом как unhealthy с самого первого цикла (или
+  поднялся неработающим после рестарта) и `last_any_wire_success` ещё
+  ни разу не штамповался, selection-слой всё равно пропускает аплинк
+  в кандидаты — при условии, что fallbacks сконфигурированы и
+  транспорт не в cooldown — чтобы dial-loop получил шанс попробовать
+  fallback. Иначе dial-loop (единственный, кто штампует
+  `last_any_wire_success`) и фильтр кандидатов блокируют друг друга,
+  и fallback никогда не активируется. Snapshot-side **effective
+  health** этим bootstrap-проходом НЕ пользуется: fallback wire,
+  который ещё ни разу не дозвонился, не должен светиться зелёным.
+  Дашборд становится зелёным только после реально успешного
+  fallback-дайла.
 - Тот же any-wire-сигнал кормит **effective health** на snapshot /
   Prometheus / дашборде. `UplinkSnapshot::tcp_health_effective` (и
   соответствующая Prometheus-gauge

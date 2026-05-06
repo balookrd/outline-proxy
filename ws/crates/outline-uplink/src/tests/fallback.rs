@@ -479,6 +479,97 @@ fn record_wire_outcome_stamps_last_any_wire_success() {
     ));
 }
 
+// ── Bootstrap pass-through: primary down, fallback never tried ──────────────
+//
+// `selection_health` must admit an uplink whose primary wire is probe-marked
+// unhealthy AND whose fallback wire has never recorded a successful dial yet,
+// so the active-wire dial loop has a chance to attempt the fallback. Without
+// this, `last_any_wire_success` (stamped only from inside the dial loop) and
+// candidate filtering deadlock each other and the fallback never engages.
+
+#[test]
+fn selection_health_admits_unhealthy_primary_when_fallback_untried() {
+    use crate::config::RoutingScope;
+    use crate::selection::{fallback_bootstrap_allowed, selection_health};
+
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let lb = make_lb(std::time::Duration::from_secs(60));
+    let manager =
+        UplinkManager::new_for_test("test", vec![cfg], make_probe(1), lb.clone()).unwrap();
+
+    // Probe says primary is down; nothing else has happened yet.
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.healthy = Some(false);
+    });
+
+    let status = manager.read_status_for_test(0);
+    let uplink = &manager.uplinks()[0];
+    let now = tokio::time::Instant::now();
+
+    assert!(
+        fallback_bootstrap_allowed(&status, uplink, TransportKind::Tcp, now),
+        "fallback configured + no prior success + no cooldown → bootstrap allowed",
+    );
+    assert!(
+        selection_health(&status, uplink, TransportKind::Tcp, now, RoutingScope::PerFlow, &lb),
+        "selection must admit the uplink so the dial loop can try the fallback",
+    );
+    assert!(
+        selection_health(&status, uplink, TransportKind::Tcp, now, RoutingScope::Global, &lb),
+        "global scope must also admit the uplink for the same reason",
+    );
+}
+
+#[test]
+fn fallback_bootstrap_blocked_during_cooldown() {
+    use crate::selection::fallback_bootstrap_allowed;
+
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let lb = make_lb(std::time::Duration::from_secs(60));
+    let manager =
+        UplinkManager::new_for_test("test", vec![cfg], make_probe(1), lb.clone()).unwrap();
+
+    let now = tokio::time::Instant::now();
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.healthy = Some(false);
+        status.tcp.cooldown_until = Some(now + std::time::Duration::from_secs(5));
+    });
+
+    let status = manager.read_status_for_test(0);
+    let uplink = &manager.uplinks()[0];
+
+    assert!(
+        !fallback_bootstrap_allowed(&status, uplink, TransportKind::Tcp, now),
+        "active cooldown must suppress bootstrap admission",
+    );
+}
+
+#[test]
+fn fallback_bootstrap_off_after_first_wire_success() {
+    use crate::selection::fallback_bootstrap_allowed;
+
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let lb = make_lb(std::time::Duration::from_secs(60));
+    let manager =
+        UplinkManager::new_for_test("test", vec![cfg], make_probe(1), lb.clone()).unwrap();
+
+    // Record a fallback-wire success — bootstrap must hand off to the
+    // recent-success window from this point on.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 1, true, 2);
+
+    let status = manager.read_status_for_test(0);
+    let uplink = &manager.uplinks()[0];
+    let now = tokio::time::Instant::now();
+
+    assert!(
+        !fallback_bootstrap_allowed(&status, uplink, TransportKind::Tcp, now),
+        "after the first wire success the bootstrap path is no longer needed",
+    );
+}
+
 // ── Early failback via probe-recovery ────────────────────────────────────────
 //
 // `record_transport_success` (probe path) snaps `active_wire` back to primary

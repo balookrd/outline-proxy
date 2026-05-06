@@ -50,6 +50,39 @@ pub(crate) fn any_wire_recent_success(
     now.duration_since(last) <= config.runtime_failure_window
 }
 
+/// Bootstrap pass-through for uplinks with `[[outline.uplinks.fallbacks]]`
+/// configured: when probe has marked the primary unhealthy (or has not
+/// yet rendered a verdict) AND no wire has ever recorded a successful
+/// dial, still admit the uplink into the candidate set so the active-wire
+/// dial loop can finally attempt the fallback.
+///
+/// Without this, an uplink whose primary wire is unhealthy from the very
+/// first probe — or comes up failing after a restart — would be excluded
+/// from selection forever: `last_any_wire_success` only ever gets stamped
+/// from inside the dial loop (see `record_wire_outcome`), but the dial
+/// loop only runs for uplinks already in the candidate set. That is a
+/// chicken-and-egg deadlock that defeats the point of declaring a
+/// fallback in the first place.
+///
+/// Gated on cooldown so that an uplink whose fallback is ALSO failing
+/// eventually drops out of selection on the normal failure-streak path
+/// instead of getting hammered with bootstrap dials forever. Returns
+/// `false` for single-wire uplinks — there is no fallback wire to dial.
+pub(crate) fn fallback_bootstrap_allowed(
+    status: &UplinkStatus,
+    uplink: &Uplink,
+    transport: TransportKind,
+    now: Instant,
+) -> bool {
+    if uplink.fallbacks.is_empty() {
+        return false;
+    }
+    if cooldown_active(status, transport, now) {
+        return false;
+    }
+    status.of(transport).last_any_wire_success.is_none()
+}
+
 pub(crate) fn supports_transport_for_scope(
     uplink: &Uplink,
     transport: TransportKind,
@@ -94,7 +127,8 @@ pub(crate) fn selection_health(
             // `global_udp_strict_health = true` in their load_balancing
             // config block.
             let tcp_ok = effective_health(status, TransportKind::Tcp, now)
-                || any_wire_recent_success(status, uplink, TransportKind::Tcp, now, config);
+                || any_wire_recent_success(status, uplink, TransportKind::Tcp, now, config)
+                || fallback_bootstrap_allowed(status, uplink, TransportKind::Tcp, now);
             if !tcp_ok {
                 return false;
             }
@@ -108,6 +142,7 @@ pub(crate) fn selection_health(
         _ => {
             effective_health(status, transport, now)
                 || any_wire_recent_success(status, uplink, transport, now, config)
+                || fallback_bootstrap_allowed(status, uplink, transport, now)
         },
     }
 }

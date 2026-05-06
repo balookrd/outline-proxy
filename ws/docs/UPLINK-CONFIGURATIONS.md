@@ -886,6 +886,19 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
   keep their probe-only health gating intact (no false-positive
   liveness from stale primary successes). This is the bridge until
   per-wire probe walks land — full per-wire probing is a follow-up.
+- **Bootstrap pass-through.** The recent-success override needs at
+  least one prior dial to latch onto. When primary is probe-marked
+  unhealthy from the very first probe (or comes up failing after a
+  restart) and no wire has stamped `last_any_wire_success` yet, the
+  selection layer admits the uplink anyway — provided fallbacks are
+  configured and the transport is not in cooldown — so the dial loop
+  has a chance to attempt the fallback. Without this, the dial loop
+  (which is the only path that can stamp `last_any_wire_success`) and
+  candidate filtering deadlock each other and the fallback never
+  engages. Snapshot-side **effective health** does NOT use this
+  bootstrap pass-through: a fallback wire that has not yet succeeded
+  must not display as green. The dashboard goes green only after a
+  fallback dial actually lands.
 - The same any-wire signal also drives **effective health** on the
   snapshot / Prometheus / dashboard. `UplinkSnapshot::tcp_health_effective`
   (and the corresponding `outline_ws_rust_uplink_health_effective` gauge)
