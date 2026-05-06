@@ -206,6 +206,12 @@ impl UplinkManager {
         &self.inner.dns_cache
     }
 
+    /// `Arc` handle to the same DNS cache. Needed by transports that hold
+    /// the cache for the lifetime of a session (e.g. `VlessUdpSessionMux`).
+    pub fn dns_cache_arc(&self) -> &Arc<outline_transport::DnsCache> {
+        &self.inner.dns_cache
+    }
+
     pub fn uplinks(&self) -> &[Uplink] {
         &self.inner.uplinks
     }

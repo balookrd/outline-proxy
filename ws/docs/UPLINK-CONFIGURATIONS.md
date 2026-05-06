@@ -829,12 +829,17 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
   `UplinkConfig::supports_udp_any()` so an uplink whose primary is
   TCP-only (e.g. SS without `udp_addr`) but whose fallback is
   UDP-capable still shows up for UDP dispatch.
-- **Limitation:** VLESS as a *fallback transport on UDP* returns a
-  clear error in this iteration. The QUIC-mux machinery in
-  `acquire_udp_standby_or_connect` keys all per-uplink hooks on
-  `candidate.index` and reusing those hooks for a fallback wire
-  requires the upcoming active-wire plumbing. Use SS or WS for UDP
-  fallback today.
+- **Partial limitation:** VLESS-as-fallback over UDP works for the
+  WS family (`ws_h1` / `ws_h2` / `ws_h3`) and the XHTTP family
+  (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`); both share the
+  `VlessUdpSessionMux` carrier. VLESS-fallback over **raw QUIC**
+  (`vless_mode = "quic"`) returns a clear error — the
+  `VlessUdpHybridMux` machinery and its `on_fallback` /
+  `on_downgrade` hooks are keyed on the parent uplink's primary
+  index/transport, and per-wire mode tracking that lets those hooks
+  cleanly attribute a fallback observation is a follow-up. Operators
+  who specifically want a QUIC backup should declare a second
+  primary VLESS uplink with `vless_mode = "quic"` in the same group.
 
 ### Inline `[outline]` shorthand
 
