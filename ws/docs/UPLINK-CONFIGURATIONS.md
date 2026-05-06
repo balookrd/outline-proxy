@@ -834,6 +834,15 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
   primary is still broken the failure streak rebuilds and we end up
   pinned to the same fallback again — the timer is the rate-limit on
   retry, not a one-shot.
+- **Early failback via probe recovery.** The probe (still primary-only
+  in this iteration) drives an immediate snap-back to primary as soon
+  as it accumulates `probe.min_failures` consecutive successes — the
+  pin timer is not a hard wait. So a primary that recovers within a
+  few probe cycles (typically 2 × `probe.interval_secs`) returns
+  traffic to itself well before the 60-second pin would expire on its
+  own. The same `min_failures` knob is the failure threshold and the
+  success-stability threshold (one mental model: N consecutive probe
+  outcomes flip the active wire in either direction).
 - State is **per-transport**: TCP and UDP advance independently
   (`PerTransportStatus::active_wire` is split per transport).
   `outline_ws_rust_uplink_active_wire_index{transport}` exposes the

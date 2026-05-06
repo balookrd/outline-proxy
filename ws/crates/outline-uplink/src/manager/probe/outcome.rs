@@ -46,7 +46,7 @@ fn record_transport_failure(
     }
 }
 
-fn record_transport_success(status: &mut PerTransportStatus) {
+fn record_transport_success(status: &mut PerTransportStatus, min_failures: u32) {
     status.consecutive_failures = 0;
     status.consecutive_successes = status.consecutive_successes.saturating_add(1);
     status.healthy = Some(true);
@@ -57,6 +57,25 @@ fn record_transport_success(status: &mut PerTransportStatus) {
     // healthy. Clearing unconditionally would make a recently-failed uplink
     // immediately eligible again, causing oscillation under load.
     status.cooldown_until = None;
+
+    // Early failback: if the active wire on this transport is currently
+    // pinned to a fallback (because primary failed enough recent dials)
+    // and the probe — which always targets the primary wire in this
+    // iteration — has now succeeded `min_failures` consecutive times, the
+    // primary wire has demonstrably recovered. Snap `active_wire` back to
+    // primary immediately instead of waiting for the auto-failback timer
+    // to expire (`mode_downgrade_duration`, default 60 s).
+    //
+    // The same `min_failures` knob doubles as the "stability" threshold
+    // for failback (mirroring the existing `auto_failback` logic in
+    // strict mode in candidates.rs): one operator-facing knob, one
+    // mental model — N consecutive probe outcomes are needed in either
+    // direction (failure to flip down, success to flip back).
+    if status.active_wire != 0 && status.consecutive_successes >= min_failures.max(1) {
+        status.active_wire = 0;
+        status.active_wire_pinned_until = None;
+        status.active_wire_streak = 0;
+    }
 }
 
 fn needs_h3_recovery(
@@ -74,7 +93,7 @@ fn needs_h3_recovery(
 
 impl UplinkManager {
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn process_probe_ok(
+    pub(crate) fn process_probe_ok(
         &self,
         index: usize,
         uplink: &Uplink,
@@ -99,7 +118,7 @@ impl UplinkManager {
             if !result.tcp_ok {
                 record_transport_failure(&mut status.tcp, now, min_failures, &load_balancing);
             } else {
-                record_transport_success(&mut status.tcp);
+                record_transport_success(&mut status.tcp, min_failures);
                 // Do NOT clear h3_tcp_downgrade_until here.  The probe uses the
                 // effective (possibly downgraded) WS mode, so a successful probe
                 // only confirms H2 connectivity during a downgrade window — it does
@@ -117,7 +136,7 @@ impl UplinkManager {
                 if !result.udp_ok {
                     record_transport_failure(&mut status.udp, now, min_failures, &load_balancing);
                 } else {
-                    record_transport_success(&mut status.udp);
+                    record_transport_success(&mut status.udp, min_failures);
                     // Schedule UDP H3 recovery re-probe — mirror of the TCP
                     // path.  Successful H2 probe doesn't prove H3 is back, so
                     // verify it explicitly below.

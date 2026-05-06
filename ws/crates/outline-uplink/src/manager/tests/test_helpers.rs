@@ -57,4 +57,33 @@ impl UplinkManager {
     pub fn read_status_for_test(&self, index: usize) -> crate::manager::status::UplinkStatus {
         self.inner.read_status(index)
     }
+
+    /// Test helper: feed a synthetic [`ProbeOutcome`] through the same path
+    /// the scheduler uses, so probe-driven side effects (health flip,
+    /// streak counters, mode-downgrade window, early active-wire failback)
+    /// run without spinning up real probe targets.
+    #[doc(hidden)]
+    pub fn test_apply_probe_outcome_for_test(
+        &self,
+        index: usize,
+        outcome: crate::manager::probe::outcome::ProbeOutcome,
+    ) {
+        // The real scheduler walks `process_probe_ok` with the per-uplink
+        // effective TCP/UDP modes; for tests we read them off the uplink
+        // config directly (no async-friendly accessor here, so block).
+        let uplink = self.uplinks()[index].clone();
+        let effective_tcp = uplink.tcp_dial_mode();
+        let effective_udp = uplink.udp_dial_mode();
+        let mut h3_tcp_recovery = Vec::new();
+        let mut h3_udp_recovery = Vec::new();
+        let _ = self.process_probe_ok(
+            index,
+            &uplink,
+            outcome,
+            effective_tcp,
+            effective_udp,
+            &mut h3_tcp_recovery,
+            &mut h3_udp_recovery,
+        );
+    }
 }
