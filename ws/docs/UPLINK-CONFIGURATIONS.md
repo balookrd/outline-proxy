@@ -900,12 +900,20 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
 
 #### Bypass list
 
-- The fallback dial bypasses the standby pool, mode-downgrade window,
-  and RTT-EWMA feed — those structures are keyed on the parent's
+- The fallback dial bypasses the standby pool and the per-uplink
+  mode-downgrade window — those structures are keyed on the parent's
   primary index/transport and reusing them for a fallback wire would
   mis-park primary's mode. Per-wire variants of these are a follow-up.
-  DNS cache, per-uplink fingerprint scope, and the resume cache **are**
-  preserved across wire switches.
+- The DNS cache, per-uplink fingerprint scope, and the resume cache
+  **are** preserved across wire switches.
+- The RTT EWMA is **shared** by primary and fallback dials of the
+  same `(uplink, transport)`. Fallback dials feed their dial duration
+  into it on success, so score-based selection between uplinks
+  reflects the active wire's real latency. Tradeoff of the shared
+  EWMA: a wire flip carries the previous wire's measurements for
+  ~4-5 samples (at the default `rtt_ewma_alpha = 0.25`) before fully
+  reflecting the new wire — acceptable in practice since wire flips
+  are rare. Strict per-(uplink, wire) EWMA is a follow-up.
 
 #### UDP candidacy
 

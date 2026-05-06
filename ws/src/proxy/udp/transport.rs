@@ -136,6 +136,7 @@ async fn dial_udp_fallback(
 ) -> Result<UdpSessionTransport> {
     let cache = uplinks.dns_cache();
     let source = "socks_udp_fb";
+    let dial_started = std::time::Instant::now();
 
     match fallback.transport {
         UplinkTransport::Shadowsocks => {
@@ -154,8 +155,21 @@ async fn dial_udp_fallback(
             )
             .await
             .with_context(|| format!("fallback udp dial to {addr} failed"))?;
-            UdpWsTransport::from_socket(socket, fallback.cipher, &fallback.password, source)
-                .map(UdpSessionTransport::Ss)
+            let transport = UdpWsTransport::from_socket(
+                socket,
+                fallback.cipher,
+                &fallback.password,
+                source,
+            )
+            .map(UdpSessionTransport::Ss)?;
+            uplinks
+                .report_connection_latency(
+                    parent.index,
+                    TransportKind::Udp,
+                    dial_started.elapsed(),
+                )
+                .await;
+            Ok(transport)
         },
         UplinkTransport::Ws => {
             let url = fallback.udp_ws_url.as_ref().ok_or_else(|| {
@@ -187,6 +201,13 @@ async fn dial_udp_fallback(
             .await
             .with_context(|| format!("fallback ws dial to {url} failed"))?;
             global_resume_cache().store_if_issued(resume_key, issued);
+            uplinks
+                .report_connection_latency(
+                    parent.index,
+                    TransportKind::Udp,
+                    dial_started.elapsed(),
+                )
+                .await;
             Ok(UdpSessionTransport::Ss(transport))
         },
         UplinkTransport::Vless => {
@@ -236,6 +257,13 @@ async fn dial_udp_fallback(
                 keepalive,
                 limits,
             );
+            uplinks
+                .report_connection_latency(
+                    parent.index,
+                    TransportKind::Udp,
+                    dial_started.elapsed(),
+                )
+                .await;
             Ok(UdpSessionTransport::Vless(mux))
         },
     }
