@@ -185,6 +185,12 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .proto-pill .proto-submode { margin-left: 4px; padding: 0 4px; font-size: 9.5px; opacity: .8; border-radius: 4px; background: rgba(0,0,0,.1); letter-spacing: .04em; }
 .proto-pill .proto-submode.proto-downgraded { border-style: solid; box-shadow: none; color: #b8631a; background: rgba(214, 130, 30, .15); opacity: 1; }
 .proto-pill .proto-submode .proto-dg { margin: 0 1px; }
+.fb-chain { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 4px; font-size: 10.5px; }
+.fb-chain .fb-link { padding: 1px 6px; border-radius: 4px; background: var(--soft); color: var(--muted); border: 1px solid var(--line); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.fb-chain .fb-link.fb-active { background: var(--amber-soft); color: #b45309; border-color: rgba(180, 83, 9, .4); font-weight: 800; }
+.fb-chain .fb-link.fb-primary-active { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); font-weight: 800; }
+.fb-chain .fb-arrow { color: var(--muted); font-size: 10px; }
+.fb-chain .fb-pin { padding: 1px 6px; border-radius: 4px; background: var(--amber-soft); color: #b45309; border: 1px solid rgba(180, 83, 9, .4); font-size: 10px; font-weight: 700; }
 .rows-head { min-height: 46px; color: var(--muted); font-size: 11px; font-weight: 780; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid var(--line); }
 .row { border-bottom: 1px solid var(--line); font-size: 13px; }
 .row:last-child { border-bottom: 0; }
@@ -430,6 +436,47 @@ function protocolPill(uplink) {
   if (!parts.length) return `<span class="proto-pill ${cls}">${escapeHtml(protocolLabel(t))}</span>`;
   return `<div class="proto-stack">${parts.join("")}</div>`;
 }
+/**
+ * Render the wire chain `primary → fallbacks[0] → fallbacks[1] → …` for
+ * one uplink. The currently-active wire is highlighted; a "pin: Ns"
+ * suffix appears next to it when an auto-failback timer is ticking.
+ *
+ * Single-wire uplinks (no `configured_fallbacks`) get an empty string —
+ * the existing protocol pill alone is enough info there. TCP and UDP
+ * active wires can diverge, so when they do we render two lines (one
+ * per leg); otherwise a single combined line.
+ */
+function fallbackChainPill(uplink) {
+  const fallbacks = Array.isArray(uplink.configured_fallbacks) ? uplink.configured_fallbacks : [];
+  if (!fallbacks.length) return "";
+  const wires = [String(uplink.transport || "?").toLowerCase(), ...fallbacks.map(t => String(t).toLowerCase())];
+  const tcpActive = uplink.tcp_active_wire || 0;
+  const udpActive = uplink.udp_active_wire || 0;
+  const tcpPinMs = uplink.tcp_active_wire_pin_remaining_ms;
+  const udpPinMs = uplink.udp_active_wire_pin_remaining_ms;
+  const renderOne = (legLabel, activeIdx, pinMs) => {
+    const links = wires.map((w, i) => {
+      const isActive = i === activeIdx;
+      const cls = !isActive
+        ? "fb-link"
+        : (i === 0 ? "fb-link fb-primary-active" : "fb-link fb-active");
+      const pin = (isActive && i !== 0 && typeof pinMs === "number")
+        ? `<span class="fb-pin" title="auto-failback in">⏱ ${(pinMs / 1000).toFixed(0)}s</span>`
+        : "";
+      return `<span class="${cls}">${escapeHtml(w)}</span>${pin}`;
+    }).join('<span class="fb-arrow">›</span>');
+    const legTag = legLabel ? `<span class="proto-leg">${legLabel}</span>` : "";
+    return `<div class="fb-chain">${legTag}${links}</div>`;
+  };
+  // Single combined line when TCP and UDP are at the same active wire and
+  // no asymmetric pin is in flight; two lines otherwise so the operator
+  // can tell them apart at a glance.
+  const sameLine = tcpActive === udpActive && (tcpPinMs == null) === (udpPinMs == null);
+  if (sameLine) {
+    return renderOne("", tcpActive, tcpPinMs ?? udpPinMs);
+  }
+  return renderOne("TCP", tcpActive, tcpPinMs) + renderOne("UDP", udpActive, udpPinMs);
+}
 function activeProtocolChip(group) {
   const byName = new Map((group.uplinks || []).map(u => [u.name, u]));
   const candidates = [];
@@ -627,7 +674,7 @@ function renderInstanceBody(panel, instance, groups) {
         row.className = "row";
         row.innerHTML = `
           <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
-          <div>${protocolPill(uplink)}</div>
+          <div>${protocolPill(uplink)}${fallbackChainPill(uplink)}</div>
           <div><span class="status-pill ${rowTone}">${label}</span></div>
           <div class="${uplink.tcp_healthy === false ? "muted-cell" : ""}">${uplink.tcp_healthy === false ? "down" : "ok"}</div>
           <div class="${uplink.udp_healthy === false ? "muted-cell" : ""}">${uplink.udp_healthy === false ? "down" : "ok"}</div>
