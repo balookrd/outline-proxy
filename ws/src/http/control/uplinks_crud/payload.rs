@@ -3,7 +3,7 @@
 //! shared by the create/update handlers.
 
 use serde::{Deserialize, Serialize};
-use toml_edit::{Item, Table, Value};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
 use crate::config::UplinkSection;
 
@@ -33,6 +33,42 @@ pub(crate) struct UplinkPayload {
     pub(crate) method: Option<String>,
     pub(crate) password: Option<String>,
     pub(crate) weight: Option<f64>,
+    pub(crate) fwmark: Option<u32>,
+    pub(crate) ipv6_first: Option<bool>,
+    pub(crate) vless_id: Option<String>,
+    /// Per-uplink fallback transports — the wire-shape list rendered as
+    /// `[[outline.uplinks.fallbacks]]` in the TOML config. When set in a
+    /// PATCH request, the payload **replaces** the entire fallbacks array
+    /// (no per-entry merging — fallback identity is positional, so a partial
+    /// merge would be ambiguous). To remove all fallbacks, send an empty
+    /// array `[]`. Field stays `Option<...>` so omitting it from a PATCH
+    /// leaves the existing fallbacks untouched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) fallbacks: Option<Vec<FallbackPayload>>,
+}
+
+/// JSON wire shape for one fallback wire — same fields as the TOML
+/// `[[outline.uplinks.fallbacks]]` block (no `name` / `weight` / `group` /
+/// `link`; those belong to the parent uplink). Mirrors
+/// `crate::config::schema::FallbackSection`. Validation happens through
+/// the same `UplinkSection → ResolvedUplinkInput::try_into` pipeline as
+/// the TOML loader, so error messages stay consistent across the two
+/// surfaces.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FallbackPayload {
+    pub(crate) transport: String,
+    pub(crate) tcp_ws_url: Option<String>,
+    pub(crate) tcp_mode: Option<String>,
+    pub(crate) udp_ws_url: Option<String>,
+    pub(crate) udp_mode: Option<String>,
+    pub(crate) vless_ws_url: Option<String>,
+    pub(crate) vless_xhttp_url: Option<String>,
+    pub(crate) vless_mode: Option<String>,
+    pub(crate) tcp_addr: Option<String>,
+    pub(crate) udp_addr: Option<String>,
+    pub(crate) method: Option<String>,
+    pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,
     pub(crate) ipv6_first: Option<bool>,
     pub(crate) vless_id: Option<String>,
@@ -82,10 +118,26 @@ pub(super) struct UplinkListResponse {
 /// Convert a `toml_edit` table into a `serde_json::Value` by round-tripping
 /// through a TOML string. Returns `None` if the round-trip fails (which
 /// would be a surprising bug, not a normal user error).
+///
+/// `Table::to_string()` alone doesn't render nested
+/// `ArrayOfTables` items (the `[[fallbacks]]` arrays under an uplink's
+/// inline table) because the array headers need a parent path to render
+/// — the table doesn't know its own path until it's part of a document.
+/// Wrap in a one-shot synthetic `DocumentMut` so the nested array
+/// surfaces in the rendered TOML.
 pub(super) fn table_to_json(tbl: &Table) -> Option<serde_json::Value> {
-    let text = tbl.to_string();
+    let text = render_table_with_arrays(tbl);
     let value: toml::Value = toml::from_str(&text).ok()?;
     serde_json::to_value(value).ok()
+}
+
+fn render_table_with_arrays(tbl: &Table) -> String {
+    let mut doc = DocumentMut::new();
+    let root = doc.as_table_mut();
+    for (key, item) in tbl.iter() {
+        root.insert(key, item.clone());
+    }
+    doc.to_string()
 }
 
 pub(super) fn payload_to_table(payload: &UplinkPayload) -> Table {
@@ -119,7 +171,47 @@ pub(super) fn payload_to_table(payload: &UplinkPayload) -> Table {
         tbl.insert("ipv6_first", Item::Value(Value::from(v)));
     }
     set_str(&mut tbl, "vless_id", payload.vless_id.as_deref());
+    if let Some(fallbacks) = payload.fallbacks.as_ref() {
+        tbl.insert("fallbacks", Item::ArrayOfTables(fallbacks_to_array(fallbacks)));
+    }
     tbl
+}
+
+/// Build the `[[outline.uplinks.fallbacks]]` array-of-tables that lives
+/// under the parent uplink. Each entry mirrors the TOML schema for
+/// `FallbackSection`. Empty fields are omitted so the rendered TOML
+/// stays minimal and the schema deserializer applies its defaults.
+fn fallbacks_to_array(fallbacks: &[FallbackPayload]) -> ArrayOfTables {
+    let mut arr = ArrayOfTables::new();
+    for fb in fallbacks {
+        let mut sub = Table::new();
+        fn set_str(tbl: &mut Table, key: &str, value: Option<&str>) {
+            if let Some(v) = value {
+                tbl.insert(key, Item::Value(Value::from(v)));
+            }
+        }
+        sub.insert("transport", Item::Value(Value::from(fb.transport.as_str())));
+        set_str(&mut sub, "tcp_ws_url", fb.tcp_ws_url.as_deref());
+        set_str(&mut sub, "tcp_mode", fb.tcp_mode.as_deref());
+        set_str(&mut sub, "udp_ws_url", fb.udp_ws_url.as_deref());
+        set_str(&mut sub, "udp_mode", fb.udp_mode.as_deref());
+        set_str(&mut sub, "vless_ws_url", fb.vless_ws_url.as_deref());
+        set_str(&mut sub, "vless_xhttp_url", fb.vless_xhttp_url.as_deref());
+        set_str(&mut sub, "vless_mode", fb.vless_mode.as_deref());
+        set_str(&mut sub, "tcp_addr", fb.tcp_addr.as_deref());
+        set_str(&mut sub, "udp_addr", fb.udp_addr.as_deref());
+        set_str(&mut sub, "method", fb.method.as_deref());
+        set_str(&mut sub, "password", fb.password.as_deref());
+        if let Some(fw) = fb.fwmark {
+            sub.insert("fwmark", Item::Value(Value::from(fw as i64)));
+        }
+        if let Some(v) = fb.ipv6_first {
+            sub.insert("ipv6_first", Item::Value(Value::from(v)));
+        }
+        set_str(&mut sub, "vless_id", fb.vless_id.as_deref());
+        arr.push(sub);
+    }
+    arr
 }
 
 pub(super) fn merge_patch_into_table(tbl: &mut Table, patch: &UplinkPayload) {
@@ -182,6 +274,17 @@ pub(super) fn merge_patch_into_table(tbl: &mut Table, patch: &UplinkPayload) {
     if let Some(v) = patch.vless_id.as_deref() {
         set_str(tbl, "vless_id", Some(v));
     }
+    if let Some(fallbacks) = patch.fallbacks.as_ref() {
+        // PATCH semantics: a present `fallbacks` field replaces the whole
+        // list. Empty array clears all fallbacks. Omitted (`None`) leaves
+        // the existing list untouched. See doc comment on
+        // `UplinkPayload::fallbacks` for the rationale.
+        if fallbacks.is_empty() {
+            tbl.remove("fallbacks");
+        } else {
+            tbl.insert("fallbacks", Item::ArrayOfTables(fallbacks_to_array(fallbacks)));
+        }
+    }
 }
 
 /// Convert the JSON payload to an `UplinkSection` for validation. We go via
@@ -201,6 +304,8 @@ pub(super) fn payload_to_section(
 }
 
 pub(super) fn table_to_section(tbl: &Table) -> Result<UplinkSection, String> {
-    let text = tbl.to_string();
+    // See `table_to_json` for why we render through a synthetic document
+    // rather than `tbl.to_string()` directly.
+    let text = render_table_with_arrays(tbl);
     toml::from_str::<UplinkSection>(&text).map_err(|e| e.to_string())
 }
