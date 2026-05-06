@@ -555,6 +555,48 @@ fn probe_err_re_pins_after_pin_expiry_when_primary_still_failing() {
 }
 
 #[test]
+fn probe_failure_walks_xhttp_downgrade_chain_h3_h2_h1() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary(); // primary configured XhttpH3
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Cycle 1: probe of XHTTP/H3 fails. Cap should land at XHTTP/H2.
+    manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("h3 unreachable"));
+    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    assert_eq!(cap, Some(TransportMode::XhttpH2), "first failure caps H3 → H2");
+
+    // Cycle 2: probe of XHTTP/H2 (the now-effective carrier) fails. Cap
+    // should advance to XHTTP/H1 — the previous design fed back the
+    // configured (still-H3) mode here, so the cap stalled at H2 forever.
+    let outcome_with_h2_failed = ProbeOutcome {
+        tcp_ok: false,
+        udp_ok: false,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        outcome_with_h2_failed,
+        TransportMode::XhttpH2,
+        TransportMode::XhttpH2,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    assert_eq!(cap, Some(TransportMode::XhttpH1), "second failure caps H2 → H1");
+}
+
+#[test]
 fn probe_err_does_not_advance_below_min_failures() {
     let mut cfg = vless_xhttp_primary();
     cfg.fallbacks = vec![ws_fallback(false)];

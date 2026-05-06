@@ -36,10 +36,18 @@ pub(crate) enum ModeDowngradeTrigger<'a> {
     /// Real traffic observed a transport-level failure on an H3 session.
     RuntimeFailure(&'a anyhow::Error),
     /// Probe task completed but the per-transport check failed
-    /// (e.g. `tcp_ok=false` in `ProbeOutcome`).
-    ProbeTransportFailure,
+    /// (e.g. `tcp_ok=false` in `ProbeOutcome`). Carries the **effective**
+    /// mode the probe actually attempted — when a downgrade window is
+    /// active the probe runs against the capped carrier (e.g. `xhttp_h2`
+    /// after a previous `xhttp_h3 → xhttp_h2` cap), not the configured
+    /// one. Threading the actually-failed carrier through here lets the
+    /// monotonic downward cap continue (`xhttp_h2 → xhttp_h1`) instead
+    /// of stalling at the first downgrade step forever.
+    ProbeTransportFailure(TransportMode),
     /// Probe task itself errored out (ws connect failure, timeout).
-    ProbeConnectFailure(&'a anyhow::Error),
+    /// Carries the effective mode that was attempted — same reasoning as
+    /// [`Self::ProbeTransportFailure`].
+    ProbeConnectFailure(&'a anyhow::Error, TransportMode),
     /// Explicit H3 recovery re-probe failed to confirm H3 liveness.
     RecoveryReprobeFail,
     /// A dial succeeded but at a lower mode than requested — the host-level
@@ -86,6 +94,8 @@ impl UplinkManager {
         // the failure is by definition on the configured carrier.
         let failed_mode = match &trigger {
             ModeDowngradeTrigger::SilentTransportFallback(requested) => *requested,
+            ModeDowngradeTrigger::ProbeTransportFailure(attempted)
+            | ModeDowngradeTrigger::ProbeConnectFailure(_, attempted) => *attempted,
             _ => configured_mode,
         };
         // Map the failed carrier to the carrier the next dial should
@@ -110,6 +120,14 @@ impl UplinkManager {
         // Both indicate a wiring bug somewhere upstream; the right
         // response is to ignore the trigger rather than mis-park the
         // uplink.
+        //
+        // Comparing against `configured_mode` (rather than `failed_mode`)
+        // here is important: under multi-step downgrades the failed mode
+        // may already be a previous cap (`xhttp_h2`), and the new cap
+        // (`xhttp_h1`) ranks below configured (`xhttp_h3`) — so the
+        // multi-step `xhttp_h3 → h2 → h1` walk is admitted, while a
+        // mis-wired cross-family or above-configured trigger is still
+        // rejected.
         if family(new_cap) != family(configured_mode) || rank(new_cap) >= rank(configured_mode) {
             return;
         }
@@ -184,14 +202,14 @@ impl UplinkManager {
                     downgrade_secs,
                     "{kind_label} runtime error on {failed_mode}, capping carrier to {updated_cap}"
                 ),
-                ModeDowngradeTrigger::ProbeTransportFailure => warn!(
+                ModeDowngradeTrigger::ProbeTransportFailure(_) => warn!(
                     uplink = %uplink.name,
                     failed_mode = %failed_mode,
                     capped_to = %updated_cap,
                     downgrade_secs,
                     "{kind_label} probe failed on {failed_mode}, capping carrier to {updated_cap} for next probe cycle"
                 ),
-                ModeDowngradeTrigger::ProbeConnectFailure(err) => warn!(
+                ModeDowngradeTrigger::ProbeConnectFailure(err, _) => warn!(
                     uplink = %uplink.name,
                     error = %format!("{err:#}"),
                     failed_mode = %failed_mode,

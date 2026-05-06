@@ -110,6 +110,8 @@ impl UplinkManager {
     #[allow(dead_code)]
     pub(crate) fn test_apply_probe_err_for_test(&self, index: usize, error: anyhow::Error) {
         let uplink = self.uplinks()[index].clone();
-        self.process_probe_err(index, &uplink, error);
+        let effective_tcp = uplink.tcp_dial_mode();
+        let effective_udp = uplink.udp_dial_mode();
+        self.process_probe_err(index, &uplink, error, effective_tcp, effective_udp);
     }
 }

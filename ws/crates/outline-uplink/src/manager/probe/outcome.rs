@@ -278,14 +278,14 @@ impl UplinkManager {
             self.extend_mode_downgrade(
                 index,
                 TransportKind::Tcp,
-                ModeDowngradeTrigger::ProbeTransportFailure,
+                ModeDowngradeTrigger::ProbeTransportFailure(effective_tcp_mode),
             );
         }
         if result.udp_applicable && !result.udp_ok {
             self.extend_mode_downgrade(
                 index,
                 TransportKind::Udp,
-                ModeDowngradeTrigger::ProbeTransportFailure,
+                ModeDowngradeTrigger::ProbeTransportFailure(effective_udp_mode),
             );
         }
         // The probe layer reports a "silent" downgrade when it succeeded but
@@ -339,7 +339,14 @@ impl UplinkManager {
         (refill_tcp, refill_udp)
     }
 
-    pub(crate) fn process_probe_err(&self, index: usize, uplink: &Uplink, error: anyhow::Error) {
+    pub(crate) fn process_probe_err(
+        &self,
+        index: usize,
+        uplink: &Uplink,
+        error: anyhow::Error,
+        effective_tcp_mode: crate::config::TransportMode,
+        effective_udp_mode: crate::config::TransportMode,
+    ) {
         let now = Instant::now();
         let min_failures = self.inner.probe.min_failures as u32;
         let load_balancing = self.inner.load_balancing.clone();
@@ -407,13 +414,13 @@ impl UplinkManager {
         self.extend_mode_downgrade(
             index,
             TransportKind::Tcp,
-            ModeDowngradeTrigger::ProbeConnectFailure(&error),
+            ModeDowngradeTrigger::ProbeConnectFailure(&error, effective_tcp_mode),
         );
         if uplink.supports_udp() {
             self.extend_mode_downgrade(
                 index,
                 TransportKind::Udp,
-                ModeDowngradeTrigger::ProbeConnectFailure(&error),
+                ModeDowngradeTrigger::ProbeConnectFailure(&error, effective_udp_mode),
             );
         }
         warn!(uplink = %uplink.name, error = %format!("{error:#}"), "uplink probe failed");
