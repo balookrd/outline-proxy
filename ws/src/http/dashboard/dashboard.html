@@ -174,7 +174,7 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .cfg-active { color: var(--green-strong); font-weight: 600; white-space: nowrap; }
 .rows { width: 100%; }
 .rows-head,.row { display: grid; grid-template-columns: minmax(120px, 1.3fr) minmax(90px, .9fr) minmax(90px, .8fr) minmax(90px, .8fr) minmax(80px, .7fr) minmax(80px, .7fr) minmax(120px, 1fr) 100px; gap: 12px; align-items: center; padding: 13px 18px; }
-.proto-pill { min-height: 24px; display: inline-flex; align-items: center; padding: 0 9px; border-radius: 999px; font-size: 11px; font-weight: 760; letter-spacing: .02em; text-transform: uppercase; background: var(--soft); color: var(--text); border: 1px solid var(--line); }
+.proto-pill { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 4px; font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; background: var(--soft); color: var(--text); border: 1px solid var(--line); }
 .proto-pill.proto-vless { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
 .proto-pill.proto-shadowsocks { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
 .proto-pill.proto-ws { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
@@ -611,10 +611,11 @@ function fallbackChainPill(uplink) {
       const downMark = (isActive && allDown)
         ? '<span class="fb-down" title="active wire failing — nothing is up on this leg">✕</span>'
         : "";
-      // Pin badge ("⏱ 17s") rides inside the active chip rather than as a
-      // separate element next to it — keeps everything for the active
-      // wire (label + submode + arrow + DOWN + pin) inside one rounded
-      // pill, matching the legacy top-pill layout.
+      // Pin badge ("⏱ 17s") sits OUTSIDE the active pill as a separate
+      // element. Inlining it inside the chip overflowed onto a second
+      // line in narrow rows when label + submode + arrow + pin together
+      // exceeded the chip's content width — splitting it out keeps each
+      // piece on a single line and avoids broken multi-line wrapping.
       const pin = (isActive && i !== 0 && typeof pinMs === "number")
         ? `<span class="fb-pin" title="auto-failback in">⏱ ${(pinMs / 1000).toFixed(0)}s</span>`
         : "";
@@ -630,7 +631,7 @@ function fallbackChainPill(uplink) {
       const titleParts = [`wire #${i}: ${fullLabel}`];
       if (i === activeIdx && deco.dg) titleParts.push("auto-downgraded from configured carrier");
       const title = titleParts.join(" · ");
-      return `<span class="${cls}" title="${escapeHtml(title)}">${legTagInline}${escapeHtml(visible)}${submodeHtml}${dgArrow}${downMark}${pin}</span>`;
+      return `<span class="${cls}" title="${escapeHtml(title)}">${legTagInline}${escapeHtml(visible)}${submodeHtml}${dgArrow}${downMark}</span>${pin}`;
     }).join('<span class="fb-arrow">›</span>');
     return `<div class="fb-chain">${links}</div>`;
   };
