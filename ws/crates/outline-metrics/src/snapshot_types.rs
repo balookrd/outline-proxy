@@ -74,6 +74,19 @@ pub struct UplinkSnapshot {
     pub udp_latency_ms: Option<u128>,
     pub tcp_rtt_ewma_ms: Option<u128>,
     pub udp_rtt_ewma_ms: Option<u128>,
+    /// RTT EWMA for the wire that **new TCP sessions** currently land on
+    /// (i.e. `tcp_active_wire`). Equals `tcp_rtt_ewma_ms` when the active
+    /// wire is primary; reads the corresponding per-fallback-wire slot
+    /// when the dial loop / probe walk has flipped onto a fallback. The
+    /// legacy `tcp_rtt_ewma_ms` field stays primary-only for the
+    /// Prometheus consumers that already rely on its semantics; the
+    /// dashboard prefers this field so the operator sees the latency of
+    /// the wire actually carrying traffic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_active_wire_rtt_ewma_ms: Option<u128>,
+    /// UDP counterpart to [`Self::tcp_active_wire_rtt_ewma_ms`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_active_wire_rtt_ewma_ms: Option<u128>,
     pub tcp_penalty_ms: Option<u128>,
     pub udp_penalty_ms: Option<u128>,
     pub tcp_effective_latency_ms: Option<u128>,

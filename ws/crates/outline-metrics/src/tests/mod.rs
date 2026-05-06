@@ -45,6 +45,8 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         udp_latency_ms: None,
         tcp_rtt_ewma_ms: None,
         udp_rtt_ewma_ms: None,
+        tcp_active_wire_rtt_ewma_ms: None,
+        udp_active_wire_rtt_ewma_ms: None,
         tcp_penalty_ms: None,
         udp_penalty_ms: None,
         tcp_effective_latency_ms: None,

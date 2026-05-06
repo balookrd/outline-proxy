@@ -83,6 +83,17 @@ struct ControlUplinkTopology {
     /// per-transport latency.
     tcp_rtt_ewma_ms: Option<u128>,
     udp_rtt_ewma_ms: Option<u128>,
+    /// RTT EWMA for the wire that **new TCP sessions** currently land on.
+    /// Mirrors `tcp_rtt_ewma_ms` when active is primary; reads the
+    /// per-fallback-wire slot when the dial loop / probe walk has flipped
+    /// onto a fallback. Surfaced separately so the dashboard can render
+    /// the latency of the wire actually carrying traffic without breaking
+    /// Prometheus consumers that already rely on `tcp_rtt_ewma_ms`'s
+    /// primary-only semantics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tcp_active_wire_rtt_ewma_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    udp_active_wire_rtt_ewma_ms: Option<u128>,
     tcp_healthy: Option<bool>,
     udp_healthy: Option<bool>,
     /// Effective health on this transport — true when probe-confirmed OR
@@ -253,6 +264,8 @@ fn build_uplink_topology(
         udp_score_ms: uplink.udp_score_ms,
         tcp_rtt_ewma_ms: uplink.tcp_rtt_ewma_ms,
         udp_rtt_ewma_ms: uplink.udp_rtt_ewma_ms,
+        tcp_active_wire_rtt_ewma_ms: uplink.tcp_active_wire_rtt_ewma_ms,
+        udp_active_wire_rtt_ewma_ms: uplink.udp_active_wire_rtt_ewma_ms,
         tcp_healthy: uplink.tcp_healthy,
         tcp_health_effective: uplink.tcp_health_effective,
         udp_health_effective: uplink.udp_health_effective,
