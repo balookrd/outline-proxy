@@ -479,6 +479,56 @@ fn record_wire_outcome_stamps_last_any_wire_success() {
     ));
 }
 
+// ── Probe-error path advances active_wire ───────────────────────────────────
+//
+// `process_probe_err` is what the scheduler calls when the probe MACHINERY
+// itself errors out (WS handshake timeout, 404 from the XHTTP endpoint, TLS
+// failure — anything that aborts the probe before it can produce a
+// `ProbeOutcome`). It must drive the same active-wire advance that
+// `process_probe_ok` does for `tcp_ok=false`, otherwise an uplink whose
+// primary is reachable enough to handshake but broken at the application
+// layer (e.g. server disabled XHTTP but still responds with 404) would stay
+// pinned to wire 0 forever and the fallback dial loop would never run on
+// passive uplinks.
+
+#[test]
+fn probe_err_advances_active_wire_to_fallback() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 2);
+
+    // Two consecutive probe errors == min_failures threshold.
+    manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("first probe error"));
+    manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("second probe error"));
+
+    let status = manager.read_status_for_test(0);
+    assert_eq!(
+        status.tcp.active_wire, 1,
+        "after min_failures probe errors active_wire must flip to the first fallback",
+    );
+    assert!(
+        status.tcp.active_wire_pinned_until.is_some(),
+        "active_wire transition pins the fallback for the failback window",
+    );
+}
+
+#[test]
+fn probe_err_does_not_advance_below_min_failures() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 3);
+
+    // Only two errors, threshold is three.
+    manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("first probe error"));
+    manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("second probe error"));
+
+    let status = manager.read_status_for_test(0);
+    assert_eq!(
+        status.tcp.active_wire, 0,
+        "below min_failures the streak alone must not flip active_wire",
+    );
+}
+
 // ── Per-wire RTT EWMA ───────────────────────────────────────────────────────
 //
 // Each wire on a multi-wire uplink keeps its own RTT EWMA. The cross-uplink
