@@ -678,6 +678,93 @@ async fn primary_wire_downgrade_does_not_leak_into_fallback() {
 }
 
 #[tokio::test]
+async fn probe_failure_advances_active_wire_without_dials() {
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    // min_failures = 2, pin = 1h so timer-driven advance can't be the
+    // explanation for the snap.
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![cfg],
+        make_probe(2),
+        make_lb(std::time::Duration::from_secs(3600)),
+    )
+    .unwrap();
+
+    // Single probe failure: below threshold → active stays at primary.
+    manager.test_apply_probe_outcome_for_test(
+        0,
+        ProbeOutcome {
+            tcp_ok: false,
+            udp_ok: false,
+            udp_applicable: false,
+            tcp_latency: None,
+            udp_latency: None,
+            tcp_downgraded_from: None,
+            udp_downgraded_from: None,
+        },
+    );
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 0);
+
+    // Second consecutive failure: crosses min_failures → active advances
+    // to fallback even though no client dial ever fired.
+    manager.test_apply_probe_outcome_for_test(
+        0,
+        ProbeOutcome {
+            tcp_ok: false,
+            udp_ok: false,
+            udp_applicable: false,
+            tcp_latency: None,
+            udp_latency: None,
+            tcp_downgraded_from: None,
+            udp_downgraded_from: None,
+        },
+    );
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        1,
+        "probe-driven failover must advance active_wire when primary keeps failing",
+    );
+
+    // Pin must be set so the next session won't immediately retry primary.
+    let snap = manager.read_status_for_test(0);
+    assert!(
+        snap.tcp.active_wire_pinned_until.is_some(),
+        "probe-driven advance must pin the fallback active",
+    );
+}
+
+#[tokio::test]
+async fn probe_failure_does_not_advance_when_no_fallback_configured() {
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let cfg = vless_xhttp_primary(); // single-wire, no fallbacks
+    let manager = manager_with_uplink(cfg, 1);
+
+    for _ in 0..5 {
+        manager.test_apply_probe_outcome_for_test(
+            0,
+            ProbeOutcome {
+                tcp_ok: false,
+                udp_ok: false,
+                udp_applicable: false,
+                tcp_latency: None,
+                udp_latency: None,
+                tcp_downgraded_from: None,
+                udp_downgraded_from: None,
+            },
+        );
+    }
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        0,
+        "single-wire uplink has no fallback to advance to",
+    );
+}
+
+#[tokio::test]
 async fn fallback_wire_downgrade_is_monotonic_within_window() {
     // Use XHTTP family so the multi-step chain XhttpH3 → XhttpH2 → XhttpH1
     // is observable through this window. (WS family stops at H3 → H2 here;
