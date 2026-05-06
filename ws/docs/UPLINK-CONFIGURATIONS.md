@@ -922,18 +922,20 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
   TCP-only (e.g. SS without `udp_addr`) but whose fallback is
   UDP-capable still shows up for UDP dispatch.
 
-#### Remaining limitation
+#### VLESS-fallback wire types
 
-- **VLESS-fallback over raw QUIC** (`vless_mode = "quic"`) returns a
-  clear error. The WS family (`ws_h1` / `ws_h2` / `ws_h3`) and the
-  XHTTP family (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) both work as
-  fallbacks because they share the `VlessUdpSessionMux` carrier; raw
-  QUIC needs the `VlessUdpHybridMux` machinery and its
-  `on_fallback` / `on_downgrade` hooks, which still need per-wire
-  mode tracking to attribute fallback observations correctly.
-  Operators who specifically want a QUIC backup should declare a
-  second primary VLESS uplink with `vless_mode = "quic"` in the same
-  group as a workaround.
+- **All three wire shapes work as VLESS fallbacks** now: `ws_h1` /
+  `ws_h2` / `ws_h3` (WS family), `xhttp_h1` / `xhttp_h2` / `xhttp_h3`
+  (XHTTP family), and `quic` (raw QUIC). The QUIC mode rides through
+  the same `VlessUdpHybridMux` machinery the primary VLESS-UDP path
+  uses (QUIC mux + WS-over-H2 fallback factory), but every per-uplink
+  hook is wired to *the fallback wire's* per-wire mode-downgrade slot
+  rather than primary's. So a fallback wire's `quic` dial that fails
+  and pivots to WS-H2 records the QUIC failure in its own slot, and
+  subsequent dials of the same fallback wire skip QUIC outright until
+  the wire's downgrade window expires — exactly mirroring primary's
+  established behaviour, just without polluting primary's mode
+  tracking.
 
 ### Inline `[outline]` shorthand
 

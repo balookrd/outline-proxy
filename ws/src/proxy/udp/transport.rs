@@ -7,9 +7,11 @@ use tracing::{debug, info, warn};
 use outline_metrics as metrics;
 use socks5_proto::TargetAddr;
 use outline_transport::{
-    TransportMode, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux,
-    connect_shadowsocks_udp_with_source, global_resume_cache,
+    TransportMode, UdpSessionTransport, UdpWsTransport, VlessUdpDowngradeNotifier,
+    VlessUdpSessionMux, connect_shadowsocks_udp_with_source, global_resume_cache,
 };
+#[cfg(feature = "quic")]
+use outline_transport::{FallbackNotifier, VlessUdpHybridMux, VlessUdpQuicMux, WsFallbackFactory};
 use outline_uplink::{
     FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
 };
@@ -243,28 +245,102 @@ async fn dial_udp_fallback(
             let mode = uplinks
                 .effective_udp_mode_for_wire(parent.index, wire_index)
                 .await;
-            if mode == TransportMode::Quic {
-                anyhow::bail!(
-                    "uplink {}: VLESS-fallback on UDP with mode=quic is not supported \
-                     in this iteration — use ws_h1/h2/h3 or xhttp_h1/h2/h3 for the \
-                     fallback's `vless_mode`",
-                    parent.uplink.name,
-                );
-            }
             let uuid = fallback.vless_id.ok_or_else(|| {
                 anyhow!(
                     "uplink {} fallback (transport=vless) missing vless_id",
                     parent.uplink.name,
                 )
             })?;
-            // Note: `on_downgrade` callback is **not** wired for the fallback
-            // mux. The primary's per-uplink mode-downgrade window is keyed on
-            // the parent's index and primary transport; threading a fallback
-            // observation into it would mis-park the primary's mode. Per-wire
-            // mode tracking is the same Phase-2 follow-up that gates VLESS-
-            // fallback over raw QUIC.
             let limits = uplinks.load_balancing().vless_udp_mux_limits;
             let keepalive = uplinks.load_balancing().udp_ws_keepalive_interval;
+
+            // Per-wire `on_downgrade` callback: any inline H3→H2/H1 step
+            // observed by the mux on this fallback wire writes into *this
+            // wire's* `fallback_mode_downgrades` slot via the wire-aware
+            // setter. Primary's mode is unaffected.
+            let downgrade_manager = uplinks.clone();
+            let downgrade_index = parent.index;
+            let on_downgrade: VlessUdpDowngradeNotifier =
+                Arc::new(move |requested: TransportMode| {
+                    downgrade_manager.note_silent_transport_fallback_for_wire(
+                        downgrade_index,
+                        TransportKind::Udp,
+                        wire_index,
+                        requested,
+                    );
+                });
+
+            #[cfg(feature = "quic")]
+            if mode == TransportMode::Quic {
+                // VLESS-fallback over raw QUIC: build a hybrid mux that
+                // tries QUIC first and falls back to WS-over-H2 the same
+                // way the primary path does, but every per-uplink hook is
+                // wired to *this fallback wire's* slot — never primary's.
+                let dns_cache = Arc::clone(uplinks.dns_cache_arc());
+                let quic_mux = VlessUdpQuicMux::new(
+                    dns_cache,
+                    url.clone(),
+                    uuid,
+                    fallback.fwmark,
+                    fallback.ipv6_first,
+                    source,
+                    limits,
+                );
+                // Factory for the WS fallback inside the hybrid mux. Mode
+                // pinned to WsH2 so the post-QUIC retry path is
+                // deterministic — the wire-aware downgrade window above
+                // already records the QUIC failure so subsequent dials of
+                // this same fallback wire skip QUIC outright.
+                let factory_dns_cache = Arc::clone(uplinks.dns_cache_arc());
+                let factory_url = url.clone();
+                let factory_fwmark = fallback.fwmark;
+                let factory_ipv6_first = fallback.ipv6_first;
+                let factory_keepalive = keepalive;
+                let factory_limits = limits;
+                let factory_uuid = uuid;
+                let factory_on_downgrade = Arc::clone(&on_downgrade);
+                let ws_factory: WsFallbackFactory = Box::new(move || {
+                    VlessUdpSessionMux::new_with_limits(
+                        factory_dns_cache,
+                        factory_url,
+                        TransportMode::WsH2,
+                        factory_uuid,
+                        factory_fwmark,
+                        factory_ipv6_first,
+                        source,
+                        factory_keepalive,
+                        factory_limits,
+                    )
+                    .with_on_downgrade(Some(factory_on_downgrade))
+                });
+                // QUIC → WS pivot notifier: write a `Quic` downgrade
+                // observation into the fallback wire's slot so the next
+                // session starts at WS directly.
+                let pivot_manager = uplinks.clone();
+                let pivot_index = parent.index;
+                let on_fallback: FallbackNotifier =
+                    Arc::new(move |_error: &anyhow::Error| {
+                        pivot_manager.note_silent_transport_fallback_for_wire(
+                            pivot_index,
+                            TransportKind::Udp,
+                            wire_index,
+                            TransportMode::Quic,
+                        );
+                    });
+                let hybrid =
+                    VlessUdpHybridMux::from_quic(quic_mux, ws_factory, Some(on_fallback));
+                uplinks
+                    .report_connection_latency(
+                        parent.index,
+                        TransportKind::Udp,
+                        dial_started.elapsed(),
+                    )
+                    .await;
+                return Ok(UdpSessionTransport::VlessQuic(hybrid));
+            }
+
+            // Non-QUIC vless fallback: WS or XHTTP family, plain mux with
+            // wire-aware on_downgrade hook.
             let mux = VlessUdpSessionMux::new_with_limits(
                 Arc::clone(uplinks.dns_cache_arc()),
                 url.clone(),
@@ -275,7 +351,8 @@ async fn dial_udp_fallback(
                 source,
                 keepalive,
                 limits,
-            );
+            )
+            .with_on_downgrade(Some(on_downgrade));
             uplinks
                 .report_connection_latency(
                     parent.index,
