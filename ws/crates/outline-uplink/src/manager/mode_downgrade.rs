@@ -262,6 +262,134 @@ impl UplinkManager {
         );
     }
 
+    /// Wire-aware variant of [`Self::note_silent_transport_fallback`]: when
+    /// `wire_index == 0`, identical to the primary entry-point; when
+    /// `wire_index >= 1`, the downgrade observation is stored against
+    /// `fallback_mode_downgrades[wire_index - 1]` instead of primary's
+    /// slot. Used by fallback-wire dial paths so a fallback that observes
+    /// (e.g.) `XhttpH3 → XhttpH2` doesn't mis-park the primary's mode
+    /// while still letting subsequent dials of the same fallback wire
+    /// honour the cap.
+    ///
+    /// Reuses the same family/rank logic as the primary path: the cap
+    /// must be in the same family as the wire's configured mode and rank
+    /// strictly below it (cross-family or upward triggers are dropped).
+    pub fn note_silent_transport_fallback_for_wire(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        wire_index: u8,
+        requested: TransportMode,
+    ) {
+        if wire_index == 0 {
+            self.note_silent_transport_fallback(index, transport, requested);
+            return;
+        }
+        let slot_idx = (wire_index - 1) as usize;
+        let uplink = &self.inner.uplinks[index];
+        let Some(fallback) = uplink.fallbacks.get(slot_idx) else {
+            return;
+        };
+        let configured_mode = match transport {
+            TransportKind::Tcp => fallback.tcp_dial_mode(),
+            TransportKind::Udp => fallback.udp_dial_mode(),
+        };
+        let new_cap = match one_step_down(requested) {
+            Some(cap) => cap,
+            None => return,
+        };
+        if family(new_cap) != family(configured_mode) || rank(new_cap) >= rank(configured_mode) {
+            return;
+        }
+        let now = Instant::now();
+        let duration = self.inner.load_balancing.mode_downgrade_duration;
+        let new_until = now + duration;
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            // Lazy-extend the per-wire vec; entries default to (None, None).
+            while per.fallback_mode_downgrades.len() <= slot_idx {
+                per.fallback_mode_downgrades
+                    .push(super::status::ModeDowngradeSlot::default());
+            }
+            let slot = &mut per.fallback_mode_downgrades[slot_idx];
+            let window_active = slot.until.is_some_and(|t| t > now);
+            // Monotonically-downward cap update mirroring primary's rule:
+            // an in-window re-trigger must not raise the ceiling.
+            let updated_cap = match slot.capped_to {
+                Some(prev)
+                    if window_active
+                        && family(prev) == family(new_cap)
+                        && rank(prev) < rank(new_cap) =>
+                {
+                    prev
+                },
+                _ => new_cap,
+            };
+            slot.until = Some(new_until);
+            slot.capped_to = Some(updated_cap);
+        });
+        debug!(
+            uplink = %uplink.name,
+            transport = ?transport,
+            wire_index,
+            requested = %requested,
+            capped_to = %new_cap,
+            duration_secs = duration.as_secs(),
+            "fallback wire mode-downgrade window opened"
+        );
+    }
+
+    /// Read the effective TCP / UDP mode for a specific wire on this uplink:
+    /// configured mode for that wire, capped by any active downgrade window
+    /// in the wire's slot. Wire 0 reuses the existing primary path; wire >= 1
+    /// reads `fallback_mode_downgrades[wire_index - 1]`. Out-of-range wires
+    /// return their configured mode unchanged (no slot, no downgrade).
+    pub async fn effective_tcp_mode_for_wire(
+        &self,
+        index: usize,
+        wire_index: u8,
+    ) -> crate::config::TransportMode {
+        if wire_index == 0 {
+            return self.effective_tcp_mode(index).await;
+        }
+        let uplink = &self.inner.uplinks[index];
+        let slot_idx = (wire_index - 1) as usize;
+        let Some(fallback) = uplink.fallbacks.get(slot_idx) else {
+            return uplink.tcp_dial_mode();
+        };
+        let configured = fallback.tcp_dial_mode();
+        if !matches!(fallback.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+            return configured;
+        }
+        let status = self.inner.read_status(index);
+        wire_capped_or_configured(&status.tcp, slot_idx, configured)
+    }
+
+    /// UDP counterpart to [`Self::effective_tcp_mode_for_wire`].
+    pub async fn effective_udp_mode_for_wire(
+        &self,
+        index: usize,
+        wire_index: u8,
+    ) -> crate::config::TransportMode {
+        if wire_index == 0 {
+            return self.effective_udp_mode(index).await;
+        }
+        let uplink = &self.inner.uplinks[index];
+        let slot_idx = (wire_index - 1) as usize;
+        let Some(fallback) = uplink.fallbacks.get(slot_idx) else {
+            return uplink.udp_dial_mode();
+        };
+        let configured = fallback.udp_dial_mode();
+        if !matches!(fallback.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+            return configured;
+        }
+        let status = self.inner.read_status(index);
+        wire_capped_or_configured(&status.udp, slot_idx, configured)
+    }
+
     /// Clear the downgrade window for `(index, transport)`. Resets both
     /// the deadline and the cap so the next dial returns to the
     /// configured mode. Called when an explicit H3 recovery re-probe
@@ -280,6 +408,26 @@ impl UplinkManager {
                 status.udp.mode_downgrade_capped_to = None;
             },
         });
+    }
+}
+
+/// Mirror of `capped_or_configured` (in standby/mod.rs) but for a
+/// fallback wire's per-wire slot in `fallback_mode_downgrades`.
+/// Returns the cap when the per-wire window is active and the cap is
+/// set; falls back to the configured mode in any other case (no slot,
+/// expired window, missing cap — defensive).
+fn wire_capped_or_configured(
+    status: &super::status::PerTransportStatus,
+    slot_idx: usize,
+    configured: TransportMode,
+) -> TransportMode {
+    let now = Instant::now();
+    let Some(slot) = status.fallback_mode_downgrades.get(slot_idx) else {
+        return configured;
+    };
+    match (slot.until, slot.capped_to) {
+        (Some(until), Some(cap)) if until > now => cap,
+        _ => configured,
     }
 }
 

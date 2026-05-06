@@ -61,6 +61,20 @@ pub(crate) struct PerTransportStatus {
     /// raises it, so multi-step downgrades preserve the deepest
     /// failure observed during the window.
     pub(crate) mode_downgrade_capped_to: Option<TransportMode>,
+    /// Per-fallback-wire mode-downgrade slots. Indexed by `wire_index - 1`
+    /// (i.e. `[0]` corresponds to `fallbacks[0]`); the primary wire's
+    /// downgrade lives in the existing `mode_downgrade_until` /
+    /// `mode_downgrade_capped_to` fields above. Lazily extended on first
+    /// write — empty for uplinks without fallbacks. Reads of an out-of-
+    /// range slot return `(None, None)` (no active downgrade).
+    ///
+    /// Without these slots, every observation of a downgrade on a fallback
+    /// wire (XHTTP-H3 → H2, raw-QUIC → WS, etc.) had to be discarded at the
+    /// proxy / transport layer to avoid mis-parking the primary's mode —
+    /// which kept fallback-only paths from learning their own downgrade
+    /// chain. Now each wire gets its own window, and fallback dials can
+    /// honour the cap they earned without polluting primary's slot.
+    pub(crate) fallback_mode_downgrades: Vec<ModeDowngradeSlot>,
     /// Timestamp of the most recent real data transfer on this transport.
     /// Used to skip probe cycles when the uplink is actively carrying traffic.
     pub(crate) last_active: Option<Instant>,
@@ -121,6 +135,17 @@ impl UplinkStatus {
             TransportKind::Udp => &self.udp,
         }
     }
+}
+
+/// One mode-downgrade window slot. Mirrors the
+/// `(mode_downgrade_until, mode_downgrade_capped_to)` pair on
+/// [`PerTransportStatus`] but for a non-primary wire. `until == None`
+/// means no active window (defaults dial to the wire's configured mode);
+/// `capped_to == None` is the same.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ModeDowngradeSlot {
+    pub(crate) until: Option<Instant>,
+    pub(crate) capped_to: Option<TransportMode>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
