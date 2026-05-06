@@ -128,6 +128,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 last_active_tcp_ago_ms: None,
                 last_active_udp_ago_ms: None,
                 configured_fallbacks: Vec::new(),
+                configured_wire_chain: Vec::new(),
                 tcp_active_wire: 0,
                 udp_active_wire: 0,
                 tcp_active_wire_pin_remaining_ms: None,
@@ -174,6 +175,23 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 last_active_tcp_ago_ms: None,
                 last_active_udp_ago_ms: None,
                 configured_fallbacks: vec!["xhttp_h2".to_string(), "ws_h2".to_string()],
+                configured_wire_chain: vec![
+                    outline_metrics::WireSnapshot {
+                        transport: "vless".to_string(),
+                        tcp_mode: Some("quic".to_string()),
+                        udp_mode: Some("quic".to_string()),
+                    },
+                    outline_metrics::WireSnapshot {
+                        transport: "vless".to_string(),
+                        tcp_mode: Some("xhttp_h2".to_string()),
+                        udp_mode: Some("xhttp_h2".to_string()),
+                    },
+                    outline_metrics::WireSnapshot {
+                        transport: "ws".to_string(),
+                        tcp_mode: Some("ws_h2".to_string()),
+                        udp_mode: Some("ws_h2".to_string()),
+                    },
+                ],
                 tcp_active_wire: 1,
                 udp_active_wire: 0,
                 tcp_active_wire_pin_remaining_ms: Some(7_500),

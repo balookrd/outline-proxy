@@ -63,6 +63,55 @@ fn routing_scope_name(scope: RoutingScope) -> &'static str {
 /// half always reflects the URL exactly (including `packet-up` when no
 /// `?mode=` is set), so dashboards can show the user's chosen shape
 /// independent of the cache state.
+/// Build the per-wire chain `[primary, fallbacks[0], ..., fallbacks[N-1]]`
+/// for snapshot export. Each entry surfaces the transport family plus the
+/// configured TCP / UDP mode strings, so the dashboard can render the
+/// **active wire**'s mode (e.g. `VLESS/WS/H2`) when `*_active_wire` has
+/// flipped onto a fallback. Returns an empty Vec for single-wire uplinks
+/// — the existing `tcp_mode` / `udp_mode` fields already carry primary's
+/// mode there.
+///
+/// `tcp_mode` / `udp_mode` are wrapped in `Option` because Shadowsocks
+/// wires don't carry a transport-mode enum (their shape is fixed by the
+/// address fields). For those wires both fields stay `None`.
+fn build_wire_chain(uplink: &super::super::types::Uplink) -> Vec<outline_metrics::WireSnapshot> {
+    use crate::config::UplinkTransport;
+    use outline_metrics::WireSnapshot;
+    if uplink.fallbacks.is_empty() {
+        return Vec::new();
+    }
+    let mut chain = Vec::with_capacity(1 + uplink.fallbacks.len());
+    chain.push(WireSnapshot {
+        transport: uplink.transport.to_string(),
+        tcp_mode: match uplink.transport {
+            UplinkTransport::Vless => Some(uplink.vless_mode.to_string()),
+            UplinkTransport::Ws => Some(uplink.tcp_mode.to_string()),
+            UplinkTransport::Shadowsocks => None,
+        },
+        udp_mode: match uplink.transport {
+            UplinkTransport::Vless => Some(uplink.vless_mode.to_string()),
+            UplinkTransport::Ws => Some(uplink.udp_mode.to_string()),
+            UplinkTransport::Shadowsocks => None,
+        },
+    });
+    for fb in &uplink.fallbacks {
+        chain.push(WireSnapshot {
+            transport: fb.transport.to_string(),
+            tcp_mode: match fb.transport {
+                UplinkTransport::Vless => Some(fb.vless_mode.to_string()),
+                UplinkTransport::Ws => Some(fb.tcp_mode.to_string()),
+                UplinkTransport::Shadowsocks => None,
+            },
+            udp_mode: match fb.transport {
+                UplinkTransport::Vless => Some(fb.vless_mode.to_string()),
+                UplinkTransport::Ws => Some(fb.udp_mode.to_string()),
+                UplinkTransport::Shadowsocks => None,
+            },
+        });
+    }
+    chain
+}
+
 async fn xhttp_submode_view(
     dial_url: Option<&url::Url>,
     transport: UplinkTransport,
@@ -231,6 +280,7 @@ impl UplinkManager {
                     .iter()
                     .map(|fb| fb.transport.to_string())
                     .collect(),
+                configured_wire_chain: build_wire_chain(uplink),
                 tcp_active_wire: status.tcp.active_wire,
                 udp_active_wire: status.udp.active_wire,
                 tcp_active_wire_pin_remaining_ms: status
