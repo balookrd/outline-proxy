@@ -1058,6 +1058,142 @@
       "type": "table"
     },
     {
+      "title": "Active Wire (Sticky Fallback)",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "cellHeight": "sm"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #A"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "active wire idx"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #B"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "pin remaining"
+              },
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value #C"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "fallbacks"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Time|__name__|job|instance"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "outline_ws_rust_uplink_active_wire_index{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "expr": "outline_ws_rust_uplink_active_wire_pin_remaining_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        },
+        {
+          "expr": "outline_ws_rust_uplink_configured_fallbacks_count{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "format": "table",
+          "instant": true,
+          "refId": "C"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        }
+      ],
+      "description": "Sticky-fallback active-wire state per uplink+transport. `active wire idx` 0 = primary (operator's first-choice transport); non-zero = fallback (`fallbacks[idx-1]` of `[[outline.uplinks.fallbacks]]`). `pin remaining` is seconds until auto-failback snaps active back to primary. `fallbacks` is the configured count for context. Only uplinks with at least one fallback declared appear here."
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -5020,6 +5156,6 @@
   "timezone": "browser",
   "title": "outline-ws-rust",
   "uid": "outline-ws-rust",
-  "version": 84,
+  "version": 85,
   "weekStart": ""
 }
