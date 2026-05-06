@@ -17,8 +17,8 @@ CHANNEL="${CHANNEL:-stable}"   # stable | nightly
 VERSION="${VERSION:-}"         # stable: 1.0.0 or v1.0.0 ; nightly: nightly
 FORCE="${FORCE:-}"             # непусто — пропустить проверку текущей версии
 NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${CONFIG_DIR}/nightly-commit}"
-GITHUB_API="${GITHUB_API:-https://api.github.com}"
-GITHUB_TOKEN="${GITHUB_TOKEN:-}"
+
+GITHUB_BASE="${GITHUB_BASE:-https://github.com/${REPO_OWNER}/${REPO_NAME}}"
 
 # Откуда качать unit-файлы
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_REF}}"
@@ -81,7 +81,6 @@ usage() {
   STATE_DIR=...             Каталог рабочего состояния
   SERVICE_USER=...          System-юзер сервиса (по умолчанию outline-ws)
   SERVICE_GROUP=...         System-группа сервиса (по умолчанию outline-ws)
-  GITHUB_TOKEN=...          GitHub token для обхода rate limit API
 
 После установки:
   systemctl enable --now ${SERVICE_NAME}
@@ -106,22 +105,6 @@ parse_args() {
     esac
     shift
   done
-}
-
-github_api_get() {
-  local url="$1"
-  if [[ -n "$GITHUB_TOKEN" ]]; then
-    curl -fsSL \
-      -H "Accept: application/vnd.github+json" \
-      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "$url"
-  else
-    curl -fsSL \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "$url"
-  fi
 }
 
 map_arch_to_target() {
@@ -164,82 +147,73 @@ normalize_version_tag() {
   fi
 }
 
-select_release_json() {
-  local api_path tag
+# Резолвит тег релиза без обращения к api.github.com.
+# Для stable без VERSION — следует за редиректом /releases/latest и берёт
+# последний сегмент пути финального URL (.../releases/tag/<TAG>).
+# Для остальных случаев тег уже задан явно (VERSION) или фиксирован (nightly).
+resolve_release_tag() {
+  local final_url tag
 
   if [[ -n "$VERSION" ]]; then
-    tag="$(normalize_version_tag "$VERSION")"
-    api_path="releases/tags/${tag}"
-  else
-    case "$CHANNEL" in
-      stable)
-        api_path="releases/latest"
-        ;;
-      nightly)
-        api_path="releases/tags/nightly"
-        ;;
-      *)
-        die "Неподдерживаемый CHANNEL: ${CHANNEL}. Допустимо: stable, nightly"
-        ;;
-    esac
-  fi
-
-  github_api_get "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/${api_path}"
-}
-
-release_field() {
-  local field="$1"
-
-  grep -oE "\"${field}\":[[:space:]]*\"([^\"\\\\]|\\\\.)*\"" \
-    | head -n1 \
-    | sed -E "s/^\"${field}\":[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\"$/\\1/"
-}
-
-asset_url_from_release() {
-  local target="$1"
-  local asset_pattern
-
-  asset_pattern="/${BINARY_NAME}-v[^/]*-${target}\\.tar\\.gz$"
-  grep -oE '"browser_download_url":[[:space:]]*"[^"]+"' \
-    | sed -E 's/^"browser_download_url":[[:space:]]*"([^"]+)"$/\1/' \
-    | grep -E "$asset_pattern" \
-    | head -n1 || true
-}
-
-# Возвращает короткий (12 символов) SHA коммита для тега nightly.
-# Сначала берёт target_commitish из release JSON; если это ветка, а не SHA —
-# делает доп. запрос к refs API и при annotated-теге разыменовывает его.
-get_nightly_commit_sha() {
-  local release_json="$1"
-  local commitish sha type ref_json tag_json
-
-  commitish="$(printf '%s' "$release_json" | release_field target_commitish)"
-
-  if [[ "$commitish" =~ ^[0-9a-f]{40}$ ]]; then
-    echo "${commitish:0:12}"
+    normalize_version_tag "$VERSION"
     return
   fi
 
-  # target_commitish — имя ветки; резолвим через refs API
-  ref_json="$(github_api_get \
-    "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/tags/nightly" 2>/dev/null || true)"
+  case "$CHANNEL" in
+    stable)
+      final_url="$(curl -sIL -o /dev/null -w '%{url_effective}' \
+        "${GITHUB_BASE}/releases/latest")" \
+        || die "Не удалось получить latest-тег с ${GITHUB_BASE}/releases/latest"
+      tag="${final_url##*/}"
+      [[ -n "$tag" && "$tag" != "latest" ]] \
+        || die "Не удалось распарсить тег из URL: ${final_url}"
+      echo "$tag"
+      ;;
+    nightly)
+      echo "nightly"
+      ;;
+    *)
+      die "Неподдерживаемый CHANNEL: ${CHANNEL}. Допустимо: stable, nightly"
+      ;;
+  esac
+}
 
-  [[ -n "$ref_json" ]] || { echo ""; return; }
+# Находит download-URL ассета для нужной архитектуры через HTML-фрагмент
+# /releases/expanded_assets/<tag> (его github.com отдаёт публично, без API
+# и без rate-limit'а).
+find_asset_url() {
+  local tag="$1"
+  local target="$2"
+  local html path
 
-  type="$(printf '%s' "$ref_json" \
-    | grep -oE '"type":[[:space:]]*"[^"]+"' | head -n1 \
-    | sed -E 's/^"type":[[:space:]]*"([^"]+)"$/\1/')"
-  sha="$(printf '%s' "$ref_json" \
-    | grep -oE '"sha":[[:space:]]*"[^"]+"' | head -n1 \
-    | sed -E 's/^"sha":[[:space:]]*"([^"]+)"$/\1/')"
+  html="$(curl -fsSL "${GITHUB_BASE}/releases/expanded_assets/${tag}")" \
+    || die "Не удалось получить список ассетов для тега ${tag}"
 
-  if [[ "$type" == "tag" ]]; then
-    # Annotated tag — разыменовываем до commit-объекта
-    tag_json="$(github_api_get \
-      "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/git/tags/${sha}" 2>/dev/null || true)"
-    sha="$(printf '%s' "$tag_json" \
-      | grep -oE '"sha":[[:space:]]*"[^"]+"' | tail -n1 \
-      | sed -E 's/^"sha":[[:space:]]*"([^"]+)"$/\1/')"
+  # Ссылки в HTML вида: href="/OWNER/REPO/releases/download/TAG/FILE"
+  path="$(printf '%s' "$html" \
+    | grep -oE "/${REPO_OWNER}/${REPO_NAME}/releases/download/[^\"']+\\.tar\\.gz" \
+    | grep -E "/${BINARY_NAME}-v[^/]*-${target}\\.tar\\.gz$" \
+    | head -n1 || true)"
+
+  [[ -n "$path" ]] || return 0
+  echo "https://github.com${path}"
+}
+
+# Возвращает короткий (12 символов) SHA коммита, на который указывает тег
+# nightly. Использует git ls-remote — это работает анонимно через https и не
+# зависит от api.github.com. Для annotated-тегов берёт dereferenced-ссылку
+# refs/tags/nightly^{}, иначе — обычный refs/tags/nightly.
+get_nightly_commit_sha() {
+  local out sha
+
+  out="$(git ls-remote "${GITHUB_BASE}.git" \
+    'refs/tags/nightly' 'refs/tags/nightly^{}' 2>/dev/null || true)"
+
+  [[ -n "$out" ]] || { echo ""; return; }
+
+  sha="$(printf '%s\n' "$out" | awk '$2 == "refs/tags/nightly^{}" {print $1}' | head -n1)"
+  if [[ -z "$sha" ]]; then
+    sha="$(printf '%s\n' "$out" | awk '$2 == "refs/tags/nightly" {print $1}' | head -n1)"
   fi
 
   echo "${sha:0:12}"
@@ -408,8 +382,10 @@ main() {
   need_cmd groupadd
   need_cmd chown
   need_cmd getent
+  need_cmd git
+  need_cmd awk
 
-  local target release_json release_tag release_name asset_url archive_path workdir
+  local target release_tag asset_url archive_path workdir
   local svc_tmp tpl_tmp
   target="$(map_arch_to_target)"
   archive_path="${TMP_DIR}/${BINARY_NAME}.tar.gz"
@@ -425,12 +401,14 @@ main() {
   log "Target: ${target}"
   log "Канал: ${CHANNEL}"
 
-  release_json="$(select_release_json)"
-  release_tag="$(printf '%s' "$release_json" | release_field tag_name)"
-  release_name="$(printf '%s' "$release_json" | release_field name)"
-  asset_url="$(printf '%s' "$release_json" | asset_url_from_release "$target")"
+  release_tag="$(resolve_release_tag)"
+  [[ -n "$release_tag" ]] || die "Не удалось определить тег релиза"
 
-  log "Релиз: ${release_tag}${release_name:+ (${release_name})}"
+  asset_url="$(find_asset_url "$release_tag" "$target")"
+  [[ -n "$asset_url" ]] \
+    || die "Не найден ассет под ${target} в релизе ${release_tag}"
+
+  log "Релиз: ${release_tag}"
 
   if [[ -z "$FORCE" ]]; then
     case "$CHANNEL" in
@@ -449,7 +427,7 @@ main() {
         ;;
       nightly)
         local new_sha installed_sha
-        new_sha="$(get_nightly_commit_sha "$release_json")"
+        new_sha="$(get_nightly_commit_sha)"
         installed_sha=""
         if [[ -f "$NIGHTLY_COMMIT_FILE" ]]; then
           installed_sha="$(cat "$NIGHTLY_COMMIT_FILE" 2>/dev/null || true)"
@@ -480,7 +458,7 @@ main() {
 
   if [[ "$CHANNEL" == "nightly" ]]; then
     local saved_sha
-    saved_sha="$(get_nightly_commit_sha "$release_json")"
+    saved_sha="$(get_nightly_commit_sha)"
     if [[ -n "$saved_sha" ]]; then
       mkdir -p "$(dirname "$NIGHTLY_COMMIT_FILE")"
       printf '%s\n' "$saved_sha" > "$NIGHTLY_COMMIT_FILE"
