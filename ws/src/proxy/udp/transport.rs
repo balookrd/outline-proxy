@@ -7,8 +7,7 @@ use tracing::{debug, info, warn};
 use outline_metrics as metrics;
 use socks5_proto::TargetAddr;
 use outline_transport::{
-    UdpSessionTransport, UdpWsTransport, connect_shadowsocks_udp_with_source,
-    connect_websocket_with_source,
+    UdpSessionTransport, UdpWsTransport, connect_shadowsocks_udp_with_source, global_resume_cache,
 };
 use outline_uplink::{
     FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
@@ -165,19 +164,29 @@ async fn dial_udp_fallback(
                 )
             })?;
             let mode = fallback.udp_dial_mode();
-            let ws = connect_websocket_with_source(
+            let keepalive = uplinks.load_balancing().udp_ws_keepalive_interval;
+            // Resume-cache participation (same key as primary's UDP dial)
+            // so an X-Outline-Resume token issued by VLESS-UDP earlier in
+            // this session re-attaches the upstream session on the WS
+            // fallback dial.
+            let resume_key = uplinks.resume_cache_key_for(&parent.uplink.name, "udp");
+            let resume_request = global_resume_cache().get(&resume_key);
+            let (transport, issued, _downgraded_from) = UdpWsTransport::connect_with_resume(
                 cache,
                 url,
                 mode,
+                fallback.cipher,
+                &fallback.password,
                 fallback.fwmark,
                 fallback.ipv6_first,
                 source,
+                keepalive,
+                resume_request,
             )
             .await
             .with_context(|| format!("fallback ws dial to {url} failed"))?;
-            let keepalive = uplinks.load_balancing().udp_ws_keepalive_interval;
-            UdpWsTransport::from_websocket(ws, fallback.cipher, &fallback.password, source, keepalive)
-                .map(UdpSessionTransport::Ss)
+            global_resume_cache().store_if_issued(resume_key, issued);
+            Ok(UdpSessionTransport::Ss(transport))
         },
         UplinkTransport::Vless => {
             // Phase 2: VLESS UDP fallback needs the QUIC mux + WS fallback
