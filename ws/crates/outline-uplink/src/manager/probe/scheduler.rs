@@ -240,7 +240,13 @@ impl UplinkManager {
                     );
                 },
                 Err(error) => {
-                    self.process_probe_err(index, &uplink, error);
+                    self.process_probe_err(
+                        index,
+                        &uplink,
+                        error,
+                        effective_tcp_mode,
+                        effective_udp_mode,
+                    );
                 },
             }
             // Per-wire probe walk: when primary failed, validate the
