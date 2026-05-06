@@ -100,4 +100,16 @@ impl UplinkManager {
             &mut h3_udp_recovery,
         );
     }
+
+    /// Feed a synthetic probe error through `process_probe_err`. Mirrors
+    /// `test_apply_probe_outcome_for_test` for the failure side: lets
+    /// inline tests exercise the failure-path bookkeeping (active-wire
+    /// advance on probe machinery error, consecutive_failures streak,
+    /// cooldown / penalty) without standing up real probe targets.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn test_apply_probe_err_for_test(&self, index: usize, error: anyhow::Error) {
+        let uplink = self.uplinks()[index].clone();
+        self.process_probe_err(index, &uplink, error);
+    }
 }

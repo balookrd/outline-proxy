@@ -323,23 +323,69 @@ impl UplinkManager {
         (refill_tcp, refill_udp)
     }
 
-    pub(super) fn process_probe_err(&self, index: usize, uplink: &Uplink, error: anyhow::Error) {
+    pub(crate) fn process_probe_err(&self, index: usize, uplink: &Uplink, error: anyhow::Error) {
         let now = Instant::now();
         let min_failures = self.inner.probe.min_failures as u32;
         let load_balancing = self.inner.load_balancing.clone();
         let error_text = format!("{error:#}");
+        let pin_duration = self.inner.load_balancing.mode_downgrade_duration;
+        let uplink_total_wires = 1 + uplink.fallbacks.len();
+        // Capture transitions for post-critical-section side effects (warm-
+        // standby pool drain). Same pattern as `process_probe_ok`.
+        let mut tcp_transitioned_to_fallback = false;
+        let mut udp_transitioned_to_fallback = false;
         self.inner.with_status_mut(index, |status| {
             status.last_checked = Some(now);
             record_transport_failure(&mut status.tcp, now, min_failures, &load_balancing);
+            // Mirror `process_probe_ok`'s probe-driven active-wire advance.
+            // Without this, a probe that errors out (WS handshake timeout,
+            // 404 on the XHTTP URL, TLS failure — anything that aborts the
+            // probe machinery itself before producing a `ProbeOutcome`)
+            // never flips `active_wire` even after `min_failures`
+            // consecutive errors, so a passive uplink whose primary is
+            // reachable enough to handshake but broken at the application
+            // layer would stay pinned to wire 0 forever — defeating the
+            // failover for the most common real-world failure mode (server
+            // disabled XHTTP but kept TLS / HTTPS responding).
+            tcp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
+                &mut status.tcp,
+                uplink_total_wires,
+                min_failures,
+                now,
+                pin_duration,
+            );
             // Only penalise UDP when it is actually configured.  The probe Err
             // path is usually a TCP connect failure; penalising UDP here when
             // there is no udp_ws_url would permanently mark UDP unhealthy for
             // TCP-only uplinks.
             if uplink.supports_udp() {
                 record_transport_failure(&mut status.udp, now, min_failures, &load_balancing);
+                udp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
+                    &mut status.udp,
+                    uplink_total_wires,
+                    min_failures,
+                    now,
+                    pin_duration,
+                );
             }
             status.last_error = Some(error_text.clone());
         });
+        // Same standby-drain side effect as `process_probe_ok` — entries in
+        // the pool are primary-wire-shaped and become stale once active
+        // moves off primary.
+        let runtime_present = tokio::runtime::Handle::try_current().is_ok();
+        if tcp_transitioned_to_fallback && runtime_present {
+            let manager = self.clone();
+            tokio::spawn(async move {
+                manager.drain_standby_pool(index, TransportKind::Tcp).await;
+            });
+        }
+        if udp_transitioned_to_fallback && runtime_present {
+            let manager = self.clone();
+            tokio::spawn(async move {
+                manager.drain_standby_pool(index, TransportKind::Udp).await;
+            });
+        }
         // Probe-level failure (ws connect / timeout).  Same H3 downgrade logic
         // as the tcp_ok=false case above; helper is a no-op for non-WS/non-H3.
         self.extend_mode_downgrade(
