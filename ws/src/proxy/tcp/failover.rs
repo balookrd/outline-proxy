@@ -28,6 +28,11 @@ pub(super) struct ConnectedTcpUplink {
     pub(super) writer: TcpWriter,
     pub(super) reader: TcpReader,
     pub(super) source: TcpUplinkSource,
+    /// Which wire of the parent uplink this connection rides. `0` means
+    /// primary; `1..=N` means `fallbacks[wire_index - 1]`. Carried through
+    /// to [`ActiveTcpUplink`] so the chunk-0 failover step can attempt
+    /// other wires of the same uplink before jumping to a different one.
+    pub(super) wire_index: u8,
 }
 
 /// All mutable state that tracks the currently-active uplink during the
@@ -44,6 +49,12 @@ pub(super) struct ActiveTcpUplink {
     pub(super) writer: TcpWriter,
     pub(super) reader: TcpReader,
     pub(super) source: TcpUplinkSource,
+    /// Which wire of `candidate.uplink` this connection rides
+    /// (`[primary, fallbacks[0], fallbacks[1], ...]`). Used by chunk-0
+    /// failover to avoid retrying the wire that just stalled and to
+    /// know which wires of this same uplink remain to try before
+    /// jumping to a different uplink.
+    pub(super) wire_index: u8,
 }
 
 impl ActiveTcpUplink {
@@ -55,6 +66,7 @@ impl ActiveTcpUplink {
             writer: connected.writer,
             reader: connected.reader,
             source: connected.source,
+            wire_index: connected.wire_index,
         }
     }
 
@@ -71,6 +83,7 @@ impl ActiveTcpUplink {
         self.writer = reconnected.writer;
         self.reader = reconnected.reader;
         self.source = reconnected.source;
+        self.wire_index = reconnected.wire_index;
     }
 
     /// Replace only the transport (writer/reader/source) while keeping the
@@ -80,6 +93,18 @@ impl ActiveTcpUplink {
         self.writer = reconnected.writer;
         self.reader = reconnected.reader;
         self.source = reconnected.source;
+        self.wire_index = reconnected.wire_index;
+    }
+
+    /// Replace the transport with a fresh dial of a *different* wire on
+    /// the same uplink. Updates `wire_index` and the io halves; uplink
+    /// identity (`index`, `name`, `candidate`) stays put. Used by the
+    /// wire-aware chunk-0 failover path.
+    pub(super) fn replace_wire(&mut self, reconnected: ConnectedTcpUplink) {
+        self.writer = reconnected.writer;
+        self.reader = reconnected.reader;
+        self.source = reconnected.source;
+        self.wire_index = reconnected.wire_index;
     }
 }
 
@@ -117,7 +142,7 @@ pub(super) async fn connect_tcp_uplink(
             connect_tcp_uplink_primary(uplinks, candidate, target).await
         } else {
             let fallback = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
-            connect_tcp_fallback_fresh(uplinks, candidate, fallback, target).await
+            connect_tcp_fallback_fresh(uplinks, candidate, fallback, target, wire_index).await
         };
         match attempt {
             Ok(connected) => {
@@ -180,6 +205,36 @@ pub(super) async fn connect_tcp_uplink(
         )))
 }
 
+/// Dial a specific wire on `candidate` — primary if `wire_index == 0`,
+/// `fallbacks[wire_index - 1]` otherwise. Used by the wire-aware chunk-0
+/// failover step to retry a different wire of the same uplink before
+/// falling through to a different uplink. Distinct from
+/// [`connect_tcp_uplink`] which iterates wires internally and picks the
+/// first one to succeed; the chunk-0 failover loop already knows which
+/// wire just failed and wants to skip it.
+pub(super) async fn connect_tcp_specific_wire(
+    uplinks: &UplinkManager,
+    candidate: &UplinkCandidate,
+    target: &TargetAddr,
+    wire_index: u8,
+) -> Result<ConnectedTcpUplink> {
+    if wire_index == 0 {
+        connect_tcp_uplink_primary(uplinks, candidate, target).await
+    } else {
+        let idx = (wire_index - 1) as usize;
+        let fallback = candidate
+            .uplink
+            .fallbacks
+            .get(idx)
+            .ok_or_else(|| anyhow!(
+                "uplink {} has no fallback at index {}",
+                candidate.uplink.name,
+                idx,
+            ))?;
+        connect_tcp_fallback_fresh(uplinks, candidate, fallback, target, wire_index).await
+    }
+}
+
 async fn connect_tcp_uplink_primary(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
@@ -206,6 +261,7 @@ async fn connect_tcp_uplink_primary(
             writer,
             reader,
             source: TcpUplinkSource::DirectSocket,
+            wire_index: 0,
         });
     }
 
@@ -222,6 +278,7 @@ async fn connect_tcp_uplink_primary(
                     writer,
                     reader,
                     source: TcpUplinkSource::Standby,
+                    wire_index: 0,
                 });
             }
             Err(e) => {
@@ -261,6 +318,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
                         writer,
                         reader,
                         source: TcpUplinkSource::FreshDial,
+                        wire_index: 0,
                     });
                 }
                 Err(e) => {
@@ -292,6 +350,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
         writer,
         reader,
         source: TcpUplinkSource::FreshDial,
+        wire_index: 0,
     })
 }
 
@@ -310,6 +369,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
     parent: &UplinkCandidate,
     fallback: &FallbackTransport,
     target: &TargetAddr,
+    wire_index: u8,
 ) -> Result<ConnectedTcpUplink> {
     let cache = uplinks.dns_cache();
     let setup = WireSetup::from_fallback(&parent.uplink.name, fallback);
@@ -343,6 +403,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
             writer,
             reader,
             source: TcpUplinkSource::DirectSocket,
+            wire_index,
         });
     }
 
@@ -396,6 +457,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
         writer,
         reader,
         source: TcpUplinkSource::FreshDial,
+        wire_index,
     })
 }
 

@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -78,6 +78,13 @@ pub(super) async fn try_uplinks(
     // Counts transparent same-uplink retries after a chunk-0 WS reset.
     // Reset to 0 whenever we switch to a different uplink.
     let mut rst_retries_on_current_uplink: u8 = 0;
+    // Per-uplink set of wires already attempted during this session's
+    // chunk-0 failover loop. Each entry seeds with the wire that just
+    // failed before failover_to_next_candidate is called, so the wire-
+    // handover phase doesn't immediately retry it. Survives across
+    // cross-uplink jumps so re-encountering the same uplink doesn't
+    // re-try wires we already exhausted on it.
+    let mut tried_wires_per_uplink: HashMap<usize, HashSet<u8>> = HashMap::new();
     // Single scratch buffer reused across every chunk-0 failover attempt.
     // Allocated once here so a chunk-0 failover does not re-allocate 64 KiB
     // per retry.
@@ -260,7 +267,15 @@ pub(super) async fn try_uplinks(
                 let failed_index = active.index;
                 let failed_uplink = Arc::clone(&active.name);
 
-                match failover_to_next_candidate(uplinks, active, target, tried_indexes).await? {
+                match failover_to_next_candidate(
+                    uplinks,
+                    active,
+                    target,
+                    tried_indexes,
+                    &mut tried_wires_per_uplink,
+                )
+                .await?
+                {
                     FailoverStep::NoCandidate => {
                         return Err(chunk0_error
                             .context("no alternative uplink available for chunk-0 failover"));
