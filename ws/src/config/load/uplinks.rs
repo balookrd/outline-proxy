@@ -386,6 +386,11 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             ipv6_first: ipv6_first.unwrap_or(false),
             vless_id,
             fingerprint_profile,
+            // Fallbacks are not yet wired through the schema → resolved →
+            // UplinkConfig pipeline. The struct field exists so downstream
+            // code can be written against the runtime shape; TOML parsing
+            // for `[[outline.uplinks.fallbacks]]` lands in a follow-up commit.
+            fallbacks: Vec::new(),
         })
     }
 }

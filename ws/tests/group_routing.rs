@@ -84,6 +84,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         ipv6_first: false,
         vless_id: None,
         fingerprint_profile: None,
+        fallbacks: Vec::new(),
     }
 }
 

@@ -195,6 +195,7 @@ fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         ipv6_first: false,
         vless_id: None,
         fingerprint_profile: None,
+        fallbacks: Vec::new(),
         }
 }
 

@@ -19,9 +19,10 @@ mod time;
 mod types;
 
 pub use config::{
-    CipherKind, DnsProbeConfig, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode,
-    ProbeConfig, RoutingScope, ServerAddr, TargetAddr, TcpProbeConfig, UplinkConfig,
-    UplinkGroupConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig, TransportMode,
+    CipherKind, DnsProbeConfig, FallbackTransport, HttpProbeConfig, LoadBalancingConfig,
+    LoadBalancingMode, ProbeConfig, RoutingScope, ServerAddr, TargetAddr, TcpProbeConfig,
+    UplinkConfig, UplinkGroupConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
+    TransportMode,
 };
 pub use share_link::VlessShareLink;
 #[cfg(test)]

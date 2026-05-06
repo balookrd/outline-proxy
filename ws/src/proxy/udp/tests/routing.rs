@@ -35,6 +35,7 @@ async fn classify_decision_unknown_group_falls_back_to_default() {
         ipv6_first: false,
         vless_id: None,
         fingerprint_profile: None,
+        fallbacks: Vec::new(),
         };
     let probe = ProbeConfig {
         interval: Duration::from_secs(120),

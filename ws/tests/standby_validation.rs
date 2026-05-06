@@ -88,6 +88,7 @@ async fn build_manager(
             ipv6_first: false,
             vless_id: None,
             fingerprint_profile: None,
+            fallbacks: Vec::new(),
         }],
         ProbeConfig {
             interval: Duration::from_secs(30),

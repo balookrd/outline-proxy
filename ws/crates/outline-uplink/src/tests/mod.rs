@@ -119,6 +119,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         ipv6_first: false,
         vless_id: None,
         fingerprint_profile: None,
+        fallbacks: Vec::new(),
     }
 }
 
@@ -1537,6 +1538,7 @@ fn make_ws_uplink_with_modes(
         ipv6_first: false,
         vless_id: None,
         fingerprint_profile: None,
+        fallbacks: Vec::new(),
     }
 }
 
@@ -1560,6 +1562,7 @@ fn make_vless_h3_uplink(name: &str, url: &str) -> UplinkConfig {
         ipv6_first: false,
         vless_id: Some([0u8; 16]),
         fingerprint_profile: None,
+        fallbacks: Vec::new(),
     }
 }
 
@@ -1583,6 +1586,7 @@ fn make_shadowsocks_uplink(name: &str) -> UplinkConfig {
         ipv6_first: false,
         vless_id: None,
         fingerprint_profile: None,
+        fallbacks: Vec::new(),
     }
 }
 
@@ -1724,6 +1728,7 @@ fn make_vless_xhttp_uplink_with_mode(
         ipv6_first: false,
         vless_id: Some([0u8; 16]),
         fingerprint_profile: None,
+        fallbacks: Vec::new(),
     }
 }
 
@@ -1832,4 +1837,55 @@ async fn note_silent_transport_fallback_marker_expires_after_window() {
 
     tokio::time::sleep(Duration::from_millis(80)).await;
     assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::WsH3);
+}
+
+#[tokio::test]
+async fn tcp_candidates_are_grouped_by_transport_kind() {
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_vless_h3_uplink("vless1", "wss://vless1.example.com/v"),
+            make_uplink("ws1", "wss://ws1.example.com/tcp"),
+            make_vless_h3_uplink("vless2", "wss://vless2.example.com/v"),
+            make_shadowsocks_uplink("ss1"),
+            make_uplink("ws2", "wss://ws2.example.com/tcp"),
+        ],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
+
+    for index in 0..5 {
+        set_tcp_status(&manager, index, true, 50).await;
+    }
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let candidates = manager.tcp_candidates(&target).await;
+    let names: Vec<_> = candidates.iter().map(|c| c.uplink.name.as_str()).collect();
+    assert_eq!(names, vec!["vless1", "vless2", "ws1", "ws2", "ss1"]);
+}
+
+#[tokio::test]
+async fn udp_candidates_are_grouped_by_transport_kind() {
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("ws1", "wss://ws1.example.com/tcp"),
+            make_shadowsocks_uplink("ss1"),
+            make_vless_h3_uplink("vless1", "wss://vless1.example.com/v"),
+            make_uplink("ws2", "wss://ws2.example.com/tcp"),
+        ],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
+
+    for index in 0..4 {
+        set_udp_status(&manager, index, true, 50).await;
+    }
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let candidates = manager.udp_candidates(Some(&target)).await;
+    let names: Vec<_> = candidates.iter().map(|c| c.uplink.name.as_str()).collect();
+    assert_eq!(names, vec!["ws1", "ws2", "ss1", "vless1"]);
 }
