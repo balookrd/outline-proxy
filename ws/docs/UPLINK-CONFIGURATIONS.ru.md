@@ -885,22 +885,34 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
   **любой** wire — primary или fallback — недавно успешно дозвонился
   в окне `runtime_failure_window`. Single-wire аплинки сохраняют
   probe-only гейтинг (никаких false-positive liveness из устаревших
-  primary-успехов). Это мост до per-wire probe walks — полное
-  per-wire тестирование остаётся отдельной задачей.
+  primary-успехов).
 - **Bootstrap pass-through.** Override по recent-success нуждается
-  хотя бы в одном предыдущем успешном дайле, чтобы зацепиться. Если
+  хотя бы в одном предыдущем wire-успехе, чтобы зацепиться. Если
   primary помечен probe'ом как unhealthy с самого первого цикла (или
   поднялся неработающим после рестарта) и `last_any_wire_success` ещё
   ни разу не штамповался, selection-слой всё равно пропускает аплинк
   в кандидаты — при условии, что fallbacks сконфигурированы и
   транспорт не в cooldown — чтобы dial-loop получил шанс попробовать
-  fallback. Иначе dial-loop (единственный, кто штампует
-  `last_any_wire_success`) и фильтр кандидатов блокируют друг друга,
-  и fallback никогда не активируется. Snapshot-side **effective
-  health** этим bootstrap-проходом НЕ пользуется: fallback wire,
-  который ещё ни разу не дозвонился, не должен светиться зелёным.
-  Дашборд становится зелёным только после реально успешного
-  fallback-дайла.
+  fallback. Иначе dial-loop (раньше — единственный, кто штамповал
+  `last_any_wire_success`) и фильтр кандидатов блокируют друг друга.
+  Snapshot-side **effective health** этим bootstrap-проходом НЕ
+  пользуется: fallback wire, который ещё ни разу не дозвонился, не
+  должен светиться зелёным. Дашборд становится зелёным только после
+  реально успешного fallback-дайла или валидации fallback-wire
+  пробой (см. ниже).
+- **Per-wire probe walks.** Когда primary в этом цикле упал И у
+  аплинка есть fallback, шедулер делает дополнительный probe-проход
+  по активному fallback wire — индекс `max(active_wire, 1)` — через
+  синтетическое per-wire представление аплинка
+  (`UplinkConfig::wire_view`). При успехе fallback-wire probe сам
+  штампует `last_any_wire_success`, так что пассивные аплинки без
+  клиентского трафика всё равно получают валидацию fallback'а и
+  светятся `*_health_effective = true` на дашборде. Обходит
+  warm-standby слоты (они приколочены к primary wire родителя) и не
+  кормит RTT EWMA / penalty / cooldown родителя — это scoring state
+  размечен под primary'ский трафик, и подмешивание латенси
+  fallback-wire probe'ов туда исказит EWMA. Fallback-wire probe
+  доставляет только boolean liveness-сигнал.
 - Тот же any-wire-сигнал кормит **effective health** на snapshot /
   Prometheus / дашборде. `UplinkSnapshot::tcp_health_effective` (и
   соответствующая Prometheus-gauge

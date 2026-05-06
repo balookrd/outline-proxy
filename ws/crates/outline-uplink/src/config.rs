@@ -75,9 +75,12 @@ pub struct UplinkGroupConfig {
 /// **not** inherited from the parent (different VLESS endpoints use different
 /// uuids by definition).
 ///
-/// Probe and runtime-state tracking remain attached to the parent uplink's
-/// primary transport in the current iteration. Active-wire-aware probing and
-/// auto-failback land in a follow-up.
+/// Runtime-state tracking (RTT EWMA, penalty, cooldown, mode-downgrade) is
+/// still attached to the parent uplink's primary transport — fallback wires
+/// share the parent's scoring state. Probe-time validation of fallback wires
+/// is wired through `UplinkConfig::wire_view` + the manager's per-wire probe
+/// walk, so `last_any_wire_success` and `*_health_effective` reflect a
+/// working fallback even on a passive uplink with no client traffic.
 #[derive(Debug, Clone)]
 pub struct FallbackTransport {
     pub transport: UplinkTransport,
@@ -271,6 +274,49 @@ impl UplinkConfig {
             UplinkTransport::Vless => self.vless_mode,
             _ => self.udp_mode,
         }
+    }
+
+    /// Materialise a per-wire view of this uplink as a synthetic
+    /// `UplinkConfig`. `wire_index = 0` returns the primary; `wire_index
+    /// = N` returns the `N - 1`-th fallback rendered as a standalone
+    /// uplink (its own `transport`, dial URLs, and credentials, with
+    /// `fallbacks` cleared so probe code paths can treat it as a single
+    /// wire). The synthetic uplink keeps the parent's `name` and
+    /// `weight` for log/metric attribution.
+    ///
+    /// Used by the per-wire probe walks: when primary is failing, the
+    /// scheduler probes the active fallback wire to validate it without
+    /// re-implementing the per-protocol probe logic.
+    ///
+    /// Returns `None` for `wire_index` outside `0..=fallbacks.len()`.
+    pub fn wire_view(&self, wire_index: usize) -> Option<UplinkConfig> {
+        if wire_index == 0 {
+            let mut view = self.clone();
+            view.fallbacks = Vec::new();
+            return Some(view);
+        }
+        let fb = self.fallbacks.get(wire_index - 1)?;
+        Some(UplinkConfig {
+            name: self.name.clone(),
+            transport: fb.transport,
+            tcp_ws_url: fb.tcp_ws_url.clone(),
+            tcp_mode: fb.tcp_mode,
+            udp_ws_url: fb.udp_ws_url.clone(),
+            udp_mode: fb.udp_mode,
+            vless_ws_url: fb.vless_ws_url.clone(),
+            vless_xhttp_url: fb.vless_xhttp_url.clone(),
+            vless_mode: fb.vless_mode,
+            tcp_addr: fb.tcp_addr.clone(),
+            udp_addr: fb.udp_addr.clone(),
+            cipher: fb.cipher,
+            password: fb.password.clone(),
+            weight: self.weight,
+            fwmark: fb.fwmark,
+            ipv6_first: fb.ipv6_first,
+            vless_id: fb.vless_id,
+            fingerprint_profile: fb.fingerprint_profile.clone(),
+            fallbacks: Vec::new(),
+        })
     }
 }
 

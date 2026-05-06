@@ -221,6 +221,12 @@ impl UplinkManager {
             };
             let mut refill_tcp = false;
             let mut refill_udp = false;
+            // Whether to chase up with a fallback-wire probe pass. Decided
+            // against the primary outcome before the match consumes it.
+            let primary_failing = match &outcome {
+                Ok(r) => !r.tcp_ok || (r.udp_applicable && !r.udp_ok),
+                Err(_) => true,
+            };
             match outcome {
                 Ok(result) => {
                     (refill_tcp, refill_udp) = self.process_probe_ok(
@@ -236,6 +242,21 @@ impl UplinkManager {
                 Err(error) => {
                     self.process_probe_err(index, &uplink, error);
                 },
+            }
+            // Per-wire probe walk: when primary failed, validate the
+            // active fallback wire so `last_any_wire_success` (and the
+            // dashboard / Prometheus `*_health_effective` view) reflect
+            // a working fallback even on a passive uplink with no
+            // client traffic. No-op when the uplink has no fallbacks.
+            if primary_failing && !uplink.fallbacks.is_empty() {
+                self.run_fallback_wire_probe(
+                    index,
+                    &uplink,
+                    Arc::clone(&self.inner.dns_cache),
+                    self.inner.probe.clone(),
+                    Arc::clone(&self.inner.probe_dial_limit),
+                )
+                .await;
             }
 
             if refill_tcp {
