@@ -78,6 +78,18 @@ struct ControlUplinkTopology {
     active_tcp_reason: Option<String>,
     active_udp: bool,
     active_udp_reason: Option<String>,
+    /// Configured per-uplink fallback transports (`[[outline.uplinks.fallbacks]]`).
+    /// Empty when the uplink is single-wire. The dashboard renders these as the
+    /// `primary → fb[0] → fb[1]` chain pill below the protocol cell.
+    configured_fallbacks: Vec<String>,
+    /// Index into `[primary, fallbacks[0], …]` of the wire currently carrying
+    /// TCP traffic. Always `0` for single-wire uplinks.
+    tcp_active_wire: u8,
+    udp_active_wire: u8,
+    /// Remaining auto-failback pin time on the active wire when it is *not* the
+    /// primary, in ms. `None` when the primary is active or no pin is in flight.
+    tcp_active_wire_pin_remaining_ms: Option<u128>,
+    udp_active_wire_pin_remaining_ms: Option<u128>,
 }
 
 /// Resolve the effective submode for one direction. Returns the
@@ -229,6 +241,11 @@ fn build_uplink_topology(
         active_udp_reason: (snapshot.udp_active_uplink.as_deref() == Some(uplink.name.as_str()))
             .then(|| snapshot.udp_active_reason.clone())
             .flatten(),
+        configured_fallbacks: uplink.configured_fallbacks.clone(),
+        tcp_active_wire: uplink.tcp_active_wire,
+        udp_active_wire: uplink.udp_active_wire,
+        tcp_active_wire_pin_remaining_ms: uplink.tcp_active_wire_pin_remaining_ms,
+        udp_active_wire_pin_remaining_ms: uplink.udp_active_wire_pin_remaining_ms,
     }
 }
 

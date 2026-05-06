@@ -181,6 +181,9 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .proto-pill .proto-leg { font-size: 9.5px; opacity: .7; margin-right: 5px; padding: 1px 5px; border-radius: 4px; background: rgba(0,0,0,.12); letter-spacing: .04em; }
 .proto-stack { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .proto-pill.proto-downgraded { border-style: dashed; box-shadow: inset 0 0 0 1px rgba(214, 130, 30, .35); }
+.proto-pill.proto-failed { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); border-style: solid; box-shadow: inset 0 0 0 1px rgba(185, 28, 28, .35); }
+.proto-pill.proto-failed .proto-leg { background: rgba(185, 28, 28, .18); color: #7f1d1d; opacity: .9; }
+.proto-pill .proto-fail { margin-left: 5px; font-size: 10px; font-weight: 800; letter-spacing: .06em; }
 .proto-pill .proto-dg { margin-left: 5px; font-size: 10px; opacity: .85; color: #b8631a; }
 .proto-pill .proto-submode { margin-left: 4px; padding: 0 4px; font-size: 9.5px; opacity: .8; border-radius: 4px; background: rgba(0,0,0,.1); letter-spacing: .04em; }
 .proto-pill .proto-submode.proto-downgraded { border-style: solid; box-shadow: none; color: #b8631a; background: rgba(214, 130, 30, .15); opacity: 1; }
@@ -366,9 +369,14 @@ function transportLabel(mode) {
   if (v === "ws_h2"||v === "h2") return "WS/H2";
   if (v === "ws_h3"||v === "h3") return "WS/H3";
   if (v === "quic") return "QUIC";
+  if (v === "xhttp_h1") return "XHTTP/H1";
   if (v === "xhttp_h2") return "XHTTP/H2";
   if (v === "xhttp_h3") return "XHTTP/H3";
-  return null;
+  if (!v) return null;
+  // Defensive: surface unknown effective modes verbatim instead of
+  // silently dropping the carrier from the pill (which made an
+  // `xhttp_h1` cap-down look like plain VLESS over TLS).
+  return v.toUpperCase();
 }
 function stackLabel(transport, mode) {
   const t = String(transport || "").toLowerCase();
@@ -399,14 +407,18 @@ function submodeSuffix(submode, effective, downgraded) {
   if (submode === "stream-one") return ["<span class=\"proto-submode\">(S)</span>", "submode: stream-one"];
   return ["<span class=\"proto-submode\">(P)</span>", "submode: packet-up"];
 }
-function legPill(t, cls, leg, configured, effective, downgraded, submode, submodeEff, submodeDg) {
+function legPill(t, cls, leg, configured, effective, downgraded, submode, submodeEff, submodeDg, failed) {
   const dg = downgraded ? " proto-downgraded" : "";
+  const fail = failed ? " proto-failed" : "";
   const star = downgraded ? "<span class=\"proto-dg\">↘</span>" : "";
+  const failMark = failed ? "<span class=\"proto-fail\">✕ DOWN</span>" : "";
   const [submodeHtml, submodeTitle] = submodeSuffix(submode, submodeEff, submodeDg);
-  const baseTitle = downgraded ? downgradeTitle(configured, effective, leg) : `${leg} path`;
+  const baseTitle = failed
+    ? `${leg || "wire"} unhealthy — no working transport (latest dial failed)`
+    : (downgraded ? downgradeTitle(configured, effective, leg) : `${leg} path`);
   const title = submodeTitle ? `${baseTitle} · ${submodeTitle}` : baseTitle;
   const legTag = leg ? `<span class="proto-leg">${leg}</span>` : "";
-  return `<span class="proto-pill ${cls}${dg}" title="${escapeHtml(title)}">${legTag}${escapeHtml(stackLabel(t, effective))}${star}${submodeHtml}</span>`;
+  return `<span class="proto-pill ${cls}${dg}${fail}" title="${escapeHtml(title)}">${legTag}${escapeHtml(stackLabel(t, effective))}${star}${submodeHtml}${failMark}</span>`;
 }
 function protocolPill(uplink) {
   const t = String(uplink.transport || "").toLowerCase();
@@ -423,16 +435,20 @@ function protocolPill(uplink) {
   const udpSmEff = uplink.udp_xhttp_submode_effective || udpSm;
   const tcpSmDg = !!uplink.tcp_xhttp_submode_downgrade_active && tcpSm !== tcpSmEff;
   const udpSmDg = !!uplink.udp_xhttp_submode_downgrade_active && udpSm !== udpSmEff;
+  const tcpFailed = uplink.tcp_healthy === false;
+  const udpFailed = uplink.udp_healthy === false;
   if (t === "shadowsocks") {
-    return `<span class="proto-pill ${cls}" title="encapsulation/transport">${escapeHtml(stackLabel(t))}</span>`;
+    const ssFail = (tcpFailed || udpFailed) ? " proto-failed" : "";
+    const ssMark = (tcpFailed || udpFailed) ? "<span class=\"proto-fail\">✕ DOWN</span>" : "";
+    return `<span class="proto-pill ${cls}${ssFail}" title="encapsulation/transport">${escapeHtml(stackLabel(t))}${ssMark}</span>`;
   }
   const sameSubmode = tcpSm === udpSm && tcpSmEff === udpSmEff && tcpSmDg === udpSmDg;
-  if (tcpMode && udpMode && tcpMode === udpMode && tcpEff === udpEff && tcpDg === udpDg && sameSubmode) {
-    return legPill(t, cls, "", tcpMode, tcpEff, tcpDg, tcpSm, tcpSmEff, tcpSmDg);
+  if (tcpMode && udpMode && tcpMode === udpMode && tcpEff === udpEff && tcpDg === udpDg && sameSubmode && tcpFailed === udpFailed) {
+    return legPill(t, cls, "", tcpMode, tcpEff, tcpDg, tcpSm, tcpSmEff, tcpSmDg, tcpFailed);
   }
   const parts = [];
-  if (tcpMode) parts.push(legPill(t, cls, "TCP", tcpMode, tcpEff, tcpDg, tcpSm, tcpSmEff, tcpSmDg));
-  if (udpMode) parts.push(legPill(t, cls, "UDP", udpMode, udpEff, udpDg, udpSm, udpSmEff, udpSmDg));
+  if (tcpMode) parts.push(legPill(t, cls, "TCP", tcpMode, tcpEff, tcpDg, tcpSm, tcpSmEff, tcpSmDg, tcpFailed));
+  if (udpMode) parts.push(legPill(t, cls, "UDP", udpMode, udpEff, udpDg, udpSm, udpSmEff, udpSmDg, udpFailed));
   if (!parts.length) return `<span class="proto-pill ${cls}">${escapeHtml(protocolLabel(t))}</span>`;
   return `<div class="proto-stack">${parts.join("")}</div>`;
 }

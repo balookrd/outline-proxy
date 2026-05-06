@@ -169,10 +169,10 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_xhttp_submode_block_remaining_ms: None,
                 last_active_tcp_ago_ms: None,
                 last_active_udp_ago_ms: None,
-                configured_fallbacks: Vec::new(),
-                tcp_active_wire: 0,
+                configured_fallbacks: vec!["xhttp_h2".to_string(), "ws_h2".to_string()],
+                tcp_active_wire: 1,
                 udp_active_wire: 0,
-                tcp_active_wire_pin_remaining_ms: None,
+                tcp_active_wire_pin_remaining_ms: Some(7_500),
                 udp_active_wire_pin_remaining_ms: None,
             },
         ],
@@ -261,6 +261,15 @@ fn topology_serialization_shape_has_active_flags() {
     assert_eq!(json["instance"]["groups"][0]["uplinks"][0]["active_tcp"], false);
     assert_eq!(json["instance"]["groups"][0]["uplinks"][1]["active_tcp"], true);
     assert_eq!(json["instance"]["groups"][0]["uplinks"][1]["last_error"], "tcp failed");
+    let u1 = &json["instance"]["groups"][0]["uplinks"][1];
+    assert_eq!(u1["configured_fallbacks"], serde_json::json!(["xhttp_h2", "ws_h2"]));
+    assert_eq!(u1["tcp_active_wire"], 1);
+    assert_eq!(u1["udp_active_wire"], 0);
+    assert_eq!(u1["tcp_active_wire_pin_remaining_ms"], 7_500);
+    assert!(u1["udp_active_wire_pin_remaining_ms"].is_null());
+    let u0 = &json["instance"]["groups"][0]["uplinks"][0];
+    assert_eq!(u0["configured_fallbacks"], serde_json::json!([]));
+    assert_eq!(u0["tcp_active_wire"], 0);
 }
 
 #[test]
