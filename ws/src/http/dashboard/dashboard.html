@@ -513,20 +513,26 @@ function fallbackChainPill(uplink) {
   // broken rows.
   const wireChain = Array.isArray(uplink.configured_wire_chain) ? uplink.configured_wire_chain : [];
   const buildWires = (legKey) => {
+    // For the wire 0 chip we prefer the **effective** carrier mode on
+    // the named leg — that's what the top pill used to show, and it
+    // reflects the carrier currently in use (e.g. `xhttp_h2` after an
+    // `xhttp_h3 → h2` downgrade) rather than the configured-on-disk
+    // shape. Wire 1+ chips read their configured mode straight from
+    // the snapshot's wire chain because per-wire effective-mode
+    // tracking isn't exposed in the snapshot yet.
+    const effectiveKey = `${legKey}_effective`;
     if (wireChain.length) {
-      return wireChain.map(w => ({
+      return wireChain.map((w, i) => ({
         transport: String((w && w.transport) || "?").toLowerCase(),
-        // Pick the leg-specific mode so the TCP and UDP chains show
-        // their own carrier shapes when they diverge (a WS uplink with
-        // tcp_mode=ws_h3 + udp_mode=ws_h2, say). Falls back to the other
-        // leg's mode when one is missing — VLESS wires share the same
-        // mode for both legs anyway, so this is just safe.
-        mode: w ? (w[legKey] || w.tcp_mode || w.udp_mode || null) : null,
+        mode: i === 0
+          ? (uplink[effectiveKey] || (w && (w[legKey] || w.tcp_mode || w.udp_mode)) || null)
+          : (w ? (w[legKey] || w.tcp_mode || w.udp_mode || null) : null),
       }));
     }
-    const primaryMode = legKey === "tcp_mode"
-      ? (uplink.tcp_mode || uplink.udp_mode || null)
-      : (uplink.udp_mode || uplink.tcp_mode || null);
+    const primaryMode = uplink[effectiveKey]
+      || uplink[legKey]
+      || (legKey === "tcp_mode" ? uplink.udp_mode : uplink.tcp_mode)
+      || null;
     return [
       { transport: String(uplink.transport || "?").toLowerCase(), mode: primaryMode },
       ...fallbacks.map(t => ({ transport: String(t).toLowerCase(), mode: null })),
@@ -569,8 +575,18 @@ function fallbackChainPill(uplink) {
       } else if (isActive) {
         cls += " fb-active";
       }
-      const submodeHtml = (i === 0) ? submodeSuffix(deco.sm, deco.smEff, deco.smDg)[0] : "";
-      const dgArrow = (i === 0 && deco.dg)
+      // Submode + downgrade decorations follow the **active** wire so the
+      // active chip carries the same level of detail the (now-removed)
+      // top pill used to surface — submode badge, ↘ auto-downgrade arrow,
+      // effective-mode label. Today the underlying snapshot fields
+      // (`*_xhttp_submode*`, `*_downgrade_active`) are uplink-level and
+      // primary-bound, so when the dial loop is on a fallback wire these
+      // decorations describe primary's last-known mode state. That still
+      // matches what the top pill showed before (primary's effective
+      // shape) and gives the operator a single chip per leg to read at
+      // a glance.
+      const submodeHtml = (i === activeIdx) ? submodeSuffix(deco.sm, deco.smEff, deco.smDg)[0] : "";
+      const dgArrow = (i === activeIdx && deco.dg)
         ? '<span class="fb-dg" title="carrier auto-downgraded (configured H3/QUIC unreachable)">↘</span>'
         : "";
       const downMark = (isActive && allDown)
@@ -579,11 +595,19 @@ function fallbackChainPill(uplink) {
       const pin = (isActive && i !== 0 && typeof pinMs === "number")
         ? `<span class="fb-pin" title="auto-failback in">⏱ ${(pinMs / 1000).toFixed(0)}s</span>`
         : "";
-      const label = stackLabel(w.transport, w.mode);
-      const titleParts = [`wire #${i}: ${label}`];
-      if (i === 0 && deco.dg) titleParts.push("auto-downgraded from configured carrier");
+      // Verbose label (`VLESS/WS/H3`) only on the active chip — that's
+      // where the operator looks for "what's the actual carrier shape
+      // right now". Non-active chips collapse to the transport family
+      // alone (`VLESS`, `WS`) — they're chain markers, not full
+      // protocol descriptors. The full label still lives in the chip's
+      // `title` for hover so an operator can confirm without clicking
+      // through to the raw snapshot.
+      const fullLabel = stackLabel(w.transport, w.mode);
+      const visible = (i === activeIdx) ? fullLabel : protocolLabel(w.transport);
+      const titleParts = [`wire #${i}: ${fullLabel}`];
+      if (i === activeIdx && deco.dg) titleParts.push("auto-downgraded from configured carrier");
       const title = titleParts.join(" · ");
-      return `<span class="${cls}" title="${escapeHtml(title)}">${escapeHtml(label)}${submodeHtml}${dgArrow}${downMark}</span>${pin}`;
+      return `<span class="${cls}" title="${escapeHtml(title)}">${escapeHtml(visible)}${submodeHtml}${dgArrow}${downMark}</span>${pin}`;
     }).join('<span class="fb-arrow">›</span>');
     const legTag = legLabel ? `<span class="proto-leg">${legLabel}</span>` : "";
     return `<div class="fb-chain">${legTag}${links}</div>`;
@@ -598,16 +622,32 @@ function fallbackChainPill(uplink) {
   // Decide whether to render one or two lines. Diverge on:
   //   * which wire is active per leg,
   //   * presence of an asymmetric pin,
-  //   * configured TCP vs UDP modes anywhere in the chain (a WS uplink
-  //     with `tcp_mode != udp_mode` per wire shows two visibly different
-  //     carrier shapes — collapsing them would hide that).
+  //   * the **active** wire's TCP vs UDP mode differing (only the active
+  //     chip displays the full label, so we only need to split when its
+  //     two legs would render different things — non-active chips show
+  //     just the transport family and naturally collapse).
   const tcpWires = buildWires("tcp_mode");
   const udpWires = buildWires("udp_mode");
-  const wiresDiverge = tcpWires.length !== udpWires.length
-    || tcpWires.some((w, i) => w.transport !== udpWires[i].transport || w.mode !== udpWires[i].mode);
+  const activeTcpWire = tcpWires[tcpActive];
+  const activeUdpWire = udpWires[udpActive];
+  const activeModeDiverge = activeTcpWire && activeUdpWire
+    && (activeTcpWire.transport !== activeUdpWire.transport
+        || activeTcpWire.mode !== activeUdpWire.mode);
+  // Per-leg decorations (submode, primary auto-downgrade, mode-effective)
+  // also drive the split: if TCP has an active downgrade but UDP doesn't
+  // — or the legs sit on different XHTTP submodes — collapsing the
+  // chains would hide the asymmetry. We split so each line carries its
+  // own ↘ arrow / submode badge.
+  const tcpDeco = decorations("tcp");
+  const udpDeco = decorations("udp");
+  const decoDiverge = tcpDeco.dg !== udpDeco.dg
+    || tcpDeco.sm !== udpDeco.sm
+    || tcpDeco.smEff !== udpDeco.smEff
+    || tcpDeco.smDg !== udpDeco.smDg;
   const sameLine = tcpActive === udpActive
     && (tcpPinMs == null) === (udpPinMs == null)
-    && !wiresDiverge;
+    && !activeModeDiverge
+    && !decoDiverge;
   const tcpFailed = uplink.tcp_healthy === false;
   const udpFailed = uplink.udp_healthy === false;
   if (sameLine) {
