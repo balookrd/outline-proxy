@@ -923,18 +923,19 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
   `udp_addr`), но fallback UDP-capable, всё равно попадает в
   UDP-выдачу.
 
-#### Оставшееся ограничение
+#### Поддерживаемые wire-формы VLESS-fallback'а
 
-- **VLESS-fallback поверх raw QUIC** (`vless_mode = "quic"`)
-  возвращает понятную ошибку. WS-семейство (`ws_h1` / `ws_h2` /
-  `ws_h3`) и XHTTP-семейство (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`)
-  оба работают как fallback'и, потому что используют carrier
-  `VlessUdpSessionMux`; raw QUIC требует `VlessUdpHybridMux` и его
-  хуков `on_fallback` / `on_downgrade`, которым нужен per-wire
-  mode-tracking для корректной атрибуции fallback-наблюдения.
-  Операторам, которым конкретно нужен QUIC-бэкап, стоит объявить
-  второй primary VLESS-аплинк с `vless_mode = "quic"` в той же группе
-  как обходной путь.
+- **Все три формы работают как VLESS-fallback** теперь: `ws_h1` /
+  `ws_h2` / `ws_h3` (WS-семейство), `xhttp_h1` / `xhttp_h2` /
+  `xhttp_h3` (XHTTP-семейство) и `quic` (raw QUIC). QUIC-mode идёт
+  через ту же машинерию `VlessUdpHybridMux`, что primary VLESS-UDP
+  (QUIC-mux + WS-over-H2 fallback factory), но все per-uplink хуки
+  привязаны к *слоту fallback wire'а* в per-wire mode-downgrade,
+  а не к primary'и. Так что fallback-wire'овский `quic`-дайл,
+  который провалился и переключился на WS-H2, записывает QUIC-провал
+  в свой слот, и следующие дайлы того же fallback-wire'а пропускают
+  QUIC сразу, пока окно даунгрейда wire'а не истечёт — точно
+  отражая поведение primary, без загрязнения его mode-tracking'а.
 
 ### Inline-стенограмма `[outline]`
 
