@@ -1,3 +1,5 @@
+mod fallback;
+
 use anyhow::anyhow;
 use futures_util::StreamExt;
 use std::time::Duration;

@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use super::groups::merge_probe_section;
 use super::routing::resolve_config_path;
+
+mod uplinks;
 use super::super::schema::{
     DnsProbeSection, HttpProbeSection, ProbeSection, TcpProbeSection, WsProbeSection,
 };
