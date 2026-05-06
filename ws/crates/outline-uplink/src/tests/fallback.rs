@@ -478,3 +478,69 @@ fn record_wire_outcome_stamps_last_any_wire_success() {
         &lb,
     ));
 }
+
+// ── Early failback via probe-recovery ────────────────────────────────────────
+//
+// `record_transport_success` (probe path) snaps `active_wire` back to primary
+// as soon as the primary wire's probe accumulates `min_failures` consecutive
+// successes — short-circuiting the auto-failback timer. The probe always
+// targets the primary wire in this iteration, so a probe success directly
+// proves primary recovery; no per-wire probe machinery needed for this
+// optimisation.
+
+#[test]
+fn probe_recovery_snaps_active_wire_back_to_primary() {
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    // min_failures = 2 so we can verify the streak threshold.
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![cfg],
+        make_probe(2),
+        // Pin window long enough that timer-driven failback can't be the
+        // explanation for the snap-back we observe.
+        make_lb(std::time::Duration::from_secs(3600)),
+    )
+    .unwrap();
+
+    // Drive active wire onto a fallback by failing the primary's dial twice.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        1,
+        "primary failed past min_failures, active should advance to fallback",
+    );
+
+    // First probe success on primary: not enough yet (min_failures=2).
+    manager.test_apply_probe_outcome_for_test(
+        0,
+        ProbeOutcome { tcp_ok: true, udp_ok: false, udp_applicable: false, tcp_latency: None, udp_latency: None, tcp_downgraded_from: None, udp_downgraded_from: None },
+    );
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        1,
+        "single probe success below threshold must not flip back to primary",
+    );
+
+    // Second consecutive probe success: threshold reached → snap back.
+    manager.test_apply_probe_outcome_for_test(
+        0,
+        ProbeOutcome { tcp_ok: true, udp_ok: false, udp_applicable: false, tcp_latency: None, udp_latency: None, tcp_downgraded_from: None, udp_downgraded_from: None },
+    );
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        0,
+        "second consecutive probe success crosses min_failures, primary regains active",
+    );
+
+    // Pin must be cleared so a future failure starts a fresh streak.
+    let snap = manager.read_status_for_test(0);
+    assert!(
+        snap.tcp.active_wire_pinned_until.is_none(),
+        "early failback must clear the pin",
+    );
+    assert_eq!(snap.tcp.active_wire_streak, 0);
+}

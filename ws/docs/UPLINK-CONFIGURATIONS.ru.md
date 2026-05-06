@@ -837,6 +837,15 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
   (primary), и следующая сессия снова пробует первый-выбор оператора.
   Если primary всё ещё сломан, streak пересобирается — таймер это
   rate-limit на retry, а не one-shot.
+- **Ранний failback через probe-recovery.** Probe (в этой итерации
+  всё ещё primary-only) триггерит немедленный snap-back на primary,
+  как только наберёт `probe.min_failures` подряд успехов — pin timer
+  это не жёсткий wait. Если primary оправился за пару probe-циклов
+  (типично 2 × `probe.interval_secs`), трафик возвращается к нему
+  задолго до естественного истечения 60-секундного пина. Тот же knob
+  `min_failures` это и failure-threshold, и success-stability (одна
+  ментальная модель: N подряд probe-исходов перекидывают active wire
+  в любую сторону).
 - Состояние **per-transport**: TCP и UDP двигаются независимо
   (`PerTransportStatus::active_wire` разделено per-transport).
   Метрика `outline_ws_rust_uplink_active_wire_index{transport}`
