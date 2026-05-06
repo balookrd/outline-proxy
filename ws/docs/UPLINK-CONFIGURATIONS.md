@@ -804,42 +804,108 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
 
 ### Behaviour
 
-- The dial loop tries `primary → fallbacks[0] → fallbacks[1] → …` on a
-  single session basis. Each new session restarts at the primary; there
-  is no per-uplink "active wire" memory in this iteration (Phase 2
-  feature).
-- A successful fallback dial is **invisible** to the load-balancer
-  beyond an `outline_uplink_selected` metric tick. The parent's
-  `report_runtime_failure` counter is only bumped when **every** wire
-  on this uplink (primary + all fallbacks) has failed — so transient
-  primary outages no longer demote the whole uplink as long as a
-  fallback works.
-- Probe still targets the **primary** transport in this iteration. The
-  probe-confirmed health status of the parent uplink is read from the
-  primary wire only; a flapping primary that always recovers via a
-  fallback may still surface as `tcp_healthy = Some(false)` once the
-  probe accumulates `min_failures` consecutive failures. Routing
-  fallback to the active wire is a Phase-2 feature.
+#### Per-session dial loop
+
+- For each new session the dial loop iterates wires in
+  `wire_dial_order` — starting at the **active wire** (initially `0` =
+  primary; advanced by the sticky-fallback state machine described
+  below) and wrapping through the rest of the chain so primary is
+  still tried as a last resort even when active is pinned to a
+  fallback. The first wire that successfully dials carries the session.
+- A successful dial is **invisible** to the load-balancer beyond an
+  `outline_uplink_selected` metric tick. The parent's
+  `report_runtime_failure` counter is only bumped when every wire on
+  this uplink (primary + all fallbacks) has failed in the same
+  session — so transient single-wire outages no longer demote the
+  whole uplink as long as another wire works.
+
+#### Sticky fallback + auto-failback (active-wire state machine)
+
+- After **`probe.min_failures` consecutive dial failures** of the wire
+  that new sessions currently start with (`active_wire`), the dial
+  loop advances `active_wire` to the next wire in the chain and pins
+  it for `LoadBalancingConfig::mode_downgrade_duration` (one knob,
+  two uses — per-wire mode downgrades and per-uplink active-wire
+  pinning). Subsequent new sessions start at the sticky wire; the
+  primary is still in the dial chain at the end so a recovered
+  primary can still serve traffic if every other wire fails.
+- When the pin expires `active_wire` snaps back to `0` (primary) so
+  the next session retries the operator's first-choice wire. If
+  primary is still broken the failure streak rebuilds and we end up
+  pinned to the same fallback again — the timer is the rate-limit on
+  retry, not a one-shot.
+- State is **per-transport**: TCP and UDP advance independently
+  (`PerTransportStatus::active_wire` is split per transport).
+  `outline_ws_rust_uplink_active_wire_index{transport}` exposes the
+  current wire to dashboards.
+
+#### Mid-session handover (chunk-0 wire-aware failover)
+
+- If a session's chunk-0 stalls (no first byte from upstream within
+  `tcp_chunk0_failover_timeout`), the chunk-0 failover loop now first
+  tries every **other wire on the same uplink** (Phase A) before
+  jumping to a different uplink (Phase B). The X-Outline-Resume token
+  issued for the failed wire rides into the wire-handover dial via
+  the identity-level resume cache (see "Resume across wire switches"
+  below), so handover-via-resume is seamless on a feature-enabled
+  outline-ss-rust server. Wire-handover events surface on the
+  failover counter as `transport="tcp_wire"`; cross-uplink failovers
+  keep `transport="tcp"`.
+
+#### Resume across wire switches
+
+- Fallback TCP and UDP dials participate in
+  `outline_transport::global_resume_cache()` keyed on
+  `<uplink_name>#<transport>` — the **same identity-level key** the
+  primary path uses. A primary VLESS dial that issued an
+  `X-Outline-Resume` session id followed by a fallback WS dial after
+  primary fails presents that token on the fallback dial; the
+  server-side resume mechanism re-attaches the upstream session.
+  Works for any combination where both wires carry the WS-resume
+  header (WS, VLESS-WS, VLESS-XHTTP). Shadowsocks fallback has no WS
+  layer and dials fresh — the user-visible session restart there is
+  unavoidable.
+
+#### Liveness override
+
+- Without help, probe health on the primary wire would gate the whole
+  uplink out of selection (`selection_health` → `effective_health` →
+  false) and the fallback wire would never get a chance. To prevent
+  that, an uplink with at least one fallback configured is treated as
+  selectable when **any** wire — primary or fallback — has dialed
+  successfully within `runtime_failure_window`. Single-wire uplinks
+  keep their probe-only health gating intact (no false-positive
+  liveness from stale primary successes). This is the bridge until
+  per-wire probe walks land — full per-wire probing is a follow-up.
+
+#### Bypass list
+
 - The fallback dial bypasses the standby pool, mode-downgrade window,
-  cross-transport resume cache, and RTT-EWMA feed — those structures
-  are keyed on the parent's primary index/transport and are owned by
-  the active-wire-aware machinery that lands in Phase 2. DNS cache and
-  per-uplink fingerprint scope are preserved.
-- UDP candidate filter (`supports_transport_for_scope`) consults
+  and RTT-EWMA feed — those structures are keyed on the parent's
+  primary index/transport and reusing them for a fallback wire would
+  mis-park primary's mode. Per-wire variants of these are a follow-up.
+  DNS cache, per-uplink fingerprint scope, and the resume cache **are**
+  preserved across wire switches.
+
+#### UDP candidacy
+
+- The UDP candidate filter (`supports_transport_for_scope`) consults
   `UplinkConfig::supports_udp_any()` so an uplink whose primary is
   TCP-only (e.g. SS without `udp_addr`) but whose fallback is
   UDP-capable still shows up for UDP dispatch.
-- **Partial limitation:** VLESS-as-fallback over UDP works for the
-  WS family (`ws_h1` / `ws_h2` / `ws_h3`) and the XHTTP family
-  (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`); both share the
-  `VlessUdpSessionMux` carrier. VLESS-fallback over **raw QUIC**
-  (`vless_mode = "quic"`) returns a clear error — the
-  `VlessUdpHybridMux` machinery and its `on_fallback` /
-  `on_downgrade` hooks are keyed on the parent uplink's primary
-  index/transport, and per-wire mode tracking that lets those hooks
-  cleanly attribute a fallback observation is a follow-up. Operators
-  who specifically want a QUIC backup should declare a second
-  primary VLESS uplink with `vless_mode = "quic"` in the same group.
+
+#### Remaining limitation
+
+- **VLESS-fallback over raw QUIC** (`vless_mode = "quic"`) returns a
+  clear error. The WS family (`ws_h1` / `ws_h2` / `ws_h3`) and the
+  XHTTP family (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) both work as
+  fallbacks because they share the `VlessUdpSessionMux` carrier; raw
+  QUIC needs the `VlessUdpHybridMux` machinery and its
+  `on_fallback` / `on_downgrade` hooks, which still need per-wire
+  mode tracking to attribute fallback observations correctly.
+  Operators who specifically want a QUIC backup should declare a
+  second primary VLESS uplink with `vless_mode = "quic"` in the same
+  group as a workaround.
 
 ### Inline `[outline]` shorthand
 

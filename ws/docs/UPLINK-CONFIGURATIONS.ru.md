@@ -809,40 +809,105 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
 
 ### Поведение
 
-- Dial-loop пробует `primary → fallbacks[0] → fallbacks[1] → …`
-  для каждой сессии заново. Новая сессия снова стартует с primary —
-  per-аплинковой памяти про «активный wire» в этой итерации нет
-  (это фаза 2).
-- Успешный fallback-дайл **невидим** для балансировщика, кроме тика
-  метрики `outline_uplink_selected`. `report_runtime_failure` родителя
-  инкрементируется только когда провалились **все** wire'ы аплинка —
-  транзиентные сбои primary'а больше не демотят аплинк целиком, пока
-  работает хоть один fallback.
-- Probe в этой итерации продолжает дёргать **primary**. Probe-
-  подтверждённый health-статус читается с primary-wire; флапающий
-  primary, всегда восстанавливающийся через fallback, всё равно может
-  показаться как `tcp_healthy = Some(false)` после `min_failures`
-  подряд probe-failures. Маршрутизация probe на active-wire — фаза 2.
-- Fallback-дайл обходит standby pool, mode-downgrade окно,
-  cross-transport resume cache и RTT-EWMA — эти структуры приколочены
-  к primary index/transport и принадлежат active-wire-aware
-  механизму, который придёт в фазе 2. DNS-кэш и per-uplink fingerprint
-  scope сохраняются.
-- UDP-фильтр кандидатов (`supports_transport_for_scope`) теперь
+#### Per-сессионный dial-loop
+
+- Для каждой новой сессии dial-loop итерирует wire'ы по
+  `wire_dial_order` — стартует с **активного wire'а** (изначально `0`
+  = primary; продвигается state-машиной sticky-fallback ниже) и
+  заворачивается через остальную цепочку, чтобы primary всё ещё был
+  протестирован last-resort'ом, даже если активный приколот к
+  fallback'у. Первый wire, который успешно дозвонился, несёт сессию.
+- Успешный дайл **невидим** для балансировщика кроме тика метрики
+  `outline_uplink_selected`. `report_runtime_failure` родителя
+  инкрементируется только когда **все** wire'ы аплинка провалились в
+  одной сессии — транзиентные сбои одного wire'а больше не демотят
+  аплинк целиком, пока работает другой.
+
+#### Sticky fallback + auto-failback (active-wire state machine)
+
+- После **`probe.min_failures` подряд провалов dial'а** wire'а, с
+  которого новые сессии сейчас стартуют (`active_wire`), dial-loop
+  продвигает `active_wire` на следующий wire в цепочке и пинит его
+  на `LoadBalancingConfig::mode_downgrade_duration` (один knob, два
+  применения — per-wire mode-downgrade и per-uplink active-wire
+  pin). Последующие новые сессии стартуют со sticky-wire'а; primary
+  всё ещё в конце dial-цепочки, так что recovered primary может
+  обслуживать трафик, если все остальные wire'ы провалились.
+- По истечении пина `active_wire` сбрасывается обратно на `0`
+  (primary), и следующая сессия снова пробует первый-выбор оператора.
+  Если primary всё ещё сломан, streak пересобирается — таймер это
+  rate-limit на retry, а не one-shot.
+- Состояние **per-transport**: TCP и UDP двигаются независимо
+  (`PerTransportStatus::active_wire` разделено per-transport).
+  Метрика `outline_ws_rust_uplink_active_wire_index{transport}`
+  показывает текущий wire для дашбордов.
+
+#### Mid-session handover (chunk-0 wire-aware failover)
+
+- Если у сессии чанк-0 застрял (нет первого байта от upstream'а в
+  пределах `tcp_chunk0_failover_timeout`), цикл chunk-0 failover
+  теперь сначала пробует все остальные wire'ы **этого же** аплинка
+  (Phase A) перед прыжком на другой аплинк (Phase B). Токен
+  X-Outline-Resume, выпущенный для провалившегося wire'а, едет в
+  wire-handover dial через identity-level resume-cache (см. «Resume
+  через wire-свитчи» ниже), так что handover-via-resume бесшовен на
+  сервере outline-ss-rust с включённой фичей. События wire-handover
+  пишутся на failover-счётчик с `transport="tcp_wire"`; cross-uplink
+  failover'ы — `transport="tcp"`.
+
+#### Resume через wire-свитчи
+
+- Fallback TCP- и UDP-дайлы участвуют в
+  `outline_transport::global_resume_cache()` под ключом
+  `<uplink_name>#<transport>` — **тот же identity-level ключ**, что
+  у primary. Primary VLESS-дайл, выпустивший session id, далее WS
+  fallback-дайл после провала primary'а — токен предъявляется на
+  fallback-дайле; server-side resume re-attach'ит upstream-сессию.
+  Работает для любой комбинации, где оба wire'а несут WS-resume
+  header (WS, VLESS-WS, VLESS-XHTTP). У Shadowsocks fallback'а нет
+  WS-слоя, и он дайлит свежим — рестарт сессии там неизбежен.
+
+#### Liveness override
+
+- Без помощи probe-здоровье primary гейтило бы весь аплинк из выдачи
+  (`selection_health` → `effective_health` → false), и fallback wire
+  не получил бы шанса. Чтобы это предотвратить, аплинк хотя бы с
+  одним сконфигурированным fallback'ом считается selectable, если
+  **любой** wire — primary или fallback — недавно успешно дозвонился
+  в окне `runtime_failure_window`. Single-wire аплинки сохраняют
+  probe-only гейтинг (никаких false-positive liveness из устаревших
+  primary-успехов). Это мост до per-wire probe walks — полное
+  per-wire тестирование остаётся отдельной задачей.
+
+#### Список обходов
+
+- Fallback-дайл обходит standby pool, mode-downgrade окно и RTT-EWMA
+  feed — эти структуры приколочены к primary-индексу/транспорту
+  родителя, и переиспользование их для fallback-wire испортило бы
+  primary-mode. Per-wire варианты — отдельная задача. DNS-кэш,
+  per-uplink fingerprint scope и resume-cache **сохраняются** через
+  wire-свитчи.
+
+#### UDP-кандидатура
+
+- UDP-фильтр кандидатов (`supports_transport_for_scope`)
   консультируется с `UplinkConfig::supports_udp_any()`, так что
-  аплинк, у которого primary — TCP-only (например, SS без `udp_addr`),
-  но fallback UDP-capable, всё равно попадает в UDP-выдачу.
-- **Частичное ограничение:** VLESS как fallback-транспорт на UDP
-  работает для WS-семейства (`ws_h1` / `ws_h2` / `ws_h3`) и
-  XHTTP-семейства (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) — оба
-  используют carrier `VlessUdpSessionMux`. VLESS-fallback поверх
-  **raw QUIC** (`vless_mode = "quic"`) возвращает понятную ошибку:
-  машинерия `VlessUdpHybridMux` и её хуки `on_fallback` /
-  `on_downgrade` приколочены к primary-индексу/транспорту родителя,
-  а per-wire mode-tracking, который позволил бы корректно
-  атрибутировать fallback-обсёрвейшн, — отдельная задача дальше.
-  Если конкретно нужен QUIC-бэкап — объявите второй primary
-  VLESS-аплинк с `vless_mode = "quic"` в той же группе.
+  аплинк, у которого primary — TCP-only (например, SS без
+  `udp_addr`), но fallback UDP-capable, всё равно попадает в
+  UDP-выдачу.
+
+#### Оставшееся ограничение
+
+- **VLESS-fallback поверх raw QUIC** (`vless_mode = "quic"`)
+  возвращает понятную ошибку. WS-семейство (`ws_h1` / `ws_h2` /
+  `ws_h3`) и XHTTP-семейство (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`)
+  оба работают как fallback'и, потому что используют carrier
+  `VlessUdpSessionMux`; raw QUIC требует `VlessUdpHybridMux` и его
+  хуков `on_fallback` / `on_downgrade`, которым нужен per-wire
+  mode-tracking для корректной атрибуции fallback-наблюдения.
+  Операторам, которым конкретно нужен QUIC-бэкап, стоит объявить
+  второй primary VLESS-аплинк с `vless_mode = "quic"` в той же группе
+  как обходной путь.
 
 ### Inline-стенограмма `[outline]`
 

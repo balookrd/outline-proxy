@@ -302,6 +302,42 @@ password = "Secret0"
 # link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fvless&alpn=h2#vless-edge"
 # weight = 0.5
 
+# Per-uplink fallback transports. Each [[outline.uplinks]] entry can
+# declare additional wire shapes that the dial loop tries when the
+# primary transport on this uplink fails. After `probe.min_failures`
+# consecutive primary failures the active wire becomes sticky for
+# `mode_downgrade_secs` (auto-failback to primary on pin expiry).
+# Resume tokens (X-Outline-Resume) ride through the wire switch, so
+# handover between WS-family wires is seamless on a feature-enabled
+# server. See docs/UPLINK-CONFIGURATIONS.md "Per-uplink fallback transports".
+#
+# Inheritance: `cipher` / `password` / `fwmark` / `ipv6_first` /
+# `fingerprint_profile` default to the parent uplink's value when
+# omitted; `vless_id` is per-wire and NOT inherited.
+#
+# [[outline.uplinks]]
+# name = "edge-1"
+# group = "main"
+# transport = "vless"
+# vless_xhttp_url = "https://cdn.example.com/SECRET/xhttp"
+# vless_id = "00000000-0000-0000-0000-000000000000"
+# vless_mode = "xhttp_h3"
+# method = "2022-blake3-aes-256-gcm"
+# password = "BASE64=="
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "ws"
+# tcp_ws_url = "wss://ws.example.com/SECRET/tcp"
+# udp_ws_url = "wss://ws.example.com/SECRET/udp"
+# tcp_mode = "h2"
+# udp_mode = "h1"
+# # cipher / password inherited from parent edge-1
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "shadowsocks"
+# tcp_addr = "1.2.3.4:8388"
+# udp_addr = "1.2.3.4:8389"
+
 # Raw QUIC examples (no WebSocket / no HTTP/3 framing). Pairs with the
 # outline-ss-rust server's `transport::raw_quic` listener — ALPN selects
 # the protocol on the same QUIC endpoint, then VLESS / SS framing rides
