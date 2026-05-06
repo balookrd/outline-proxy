@@ -2,6 +2,20 @@ use serde::Serialize;
 
 use outline_metrics::{UplinkManagerSnapshot, UplinkSnapshot};
 
+/// One per-wire entry in [`ControlUplinkTopology::configured_wire_chain`].
+/// Surfaces the configured TCP / UDP transport mode strings for primary
+/// (index 0) and each fallback (index `1..`). Shadowsocks wires have
+/// neither field set — their transport shape is fixed by the address
+/// fields, not a mode enum.
+#[derive(Debug, Clone, Serialize)]
+struct WireChainEntry {
+    transport: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tcp_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    udp_mode: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ControlTopologyResponse {
     pub(crate) instance: ControlInstanceTopology,
@@ -90,6 +104,12 @@ struct ControlUplinkTopology {
     /// Empty when the uplink is single-wire. The dashboard renders these as the
     /// `primary → fb[0] → fb[1]` chain pill below the protocol cell.
     configured_fallbacks: Vec<String>,
+    /// Fully-resolved view of every wire on this uplink (primary + fallbacks)
+    /// with the configured TCP / UDP modes per wire. Used by the dashboard
+    /// to render the active-wire mode in the top pill (e.g. `VLESS/WS/H2`)
+    /// instead of just the bare transport. Empty for single-wire uplinks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    configured_wire_chain: Vec<WireChainEntry>,
     /// Index into `[primary, fallbacks[0], …]` of the wire currently carrying
     /// TCP traffic. Always `0` for single-wire uplinks.
     tcp_active_wire: u8,
@@ -252,6 +272,15 @@ fn build_uplink_topology(
             .then(|| snapshot.udp_active_reason.clone())
             .flatten(),
         configured_fallbacks: uplink.configured_fallbacks.clone(),
+        configured_wire_chain: uplink
+            .configured_wire_chain
+            .iter()
+            .map(|wire| WireChainEntry {
+                transport: wire.transport.clone(),
+                tcp_mode: wire.tcp_mode.clone(),
+                udp_mode: wire.udp_mode.clone(),
+            })
+            .collect(),
         tcp_active_wire: uplink.tcp_active_wire,
         udp_active_wire: uplink.udp_active_wire,
         tcp_active_wire_pin_remaining_ms: uplink.tcp_active_wire_pin_remaining_ms,

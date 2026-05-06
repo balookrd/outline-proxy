@@ -122,6 +122,23 @@ pub struct UplinkSnapshot {
     /// next to the uplink name (e.g. `vless → ws → ss`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub configured_fallbacks: Vec<String>,
+    /// Ordered, fully-resolved view of every wire on this uplink — primary
+    /// at index 0 followed by `fallbacks[0..]`. Each entry exposes the
+    /// transport family and the configured TCP / UDP mode for that wire,
+    /// so the dashboard's top pill can render the **active wire**'s mode
+    /// (e.g. `VLESS/WS/H2` when `tcp_active_wire == 1` and the first
+    /// fallback is `vless` over `ws_h2`) rather than primary's mode.
+    /// Without this, the snapshot only carried per-fallback transport
+    /// strings, forcing the dashboard to fall back to the bare transport
+    /// label and lose the carrier shape that the chain visualisation
+    /// otherwise depends on.
+    ///
+    /// Always exactly `1 + configured_fallbacks.len()` entries when
+    /// fallbacks are configured; empty (skipped on the wire) when no
+    /// fallbacks exist — single-wire uplinks already carry their primary
+    /// mode in the existing `tcp_mode` / `udp_mode` fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configured_wire_chain: Vec<WireSnapshot>,
     /// Index into `[primary, fallbacks[0], ..., fallbacks[N-1]]` of the
     /// wire that **new TCP sessions** start with. `0` is primary; non-zero
     /// means a sticky-fallback is in effect after consecutive primary
@@ -144,6 +161,21 @@ pub struct UplinkSnapshot {
 #[doc(hidden)]
 fn is_zero_u8(v: &u8) -> bool {
     *v == 0
+}
+
+/// One entry in [`UplinkSnapshot::configured_wire_chain`]. Represents a
+/// single wire (primary OR a fallback) with the transport family and
+/// configured TCP / UDP mode strings. `tcp_mode` / `udp_mode` are
+/// optional because Shadowsocks wires don't carry a TransportMode
+/// (their UDP/TCP shape is determined by the address fields, not a
+/// mode enum) — for those, both fields stay `None`.
+#[derive(Debug, Clone, Serialize)]
+pub struct WireSnapshot {
+    pub transport: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
