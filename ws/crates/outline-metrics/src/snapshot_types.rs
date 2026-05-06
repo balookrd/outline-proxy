@@ -177,18 +177,55 @@ fn is_zero_u8(v: &u8) -> bool {
 }
 
 /// One entry in [`UplinkSnapshot::configured_wire_chain`]. Represents a
-/// single wire (primary OR a fallback) with the transport family and
-/// configured TCP / UDP mode strings. `tcp_mode` / `udp_mode` are
-/// optional because Shadowsocks wires don't carry a TransportMode
-/// (their UDP/TCP shape is determined by the address fields, not a
-/// mode enum) — for those, both fields stay `None`.
+/// single wire (primary OR a fallback) with the transport family,
+/// configured TCP / UDP mode strings, the **effective** modes after the
+/// per-wire mode-downgrade window is applied (so a fallback wire that
+/// has been capped from `xhttp_h3` to `xhttp_h2` shows the cap here),
+/// and per-wire XHTTP submode state (configured submode + remaining
+/// block on stream-one).
+///
+/// `*_mode` / `*_mode_effective` are `None` for Shadowsocks wires —
+/// those don't carry a TransportMode enum (their TCP/UDP shape is fixed
+/// by the address fields). `*_xhttp_submode*` are `None` for non-VLESS
+/// wires (only XHTTP carriers under VLESS have a submode axis).
 #[derive(Debug, Clone, Serialize)]
 pub struct WireSnapshot {
     pub transport: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tcp_mode: Option<String>,
+    /// Effective TCP mode after the per-wire mode-downgrade slot is
+    /// applied. Equals `tcp_mode` when no downgrade is active.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_mode_effective: Option<String>,
+    /// `true` when this wire is currently serving a downgraded TCP
+    /// carrier (`tcp_mode_effective` ranks below `tcp_mode`). Skipped
+    /// from the wire when `false` to keep the JSON small.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub tcp_downgrade_active: bool,
+    /// Configured XHTTP submode on this wire's TCP dial URL — `(S)` for
+    /// stream-one, `(P)` for packet-up, `None` for non-XHTTP wires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_xhttp_submode: Option<String>,
+    /// Remaining time on this wire's per-host stream-one block. `Some`
+    /// means a recent stream-one failure has the next dial silently
+    /// served by packet-up; `None` means stream-one is dial-able.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_xhttp_submode_block_remaining_ms: Option<u128>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub udp_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_mode_effective: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub udp_downgrade_active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_xhttp_submode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_xhttp_submode_block_remaining_ms: Option<u128>,
+}
+
+#[doc(hidden)]
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 #[derive(Debug, Clone, Serialize)]

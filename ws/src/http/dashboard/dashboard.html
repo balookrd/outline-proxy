@@ -546,11 +546,13 @@ function fallbackChainPill(uplink) {
     // tracking isn't exposed in the snapshot yet.
     const effectiveKey = `${legKey}_effective`;
     if (wireChain.length) {
-      return wireChain.map((w, i) => ({
+      // Per-wire effective mode now ships in the wire chain entry
+      // itself — `${legKey}_effective` for that wire. Falls back to
+      // configured mode (then the other-leg mode) for older snapshots
+      // that pre-date the per-wire mode-effective field.
+      return wireChain.map((w) => ({
         transport: String((w && w.transport) || "?").toLowerCase(),
-        mode: i === 0
-          ? (uplink[effectiveKey] || (w && (w[legKey] || w.tcp_mode || w.udp_mode)) || null)
-          : (w ? (w[legKey] || w.tcp_mode || w.udp_mode || null) : null),
+        mode: w ? (w[effectiveKey] || w[legKey] || w.tcp_mode || w.udp_mode || null) : null,
       }));
     }
     const primaryMode = uplink[effectiveKey]
@@ -572,25 +574,43 @@ function fallbackChainPill(uplink) {
   // used to surface this state is gone.
   const tcpEff = legHealth(uplink, 'tcp');
   const udpEff = legHealth(uplink, 'udp');
-  // Per-leg primary submode + downgrade decorations. These live on the
-  // wire 0 chip — the uplink-level submode/downgrade fields are
-  // primary-bound. Wire 1+ chips don't have per-wire submode info
-  // exposed in the snapshot yet — they render as plain transport/mode.
-  const decorations = (legKey) => {
-    const sm = uplink[`${legKey}_xhttp_submode`] || null;
-    const smEff = uplink[`${legKey}_xhttp_submode_effective`] || sm;
-    const smDg = !!uplink[`${legKey}_xhttp_submode_downgrade_active`] && sm !== smEff;
-    const carrierMode = uplink[`${legKey}_mode`];
-    const carrierEff = uplink[`${legKey}_mode_effective`];
-    const dg = !!uplink[`${legKey}_downgrade_active`] && carrierMode && carrierMode !== carrierEff;
-    return { sm, smEff, smDg, dg, carrierMode, carrierEff };
+  // Per-wire decorations: pull from the per-wire chain entry first
+  // (carries this wire's own submode + carrier-downgrade state),
+  // falling back to the legacy uplink-level fields when the snapshot
+  // pre-dates per-wire submode tracking. Each wire now reports its
+  // own `↘` arrow and `(S)` / `(P)` badge — a fallback wire that
+  // observed its own xhttp_h3 → h2 fall does NOT borrow primary's
+  // arrow any more.
+  const decorationsForWire = (legKey, wireIndex) => {
+    const w = wireChain[wireIndex];
+    if (w) {
+      const sm = w[`${legKey}_xhttp_submode`] || null;
+      const smEff = w[`${legKey}_xhttp_submode_effective`] || sm;
+      const smDg = !!w[`${legKey}_xhttp_submode_downgrade_active`] && sm !== smEff;
+      const carrierMode = w[legKey];
+      const carrierEff = w[`${legKey}_effective`];
+      const dg = !!w[`${legKey}_downgrade_active`] && carrierMode && carrierMode !== carrierEff;
+      return { sm, smEff, smDg, dg, carrierMode, carrierEff };
+    }
+    // Fallback for older snapshots: when the chain doesn't have
+    // per-wire fields, mirror primary's uplink-level decorations on
+    // wire 0 only.
+    if (wireIndex === 0) {
+      const sm = uplink[`${legKey}_xhttp_submode`] || null;
+      const smEff = uplink[`${legKey}_xhttp_submode_effective`] || sm;
+      const smDg = !!uplink[`${legKey}_xhttp_submode_downgrade_active`] && sm !== smEff;
+      const carrierMode = uplink[`${legKey}_mode`];
+      const carrierEff = uplink[`${legKey}_mode_effective`];
+      const dg = !!uplink[`${legKey}_downgrade_active`] && carrierMode && carrierMode !== carrierEff;
+      return { sm, smEff, smDg, dg, carrierMode, carrierEff };
+    }
+    return { sm: null, smEff: null, smDg: false, dg: false, carrierMode: null, carrierEff: null };
   };
   // `legKey` selects which leg's mode + submode/downgrade fields drive
   // the chain. For the combined (sameLine) line we prefer TCP — that
   // matches the rest of the dashboard's collapsed-leg conventions.
   const renderOne = (legLabel, legKey, activeIdx, pinMs, primaryFailed, allDown) => {
     const wires = buildWires(`${legKey}_mode`);
-    const deco = decorations(legKey);
     const links = wires.map((w, i) => {
       const isActive = i === activeIdx;
       let cls = "fb-link";
@@ -610,16 +630,11 @@ function fallbackChainPill(uplink) {
       const legTagInline = (isActive && legLabel)
         ? `<span class="proto-leg">${legLabel}</span>`
         : "";
-      // Submode + downgrade decorations follow the **active** wire so the
-      // active chip carries the same level of detail the (now-removed)
-      // top pill used to surface — submode badge, ↘ auto-downgrade arrow,
-      // effective-mode label. Today the underlying snapshot fields
-      // (`*_xhttp_submode*`, `*_downgrade_active`) are uplink-level and
-      // primary-bound, so when the dial loop is on a fallback wire these
-      // decorations describe primary's last-known mode state. That still
-      // matches what the top pill showed before (primary's effective
-      // shape) and gives the operator a single chip per leg to read at
-      // a glance.
+      // Per-wire decorations from this wire's own snapshot entry. The
+      // (S) / (P) submode badge and ↘ auto-downgrade arrow now follow
+      // the wire that owns them, so a fallback wire's own carrier
+      // downgrade is its own decoration instead of borrowing primary's.
+      const deco = decorationsForWire(legKey, i);
       const submodeHtml = (i === activeIdx) ? submodeSuffix(deco.sm, deco.smEff, deco.smDg)[0] : "";
       const dgArrow = (i === activeIdx && deco.dg)
         ? '<span class="fb-dg" title="carrier auto-downgraded (configured H3/QUIC unreachable)">↘</span>'
@@ -672,13 +687,13 @@ function fallbackChainPill(uplink) {
   const activeModeDiverge = activeTcpWire && activeUdpWire
     && (activeTcpWire.transport !== activeUdpWire.transport
         || activeTcpWire.mode !== activeUdpWire.mode);
-  // Per-leg decorations (submode, primary auto-downgrade, mode-effective)
-  // also drive the split: if TCP has an active downgrade but UDP doesn't
-  // — or the legs sit on different XHTTP submodes — collapsing the
-  // chains would hide the asymmetry. We split so each line carries its
-  // own ↘ arrow / submode badge.
-  const tcpDeco = decorations("tcp");
-  const udpDeco = decorations("udp");
+  // Per-leg decorations on the **active wire** also drive the split:
+  // if TCP's active wire has an auto-downgrade ↘ but UDP's active wire
+  // doesn't — or the legs sit on different XHTTP submodes — collapsing
+  // the chains would hide the asymmetry. We split so each line carries
+  // its own ↘ arrow / submode badge.
+  const tcpDeco = decorationsForWire("tcp", tcpActive);
+  const udpDeco = decorationsForWire("udp", udpActive);
   const decoDiverge = tcpDeco.dg !== udpDeco.dg
     || tcpDeco.sm !== udpDeco.sm
     || tcpDeco.smEff !== udpDeco.smEff

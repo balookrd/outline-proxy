@@ -3,17 +3,43 @@ use serde::Serialize;
 use outline_metrics::{UplinkManagerSnapshot, UplinkSnapshot};
 
 /// One per-wire entry in [`ControlUplinkTopology::configured_wire_chain`].
-/// Surfaces the configured TCP / UDP transport mode strings for primary
+/// Surfaces the configured + effective TCP / UDP transport mode strings,
+/// per-wire downgrade flags, and per-wire XHTTP submode state for primary
 /// (index 0) and each fallback (index `1..`). Shadowsocks wires have
-/// neither field set — their transport shape is fixed by the address
-/// fields, not a mode enum.
+/// `*_mode` / `*_mode_effective` unset — their TCP/UDP shape is fixed
+/// by the address fields, not a mode enum. `*_xhttp_submode` is unset
+/// for non-XHTTP wires (only VLESS / XHTTP carriers have a submode axis).
 #[derive(Debug, Clone, Serialize)]
 struct WireChainEntry {
     transport: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     tcp_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    tcp_mode_effective: Option<String>,
+    #[serde(skip_serializing_if = "is_false_ref")]
+    tcp_downgrade_active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tcp_xhttp_submode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tcp_xhttp_submode_effective: Option<String>,
+    #[serde(skip_serializing_if = "is_false_ref")]
+    tcp_xhttp_submode_downgrade_active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     udp_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    udp_mode_effective: Option<String>,
+    #[serde(skip_serializing_if = "is_false_ref")]
+    udp_downgrade_active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    udp_xhttp_submode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    udp_xhttp_submode_effective: Option<String>,
+    #[serde(skip_serializing_if = "is_false_ref")]
+    udp_xhttp_submode_downgrade_active: bool,
+}
+
+fn is_false_ref(v: &bool) -> bool {
+    !*v
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -288,10 +314,36 @@ fn build_uplink_topology(
         configured_wire_chain: uplink
             .configured_wire_chain
             .iter()
-            .map(|wire| WireChainEntry {
-                transport: wire.transport.clone(),
-                tcp_mode: wire.tcp_mode.clone(),
-                udp_mode: wire.udp_mode.clone(),
+            .map(|wire| {
+                // Submode-effective mirrors the per-uplink computation:
+                // configured submode unchanged unless a stream-one block
+                // remains live in the per-host cache, in which case
+                // stream-one collapses to packet-up. Reuses the existing
+                // helper so the per-wire view is consistent with the
+                // legacy top-level fields.
+                let tcp_sub_dg = wire
+                    .tcp_xhttp_submode_block_remaining_ms
+                    .is_some_and(|ms| ms > 0);
+                let udp_sub_dg = wire
+                    .udp_xhttp_submode_block_remaining_ms
+                    .is_some_and(|ms| ms > 0);
+                let tcp_sub_eff = effective_submode(wire.tcp_xhttp_submode.as_deref(), tcp_sub_dg);
+                let udp_sub_eff = effective_submode(wire.udp_xhttp_submode.as_deref(), udp_sub_dg);
+                WireChainEntry {
+                    transport: wire.transport.clone(),
+                    tcp_mode: wire.tcp_mode.clone(),
+                    tcp_mode_effective: wire.tcp_mode_effective.clone(),
+                    tcp_downgrade_active: wire.tcp_downgrade_active,
+                    tcp_xhttp_submode: wire.tcp_xhttp_submode.clone(),
+                    tcp_xhttp_submode_effective: tcp_sub_eff,
+                    tcp_xhttp_submode_downgrade_active: tcp_sub_dg,
+                    udp_mode: wire.udp_mode.clone(),
+                    udp_mode_effective: wire.udp_mode_effective.clone(),
+                    udp_downgrade_active: wire.udp_downgrade_active,
+                    udp_xhttp_submode: wire.udp_xhttp_submode.clone(),
+                    udp_xhttp_submode_effective: udp_sub_eff,
+                    udp_xhttp_submode_downgrade_active: udp_sub_dg,
+                }
             })
             .collect(),
         tcp_active_wire: uplink.tcp_active_wire,
