@@ -832,12 +832,17 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
   консультируется с `UplinkConfig::supports_udp_any()`, так что
   аплинк, у которого primary — TCP-only (например, SS без `udp_addr`),
   но fallback UDP-capable, всё равно попадает в UDP-выдачу.
-- **Ограничение:** VLESS как *fallback-транспорт на UDP* в этой
-  итерации возвращает понятную ошибку. QUIC-mux в
-  `acquire_udp_standby_or_connect` приколочен хуками к
-  `candidate.index`, и переиспользование этих хуков для fallback-wire
-  требует active-wire плумбинга. Сегодня для UDP-fallback используйте
-  SS или WS.
+- **Частичное ограничение:** VLESS как fallback-транспорт на UDP
+  работает для WS-семейства (`ws_h1` / `ws_h2` / `ws_h3`) и
+  XHTTP-семейства (`xhttp_h1` / `xhttp_h2` / `xhttp_h3`) — оба
+  используют carrier `VlessUdpSessionMux`. VLESS-fallback поверх
+  **raw QUIC** (`vless_mode = "quic"`) возвращает понятную ошибку:
+  машинерия `VlessUdpHybridMux` и её хуки `on_fallback` /
+  `on_downgrade` приколочены к primary-индексу/транспорту родителя,
+  а per-wire mode-tracking, который позволил бы корректно
+  атрибутировать fallback-обсёрвейшн, — отдельная задача дальше.
+  Если конкретно нужен QUIC-бэкап — объявите второй primary
+  VLESS-аплинк с `vless_mode = "quic"` в той же группе.
 
 ### Inline-стенограмма `[outline]`
 

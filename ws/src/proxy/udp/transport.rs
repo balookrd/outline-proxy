@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use arc_swap::ArcSwap;
 use tracing::{debug, info, warn};
 
 use outline_metrics as metrics;
 use socks5_proto::TargetAddr;
 use outline_transport::{
-    UdpSessionTransport, UdpWsTransport, connect_shadowsocks_udp_with_source, global_resume_cache,
+    TransportMode, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux,
+    connect_shadowsocks_udp_with_source, global_resume_cache,
 };
 use outline_uplink::{
     FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
@@ -189,15 +190,53 @@ async fn dial_udp_fallback(
             Ok(UdpSessionTransport::Ss(transport))
         },
         UplinkTransport::Vless => {
-            // Phase 2: VLESS UDP fallback needs the QUIC mux + WS fallback
-            // factory machinery from `acquire_udp_standby_or_connect`, which
-            // currently keys all per-uplink hooks on `candidate.index`. Wiring
-            // those hooks for a fallback wire requires the active-wire state
-            // landed in Phase 2.
-            bail!(
-                "uplink {}: VLESS-as-fallback on UDP is not supported yet (use SS or WS for the UDP fallback)",
-                parent.uplink.name,
-            )
+            // VLESS-as-fallback on UDP. We support the WS / XHTTP modes here
+            // (anything that rides through `VlessUdpSessionMux`); raw QUIC
+            // mode would need the `VlessUdpHybridMux` machinery whose hooks
+            // are keyed on the parent's primary index/transport — wire-aware
+            // hybrid-mux is a follow-up. Operators wanting a QUIC fallback
+            // can declare two VLESS uplinks instead.
+            let url = fallback.udp_dial_url().ok_or_else(|| {
+                anyhow!(
+                    "uplink {} fallback (transport=vless) missing UDP dial URL",
+                    parent.uplink.name,
+                )
+            })?;
+            let mode = fallback.udp_dial_mode();
+            if mode == TransportMode::Quic {
+                anyhow::bail!(
+                    "uplink {}: VLESS-fallback on UDP with mode=quic is not supported \
+                     in this iteration — use ws_h1/h2/h3 or xhttp_h1/h2/h3 for the \
+                     fallback's `vless_mode`",
+                    parent.uplink.name,
+                );
+            }
+            let uuid = fallback.vless_id.ok_or_else(|| {
+                anyhow!(
+                    "uplink {} fallback (transport=vless) missing vless_id",
+                    parent.uplink.name,
+                )
+            })?;
+            // Note: `on_downgrade` callback is **not** wired for the fallback
+            // mux. The primary's per-uplink mode-downgrade window is keyed on
+            // the parent's index and primary transport; threading a fallback
+            // observation into it would mis-park the primary's mode. Per-wire
+            // mode tracking is the same Phase-2 follow-up that gates VLESS-
+            // fallback over raw QUIC.
+            let limits = uplinks.load_balancing().vless_udp_mux_limits;
+            let keepalive = uplinks.load_balancing().udp_ws_keepalive_interval;
+            let mux = VlessUdpSessionMux::new_with_limits(
+                Arc::clone(uplinks.dns_cache_arc()),
+                url.clone(),
+                mode,
+                uuid,
+                fallback.fwmark,
+                fallback.ipv6_first,
+                source,
+                keepalive,
+                limits,
+            );
+            Ok(UdpSessionTransport::Vless(mux))
         },
     }
 }
