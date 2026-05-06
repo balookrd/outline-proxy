@@ -39,6 +39,8 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         weight: 1.0,
         tcp_healthy: None,
         udp_healthy: None,
+        tcp_health_effective: None,
+        udp_health_effective: None,
         tcp_latency_ms: None,
         udp_latency_ms: None,
         tcp_rtt_ewma_ms: None,

@@ -305,7 +305,26 @@ const state = {
 };
 function instancesArray() { return state.order.map(name => state.instances.get(name)).filter(Boolean); }
 
-function healthy(u) { return u.tcp_healthy !== false && u.udp_healthy !== false; }
+/**
+ * Effective health for tone / status calculations. Reads
+ * `*_health_effective` (probe-confirmed OR any-wire recently worked) when
+ * the uplink has fallbacks configured, falling back to `*_healthy`
+ * (probe-only) for single-wire uplinks. Without this an uplink whose
+ * primary is down but whose fallback is delivering traffic would render
+ * red here while still being selected by the router — confusing.
+ *
+ * The legacy `tcp_healthy` / `udp_healthy` fields stay readable on
+ * individual leg cells so an operator who specifically wants to see the
+ * primary wire's probe verdict can.
+ */
+function legHealth(u, leg) {
+  const eff = leg === 'tcp' ? u.tcp_health_effective : u.udp_health_effective;
+  if (eff === true || eff === false) return eff;
+  return leg === 'tcp' ? u.tcp_healthy : u.udp_healthy;
+}
+function healthy(u) {
+  return legHealth(u, 'tcp') !== false && legHealth(u, 'udp') !== false;
+}
 function isActive(u) { return Boolean(u.active_global || u.active_tcp || u.active_udp); }
 function computeStats() {
   const list = instancesArray();

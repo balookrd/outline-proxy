@@ -544,3 +544,62 @@ fn probe_recovery_snaps_active_wire_back_to_primary() {
     );
     assert_eq!(snap.tcp.active_wire_streak, 0);
 }
+
+// ── Effective health (visualization truth) ──────────────────────────────────
+//
+// `tcp_health_effective` / `udp_health_effective` on the snapshot reflect
+// "is this uplink delivering traffic right now?" — `Some(true)` when probe-
+// confirmed OR (for uplinks with at least one fallback) when any wire has
+// dialed successfully within the runtime-failure window. Single-wire uplinks
+// always equal `tcp_healthy` / `udp_healthy`.
+
+#[tokio::test]
+async fn snapshot_effective_health_uses_any_wire_for_multi_wire_uplinks() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Mark probe of primary as failed.
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.healthy = Some(false);
+    });
+
+    let snap = manager.snapshot().await;
+    assert_eq!(snap.uplinks[0].tcp_healthy, Some(false));
+    assert_eq!(
+        snap.uplinks[0].tcp_health_effective,
+        Some(false),
+        "no fallback success yet, effective should mirror probe verdict",
+    );
+
+    // Stamp a successful fallback wire dial.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 1, true, 2);
+
+    let snap = manager.snapshot().await;
+    assert_eq!(snap.uplinks[0].tcp_healthy, Some(false), "probe verdict unchanged");
+    assert_eq!(
+        snap.uplinks[0].tcp_health_effective,
+        Some(true),
+        "fallback wire success surfaces as effective health true",
+    );
+}
+
+#[tokio::test]
+async fn snapshot_effective_health_equals_probe_for_single_wire() {
+    let cfg = vless_xhttp_primary(); // no fallbacks
+    let manager = manager_with_uplink(cfg, 1);
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.healthy = Some(false);
+    });
+    // Even if a wire-success timestamp exists (defensive — single-wire uplinks
+    // shouldn't really get one through normal paths), the override stays off
+    // because `fallbacks.is_empty()`.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, true, 1);
+    let snap = manager.snapshot().await;
+    assert_eq!(snap.uplinks[0].tcp_healthy, Some(false));
+    assert_eq!(
+        snap.uplinks[0].tcp_health_effective,
+        Some(false),
+        "single-wire uplink keeps effective == probe (no liveness override)",
+    );
+}

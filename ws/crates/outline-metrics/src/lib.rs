@@ -170,6 +170,7 @@ struct Metrics {
     #[cfg(feature = "tun")]
     tun_tcp_smoothed_rtt_seconds: GaugeVec,
     uplink_health: GaugeVec,
+    uplink_health_effective: GaugeVec,
     uplink_latency_seconds: GaugeVec,
     uplink_rtt_ewma_seconds: GaugeVec,
     uplink_penalty_seconds: GaugeVec,

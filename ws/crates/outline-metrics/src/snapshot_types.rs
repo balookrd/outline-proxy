@@ -54,6 +54,22 @@ pub struct UplinkSnapshot {
     pub weight: f64,
     pub tcp_healthy: Option<bool>,
     pub udp_healthy: Option<bool>,
+    /// Effective health on this transport — `tcp_healthy` (probe-only) OR
+    /// "any wire recently dialed successfully" for uplinks with at least
+    /// one fallback configured. Single-wire uplinks have this equal to
+    /// `tcp_healthy`. The point is "visualization truth": an uplink whose
+    /// primary wire is down but whose fallback is doing the actual work
+    /// shows `Some(true)` here even though `tcp_healthy` is `Some(false)`.
+    /// Dashboards that just want "is this uplink delivering traffic?"
+    /// should read this field; dashboards that specifically care about
+    /// the primary wire's probe verdict should keep reading `tcp_healthy`.
+    /// `None` when neither signal has produced a verdict yet (e.g. a
+    /// just-started instance whose first probe cycle hasn't completed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_health_effective: Option<bool>,
+    /// UDP counterpart to [`Self::tcp_health_effective`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_health_effective: Option<bool>,
     pub tcp_latency_ms: Option<u128>,
     pub udp_latency_ms: Option<u128>,
     pub tcp_rtt_ewma_ms: Option<u128>,

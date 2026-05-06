@@ -886,6 +886,17 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
   keep their probe-only health gating intact (no false-positive
   liveness from stale primary successes). This is the bridge until
   per-wire probe walks land — full per-wire probing is a follow-up.
+- The same any-wire signal also drives **effective health** on the
+  snapshot / Prometheus / dashboard. `UplinkSnapshot::tcp_health_effective`
+  (and the corresponding `outline_ws_rust_uplink_health_effective` gauge)
+  reflects "is this uplink delivering traffic?": probe-confirmed OR
+  any-wire-recent-success. The legacy `tcp_healthy` /
+  `outline_ws_rust_uplink_health` keeps the probe-only verdict for
+  dashboards that specifically care about the primary wire. The HTML
+  dashboard's row tone consults effective health, so an uplink whose
+  primary is probe-down but whose fallback is delivering traffic
+  renders green instead of red — visualization stays in sync with
+  routing.
 
 #### Bypass list
 

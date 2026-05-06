@@ -97,6 +97,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_runtime_failure_other_details_total: IntCounterVec,
     pub(super) uplink_failovers_total: IntCounterVec,
     pub(super) uplink_health: GaugeVec,
+    pub(super) uplink_health_effective: GaugeVec,
     pub(super) uplink_latency_seconds: GaugeVec,
     pub(super) uplink_rtt_ewma_seconds: GaugeVec,
     pub(super) uplink_penalty_seconds: GaugeVec,
@@ -170,7 +171,14 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         registry,
         GaugeVec,
         "outline_ws_rust_uplink_health",
-        "Current uplink health by transport.",
+        "Probe-confirmed uplink health by transport. Reflects only the primary wire's probe verdict; an uplink whose primary is down but whose fallback is delivering traffic still shows 0 here.",
+        ["group", "transport", "uplink"]
+    );
+    let uplink_health_effective = register_labeled!(
+        registry,
+        GaugeVec,
+        "outline_ws_rust_uplink_health_effective",
+        "Effective uplink health by transport: 1 when probe-confirmed OR (for uplinks with at least one fallback) when any wire has dialed successfully within the runtime-failure window. The 'is this uplink delivering traffic?' signal that dashboards should prefer; equals `outline_ws_rust_uplink_health` for single-wire uplinks.",
         ["group", "transport", "uplink"]
     );
     let uplink_latency_seconds = register_labeled!(
@@ -302,6 +310,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_runtime_failure_other_details_total,
         uplink_failovers_total,
         uplink_health,
+        uplink_health_effective,
         uplink_latency_seconds,
         uplink_rtt_ewma_seconds,
         uplink_penalty_seconds,

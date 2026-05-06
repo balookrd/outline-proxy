@@ -961,7 +961,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "outline_ws_rust_uplink_health{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "expr": "outline_ws_rust_uplink_health_effective{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
@@ -5156,6 +5156,6 @@
   "timezone": "browser",
   "title": "outline-ws-rust",
   "uid": "outline-ws-rust",
-  "version": 85,
+  "version": 86,
   "weekStart": ""
 }

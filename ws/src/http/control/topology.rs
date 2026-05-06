@@ -71,6 +71,14 @@ struct ControlUplinkTopology {
     udp_rtt_ewma_ms: Option<u128>,
     tcp_healthy: Option<bool>,
     udp_healthy: Option<bool>,
+    /// Effective health on this transport — true when probe-confirmed OR
+    /// (for uplinks with at least one fallback) when any wire has dialed
+    /// successfully within the runtime-failure window. The "is this
+    /// uplink delivering traffic?" signal the dashboard reads to colour
+    /// the row, distinct from `tcp_healthy` which reflects only the
+    /// primary wire's probe verdict.
+    tcp_health_effective: Option<bool>,
+    udp_health_effective: Option<bool>,
     last_error: Option<String>,
     active_global: bool,
     active_global_reason: Option<String>,
@@ -226,6 +234,8 @@ fn build_uplink_topology(
         tcp_rtt_ewma_ms: uplink.tcp_rtt_ewma_ms,
         udp_rtt_ewma_ms: uplink.udp_rtt_ewma_ms,
         tcp_healthy: uplink.tcp_healthy,
+        tcp_health_effective: uplink.tcp_health_effective,
+        udp_health_effective: uplink.udp_health_effective,
         udp_healthy: uplink.udp_healthy,
         last_error: uplink.last_error.clone(),
         active_global: snapshot.global_active_uplink.as_deref() == Some(uplink.name.as_str()),
