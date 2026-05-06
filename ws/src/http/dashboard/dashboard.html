@@ -190,25 +190,12 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .proto-pill .proto-submode .proto-dg { margin: 0 1px; }
 .fb-chain { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 4px; font-size: 10.5px; }
 .fb-chain .fb-link { padding: 1px 6px; border-radius: 4px; background: var(--soft); color: var(--muted); border: 1px solid var(--line); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
-/* Active chip mirrors the dimensions / shape of the legacy top pill so
- * the chain's "currently working" chip reads at the same visual weight
- * as the rest of the protocol pills elsewhere on the page (probe
- * attribution, summary cards). Inactive chain chips keep the compact
- * fb-link style — they're chain markers, not full descriptors. */
-.fb-chain .fb-link.fb-active {
-  min-height: 24px;
-  padding: 0 9px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 760;
-  letter-spacing: .02em;
-  background: var(--green-soft);
-  color: var(--green-strong);
-  border-color: var(--chip-fb-border);
-}
-/* Per-transport palette overrides — match `proto-vless` / `proto-ws` /
- * `proto-shadowsocks` so the chain colour ties back to the transport
- * the operator sees elsewhere. */
+/* Active chip keeps the same compact / square geometry as inactive
+ * chain chips — only the colour changes, picked up from the per-
+ * transport palette below. Operators read the chain as a sequence of
+ * uniform markers, with the active one tinted to its protocol colour
+ * rather than blown up into a separate visual class. */
+.fb-chain .fb-link.fb-active { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); font-weight: 800; }
 .fb-chain .fb-link.fb-active.proto-vless { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
 .fb-chain .fb-link.fb-active.proto-shadowsocks { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
 .fb-chain .fb-link.fb-active.proto-ws { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
