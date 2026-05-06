@@ -907,11 +907,13 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
   probe stamps `last_any_wire_success` directly, so passive uplinks
   carrying no client traffic still get their fallback validated and
   surface as `*_health_effective = true` on dashboards. Bypasses
-  warm-standby slots (those are keyed on the parent's primary wire) and
-  does not feed the parent's RTT EWMA / penalty / cooldown — that
-  scoring state is sized for primary's traffic patterns, and mixing in
-  fallback-wire probe latencies would skew it. The fallback-wire probe
-  contributes only the boolean liveness signal.
+  warm-standby slots (those are keyed on the parent's primary wire)
+  and skips parent-level penalty / cooldown bookkeeping — that
+  scoring state is sized for primary's traffic patterns. The
+  fallback-wire probe DOES feed its measured latency into the
+  fallback wire's own per-wire EWMA slot, so cross-uplink scoring
+  ranks this uplink by the wire actually carrying traffic instead of
+  primary's (possibly stale) measurement.
 - The same any-wire signal also drives **effective health** on the
   snapshot / Prometheus / dashboard. `UplinkSnapshot::tcp_health_effective`
   (and the corresponding `outline_ws_rust_uplink_health_effective` gauge)
@@ -926,20 +928,29 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
 
 #### Bypass list
 
-- The fallback dial bypasses the standby pool and the per-uplink
-  mode-downgrade window — those structures are keyed on the parent's
-  primary index/transport and reusing them for a fallback wire would
-  mis-park primary's mode. Per-wire variants of these are a follow-up.
+- The fallback dial bypasses the standby pool — that pool today is
+  keyed on the parent's primary wire shape, and reusing it for a
+  fallback wire would hand out a socket of the wrong transport. A
+  per-wire warm-standby pool is the next step. The mode-downgrade
+  window, by contrast, is already per-wire (see
+  `fallback_mode_downgrades` and `effective_*_mode_for_wire`), so a
+  fallback wire that observes its own carrier downgrade caps only
+  its own slot.
 - The DNS cache, per-uplink fingerprint scope, and the resume cache
   **are** preserved across wire switches.
-- The RTT EWMA is **shared** by primary and fallback dials of the
-  same `(uplink, transport)`. Fallback dials feed their dial duration
-  into it on success, so score-based selection between uplinks
-  reflects the active wire's real latency. Tradeoff of the shared
-  EWMA: a wire flip carries the previous wire's measurements for
-  ~4-5 samples (at the default `rtt_ewma_alpha = 0.25`) before fully
-  reflecting the new wire — acceptable in practice since wire flips
-  are rare. Strict per-(uplink, wire) EWMA is a follow-up.
+- The RTT EWMA is now **per-wire**. Primary's measurement lives in
+  the existing `rtt_ewma` slot on `PerTransportStatus`; each fallback
+  wire has its own slot in `fallback_rtt_ewma` (lazy-extended on
+  first write, indexed by `wire_index - 1`). The per-wire probe walk
+  feeds the fallback wire's probe latency into its own slot, and
+  cross-uplink scoring (`scoring_base_latency`) reads the EWMA of the
+  currently active wire — so when the dial loop has flipped
+  `active_wire` to a fallback, that fallback's measured RTT is what
+  ranks this uplink against its peers, not primary's (possibly
+  stale, possibly belonging to a now-broken wire) value. Cold start
+  right after a wire flip — fallback slot still empty — falls back to
+  primary's EWMA for one probe cycle until the per-wire probe stamps
+  in.
 
 #### UDP candidacy
 

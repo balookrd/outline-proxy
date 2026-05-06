@@ -211,7 +211,18 @@ pub(crate) fn scoring_base_latency(
     transport: TransportKind,
 ) -> Option<Duration> {
     let ts = status.of(transport);
-    ts.rtt_ewma.or(ts.latency)
+    // Prefer the active wire's measured RTT so cross-uplink scoring
+    // compares the latency of the wire that is **actually carrying
+    // traffic**. When the dial loop / probe walk has moved `active_wire`
+    // off primary, primary's `rtt_ewma` may belong to a completely
+    // different (now-broken) wire — using it would mis-rank this uplink
+    // against its peers.
+    //
+    // Fall back to primary's `rtt_ewma`, then to the latest probe
+    // `latency`, when the active wire has no per-wire sample yet (cold
+    // start right after a wire flip). The first per-wire probe writes
+    // the slot within one cycle, so this stale-primary window is bounded.
+    ts.active_wire_rtt_ewma().or(ts.rtt_ewma).or(ts.latency)
 }
 
 pub(crate) fn weighted_latency_score(base: Option<Duration>, weight: f64) -> Option<Duration> {

@@ -17,10 +17,12 @@
 //!   and carrying no client sessions.
 //!
 //! Bypasses warm-standby slots (those are keyed on the parent's primary wire
-//! shape) and skips per-uplink RTT-EWMA / penalty / cooldown bookkeeping —
-//! that scoring state is sized for the primary's traffic patterns, and
-//! mixing fallback-wire probe latencies into it would skew the EWMA. The
-//! fallback-wire probe contributes only the boolean liveness signal.
+//! shape) and skips parent-level penalty / cooldown bookkeeping — that
+//! scoring state is sized for the primary's traffic patterns. The
+//! fallback-wire probe DOES feed its measured latency into a per-wire RTT
+//! EWMA slot (`PerTransportStatus::fallback_rtt_ewma`), so cross-uplink
+//! scoring against the active wire ranks this uplink by the wire actually
+//! carrying traffic, not by primary's stale (or now-broken) measurement.
 
 use std::sync::Arc;
 
@@ -138,12 +140,24 @@ impl UplinkManager {
         };
 
         let now = Instant::now();
+        let alpha = self.inner.load_balancing.rtt_ewma_alpha;
+        let wire_index_u8 = u8::try_from(wire_index).unwrap_or(u8::MAX);
         self.inner.with_status_mut(index, |status| {
             if result.tcp_ok {
                 status.tcp.last_any_wire_success = Some(now);
+                // Per-wire RTT EWMA: feed the fallback-wire probe latency
+                // into this wire's slot so cross-uplink scoring uses the
+                // wire that's actually carrying traffic, not primary's
+                // (now-stale) measurement.
+                status
+                    .tcp
+                    .record_fallback_wire_latency(wire_index_u8, result.tcp_latency, alpha);
             }
             if result.udp_applicable && result.udp_ok {
                 status.udp.last_any_wire_success = Some(now);
+                status
+                    .udp
+                    .record_fallback_wire_latency(wire_index_u8, result.udp_latency, alpha);
             }
         });
         debug!(

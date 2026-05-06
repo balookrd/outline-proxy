@@ -479,6 +479,126 @@ fn record_wire_outcome_stamps_last_any_wire_success() {
     ));
 }
 
+// ── Per-wire RTT EWMA ───────────────────────────────────────────────────────
+//
+// Each wire on a multi-wire uplink keeps its own RTT EWMA. The cross-uplink
+// scoring layer reads the EWMA of whichever wire is currently active, so
+// scoring compares peers by the wire that is actually carrying traffic
+// rather than primary's measurement (which may belong to a wire the dial
+// loop has long since moved off).
+
+#[test]
+fn active_wire_rtt_ewma_reads_primary_slot_for_wire_zero() {
+    use crate::manager::status::PerTransportStatus;
+    let mut st = PerTransportStatus::default();
+    st.rtt_ewma = Some(std::time::Duration::from_millis(40));
+    st.fallback_rtt_ewma.push(Some(std::time::Duration::from_millis(120)));
+    st.active_wire = 0;
+    assert_eq!(st.active_wire_rtt_ewma(), Some(std::time::Duration::from_millis(40)));
+}
+
+#[test]
+fn active_wire_rtt_ewma_reads_fallback_slot_when_advanced() {
+    use crate::manager::status::PerTransportStatus;
+    let mut st = PerTransportStatus::default();
+    st.rtt_ewma = Some(std::time::Duration::from_millis(40));
+    st.fallback_rtt_ewma.push(Some(std::time::Duration::from_millis(120)));
+    st.active_wire = 1;
+    assert_eq!(
+        st.active_wire_rtt_ewma(),
+        Some(std::time::Duration::from_millis(120)),
+        "with active_wire=1 the fallback slot is the source of truth — primary may be a now-broken wire",
+    );
+}
+
+#[test]
+fn active_wire_rtt_ewma_returns_none_when_fallback_slot_unset() {
+    use crate::manager::status::PerTransportStatus;
+    let mut st = PerTransportStatus::default();
+    st.rtt_ewma = Some(std::time::Duration::from_millis(40));
+    // No `fallback_rtt_ewma` push — slot 0 is missing.
+    st.active_wire = 1;
+    assert!(
+        st.active_wire_rtt_ewma().is_none(),
+        "scoring chooses the bounded-stale fallback path itself; the slot returns None until probed",
+    );
+}
+
+#[test]
+fn record_fallback_wire_latency_lazy_extends_vec() {
+    use crate::manager::status::PerTransportStatus;
+    let mut st = PerTransportStatus::default();
+    // Wire 2 first — slot 1. Slot 0 should be auto-filled with None.
+    st.record_fallback_wire_latency(2, Some(std::time::Duration::from_millis(80)), 0.5);
+    assert_eq!(st.fallback_rtt_ewma.len(), 2);
+    assert_eq!(st.fallback_rtt_ewma[0], None);
+    assert_eq!(st.fallback_rtt_ewma[1], Some(std::time::Duration::from_millis(80)));
+}
+
+#[test]
+fn record_fallback_wire_latency_is_noop_for_primary() {
+    use crate::manager::status::PerTransportStatus;
+    let mut st = PerTransportStatus::default();
+    st.rtt_ewma = Some(std::time::Duration::from_millis(40));
+    st.record_fallback_wire_latency(0, Some(std::time::Duration::from_millis(999)), 0.5);
+    // Primary's EWMA goes through the existing `update_rtt_ewma` path in the
+    // probe outcome handler; this helper deliberately ignores wire 0 so the
+    // per-wire probe walk doesn't double-write primary's slot.
+    assert_eq!(st.rtt_ewma, Some(std::time::Duration::from_millis(40)));
+    assert!(st.fallback_rtt_ewma.is_empty());
+}
+
+#[test]
+fn record_fallback_wire_latency_smooths_subsequent_samples() {
+    use crate::manager::status::PerTransportStatus;
+    let mut st = PerTransportStatus::default();
+    let alpha = 0.5;
+    st.record_fallback_wire_latency(1, Some(std::time::Duration::from_millis(100)), alpha);
+    st.record_fallback_wire_latency(1, Some(std::time::Duration::from_millis(200)), alpha);
+    // EWMA: 100 → (100*0.5 + 200*0.5) = 150ms.
+    assert_eq!(st.fallback_rtt_ewma[0], Some(std::time::Duration::from_millis(150)));
+}
+
+#[test]
+fn scoring_base_latency_uses_active_wire_ewma_when_advanced() {
+    use crate::manager::status::PerTransportStatus;
+    use crate::selection::scoring_base_latency;
+    let mut tcp = PerTransportStatus::default();
+    tcp.rtt_ewma = Some(std::time::Duration::from_millis(40));
+    tcp.latency = Some(std::time::Duration::from_millis(50));
+    tcp.fallback_rtt_ewma.push(Some(std::time::Duration::from_millis(120)));
+    tcp.active_wire = 1;
+    let status = crate::manager::status::UplinkStatus {
+        tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        scoring_base_latency(&status, TransportKind::Tcp),
+        Some(std::time::Duration::from_millis(120)),
+        "scoring against peers must use the wire actually carrying traffic",
+    );
+}
+
+#[test]
+fn scoring_base_latency_falls_back_to_primary_when_fallback_ewma_unset() {
+    use crate::manager::status::PerTransportStatus;
+    use crate::selection::scoring_base_latency;
+    let mut tcp = PerTransportStatus::default();
+    tcp.rtt_ewma = Some(std::time::Duration::from_millis(40));
+    tcp.latency = Some(std::time::Duration::from_millis(50));
+    tcp.active_wire = 1;
+    // No fallback slot pushed — cold start right after a wire flip.
+    let status = crate::manager::status::UplinkStatus {
+        tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        scoring_base_latency(&status, TransportKind::Tcp),
+        Some(std::time::Duration::from_millis(40)),
+        "until per-wire probe stamps in, primary's EWMA is the best signal we have",
+    );
+}
+
 // ── Bootstrap pass-through: primary down, fallback never tried ──────────────
 //
 // `selection_health` must admit an uplink whose primary wire is probe-marked

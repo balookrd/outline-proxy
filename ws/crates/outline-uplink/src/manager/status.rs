@@ -75,6 +75,23 @@ pub(crate) struct PerTransportStatus {
     /// chain. Now each wire gets its own window, and fallback dials can
     /// honour the cap they earned without polluting primary's slot.
     pub(crate) fallback_mode_downgrades: Vec<ModeDowngradeSlot>,
+    /// Per-fallback-wire RTT EWMA slots. Indexed by `wire_index - 1`
+    /// (`[0]` corresponds to `fallbacks[0]`); the primary wire's EWMA
+    /// lives in [`Self::rtt_ewma`] above. Lazily extended on first
+    /// write — empty for uplinks without fallbacks; reads of an
+    /// out-of-range slot return `None`.
+    ///
+    /// Without these slots, the EWMA on `PerTransportStatus` reflects
+    /// the **primary** wire's latency forever, even after the dial
+    /// loop / probe walk has moved `active_wire` to a fallback. The
+    /// scoring layer would then keep ranking this uplink against
+    /// peers using a stale primary RTT, potentially preferring it (or
+    /// avoiding it) for reasons unrelated to the wire actually
+    /// carrying traffic. Each fallback wire now has its own slot, fed
+    /// by the per-wire probe walk in
+    /// [`crate::manager::probe::wire`], so scoring of an uplink whose
+    /// `active_wire` is non-zero uses that wire's measured RTT.
+    pub(crate) fallback_rtt_ewma: Vec<Option<Duration>>,
     /// Timestamp of the most recent real data transfer on this transport.
     /// Used to skip probe cycles when the uplink is actively carrying traffic.
     pub(crate) last_active: Option<Instant>,
@@ -134,6 +151,56 @@ impl UplinkStatus {
             TransportKind::Tcp => &self.tcp,
             TransportKind::Udp => &self.udp,
         }
+    }
+}
+
+impl PerTransportStatus {
+    /// RTT EWMA for the wire that `new sessions currently land on`
+    /// (i.e. [`Self::active_wire`]). Returns the primary's
+    /// [`Self::rtt_ewma`] when `active_wire == 0` and the corresponding
+    /// per-fallback-wire slot otherwise. Returns `None` when the active
+    /// wire has no measured RTT yet — caller-side fallback behaviour
+    /// (e.g. primary's stale value vs. None) is the caller's choice.
+    ///
+    /// Used by the scoring layer so the load-balancer compares uplinks by
+    /// the latency of the wire that is **actually carrying traffic**
+    /// rather than primary's measurement, which may belong to a wire
+    /// that the dial loop has long since moved off.
+    pub(crate) fn active_wire_rtt_ewma(&self) -> Option<Duration> {
+        if self.active_wire == 0 {
+            return self.rtt_ewma;
+        }
+        let slot_idx = (self.active_wire - 1) as usize;
+        self.fallback_rtt_ewma.get(slot_idx).copied().flatten()
+    }
+
+    /// Fold a fresh latency sample into the per-fallback-wire EWMA slot
+    /// for `wire_index`. No-op for `wire_index == 0` (the primary path
+    /// updates [`Self::rtt_ewma`] directly through `update_rtt_ewma` in
+    /// the probe outcome handler). Lazily extends
+    /// [`Self::fallback_rtt_ewma`] so wires that have never been probed
+    /// stay represented as `None` rather than a stale zero.
+    ///
+    /// Called from the per-wire probe walk
+    /// ([`crate::manager::probe::wire`]) on a successful fallback-wire
+    /// probe, so scoring picks up the fallback's measured RTT instead of
+    /// inheriting primary's (possibly stale, possibly broken) value.
+    pub(crate) fn record_fallback_wire_latency(
+        &mut self,
+        wire_index: u8,
+        sample: Option<Duration>,
+        alpha: f64,
+    ) {
+        if wire_index == 0 {
+            return;
+        }
+        let slot_idx = (wire_index - 1) as usize;
+        while self.fallback_rtt_ewma.len() <= slot_idx {
+            self.fallback_rtt_ewma.push(None);
+        }
+        let mut current = self.fallback_rtt_ewma[slot_idx];
+        crate::penalty::update_rtt_ewma(&mut current, sample, alpha);
+        self.fallback_rtt_ewma[slot_idx] = current;
     }
 }
 
