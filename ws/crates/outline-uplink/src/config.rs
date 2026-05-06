@@ -59,6 +59,97 @@ pub struct UplinkGroupConfig {
     pub load_balancing: LoadBalancingConfig,
 }
 
+// ── FallbackTransport ────────────────────────────────────────────────────────
+
+/// Wire-level configuration for a single fallback transport on an uplink.
+///
+/// An [`UplinkConfig`] may list zero or more fallbacks via [`UplinkConfig::fallbacks`].
+/// Each fallback represents an alternate `(transport, wire-fields)` shape that the
+/// dial loop tries when the parent uplink's primary transport fails on this
+/// session. Fallbacks share the parent's identity (`name`, `weight`, `group`)
+/// and are not separate uplinks from the load-balancer's point of view.
+///
+/// `cipher` / `password` / `fwmark` / `ipv6_first` / `fingerprint_profile` are
+/// inherited from the parent uplink when omitted; the loader fills them in
+/// during validation. `vless_id` is mandatory for `transport = "vless"` and is
+/// **not** inherited from the parent (different VLESS endpoints use different
+/// uuids by definition).
+///
+/// Probe and runtime-state tracking remain attached to the parent uplink's
+/// primary transport in the current iteration. Active-wire-aware probing and
+/// auto-failback land in a follow-up.
+#[derive(Debug, Clone)]
+pub struct FallbackTransport {
+    pub transport: UplinkTransport,
+    pub tcp_ws_url: Option<Url>,
+    pub tcp_mode: TransportMode,
+    pub udp_ws_url: Option<Url>,
+    pub udp_mode: TransportMode,
+    pub vless_ws_url: Option<Url>,
+    pub vless_xhttp_url: Option<Url>,
+    pub vless_mode: TransportMode,
+    pub vless_id: Option<[u8; 16]>,
+    pub tcp_addr: Option<ServerAddr>,
+    pub udp_addr: Option<ServerAddr>,
+    pub cipher: CipherKind,
+    pub password: String,
+    pub fwmark: Option<u32>,
+    pub ipv6_first: bool,
+    pub fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
+}
+
+impl FallbackTransport {
+    /// True when this fallback is configured for UDP-style sessions.
+    /// Mirrors [`UplinkConfig::supports_udp`] but operates on the
+    /// fallback's own wire fields.
+    pub fn supports_udp(&self) -> bool {
+        match self.transport {
+            UplinkTransport::Ws => self.udp_ws_url.is_some(),
+            UplinkTransport::Vless => self.vless_dial_url().is_some(),
+            UplinkTransport::Shadowsocks => self.udp_addr.is_some(),
+        }
+    }
+
+    pub fn tcp_dial_url(&self) -> Option<&Url> {
+        match self.transport {
+            UplinkTransport::Vless => self.vless_dial_url(),
+            UplinkTransport::Ws => self.tcp_ws_url.as_ref(),
+            UplinkTransport::Shadowsocks => None,
+        }
+    }
+
+    pub fn udp_dial_url(&self) -> Option<&Url> {
+        match self.transport {
+            UplinkTransport::Vless => self.vless_dial_url(),
+            UplinkTransport::Ws => self.udp_ws_url.as_ref(),
+            UplinkTransport::Shadowsocks => None,
+        }
+    }
+
+    fn vless_dial_url(&self) -> Option<&Url> {
+        match self.vless_mode {
+            TransportMode::XhttpH1 | TransportMode::XhttpH2 | TransportMode::XhttpH3 => {
+                self.vless_xhttp_url.as_ref()
+            },
+            _ => self.vless_ws_url.as_ref(),
+        }
+    }
+
+    pub fn tcp_dial_mode(&self) -> TransportMode {
+        match self.transport {
+            UplinkTransport::Vless => self.vless_mode,
+            _ => self.tcp_mode,
+        }
+    }
+
+    pub fn udp_dial_mode(&self) -> TransportMode {
+        match self.transport {
+            UplinkTransport::Vless => self.vless_mode,
+            _ => self.udp_mode,
+        }
+    }
+}
+
 // ── UplinkConfig ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -100,15 +191,34 @@ pub struct UplinkConfig {
     /// `Strategy::None` for an uplink that must keep a byte-identical
     /// xray-style wire shape, while siblings opt into `PerHostStable`).
     pub fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
+    /// Optional list of fallback transports tried in order when the primary
+    /// transport on this uplink fails to dial / chunk-0. Fallbacks share the
+    /// parent's identity (`name`, `weight`, `group`) — they are not separate
+    /// uplinks from the load-balancer's point of view. See
+    /// [`FallbackTransport`] for the wire-shape fields each fallback carries.
+    /// Empty by default; populated from `[[outline.uplinks.fallbacks]]` in
+    /// the TOML config.
+    pub fallbacks: Vec<FallbackTransport>,
 }
 
 impl UplinkConfig {
+    /// True when the parent's primary transport supports UDP. To check
+    /// whether *any* (primary or fallback) wire on this uplink supports UDP,
+    /// use [`UplinkConfig::supports_udp_any`].
     pub fn supports_udp(&self) -> bool {
         match self.transport {
             UplinkTransport::Ws => self.udp_ws_url.is_some(),
             UplinkTransport::Vless => self.vless_dial_url().is_some(),
             UplinkTransport::Shadowsocks => self.udp_addr.is_some(),
         }
+    }
+
+    /// True when at least one configured wire (primary or any fallback) on
+    /// this uplink can carry UDP traffic. Used by the candidate filter so an
+    /// uplink whose primary is UDP-incapable but whose fallback is, still
+    /// shows up for UDP dispatch.
+    pub fn supports_udp_any(&self) -> bool {
+        self.supports_udp() || self.fallbacks.iter().any(|fb| fb.supports_udp())
     }
 
     /// URL to dial for TCP-style sessions. For VLESS this is either
