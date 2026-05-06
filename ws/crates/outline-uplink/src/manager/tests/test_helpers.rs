@@ -51,4 +51,10 @@ impl UplinkManager {
     pub async fn test_tcp_healthy(&self, index: usize) -> Option<bool> {
         self.inner.read_status(index).tcp.healthy
     }
+
+    /// Test helper: snapshot of full UplinkStatus for uplink `index`.
+    #[doc(hidden)]
+    pub fn read_status_for_test(&self, index: usize) -> crate::manager::status::UplinkStatus {
+        self.inner.read_status(index)
+    }
 }

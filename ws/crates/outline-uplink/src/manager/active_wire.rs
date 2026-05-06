@@ -149,6 +149,12 @@ impl UplinkManager {
                 TransportKind::Udp => &mut status.udp,
             };
             if success {
+                // Stamp the any-wire liveness timestamp regardless of which
+                // wire succeeded — this is the signal `selection_health`
+                // uses to keep an uplink in the candidate set when the
+                // probe has marked the *primary* wire unhealthy but a
+                // fallback wire is doing the actual work.
+                st.last_any_wire_success = Some(now);
                 if attempted_wire == st.active_wire {
                     st.active_wire_streak = 0;
                 }

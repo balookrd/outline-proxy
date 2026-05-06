@@ -89,6 +89,20 @@ pub(crate) struct PerTransportStatus {
     /// failure threshold equivalent), the dial-loop bumps `active_wire` to
     /// the next configured wire and starts a fresh streak there.
     pub(crate) active_wire_streak: u32,
+    /// Timestamp of the most recent **any-wire** successful dial on this
+    /// transport (primary or any fallback). Used by `selection_health` as a
+    /// liveness override: if the probe has marked the parent uplink
+    /// unhealthy because the *primary* wire is broken but a fallback wire
+    /// has dialed successfully within the runtime-failure window, the
+    /// uplink stays in the candidate set so the active-wire dial loop can
+    /// keep using the working fallback. Without this, probe health on the
+    /// primary would gate the whole uplink out of selection and the
+    /// fallback wire never gets a chance.
+    ///
+    /// Only set on successful dials of an uplink that has at least one
+    /// fallback configured — for single-wire uplinks the existing health
+    /// gating is unchanged.
+    pub(crate) last_any_wire_success: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Default)]
