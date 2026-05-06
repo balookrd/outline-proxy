@@ -67,6 +67,11 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         udp_xhttp_submode_block_remaining_ms: None,
         last_active_tcp_ago_ms: None,
         last_active_udp_ago_ms: None,
+        configured_fallbacks: Vec::new(),
+        tcp_active_wire: 0,
+        udp_active_wire: 0,
+        tcp_active_wire_pin_remaining_ms: None,
+        udp_active_wire_pin_remaining_ms: None,
     }
 }
 

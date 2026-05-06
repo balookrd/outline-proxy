@@ -21,6 +21,9 @@ impl Metrics {
         self.uplink_weight.reset();
         self.uplink_cooldown_seconds.reset();
         self.uplink_standby_ready.reset();
+        self.uplink_active_wire_index.reset();
+        self.uplink_active_wire_pin_remaining_seconds.reset();
+        self.uplink_configured_fallbacks_count.reset();
         self.sticky_routes_by_uplink.reset();
         self.sticky_routes_total.reset();
         self.selection_mode_info.reset();
@@ -141,6 +144,33 @@ impl Metrics {
             self.uplink_standby_ready
                 .with_label_values(&[group, "udp", &uplink.name])
                 .set(i64::try_from(uplink.standby_udp_ready).unwrap_or(i64::MAX));
+
+            // Active-wire visibility: published unconditionally for uplinks
+            // with at least one fallback so dashboards can pin a panel on
+            // every uplink that *can* enter sticky-fallback. Single-wire
+            // uplinks are skipped — for them the value would always be 0
+            // and the metric would just clutter the namespace.
+            if !uplink.configured_fallbacks.is_empty() {
+                self.uplink_active_wire_index
+                    .with_label_values(&[group, "tcp", &uplink.name])
+                    .set(uplink.tcp_active_wire as i64);
+                self.uplink_active_wire_index
+                    .with_label_values(&[group, "udp", &uplink.name])
+                    .set(uplink.udp_active_wire as i64);
+                self.uplink_configured_fallbacks_count
+                    .with_label_values(&[group, &uplink.name])
+                    .set(i64::try_from(uplink.configured_fallbacks.len()).unwrap_or(i64::MAX));
+                if let Some(remaining_ms) = uplink.tcp_active_wire_pin_remaining_ms {
+                    self.uplink_active_wire_pin_remaining_seconds
+                        .with_label_values(&[group, "tcp", &uplink.name])
+                        .set(remaining_ms as f64 / 1000.0);
+                }
+                if let Some(remaining_ms) = uplink.udp_active_wire_pin_remaining_ms {
+                    self.uplink_active_wire_pin_remaining_seconds
+                        .with_label_values(&[group, "udp", &uplink.name])
+                        .set(remaining_ms as f64 / 1000.0);
+                }
+            }
         }
         if let Some(global_active_uplink) = &snapshot.global_active_uplink {
             self.global_active_uplink_info

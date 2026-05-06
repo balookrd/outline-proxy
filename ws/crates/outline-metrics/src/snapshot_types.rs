@@ -100,6 +100,34 @@ pub struct UplinkSnapshot {
     pub udp_xhttp_submode_block_remaining_ms: Option<u128>,
     pub last_active_tcp_ago_ms: Option<u128>,
     pub last_active_udp_ago_ms: Option<u128>,
+    /// Ordered list of fallback transport names configured under
+    /// `[[outline.uplinks.fallbacks]]` for this uplink. Empty when no
+    /// fallbacks are configured. Surfaced on the dashboard as a chip chain
+    /// next to the uplink name (e.g. `vless → ws → ss`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configured_fallbacks: Vec<String>,
+    /// Index into `[primary, fallbacks[0], ..., fallbacks[N-1]]` of the
+    /// wire that **new TCP sessions** start with. `0` is primary; non-zero
+    /// means a sticky-fallback is in effect after consecutive primary
+    /// failures. Always `0` for uplinks without fallbacks.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub tcp_active_wire: u8,
+    /// UDP counterpart to [`Self::tcp_active_wire`].
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub udp_active_wire: u8,
+    /// Milliseconds remaining on the TCP active-wire pin: time until the
+    /// active wire snaps back to primary. `Some(_)` only while a non-primary
+    /// wire is sticky; `None` when active is on primary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_active_wire_pin_remaining_ms: Option<u128>,
+    /// UDP counterpart to [`Self::tcp_active_wire_pin_remaining_ms`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_active_wire_pin_remaining_ms: Option<u128>,
+}
+
+#[doc(hidden)]
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
 }
 
 #[derive(Debug, Clone, Serialize)]
