@@ -30,6 +30,44 @@ use crate::types::{TransportKind, UplinkManager};
 use super::standby::resume_cache_key;
 
 impl UplinkManager {
+    /// Drain the warm-standby deque for `(uplink_index, transport)`.
+    ///
+    /// The pool today holds sockets dialed against the parent uplink's
+    /// **primary** wire; when active_wire advances away from primary
+    /// (0 → 1+), those sockets are now to the wire we just abandoned
+    /// because it has been failing. Holding them until the next probe
+    /// cycle's `validate` peek would either dispatch a stale socket to
+    /// a session that lands on primary again (rare but possible) or
+    /// keep an FD alive needlessly. Drain on transition is the cleanup.
+    ///
+    /// Per-wire warm pools (separate slots for primary vs each
+    /// fallback) are a follow-up; until they land, this drain is a
+    /// no-op on the fallback side because no fallback sockets are ever
+    /// pooled in the first place.
+    pub async fn drain_standby_pool(&self, uplink_index: usize, transport: TransportKind) {
+        let pool = match self.inner.standby_pools.get(uplink_index) {
+            Some(p) => p,
+            None => return,
+        };
+        let mut guard = match transport {
+            TransportKind::Tcp => pool.tcp.lock().await,
+            TransportKind::Udp => pool.udp.lock().await,
+        };
+        if guard.is_empty() {
+            return;
+        }
+        let drained = guard.len();
+        guard.clear();
+        debug!(
+            uplink_index,
+            transport = ?transport,
+            drained,
+            "drained warm-standby pool on active-wire transition",
+        );
+    }
+}
+
+impl UplinkManager {
     /// Public-facing handle for the cross-transport resume-cache key used by
     /// the dial paths to look up / store an `X-Outline-Resume` token. The
     /// key is identity-level (parent uplink name + transport label, no wire
@@ -143,6 +181,12 @@ impl UplinkManager {
         let uplink_name = self.inner.uplinks[uplink_index].name.clone();
         let total = total_wires as u8;
 
+        // We collect the transition signal inside the sync `with_status_mut`
+        // closure and act on it (spawn the async pool drain) after the
+        // status lock is released — async work can't happen inside the
+        // sync closure.
+        let mut transition_away_from_primary = false;
+
         self.inner.with_status_mut(uplink_index, |status| {
             let st = match transport {
                 TransportKind::Tcp => &mut status.tcp,
@@ -179,6 +223,7 @@ impl UplinkManager {
             // wrapping back to primary clears the pin so the next session is
             // a clean retry from the operator's first-choice wire.
             st.active_wire_pinned_until = if next == 0 { None } else { Some(now + pin_window) };
+            transition_away_from_primary = previous == 0 && next != 0;
             info!(
                 group = %group_name,
                 uplink = %uplink_name,
@@ -204,5 +249,24 @@ impl UplinkManager {
                 st.active_wire_pinned_until,
             );
         });
+
+        // Drain the warm-standby pool when active just moved off primary —
+        // see `drain_standby_pool` for the rationale. Spawned because we
+        // cannot `.await` inside the sync `with_status_mut` closure above;
+        // ordering with subsequent dials is fine because a stale socket
+        // arriving before the drain completes still gets liveness-peeked
+        // by the standby validate path before being handed out.
+        if transition_away_from_primary && tokio::runtime::Handle::try_current().is_ok() {
+            // `try_current` guards the unit-test path: those tests call
+            // `record_wire_outcome` synchronously from a `#[test]` (no
+            // tokio runtime), and `tokio::spawn` would panic. The drain
+            // is best-effort cleanup anyway — production callers always
+            // run inside the tokio runtime, so the guard short-circuits
+            // only in tests.
+            let manager = self.clone();
+            tokio::spawn(async move {
+                manager.drain_standby_pool(uplink_index, transport).await;
+            });
+        }
     }
 }
