@@ -141,6 +141,10 @@ fn synthesize_default_uplink(mut outline: OutlineSection) -> OutlineSection {
         vless_id: None,
         group: None,
         fingerprint_profile: None,
+        // Inline-shorthand `[outline]` does not yet expose fallback
+        // configuration; explicit `[[outline.uplinks]]` is required to
+        // declare fallbacks. See docs/UPLINK-CONFIGURATIONS.md.
+        fallbacks: None,
     }]);
     outline
 }
