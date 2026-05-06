@@ -191,6 +191,14 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .fb-chain { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 4px; font-size: 10.5px; }
 .fb-chain .fb-link { padding: 1px 6px; border-radius: 4px; background: var(--soft); color: var(--muted); border: 1px solid var(--line); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
 .fb-chain .fb-link.fb-active { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); font-weight: 800; }
+/* Active chip painted in the transport's protocol palette so the chain
+ * "currently working" cue matches the colour the operator already
+ * associates with that transport elsewhere on the page. The class
+ * combination `.fb-active.proto-*` overrides the default green
+ * fb-active background. */
+.fb-chain .fb-link.fb-active.proto-vless { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
+.fb-chain .fb-link.fb-active.proto-shadowsocks { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
+.fb-chain .fb-link.fb-active.proto-ws { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
 .fb-chain .fb-link.fb-failed { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); font-weight: 800; }
 .fb-chain .fb-arrow { color: var(--muted); font-size: 10px; }
 .fb-chain .fb-pin { padding: 1px 6px; border-radius: 4px; background: var(--amber-soft); color: #b45309; border: 1px solid rgba(180, 83, 9, .4); font-size: 10px; font-weight: 700; }
@@ -574,6 +582,13 @@ function fallbackChainPill(uplink) {
         cls += " fb-failed";
       } else if (isActive) {
         cls += " fb-active";
+        // Tag the active chip with the transport's proto class so the
+        // CSS overrides paint it in the protocol palette (VLESS violet,
+        // WS green, SS — its own colour) instead of the generic
+        // fb-active green. Matches the colour the old top pill used and
+        // ties the chain back to the rest of the dashboard's palette.
+        const t = w.transport;
+        if (t === "vless" || t === "shadowsocks" || t === "ws") cls += ` proto-${t}`;
       }
       // Submode + downgrade decorations follow the **active** wire so the
       // active chip carries the same level of detail the (now-removed)
