@@ -900,12 +900,20 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
 
 #### Список обходов
 
-- Fallback-дайл обходит standby pool, mode-downgrade окно и RTT-EWMA
-  feed — эти структуры приколочены к primary-индексу/транспорту
-  родителя, и переиспользование их для fallback-wire испортило бы
-  primary-mode. Per-wire варианты — отдельная задача. DNS-кэш,
-  per-uplink fingerprint scope и resume-cache **сохраняются** через
-  wire-свитчи.
+- Fallback-дайл обходит standby pool и per-uplink mode-downgrade окно
+  — эти структуры приколочены к primary-индексу/транспорту родителя,
+  и переиспользование их для fallback-wire испортило бы primary-mode.
+  Per-wire варианты — отдельная задача.
+- DNS-кэш, per-uplink fingerprint scope и resume-cache **сохраняются**
+  через wire-свитчи.
+- RTT EWMA **общий** для primary и fallback дайлов одного
+  `(uplink, transport)`. Fallback-дайлы скармливают свою длительность
+  при успехе, чтобы score-based selection между аплинками отражал
+  реальную задержку active wire'а. Trade-off shared-EWMA: flip wire'а
+  тащит предыдущие измерения ~4-5 сэмплов (при дефолте
+  `rtt_ewma_alpha = 0.25`) до полного отражения нового wire'а —
+  приемлемо на практике (wire-флипы редкие). Строгий per-(uplink, wire)
+  EWMA — отдельная задача.
 
 #### UDP-кандидатура
 

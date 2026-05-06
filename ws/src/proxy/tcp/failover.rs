@@ -357,13 +357,17 @@ pub(super) async fn connect_tcp_uplink_fresh(
 /// Dial one fallback transport on the parent uplink. Returns a fully-set-up
 /// `ConnectedTcpUplink` indistinguishable from the primary path.
 ///
-/// Bypasses the standby pool, mode-downgrade window, RTT-EWMA feed, and
-/// cross-transport resume cache — those structures are keyed on the parent's
-/// uplink index and primary transport, so a fallback dial must not pollute
-/// them. (Active-wire-aware probing and stat tracking are Phase 2.)
+/// Bypasses the standby pool, mode-downgrade window, and cross-transport
+/// resume cache (well — resume cache *is* shared by design now, see the
+/// resume-handover commit). Per-wire RTT samples **are** fed back into the
+/// uplink's EWMA on success: when a sticky fallback is the active wire,
+/// the score-based selection between uplinks must reflect the active wire's
+/// real latency rather than a stale primary-probe measurement. Strict per-
+/// (uplink, wire) EWMA is a follow-up; this iteration shares one EWMA per
+/// (uplink, transport) and the wire that successfully dials feeds it.
 ///
 /// The DNS cache and per-uplink fingerprint scope (which is identity-level,
-/// not transport-level) **are** preserved.
+/// not transport-level) are preserved.
 pub(super) async fn connect_tcp_fallback_fresh(
     uplinks: &UplinkManager,
     parent: &UplinkCandidate,
@@ -374,6 +378,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
     let cache = uplinks.dns_cache();
     let setup = WireSetup::from_fallback(&parent.uplink.name, fallback);
     let source = "socks_tcp_fb";
+    let dial_started = std::time::Instant::now();
 
     if fallback.transport == UplinkTransport::Shadowsocks {
         let addr = fallback
@@ -392,6 +397,17 @@ pub(super) async fn connect_tcp_fallback_fresh(
         )
         .await?;
         let (writer, reader) = do_tcp_ss_setup_socket(stream, &setup, target, source).await?;
+        // Feed the dial latency into the uplink's RTT EWMA so score-based
+        // selection between uplinks reflects this wire's real quality
+        // when it is the sticky-active one. See doc comment above on the
+        // shared-per-transport EWMA tradeoff.
+        uplinks
+            .report_connection_latency(
+                parent.index,
+                TransportKind::Tcp,
+                dial_started.elapsed(),
+            )
+            .await;
         debug!(
             uplink = %parent.uplink.name,
             target = %target,
@@ -446,6 +462,15 @@ pub(super) async fn connect_tcp_fallback_fresh(
     global_resume_cache().store_if_issued(resume_key, ws.issued_session_id());
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
     let (writer, reader) = do_tcp_ss_setup(ws, &setup, target, source, keepalive_interval).await?;
+    // Feed the dial latency into the uplink's RTT EWMA — see SS branch
+    // above for the rationale.
+    uplinks
+        .report_connection_latency(
+            parent.index,
+            TransportKind::Tcp,
+            dial_started.elapsed(),
+        )
+        .await;
     debug!(
         uplink = %parent.uplink.name,
         target = %target,
