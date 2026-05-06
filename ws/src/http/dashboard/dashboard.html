@@ -194,6 +194,15 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .fb-chain .fb-link.fb-failed { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); font-weight: 800; }
 .fb-chain .fb-arrow { color: var(--muted); font-size: 10px; }
 .fb-chain .fb-pin { padding: 1px 6px; border-radius: 4px; background: var(--amber-soft); color: #b45309; border: 1px solid rgba(180, 83, 9, .4); font-size: 10px; font-weight: 700; }
+/* Inline decorations on the chain chips, mirroring the styling that
+ * used to live on the (now-removed) top pill: submode badge, carrier
+ * auto-downgrade arrow, and a "✕" failure mark on the active chip
+ * when effective health is false on every leg. */
+.fb-chain .fb-link .proto-submode { margin-left: 4px; padding: 0 4px; font-size: 9px; opacity: .8; border-radius: 3px; background: rgba(0,0,0,.1); letter-spacing: .04em; text-transform: none; font-weight: 600; }
+.fb-chain .fb-link .proto-submode.proto-downgraded { color: #b8631a; background: rgba(214, 130, 30, .15); opacity: 1; }
+.fb-chain .fb-link .proto-submode .proto-dg { margin: 0 1px; }
+.fb-chain .fb-link .fb-dg { margin-left: 4px; color: #b8631a; font-weight: 800; }
+.fb-chain .fb-link .fb-down { margin-left: 4px; color: #b91c1c; font-weight: 800; font-size: 10px; }
 .rows-head { min-height: 46px; color: var(--muted); font-size: 11px; font-weight: 780; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid var(--line); }
 .row { border-bottom: 1px solid var(--line); font-size: 13px; }
 .row:last-child { border-bottom: 0; }
@@ -442,48 +451,16 @@ function legPill(t, cls, leg, configured, effective, downgraded, submode, submod
 function protocolPill(uplink) {
   const t = String(uplink.transport || "").toLowerCase();
   const cls = t === "vless" || t === "shadowsocks" || t === "ws" ? `proto-${t}` : "";
-  // When the dial loop / probe walk has moved `active_wire` to a
-  // fallback, the "currently working protocol" pill should reflect that
-  // wire — not primary's mode, which is now serving DOWN. The chain
-  // below identifies the wire by index/transport; here we surface only
-  // the transport family of the wire actually carrying traffic
-  // (per-fallback mode strings aren't exposed in the snapshot today).
-  // Falls through to the primary-mode rendering when both legs are
-  // still on wire 0, when active wires diverge between TCP/UDP (let
-  // the legged variant below clarify), or when no fallbacks are
-  // configured.
   const fallbacks = Array.isArray(uplink.configured_fallbacks) ? uplink.configured_fallbacks : [];
-  const tcpActiveWire = uplink.tcp_active_wire || 0;
-  const udpActiveWire = uplink.udp_active_wire || 0;
-  // The fully-resolved chain (primary + each fallback with their
-  // configured TCP/UDP modes) lets us render the active wire's mode in
-  // the top pill — e.g. `VLESS/WS/H2` instead of bare `VLESS`. Older
-  // backends that don't yet emit `configured_wire_chain` fall back to
-  // the transport-only path below, gated on `configured_fallbacks`.
-  const wireChain = Array.isArray(uplink.configured_wire_chain) ? uplink.configured_wire_chain : [];
-  if (
-    tcpActiveWire === udpActiveWire
-    && tcpActiveWire > 0
-    && (wireChain[tcpActiveWire] != null || fallbacks[tcpActiveWire - 1] != null)
-  ) {
-    const wire = wireChain[tcpActiveWire];
-    const ft = String((wire ? wire.transport : fallbacks[tcpActiveWire - 1]) || "").toLowerCase();
-    const fcls = ft === "vless" || ft === "shadowsocks" || ft === "ws" ? `proto-${ft}` : "";
-    const tcpEff = legHealth(uplink, 'tcp');
-    const udpEff = legHealth(uplink, 'udp');
-    const allDown = tcpEff === false && udpEff === false;
-    const failCls = allDown ? " proto-failed" : "";
-    const failMark = allDown ? "<span class=\"proto-fail\">✕ DOWN</span>" : "";
-    // Prefer TCP mode for the label (matches single-wire `protocolPill`
-    // which collapses to TCP when both legs are at the same shape); the
-    // chain chip below carries the raw transport for the inactive wires.
-    const mode = wire ? (wire.tcp_mode || wire.udp_mode || null) : null;
-    const label = stackLabel(ft, mode);
-    const title = allDown
-      ? `nothing is up — fallback wire #${tcpActiveWire} (${label}) is also failing`
-      : `currently working on fallback wire #${tcpActiveWire} (${label})`;
-    return `<span class="proto-pill ${fcls}${failCls}" title="${escapeHtml(title)}">${escapeHtml(label)}${failMark}</span>`;
-  }
+  // Multi-wire uplinks render their full state through the chain pill
+  // alone — the top pill duplicates information already shown there.
+  // The chain chips carry per-wire transport/mode labels, the active
+  // wire highlight, the failed-primary red, the auto-failback pin,
+  // and (for wire 0) the submode + downgrade arrow + tooltip that
+  // used to live exclusively on the top pill. Returning an empty
+  // string here drops the redundant top pill cleanly; the row layout
+  // collapses to just the chain.
+  if (fallbacks.length > 0) return "";
   const tcpMode = uplink.tcp_mode || null;
   const udpMode = uplink.udp_mode || null;
   const tcpEff = uplink.tcp_mode_effective || tcpMode;
@@ -554,34 +531,59 @@ function fallbackChainPill(uplink) {
   // visualises "what's broken vs. what's serving traffic" — the failed
   // primary stays red even when the active wire has flipped onto a
   // working fallback.
+  // Top-pill decorations now live on the chain chips. For wire 0 we
+  // borrow the uplink-level submode / downgrade fields (those track
+  // primary's mode state, so they apply only to the primary chip).
+  // Wire 1+ chips don't have per-wire submode info exposed in the
+  // snapshot yet — they render as plain transport/mode.
+  const tcpSm = uplink.tcp_xhttp_submode || null;
+  const udpSm = uplink.udp_xhttp_submode || null;
+  const tcpSmEff = uplink.tcp_xhttp_submode_effective || tcpSm;
+  const udpSmEff = uplink.udp_xhttp_submode_effective || udpSm;
+  const tcpSmDg = !!uplink.tcp_xhttp_submode_downgrade_active && tcpSm !== tcpSmEff;
+  const udpSmDg = !!uplink.udp_xhttp_submode_downgrade_active && udpSm !== udpSmEff;
+  // The original mode (configured) vs effective mode delta on primary —
+  // surfaces the carrier auto-downgrade arrow inline on the wire 0 chip.
+  const primaryTcpDg = !!uplink.tcp_downgrade_active && uplink.tcp_mode && uplink.tcp_mode !== uplink.tcp_mode_effective;
+  const primaryUdpDg = !!uplink.udp_downgrade_active && uplink.udp_mode && uplink.udp_mode !== uplink.udp_mode_effective;
+  const primaryDg = primaryTcpDg || primaryUdpDg;
+  // Effective health on either leg false == nothing is up, including the
+  // active wire — paint the active chip with a DOWN marker so the chain
+  // alone communicates "everything has failed", since the top pill that
+  // used to surface this state is gone.
+  const tcpEff = legHealth(uplink, 'tcp');
+  const udpEff = legHealth(uplink, 'udp');
+  const allDown = tcpEff === false && udpEff === false;
   const renderOne = (legLabel, activeIdx, pinMs, primaryFailed) => {
     const links = wires.map((w, i) => {
       const isActive = i === activeIdx;
       let cls = "fb-link";
       if (i === 0 && primaryFailed && !isActive) {
-        // Primary is dead AND active wire has moved off — show wire 0
-        // as failed. We avoid the failed style when active is still on
-        // primary (rare race during streak accrual) so the chip can
-        // still highlight as active in that brief window.
         cls += " fb-failed";
       } else if (isActive) {
-        // Active wire (whether primary or fallback) is the working one
-        // right now — paint it green. The previous design split this
-        // into separate primary/fallback colour buckets; collapsing
-        // them keeps "currently working" visually consistent.
         cls += " fb-active";
       }
+      // Submode chip ((S) / (P)) and downgrade arrow only attach to the
+      // wire 0 chip — the uplink-level submode/downgrade fields are
+      // primary-bound. The arrow + tooltip preserve the auto-downgrade
+      // hint that the operator used to read on the top pill.
+      const submodeHtml = (i === 0)
+        ? submodeSuffix(tcpSm, tcpSmEff, tcpSmDg)[0]
+        : "";
+      const dgArrow = (i === 0 && primaryDg)
+        ? '<span class="fb-dg" title="carrier auto-downgraded (configured H3/QUIC unreachable)">↘</span>'
+        : "";
+      const downMark = (isActive && allDown)
+        ? '<span class="fb-down" title="active wire failing — nothing is up on this leg">✕</span>'
+        : "";
       const pin = (isActive && i !== 0 && typeof pinMs === "number")
         ? `<span class="fb-pin" title="auto-failback in">⏱ ${(pinMs / 1000).toFixed(0)}s</span>`
         : "";
-      // Show transport + mode when we know the mode (so the chain chip
-      // matches the carrier shape of that specific wire — `VLESS/WS/H2`
-      // is far clearer than bare `VLESS` in a chain that has multiple
-      // VLESS wires with different modes). Falls back to bare transport
-      // for Shadowsocks (no mode enum) and for older snapshots without
-      // `configured_wire_chain`.
       const label = stackLabel(w.transport, w.mode);
-      return `<span class="${cls}" title="wire #${i}: ${escapeHtml(label)}">${escapeHtml(label)}</span>${pin}`;
+      const titleParts = [`wire #${i}: ${label}`];
+      if (i === 0 && primaryDg) titleParts.push("auto-downgraded from configured carrier");
+      const title = titleParts.join(" · ");
+      return `<span class="${cls}" title="${escapeHtml(title)}">${escapeHtml(label)}${submodeHtml}${dgArrow}${downMark}</span>${pin}`;
     }).join('<span class="fb-arrow">›</span>');
     const legTag = legLabel ? `<span class="proto-leg">${legLabel}</span>` : "";
     return `<div class="fb-chain">${legTag}${links}</div>`;
