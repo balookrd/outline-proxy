@@ -909,10 +909,11 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
   клиентского трафика всё равно получают валидацию fallback'а и
   светятся `*_health_effective = true` на дашборде. Обходит
   warm-standby слоты (они приколочены к primary wire родителя) и не
-  кормит RTT EWMA / penalty / cooldown родителя — это scoring state
-  размечен под primary'ский трафик, и подмешивание латенси
-  fallback-wire probe'ов туда исказит EWMA. Fallback-wire probe
-  доставляет только boolean liveness-сигнал.
+  трогает penalty / cooldown родителя — этот scoring-state размечен
+  под primary'ский трафик. Fallback-wire probe **кормит** свою
+  собственную per-wire EWMA-слотину, так что cross-uplink скоринг
+  ранжирует аплинк по реально работающему wire'у, а не по
+  (возможно устаревшему) primary-сэмплу.
 - Тот же any-wire-сигнал кормит **effective health** на snapshot /
   Prometheus / дашборде. `UplinkSnapshot::tcp_health_effective` (и
   соответствующая Prometheus-gauge
@@ -926,20 +927,28 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
 
 #### Список обходов
 
-- Fallback-дайл обходит standby pool и per-uplink mode-downgrade окно
-  — эти структуры приколочены к primary-индексу/транспорту родителя,
-  и переиспользование их для fallback-wire испортило бы primary-mode.
-  Per-wire варианты — отдельная задача.
+- Fallback-дайл обходит standby pool — пул сегодня приколочен к форме
+  primary wire'а родителя, и переиспользование его для fallback wire
+  выдало бы сокет неподходящего транспорта. Per-wire warm-standby
+  pool — следующий шаг. Mode-downgrade окно, наоборот, уже per-wire
+  (см. `fallback_mode_downgrades` и `effective_*_mode_for_wire`), так
+  что fallback wire, наблюдающий собственный carrier-downgrade,
+  закрывает только свой слот.
 - DNS-кэш, per-uplink fingerprint scope и resume-cache **сохраняются**
   через wire-свитчи.
-- RTT EWMA **общий** для primary и fallback дайлов одного
-  `(uplink, transport)`. Fallback-дайлы скармливают свою длительность
-  при успехе, чтобы score-based selection между аплинками отражал
-  реальную задержку active wire'а. Trade-off shared-EWMA: flip wire'а
-  тащит предыдущие измерения ~4-5 сэмплов (при дефолте
-  `rtt_ewma_alpha = 0.25`) до полного отражения нового wire'а —
-  приемлемо на практике (wire-флипы редкие). Строгий per-(uplink, wire)
-  EWMA — отдельная задача.
+- RTT EWMA теперь **per-wire**. Primary живёт в существующем
+  `rtt_ewma` слоте на `PerTransportStatus`; у каждого fallback wire'а
+  свой слот в `fallback_rtt_ewma` (lazy-extend при первой записи,
+  индекс `wire_index - 1`). Per-wire probe walk подкладывает
+  латенси fallback-пробы в его собственный слот, а cross-uplink
+  скоринг (`scoring_base_latency`) читает EWMA текущего active
+  wire'а. Так что когда dial-loop перевёл `active_wire` на fallback,
+  скоринг ранжирует аплинк против соседей по реально работающему
+  wire'у, а не по primary (потенциально устаревшему или
+  принадлежащему уже сломанному wire'у) значению. Холодный старт
+  сразу после wire-flip'а — fallback-слот пустой — на один probe-
+  цикл откатывается на primary EWMA, пока per-wire probe не
+  заштампует свежий сэмпл.
 
 #### UDP-кандидатура
 
