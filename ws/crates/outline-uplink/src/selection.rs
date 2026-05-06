@@ -21,14 +21,19 @@ pub(crate) fn supports_transport_for_scope(
     transport: TransportKind,
     scope: RoutingScope,
 ) -> bool {
+    // For UDP we use `supports_udp_any()` — true when the primary or any
+    // configured fallback transport on this uplink can carry UDP. Without
+    // this an uplink whose primary is UDP-incapable but whose fallback is
+    // would be filtered out of the UDP candidate set entirely, defeating
+    // the point of declaring a UDP-capable fallback in the first place.
     match scope {
         RoutingScope::Global => match transport {
             TransportKind::Tcp => true,
-            TransportKind::Udp => uplink.supports_udp(),
+            TransportKind::Udp => uplink.supports_udp_any(),
         },
         _ => match transport {
             TransportKind::Tcp => true,
-            TransportKind::Udp => uplink.supports_udp(),
+            TransportKind::Udp => uplink.supports_udp_any(),
         },
     }
 }
