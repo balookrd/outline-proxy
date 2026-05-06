@@ -440,7 +440,13 @@ pub(super) async fn connect_tcp_fallback_fresh(
             parent.uplink.name,
             fallback.transport,
         ))?;
-    let mode = fallback.tcp_dial_mode();
+    // Honour any active per-wire mode-downgrade window for this fallback.
+    // The cap is family-aware (`WsH3` → `WsH2`, `XhttpH3` → `XhttpH2`,
+    // `XhttpH2` → `XhttpH1`) and lives in
+    // `PerTransportStatus::fallback_mode_downgrades[wire_index - 1]`.
+    let mode = uplinks
+        .effective_tcp_mode_for_wire(parent.index, wire_index)
+        .await;
     let resume_key = uplinks.resume_cache_key_for(&parent.uplink.name, "tcp");
     let resume_request = global_resume_cache().get(&resume_key);
     let ws = connect_websocket_with_resume(
@@ -459,6 +465,17 @@ pub(super) async fn connect_tcp_fallback_fresh(
         parent.uplink.name,
         fallback.transport,
     ))?;
+    // Mirror a transport-level downgrade observed by `connect_websocket_*`
+    // (host-clamp via `ws_mode_cache` or inline H3→H2/H1 fallback) into
+    // *this fallback wire's* per-wire downgrade slot — never primary's.
+    if let Some(requested) = ws.downgraded_from() {
+        uplinks.note_silent_transport_fallback_for_wire(
+            parent.index,
+            TransportKind::Tcp,
+            wire_index,
+            requested,
+        );
+    }
     global_resume_cache().store_if_issued(resume_key, ws.issued_session_id());
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
     let (writer, reader) = do_tcp_ss_setup(ws, &setup, target, source, keepalive_interval).await?;

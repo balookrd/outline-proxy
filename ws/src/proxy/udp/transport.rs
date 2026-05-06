@@ -75,7 +75,7 @@ async fn acquire_udp_with_fallbacks(
             uplinks.acquire_udp_standby_or_connect(candidate, "socks_udp").await
         } else {
             let fallback = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
-            dial_udp_fallback(uplinks, candidate, fallback).await
+            dial_udp_fallback(uplinks, candidate, fallback, wire_index).await
         };
         match attempt {
             Ok(transport) => {
@@ -133,6 +133,7 @@ async fn dial_udp_fallback(
     uplinks: &UplinkManager,
     parent: &UplinkCandidate,
     fallback: &FallbackTransport,
+    wire_index: u8,
 ) -> Result<UdpSessionTransport> {
     let cache = uplinks.dns_cache();
     let source = "socks_udp_fb";
@@ -178,7 +179,11 @@ async fn dial_udp_fallback(
                     parent.uplink.name,
                 )
             })?;
-            let mode = fallback.udp_dial_mode();
+            // Per-wire mode-downgrade window: cap from this fallback's
+            // own slot, family-aware (same family/rank rules as primary).
+            let mode = uplinks
+                .effective_udp_mode_for_wire(parent.index, wire_index)
+                .await;
             let keepalive = uplinks.load_balancing().udp_ws_keepalive_interval;
             // Resume-cache participation (same key as primary's UDP dial)
             // so an X-Outline-Resume token issued by VLESS-UDP earlier in
@@ -186,7 +191,7 @@ async fn dial_udp_fallback(
             // fallback dial.
             let resume_key = uplinks.resume_cache_key_for(&parent.uplink.name, "udp");
             let resume_request = global_resume_cache().get(&resume_key);
-            let (transport, issued, _downgraded_from) = UdpWsTransport::connect_with_resume(
+            let (transport, issued, downgraded_from) = UdpWsTransport::connect_with_resume(
                 cache,
                 url,
                 mode,
@@ -200,6 +205,15 @@ async fn dial_udp_fallback(
             )
             .await
             .with_context(|| format!("fallback ws dial to {url} failed"))?;
+            // Mirror an inline downgrade into *this fallback wire's* slot.
+            if let Some(requested) = downgraded_from {
+                uplinks.note_silent_transport_fallback_for_wire(
+                    parent.index,
+                    TransportKind::Udp,
+                    wire_index,
+                    requested,
+                );
+            }
             global_resume_cache().store_if_issued(resume_key, issued);
             uplinks
                 .report_connection_latency(
@@ -223,7 +237,12 @@ async fn dial_udp_fallback(
                     parent.uplink.name,
                 )
             })?;
-            let mode = fallback.udp_dial_mode();
+            // Wire-aware mode: read this fallback's per-wire downgrade slot
+            // first; falls back to the configured `vless_mode` when no
+            // window is active.
+            let mode = uplinks
+                .effective_udp_mode_for_wire(parent.index, wire_index)
+                .await;
             if mode == TransportMode::Quic {
                 anyhow::bail!(
                     "uplink {}: VLESS-fallback on UDP with mode=quic is not supported \

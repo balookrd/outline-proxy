@@ -603,3 +603,147 @@ async fn snapshot_effective_health_equals_probe_for_single_wire() {
         "single-wire uplink keeps effective == probe (no liveness override)",
     );
 }
+
+// ── Per-wire mode-tracking ──────────────────────────────────────────────────
+//
+// `note_silent_transport_fallback_for_wire` opens a per-wire downgrade window
+// that only `effective_*_mode_for_wire` of the same wire reads. Primary's
+// downgrade slot stays untouched, so a fallback wire that observes its own
+// XHTTP-H3 → XHTTP-H2 fallback doesn't mis-park primary's mode.
+
+#[tokio::test]
+async fn fallback_wire_downgrade_caps_only_its_own_wire() {
+    let mut cfg = vless_xhttp_primary(); // primary: vless xhttp_h3
+    // fallback[0]: WS family — primary's xhttp downgrade family is XHTTP, so
+    // we use a fallback configured for ws_h3 to verify wire 1 has its own
+    // independent slot.
+    let mut ws_fb = ws_fallback(false);
+    ws_fb.tcp_mode = TransportMode::WsH3;
+    cfg.fallbacks = vec![ws_fb];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Open a downgrade on wire 1 (the fallback) by observing a WsH3 → WsH2
+    // silent fallback during a successful dial.
+    manager.note_silent_transport_fallback_for_wire(
+        0,
+        TransportKind::Tcp,
+        1,
+        TransportMode::WsH3,
+    );
+
+    // Wire 1's effective mode is now capped to WsH2 (one step down).
+    let wire1_mode = manager.effective_tcp_mode_for_wire(0, 1).await;
+    assert_eq!(wire1_mode, TransportMode::WsH2);
+
+    // Wire 0 (primary) is unaffected — its slot was never touched.
+    let wire0_mode = manager.effective_tcp_mode_for_wire(0, 0).await;
+    assert_eq!(
+        wire0_mode,
+        TransportMode::XhttpH3,
+        "primary's mode must stay at XhttpH3 — fallback wire downgrade does not pollute it",
+    );
+    let snap = manager.read_status_for_test(0);
+    assert!(
+        snap.tcp.mode_downgrade_until.is_none(),
+        "primary's downgrade slot must remain unset",
+    );
+    assert!(
+        snap.tcp.mode_downgrade_capped_to.is_none(),
+        "primary's cap must remain unset",
+    );
+}
+
+#[tokio::test]
+async fn primary_wire_downgrade_does_not_leak_into_fallback() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Trigger a downgrade on wire 0 (primary) — XhttpH3 → XhttpH2.
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
+
+    // Primary effective mode is now capped to XhttpH2.
+    assert_eq!(
+        manager.effective_tcp_mode_for_wire(0, 0).await,
+        TransportMode::XhttpH2,
+    );
+
+    // Fallback wire stays at its configured mode — primary's downgrade
+    // doesn't reach it.
+    assert_eq!(
+        manager.effective_tcp_mode_for_wire(0, 1).await,
+        TransportMode::WsH2,
+        "fallback wire reads its configured ws_h2 mode unchanged",
+    );
+}
+
+#[tokio::test]
+async fn fallback_wire_downgrade_is_monotonic_within_window() {
+    // Use XHTTP family so the multi-step chain XhttpH3 → XhttpH2 → XhttpH1
+    // is observable through this window. (WS family stops at H3 → H2 here;
+    // H2 → H1 is the `ws_mode_cache`'s job, not the per-uplink window's.)
+    let mut cfg = vless_xhttp_primary(); // primary: vless xhttp_h3
+    // Fallback is also vless-xhttp at H3 so the family/rank checks pass.
+    let mut vless_xhttp_fb = FallbackTransport {
+        transport: UplinkTransport::Vless,
+        tcp_ws_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: Some(Url::parse("https://other.example.com/xhttp").unwrap()),
+        vless_mode: TransportMode::XhttpH3,
+        vless_id: Some([1u8; 16]),
+        tcp_addr: None,
+        udp_addr: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        fwmark: None,
+        ipv6_first: false,
+        fingerprint_profile: None,
+    };
+    let _ = &mut vless_xhttp_fb; // keep mutable for clarity even if unused
+    cfg.fallbacks = vec![vless_xhttp_fb];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // First trigger: XhttpH3 → XhttpH2.
+    manager.note_silent_transport_fallback_for_wire(
+        0,
+        TransportKind::Tcp,
+        1,
+        TransportMode::XhttpH3,
+    );
+    assert_eq!(
+        manager.effective_tcp_mode_for_wire(0, 1).await,
+        TransportMode::XhttpH2,
+    );
+
+    // Second trigger inside the window: XhttpH2 → XhttpH1.
+    manager.note_silent_transport_fallback_for_wire(
+        0,
+        TransportKind::Tcp,
+        1,
+        TransportMode::XhttpH2,
+    );
+    assert_eq!(
+        manager.effective_tcp_mode_for_wire(0, 1).await,
+        TransportMode::XhttpH1,
+        "XhttpH2 → XhttpH1 step must lower the cap",
+    );
+
+    // Third trigger inside the window claiming XhttpH3 again must NOT raise
+    // the cap back from XhttpH1 to XhttpH2 (defensive: a stray observation
+    // must not reset a deeper downgrade).
+    manager.note_silent_transport_fallback_for_wire(
+        0,
+        TransportKind::Tcp,
+        1,
+        TransportMode::XhttpH3,
+    );
+    assert_eq!(
+        manager.effective_tcp_mode_for_wire(0, 1).await,
+        TransportMode::XhttpH1,
+        "in-window XhttpH3 retrigger must not raise cap from XhttpH1 back to XhttpH2",
+    );
+}
+
