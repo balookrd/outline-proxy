@@ -748,3 +748,96 @@ What this does **not** cover (separate, costlier work):
 - HTTP/2 `SETTINGS` frame fingerprint (Akamai/JA4H2) — owned by
   the `h2` crate and largely closed to client-side tweaks.
 - QUIC transport-parameter ordering — owned by `quinn`.
+
+## Per-uplink fallback transports
+
+A single `[[outline.uplinks]]` entry can carry an ordered list of
+**fallback transports** that the dial loop tries when the primary
+transport on this uplink fails to dial. The motivating use-case is a
+VLESS endpoint that gets blocked at the network path: instead of
+demoting the whole uplink and failing over to a different one in the
+group, the loop falls through to a Shadowsocks or WS wire on the
+**same** uplink, keeping the operator's identity / weight / group
+attribution intact.
+
+```toml
+[[outline.uplinks]]
+name        = "edge-1"
+group       = "main"
+weight      = 1.0
+transport   = "vless"
+vless_xhttp_url = "https://cdn.example.com/SECRET/xhttp"
+vless_id        = "00000000-0000-0000-0000-000000000000"
+vless_mode      = "xhttp_h3"
+cipher          = "2022-blake3-aes-256-gcm"
+password        = "BASE64=="
+
+  [[outline.uplinks.fallbacks]]
+  transport   = "ws"
+  tcp_ws_url  = "wss://ws.example.com/tcp"
+  udp_ws_url  = "wss://ws.example.com/udp"
+  tcp_mode    = "ws_h2"
+  udp_mode    = "ws_h1"
+  # cipher / password / fwmark / ipv6_first / fingerprint_profile
+  # are inherited from the parent uplink unless overridden here.
+
+  [[outline.uplinks.fallbacks]]
+  transport   = "shadowsocks"
+  tcp_addr    = "1.2.3.4:8388"
+  udp_addr    = "1.2.3.4:8389"
+```
+
+### Fields
+
+Every fallback entry carries its own wire-shape fields, mirroring the
+top-level `[[outline.uplinks]]` schema **minus** the identity attributes
+that belong to the parent (`name`, `weight`, `group`, `link`):
+
+| Field | Required for | Notes |
+|---|---|---|
+| `transport` | always | `ws` / `shadowsocks` / `vless`; must differ from the parent's primary, and each transport may appear at most once across a single uplink's fallback list. |
+| `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ws"` | `tcp_ws_url` mandatory; `udp_ws_url` optional (UDP fallback opt-in). |
+| `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws/quic → `vless_ws_url`). `vless_id` is per-wire-credential and **not** inherited from the parent — different VLESS endpoints use different uuids by definition. |
+| `tcp_addr`, `udp_addr` | `transport = "shadowsocks"` | `tcp_addr` mandatory; `udp_addr` optional. |
+| `cipher`, `password` | inherited | Default to the parent uplink's value. Override here to dial a fallback that uses a different shared secret. |
+| `fwmark`, `ipv6_first`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. |
+
+### Behaviour
+
+- The dial loop tries `primary → fallbacks[0] → fallbacks[1] → …` on a
+  single session basis. Each new session restarts at the primary; there
+  is no per-uplink "active wire" memory in this iteration (Phase 2
+  feature).
+- A successful fallback dial is **invisible** to the load-balancer
+  beyond an `outline_uplink_selected` metric tick. The parent's
+  `report_runtime_failure` counter is only bumped when **every** wire
+  on this uplink (primary + all fallbacks) has failed — so transient
+  primary outages no longer demote the whole uplink as long as a
+  fallback works.
+- Probe still targets the **primary** transport in this iteration. The
+  probe-confirmed health status of the parent uplink is read from the
+  primary wire only; a flapping primary that always recovers via a
+  fallback may still surface as `tcp_healthy = Some(false)` once the
+  probe accumulates `min_failures` consecutive failures. Routing
+  fallback to the active wire is a Phase-2 feature.
+- The fallback dial bypasses the standby pool, mode-downgrade window,
+  cross-transport resume cache, and RTT-EWMA feed — those structures
+  are keyed on the parent's primary index/transport and are owned by
+  the active-wire-aware machinery that lands in Phase 2. DNS cache and
+  per-uplink fingerprint scope are preserved.
+- UDP candidate filter (`supports_transport_for_scope`) consults
+  `UplinkConfig::supports_udp_any()` so an uplink whose primary is
+  TCP-only (e.g. SS without `udp_addr`) but whose fallback is
+  UDP-capable still shows up for UDP dispatch.
+- **Limitation:** VLESS as a *fallback transport on UDP* returns a
+  clear error in this iteration. The QUIC-mux machinery in
+  `acquire_udp_standby_or_connect` keys all per-uplink hooks on
+  `candidate.index` and reusing those hooks for a fallback wire
+  requires the upcoming active-wire plumbing. Use SS or WS for UDP
+  fallback today.
+
+### Inline `[outline]` shorthand
+
+The single-uplink inline shape (`tcp_ws_url` etc. directly on
+`[outline]`) does **not** expose fallback configuration — declare an
+explicit `[[outline.uplinks]]` array entry to use fallbacks.
