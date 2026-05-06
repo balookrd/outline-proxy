@@ -513,6 +513,48 @@ fn probe_err_advances_active_wire_to_fallback() {
 }
 
 #[test]
+fn probe_err_re_pins_after_pin_expiry_when_primary_still_failing() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    // Short pin window so we can wait it out in a unit test.
+    let very_short_pin = std::time::Duration::from_millis(40);
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![cfg],
+        make_probe(1),
+        make_lb(very_short_pin),
+    )
+    .unwrap();
+
+    // First failure: active_wire flips to 1, pin set.
+    manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("primary 404"));
+    let status = manager.read_status_for_test(0);
+    assert_eq!(status.tcp.active_wire, 1);
+    let first_pin = status.tcp.active_wire_pinned_until.expect("pin set on first flip");
+
+    // Wait the pin out. Without the pin-expiry reset inside
+    // `advance_active_wire_on_probe_failure`, the next probe failure
+    // would bail out via the `active_wire != 0` guard (storage stayed at
+    // 1 because no traffic ever called the lazy reader on a passive
+    // uplink) and the chain's pin badge would tick to zero and never
+    // refresh.
+    std::thread::sleep(very_short_pin + std::time::Duration::from_millis(10));
+
+    // Second probe failure after pin expiry: must re-pin, not no-op.
+    manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("primary still 404"));
+    let status = manager.read_status_for_test(0);
+    assert_eq!(
+        status.tcp.active_wire, 1,
+        "post-expiry probe failure must re-flip back to the fallback wire",
+    );
+    let second_pin = status.tcp.active_wire_pinned_until.expect("re-pin set on second flip");
+    assert!(
+        second_pin > first_pin,
+        "second pin must extend past the original pin's deadline",
+    );
+}
+
+#[test]
 fn probe_err_does_not_advance_below_min_failures() {
     let mut cfg = vless_xhttp_primary();
     cfg.fallbacks = vec![ws_fallback(false)];

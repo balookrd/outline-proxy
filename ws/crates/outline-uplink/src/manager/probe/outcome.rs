@@ -79,6 +79,22 @@ fn advance_active_wire_on_probe_failure(
     if total_wires <= 1 {
         return false;
     }
+    // Snap back to primary when the auto-failback pin has expired. The
+    // `active_wire` reader (`UplinkManager::active_wire`) does this lazily
+    // on read, but on a passive uplink with no client traffic the reader
+    // is never called between probe cycles — without an explicit reset
+    // here, the storage stays pinned to the fallback wire forever after
+    // the pin's nominal expiry. The next probe failure would then bail
+    // out via the `active_wire != 0` guard below and never re-pin, so
+    // the operator sees the chain's pin badge tick down to zero and
+    // disappear with no new pin replacing it.
+    if let Some(until) = status.active_wire_pinned_until {
+        if until <= now {
+            status.active_wire = 0;
+            status.active_wire_pinned_until = None;
+            status.active_wire_streak = 0;
+        }
+    }
     if status.active_wire != 0 {
         return false;
     }
