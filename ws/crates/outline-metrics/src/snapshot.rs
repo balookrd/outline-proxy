@@ -13,6 +13,7 @@ static RENDER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 impl Metrics {
     fn update_snapshot_metrics(&self, snapshots: &[UplinkManagerSnapshot]) {
         self.uplink_health.reset();
+        self.uplink_health_effective.reset();
         self.uplink_latency_seconds.reset();
         self.uplink_rtt_ewma_seconds.reset();
         self.uplink_penalty_seconds.reset();
@@ -75,6 +76,16 @@ impl Metrics {
                 self.uplink_health
                     .with_label_values(&[group, "udp", &uplink.name])
                     .set(if udp_healthy { 1.0 } else { 0.0 });
+            }
+            if let Some(tcp_eff) = uplink.tcp_health_effective {
+                self.uplink_health_effective
+                    .with_label_values(&[group, "tcp", &uplink.name])
+                    .set(if tcp_eff { 1.0 } else { 0.0 });
+            }
+            if let Some(udp_eff) = uplink.udp_health_effective {
+                self.uplink_health_effective
+                    .with_label_values(&[group, "udp", &uplink.name])
+                    .set(if udp_eff { 1.0 } else { 0.0 });
             }
 
             if let Some(latency_ms) = uplink.tcp_latency_ms {

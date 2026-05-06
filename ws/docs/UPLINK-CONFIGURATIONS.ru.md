@@ -887,6 +887,16 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
   probe-only гейтинг (никаких false-positive liveness из устаревших
   primary-успехов). Это мост до per-wire probe walks — полное
   per-wire тестирование остаётся отдельной задачей.
+- Тот же any-wire-сигнал кормит **effective health** на snapshot /
+  Prometheus / дашборде. `UplinkSnapshot::tcp_health_effective` (и
+  соответствующая Prometheus-gauge
+  `outline_ws_rust_uplink_health_effective`) отражает «доставляет ли
+  аплинк трафик?»: probe-подтверждённое ИЛИ any-wire недавно работал.
+  Legacy `tcp_healthy` / `outline_ws_rust_uplink_health` сохраняет
+  probe-only верлдикт для дашбордов, которым нужно именно primary-
+  здоровье. Tone строки в HTML-дашборде читает effective, так что
+  аплинк с probe-мёртвым primary, но рабочим fallback'ом, рендерится
+  зелёным, а не красным — визуализация совпадает с роутингом.
 
 #### Список обходов
 

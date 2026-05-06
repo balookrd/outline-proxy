@@ -2,7 +2,9 @@ use tokio::time::Instant;
 
 use super::super::config::{LoadBalancingMode, RoutingScope, UplinkTransport};
 use super::super::penalty::current_penalty;
-use super::super::selection::{effective_latency, selection_score};
+use super::super::selection::{
+    any_wire_recent_success, effective_health, effective_latency, selection_score,
+};
 use super::super::time::duration_to_millis_option;
 use super::super::types::{
     StickyRouteSnapshot, TransportKind, UplinkManager, UplinkManagerSnapshot, UplinkSnapshot,
@@ -13,6 +15,35 @@ fn load_balancing_mode_name(mode: LoadBalancingMode) -> &'static str {
         LoadBalancingMode::ActiveActive => "active_active",
         LoadBalancingMode::ActivePassive => "active_passive",
     }
+}
+
+/// "Visualization truth" health: probe-confirmed health on this wire, or
+/// — for uplinks with at least one fallback configured — `Some(true)`
+/// when *any* wire has dialed successfully within the runtime-failure
+/// window. Mirrors what `selection_health` consults for routing, so a
+/// dashboard reading this field and a router making a candidate choice
+/// agree on whether the uplink is delivering traffic.
+///
+/// Returns `None` when neither the probe verdict nor any-wire-success is
+/// set yet (e.g. an instance that just started and hasn't completed its
+/// first probe cycle).
+fn compute_health_effective(
+    status: &super::status::UplinkStatus,
+    uplink: &super::super::types::Uplink,
+    transport: TransportKind,
+    now: Instant,
+    config: &crate::config::LoadBalancingConfig,
+) -> Option<bool> {
+    if effective_health(status, transport, now) {
+        return Some(true);
+    }
+    if any_wire_recent_success(status, uplink, transport, now, config) {
+        return Some(true);
+    }
+    // Surface the negative probe verdict only when one exists; otherwise
+    // leave the snapshot field empty so the consumer can distinguish "we
+    // know this wire is down" from "we haven't probed it yet".
+    status.of(transport).healthy.map(|_| false)
 }
 
 fn routing_scope_name(scope: RoutingScope) -> &'static str {
@@ -123,6 +154,20 @@ impl UplinkManager {
                 weight: uplink.weight,
                 tcp_healthy: status.tcp.healthy,
                 udp_healthy: status.udp.healthy,
+                tcp_health_effective: compute_health_effective(
+                    status,
+                    uplink,
+                    TransportKind::Tcp,
+                    now,
+                    &self.inner.load_balancing,
+                ),
+                udp_health_effective: compute_health_effective(
+                    status,
+                    uplink,
+                    TransportKind::Udp,
+                    now,
+                    &self.inner.load_balancing,
+                ),
                 tcp_latency_ms: status.tcp.latency.map(|v| v.as_millis()),
                 udp_latency_ms: status.udp.latency.map(|v| v.as_millis()),
                 tcp_rtt_ewma_ms: status.tcp.rtt_ewma.map(|v| v.as_millis()),
