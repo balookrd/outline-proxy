@@ -711,8 +711,8 @@ function renderInstanceBody(panel, instance, groups) {
           <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
           <div>${protocolPill(uplink)}${fallbackChainPill(uplink)}</div>
           <div><span class="status-pill ${rowTone}">${label}</span></div>
-          <div class="${uplink.tcp_healthy === false ? "muted-cell" : ""}">${uplink.tcp_healthy === false ? "down" : "ok"}</div>
-          <div class="${uplink.udp_healthy === false ? "muted-cell" : ""}">${uplink.udp_healthy === false ? "down" : "ok"}</div>
+          <div class="${legHealth(uplink, 'tcp') === false ? "muted-cell" : ""}">${legHealth(uplink, 'tcp') === false ? "down" : "ok"}</div>
+          <div class="${legHealth(uplink, 'udp') === false ? "muted-cell" : ""}">${legHealth(uplink, 'udp') === false ? "down" : "ok"}</div>
           <div class="muted-cell">${weightCell(uplink)}</div>
           <div class="muted-cell">${uplinkRoleCell(uplink)}</div>
           <div>${rowTone === "good" ? `<button class="action-btn" type="button" disabled>Active</button>` : `<button class="action-btn primary" type="button">▶ Activate</button>`}</div>`;
