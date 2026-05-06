@@ -178,12 +178,22 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .proto-pill.proto-vless { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
 .proto-pill.proto-shadowsocks { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
 .proto-pill.proto-ws { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
-.proto-pill .proto-leg, .fb-chain .fb-link .proto-leg { font-size: 9.5px; opacity: .7; margin-right: 5px; padding: 1px 5px; border-radius: 4px; background: rgba(0,0,0,.12); letter-spacing: .04em; text-transform: uppercase; }
+/* Leg label ("TCP" / "UDP") shares the same inset-chip styling as the
+ * submode badge ("(S)" / "(P)") — both are sub-pills inside the parent
+ * pill, so they should read as a uniform pair of inset frames. The
+ * only differences are placement (leg goes left of the carrier label,
+ * submode goes right) and the side margin handled inline in the
+ * markup. */
+.proto-pill .proto-leg, .fb-chain .fb-link .proto-leg { font-size: 9.5px; opacity: .8; margin-right: 4px; padding: 0 4px; border-radius: 4px; background: rgba(0,0,0,.1); letter-spacing: .04em; text-transform: uppercase; font-weight: 700; }
 .proto-stack { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .proto-pill.proto-downgraded { border-style: dashed; box-shadow: inset 0 0 0 1px rgba(214, 130, 30, .35); }
 .proto-pill.proto-failed { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); border-style: solid; box-shadow: inset 0 0 0 1px rgba(185, 28, 28, .35); }
 .proto-pill.proto-failed .proto-leg { background: rgba(185, 28, 28, .18); color: #7f1d1d; opacity: .9; }
 .proto-pill .proto-fail { margin-left: 5px; font-size: 10px; font-weight: 800; letter-spacing: .06em; }
+/* Standalone DOWN chip — sits alongside the protocol pill rather than
+ * inside it, so the failure marker reads as a separate "this leg is
+ * broken" badge instead of running into the carrier-shape label. */
+.proto-fail-chip { display: inline-flex; align-items: center; margin-left: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; background: rgba(220, 38, 38, .12); color: #b91c1c; border: 1px solid rgba(185, 28, 28, .45); }
 .proto-pill .proto-dg { margin-left: 5px; font-size: 10px; opacity: .85; color: #b8631a; }
 .proto-pill .proto-submode { margin-left: 4px; padding: 0 4px; font-size: 9.5px; opacity: .8; border-radius: 4px; background: rgba(0,0,0,.1); letter-spacing: .04em; }
 .proto-pill .proto-submode.proto-downgraded { border-style: solid; box-shadow: none; color: #b8631a; background: rgba(214, 130, 30, .15); opacity: 1; }
@@ -447,14 +457,20 @@ function legPill(t, cls, leg, configured, effective, downgraded, submode, submod
   const dg = downgraded ? " proto-downgraded" : "";
   const fail = failed ? " proto-failed" : "";
   const star = downgraded ? "<span class=\"proto-dg\">↘</span>" : "";
-  const failMark = failed ? "<span class=\"proto-fail\">✕ DOWN</span>" : "";
+  // The DOWN marker rides as a separate inline pill next to the
+  // protocol pill rather than as a tail-end span inside it. Inlining
+  // it bled the marker into the pill's text run and made the "✕ DOWN"
+  // hard to read at a glance against the carrier mode label. A
+  // standalone chip reads cleanly as "this leg is broken" without
+  // crowding the carrier shape.
+  const failChip = failed ? `<span class="proto-fail-chip" title="${escapeHtml((leg || "wire") + " unhealthy — no working transport (latest dial failed)")}">✕ DOWN</span>` : "";
   const [submodeHtml, submodeTitle] = submodeSuffix(submode, submodeEff, submodeDg);
   const baseTitle = failed
     ? `${leg || "wire"} unhealthy — no working transport (latest dial failed)`
     : (downgraded ? downgradeTitle(configured, effective, leg) : `${leg} path`);
   const title = submodeTitle ? `${baseTitle} · ${submodeTitle}` : baseTitle;
   const legTag = leg ? `<span class="proto-leg">${leg}</span>` : "";
-  return `<span class="proto-pill ${cls}${dg}${fail}" title="${escapeHtml(title)}">${legTag}${escapeHtml(stackLabel(t, effective))}${star}${submodeHtml}${failMark}</span>`;
+  return `<span class="proto-pill ${cls}${dg}${fail}" title="${escapeHtml(title)}">${legTag}${escapeHtml(stackLabel(t, effective))}${star}${submodeHtml}</span>${failChip}`;
 }
 function protocolPill(uplink) {
   const t = String(uplink.transport || "").toLowerCase();
@@ -489,8 +505,8 @@ function protocolPill(uplink) {
   const udpFailed = legHealth(uplink, 'udp') === false;
   if (t === "shadowsocks") {
     const ssFail = (tcpFailed || udpFailed) ? " proto-failed" : "";
-    const ssMark = (tcpFailed || udpFailed) ? "<span class=\"proto-fail\">✕ DOWN</span>" : "";
-    return `<span class="proto-pill ${cls}${ssFail}" title="encapsulation/transport">${escapeHtml(stackLabel(t))}${ssMark}</span>`;
+    const ssChip = (tcpFailed || udpFailed) ? '<span class="proto-fail-chip" title="uplink unhealthy — no working transport">✕ DOWN</span>' : "";
+    return `<span class="proto-pill ${cls}${ssFail}" title="encapsulation/transport">${escapeHtml(stackLabel(t))}</span>${ssChip}`;
   }
   const sameSubmode = tcpSm === udpSm && tcpSmEff === udpSmEff && tcpSmDg === udpSmDg;
   if (tcpMode && udpMode && tcpMode === udpMode && tcpEff === udpEff && tcpDg === udpDg && sameSubmode && tcpFailed === udpFailed) {
