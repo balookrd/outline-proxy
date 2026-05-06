@@ -795,7 +795,7 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
 
 | Field | Required for | Notes |
 |---|---|---|
-| `transport` | always | `ws` / `shadowsocks` / `vless`; must differ from the parent's primary, and each transport may appear at most once across a single uplink's fallback list. |
+| `transport` | always | `ws` / `shadowsocks` / `vless`. **No uniqueness restriction** — same-transport-as-parent and duplicate-transport entries are explicitly allowed. The most common cross-family shape is a VLESS primary on `xhttp_h*` with a VLESS fallback on `ws_h*` (same `transport = "vless"`, different carrier family, different dial URL); two SS fallbacks at distinct hosts as belt-and-suspenders also work. The dial loop and per-wire mode tracking treat each fallback as its own wire regardless of `transport`. |
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ws"` | `tcp_ws_url` mandatory; `udp_ws_url` optional (UDP fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws/quic → `vless_ws_url`). `vless_id` is per-wire-credential and **not** inherited from the parent — different VLESS endpoints use different uuids by definition. |
 | `tcp_addr`, `udp_addr` | `transport = "shadowsocks"` | `tcp_addr` mandatory; `udp_addr` optional. |

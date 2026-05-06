@@ -21,8 +21,6 @@ mod list;
 mod mutate;
 mod payload;
 
-pub(crate) use mutate::find_group_mut;
-pub(crate) use payload::UplinkPayload;
 
 pub(crate) async fn handle_uplinks(
     request: Request<Incoming>,

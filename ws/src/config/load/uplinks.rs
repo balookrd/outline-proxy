@@ -402,23 +402,20 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
         };
 
         // ── Fallback transports ─────────────────────────────────────────────
-        // Validated against the now-resolved primary so error messages can
-        // refer to the parent's `name` and reject same-transport entries
-        // before we reach the dial loop.
+        // Per-fallback validation runs against the now-resolved primary so
+        // error messages can refer to the parent's `name`. Duplicate
+        // `transport` entries are intentionally NOT rejected — a VLESS
+        // primary configured for `xhttp_h*` may legitimately have a VLESS
+        // fallback configured for `ws_h*` (different carrier family,
+        // different dial URL, different vless_id), and an operator might
+        // also want, say, two SS fallbacks pointing at distinct hosts as
+        // belt-and-suspenders. The dial loop and per-wire mode tracking
+        // handle distinct entries correctly; uniqueness of identity is
+        // the operator's choice. `resolve_fallback` still enforces all
+        // required-field rules per transport.
         let mut fallbacks: Vec<FallbackTransport> = Vec::with_capacity(input_fallbacks.len());
         for (idx, section) in input_fallbacks.iter().enumerate() {
             let fb = resolve_fallback(&parent, section, idx)?;
-            // Disallow duplicates per `transport`; one fallback per kind is
-            // already enough for the only sane chain shape (vless → ws → ss).
-            if fallbacks.iter().any(|existing| existing.transport == fb.transport) {
-                bail!(
-                    "uplink {}: fallbacks[{}] declares transport={} a second time; \
-                     each fallback transport must be unique",
-                    parent.name,
-                    idx,
-                    fb.transport,
-                );
-            }
             fallbacks.push(fb);
         }
         Ok(UplinkConfig { fallbacks, ..parent })
@@ -437,13 +434,15 @@ fn resolve_fallback(
     let parent_name = &parent.name;
     let transport = section.transport;
 
-    if transport == parent.transport {
-        bail!(
-            "uplink {parent_name}: fallbacks[{idx}] declares transport={transport} which \
-             matches the parent uplink's primary transport — a fallback must use a \
-             different wire family"
-        );
-    }
+    // Same-transport-as-parent fallbacks are explicitly allowed: the most
+    // common shape is a VLESS primary on `xhttp_h*` falling back to a
+    // *different VLESS endpoint* on `ws_h*` — same `transport = "vless"`,
+    // different carrier family, different dial URL, different (or same)
+    // vless_id. The dial loop's per-wire state machine and per-wire
+    // mode-downgrade tracking treat each fallback entry as its own wire
+    // regardless of the `transport` field, so cross-family fallbacks
+    // within the same transport family work without special-casing.
+    let _ = transport; // documented above; no rejection here.
 
     // Inherited fields (parent → fallback default).
     let cipher = section.method.unwrap_or(parent.cipher);

@@ -189,24 +189,43 @@ fn fallback_can_override_inherited_password_and_fwmark() {
 
 // ── Error paths ─────────────────────────────────────────────────────────────
 
+// ── Same-transport-as-parent fallbacks are now allowed ─────────────────────
+//
+// The validator no longer rejects fallbacks whose `transport` matches the
+// parent's primary. The motivating use case is a VLESS primary on
+// `xhttp_h*` that wants to fall back to a *different VLESS endpoint* on
+// `ws_h*` — same `transport = "vless"`, different carrier family. The dial
+// loop and per-wire mode tracking treat each fallback as its own wire
+// regardless of `transport`, so the relaxation is safe; uniqueness of
+// identity is now the operator's responsibility.
+
 #[test]
-fn rejects_fallback_with_same_transport_as_parent() {
+fn allows_vless_xhttp_primary_with_vless_ws_fallback() {
     let ws_fb = FallbackSection {
-        transport: UplinkTransport::Ws,
-        tcp_ws_url: Some(Url::parse("wss://other.example.com/tcp").unwrap()),
+        transport: UplinkTransport::Vless,
+        vless_ws_url: Some(Url::parse("wss://vless-ws.example.com/v").unwrap()),
+        vless_mode: Some(TransportMode::WsH3),
+        vless_id: Some("11111111-2222-3333-4444-555555555555".into()),
         ..empty_fallback()
     };
-    let err = resolve(ws_uplink_section("edge", "wss://primary.example.com/tcp", vec![ws_fb]))
-        .unwrap_err()
-        .to_string();
-    assert!(
-        err.contains("matches the parent uplink's primary transport"),
-        "got: {err}"
+    let cfg = resolve(vless_uplink_section(
+        "edge",
+        "https://cdn.example.com/SECRET/xhttp",
+        vec![ws_fb],
+    ))
+    .unwrap();
+    assert_eq!(cfg.fallbacks.len(), 1);
+    assert_eq!(cfg.fallbacks[0].transport, UplinkTransport::Vless);
+    assert_eq!(cfg.fallbacks[0].vless_mode, TransportMode::WsH3);
+    // Distinct dial URL from primary's xhttp endpoint.
+    assert_eq!(
+        cfg.fallbacks[0].vless_ws_url.as_ref().unwrap().as_str(),
+        "wss://vless-ws.example.com/v",
     );
 }
 
 #[test]
-fn rejects_duplicate_fallback_transport() {
+fn allows_two_ws_fallbacks_at_distinct_endpoints() {
     let ws_fb_1 = FallbackSection {
         transport: UplinkTransport::Ws,
         tcp_ws_url: Some(Url::parse("wss://a.example.com/tcp").unwrap()),
@@ -217,14 +236,15 @@ fn rejects_duplicate_fallback_transport() {
         tcp_ws_url: Some(Url::parse("wss://b.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
-    let err = resolve(vless_uplink_section(
+    let cfg = resolve(vless_uplink_section(
         "edge",
         "https://cdn.example.com/SECRET/xhttp",
         vec![ws_fb_1, ws_fb_2],
     ))
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("a second time"), "got: {err}");
+    .unwrap();
+    assert_eq!(cfg.fallbacks.len(), 2);
+    assert_eq!(cfg.fallbacks[0].tcp_ws_url.as_ref().unwrap().host_str(), Some("a.example.com"));
+    assert_eq!(cfg.fallbacks[1].tcp_ws_url.as_ref().unwrap().host_str(), Some("b.example.com"));
 }
 
 #[test]

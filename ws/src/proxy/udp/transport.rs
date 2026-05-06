@@ -10,7 +10,7 @@ use outline_transport::{
     TransportMode, UdpSessionTransport, UdpWsTransport, VlessUdpDowngradeNotifier,
     VlessUdpSessionMux, connect_shadowsocks_udp_with_source, global_resume_cache,
 };
-#[cfg(feature = "quic")]
+#[cfg(feature = "h3")]
 use outline_transport::{FallbackNotifier, VlessUdpHybridMux, VlessUdpQuicMux, WsFallbackFactory};
 use outline_uplink::{
     FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
@@ -270,7 +270,7 @@ async fn dial_udp_fallback(
                     );
                 });
 
-            #[cfg(feature = "quic")]
+            #[cfg(feature = "h3")]
             if mode == TransportMode::Quic {
                 // VLESS-fallback over raw QUIC: build a hybrid mux that
                 // tries QUIC first and falls back to WS-over-H2 the same
