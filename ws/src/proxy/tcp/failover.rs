@@ -7,7 +7,8 @@ use tracing::{debug, warn};
 use outline_transport::{
     TcpReader, TcpWriter,
     TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
-    connect_shadowsocks_tcp_with_source, connect_websocket_with_source,
+    connect_shadowsocks_tcp_with_source, connect_websocket_with_resume,
+    global_resume_cache,
 };
 use socks5_proto::TargetAddr;
 use outline_uplink::{
@@ -347,7 +348,14 @@ pub(super) async fn connect_tcp_fallback_fresh(
 
     // WS / VLESS dial — both ride the same WS-family primitives. Mode is
     // taken from the fallback's configured value (no per-fallback downgrade
-    // tracking yet — Phase 2). Resume cache is intentionally bypassed.
+    // tracking yet — Phase 2 follow-up).
+    //
+    // Resume-cache participation: keyed on the parent's uplink name (not
+    // the wire), so the X-Outline-Resume token issued for a primary dial
+    // is presented on the fallback dial too — server-side re-attaches the
+    // upstream session, enabling handover-via-resume across wire switches
+    // without renegotiating the upstream conversation. SS fallback has no
+    // WS layer and no resume mechanism; it always dials fresh.
     let url = fallback
         .tcp_dial_url()
         .ok_or_else(|| anyhow!(
@@ -356,13 +364,16 @@ pub(super) async fn connect_tcp_fallback_fresh(
             fallback.transport,
         ))?;
     let mode = fallback.tcp_dial_mode();
-    let ws = connect_websocket_with_source(
+    let resume_key = uplinks.resume_cache_key_for(&parent.uplink.name, "tcp");
+    let resume_request = global_resume_cache().get(&resume_key);
+    let ws = connect_websocket_with_resume(
         cache,
         url,
         mode,
         fallback.fwmark,
         fallback.ipv6_first,
         source,
+        resume_request,
     )
     .await
     .with_context(|| format!(
@@ -371,6 +382,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
         parent.uplink.name,
         fallback.transport,
     ))?;
+    global_resume_cache().store_if_issued(resume_key, ws.issued_session_id());
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
     let (writer, reader) = do_tcp_ss_setup(ws, &setup, target, source, keepalive_interval).await?;
     debug!(

@@ -27,8 +27,21 @@ use tokio::time::Instant;
 use tracing::{debug, info};
 
 use crate::types::{TransportKind, UplinkManager};
+use super::standby::resume_cache_key;
 
 impl UplinkManager {
+    /// Public-facing handle for the cross-transport resume-cache key used by
+    /// the dial paths to look up / store an `X-Outline-Resume` token. The
+    /// key is identity-level (parent uplink name + transport label, no wire
+    /// disambiguation) so primary and fallback dials of the same uplink
+    /// share the same upstream session token — enabling handover-via-resume
+    /// when the dial loop switches wires mid-flight.
+    ///
+    /// `transport_label` must be one of `"tcp"` / `"udp"`.
+    pub fn resume_cache_key_for(&self, uplink_name: &str, transport_label: &str) -> String {
+        resume_cache_key(uplink_name, transport_label)
+    }
+
     /// Read the currently-active wire index for `uplink_index` on `transport`.
     /// Performs an inline auto-failback check: if the pin has expired, the
     /// active wire is snapped back to `0` (primary) before the value is

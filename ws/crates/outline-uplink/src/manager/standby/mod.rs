@@ -44,7 +44,15 @@ const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
 /// helpers in [`outline_transport::global_resume_cache`]. The form
 /// `<uplink_name>#<transport>` keeps TCP and UDP entries separate so
 /// the next TCP reconnect cannot pick up a UDP-session ID by accident.
-pub(super) fn resume_cache_key(uplink_name: &str, transport: &str) -> String {
+///
+/// Importantly, the key is **identity-level** — keyed on the parent
+/// uplink's display name only — so a fallback dial (different wire
+/// family, same uplink) presents the *same* X-Outline-Resume token as
+/// the primary dial. The server-side resume mechanism re-attaches the
+/// upstream session across wire switches, enabling seamless handover
+/// from e.g. VLESS to WS on the same uplink without renegotiating the
+/// upstream conversation.
+pub(crate) fn resume_cache_key(uplink_name: &str, transport: &str) -> String {
     format!("{uplink_name}#{transport}")
 }
 
