@@ -181,6 +181,23 @@ impl UplinkManager {
                     .udp
                     .last_active
                     .map(|t| now.duration_since(t).as_millis()),
+                configured_fallbacks: uplink
+                    .fallbacks
+                    .iter()
+                    .map(|fb| fb.transport.to_string())
+                    .collect(),
+                tcp_active_wire: status.tcp.active_wire,
+                udp_active_wire: status.udp.active_wire,
+                tcp_active_wire_pin_remaining_ms: status
+                    .tcp
+                    .active_wire_pinned_until
+                    .and_then(|until| until.checked_duration_since(now))
+                    .map(|v| v.as_millis()),
+                udp_active_wire_pin_remaining_ms: status
+                    .udp
+                    .active_wire_pinned_until
+                    .and_then(|until| until.checked_duration_since(now))
+                    .map(|v| v.as_millis()),
             });
         }
 

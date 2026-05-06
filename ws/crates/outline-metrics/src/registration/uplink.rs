@@ -105,6 +105,9 @@ pub(super) struct UplinkFields {
     pub(super) uplink_weight: GaugeVec,
     pub(super) uplink_cooldown_seconds: GaugeVec,
     pub(super) uplink_standby_ready: IntGaugeVec,
+    pub(super) uplink_active_wire_index: IntGaugeVec,
+    pub(super) uplink_active_wire_pin_remaining_seconds: GaugeVec,
+    pub(super) uplink_configured_fallbacks_count: IntGaugeVec,
     pub(super) selection_mode_info: IntGaugeVec,
     pub(super) routing_scope_info: IntGaugeVec,
     pub(super) global_active_uplink_info: IntGaugeVec,
@@ -226,6 +229,27 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         "Currently available warm-standby websocket connections.",
         ["group", "transport", "uplink"]
     );
+    let uplink_active_wire_index = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_rust_uplink_active_wire_index",
+        "Index into [primary, fallbacks[0], fallbacks[1], ...] of the wire that new sessions on this uplink+transport currently start with. 0 = primary; non-zero = sticky-fallback after consecutive primary failures. Always 0 for uplinks declared without `[[outline.uplinks.fallbacks]]`.",
+        ["group", "transport", "uplink"]
+    );
+    let uplink_active_wire_pin_remaining_seconds = register_labeled!(
+        registry,
+        GaugeVec,
+        "outline_ws_rust_uplink_active_wire_pin_remaining_seconds",
+        "Seconds remaining on the active-wire auto-failback pin for this uplink+transport. Visible only while a non-primary wire is sticky; the metric is cleared once the pin expires and active snaps back to primary.",
+        ["group", "transport", "uplink"]
+    );
+    let uplink_configured_fallbacks_count = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_rust_uplink_configured_fallbacks_count",
+        "Number of fallback transports declared under `[[outline.uplinks.fallbacks]]` for this uplink. Identity-level (no transport label).",
+        ["group", "uplink"]
+    );
     let selection_mode_info = register_labeled!(
         registry,
         IntGaugeVec,
@@ -286,6 +310,9 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_weight,
         uplink_cooldown_seconds,
         uplink_standby_ready,
+        uplink_active_wire_index,
+        uplink_active_wire_pin_remaining_seconds,
+        uplink_configured_fallbacks_count,
         selection_mode_info,
         routing_scope_info,
         global_active_uplink_info,
