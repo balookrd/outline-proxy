@@ -111,6 +111,9 @@ enabled = true
 
 # ── Uplink group ─────────────────────────────────────────────────────────────
 # Single group in active_passive mode. No warm standby — saves RAM and CPU.
+# LB fields (mode, routing_scope, sticky_ttl_secs, hysteresis_ms, …) live
+# directly on [[uplink_group]] in this shape. Full field reference and
+# defaults: docs/UPLINK-CONFIGURATIONS.md "Load-balancing reference".
 [[uplink_group]]
 name = "main"
 mode = "active_passive"         # single active uplink, fail over on error

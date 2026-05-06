@@ -363,6 +363,153 @@ Snapshot fields:
 | VLESS / WS / H3       | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (`#tcp`)      | shared with TCP carrier   |
 | VLESS / XHTTP / H3    | `xhttp_h3 → xhttp_h2→ xhttp_h1` | `xhttp_h3 → xhttp_h2 → xhttp_h1` | yes (`#tcp`) | shared with TCP carrier   |
 
+## Top-level `[outline]` shape
+
+The `[outline]` table groups everything that drives the proxying engine —
+transports, uplinks, probing, load balancing — separately from host-level
+concerns (`[socks5]`, `[metrics]`, `[control]`, `[dashboard]`,
+`[tcp_timeouts]`, `[tun]`, `[[route]]`). Two configuration shapes are
+supported.
+
+**1. Inline single-uplink shorthand.** Writing `transport`, `tcp_ws_url`,
+`udp_ws_url`, `vless_ws_url`, `vless_xhttp_url`, `tcp_mode` / `udp_mode` /
+`vless_mode`, `link`, `tcp_addr`, `udp_addr`, `method`, `password`,
+`fwmark`, `ipv6_first` directly under `[outline]` (or — for backward
+compatibility — at the top level) declares a single implicit uplink. CLI
+flags (`--tcp-ws-url`, `--password`, …) target this shape. Convenient for
+trivial deployments; not used together with `[[outline.uplinks]]` /
+`[[uplink_group]]`.
+
+```toml
+[outline]
+transport = "ws"                  # "ws" (default; alias "websocket") | "shadowsocks" | "vless"
+tcp_ws_url = "wss://example.com/SECRET/tcp"
+udp_ws_url = "wss://example.com/SECRET/udp"
+tcp_mode = "h3"
+udp_mode = "h3"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
+```
+
+`outline.transport` accepts:
+
+| value         | wire shape                                                                       |
+|---------------|----------------------------------------------------------------------------------|
+| `ws`          | Shadowsocks AEAD framing inside a WebSocket carrier (default; alias `websocket`) |
+| `shadowsocks` | Plain Shadowsocks over raw TCP/UDP sockets — see § 1                             |
+| `vless`       | VLESS over WebSocket or XHTTP (h1/h2/h3) — see §§ 4–7                            |
+
+**2. Multi-uplink + groups (production shape).** `[[outline.uplinks]]`
+declares uplinks; `[[uplink_group]]` (top-level, *not* nested under
+`[outline]`) declares groups; each uplink names its group via
+`group = "..."`. In this shape every uplink carries its own `transport`
+field, so the inline `outline.transport` is unused.
+
+## Load-balancing reference
+
+Two equivalent surfaces, picked by config shape:
+
+- **`[outline.load_balancing]`** — applies in inline single-uplink
+  shorthand (no `[[uplink_group]]` declared). Folded into the implicit
+  default group at load time
+  ([groups.rs:21](src/config/load/groups.rs:21)).
+- **Fields directly under `[[uplink_group]]`** — apply per group when
+  `[[uplink_group]]` is in use (the `[outline.load_balancing]` block is
+  silently ignored in this shape;
+  [groups.rs:171](src/config/load/groups.rs:171)).
+
+Field names and defaults are identical between the two surfaces. All
+fields are optional; omitted fields fall back to the defaults below.
+
+| field                                | default            | unit  | purpose                                                                                           |
+|--------------------------------------|--------------------|-------|---------------------------------------------------------------------------------------------------|
+| `mode`                               | `"active_active"`  | enum  | `active_active` spreads per-flow / per-uplink load; `active_passive` keeps one active, others as failover |
+| `routing_scope`                      | `"per_flow"`       | enum  | `per_flow` (per-session selection) / `per_uplink` (sticky by host:port) / `global` (single active for the whole instance) |
+| `sticky_ttl_secs`                    | `300`              | s     | how long a `(host, port)` keeps its assigned uplink                                               |
+| `hysteresis_ms`                      | `50`               | ms    | minimum gap between two `active` switches; suppresses flapping                                    |
+| `failure_cooldown_secs`              | `10`               | s     | how long after a failure the uplink is excluded from selection                                    |
+| `tcp_chunk0_failover_timeout_secs`   | `10`               | s     | wait for the first response byte from origin before failing over to the next uplink               |
+| `auto_failback`                      | `false`            | bool  | return to the originally-preferred uplink once it recovers                                        |
+| `warm_standby_tcp`                   | `0`                | int   | pre-warmed TCP connections to keep on standby uplinks                                             |
+| `warm_standby_udp`                   | `0`                | int   | same for UDP                                                                                      |
+| `warm_probe_keepalive_secs`          | `20`               | s     | keepalive cadence for cached warm-probe pipes (`0` disables)                                      |
+| `rtt_ewma_alpha`                     | `0.3`              | (0,1] | smoothing factor for the per-uplink RTT EWMA used in selection scoring                            |
+| `failure_penalty_ms`                 | `500`              | ms    | initial RTT penalty added on a fresh runtime failure                                              |
+| `failure_penalty_max_ms`             | `30000`            | ms    | cap on the cumulative failure penalty                                                             |
+| `failure_penalty_halflife_secs`      | `60`               | s     | half-life of the failure-penalty exponential decay                                                |
+| `runtime_failure_window_secs`        | `60`               | s     | window over which back-to-back data-plane failures stack toward a health flip; `0` = legacy (no decay) |
+| `mode_downgrade_secs`                | `60`               | s     | cooldown before retrying the configured advanced mode (H3 / QUIC / `xhttp_h{2,3}`) after fallback. Legacy alias: `h3_downgrade_secs` |
+| `global_udp_strict_health`           | `false`            | bool  | in `routing_scope = "global"`, also gate the active uplink on UDP health; default lenient — UDP failures are informational |
+| `udp_ws_keepalive_secs`              | `60`               | s     | WS Ping cadence on idle UDP-WS sockets (`0` disables)                                             |
+| `tcp_ws_keepalive_secs`              | `60`               | s     | WS Ping cadence on idle VLESS-over-WS TCP sessions (`0` disables; SS-over-WS ignores)             |
+| `tcp_ws_standby_keepalive_secs`      | `20`               | s     | WS Ping cadence on warm-standby TCP sockets (`0` disables)                                        |
+| `tcp_active_keepalive_secs`          | `20`               | s     | SS2022 0-length keepalive on active SOCKS TCP sessions (`0` disables; SS1 ignores)                |
+| `vless_udp_max_sessions`             | `256`              | int   | hard cap on concurrent VLESS UDP sessions (LRU-evicted on overflow)                               |
+| `vless_udp_session_idle_secs`        | `60`               | s     | evict VLESS UDP sessions idle longer than this (`0` disables eviction)                            |
+| `vless_udp_janitor_interval_secs`    | `15`               | s     | how often the VLESS UDP janitor scans for idle sessions                                           |
+
+Source of defaults:
+[`src/config/load/balancing.rs`](src/config/load/balancing.rs); the
+`vless_udp_*` fallback comes from
+[`crates/outline-transport/src/vless/udp_mux.rs`](crates/outline-transport/src/vless/udp_mux.rs).
+
+Routing-scope cheat sheet:
+
+- **`per_flow`** — recommended default. Each new SOCKS/TUN session picks
+  an uplink based on weight, RTT EWMA and current penalties; existing
+  sessions stay on their uplink for the whole flow. Best parallelism,
+  smallest blast radius.
+- **`per_uplink`** — assigns flows that share a `(host, port)` to the
+  same uplink for `sticky_ttl_secs`. Useful when an origin is sensitive
+  to source-IP churn (anti-fraud, sticky session cookies bound to
+  client IP).
+- **`global`** — exactly one uplink is `active` instance-wide; failover
+  is gated by `hysteresis_ms` + `failure_cooldown_secs`. Use for clean
+  dashboard semantics on devices that should look like they have a
+  single egress (routers, single-purpose home-gateway).
+
+Mode-vs-scope interaction:
+
+- `active_active` + `per_flow` is the only combination that exercises
+  weighted load distribution.
+- `active_passive` + `global` mirrors the classic primary/backup
+  pattern — one uplink carries everything, others wait.
+- `active_passive` + `per_flow` is legal but has reduced meaning:
+  passive uplinks act only as failover targets, not weighted siblings.
+
+Example — `[outline.load_balancing]` for the inline shape, and the same
+fields lifted onto a group:
+
+```toml
+# Inline single-uplink shorthand
+[outline.load_balancing]
+mode = "active_active"
+routing_scope = "per_flow"
+sticky_ttl_secs = 300
+hysteresis_ms = 50
+failure_cooldown_secs = 10
+warm_standby_tcp = 1
+warm_standby_udp = 1
+rtt_ewma_alpha = 0.3
+failure_penalty_ms = 500
+failure_penalty_max_ms = 30000
+failure_penalty_halflife_secs = 60
+mode_downgrade_secs = 60
+runtime_failure_window_secs = 60
+global_udp_strict_health = false
+auto_failback = false
+
+# Equivalent for multi-group shape — same field names directly on the group:
+[[uplink_group]]
+name = "main"
+mode = "active_active"
+routing_scope = "per_flow"
+sticky_ttl_secs = 300
+hysteresis_ms = 50
+warm_standby_tcp = 1
+# … etc.
+```
+
 ## Per-group probe overrides
 
 `[outline.probe]` is a template inherited by every `[[uplink_group]]`.
