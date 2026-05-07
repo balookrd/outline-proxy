@@ -87,6 +87,15 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
             if secs == 0 { None } else { Some(Duration::from_secs(secs)) }
         },
         auto_failback: lb.and_then(|l| l.auto_failback).unwrap_or(false),
+        // Default: 256 KiB — large enough to absorb typical HTTP
+        // request bodies and idempotent RPC payloads, small enough
+        // that holding it for N concurrent pinned sessions stays
+        // negligible compared with kernel socket buffers. `0` disables
+        // mid-session retry entirely (the ring is never allocated and
+        // the orchestrator skips the redial step).
+        tcp_mid_session_retry_buffer_bytes: lb
+            .and_then(|l| l.tcp_mid_session_retry_buffer_bytes)
+            .unwrap_or(256 * 1024),
         vless_udp_mux_limits: {
             let defaults = VlessUdpMuxLimits::default();
             VlessUdpMuxLimits {

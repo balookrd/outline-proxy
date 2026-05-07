@@ -96,6 +96,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_runtime_failure_signatures_total: IntCounterVec,
     pub(super) uplink_runtime_failure_other_details_total: IntCounterVec,
     pub(super) uplink_failovers_total: IntCounterVec,
+    pub(super) uplink_mid_session_retries_total: IntCounterVec,
     pub(super) uplink_health: GaugeVec,
     pub(super) uplink_health_effective: GaugeVec,
     pub(super) uplink_latency_seconds: GaugeVec,
@@ -167,6 +168,18 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         "outline_ws_rust_uplink_failovers_total",
         "Runtime failovers from one uplink to another.",
         ["transport", "group", "from_uplink", "to_uplink"]
+    );
+    let uplink_mid_session_retries_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_rust_uplink_mid_session_retries_total",
+        "Ack-Prefix Protocol mid-session retries on the pinned-relay uplink path, by outcome. \
+         `success` = redial + replay completed and the relay continued; `failed_redial` = the \
+         redial itself failed (no new transport to migrate to); `failed_replay` = redial \
+         succeeded but the server's reported `up_acked` offset fell outside the local ring \
+         buffer; `buffer_overflow` = a single uplink chunk exceeded the buffer cap so the \
+         retry budget for the session was burned without a redial attempt.",
+        ["transport", "group", "uplink", "outcome"]
     );
     let uplink_health = register_labeled!(
         registry,
@@ -325,6 +338,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_runtime_failure_signatures_total,
         uplink_runtime_failure_other_details_total,
         uplink_failovers_total,
+        uplink_mid_session_retries_total,
         uplink_health,
         uplink_health_effective,
         uplink_latency_seconds,

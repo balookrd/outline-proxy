@@ -305,6 +305,14 @@ pub(super) struct UplinkGroupSection {
     pub(super) vless_udp_max_sessions: Option<usize>,
     pub(super) vless_udp_session_idle_secs: Option<u64>,
     pub(super) vless_udp_janitor_interval_secs: Option<u64>,
+    /// Maximum bytes of recently-sent uplink payload kept buffered for
+    /// the Ack-Prefix Protocol mid-session retry path. On a mid-session
+    /// transport reset the client re-dials with the capability bit, the
+    /// server reports its `up_acked` offset on the new stream's first
+    /// SS-AEAD chunk, and the client replays the buffered tail from
+    /// that offset. `0` disables retry (and stops buffering). Default:
+    /// 256 KiB. See `docs/UPLINK-CONFIGURATIONS.md` for guidance.
+    pub(super) tcp_mid_session_retry_buffer_bytes: Option<usize>,
     /// Per-group override of top-level `[probe]`; unspecified fields inherit.
     pub(super) probe: Option<ProbeSection>,
 }
@@ -417,4 +425,9 @@ pub(super) struct LoadBalancingSection {
     pub(super) vless_udp_max_sessions: Option<usize>,
     pub(super) vless_udp_session_idle_secs: Option<u64>,
     pub(super) vless_udp_janitor_interval_secs: Option<u64>,
+    /// Mid-session retry buffer cap (bytes). See the same-named field on
+    /// `UplinkGroupSection` for full semantics; this top-level entry is
+    /// the global default applied to every group that does not override
+    /// it. Default: 256 KiB. `0` disables retry and the buffer.
+    pub(super) tcp_mid_session_retry_buffer_bytes: Option<usize>,
 }

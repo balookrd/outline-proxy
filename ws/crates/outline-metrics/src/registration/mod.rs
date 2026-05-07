@@ -39,6 +39,7 @@ impl Metrics {
             uplink_runtime_failure_other_details_total: u
                 .uplink_runtime_failure_other_details_total,
             uplink_failovers_total: u.uplink_failovers_total,
+            uplink_mid_session_retries_total: u.uplink_mid_session_retries_total,
             uplink_health: u.uplink_health,
             uplink_health_effective: u.uplink_health_effective,
             uplink_latency_seconds: u.uplink_latency_seconds,

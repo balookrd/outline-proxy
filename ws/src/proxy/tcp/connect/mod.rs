@@ -5,6 +5,7 @@ mod first_chunk;
 mod pinned_relay;
 mod replay;
 mod retry;
+mod ring_buffer;
 
 use std::collections::HashSet;
 use std::sync::Arc;

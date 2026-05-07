@@ -94,6 +94,7 @@ struct Metrics {
     uplink_runtime_failure_signatures_total: IntCounterVec,
     uplink_runtime_failure_other_details_total: IntCounterVec,
     uplink_failovers_total: IntCounterVec,
+    uplink_mid_session_retries_total: IntCounterVec,
     probe_runs_total: IntCounterVec,
     probe_duration_seconds: HistogramVec,
     probe_bytes_total: IntCounterVec,
