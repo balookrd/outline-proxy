@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
@@ -145,6 +146,21 @@ pub(in crate::server::transport) struct VlessRelayState {
     /// Session ID the client offered for resumption. Consumed (`take()`)
     /// on the first authenticated VLESS-TCP / VLESS-UDP / VLESS-MUX frame.
     pub(in crate::server::transport) pending_resume_request: Option<SessionId>,
+    /// Whether the client advertised `X-Outline-Resume-Ack-Prefix: 1` on
+    /// the WebSocket upgrade. When true, a successful resume hit
+    /// triggers emission of the 14-byte v1 control frame as the first
+    /// WS Binary message AFTER the standard VLESS response header.
+    pub(in crate::server::transport) ack_prefix_requested: bool,
+    /// Per-session counter of plaintext bytes the relay has forwarded
+    /// to the upstream socket. Same units the client tracks on its
+    /// uplink ring buffer; survives park/resume because the `Arc` is
+    /// moved into `ParkedTcp` on park and back into the state on the
+    /// next resume hit. The counter underpins the
+    /// [Ack-Prefix Protocol v1] `up_acked` field reported in the
+    /// 14-byte control frame.
+    ///
+    /// [Ack-Prefix Protocol v1]: ../../../../docs/SESSION-RESUMPTION.md
+    pub(in crate::server::transport) upstream_bytes_acked: Arc<AtomicU64>,
 }
 
 pub(in crate::server::transport) struct VlessWsOutbound<'a, Msg> {
@@ -162,6 +178,8 @@ impl VlessRelayState {
             user_counters: None,
             issued_session_id: resume.issued_session_id,
             pending_resume_request: resume.requested_resume,
+            ack_prefix_requested: resume.ack_prefix_requested,
+            upstream_bytes_acked: Arc::new(AtomicU64::new(0)),
         }
     }
 }

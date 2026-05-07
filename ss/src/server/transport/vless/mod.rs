@@ -318,10 +318,20 @@ where
                     .tcp_in(AppProtocol::Vless, route.protocol)
                     .increment(data.len() as u64);
             }
+            let payload_len = data.len() as u64;
             tcp.writer
                 .write_all(&data)
                 .await
                 .context("failed to write vless websocket data upstream")?;
+            // Bump the per-session upstream-acked counter only on a
+            // successful `write_all` — same handoff semantics as the
+            // SS-WS path's `forward_plaintext_to_writer`. Survives
+            // park/resume because the `Arc` moves into `ParkedTcp` on
+            // park and back into the relay state on the next resume
+            // hit.
+            state
+                .upstream_bytes_acked
+                .fetch_add(payload_len, std::sync::atomic::Ordering::Relaxed);
             return Ok(());
         },
         UpstreamSession::Udp(udp) => {

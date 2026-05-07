@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
@@ -113,13 +112,16 @@ pub(super) async fn try_park_vless_tcp(
         protocol_context: TcpProtocolContext::Vless,
         user_counters,
         upstream_guard: guard,
-        // Ack-Prefix Protocol counter starts at 0 for VLESS-WS in v1.
-        // The actual byte-tracking + control-frame emit on resume hit
-        // for VLESS is a follow-up; until then VLESS resumes behave
-        // exactly as before (parked TcpStream reattach, no replay
-        // signalling). The Arc is wired here so the data model is
-        // uniform across protocols.
-        upstream_bytes_acked: Arc::new(AtomicU64::new(0)),
+        // Move the per-session Ack-Prefix counter into the parked
+        // entry so the v1.1 control-frame emit on the next resume
+        // hit reports the cumulative upstream byte count this
+        // session has produced — including bytes the previous
+        // incarnation wrote to the upstream socket. The `Arc` is
+        // moved (not cloned) so the relay state can no longer
+        // observe further writes; subsequent writes go through the
+        // resumed state's own counter (restored from this Arc on
+        // the resume reattach).
+        upstream_bytes_acked: Arc::clone(&state.upstream_bytes_acked),
     };
     debug!(
         user = %owner,
@@ -184,6 +186,46 @@ where
             .await
             .map_err(|error| anyhow!("failed to queue vless response header on resume: {error}"))?;
 
+        // Restore the per-session Ack-Prefix counter from the parked
+        // entry BEFORE we look at it for the v1 control-frame emit —
+        // the counter we want to report is the cumulative upstream
+        // byte count across the previous incarnation's lifetime, not
+        // a fresh `0`.
+        state.upstream_bytes_acked = Arc::clone(&parked.upstream_bytes_acked);
+
+        // Ack-Prefix Protocol v1 emit on resume hit (VLESS-WS path):
+        // queue the 14-byte plaintext control frame as the very next
+        // WS Binary message after the VLESS response header. The
+        // client's `VlessTcpReader::consume_ack_prefix*` path will
+        // intercept these 14 bytes after the header parse completes.
+        // Gated on `state.ack_prefix_requested` so old clients (or
+        // clients that did not opt in on this dial) never see the
+        // frame and continue treating the next bytes as application
+        // payload.
+        if state.ack_prefix_requested {
+            let payload = crate::server::resumption::ack_prefix::build_v1_payload(
+                state
+                    .upstream_bytes_acked
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            );
+            let make_binary = outbound.make_binary;
+            outbound
+                .data_tx
+                .send(make_binary(Bytes::copy_from_slice(&payload)))
+                .await
+                .map_err(|error| {
+                    anyhow!("failed to queue vless ack-prefix control frame on resume: {error}")
+                })?;
+            debug!(
+                user = user.label(),
+                path = %route.path,
+                up_acked = state
+                    .upstream_bytes_acked
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                "emitted ack-prefix control frame on vless resume hit",
+            );
+        }
+
         let tx = outbound.data_tx.clone();
         let metrics = Arc::clone(&server.metrics);
         let user_id_for_relay = Arc::clone(&user_id_for_resume);
@@ -228,10 +270,17 @@ where
                     .tcp_in(AppProtocol::Vless, route.protocol)
                     .increment(leftover.len() as u64);
             }
+            let leftover_len = leftover.len() as u64;
             tcp.writer
                 .write_all(&leftover)
                 .await
                 .context("failed to write initial vless payload upstream after resume")?;
+            // Same Ack-Prefix counter handoff as the regular relay
+            // path — these bytes were just written to the upstream
+            // socket and now belong to its kernel send buffer.
+            state
+                .upstream_bytes_acked
+                .fetch_add(leftover_len, std::sync::atomic::Ordering::Relaxed);
         }
         return Ok(());
     }
@@ -340,10 +389,17 @@ where
                 .tcp_in(AppProtocol::Vless, route.protocol)
                 .increment(leftover.len() as u64);
         }
+        let leftover_len = leftover.len() as u64;
         tcp.writer
             .write_all(&leftover)
             .await
             .context("failed to write initial vless payload upstream")?;
+        // Mirror the same counter handoff as `forward_vless_data`
+        // (and the SS-WS path) so initial-frame bytes are reflected
+        // in `upstream_bytes_acked` before any park can occur.
+        state
+            .upstream_bytes_acked
+            .fetch_add(leftover_len, std::sync::atomic::Ordering::Relaxed);
     }
 
     Ok(())
