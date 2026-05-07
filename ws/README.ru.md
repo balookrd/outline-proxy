@@ -1253,6 +1253,7 @@ sudo VERSION=v1.2.3 ./install.sh
 - `INSTALL_PATH=/path`: установить бинарник не в `/usr/local/bin`
 - `CONFIG_DIR=/path`: хранить конфиг не в `/etc/outline-ws-rust`
 - `STATE_DIR=/path`: использовать другой state-каталог
+- `GITHUB_TOKEN=...`: GitHub-токен для обхода rate limit API
 
 `VERSION` и `CHANNEL=nightly` одновременно использовать нельзя.
 
