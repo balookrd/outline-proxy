@@ -1396,6 +1396,146 @@ fn xhttp_recovery_streak_reset_when_cap_changes_via_descent() {
     );
 }
 
+/// Construct a fresh WS uplink configured at H3 — used by the
+/// WS-mirror tests that verify the symmetric hysteresis path
+/// (walk-up sticky, recovery streak, post-recovery grace) works
+/// for the WS family and not just XHTTP.
+fn ws_h3_primary() -> UplinkConfig {
+    UplinkConfig {
+        name: "ws-edge".to_string(),
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
+        tcp_mode: TransportMode::WsH3,
+        udp_ws_url: Some(Url::parse("wss://ws.example.com/udp").unwrap()),
+        udp_mode: TransportMode::WsH3,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        tcp_addr: None,
+        udp_addr: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+        fingerprint_profile: None,
+        fallbacks: Vec::new(),
+    }
+}
+
+#[test]
+fn ws_walk_up_holds_at_one_below_configured() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    // Mirrors `xhttp_walk_up_holds_at_one_below_configured` but
+    // exercises the WS family — proves walk-up's "stop one rank
+    // below configured, let recovery probe own the last hop"
+    // contract is transport-agnostic.
+    let manager = manager_with_uplink(ws_h3_primary(), 1);
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::WsH2,
+    );
+
+    let make_ok = || ProbeOutcome {
+        tcp_ok: true,
+        udp_ok: true,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+    for _ in 0..5 {
+        let _ = manager.process_probe_ok(
+            0,
+            &uplink,
+            make_ok(),
+            TransportMode::WsH2,
+            TransportMode::WsH2,
+            &mut tcp_recovery,
+            &mut udp_recovery,
+        );
+        assert_eq!(
+            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+            Some(TransportMode::WsH2),
+            "WS walk-up holds at H2 (one rank below configured H3) — last hop is recovery's job",
+        );
+    }
+}
+
+#[test]
+fn ws_recovery_streak_requires_two_successes_to_clear_cap() {
+    use crate::config::TransportMode;
+
+    // Mirrors `xhttp_recovery_streak_requires_two_successes_to_clear_cap`.
+    let manager = manager_with_uplink(ws_h3_primary(), 2);
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::WsH2,
+    );
+
+    // First recovery success — tentative, cap stays.
+    manager.note_recovery_probe_success(0, TransportKind::Tcp);
+    let s = manager.read_status_for_test(0);
+    assert_eq!(
+        s.tcp.mode_downgrade_capped_to,
+        Some(TransportMode::WsH2),
+        "WS first recovery success is tentative (streak threshold = 2)",
+    );
+    assert_eq!(s.tcp.recovery_probe_success_streak, 1);
+
+    // Second consecutive recovery success clears the cap.
+    manager.note_recovery_probe_success(0, TransportKind::Tcp);
+    let s = manager.read_status_for_test(0);
+    assert!(
+        s.tcp.mode_downgrade_capped_to.is_none(),
+        "WS second consecutive recovery success clears the cap",
+    );
+    assert_eq!(s.tcp.recovery_probe_success_streak, 0);
+}
+
+#[test]
+fn ws_post_recovery_grace_absorbs_runtime_failure_after_recovery() {
+    use crate::config::TransportMode;
+
+    // Mirrors `xhttp_post_recovery_grace_absorbs_runtime_failure_after_recovery`.
+    let manager = manager_with_uplink(ws_h3_primary(), 2);
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::WsH2,
+    );
+    manager.clear_mode_downgrade(0, TransportKind::Tcp);
+
+    // First two runtime failures inside grace are absorbed.
+    for i in 0..2 {
+        let err = anyhow::anyhow!("ws runtime fail ({})", i);
+        manager.note_advanced_mode_dial_failure(0, TransportKind::Tcp, &err);
+        assert!(
+            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+            "WS runtime failure #{} inside post-recovery grace must be absorbed",
+            i + 1,
+        );
+    }
+
+    // Third runtime failure releases the gate.
+    let err = anyhow::anyhow!("ws runtime fail (final)");
+    manager.note_advanced_mode_dial_failure(0, TransportKind::Tcp, &err);
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        Some(TransportMode::WsH2),
+        "WS third runtime failure releases the grace gate (counter == min_failures)",
+    );
+}
+
 #[test]
 fn ws_chain_walks_full_h3_h2_h1_descent() {
     use crate::config::TransportMode;
