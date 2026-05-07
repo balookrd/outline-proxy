@@ -208,6 +208,12 @@ async fn do_tcp_ss_setup(
         return Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader)));
     }
 
+    // Snapshot the Ack-Prefix negotiation outcome before `.split()`
+    // consumes the TransportStream — once split, the accessor on the
+    // sink/stream halves is gone. TUN engine never opts in today
+    // (Phase 2.4 work), so the bit will be `false`; wiring it now keeps
+    // the reader ready for future opt-in callers.
+    let expect_ack_prefix = ws_stream.ack_prefix_advertised_by_server();
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let (mut writer, ctrl_tx) =
@@ -217,7 +223,8 @@ async fn do_tcp_ss_setup(
     let reader =
         TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
             .with_request_salt(request_salt)
-            .with_diag(diag);
+            .with_diag(diag)
+            .with_expect_ack_prefix(expect_ack_prefix);
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await
