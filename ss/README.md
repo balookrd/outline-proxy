@@ -574,6 +574,8 @@ Requires built-in TLS on the main TCP listener (`[server].cert_path` + `[server]
 
 `match_sni` is **the whitelist of SNIs we terminate locally**. Anything in it is replayed into our own TLS stack (where the multi-cert resolver from §7 picks the cert); anything else is spliced to a backend. Whenever you add a domain to `[[server.certs]]`, mirror it into `match_sni` — otherwise its inbound traffic is redirected to the foreign-SNI backend even though we hold a cert for it.
 
+**Routing rule (one sentence)** — a peeked SNI is resolved against an exact-match `HashMap` first, and only on miss against the wildcard list, finally falling back to the catch-all backend. **Exact always beats wildcard, regardless of which list declared it.** This lets you carve a single host out of a wildcard apex without ordering tricks: a wildcard `*.example.com` in `match_sni` keeps the apex local, and an exact `px.example.com` in a backend's `match_sni` peels just that one host off to the upstream (see "Carve-out pattern" below).
+
 There are two backend formats. They are mutually exclusive.
 
 **Single-backend** — every foreign SNI goes to one upstream. Compact, perfect for "ours vs the world":
@@ -616,12 +618,32 @@ backend = "127.0.0.1:10443"
 # no `match_sni` → catch-all; must be the last entry
 ```
 
+**Carve-out pattern** — exact-first lookup makes "wildcard for the apex, but route this one host elsewhere" trivial. Local owns everything under `*.example.com`, except `px.example.com`, which goes to a separate upstream:
+
+```toml
+[sni_fallback]
+match_sni = ["*.example.com"]            # apex → local TLS terminator
+allow_no_sni = false
+
+[[sni_fallback.backends]]
+backend = "127.0.0.1:10443"
+match_sni = ["px.example.com"]           # exact carve-out wins over the apex wildcard
+proxy_protocol = "v2"
+
+[[sni_fallback.backends]]
+backend = "127.0.0.1:11443"              # catch-all for everything outside *.example.com
+proxy_protocol = "v1"
+```
+
+With this config: `cloud.example.com` and `m.example.com` terminate locally (wildcard hit on `match_sni`), `px.example.com` is spliced to `:10443` (exact hit beats the apex wildcard), and `evil.com` lands on `:11443` (catch-all).
+
 How dispatch decides:
 
 1. Read just enough bytes off the inbound socket to feed `rustls::server::Acceptor` a full ClientHello. Anything larger than `max_client_hello_bytes` is treated as malformed and the connection is closed (intentionally — junk does not get forwarded so it can't poison backend logs).
-2. If the SNI matches any entry in `match_sni` (case-insensitive; `*.foo.bar` matches one label to the left), the captured bytes are replayed into our TLS terminator via a `PrependStream` wrapper. The multi-cert resolver from §7 selects the cert; everything downstream — `[http_fallback]`, websocket / xhttp routes, etc. — runs exactly as on a non-spliced connection.
-3. Otherwise (or when no SNI was present and `allow_no_sni = false`), pick a backend. Single-backend mode always picks `backend`. Multi-backend mode walks `backends` top-down, picks the first whose `match_sni` matches (or the catch-all), and gives up with a `WARN` log if nothing matches.
-4. Open a fresh TCP connection to the chosen backend, optionally prepend a HAProxy PROXY-protocol header, write the captured ClientHello, then `tokio::io::copy_bidirectional` until either side closes.
+2. **Exact-match table** — every exact entry from `match_sni` and from each `[[sni_fallback.backends]].match_sni` is indexed in a single `HashMap` at startup. The peeked SNI is looked up there first; a hit resolves the route in O(1). Local entries are inserted before backend entries, so an SNI claimed by both wins for local; among backends, declaration order wins (mirrors the historical priority).
+3. **Wildcard scan** — on a miss, the dispatcher scans wildcards (`*.foo.bar`, case-insensitive, one label to the left) in priority order: local first, then backends in declaration order. The first hit resolves the route.
+4. **Catch-all / give-up** — on a miss for both, fall through to the catch-all backend (the single-backend `backend = "..."` form always behaves like a catch-all; in multi-backend mode it's the entry with no `match_sni`). If there is no catch-all and nothing matched, the connection is dropped with a `WARN` log. SNI-less connections take the same `allow_no_sni` shortcut: `true` → local, `false` → catch-all.
+5. Local route → captured bytes are replayed into our TLS terminator via a `PrependStream` wrapper; the multi-cert resolver from §7 selects the cert and everything downstream (`[http_fallback]`, websocket / xhttp, …) runs as on a non-spliced connection. Backend route → open a fresh TCP connection, optionally prepend a HAProxy PROXY-protocol header, write the captured ClientHello, then `tokio::io::copy_bidirectional` until either side closes.
 
 PROXY-protocol on this layer is much more useful than on `[http_fallback]`: we forward raw TCP bytes, so without it the backend sees `127.0.0.1` as the peer for every spliced connection — log/ACL/rate-limit blind. As with `[http_fallback]`, the destination address in the header is the inbound listener's bind address (degrades to UNKNOWN / UNSPEC for `0.0.0.0` / `[::]`).
 
