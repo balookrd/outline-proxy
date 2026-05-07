@@ -107,7 +107,12 @@ fn advance_active_wire_on_probe_failure(
     true
 }
 
-fn record_transport_success(status: &mut PerTransportStatus, min_failures: u32) {
+fn record_transport_success(
+    status: &mut PerTransportStatus,
+    min_failures: u32,
+    grace_window: Duration,
+) {
+    let now = Instant::now();
     status.consecutive_failures = 0;
     status.consecutive_successes = status.consecutive_successes.saturating_add(1);
     status.healthy = Some(true);
@@ -119,17 +124,27 @@ fn record_transport_success(status: &mut PerTransportStatus, min_failures: u32) 
     // immediately eligible again, causing oscillation under load.
     status.cooldown_until = None;
     // Probe success in the post-recovery grace window resets the
-    // grace's absorbed-attempts counter — a single success between
-    // two flaky fails is the operational signal that the carrier is
-    // mostly healthy and the previous fail was an outlier. Without
-    // this reset the counter rises monotonically and grace releases
-    // on the `min_failures`-th cumulative absorbed fail, even if
-    // they were spread across hours with successes between them.
-    // Resetting on success keeps the grace gate effective for the
-    // "1 fail per minute + N successes between" pattern that
-    // dominates flaky configured-carrier deployments. A pure-fail
-    // streak (no successes) still bumps the counter to release.
-    status.post_recovery_grace_descent_attempts = 0;
+    // grace's absorbed-attempts counter AND renews the grace
+    // deadline. The counter reset converts an isolated flap (1 fail
+    // every N minutes with successes between) from "monotonic drift
+    // toward release" into "effectively absorbed forever". The
+    // deadline renewal addresses the pattern observed in the field:
+    // VLESS-mux idle disconnects (`ws upstream read idle for 300s`)
+    // produce a runtime-error spike every 1-3 minutes, far apart
+    // enough that the wall-clock grace window expires between them.
+    // Renewing the deadline on each successful probe (typical probe
+    // interval = 10 s) keeps the gate alive across these wide gaps
+    // as long as **some** carrier-health signal is still positive.
+    // A pure-fail streak — neither probe success nor recovery
+    // success arriving — lets the deadline genuinely expire and
+    // descent triggers re-install the cap.
+    if status
+        .last_recovery_success_at
+        .is_some_and(|t| now.duration_since(t) < grace_window)
+    {
+        status.post_recovery_grace_descent_attempts = 0;
+        status.last_recovery_success_at = Some(now);
+    }
 
     // Early failback: if the active wire on this transport is currently
     // pinned to a fallback (because primary failed enough recent dials)
@@ -221,6 +236,11 @@ impl UplinkManager {
         let rtt_ewma_alpha = self.inner.load_balancing.rtt_ewma_alpha;
         let load_balancing = self.inner.load_balancing.clone();
         let pin_duration = self.inner.load_balancing.mode_downgrade_duration;
+        // Mirror of the grace window length computed inside
+        // `extend_mode_downgrade` — kept in sync there. Used by
+        // `record_transport_success` to renew the grace deadline on
+        // every successful probe while the gate is open.
+        let grace_window = pin_duration.saturating_mul(2);
         // Total wires on this uplink: 1 (primary) + configured fallbacks.
         // Used to gate probe-driven active-wire advance: only move active
         // off primary when there's at least one fallback to move to.
@@ -255,7 +275,7 @@ impl UplinkManager {
                     pin_duration,
                 );
             } else {
-                record_transport_success(&mut status.tcp, min_failures);
+                record_transport_success(&mut status.tcp, min_failures, grace_window);
             }
             if result.udp_applicable {
                 if !result.udp_ok {
@@ -268,7 +288,7 @@ impl UplinkManager {
                         pin_duration,
                     );
                 } else {
-                    record_transport_success(&mut status.udp, min_failures);
+                    record_transport_success(&mut status.udp, min_failures, grace_window);
                 }
             }
             if result.tcp_ok && (!result.udp_applicable || result.udp_ok) {
