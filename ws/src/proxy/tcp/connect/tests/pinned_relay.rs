@@ -55,6 +55,7 @@ fn lb(keepalive_interval: Duration) -> LoadBalancingConfig {
         vless_udp_mux_limits: VlessUdpMuxLimits::default(),
         tcp_mid_session_retry_buffer_bytes: 256 * 1024,
         tcp_mid_session_retry_budget: 1,
+        tcp_mid_session_retry_overflow_policy: outline_uplink::OverflowPolicy::Soft,
     }
 }
 

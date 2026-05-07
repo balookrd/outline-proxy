@@ -1188,6 +1188,7 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             vless_udp_mux_limits: outline_uplink::VlessUdpMuxLimits::default(),
             tcp_mid_session_retry_buffer_bytes: 256 * 1024,
             tcp_mid_session_retry_budget: 1,
+            tcp_mid_session_retry_overflow_policy: outline_uplink::OverflowPolicy::Soft,
         },
     )
     .unwrap()

@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
-use outline_uplink::{LoadBalancingConfig, LoadBalancingMode, RoutingScope, VlessUdpMuxLimits};
+use outline_uplink::{
+    LoadBalancingConfig, LoadBalancingMode, OverflowPolicy, RoutingScope, VlessUdpMuxLimits,
+};
 
 use super::super::schema::LoadBalancingSection;
 
@@ -104,6 +106,14 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         tcp_mid_session_retry_budget: lb
             .and_then(|l| l.tcp_mid_session_retry_budget)
             .unwrap_or(1),
+        // Default: `Soft` — matches the v1.1 behaviour (oversized
+        // chunk goes through, session stays alive, future retries
+        // surface `failed_replay`). `Hard` drops the session
+        // immediately on the first oversized chunk to guarantee
+        // retry-correctness for the rest.
+        tcp_mid_session_retry_overflow_policy: lb
+            .and_then(|l| l.tcp_mid_session_retry_overflow_policy)
+            .unwrap_or(OverflowPolicy::Soft),
         vless_udp_mux_limits: {
             let defaults = VlessUdpMuxLimits::default();
             VlessUdpMuxLimits {

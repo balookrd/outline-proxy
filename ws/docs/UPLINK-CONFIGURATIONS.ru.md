@@ -445,6 +445,7 @@ password = "Secret0"
 | `tcp_active_keepalive_secs`          | `20`               | с     | период SS2022 0-байтного keepalive на активных SOCKS TCP-сессиях (`0` отключает; SS1 игнорирует) |
 | `tcp_mid_session_retry_buffer_bytes` | `262144`           | bytes | размер ring-буфера на сессию для Ack-Prefix mid-session retry (`0` отключает retry; см. раздел «Mid-session retry» ниже) |
 | `tcp_mid_session_retry_budget`       | `1`                | int   | максимум попыток redial mid-session на одну сессию (`0` отключает retry — эквивалент `tcp_mid_session_retry_buffer_bytes = 0`) |
+| `tcp_mid_session_retry_overflow_policy` | `"soft"`        | enum  | поведение при чанке больше cap'а ring-буфера: `"soft"` (дефолт) держит сессию живой и отдаёт `failed_replay` на будущих ретраях; `"hard"` сразу обрывает сессию, чтобы гарантировать ретраебельность остальных |
 | `vless_udp_max_sessions`             | `256`              | int   | жёсткий лимит на одновременные VLESS UDP-сессии (LRU-вытеснение при переполнении)                |
 | `vless_udp_session_idle_secs`        | `60`               | с     | вытеснять VLESS UDP-сессии, простаивавшие дольше этого (`0` отключает вытеснение)                |
 | `vless_udp_janitor_interval_secs`    | `15`               | с     | как часто janitor сканирует idle-сессии VLESS UDP                                                |
@@ -504,6 +505,18 @@ Mid-session retry (Ack-Prefix Protocol v1):
   по-настоящему flaky-транспортах; каждая попытка стоит одного
   полного replay'а буфера даже при persistent failure. `0` полностью
   отключает retry (то же, что и `buffer_bytes = 0`).
+- `tcp_mid_session_retry_overflow_policy` определяет, что
+  происходит если один uplink-чанк больше
+  `tcp_mid_session_retry_buffer_bytes`. Такой чанк сам по себе
+  нельзя реплейнуть, и retry-контракт сессии с этого момента
+  необратимо нарушен. `"soft"` (дефолт) — поднимет метрику
+  `outcome="buffer_overflow"`, отправит чанк дальше и продолжит;
+  будущие retry на этой сессии вернут `failed_replay`. `"hard"`
+  сразу убивает сессию. Бери `"hard"` когда retry-корректность
+  для всего деплоя важнее жизни одной outlier-сессии (например,
+  интерактивные RPC, где порванный replay испортит state); бери
+  `"soft"` (дефолт) для типичного веб-трафика, где живучесть
+  сессии — пользовательски видимая метрика.
 - v1 sweet spot — HTTP request bodies, идемпотентные RPC. НЕ для
   SSH-подобных downlink-heavy сессий: протокол намеренно НЕ
   replay'ит downlink-направление в v1, поэтому SSH-туннели всё
