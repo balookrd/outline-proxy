@@ -100,6 +100,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_health_effective: GaugeVec,
     pub(super) uplink_latency_seconds: GaugeVec,
     pub(super) uplink_rtt_ewma_seconds: GaugeVec,
+    pub(super) uplink_active_wire_rtt_ewma_seconds: GaugeVec,
     pub(super) uplink_penalty_seconds: GaugeVec,
     pub(super) uplink_effective_latency_seconds: GaugeVec,
     pub(super) uplink_score_seconds: GaugeVec,
@@ -192,7 +193,22 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         registry,
         GaugeVec,
         "outline_ws_rust_uplink_rtt_ewma_seconds",
-        "EWMA RTT latency used as the probe baseline.",
+        "EWMA RTT latency on the primary wire (kept for backward compatibility — \
+         see active_wire_rtt_ewma_seconds for the wire actually carrying traffic).",
+        ["group", "transport", "uplink"]
+    );
+    // Latency of the wire that **new sessions currently land on**.
+    // Equals `rtt_ewma_seconds` while `active_wire == 0`; on a fallback
+    // it reads the corresponding per-fallback-wire EWMA slot. Lets
+    // operators alert / graph against the carrier actually in use rather
+    // than primary's (potentially stale, potentially belonging to a now-
+    // broken wire) measurement.
+    let uplink_active_wire_rtt_ewma_seconds = register_labeled!(
+        registry,
+        GaugeVec,
+        "outline_ws_rust_uplink_active_wire_rtt_ewma_seconds",
+        "EWMA RTT latency of the wire currently carrying traffic on this uplink \
+         (primary's EWMA when active_wire == 0, the matching fallback's slot otherwise).",
         ["group", "transport", "uplink"]
     );
     let uplink_penalty_seconds = register_labeled!(
@@ -313,6 +329,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_health_effective,
         uplink_latency_seconds,
         uplink_rtt_ewma_seconds,
+        uplink_active_wire_rtt_ewma_seconds,
         uplink_penalty_seconds,
         uplink_effective_latency_seconds,
         uplink_score_seconds,

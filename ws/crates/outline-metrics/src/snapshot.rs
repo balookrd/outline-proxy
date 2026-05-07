@@ -16,6 +16,7 @@ impl Metrics {
         self.uplink_health_effective.reset();
         self.uplink_latency_seconds.reset();
         self.uplink_rtt_ewma_seconds.reset();
+        self.uplink_active_wire_rtt_ewma_seconds.reset();
         self.uplink_penalty_seconds.reset();
         self.uplink_effective_latency_seconds.reset();
         self.uplink_score_seconds.reset();
@@ -105,6 +106,21 @@ impl Metrics {
             }
             if let Some(latency_ms) = uplink.udp_rtt_ewma_ms {
                 self.uplink_rtt_ewma_seconds
+                    .with_label_values(&[group, "udp", &uplink.name])
+                    .set(latency_ms as f64 / 1000.0);
+            }
+            // Active-wire RTT EWMA — primary's slot when active is on
+            // wire 0, otherwise the per-fallback-wire slot. Operators
+            // graphing / alerting against the wire actually carrying
+            // traffic use this gauge instead of the legacy primary-only
+            // `uplink_rtt_ewma_seconds`.
+            if let Some(latency_ms) = uplink.tcp_active_wire_rtt_ewma_ms {
+                self.uplink_active_wire_rtt_ewma_seconds
+                    .with_label_values(&[group, "tcp", &uplink.name])
+                    .set(latency_ms as f64 / 1000.0);
+            }
+            if let Some(latency_ms) = uplink.udp_active_wire_rtt_ewma_ms {
+                self.uplink_active_wire_rtt_ewma_seconds
                     .with_label_values(&[group, "udp", &uplink.name])
                     .set(latency_ms as f64 / 1000.0);
             }
