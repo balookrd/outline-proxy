@@ -72,6 +72,7 @@ async fn classify_decision_unknown_group_falls_back_to_default() {
         warm_probe_keepalive_interval: None,        auto_failback: false,
         vless_udp_mux_limits: VlessUdpMuxLimits::default(),
         tcp_mid_session_retry_buffer_bytes: 256 * 1024,
+        tcp_mid_session_retry_budget: 1,
     };
 
     let manager = UplinkManager::new_for_test("my-default", vec![uplink], probe, lb).unwrap();

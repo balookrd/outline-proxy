@@ -499,6 +499,23 @@ pub struct LoadBalancingConfig {
     /// retry budget for that session, since a torn replay would be
     /// undetectable downstream.
     pub tcp_mid_session_retry_buffer_bytes: usize,
+    /// Maximum number of mid-session redial attempts allowed per
+    /// pinned SOCKS TCP session before the relay propagates the
+    /// transport error. Each attempt costs one redial + one replay
+    /// of the buffered uplink tail; the bound prevents pathological
+    /// thrash on persistent server-side failure (e.g. an upstream
+    /// the server can no longer reach, where every redial succeeds
+    /// at the WS layer but the upstream relay errors immediately
+    /// again).
+    ///
+    /// `0` disables mid-session retry entirely — equivalent to
+    /// setting `tcp_mid_session_retry_buffer_bytes = 0`. Default:
+    /// `1` (one retry per session, matching the original v1
+    /// behaviour). Higher values are valid but provide diminishing
+    /// returns: most retriable failures recover on the first
+    /// attempt; persistent failures consume budget without
+    /// resolving.
+    pub tcp_mid_session_retry_budget: u8,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
