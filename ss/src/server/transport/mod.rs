@@ -92,6 +92,14 @@ pub(super) async fn tcp_websocket_upgrade(
     // would mint a different ID and silently desynchronise the
     // wire-side response from the server-side park lookup.
     let issued_for_response = resume.issued_session_id;
+    // Capability advertisements are also captured by-value before the
+    // upgrade closure consumes `resume`. Echoing
+    // `X-Outline-Resume-Ack-Prefix: 1` confirms to the client that we
+    // recognise the protocol and will emit the on-resume-hit control
+    // frame; the actual emit is gated on a successful orphan-take in
+    // the relay, but the response header lets the client decide
+    // whether to expect the prefix on its first decoded WS frame.
+    let ack_prefix_for_response = resume.ack_prefix_requested;
     let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
@@ -110,6 +118,11 @@ pub(super) async fn tcp_websocket_upgrade(
         response
             .headers_mut()
             .insert(tcp::SESSION_RESPONSE_HEADER, value);
+    }
+    if ack_prefix_for_response {
+        response
+            .headers_mut()
+            .insert(tcp::ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
     }
     response
 }
@@ -146,6 +159,12 @@ pub(super) async fn vless_websocket_upgrade(
     // and minting a fresh, mismatched ID. See the matching note in
     // `tcp_websocket_upgrade`.
     let issued_for_response = resume.issued_session_id;
+    // VLESS-WS deliberately does NOT echo the Ack-Prefix capability
+    // in v1: the on-resume-hit control-frame emit is implemented for
+    // SS-WS only this iteration, and echoing the capability without
+    // emitting the frame would be a spec violation that causes the
+    // client to misread the first byte of the upstream stream as the
+    // prefix. v1.1 will add VLESS-WS emit and start echoing.
     let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),

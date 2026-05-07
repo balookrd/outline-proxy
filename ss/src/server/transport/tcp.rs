@@ -50,7 +50,7 @@ use crate::{
 use super::super::connect::connect_tcp_target;
 use super::super::relay::UpstreamRelayOutcome;
 use super::super::resumption::{
-    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext,
+    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext, ack_prefix,
 };
 use super::super::constants::{
     WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
@@ -174,19 +174,6 @@ impl ResumeContext {
         }
     }
 
-    /// Echoes the `X-Outline-Resume-Ack-Prefix: 1` capability response
-    /// header when the client advertised it. The control frame is still
-    /// gated on a successful post-auth orphan-take, but advertising the
-    /// capability up-front lets the client know to expect it should the
-    /// resume hit. No-op when the client did not advertise.
-    pub(in crate::server) fn issue_ack_prefix_header(
-        &self,
-        headers: &mut axum::http::HeaderMap,
-    ) {
-        if self.ack_prefix_requested {
-            headers.insert(ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
-        }
-    }
 }
 
 /// Relay-task return type used by the TCP-WS path. Carries either a
@@ -684,6 +671,44 @@ where
             let mut encryptor =
                 AeadStreamEncryptor::new(&parked_user, decryptor.response_context())
                     .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
+
+            // Ack-Prefix Protocol v1: when the client advertised the
+            // capability we emit a 14-byte plaintext control frame here,
+            // ahead of any upstream relay bytes, so the client can
+            // replay only the bytes the upstream `TcpStream` has not
+            // yet acked. The frame goes through the same AEAD
+            // encryptor + WS sink as a normal data chunk; its FIFO
+            // ordering on `outbound.data_tx` guarantees it lands at
+            // the client before whatever the spawned relay task
+            // produces. See `docs/SESSION-RESUMPTION.md` § Ack-Prefix
+            // Protocol (v1).
+            if state.ack_prefix_requested {
+                let payload = ack_prefix::build_v1_payload(
+                    parked.upstream_bytes_acked.load(Ordering::Relaxed),
+                );
+                let mut out = bytes::BytesMut::new();
+                encryptor
+                    .encrypt_chunk(&payload, &mut out)
+                    .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
+                let ciphertext = out.split().freeze();
+                let make_binary = outbound.make_binary;
+                outbound
+                    .data_tx
+                    .send(make_binary(ciphertext))
+                    .await
+                    .map_err(|_| {
+                        FrameError::Fatal(anyhow!(
+                            "ack-prefix control frame send failed: WS data channel closed"
+                        ))
+                    })?;
+                debug!(
+                    user = user.id(),
+                    path = %route.path,
+                    up_acked = parked.upstream_bytes_acked.load(Ordering::Relaxed),
+                    "emitted ack-prefix control frame on resume hit",
+                );
+            }
+
             let tx = outbound.data_tx.clone();
             let make_binary = outbound.make_binary;
             let make_close = outbound.make_close;
