@@ -45,6 +45,7 @@ use url::Url;
 use outline_transport::{
     DnsCache as ClientDnsCache, TargetAddr, TransportMode, TransportStream,
     UpstreamTransportGuard, connect_vless_tcp_quic_with_resume, connect_websocket_with_resume,
+    vless::vless_tcp_pair_from_ws,
 };
 
 use super::super::bootstrap::serve_listener;
@@ -679,6 +680,165 @@ async fn cross_repo_vless_tcp_ws_h2_resume_reattaches_parked_upstream() -> Resul
     assert_eq!(&second, b"helo");
 
     drop(stream_b);
+    server.abort();
+    Ok(())
+}
+
+/// End-to-end check of the v1.1 Ack-Prefix Protocol on the VLESS-WS
+/// path — companion to `cross_repo_ss_tcp_ws_h2_ack_prefix_reports
+/// _up_acked_offset` in `cross_repo_ss.rs`.
+///
+/// Drives client A through one round-trip without the capability,
+/// parks the upstream on a clean WS Close, then reconnects as
+/// client B with both `X-Outline-Resume: <token>` AND
+/// `X-Outline-Resume-Ack-Prefix: 1`. Asserts:
+///
+///   1. The server echoes the capability header on the resume hit.
+///   2. `consume_ack_prefix_with_timeout` on the client's
+///      `VlessTcpReader` returns the parsed offset BEFORE any data
+///      `read_chunk` runs (proves the v1.1 fast path works for
+///      VLESS).
+///   3. The reported `up_acked` matches the upstream byte count the
+///      server forwarded across A's lifetime — exactly 4 bytes
+///      (`"ping"`); the VLESS request header is parsed by the
+///      dispatcher before the upstream socket opens, and only the
+///      payload portion that follows it counts toward `up_acked`.
+///
+/// Uses the higher-level `vless_tcp_pair_from_ws` constructor so
+/// the test exercises the public reader API the orchestrator
+/// itself uses.
+#[tokio::test]
+async fn cross_repo_vless_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut first = [0_u8; 4];
+        stream.read_exact(&mut first).await?;
+        stream.write_all(b"pong").await?;
+        let mut second = [0_u8; 4];
+        stream.read_exact(&mut second).await?;
+        stream.write_all(b"ackk").await?;
+        Result::<_, anyhow::Error>::Ok((first, second))
+    });
+
+    let (listen_addr, server) =
+        setup_vless_ws_server_with_resumption("/vless").await?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!("ws://{listen_addr}/vless"))?;
+
+    // ── Client A: legacy dial (no Ack-Prefix), one round-trip,
+    //              graceful Close so the upstream parks ─────────
+    let mut stream_a = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH2,
+        None,
+        false,
+        "cross-repo-vless-ws-ack-prefix-a",
+        None,
+        false,
+    )
+    .await?;
+    assert!(
+        !stream_a.ack_prefix_advertised_by_server(),
+        "client A did not advertise → server must not echo",
+    );
+    let token = stream_a
+        .issued_session_id()
+        .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
+
+    // Drive the round-trip via the raw VLESS handshake — same shape
+    // the existing resume test uses for the warm-up half. Switching
+    // to the higher-level `vless_tcp_pair_from_ws` here would mean
+    // splitting the stream and reassembling, which complicates the
+    // graceful Close that `tokio_tungstenite` exposes only on the
+    // raw `TransportStream`. The post-resume client B is where the
+    // higher-level reader earns its keep.
+    let mut handshake_a = Vec::new();
+    handshake_a.push(VERSION);
+    handshake_a.extend_from_slice(&parse_uuid(TEST_UUID)?);
+    handshake_a.push(0);
+    handshake_a.push(crate::protocol::vless::COMMAND_TCP);
+    handshake_a.extend_from_slice(&upstream_addr.port().to_be_bytes());
+    handshake_a.push(0x01);
+    handshake_a.extend_from_slice(&[127, 0, 0, 1]);
+    handshake_a.extend_from_slice(b"ping");
+    stream_a.send(Message::Binary(Bytes::from(handshake_a))).await?;
+    let received_a = read_binary_until_at_least(&mut stream_a, 6).await?;
+    assert_eq!(&received_a[..2], &[VERSION, 0x00]);
+    assert_eq!(&received_a[2..6], b"pong");
+
+    let _ = stream_a.send(Message::Close(None)).await;
+    let _ = stream_a.close().await;
+    drop(stream_a);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // ── Client B: resume + Ack-Prefix advertise ────────────────
+    let stream_b = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH2,
+        None,
+        false,
+        "cross-repo-vless-ws-ack-prefix-b",
+        Some(token),
+        true,
+    )
+    .await?;
+    assert!(
+        stream_b.ack_prefix_advertised_by_server(),
+        "server must echo X-Outline-Resume-Ack-Prefix: 1 on a vless resume hit \
+         when the client advertised the capability",
+    );
+
+    // Wrap the resumed stream in the higher-level VLESS pair so we
+    // can drive the v1.1 fast path: `consume_ack_prefix_with_timeout`
+    // surfaces the offset BEFORE any real payload is read.
+    let lifetime_b =
+        UpstreamTransportGuard::new("cross-repo-vless-ws-ack-prefix-b", "vless-ws-h2");
+    let target_b = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
+    let diag_b = outline_transport::WsReadDiag::default();
+    let uuid_b = parse_uuid(TEST_UUID)?;
+    let (mut writer_b, mut reader_b) = vless_tcp_pair_from_ws(
+        stream_b,
+        &uuid_b,
+        &target_b,
+        Arc::clone(&lifetime_b),
+        diag_b,
+        None,
+    );
+    reader_b = reader_b.with_expect_ack_prefix(true);
+
+    // Fire the second payload first so the server has something to
+    // emit downstream (the SS test serialised this; VLESS framing
+    // inserts the request header on the first send_chunk).
+    writer_b.send_chunk(b"helo").await?;
+
+    // Pre-read the offset BEFORE any data read. v1.1 contract: the
+    // call returns Some(4) without blocking on real downlink data.
+    let offset = reader_b
+        .consume_ack_prefix_with_timeout(Duration::from_secs(5))
+        .await?;
+    assert_eq!(
+        offset,
+        Some(4),
+        "vless Ack-Prefix offset must equal upstream byte count from client A's \"ping\"",
+    );
+    assert_eq!(reader_b.upstream_acked_offset(), Some(4));
+
+    // The next read_chunk returns the real downlink payload.
+    let reply_b = reader_b.read_chunk().await?;
+    assert_eq!(reply_b, b"ackk", "vless ss tcp echo via resumed upstream");
+
+    let (first, second) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&first, b"ping");
+    assert_eq!(&second, b"helo");
+
+    drop(reader_b);
+    drop(writer_b);
+    drop(lifetime_b);
     server.abort();
     Ok(())
 }
