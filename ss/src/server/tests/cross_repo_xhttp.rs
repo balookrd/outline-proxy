@@ -117,6 +117,7 @@ async fn cross_repo_xhttp_packet_up_h2_round_trip() -> Result<()> {
         false,
         "cross-repo-test",
         None,
+        false,
     )
     .await?;
 
@@ -162,6 +163,7 @@ async fn cross_repo_xhttp_stream_one_h2_round_trip() -> Result<()> {
         false,
         "cross-repo-test",
         None,
+        false,
     )
     .await?;
 
@@ -214,6 +216,7 @@ async fn cross_repo_xhttp_h2_resume_reattaches_parked_upstream() -> Result<()> {
         false,
         "cross-repo-resume-a",
         None,
+        false,
     )
     .await?;
     let token = stream_a
@@ -250,6 +253,7 @@ async fn cross_repo_xhttp_h2_resume_reattaches_parked_upstream() -> Result<()> {
         false,
         "cross-repo-resume-b",
         Some(token),
+        false,
     )
     .await?;
     // Client B mints its own token (the server cannot tell this
@@ -393,6 +397,7 @@ async fn cross_repo_xhttp_packet_up_h3_round_trip() -> Result<()> {
         false,
         "cross-repo-h3-test",
         None,
+        false,
     )
     .await?;
 
@@ -444,6 +449,7 @@ async fn cross_repo_xhttp_stream_one_h3_round_trip() -> Result<()> {
         false,
         "cross-repo-h3-test",
         None,
+        false,
     )
     .await?;
 
@@ -495,6 +501,7 @@ async fn cross_repo_xhttp_packet_up_h3_resume_reattaches_parked_upstream() -> Re
         false,
         "cross-repo-xhttp-h3-resume-a",
         None,
+        false,
     )
     .await?;
     let token = stream_a
@@ -528,6 +535,7 @@ async fn cross_repo_xhttp_packet_up_h3_resume_reattaches_parked_upstream() -> Re
         false,
         "cross-repo-xhttp-h3-resume-b",
         Some(token),
+        false,
     )
     .await?;
     let _issued_b = stream_b.issued_session_id();
@@ -646,6 +654,7 @@ async fn cross_repo_xhttp_h3_to_h2_fallback_with_resume_token() -> Result<()> {
         false,
         "cross-repo-xhttp-fallback-a",
         None,
+        false,
     )
     .await?;
     let token = stream_a
@@ -679,6 +688,7 @@ async fn cross_repo_xhttp_h3_to_h2_fallback_with_resume_token() -> Result<()> {
         false,
         "cross-repo-xhttp-fallback-b",
         Some(token),
+        false,
     )
     .await?;
     assert_eq!(
