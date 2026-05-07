@@ -1189,6 +1189,122 @@ fn xhttp_post_recovery_grace_attempts_reset_on_cap_install() {
 }
 
 #[test]
+fn xhttp_recovery_streak_requires_two_successes_to_clear_cap() {
+    use crate::config::TransportMode;
+
+    let mut cfg = vless_xhttp_primary(); // configured XhttpH3
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 2);
+
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::XhttpH2,
+    );
+
+    // First successful recovery: tentative — cap stays installed,
+    // streak counter advances to 1.
+    manager.note_recovery_probe_success(0, TransportKind::Tcp);
+    let s = manager.read_status_for_test(0);
+    assert_eq!(
+        s.tcp.mode_downgrade_capped_to,
+        Some(TransportMode::XhttpH2),
+        "first recovery success is tentative — cap must NOT clear on a single confirmation",
+    );
+    assert_eq!(
+        s.tcp.recovery_probe_success_streak, 1,
+        "streak counter advances to 1 on the first tentative success",
+    );
+
+    // Second consecutive recovery success — clear the cap.
+    manager.note_recovery_probe_success(0, TransportKind::Tcp);
+    let s = manager.read_status_for_test(0);
+    assert!(
+        s.tcp.mode_downgrade_capped_to.is_none(),
+        "second consecutive recovery success meets the streak threshold and clears the cap",
+    );
+    assert_eq!(
+        s.tcp.recovery_probe_success_streak, 0,
+        "clearing the cap also resets the recovery streak counter",
+    );
+}
+
+#[test]
+fn xhttp_recovery_streak_reset_on_descent() {
+    use crate::config::TransportMode;
+    use crate::manager::mode_downgrade::ModeDowngradeTrigger;
+
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 2);
+
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::XhttpH2,
+    );
+    // One tentative recovery success.
+    manager.note_recovery_probe_success(0, TransportKind::Tcp);
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.recovery_probe_success_streak,
+        1,
+    );
+
+    // A failed recovery probe in the same cap window must reset
+    // the streak — the previous tentative success was unlucky.
+    manager.extend_mode_downgrade(
+        0,
+        TransportKind::Tcp,
+        ModeDowngradeTrigger::RecoveryReprobeFail,
+    );
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.recovery_probe_success_streak,
+        0,
+        "RecoveryReprobeFail resets the recovery streak so the next clear requires a fresh streak",
+    );
+}
+
+#[test]
+fn xhttp_recovery_streak_reset_when_cap_re_installed() {
+    use crate::config::TransportMode;
+    use crate::manager::mode_downgrade::ModeDowngradeTrigger;
+
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    // min_failures=1 so a single ProbeTransportFailure installs the cap.
+    let manager = manager_with_uplink(cfg, 1);
+
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::XhttpH2,
+    );
+    manager.note_recovery_probe_success(0, TransportKind::Tcp);
+    // streak = 1, cap = H2, threshold = 2 (not met).
+    manager.clear_mode_downgrade(0, TransportKind::Tcp);
+    // Now cap = None, streak reset by clear.
+
+    // Re-install the cap via descent — even if we somehow get a
+    // recovery success notification later, the streak must NOT
+    // count from a stale value.
+    manager.extend_mode_downgrade(
+        0,
+        TransportKind::Tcp,
+        ModeDowngradeTrigger::ProbeTransportFailure(TransportMode::XhttpH3),
+    );
+    let s = manager.read_status_for_test(0);
+    assert_eq!(
+        s.tcp.mode_downgrade_capped_to,
+        Some(TransportMode::XhttpH2),
+        "descent re-installed the cap",
+    );
+    assert_eq!(
+        s.tcp.recovery_probe_success_streak, 0,
+        "cap install resets the recovery streak — any prior tentative successes are stale",
+    );
+}
+
+#[test]
 fn xhttp_recovery_cooldown_cleared_by_clear_mode_downgrade() {
     use crate::config::TransportMode;
     use crate::manager::mode_downgrade::ModeDowngradeTrigger;

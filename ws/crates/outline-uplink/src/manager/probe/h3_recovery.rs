@@ -19,12 +19,21 @@ impl UplinkManager {
     /// * VLESS uplinks configured at `XhttpH3` test `XhttpH3`; configured
     ///   at `XhttpH2` test `XhttpH2`.
     ///
-    /// On success the corresponding `(uplink, transport)` cap is cleared
-    /// via [`UplinkManager::clear_mode_downgrade`]. On failure the cap is
-    /// extended with [`ModeDowngradeTrigger::RecoveryReprobeFail`] so the
-    /// per-cycle "still can't reach configured carrier" event is
-    /// captured without re-stepping the cap further down (the existing
-    /// monotonic-descent rule keeps the deepest prior cap).
+    /// On success the recovery is recorded via
+    /// [`UplinkManager::note_recovery_probe_success`], which only
+    /// clears the cap when the per-transport recovery streak reaches
+    /// [`UplinkManager::RECOVERY_SUCCESS_STREAK_THRESHOLD`] (currently
+    /// 2). A single recovery success on a flaky configured carrier
+    /// (handshake passes, data plane fails immediately after) is
+    /// treated as tentative; the cap stays installed until a second
+    /// consecutive recovery success confirms.
+    ///
+    /// On failure the cap is extended with
+    /// [`ModeDowngradeTrigger::RecoveryReprobeFail`] so the per-cycle
+    /// "still can't reach configured carrier" event is captured
+    /// without re-stepping the cap further down (the existing
+    /// monotonic-descent rule keeps the deepest prior cap), and the
+    /// recovery streak is reset.
     pub(super) async fn run_h3_recovery_probes(
         &self,
         needed: Vec<(usize, Uplink)>,
@@ -90,9 +99,9 @@ impl UplinkManager {
                 info!(
                     uplink = %uplink.name,
                     kind = ?which,
-                    "carrier recovery confirmed by re-probe, clearing downgrade window early"
+                    "carrier recovery probe succeeded; consulting streak gate"
                 );
-                self.clear_mode_downgrade(index, which);
+                self.note_recovery_probe_success(index, which);
             } else {
                 self.extend_mode_downgrade(index, which, ModeDowngradeTrigger::RecoveryReprobeFail);
             }
