@@ -207,7 +207,11 @@ fn needs_carrier_recovery(
         return false;
     }
     match (uplink_transport, uplink_configured_mode) {
-        (UplinkTransport::Ws, TransportMode::WsH3) => effective_mode == TransportMode::WsH2,
+        (UplinkTransport::Ws, TransportMode::WsH3) => matches!(
+            effective_mode,
+            TransportMode::WsH2 | TransportMode::WsH1
+        ),
+        (UplinkTransport::Ws, TransportMode::WsH2) => effective_mode == TransportMode::WsH1,
         (UplinkTransport::Vless, TransportMode::XhttpH3) => matches!(
             effective_mode,
             TransportMode::XhttpH2 | TransportMode::XhttpH1
