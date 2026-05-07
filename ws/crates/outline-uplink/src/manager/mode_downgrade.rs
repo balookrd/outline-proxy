@@ -885,17 +885,23 @@ fn rank(mode: TransportMode) -> u8 {
 /// fallback in its family — there is no further step to cap to.
 ///
 /// `Quic` clamps to `WsH2` to match the legacy raw-QUIC fallback
-/// behaviour. `WsH2` does *not* downgrade through this window — the
-/// per-host `ws_mode_cache` already handles `WsH2 → WsH1` clamping
-/// across uplinks; adding a per-uplink hop on top would log twice
-/// for the same observed failure.
+/// behaviour. Both family chains walk three ranks deep:
+/// `WsH3 → WsH2 → WsH1` and `XhttpH3 → XhttpH2 → XhttpH1`. The WS
+/// chain's `WsH2 → WsH1` step duplicates the cross-uplink per-host
+/// `ws_mode_cache` clamp at the dial layer — that's intentional:
+/// without the per-uplink cap rank visible on the dashboard,
+/// operators observing `H2 ↘ DOWN` couldn't tell whether the dial
+/// loop had already fallen back to H1 (via `ws_mode_cache`) or
+/// was still spinning on a doomed H2 attempt. The minor double
+/// log on a one-off `WsH2` failure is the price.
 fn one_step_down(failed: TransportMode) -> Option<TransportMode> {
     match failed {
         TransportMode::WsH3 => Some(TransportMode::WsH2),
+        TransportMode::WsH2 => Some(TransportMode::WsH1),
         TransportMode::Quic => Some(TransportMode::WsH2),
         TransportMode::XhttpH3 => Some(TransportMode::XhttpH2),
         TransportMode::XhttpH2 => Some(TransportMode::XhttpH1),
-        TransportMode::WsH1 | TransportMode::WsH2 | TransportMode::XhttpH1 => None,
+        TransportMode::WsH1 | TransportMode::XhttpH1 => None,
     }
 }
 

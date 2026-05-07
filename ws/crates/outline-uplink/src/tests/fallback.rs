@@ -1397,6 +1397,103 @@ fn xhttp_recovery_streak_reset_when_cap_changes_via_descent() {
 }
 
 #[test]
+fn ws_chain_walks_full_h3_h2_h1_descent() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    // WS uplink configured at H3, single TCP wire.
+    let cfg = UplinkConfig {
+        name: "ws-edge".to_string(),
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
+        tcp_mode: TransportMode::WsH3,
+        udp_ws_url: Some(Url::parse("wss://ws.example.com/udp").unwrap()),
+        udp_mode: TransportMode::WsH3,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        tcp_addr: None,
+        udp_addr: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+        fingerprint_profile: None,
+        fallbacks: Vec::new(),
+    };
+    // min_failures=1 so each probe failure crosses both the
+    // in-window descent gate (`consecutive_failures < min_failures`)
+    // and triggers a cap step on the same cycle.
+    let manager = manager_with_uplink(cfg, 1);
+
+    let make_failed = || ProbeOutcome {
+        tcp_ok: false,
+        udp_ok: false,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+
+    // First probe cycle: effective = WsH3 (no cap yet), fails → cap=H2.
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        make_failed(),
+        TransportMode::WsH3,
+        TransportMode::WsH3,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        Some(TransportMode::WsH2),
+        "WS chain: first probe failure on configured H3 caps to H2",
+    );
+
+    // Second probe cycle: effective = WsH2 (capped), fails → cap=H1.
+    // Without the new `WsH2 → WsH1` descent step this stalled at H2,
+    // leaving the dashboard's `H2 ↘ DOWN` operator-confusing.
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        make_failed(),
+        TransportMode::WsH2,
+        TransportMode::WsH2,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        Some(TransportMode::WsH1),
+        "WS chain: second probe failure on H2 caps to H1 (H3 → H2 → H1 walk)",
+    );
+
+    // Third probe cycle: effective = WsH1, fails → cap stays H1
+    // (deepest rank in the family).
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        make_failed(),
+        TransportMode::WsH1,
+        TransportMode::WsH1,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        Some(TransportMode::WsH1),
+        "WS chain: H1 is the deepest rank; further failures don't move the cap",
+    );
+}
+
+#[test]
 fn xhttp_post_recovery_grace_renewed_by_probe_success_across_wide_gap() {
     use crate::config::TransportMode;
     use crate::manager::probe::outcome::ProbeOutcome;
