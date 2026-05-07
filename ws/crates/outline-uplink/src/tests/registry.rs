@@ -72,6 +72,7 @@ fn make_group(name: &str, uplink_names: &[&str]) -> UplinkGroupConfig {
             warm_probe_keepalive_interval: None,            auto_failback: false,
             vless_udp_mux_limits: VlessUdpMuxLimits::default(),
             tcp_mid_session_retry_buffer_bytes: 256 * 1024,
+            tcp_mid_session_retry_budget: 1,
         },
     }
 }

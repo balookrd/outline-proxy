@@ -444,6 +444,7 @@ password = "Secret0"
 | `tcp_ws_standby_keepalive_secs`      | `20`               | с     | период WS Ping на warm-standby TCP-сокетах (`0` отключает)                                       |
 | `tcp_active_keepalive_secs`          | `20`               | с     | период SS2022 0-байтного keepalive на активных SOCKS TCP-сессиях (`0` отключает; SS1 игнорирует) |
 | `tcp_mid_session_retry_buffer_bytes` | `262144`           | bytes | размер ring-буфера на сессию для Ack-Prefix mid-session retry (`0` отключает retry; см. раздел «Mid-session retry» ниже) |
+| `tcp_mid_session_retry_budget`       | `1`                | int   | максимум попыток redial mid-session на одну сессию (`0` отключает retry — эквивалент `tcp_mid_session_retry_buffer_bytes = 0`) |
 | `vless_udp_max_sessions`             | `256`              | int   | жёсткий лимит на одновременные VLESS UDP-сессии (LRU-вытеснение при переполнении)                |
 | `vless_udp_session_idle_secs`        | `60`               | с     | вытеснять VLESS UDP-сессии, простаивавшие дольше этого (`0` отключает вытеснение)                |
 | `vless_udp_janitor_interval_secs`    | `15`               | с     | как часто janitor сканирует idle-сессии VLESS UDP                                                |
@@ -497,6 +498,12 @@ Mid-session retry (Ack-Prefix Protocol v1):
   достаточно мало, чтобы держать N параллельных сессий не было
   заметно на фоне kernel socket buffers. `0` полностью отключает
   retry (буфер вообще не аллоцируется).
+- `tcp_mid_session_retry_budget` ограничивает число попыток redial
+  на сессию. Дефолт `1` — большинство retriable-сбоев восстанавли-
+  ваются с первой попытки. Большие значения окупаются только на
+  по-настоящему flaky-транспортах; каждая попытка стоит одного
+  полного replay'а буфера даже при persistent failure. `0` полностью
+  отключает retry (то же, что и `buffer_bytes = 0`).
 - v1 sweet spot — HTTP request bodies, идемпотентные RPC. НЕ для
   SSH-подобных downlink-heavy сессий: протокол намеренно НЕ
   replay'ит downlink-направление в v1, поэтому SSH-туннели всё

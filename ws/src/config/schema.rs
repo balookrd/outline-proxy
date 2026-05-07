@@ -313,6 +313,12 @@ pub(super) struct UplinkGroupSection {
     /// that offset. `0` disables retry (and stops buffering). Default:
     /// 256 KiB. See `docs/UPLINK-CONFIGURATIONS.md` for guidance.
     pub(super) tcp_mid_session_retry_buffer_bytes: Option<usize>,
+    /// Maximum number of mid-session redial attempts per pinned SOCKS
+    /// TCP session. `0` disables retry entirely (equivalent to
+    /// `tcp_mid_session_retry_buffer_bytes = 0`); higher values
+    /// allow successive redials when each previous one also fails.
+    /// Default: `1`.
+    pub(super) tcp_mid_session_retry_budget: Option<u8>,
     /// Per-group override of top-level `[probe]`; unspecified fields inherit.
     pub(super) probe: Option<ProbeSection>,
 }
@@ -430,4 +436,7 @@ pub(super) struct LoadBalancingSection {
     /// the global default applied to every group that does not override
     /// it. Default: 256 KiB. `0` disables retry and the buffer.
     pub(super) tcp_mid_session_retry_buffer_bytes: Option<usize>,
+    /// Mid-session retry budget per session. See the same-named field
+    /// on `UplinkGroupSection` for full semantics. Default: `1`.
+    pub(super) tcp_mid_session_retry_budget: Option<u8>,
 }

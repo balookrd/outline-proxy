@@ -102,14 +102,22 @@ pub(super) async fn run_relay(
 
     let lb_snapshot = uplinks.load_balancing();
     let buffer_cap = lb_snapshot.tcp_mid_session_retry_buffer_bytes;
+    let configured_budget = lb_snapshot.tcp_mid_session_retry_budget;
     let keepalive_interval = lb_snapshot.tcp_active_keepalive_interval;
     // Mid-session retry only operates on the SS-WS dial path in v1 —
     // VLESS-WS and raw-QUIC do not negotiate the capability, and the
     // SS-direct-socket path bypasses the WS layer entirely. The
     // orchestrator skips retry for those uplinks rather than dialling
     // a path that would not give us the offset header.
-    let retry_eligible = buffer_cap > 0 && candidate.uplink.transport == UplinkTransport::Ws;
-    let mut budget: u8 = if retry_eligible { 1 } else { 0 };
+    //
+    // Both knobs gate eligibility independently — buffer_bytes=0 OR
+    // budget=0 disables retry. This lets operators turn off retry by
+    // touching either knob, and lets a future deployment toggle the
+    // budget while keeping the buffer warm.
+    let retry_eligible = buffer_cap > 0
+        && configured_budget > 0
+        && candidate.uplink.transport == UplinkTransport::Ws;
+    let mut budget: u8 = if retry_eligible { configured_budget } else { 0 };
 
     let ring: Option<Arc<Mutex<ClientUpstreamRingBuffer>>> = retry_eligible
         .then(|| Arc::new(Mutex::new(ClientUpstreamRingBuffer::new(buffer_cap))));

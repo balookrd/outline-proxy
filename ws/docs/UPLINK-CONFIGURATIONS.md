@@ -445,6 +445,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `tcp_ws_standby_keepalive_secs`      | `20`               | s     | WS Ping cadence on warm-standby TCP sockets (`0` disables)                                        |
 | `tcp_active_keepalive_secs`          | `20`               | s     | SS2022 0-length keepalive on active SOCKS TCP sessions (`0` disables; SS1 ignores)                |
 | `tcp_mid_session_retry_buffer_bytes` | `262144`           | bytes | per-session ring-buffer cap for the Ack-Prefix mid-session retry path (`0` disables retry; see "Mid-session retry" below) |
+| `tcp_mid_session_retry_budget`       | `1`                | int   | maximum number of mid-session redial attempts per session (`0` disables retry — equivalent to `tcp_mid_session_retry_buffer_bytes = 0`) |
 | `vless_udp_max_sessions`             | `256`              | int   | hard cap on concurrent VLESS UDP sessions (LRU-evicted on overflow)                               |
 | `vless_udp_session_idle_secs`        | `60`               | s     | evict VLESS UDP sessions idle longer than this (`0` disables eviction)                            |
 | `vless_udp_janitor_interval_secs`    | `15`               | s     | how often the VLESS UDP janitor scans for idle sessions                                           |
@@ -495,6 +496,12 @@ Mid-session retry (Ack-Prefix Protocol v1):
   that holding it for N concurrent sessions stays negligible
   compared with kernel socket buffers. Set to `0` to disable retry
   entirely (the buffer is never allocated).
+- `tcp_mid_session_retry_budget` caps the number of redial attempts
+  per session. Default `1` — most retriable mid-session failures
+  recover on the first attempt. Higher values pay off only against
+  genuinely-flaky transports; each attempt costs one full buffer
+  replay even on persistent failure. `0` disables retry entirely
+  (same effect as setting the buffer cap to `0`).
 - v1 sweet spot: HTTP request bodies, idempotent RPCs. NOT for
   SSH-style downlink-heavy sessions — the protocol intentionally
   does not replay the downlink direction in v1, so SSH tunnels

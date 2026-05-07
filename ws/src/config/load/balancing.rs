@@ -96,6 +96,14 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         tcp_mid_session_retry_buffer_bytes: lb
             .and_then(|l| l.tcp_mid_session_retry_buffer_bytes)
             .unwrap_or(256 * 1024),
+        // Default: `1` — matches the original v1 behaviour. Most
+        // retriable mid-session failures recover on the first
+        // attempt; bumping the budget pays off only against
+        // genuinely-flaky transports, and burns 256 KiB per attempt
+        // (one full buffer replay) even on persistent failure.
+        tcp_mid_session_retry_budget: lb
+            .and_then(|l| l.tcp_mid_session_retry_budget)
+            .unwrap_or(1),
         vless_udp_mux_limits: {
             let defaults = VlessUdpMuxLimits::default();
             VlessUdpMuxLimits {
