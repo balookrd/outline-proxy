@@ -287,13 +287,19 @@ impl VlessTcpReader {
                 self.header_buf.extend_from_slice(&bytes);
             }
         }
-        loop {
-            let bytes = match self.source.recv_frame().await? {
-                None => return Err(anyhow::Error::from(WsClosed)),
-                Some(b) => b,
-            };
-            return Ok(bytes.into());
+        // The VLESS response header may have arrived bundled with the
+        // first downlink payload bytes in a single WS frame —
+        // `ensure_header_parsed` stashes that tail in `header_buf`.
+        // Hand it back here before touching the network so the caller
+        // never blocks waiting for a frame that already arrived.
+        if !self.header_buf.is_empty() {
+            return Ok(std::mem::take(&mut self.header_buf));
         }
+        let bytes = match self.source.recv_frame().await? {
+            None => return Err(anyhow::Error::from(WsClosed)),
+            Some(b) => b,
+        };
+        Ok(bytes.into())
     }
 
     /// Drives `recv_frame` until the VLESS response header (`[version,
