@@ -1,7 +1,7 @@
 pub(crate) mod active_wire;
 pub(crate) mod candidates;
 mod failures;
-mod mode_downgrade;
+pub(crate) mod mode_downgrade;
 pub(crate) mod probe;
 mod reporting;
 mod snapshot;
