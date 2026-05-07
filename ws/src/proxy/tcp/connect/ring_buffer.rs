@@ -37,13 +37,6 @@
 //!   retry. HTTP request bodies and idempotent RPCs are the v1 sweet
 //!   spot.
 
-// Phase 2.4.d (retry orchestration in `pinned_relay`) is the consumer
-// for every public item in this module. Until that lands the
-// dead-code lint would fire on a clean build; the test target
-// exercises everything via the inline `tests` module so coverage is
-// already in place.
-#![allow(dead_code)]
-
 use std::collections::VecDeque;
 
 /// Failure modes for [`ClientUpstreamRingBuffer::push`]. Successful
@@ -119,13 +112,18 @@ impl ClientUpstreamRingBuffer {
     }
 
     /// Configured byte capacity. Stable for the lifetime of the ring.
+    /// Currently exercised only by tests; kept on the public surface
+    /// for future diagnostics callers (metrics export, debug dumps).
+    #[allow(dead_code)]
     pub fn capacity_bytes(&self) -> usize {
         self.capacity_bytes
     }
 
     /// Total bytes pushed since construction (including bytes already
     /// evicted). Equals the absolute offset of the *next* byte to be
-    /// pushed.
+    /// pushed. Currently exercised only by tests; kept on the public
+    /// surface for future diagnostics.
+    #[allow(dead_code)]
     pub fn total_sent(&self) -> u64 {
         self.total_sent
     }
@@ -142,7 +140,10 @@ impl ClientUpstreamRingBuffer {
     }
 
     /// Number of bytes currently held in the ring (sum of all entries'
-    /// payload lengths). Always `<= capacity_bytes`.
+    /// payload lengths). Always `<= capacity_bytes`. Currently
+    /// exercised only by tests; kept on the public surface for
+    /// future diagnostics.
+    #[allow(dead_code)]
     pub fn buffered_bytes(&self) -> usize {
         self.current_bytes
     }
