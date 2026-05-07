@@ -980,6 +980,84 @@ fn xhttp_recovery_cooldown_blocks_recovery_push_until_expiry() {
 }
 
 #[test]
+fn xhttp_post_recovery_grace_absorbs_single_probe_fail() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary(); // configured XhttpH3
+    cfg.fallbacks = vec![ws_fallback(false)];
+    // min_failures=2 — the grace must require 2 consecutive failures
+    // before re-installing the cap. A single fail is absorbed.
+    let manager = manager_with_uplink(cfg, 2);
+
+    // Simulate a successful recovery probe by calling
+    // `clear_mode_downgrade` directly — it stamps
+    // `last_recovery_success_at` so the grace window opens.
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::XhttpH2,
+    );
+    manager.clear_mode_downgrade(0, TransportKind::Tcp);
+    let s = manager.read_status_for_test(0);
+    assert!(
+        s.tcp.mode_downgrade_capped_to.is_none(),
+        "clear after recovery success must drop the cap",
+    );
+    assert!(
+        s.tcp.last_recovery_success_at.is_some(),
+        "clear after recovery success must stamp the grace timestamp",
+    );
+
+    // First post-recovery probe at configured H3 fails — the
+    // descent path normally installs cap=H2 from a single fail
+    // (because the window is currently inactive). Grace must
+    // absorb this first fail.
+    let make_failed = || ProbeOutcome {
+        tcp_ok: false,
+        udp_ok: false,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        make_failed(),
+        TransportMode::XhttpH3,
+        TransportMode::XhttpH3,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    assert!(
+        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+        "single post-recovery probe-fail must NOT re-install the cap (grace absorbs it)",
+    );
+
+    // Second consecutive fail crosses min_failures=2; grace gate
+    // releases and the cap re-installs.
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        make_failed(),
+        TransportMode::XhttpH3,
+        TransportMode::XhttpH3,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        Some(TransportMode::XhttpH2),
+        "after min_failures consecutive fails grace releases and the cap re-installs",
+    );
+}
+
+#[test]
 fn xhttp_recovery_cooldown_cleared_by_clear_mode_downgrade() {
     use crate::config::TransportMode;
     use crate::manager::mode_downgrade::ModeDowngradeTrigger;

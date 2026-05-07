@@ -76,6 +76,23 @@ pub(crate) struct PerTransportStatus {
     /// capped carrier and the configured carrier is still above
     /// effective".
     pub(crate) recovery_probe_cooldown_until: Option<Instant>,
+    /// Timestamp of the most recent successful configured-carrier
+    /// recovery probe. Used as a post-recovery grace window: while
+    /// `now - last_recovery_success_at < mode_downgrade_duration`,
+    /// the descent path treats a probe-trigger failure with
+    /// `prev_cap = None` like a probe-trigger failure inside an active
+    /// window — i.e. a single probe-fail does NOT immediately install
+    /// a fresh cap; the operator's `min_failures` threshold has to
+    /// stack first. This kills the residual `H2 ↔ configured` flap
+    /// that `recovery_probe_cooldown_until` alone could not fix:
+    /// after a recovery success cleared the cap, the very next
+    /// regular probe at configured could fail (false-positive
+    /// recovery on flaky configured) and re-install the cap on a
+    /// single failure. With grace, that single failure is absorbed
+    /// and only `min_failures` consecutive failures put the cap back.
+    /// Set in `clear_mode_downgrade`; runtime / silent-fallback
+    /// triggers ignore this — only probe triggers consult the grace.
+    pub(crate) last_recovery_success_at: Option<Instant>,
     /// Per-fallback-wire mode-downgrade slots. Indexed by `wire_index - 1`
     /// (i.e. `[0]` corresponds to `fallbacks[0]`); the primary wire's
     /// downgrade lives in the existing `mode_downgrade_until` /

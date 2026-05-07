@@ -136,13 +136,14 @@ impl UplinkManager {
         let duration = self.inner.load_balancing.mode_downgrade_duration;
         let new_until = now + duration;
 
-        let (prev_until, prev_cap, consecutive_failures) = {
+        let (prev_until, prev_cap, consecutive_failures, last_recovery_success_at) = {
             let per = self.inner.read_status(index);
             let snapshot = per.of(transport);
             (
                 snapshot.mode_downgrade_until,
                 snapshot.mode_downgrade_capped_to,
                 snapshot.consecutive_failures,
+                snapshot.last_recovery_success_at,
             )
         };
         let window_active = prev_until.is_some_and(|t| t > now);
@@ -160,6 +161,16 @@ impl UplinkManager {
         // mostly healthy, producing the observed "video stalls every
         // ~probe_interval" pattern on intermittent H2 paths.
         //
+        // Post-recovery grace extension: when `prev_cap = None` but a
+        // recovery probe just successfully cleared the cap within
+        // `mode_downgrade_duration`, also apply the same gate to the
+        // first descent. Without this, a single false-positive
+        // probe-fail right after recovery success re-installs the
+        // cap on the next cycle and the dashboard flaps `H2 ↔ H3`
+        // every `mode_downgrade_duration + interval` seconds. The
+        // grace forces `min_failures` consecutive failures before
+        // re-descent, so a one-off post-recovery flap is absorbed.
+        //
         // `RuntimeFailure` and `SilentTransportFallback` skip this
         // gate intentionally: real-traffic failures are a stronger
         // signal than probe failures and warrant immediate descent.
@@ -169,15 +180,28 @@ impl UplinkManager {
                 | ModeDowngradeTrigger::ProbeConnectFailure(_, _)
         );
         let probe_min_failures = self.inner.probe.min_failures.max(1) as u32;
+        let in_post_recovery_grace = last_recovery_success_at
+            .is_some_and(|t| now.duration_since(t) < duration);
+        let probe_at_or_below_cap = match prev_cap {
+            Some(prev) => {
+                window_active
+                    && family(prev) == family(failed_mode)
+                    && rank(failed_mode) <= rank(prev)
+            },
+            None => false,
+        };
         let descent_gated = probe_trigger
-            && window_active
-            && match prev_cap {
-                Some(prev) => {
-                    family(prev) == family(failed_mode) && rank(failed_mode) <= rank(prev)
-                },
-                None => false,
-            }
-            && consecutive_failures < probe_min_failures;
+            && consecutive_failures < probe_min_failures
+            && (probe_at_or_below_cap || (prev_cap.is_none() && in_post_recovery_grace));
+
+        // In the post-recovery-grace gate path we have nothing in
+        // `prev_cap` to "hold" — installing `new_cap` would defeat
+        // the grace. Skip the cap-install block entirely; the next
+        // failure will increment `consecutive_failures` and after
+        // `min_failures` total fails the gate releases naturally.
+        if descent_gated && prev_cap.is_none() {
+            return;
+        }
 
         // Cap update rule: monotonically downward inside an active
         // window. If the previous cap is in the same family and already
@@ -628,20 +652,27 @@ impl UplinkManager {
     /// dial returns to the configured mode and the next probe success
     /// is eligible to schedule recovery (irrelevant in the cleared
     /// state, but kept consistent for the descent → recovery cycle).
+    /// Stamps `last_recovery_success_at = now` so `extend_mode_downgrade`
+    /// can apply the post-recovery grace window: a single probe-fail
+    /// in the moments after this clear must NOT immediately re-install
+    /// the cap; `min_failures` consecutive failures are required.
     /// Called when an explicit recovery re-probe confirms that the
     /// configured carrier is back, or by the reactive walk-up path
     /// when the family has no rank above the cap to walk to.
     pub(crate) fn clear_mode_downgrade(&self, index: usize, transport: TransportKind) {
+        let now = Instant::now();
         self.inner.with_status_mut(index, |status| match transport {
             TransportKind::Tcp => {
                 status.tcp.mode_downgrade_until = None;
                 status.tcp.mode_downgrade_capped_to = None;
                 status.tcp.recovery_probe_cooldown_until = None;
+                status.tcp.last_recovery_success_at = Some(now);
             },
             TransportKind::Udp => {
                 status.udp.mode_downgrade_until = None;
                 status.udp.mode_downgrade_capped_to = None;
                 status.udp.recovery_probe_cooldown_until = None;
+                status.udp.last_recovery_success_at = Some(now);
             },
         });
     }
