@@ -152,6 +152,15 @@ fn record_transport_success(status: &mut PerTransportStatus, min_failures: u32) 
 /// * VLESS+XHTTP configured at `XhttpH2` — capped to `XhttpH1`; recovery
 ///   probes `XhttpH2`.
 ///
+/// Returns `false` while [`PerTransportStatus::recovery_probe_cooldown_until`]
+/// is active — the configured carrier just failed a recovery attempt
+/// and re-running it on the next probe cycle would oscillate the cap
+/// between cleared and re-installed states (each clear lets the next
+/// regular probe target configured, which on a flaky configured carrier
+/// re-fails, descent re-installs the cap, etc.). Cooldown is cleared
+/// by a successful recovery (which clears the cap outright) and by
+/// `clear_mode_downgrade`.
+///
 /// Without the VLESS+XHTTP arms the cap could only fall through TTL
 /// expiry, which (combined with `extend_mode_downgrade` re-firing on
 /// every cycle's H2 probe failure) traps real traffic on `XhttpH1` for
@@ -165,6 +174,9 @@ fn needs_carrier_recovery(
     now: Instant,
 ) -> bool {
     if status.mode_downgrade_until.is_none_or(|t| t <= now) {
+        return false;
+    }
+    if status.recovery_probe_cooldown_until.is_some_and(|t| t > now) {
         return false;
     }
     match (uplink_transport, uplink_configured_mode) {

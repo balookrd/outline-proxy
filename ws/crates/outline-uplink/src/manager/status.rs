@@ -61,6 +61,21 @@ pub(crate) struct PerTransportStatus {
     /// raises it, so multi-step downgrades preserve the deepest
     /// failure observed during the window.
     pub(crate) mode_downgrade_capped_to: Option<TransportMode>,
+    /// Cooldown deadline after a failed configured-carrier recovery
+    /// re-probe. While this deadline is in the future, `process_probe_ok`
+    /// must NOT enqueue another configured-carrier recovery probe for
+    /// this transport — the configured carrier was just confirmed
+    /// unreachable, and re-running the probe each cycle (every
+    /// `probe.interval`) on a flaky configured carrier produces visible
+    /// `H2 ↔ configured` flapping for traffic. Cleared on a successful
+    /// recovery (which also clears the cap) and on cap-window clear /
+    /// expiry; descent triggers (probe / runtime / silent fallback) do
+    /// not touch this — the descent path is independent of the recovery
+    /// scheduler. `None` means "no recovery cooldown active, recovery
+    /// is eligible the next time the regular probe succeeds at the
+    /// capped carrier and the configured carrier is still above
+    /// effective".
+    pub(crate) recovery_probe_cooldown_until: Option<Instant>,
     /// Per-fallback-wire mode-downgrade slots. Indexed by `wire_index - 1`
     /// (i.e. `[0]` corresponds to `fallbacks[0]`); the primary wire's
     /// downgrade lives in the existing `mode_downgrade_until` /

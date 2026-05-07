@@ -198,7 +198,8 @@ impl UplinkManager {
         };
 
         let cap_changed = prev_cap != Some(updated_cap);
-        if advances_deadline || cap_changed {
+        let is_recovery_fail = matches!(trigger, ModeDowngradeTrigger::RecoveryReprobeFail);
+        if advances_deadline || cap_changed || is_recovery_fail {
             self.inner.with_status_mut(index, |status| {
                 let per = match transport {
                     TransportKind::Tcp => &mut status.tcp,
@@ -218,6 +219,18 @@ impl UplinkManager {
                     // immediately walk back up the cap that
                     // `SilentTransportFallback` / `RuntimeFailure` just set.
                     per.consecutive_successes = 0;
+                }
+                if is_recovery_fail {
+                    // The configured-carrier recovery probe just failed.
+                    // Suppress the next recovery push for the same window
+                    // by parking a cooldown deadline — re-running it on
+                    // every cycle (probe interval, often << window
+                    // duration) on a flaky configured carrier makes the
+                    // cap oscillate cleared/installed for traffic. The
+                    // cap stays sticky at the deepest stable rank for
+                    // `mode_downgrade_duration`, then a single recovery
+                    // attempt is allowed again.
+                    per.recovery_probe_cooldown_until = Some(new_until);
                 }
             });
             // The cached probe transport (if any) was dialled with the
@@ -460,21 +473,33 @@ impl UplinkManager {
     /// Walk the active mode-downgrade cap up by one carrier rank when
     /// the regular probe has succeeded against the capped (effective)
     /// carrier `min_failures` times in a row. Used as the
-    /// reactive-recovery counterpart to the H3 recovery probe: while
-    /// `run_h3_recovery_probes` tests the **configured** carrier
-    /// directly, this path lets the system claw back rank-by-rank when
-    /// only the capped carrier has been confirmed healthy by the
-    /// ordinary probe loop.
+    /// reactive-recovery counterpart to the configured-carrier
+    /// recovery probe: while `run_h3_recovery_probes` tests the
+    /// configured carrier directly, this path lets the system claw
+    /// back **intermediate** ranks when only the capped carrier has
+    /// been confirmed healthy by the ordinary probe loop.
     ///
     /// Behaviour:
     /// * No active window or no cap set → no-op.
     /// * Counter `consecutive_successes < min_failures` → no-op (the
     ///   regular probe success increments the counter, so this builds
     ///   up over `min_failures` cycles before each step).
-    /// * Otherwise the cap moves one rank up via [`one_step_up`]. If
-    ///   the new rank reaches the configured carrier the cap is
-    ///   cleared entirely. The success counter is reset to zero so the
-    ///   next step requires a fresh `min_failures` streak.
+    /// * Otherwise the cap moves one rank up via [`one_step_up`]
+    ///   **only when the new rank is still strictly below configured**.
+    ///   The final hop from `one-step-below-configured` to configured
+    ///   is owned by the configured-carrier recovery probe alone
+    ///   ([`Self::run_h3_recovery_probes`]) — promoting the cap there
+    ///   from the regular probe loop would let an intermittent
+    ///   configured carrier oscillate the cap every `interval +
+    ///   min_failures*interval` cycles (a probe success at H2 walks
+    ///   the cap up, the next probe targets H3 and fails, descent
+    ///   sets cap=H2, walk-up succeeds again on the next H2 success
+    ///   streak, …). Recovery probes specifically test the
+    ///   configured rank, so leaving the top-step exclusively to them
+    ///   keeps the cap pinned at the deepest stable rank when
+    ///   configured is genuinely intermittent.
+    /// * The success counter is reset on each step so the next step
+    ///   requires a fresh `min_failures` streak.
     ///
     /// Without this path the cap could only fall through TTL expiry,
     /// which in combination with `extend_mode_downgrade` re-firing on
@@ -522,6 +547,7 @@ impl UplinkManager {
             if family(prev_cap) != family(configured_mode) {
                 per.mode_downgrade_until = None;
                 per.mode_downgrade_capped_to = None;
+                per.recovery_probe_cooldown_until = None;
                 per.consecutive_successes = 0;
                 outcome = Outcome::Cleared { from: prev_cap };
                 return;
@@ -533,17 +559,19 @@ impl UplinkManager {
                     // ceiling.
                     per.mode_downgrade_until = None;
                     per.mode_downgrade_capped_to = None;
+                    per.recovery_probe_cooldown_until = None;
                     per.consecutive_successes = 0;
                     outcome = Outcome::Cleared { from: prev_cap };
                 },
                 Some(next) if rank(next) >= rank(configured_mode) => {
-                    // Walking up one rank reaches (or matches) the
-                    // configured carrier — recovery complete, clear
-                    // the window outright.
-                    per.mode_downgrade_until = None;
-                    per.mode_downgrade_capped_to = None;
-                    per.consecutive_successes = 0;
-                    outcome = Outcome::Cleared { from: prev_cap };
+                    // Walking up one rank would land on (or above) the
+                    // configured carrier. That hop is owned by the
+                    // recovery probe, which tests the configured rank
+                    // directly — only it can prove configured is
+                    // healthy and clear the cap. Hold here so an
+                    // intermittent configured carrier doesn't bounce
+                    // the cap up via walk-up, get re-installed by
+                    // descent, and oscillate.
                 },
                 Some(next) => {
                     per.mode_downgrade_capped_to = Some(next);
@@ -558,14 +586,17 @@ impl UplinkManager {
             }
             // The cached probe transport (if any) was dialled at the
             // old cap; clear it so the next probe refreshes against
-            // the walked-up carrier.
-            match transport {
-                TransportKind::Udp => {
-                    super::probe::warm_udp::clear(self.inner.warm_udp_probe_slot(index));
-                },
-                TransportKind::Tcp => {
-                    super::probe::warm_tcp::clear(self.inner.warm_tcp_probe_slot(index));
-                },
+            // the walked-up carrier. Skip in the hold-at-pre-configured
+            // arm — cap didn't move there, the warm pipe is still valid.
+            if !matches!(outcome, Outcome::NoOp) {
+                match transport {
+                    TransportKind::Udp => {
+                        super::probe::warm_udp::clear(self.inner.warm_udp_probe_slot(index));
+                    },
+                    TransportKind::Tcp => {
+                        super::probe::warm_tcp::clear(self.inner.warm_tcp_probe_slot(index));
+                    },
+                }
             }
         });
 
@@ -592,20 +623,25 @@ impl UplinkManager {
         }
     }
 
-    /// Clear the downgrade window for `(index, transport)`. Resets both
-    /// the deadline and the cap so the next dial returns to the
-    /// configured mode. Called when an explicit recovery re-probe
-    /// confirms that the configured carrier is back, or when the
-    /// reactive walk-up path lifts the cap all the way to configured.
+    /// Clear the downgrade window for `(index, transport)`. Resets the
+    /// deadline, the cap, and the recovery-probe cooldown so the next
+    /// dial returns to the configured mode and the next probe success
+    /// is eligible to schedule recovery (irrelevant in the cleared
+    /// state, but kept consistent for the descent → recovery cycle).
+    /// Called when an explicit recovery re-probe confirms that the
+    /// configured carrier is back, or by the reactive walk-up path
+    /// when the family has no rank above the cap to walk to.
     pub(crate) fn clear_mode_downgrade(&self, index: usize, transport: TransportKind) {
         self.inner.with_status_mut(index, |status| match transport {
             TransportKind::Tcp => {
                 status.tcp.mode_downgrade_until = None;
                 status.tcp.mode_downgrade_capped_to = None;
+                status.tcp.recovery_probe_cooldown_until = None;
             },
             TransportKind::Udp => {
                 status.udp.mode_downgrade_until = None;
                 status.udp.mode_downgrade_capped_to = None;
+                status.udp.recovery_probe_cooldown_until = None;
             },
         });
     }
