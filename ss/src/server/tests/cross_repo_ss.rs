@@ -216,6 +216,7 @@ async fn cross_repo_ss_tcp_ws_h1_round_trip() -> Result<()> {
         false,
         "cross-repo-ss-ws-h1",
         None,
+        false,
     )
     .await?;
     let (sink, stream) = transport_stream.split();
@@ -329,6 +330,7 @@ async fn cross_repo_ss_tcp_ws_h3_round_trip() -> Result<()> {
         false,
         "cross-repo-ss-ws-h3",
         None,
+        false,
     )
     .await?;
     let (sink, stream) = transport_stream.split();
@@ -398,6 +400,7 @@ async fn cross_repo_ss_tcp_ws_h2_round_trip() -> Result<()> {
         false,
         "cross-repo-ss-ws",
         None,
+        false,
     )
     .await?;
     let (sink, stream) = transport_stream.split();
@@ -547,6 +550,7 @@ async fn cross_repo_ss_tcp_ws_h2_resume_reattaches_parked_upstream() -> Result<(
         false,
         "cross-repo-ss-ws-h2-resume-a",
         None,
+        false,
     )
     .await?;
     let token = stream_a
@@ -600,6 +604,7 @@ async fn cross_repo_ss_tcp_ws_h2_resume_reattaches_parked_upstream() -> Result<(
         false,
         "cross-repo-ss-ws-h2-resume-b",
         Some(token),
+        false,
     )
     .await?;
     let _issued_b = stream_b.issued_session_id();
@@ -628,6 +633,186 @@ async fn cross_repo_ss_tcp_ws_h2_resume_reattaches_parked_upstream() -> Result<(
     writer_b.send_chunk(&second_payload).await?;
     let reply_b = reader_b.read_chunk().await?;
     assert_eq!(&reply_b, b"ackk", "ss tcp echo via resumed upstream");
+
+    let (first, second) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&first, b"ping");
+    assert_eq!(&second, b"helo");
+
+    drop(reader_b);
+    drop(writer_b);
+    drop(ctrl_tx_b);
+    drop(lifetime_b);
+    server.abort();
+    Ok(())
+}
+
+/// End-to-end check of the Ack-Prefix Protocol v1 on the SS-WS path.
+///
+/// Drives client A through one round-trip without the capability
+/// (matches the legacy resume flow), parks the upstream on a clean
+/// WS Close, and reconnects as client B with both
+/// `X-Outline-Resume: <id>` AND `X-Outline-Resume-Ack-Prefix: 1`.
+/// Asserts:
+///
+///   1. The server echoes the capability header on the resume hit.
+///   2. The reader transparently consumes the 14-byte v1 control
+///      frame (the relay loop never sees those bytes as data).
+///   3. The reported `up_acked` matches the upstream byte count the
+///      server forwarded across A's lifetime — exactly 4 bytes
+///      ("ping"); the target-address preamble is consumed by the
+///      dispatcher and does NOT count toward the offset.
+///
+/// Negotiation negative paths (no advertise / silent server) are
+/// covered by the client's H2-mock tests in
+/// `outline-ws-rust::tests::ack_prefix_*`; the cross-repo test
+/// focuses on the positive path that exercises both repos at once.
+#[tokio::test]
+async fn cross_repo_ss_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Result<()> {
+    // Echo upstream that handles two read/reply rounds on a single
+    // accepted socket — resume preserves the upstream across the
+    // client-A → client-B switch, exactly like the existing h2
+    // resume test.
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut first = [0_u8; 4];
+        stream.read_exact(&mut first).await?;
+        stream.write_all(b"pong").await?;
+        let mut second = [0_u8; 4];
+        stream.read_exact(&mut second).await?;
+        stream.write_all(b"ackk").await?;
+        Result::<_, anyhow::Error>::Ok((first, second))
+    });
+
+    let (listen_addr, server) = setup_ss_ws_server_with_resumption().await?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!("ws://{listen_addr}/tcp"))?;
+
+    let cipher = CipherKind::Chacha20IetfPoly1305;
+    let master_key = cipher
+        .derive_master_key(SS_PASSWORD)
+        .expect("derive_master_key succeeds for chacha20");
+
+    // ── Client A: legacy dial (no Ack-Prefix), one round-trip,
+    //              graceful Close so the upstream parks ─────────
+    let stream_a = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH2,
+        None,
+        false,
+        "cross-repo-ss-ws-ack-prefix-a",
+        None,
+        // Initial dials never opt into Ack-Prefix in the production
+        // wireup (only the mid-session retry path does); mirror that
+        // here so the test exercises the realistic shape.
+        false,
+    )
+    .await?;
+    assert!(
+        !stream_a.ack_prefix_advertised_by_server(),
+        "client A did not advertise → server must not echo",
+    );
+    let token = stream_a
+        .issued_session_id()
+        .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
+    let (sink_a, stream_a_inner) = stream_a.split();
+    let lifetime_a =
+        UpstreamTransportGuard::new("cross-repo-ss-ws-ack-prefix-a", "ss-ws-h2");
+    let (mut writer_a, ctrl_tx_a) = TcpShadowsocksWriter::connect(
+        sink_a,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_a),
+    )
+    .await?;
+    let mut reader_a = TcpShadowsocksReader::new(
+        stream_a_inner,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_a),
+        ctrl_tx_a.clone(),
+    );
+
+    let mut first_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    first_payload.extend_from_slice(b"ping");
+    writer_a.send_chunk(&first_payload).await?;
+    let reply_a = reader_a.read_chunk().await?;
+    assert_eq!(&reply_a, b"pong");
+
+    // Graceful Close so the SS-WS server parks the upstream and the
+    // counter survives into the resumed session. Same dance as the
+    // h2 resume test: send Close through the writer's priority
+    // channel, sleep enough for the writer task to flush before
+    // AbortOnDrop fires.
+    let _ = ctrl_tx_a.send(Message::Close(None)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(reader_a);
+    drop(writer_a);
+    drop(ctrl_tx_a);
+    drop(lifetime_a);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // ── Client B: resume + Ack-Prefix advertise ────────────────
+    let stream_b = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH2,
+        None,
+        false,
+        "cross-repo-ss-ws-ack-prefix-b",
+        Some(token),
+        true,
+    )
+    .await?;
+    assert!(
+        stream_b.ack_prefix_advertised_by_server(),
+        "server must echo X-Outline-Resume-Ack-Prefix: 1 on a resume hit \
+         when the client advertised the capability",
+    );
+    let (sink_b, stream_b_inner) = stream_b.split();
+    let lifetime_b =
+        UpstreamTransportGuard::new("cross-repo-ss-ws-ack-prefix-b", "ss-ws-h2");
+    let (mut writer_b, ctrl_tx_b) = TcpShadowsocksWriter::connect(
+        sink_b,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_b),
+    )
+    .await?;
+    let mut reader_b = TcpShadowsocksReader::new(
+        stream_b_inner,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_b),
+        ctrl_tx_b.clone(),
+    )
+    .with_expect_ack_prefix(true);
+
+    // Send the second payload through the resumed session. The
+    // server's first AEAD chunk to the client is the 14-byte v1
+    // control frame; the SS reader recurses past it so the next
+    // `read_chunk` returns the actual upstream reply ("ackk"), and
+    // `upstream_acked_offset()` exposes the parsed offset.
+    let mut second_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    second_payload.extend_from_slice(b"helo");
+    writer_b.send_chunk(&second_payload).await?;
+    let reply_b = reader_b.read_chunk().await?;
+    assert_eq!(&reply_b, b"ackk", "ss tcp echo via resumed upstream");
+
+    // Across A's lifetime the server forwarded exactly the payload
+    // bytes "ping" (4) to the upstream. The target-address preamble
+    // is parsed and consumed by the dispatcher before the upstream
+    // socket is opened, so it does not count toward `up_acked`.
+    let observed = reader_b.upstream_acked_offset();
+    assert_eq!(
+        observed,
+        Some(4),
+        "Ack-Prefix offset must equal the upstream byte count forwarded \
+         across client A's lifetime (4 bytes from \"ping\"); got {observed:?}",
+    );
 
     let (first, second) =
         tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
@@ -757,6 +942,7 @@ async fn cross_repo_ss_tcp_ws_h3_resume_reattaches_parked_upstream() -> Result<(
         false,
         "cross-repo-ss-ws-h3-resume-a",
         None,
+        false,
     )
     .await?;
     let token = stream_a
@@ -805,6 +991,7 @@ async fn cross_repo_ss_tcp_ws_h3_resume_reattaches_parked_upstream() -> Result<(
         false,
         "cross-repo-ss-ws-h3-resume-b",
         Some(token),
+        false,
     )
     .await?;
     let _issued_b = stream_b.issued_session_id();
@@ -944,6 +1131,7 @@ async fn cross_repo_ss_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result<()
         false,
         "cross-repo-ss-fallback-a",
         None,
+        false,
     )
     .await?;
     let token = stream_a
@@ -989,6 +1177,7 @@ async fn cross_repo_ss_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result<()
         false,
         "cross-repo-ss-fallback-b",
         Some(token),
+        false,
     )
     .await?;
     assert_eq!(
@@ -1133,6 +1322,7 @@ async fn cross_repo_ss_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result<()
         false,
         "cross-repo-ss-h2-h1-fallback-a",
         None,
+        false,
     )
     .await?;
     let token = stream_a
@@ -1183,6 +1373,7 @@ async fn cross_repo_ss_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result<()
         false,
         "cross-repo-ss-h2-h1-fallback-b",
         Some(token),
+        false,
     )
     .await?;
     assert_eq!(
