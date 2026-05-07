@@ -516,6 +516,44 @@ pub struct LoadBalancingConfig {
     /// attempt; persistent failures consume budget without
     /// resolving.
     pub tcp_mid_session_retry_budget: u8,
+    /// Behaviour when an uplink chunk is larger than the mid-session
+    /// retry buffer cap (`tcp_mid_session_retry_buffer_bytes`). The
+    /// chunk on its own cannot be replayed, so the session's
+    /// retry-correctness contract is irrecoverably broken from this
+    /// point. The two policies trade liveness against replay
+    /// guarantees:
+    ///
+    /// * `Soft` (default, matches v1.1 behaviour) — fire the
+    ///   `outcome="buffer_overflow"` metric, send the oversized
+    ///   chunk through anyway, and continue the session. Future
+    ///   retries on this session will surface `failed_replay`
+    ///   because the ring's `total_sent` advanced past what it can
+    ///   reproduce. Optimises for active-session liveness: the
+    ///   user does not see their session die mid-stream just
+    ///   because one large chunk happened.
+    /// * `Hard` — drop the session immediately. Guarantees that
+    ///   any session the orchestrator considers retry-eligible
+    ///   actually IS retry-eligible (no surprise `failed_replay`
+    ///   later). Surfaces the `buffer_overflow` metric and a
+    ///   transport-level error to the caller.
+    ///
+    /// Only relevant when `tcp_mid_session_retry_buffer_bytes > 0`
+    /// AND `tcp_mid_session_retry_budget > 0`; with retry disabled
+    /// the ring is never allocated and overflow cannot occur.
+    pub tcp_mid_session_retry_overflow_policy: OverflowPolicy,
+}
+
+/// Policy for the `tcp_mid_session_retry_overflow_policy` knob.
+/// See the field docs on [`LoadBalancingConfig`] for semantics.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OverflowPolicy {
+    /// Send the oversized chunk and keep the session alive; future
+    /// retries will surface `failed_replay`. Default.
+    #[default]
+    Soft,
+    /// Drop the session immediately on the first oversized chunk.
+    Hard,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

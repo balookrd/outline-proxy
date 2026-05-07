@@ -196,6 +196,7 @@ fn load_balancing_config_from_group(section: &UplinkGroupSection) -> Result<outl
         vless_udp_janitor_interval_secs: section.vless_udp_janitor_interval_secs,
         tcp_mid_session_retry_buffer_bytes: section.tcp_mid_session_retry_buffer_bytes,
         tcp_mid_session_retry_budget: section.tcp_mid_session_retry_budget,
+        tcp_mid_session_retry_overflow_policy: section.tcp_mid_session_retry_overflow_policy,
     };
     load_balancing_config(Some(&shim))
 }

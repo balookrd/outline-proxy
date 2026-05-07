@@ -103,6 +103,7 @@ pub(super) async fn run_relay(
     let lb_snapshot = uplinks.load_balancing();
     let buffer_cap = lb_snapshot.tcp_mid_session_retry_buffer_bytes;
     let configured_budget = lb_snapshot.tcp_mid_session_retry_budget;
+    let overflow_policy = lb_snapshot.tcp_mid_session_retry_overflow_policy;
     let keepalive_interval = lb_snapshot.tcp_active_keepalive_interval;
     // Mid-session retry operates on WS-family uplinks (SS-WS and
     // VLESS-WS as of v1.1) — the SS-direct-socket path bypasses the
@@ -211,26 +212,48 @@ pub(super) async fn run_relay(
                     let mut r_guard = r.lock().await;
                     if let Err(push_err) = r_guard.push(&buf[..read]) {
                         // Single-chunk overflow: replay can never
-                        // reconstruct this byte range, so the retry
-                        // budget for this session is effectively burned.
-                        // We still send the chunk through so the active
-                        // session continues; the metric records that
-                        // future retries on this session would fail
-                        // `failed_replay`. Dropping the session here
-                        // would be a surprise to the user — the chunk
-                        // is valid and the upstream wants it.
+                        // reconstruct this byte range. The configured
+                        // policy decides whether the active session
+                        // limps on (Soft — surfaces `failed_replay` on
+                        // any future retry) or dies on the spot (Hard
+                        // — guarantees retry-correctness for the rest
+                        // of the deployment).
                         metrics::record_mid_session_retry(
                             "tcp",
                             manager_for_uplink.group_name(),
                             &name_for_uplink,
                             "buffer_overflow",
                         );
-                        debug!(
-                            uplink = %name_for_uplink,
-                            error = ?push_err,
-                            "uplink chunk exceeds mid-session retry buffer cap; \
-                             retry budget for this session is effectively burned"
-                        );
+                        match overflow_policy {
+                            outline_uplink::OverflowPolicy::Soft => {
+                                debug!(
+                                    uplink = %name_for_uplink,
+                                    error = ?push_err,
+                                    policy = "soft",
+                                    "uplink chunk exceeds mid-session retry buffer cap; \
+                                     letting the chunk through, future retries will surface \
+                                     failed_replay"
+                                );
+                            },
+                            outline_uplink::OverflowPolicy::Hard => {
+                                debug!(
+                                    uplink = %name_for_uplink,
+                                    error = ?push_err,
+                                    policy = "hard",
+                                    "uplink chunk exceeds mid-session retry buffer cap; \
+                                     dropping session per overflow policy"
+                                );
+                                drop(r_guard);
+                                return Err(anyhow::anyhow!(
+                                    "mid-session retry buffer overflow on uplink {} \
+                                     (chunk_len={}, cap={}); session dropped per \
+                                     tcp_mid_session_retry_overflow_policy = \"hard\"",
+                                    name_for_uplink,
+                                    read,
+                                    buffer_cap,
+                                ));
+                            },
+                        }
                     }
                 }
                 uplink_writer.send_chunk(&buf[..read]).await?;

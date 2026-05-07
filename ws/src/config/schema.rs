@@ -319,6 +319,13 @@ pub(super) struct UplinkGroupSection {
     /// allow successive redials when each previous one also fails.
     /// Default: `1`.
     pub(super) tcp_mid_session_retry_budget: Option<u8>,
+    /// Behaviour on a chunk larger than the mid-session retry
+    /// buffer cap. `"soft"` (default) keeps the session alive and
+    /// surfaces `failed_replay` on future retries; `"hard"` drops
+    /// the session immediately to guarantee retryability for the
+    /// rest. See the same-named field on `LoadBalancingConfig` for
+    /// full semantics.
+    pub(super) tcp_mid_session_retry_overflow_policy: Option<outline_uplink::OverflowPolicy>,
     /// Per-group override of top-level `[probe]`; unspecified fields inherit.
     pub(super) probe: Option<ProbeSection>,
 }
@@ -439,4 +446,8 @@ pub(super) struct LoadBalancingSection {
     /// Mid-session retry budget per session. See the same-named field
     /// on `UplinkGroupSection` for full semantics. Default: `1`.
     pub(super) tcp_mid_session_retry_budget: Option<u8>,
+    /// Mid-session retry overflow policy (`"soft"` / `"hard"`). See
+    /// the same-named field on `UplinkGroupSection` for full
+    /// semantics. Default: `"soft"`.
+    pub(super) tcp_mid_session_retry_overflow_policy: Option<outline_uplink::OverflowPolicy>,
 }
