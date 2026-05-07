@@ -1260,6 +1260,32 @@ Useful overrides:
 
 `VERSION` and `CHANNEL=nightly` are mutually exclusive.
 
+#### Installing through an HTTP(S) proxy
+
+If `github.com` or its release CDN (`objects.githubusercontent.com`) is unreachable from the host, route the install through any HTTP/SOCKS5 proxy that can reach GitHub. The script does not need to be modified — `curl` honours the standard proxy environment variables.
+
+Important: `sudo` strips `http_proxy`/`https_proxy` from the environment by default, so pass them explicitly:
+
+```bash
+sudo https_proxy=http://HOST:PORT http_proxy=http://HOST:PORT ./install.sh
+```
+
+or export and use `sudo -E`:
+
+```bash
+export https_proxy=http://HOST:PORT
+export http_proxy=http://HOST:PORT
+sudo -E ./install.sh
+```
+
+For SOCKS5 (e.g. an `ssh -D 1080 user@vps` tunnel) use `ALL_PROXY=socks5h://HOST:PORT`. Authenticated proxies use `http://USER:PASS@HOST:PORT` (URL-encode special characters in the password).
+
+Verify the proxy works before running the installer:
+
+```bash
+curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
+```
+
 ### systemd
 
 Production-oriented systemd units are included at:
