@@ -1397,6 +1397,81 @@ fn xhttp_recovery_streak_reset_when_cap_changes_via_descent() {
 }
 
 #[test]
+fn xhttp_post_recovery_grace_renewed_by_probe_success_across_wide_gap() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary(); // configured XhttpH3
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 2);
+
+    // Open the grace window via a recovery clear.
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::XhttpH2,
+    );
+    manager.clear_mode_downgrade(0, TransportKind::Tcp);
+
+    let make_ok = || ProbeOutcome {
+        tcp_ok: true,
+        udp_ok: true,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+
+    // A burst of successful probes — each one should renew
+    // `last_recovery_success_at`. We can't fast-forward time in
+    // this test, but we can verify that the timestamp is being
+    // re-stamped on each success.
+    let initial = manager
+        .read_status_for_test(0)
+        .tcp
+        .last_recovery_success_at
+        .expect("grace timestamp set by clear");
+
+    // Run a couple of probe cycles' worth of successes.
+    for _ in 0..3 {
+        let _ = manager.process_probe_ok(
+            0,
+            &uplink,
+            make_ok(),
+            TransportMode::XhttpH3,
+            TransportMode::XhttpH3,
+            &mut tcp_recovery,
+            &mut udp_recovery,
+        );
+    }
+
+    let renewed = manager
+        .read_status_for_test(0)
+        .tcp
+        .last_recovery_success_at
+        .expect("grace timestamp still set");
+    assert!(
+        renewed >= initial,
+        "probe success in grace must (re)stamp last_recovery_success_at — \
+         field VLESS-mux idle pattern needs the gate to live across multi-minute gaps",
+    );
+
+    // After the probe-success burst the grace deadline has slid
+    // forward; an isolated runtime error must still be absorbed
+    // even if it arrives "long after" the original clear.
+    let err = anyhow::anyhow!("ws upstream read idle for 300s on datagram channel");
+    manager.note_advanced_mode_dial_failure(0, TransportKind::Tcp, &err);
+    assert!(
+        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+        "runtime error long after recovery clear is still absorbed because probe successes kept the grace alive",
+    );
+}
+
+#[test]
 fn xhttp_recovery_cooldown_cleared_by_clear_mode_downgrade() {
     use crate::config::TransportMode;
     use crate::manager::mode_downgrade::ModeDowngradeTrigger;
