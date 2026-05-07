@@ -124,6 +124,7 @@ async fn build_manager(
             tcp_active_keepalive_interval: None,
             warm_probe_keepalive_interval: None,            auto_failback: false,
             vless_udp_mux_limits: VlessUdpMuxLimits::default(),
+            tcp_mid_session_retry_buffer_bytes: 256 * 1024,
         },
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     )

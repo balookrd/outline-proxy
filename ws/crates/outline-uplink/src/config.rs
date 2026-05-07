@@ -482,6 +482,23 @@ pub struct LoadBalancingConfig {
     /// (LRU-evicted beyond the cap), per-session idle timeout, and janitor
     /// scan interval. Ignored for non-VLESS uplinks.
     pub vless_udp_mux_limits: VlessUdpMuxLimits,
+    /// Maximum bytes of recently-sent uplink payload kept buffered for
+    /// the Ack-Prefix Protocol mid-session retry path. The pinned-relay
+    /// uplink task pushes every chunk into a bounded ring before
+    /// sending; on a mid-session transport reset the relay re-dials
+    /// with `X-Outline-Resume-Ack-Prefix: 1`, parses the server-reported
+    /// `up_acked` offset from the new stream's first SS-AEAD chunk,
+    /// and replays the buffered tail so the upstream never sees a
+    /// duplicate or missing byte.
+    ///
+    /// `0` disables retry entirely (and the buffer is never allocated).
+    /// Default: 256 KiB — large enough to absorb most HTTP request
+    /// bodies that benefit from retry, small enough that buffering N
+    /// concurrent pinned sessions does not pressure RSS. Single-chunk
+    /// pushes larger than the cap surface a hard error and burn the
+    /// retry budget for that session, since a torn replay would be
+    /// undetectable downstream.
+    pub tcp_mid_session_retry_buffer_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

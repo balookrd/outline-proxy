@@ -134,6 +134,25 @@ pub fn record_failover(transport: &'static str, group: &str, from_uplink: &str, 
         .inc();
 }
 
+/// Records the outcome of one mid-session retry attempt on the
+/// pinned-relay path. `outcome` should be one of the four canonical
+/// values described on the `outline_ws_rust_uplink_mid_session_retries_total`
+/// metric registration: `success`, `failed_redial`, `failed_replay`,
+/// or `buffer_overflow`. Passing other values is technically allowed
+/// (Prometheus does not validate label cardinality at insert time)
+/// but defeats the dashboard's pre-built panels.
+pub fn record_mid_session_retry(
+    transport: &'static str,
+    group: &str,
+    uplink: &str,
+    outcome: &'static str,
+) {
+    METRICS
+        .uplink_mid_session_retries_total
+        .with_label_values(&[transport, group, uplink, outcome])
+        .inc();
+}
+
 pub fn record_probe(
     group: &str,
     uplink: &str,
