@@ -613,6 +613,350 @@ fn probe_err_does_not_advance_below_min_failures() {
     );
 }
 
+// ── Mode-downgrade descent gate / walk-up / carrier recovery ────────────────
+//
+// These pin the descent + recovery contract for the XHTTP family so flaky
+// H2 probes don't bounce real traffic onto H1 (the "video stalls" pattern
+// from the field). The three tests cover, in order:
+//  * #3 descent gate — stepping the cap further down requires
+//    `min_failures` consecutive failures on the capped carrier;
+//  * #2 walk-up — `min_failures` consecutive successes on the capped
+//    carrier lift the cap one rank toward configured (or clear it);
+//  * #1 recovery push — VLESS+XHTTP uplinks queue a configured-carrier
+//    re-probe just like WS+H3 does.
+
+#[test]
+fn xhttp_step_down_gated_by_min_failures() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary(); // configured XhttpH3
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 3);
+
+    // First failure: configured H3 fails. cap = H2, no prev cap so the
+    // descent gate doesn't apply — the initial entry into the window is
+    // always one rank below configured.
+    manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("h3 unreachable"));
+    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    assert_eq!(cap, Some(TransportMode::XhttpH2), "first failure caps H3 → H2");
+
+    let make_failed_outcome = || ProbeOutcome {
+        tcp_ok: false,
+        udp_ok: false,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+
+    // Second failure on the capped carrier: counter reaches 2 (still
+    // below min_failures=3) — the gate must hold the cap at H2 instead
+    // of stepping down to H1.
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        make_failed_outcome(),
+        TransportMode::XhttpH2,
+        TransportMode::XhttpH2,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    assert_eq!(
+        cap,
+        Some(TransportMode::XhttpH2),
+        "consecutive_failures=2 < min_failures=3 must hold the cap at H2",
+    );
+
+    // Third failure: counter reaches 3, gate releases, cap descends to H1.
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        make_failed_outcome(),
+        TransportMode::XhttpH2,
+        TransportMode::XhttpH2,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    assert_eq!(
+        cap,
+        Some(TransportMode::XhttpH1),
+        "after min_failures consecutive failures the gate releases and the cap descends",
+    );
+}
+
+#[test]
+fn xhttp_walk_up_after_consecutive_successes_on_capped_carrier() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary(); // configured XhttpH3
+    cfg.fallbacks = vec![ws_fallback(false)];
+    // min_failures=1 so a single success crosses the streak threshold
+    // (the `record_transport_success` path increments
+    // `consecutive_successes` once per successful probe).
+    let manager = manager_with_uplink(cfg, 1);
+
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::XhttpH1,
+    );
+
+    let make_ok_outcome = || ProbeOutcome {
+        tcp_ok: true,
+        udp_ok: true,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+
+    // First success at the capped H1 carrier walks the cap up to H2.
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        make_ok_outcome(),
+        TransportMode::XhttpH1,
+        TransportMode::XhttpH1,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    assert_eq!(
+        cap,
+        Some(TransportMode::XhttpH2),
+        "first success on capped H1 walks the cap one rank up to H2",
+    );
+
+    // Second success at the new capped H2 carrier reaches configured
+    // H3 — the cap is cleared outright.
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        make_ok_outcome(),
+        TransportMode::XhttpH2,
+        TransportMode::XhttpH2,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    assert_eq!(
+        cap, None,
+        "second success walks the cap up to configured H3, clearing the window",
+    );
+}
+
+#[test]
+fn xhttp_walk_up_holds_below_min_failures() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary(); // configured XhttpH3
+    cfg.fallbacks = vec![ws_fallback(false)];
+    // min_failures=3 → a single success isn't enough to walk up.
+    let manager = manager_with_uplink(cfg, 3);
+
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::XhttpH1,
+    );
+
+    let outcome = ProbeOutcome {
+        tcp_ok: true,
+        udp_ok: true,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        outcome,
+        TransportMode::XhttpH1,
+        TransportMode::XhttpH1,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+
+    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    assert_eq!(
+        cap,
+        Some(TransportMode::XhttpH1),
+        "consecutive_successes=1 < min_failures=3 must hold the cap at H1",
+    );
+}
+
+#[test]
+fn xhttp_walk_up_does_not_undo_concurrent_silent_fallback() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary(); // configured XhttpH3
+    cfg.fallbacks = vec![ws_fallback(false)];
+    // min_failures=1 → walk-up arms after a single success.
+    let manager = manager_with_uplink(cfg, 1);
+
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::XhttpH1,
+    );
+
+    // Two probe successes against H1 walk the cap back up to configured
+    // H3 (cleared). Then a probe that succeeds at the effective level
+    // but reports a `tcp_downgraded_from = XhttpH3` silent fallback
+    // must re-arm the window at H2 — walk-up's success streak from
+    // before the silent-fallback observation must NOT undo the new
+    // cap in the same cycle.
+    let make_ok = || ProbeOutcome {
+        tcp_ok: true,
+        udp_ok: true,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        make_ok(),
+        TransportMode::XhttpH1,
+        TransportMode::XhttpH1,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        make_ok(),
+        TransportMode::XhttpH2,
+        TransportMode::XhttpH2,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        None,
+        "walk-up cleared the cap after two successes",
+    );
+
+    // Bump consecutive_successes high enough to arm walk-up again so
+    // the silent-fallback branch is the only thing keeping the new
+    // cap in place.
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::XhttpH1,
+    );
+
+    let outcome_with_silent = ProbeOutcome {
+        tcp_ok: true,
+        udp_ok: true,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: Some(TransportMode::XhttpH3),
+        udp_downgraded_from: None,
+    };
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        outcome_with_silent,
+        TransportMode::XhttpH1,
+        TransportMode::XhttpH1,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+
+    // The probe success increments `consecutive_successes`, but the
+    // silent-fallback branch resets it when it lowers the cap, so
+    // walk-up must NOT lift the cap in the same cycle. Result:
+    // post-cycle cap reflects whichever rank silent-fallback
+    // converged the window to (H2 here — `XhttpH3` requested → one
+    // step down from configured), not the cleared state walk-up
+    // would have produced.
+    assert!(
+        matches!(
+            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+            Some(TransportMode::XhttpH1) | Some(TransportMode::XhttpH2),
+        ),
+        "silent fallback observed during a probe success must keep the cap pinned in this cycle",
+    );
+}
+
+#[test]
+fn xhttp_recovery_push_for_vless_when_walk_up_does_not_clear_cap() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary(); // configured XhttpH3
+    cfg.fallbacks = vec![ws_fallback(false)];
+    // min_failures=3 keeps walk-up dormant so we can observe the
+    // configured-carrier recovery push fire on its own.
+    let manager = manager_with_uplink(cfg, 3);
+
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::XhttpH1,
+    );
+
+    let outcome = ProbeOutcome {
+        tcp_ok: true,
+        udp_ok: true,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        outcome,
+        TransportMode::XhttpH1,
+        TransportMode::XhttpH1,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+
+    assert_eq!(
+        tcp_recovery.len(),
+        1,
+        "VLESS+XHTTP cap with insufficient successes for walk-up must queue a configured-carrier recovery probe",
+    );
+    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    assert_eq!(
+        cap,
+        Some(TransportMode::XhttpH1),
+        "single success below min_failures must not walk up — recovery push remains the lever",
+    );
+}
+
 // ── Per-wire RTT EWMA ───────────────────────────────────────────────────────
 //
 // Each wire on a multi-wire uplink keeps its own RTT EWMA. The cross-uplink

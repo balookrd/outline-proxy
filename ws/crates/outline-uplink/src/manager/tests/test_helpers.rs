@@ -114,4 +114,32 @@ impl UplinkManager {
         let effective_udp = uplink.udp_dial_mode();
         self.process_probe_err(index, &uplink, error, effective_tcp, effective_udp);
     }
+
+    /// Test helper: directly seed the primary mode-downgrade window for
+    /// `(index, transport)` with `cap` and a fresh deadline. Lets tests
+    /// pre-stage the system into "previously degraded" state without
+    /// driving a sequence of synthetic probe failures to converge there.
+    /// Counters (`consecutive_failures` / `consecutive_successes`) are
+    /// reset to zero so the test starts from a clean streak.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn test_seed_mode_downgrade_for_test(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+        cap: crate::config::TransportMode,
+    ) {
+        let now = tokio::time::Instant::now();
+        let until = now + self.inner.load_balancing.mode_downgrade_duration;
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                crate::types::TransportKind::Tcp => &mut status.tcp,
+                crate::types::TransportKind::Udp => &mut status.udp,
+            };
+            per.mode_downgrade_until = Some(until);
+            per.mode_downgrade_capped_to = Some(cap);
+            per.consecutive_failures = 0;
+            per.consecutive_successes = 0;
+        });
+    }
 }

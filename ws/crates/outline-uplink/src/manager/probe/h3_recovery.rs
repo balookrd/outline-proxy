@@ -2,13 +2,29 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use crate::config::TransportMode;
-
 use super::super::super::types::{TransportKind, Uplink, UplinkManager};
 use super::super::mode_downgrade::ModeDowngradeTrigger;
 use super::scheduler::run_probe_attempt_with_timeout;
 
 impl UplinkManager {
+    /// Run an explicit re-probe at the **configured** carrier of each
+    /// uplink in `needed` to decide whether the active mode-downgrade
+    /// window can be cleared early. The regular probe runs at the
+    /// *effective* (capped) carrier, so its success only confirms the
+    /// fallback rank; this pass tests the rank operators originally
+    /// asked for and lets the cap drop as soon as it answers.
+    ///
+    /// Symmetric across both families:
+    /// * WS uplinks configured at `WsH3` test `WsH3`.
+    /// * VLESS uplinks configured at `XhttpH3` test `XhttpH3`; configured
+    ///   at `XhttpH2` test `XhttpH2`.
+    ///
+    /// On success the corresponding `(uplink, transport)` cap is cleared
+    /// via [`UplinkManager::clear_mode_downgrade`]. On failure the cap is
+    /// extended with [`ModeDowngradeTrigger::RecoveryReprobeFail`] so the
+    /// per-cycle "still can't reach configured carrier" event is
+    /// captured without re-stepping the cap further down (the existing
+    /// monotonic-descent rule keeps the deepest prior cap).
     pub(super) async fn run_h3_recovery_probes(
         &self,
         needed: Vec<(usize, Uplink)>,
@@ -29,17 +45,20 @@ impl UplinkManager {
                     .acquire_owned()
                     .await
                     .expect("probe execution semaphore closed");
-                // Run probe with H3 for the transport we're recovering, and
-                // keep the other transport at its native mode (it doesn't
-                // affect the recovery decision but avoids penalising it).
-                let (eff_tcp, eff_udp) = match which {
-                    TransportKind::Tcp => (TransportMode::WsH3, uplink.udp_mode),
-                    TransportKind::Udp => (uplink.tcp_mode, TransportMode::WsH3),
-                };
-                // H3 recovery deliberately bypasses both warm slots:
-                // the cached pipes (if any) were dialled at the capped
+                // Recovery dials the **configured** carrier on both
+                // sides — `WsH3` for WS uplinks configured at H3,
+                // `XhttpH3` / `XhttpH2` for VLESS uplinks configured
+                // at the matching XHTTP rank. We only inspect the
+                // outcome for the side that's actually recovering
+                // (`tcp_ok` for TCP, `udp_ok` for UDP) so the other
+                // side's result is cosmetic.
+                let eff_tcp = uplink.tcp_dial_mode();
+                let eff_udp = uplink.udp_dial_mode();
+                // Recovery deliberately bypasses both warm slots: the
+                // cached pipes (if any) were dialled at the capped
                 // mode, but recovery probes need to test the un-capped
-                // H3 carrier. Passing `None`/`None` forces a fresh dial.
+                // configured carrier. Passing `None`/`None` forces a
+                // fresh dial.
                 let outcome = run_probe_attempt_with_timeout(
                     Arc::clone(&dns_cache),
                     group_name,
@@ -59,7 +78,7 @@ impl UplinkManager {
             let (index, uplink, outcome) = match joined {
                 Ok(value) => value,
                 Err(error) => {
-                    warn!(error = %error, kind = ?which, "H3 recovery probe task failed");
+                    warn!(error = %error, kind = ?which, "carrier recovery probe task failed");
                     continue;
                 },
             };
@@ -71,7 +90,7 @@ impl UplinkManager {
                 info!(
                     uplink = %uplink.name,
                     kind = ?which,
-                    "H3 recovery confirmed by re-probe, clearing downgrade window early"
+                    "carrier recovery confirmed by re-probe, clearing downgrade window early"
                 );
                 self.clear_mode_downgrade(index, which);
             } else {

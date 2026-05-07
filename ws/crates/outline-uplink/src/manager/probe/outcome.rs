@@ -139,17 +139,45 @@ fn record_transport_success(status: &mut PerTransportStatus, min_failures: u32) 
     }
 }
 
-fn needs_h3_recovery(
+/// Whether to schedule a carrier-recovery re-probe for this uplink: the
+/// regular probe just succeeded against the **capped** carrier (the
+/// downgrade window's `effective_mode`), so confirming the configured
+/// carrier is back requires an explicit attempt at the higher rank.
+///
+/// Covers both families:
+/// * WS (`UplinkTransport::Ws`) configured at `WsH3` — capped to `WsH2`.
+///   Recovery probes `WsH3` and clears the cap when it answers.
+/// * VLESS+XHTTP (`UplinkTransport::Vless`) configured at `XhttpH3` —
+///   capped to `XhttpH2` or `XhttpH1`; recovery probes `XhttpH3`.
+/// * VLESS+XHTTP configured at `XhttpH2` — capped to `XhttpH1`; recovery
+///   probes `XhttpH2`.
+///
+/// Without the VLESS+XHTTP arms the cap could only fall through TTL
+/// expiry, which (combined with `extend_mode_downgrade` re-firing on
+/// every cycle's H2 probe failure) traps real traffic on `XhttpH1` for
+/// `mode_downgrade_duration` at a time even when the H2 carrier is
+/// actually healthy.
+fn needs_carrier_recovery(
     status: &PerTransportStatus,
     effective_mode: TransportMode,
     uplink_transport: UplinkTransport,
-    uplink_ws_mode: TransportMode,
+    uplink_configured_mode: TransportMode,
     now: Instant,
 ) -> bool {
-    effective_mode == TransportMode::WsH2
-        && uplink_transport == UplinkTransport::Ws
-        && uplink_ws_mode == TransportMode::WsH3
-        && status.mode_downgrade_until.is_some_and(|t| t > now)
+    if status.mode_downgrade_until.is_none_or(|t| t <= now) {
+        return false;
+    }
+    match (uplink_transport, uplink_configured_mode) {
+        (UplinkTransport::Ws, TransportMode::WsH3) => effective_mode == TransportMode::WsH2,
+        (UplinkTransport::Vless, TransportMode::XhttpH3) => matches!(
+            effective_mode,
+            TransportMode::XhttpH2 | TransportMode::XhttpH1
+        ),
+        (UplinkTransport::Vless, TransportMode::XhttpH2) => {
+            effective_mode == TransportMode::XhttpH1
+        },
+        _ => false,
+    }
 }
 
 impl UplinkManager {
@@ -173,8 +201,6 @@ impl UplinkManager {
         // Used to gate probe-driven active-wire advance: only move active
         // off primary when there's at least one fallback to move to.
         let uplink_total_wires = 1 + uplink.fallbacks.len();
-        let mut needs_h3_tcp_recovery = false;
-        let mut needs_h3_udp_recovery = false;
         // Capture transitions so we can fire the warm-standby drain after
         // the sync status critical section ends (drain is async).
         let mut tcp_transitioned_to_fallback = false;
@@ -206,18 +232,6 @@ impl UplinkManager {
                 );
             } else {
                 record_transport_success(&mut status.tcp, min_failures);
-                // Do NOT clear h3_tcp_downgrade_until here.  The probe uses the
-                // effective (possibly downgraded) WS mode, so a successful probe
-                // only confirms H2 connectivity during a downgrade window — it does
-                // not prove that H3 is healthy again.  Instead, schedule an H3
-                // recovery re-probe below to confirm H3 liveness explicitly.
-                needs_h3_tcp_recovery = needs_h3_recovery(
-                    &status.tcp,
-                    effective_tcp_mode,
-                    uplink.transport,
-                    uplink.tcp_mode,
-                    now,
-                );
             }
             if result.udp_applicable {
                 if !result.udp_ok {
@@ -231,22 +245,50 @@ impl UplinkManager {
                     );
                 } else {
                     record_transport_success(&mut status.udp, min_failures);
-                    // Schedule UDP H3 recovery re-probe — mirror of the TCP
-                    // path.  Successful H2 probe doesn't prove H3 is back, so
-                    // verify it explicitly below.
-                    needs_h3_udp_recovery = needs_h3_recovery(
-                        &status.udp,
-                        effective_udp_mode,
-                        uplink.transport,
-                        uplink.udp_mode,
-                        now,
-                    );
                 }
             }
             if result.tcp_ok && (!result.udp_applicable || result.udp_ok) {
                 status.last_error = None;
             }
         });
+        // Reactive walk-up: a successful probe at the **capped** carrier
+        // bumps `consecutive_successes`. When that counter crosses
+        // `min_failures`, lift the cap one rank toward configured (or
+        // clear it if already adjacent). Done before deciding whether
+        // a recovery re-probe is needed, so the recovery push reflects
+        // the post-walk-up state — otherwise we'd schedule a recovery
+        // probe against a cap that walk-up already cleared.
+        if result.tcp_ok {
+            self.walk_up_mode_downgrade(index, TransportKind::Tcp);
+        }
+        if result.udp_applicable && result.udp_ok {
+            self.walk_up_mode_downgrade(index, TransportKind::Udp);
+        }
+        // Recompute carrier-recovery need from the post-walk-up state.
+        // The regular probe runs at the effective (capped) carrier, so
+        // its success only confirms the fallback rank — `run_h3_recovery_probes`
+        // tests the configured carrier directly to drop the cap early.
+        let (needs_h3_tcp_recovery, needs_h3_udp_recovery) = {
+            let s = self.inner.read_status(index);
+            let tcp = result.tcp_ok
+                && needs_carrier_recovery(
+                    &s.tcp,
+                    effective_tcp_mode,
+                    uplink.transport,
+                    uplink.tcp_dial_mode(),
+                    now,
+                );
+            let udp = result.udp_applicable
+                && result.udp_ok
+                && needs_carrier_recovery(
+                    &s.udp,
+                    effective_udp_mode,
+                    uplink.transport,
+                    uplink.udp_dial_mode(),
+                    now,
+                );
+            (tcp, udp)
+        };
         // Drain warm-standby pools when active just moved off primary as a
         // result of probe-confirmed failure. Spawned tasks because we're
         // outside the sync `with_status_mut` closure but still inside a
@@ -268,12 +310,16 @@ impl UplinkManager {
                 manager.drain_standby_pool(index, TransportKind::Udp).await;
             });
         }
-        // Route transport-level probe failures through the unified H3 downgrade
-        // helper (no-op for non-WS / non-H3 uplinks).  This prevents flapping:
-        // without downgrade, intermittent H3 probe failures alternate pass/fail
-        // and churn active-passive selection every cycle; with H2 downgrade, the
-        // next probe uses the stable H2 path and H3 is only retried after the
-        // window expires or a recovery re-probe confirms liveness.
+        // Route transport-level probe failures through the unified
+        // mode-downgrade helper. Covers both families (WS+H3 → H2 and
+        // VLESS+XHTTP H3 → H2 → H1); a no-op for transports the
+        // helper doesn't know how to step down (Shadowsocks, WS+H1).
+        // The helper's `min_failures` descent gate keeps a single
+        // flaky probe at the capped carrier from immediately stepping
+        // the cap further down — a streak is required before each
+        // descent. Recovery probes (above) plus the reactive walk-up
+        // path together restore the cap as soon as the capped carrier
+        // proves stable again.
         if !result.tcp_ok {
             self.extend_mode_downgrade(
                 index,
