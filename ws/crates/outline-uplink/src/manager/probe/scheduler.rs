@@ -280,13 +280,15 @@ impl UplinkManager {
             }
         }
 
-        // H3 recovery re-probes: for each uplink where the H2 probe succeeded
-        // during a downgrade window, run an explicit H3 probe.  A successful H3
-        // result clears h3_*_downgrade_until immediately (instead of waiting for
-        // the full mode_downgrade_duration to expire) so traffic switches back to
-        // H3 as soon as the server is confirmed ready.  A failing result extends
-        // the downgrade window by another mode_downgrade_duration from now,
-        // preventing oscillation if H3 is still unstable.
+        // Carrier-recovery re-probes: for each uplink where the regular
+        // probe succeeded against the **capped** carrier during an
+        // active downgrade window, run an explicit probe at the
+        // **configured** carrier. A success clears the cap immediately
+        // (instead of waiting out `mode_downgrade_duration`) so traffic
+        // returns to configured the moment the server is confirmed
+        // ready; a failure extends the window with `RecoveryReprobeFail`
+        // to suppress oscillation while configured is still unstable.
+        // Symmetric across WS+H3 and VLESS+XHTTP (H3/H2) configured uplinks.
         self.run_h3_recovery_probes(h3_tcp_recovery_needed, TransportKind::Tcp).await;
         self.run_h3_recovery_probes(h3_udp_recovery_needed, TransportKind::Udp).await;
     }
