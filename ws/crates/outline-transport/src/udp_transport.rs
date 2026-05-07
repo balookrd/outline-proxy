@@ -195,6 +195,10 @@ impl UdpWsTransport {
             ipv6_first,
             source,
             resume_request,
+            // Ack-Prefix Protocol is a TCP-side mid-session retry feature;
+            // SS-UDP transports do not need it and the server only emits
+            // the control frame on the SS-WS path. Always opt out here.
+            false,
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;

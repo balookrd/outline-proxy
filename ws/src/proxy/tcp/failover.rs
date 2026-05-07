@@ -457,6 +457,11 @@ pub(super) async fn connect_tcp_fallback_fresh(
         fallback.ipv6_first,
         source,
         resume_request,
+        // Failover dial path does not yet opt into Ack-Prefix; mid-session
+        // retry orchestration that consumes the negotiated bit ships in
+        // Phase 2.4. Until then, the failover dial keeps the legacy
+        // resume-only semantics.
+        false,
     )
     .await
     .with_context(|| format!(

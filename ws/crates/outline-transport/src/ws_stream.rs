@@ -133,6 +133,15 @@ pin_project! {
     /// Callers that participate in resumption stash this value before the
     /// stream is used and present it back via `X-Outline-Resume` on the
     /// next reconnect.
+    ///
+    /// The `ack_prefix_advertised_by_server` slot records whether the
+    /// server echoed `X-Outline-Resume-Ack-Prefix: 1` on the upgrade
+    /// response. When `true`, the first decoded SS-AEAD chunk on this
+    /// stream is the v1 control frame defined in
+    /// `docs/SESSION-RESUMPTION.md` (server repo) § Ack-Prefix Protocol —
+    /// callers participating in mid-session retry must consume and parse
+    /// it via [`crate::ack_prefix::parse_v1`] before treating any bytes
+    /// as upstream payload.
     #[project = TransportStreamProj]
     pub enum TransportStream {
         Http1 {
@@ -141,18 +150,21 @@ pin_project! {
             activity: H1Activity,
             issued_session_id: Option<SessionId>,
             downgraded_from: Option<TransportMode>,
+            ack_prefix_advertised_by_server: bool,
         },
         H2 {
             #[pin]
             inner: H2WsStream,
             issued_session_id: Option<SessionId>,
             downgraded_from: Option<TransportMode>,
+            ack_prefix_advertised_by_server: bool,
         },
         H3 {
             #[pin]
             inner: H3WsStream,
             issued_session_id: Option<SessionId>,
             downgraded_from: Option<TransportMode>,
+            ack_prefix_advertised_by_server: bool,
         },
         /// VLESS-over-XHTTP packet-up. The inner stream multiplexes a
         /// long-lived GET (downlink) and a sequence of POSTs (uplink)
@@ -162,6 +174,7 @@ pin_project! {
             inner: XhttpStream,
             issued_session_id: Option<SessionId>,
             downgraded_from: Option<TransportMode>,
+            ack_prefix_advertised_by_server: bool,
         },
     }
 }
@@ -192,6 +205,7 @@ impl TransportStream {
             activity,
             issued_session_id,
             downgraded_from: None,
+            ack_prefix_advertised_by_server: false,
         }
     }
 
@@ -207,6 +221,42 @@ impl TransportStream {
         }
     }
 
+    /// Whether the server echoed `X-Outline-Resume-Ack-Prefix: 1` on the
+    /// WebSocket upgrade response, confirming both peers will speak the
+    /// Ack-Prefix Protocol v1 on this stream. When `true`, the first
+    /// SS-AEAD chunk decoded from this stream is the 14-byte control
+    /// frame — see [`crate::ack_prefix::parse_v1`].
+    ///
+    /// Always `false` for transports that do not yet implement the
+    /// negotiation (callers below `connect_websocket_with_resume` that
+    /// wrap raw streams via `new_http1` keep the default).
+    pub fn ack_prefix_advertised_by_server(&self) -> bool {
+        match self {
+            TransportStream::Http1 { ack_prefix_advertised_by_server, .. }
+            | TransportStream::H2 { ack_prefix_advertised_by_server, .. }
+            | TransportStream::H3 { ack_prefix_advertised_by_server, .. }
+            | TransportStream::Xhttp { ack_prefix_advertised_by_server, .. } => {
+                *ack_prefix_advertised_by_server
+            },
+        }
+    }
+
+    /// Stamp whether the server echoed the Ack-Prefix capability on the
+    /// upgrade response. Chainable; intended to be called inside
+    /// `connect_websocket_with_resume` immediately after decoding the
+    /// upgrade response, alongside `with_downgraded_from`.
+    pub fn with_ack_prefix_advertised(mut self, advertised: bool) -> Self {
+        match &mut self {
+            TransportStream::Http1 { ack_prefix_advertised_by_server, .. }
+            | TransportStream::H2 { ack_prefix_advertised_by_server, .. }
+            | TransportStream::H3 { ack_prefix_advertised_by_server, .. }
+            | TransportStream::Xhttp { ack_prefix_advertised_by_server, .. } => {
+                *ack_prefix_advertised_by_server = advertised;
+            },
+        }
+        self
+    }
+
     /// Wraps an [`XhttpStream`] freshly returned from `connect_xhttp`,
     /// tagging it with the resume token the server returned in
     /// `X-Outline-Session` (if any). The downgrade slot is filled
@@ -216,6 +266,7 @@ impl TransportStream {
             inner,
             issued_session_id,
             downgraded_from: None,
+            ack_prefix_advertised_by_server: false,
         }
     }
 

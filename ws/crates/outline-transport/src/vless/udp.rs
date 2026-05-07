@@ -139,6 +139,10 @@ impl VlessUdpTransport {
             ipv6_first,
             source,
             resume_request,
+            // VLESS-UDP carriers do not advertise Ack-Prefix; the server
+            // gates emit on the SS-WS path. The capability bit stays off
+            // here so the server never echoes the response header.
+            false,
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;

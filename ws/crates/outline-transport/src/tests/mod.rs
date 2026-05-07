@@ -439,3 +439,199 @@ async fn vless_udp_mux_resets_downgrade_latch_after_recovery_dial() {
     );
     assert!(mux.downgrade_latch_for_test());
 }
+
+// ── Ack-Prefix Protocol v1 capability negotiation ─────────────────────────────
+//
+// These tests cover the request-side advertise + response-side echo glue
+// for `connect_websocket_with_resume`. The wire-format parser itself is
+// tested in `tests/ack_prefix.rs`; here we verify that:
+//   1. Advertise + echo → `ack_prefix_advertised_by_server() == true`.
+//   2. No advertise → flag stays `false`, regardless of server behaviour.
+//   3. Advertise but server stays silent → flag stays `false`.
+//
+// We use a parallel H2 mock instead of extending `TestH2Server` so the
+// existing tests' assertions about request shape stay verbatim.
+
+#[cfg(feature = "metrics")]
+struct TestH2AckPrefixServer {
+    addr: std::net::SocketAddr,
+    last_request_advertised: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "metrics")]
+impl TestH2AckPrefixServer {
+    /// Spawns a server that, on each CONNECT, records whether the request
+    /// carried `X-Outline-Resume-Ack-Prefix: 1` and — if `echo_back` —
+    /// echoes the same header on the response. The recorded bit lets a
+    /// test assert that the *client* actually sent the advertise header
+    /// even when no echo comes back.
+    async fn start(echo_back: bool) -> Self {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let last_request_advertised = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let recorder = Arc::clone(&last_request_advertised);
+
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(values) => values,
+                    Err(_) => break,
+                };
+                let recorder = Arc::clone(&recorder);
+                tokio::spawn(async move {
+                    let _ = serve_h2_ack_prefix_connection(stream, recorder, echo_back).await;
+                });
+            }
+        });
+
+        Self { addr, last_request_advertised }
+    }
+
+    fn url(&self) -> Url {
+        Url::parse(&format!("ws://{}/ack-prefix-h2", self.addr)).unwrap()
+    }
+
+    fn last_request_advertised(&self) -> bool {
+        self.last_request_advertised.load(Ordering::SeqCst)
+    }
+}
+
+#[cfg(feature = "metrics")]
+async fn serve_h2_ack_prefix_connection(
+    stream: TcpStream,
+    last_request_advertised: Arc<std::sync::atomic::AtomicBool>,
+    echo_back: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut builder = hyper_http2::Builder::new(TokioExecutor::new());
+    builder.enable_connect_protocol();
+    builder
+        .serve_connection(
+            TokioIo::new(stream),
+            service_fn(move |req: Request<Incoming>| {
+                let recorder = Arc::clone(&last_request_advertised);
+                async move {
+                    let advertised = req
+                        .headers()
+                        .get(crate::resumption::ACK_PREFIX_HEADER)
+                        .and_then(|v| v.to_str().ok())
+                        == Some("1");
+                    recorder.store(advertised, Ordering::SeqCst);
+
+                    let on_upgrade = hyper::upgrade::on(req);
+                    tokio::spawn(async move {
+                        if let Ok(upgraded) = on_upgrade.await {
+                            let _upgraded = upgraded;
+                            std::future::pending::<()>().await;
+                        }
+                    });
+
+                    let mut response = Response::new(Empty::<Bytes>::new());
+                    if echo_back && advertised {
+                        response.headers_mut().insert(
+                            crate::resumption::ACK_PREFIX_HEADER,
+                            http::HeaderValue::from_static("1"),
+                        );
+                    }
+                    Ok::<_, hyper::Error>(response)
+                }
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn ack_prefix_negotiation_succeeds_when_both_peers_set_header() {
+    let server = TestH2AckPrefixServer::start(true).await;
+    let url = server.url();
+
+    let stream = connect_websocket_with_resume(
+        &DnsCache::default(),
+        &url,
+        TransportMode::WsH2,
+        None,
+        false,
+        "test_ack_prefix_pos",
+        None,
+        true,
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(stream, TransportStream::H2 { .. }));
+    assert!(
+        server.last_request_advertised(),
+        "client must send X-Outline-Resume-Ack-Prefix when ack_prefix_requested = true",
+    );
+    assert!(
+        stream.ack_prefix_advertised_by_server(),
+        "server echoed the capability — accessor must return true",
+    );
+}
+
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn ack_prefix_flag_stays_false_when_client_does_not_advertise() {
+    // Even with an echoing server, a client that does not advertise must
+    // never see the flag set — gates the receiver against accidental
+    // 14-byte parse on a stream where the first chunk is real data.
+    let server = TestH2AckPrefixServer::start(true).await;
+    let url = server.url();
+
+    let stream = connect_websocket_with_resume(
+        &DnsCache::default(),
+        &url,
+        TransportMode::WsH2,
+        None,
+        false,
+        "test_ack_prefix_no_advertise",
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(stream, TransportStream::H2 { .. }));
+    assert!(
+        !server.last_request_advertised(),
+        "client must NOT send the header when ack_prefix_requested = false",
+    );
+    assert!(
+        !stream.ack_prefix_advertised_by_server(),
+        "client did not advertise — accessor must stay false",
+    );
+}
+
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn ack_prefix_flag_stays_false_when_server_does_not_echo() {
+    // Old/disabled servers omit the response header even when the client
+    // advertises. The negotiation must collapse to "off" so the receiver
+    // does not look for a control frame in the byte stream.
+    let server = TestH2AckPrefixServer::start(false).await;
+    let url = server.url();
+
+    let stream = connect_websocket_with_resume(
+        &DnsCache::default(),
+        &url,
+        TransportMode::WsH2,
+        None,
+        false,
+        "test_ack_prefix_silent_server",
+        None,
+        true,
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(stream, TransportStream::H2 { .. }));
+    assert!(
+        server.last_request_advertised(),
+        "client still sends the request-side header when ack_prefix_requested = true",
+    );
+    assert!(
+        !stream.ack_prefix_advertised_by_server(),
+        "server stayed silent — accessor must stay false",
+    );
+}

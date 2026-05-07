@@ -283,7 +283,7 @@ pub async fn connect_websocket_with_source(
     ipv6_first: bool,
     source: &'static str,
 ) -> Result<TransportStream> {
-    connect_websocket_with_resume(cache, url, mode, fwmark, ipv6_first, source, None).await
+    connect_websocket_with_resume(cache, url, mode, fwmark, ipv6_first, source, None, false).await
 }
 
 /// Variant of [`connect_websocket_with_source`] that participates in
@@ -292,6 +292,14 @@ pub async fn connect_websocket_with_source(
 /// upgrade so the server can re-attach to a parked upstream. Either way
 /// the server may issue a fresh Session ID via `X-Outline-Session`,
 /// readable on the returned stream via [`TransportStream::issued_session_id`].
+///
+/// When `ack_prefix_requested` is `true` the WS dial additionally
+/// advertises `X-Outline-Resume-Ack-Prefix: 1`. The XHTTP carrier does
+/// not echo this capability in v1 (server emits the control frame on
+/// SS-WS only), so the parameter is consumed by the WS branches and
+/// ignored by the XHTTP branches. The actual server-side echo —
+/// observed in the upgrade response — is exposed on the resulting
+/// stream via [`TransportStream::ack_prefix_advertised_by_server`].
 pub async fn connect_websocket_with_resume(
     cache: &DnsCache,
     url: &Url,
@@ -300,6 +308,7 @@ pub async fn connect_websocket_with_resume(
     ipv6_first: bool,
     source: &'static str,
     resume_request: Option<SessionId>,
+    ack_prefix_requested: bool,
 ) -> Result<TransportStream> {
     let requested = mode;
     // Two independent per-host caches are queried here: the WS one
@@ -329,15 +338,16 @@ pub async fn connect_websocket_with_resume(
     };
     match mode {
         TransportMode::WsH1 => {
-            let (ws_stream, issued) =
-                connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
+            let (ws_stream, issued, ack_prefix_advertised) =
+                connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested)
                     .await?;
             debug!(url = %url, selected_mode = "http1", "websocket transport connected");
             ws_mode_cache::record_success(url, TransportMode::WsH1).await;
             Ok(TransportStream::new_http1_with_session(ws_stream, issued)
-                .with_downgraded_from(downgrade_marker(TransportMode::WsH1)))
+                .with_downgraded_from(downgrade_marker(TransportMode::WsH1))
+                .with_ack_prefix_advertised(ack_prefix_advertised))
         },
-        TransportMode::WsH2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
+        TransportMode::WsH2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h2", "websocket transport connected");
                 ws_mode_cache::record_success(url, TransportMode::WsH2).await;
@@ -351,16 +361,17 @@ pub async fn connect_websocket_with_resume(
                     "h2 websocket connect failed, falling back"
                 );
                 ws_mode_cache::record_failure(url, TransportMode::WsH2).await;
-                let (ws_stream, issued) =
-                    connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
+                let (ws_stream, issued, ack_prefix_advertised) =
+                    connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested)
                         .await?;
                 debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
                 Ok(TransportStream::new_http1_with_session(ws_stream, issued)
-                    .with_downgraded_from(downgrade_marker(TransportMode::WsH1)))
+                    .with_downgraded_from(downgrade_marker(TransportMode::WsH1))
+                    .with_ack_prefix_advertised(ack_prefix_advertised))
             },
         },
         #[cfg(feature = "h3")]
-        TransportMode::WsH3 => match connect_websocket_h3(cache, url, fwmark, ipv6_first, source, resume_request).await {
+        TransportMode::WsH3 => match connect_websocket_h3(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h3", "websocket transport connected");
                 ws_mode_cache::record_success(url, TransportMode::WsH3).await;
@@ -374,7 +385,7 @@ pub async fn connect_websocket_with_resume(
                     "h3 websocket connect failed, falling back"
                 );
                 ws_mode_cache::record_failure(url, TransportMode::WsH3).await;
-                match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
+                match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested).await {
                     Ok(stream) => {
                         debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                         // Note: we deliberately do NOT call `record_success(H2)` here.
@@ -393,12 +404,13 @@ pub async fn connect_websocket_with_resume(
                             "h2 websocket connect failed after h3 fallback, falling back"
                         );
                         ws_mode_cache::record_failure(url, TransportMode::WsH2).await;
-                        let (ws_stream, issued) =
-                            connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
+                        let (ws_stream, issued, ack_prefix_advertised) =
+                            connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested)
                                 .await?;
                         debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
                         Ok(TransportStream::new_http1_with_session(ws_stream, issued)
-                            .with_downgraded_from(downgrade_marker(TransportMode::WsH1)))
+                            .with_downgraded_from(downgrade_marker(TransportMode::WsH1))
+                            .with_ack_prefix_advertised(ack_prefix_advertised))
                     },
                 }
             },
@@ -407,7 +419,7 @@ pub async fn connect_websocket_with_resume(
         TransportMode::WsH3 => {
             warn!(url = %url, "H3 requested but compiled without h3 feature, falling back to h2");
             ws_mode_cache::record_failure(url, TransportMode::WsH3).await;
-            match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
+            match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested).await {
                 Ok(stream) => {
                     debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                     // See sibling H3 success branch: do not clear the cap here.
@@ -416,12 +428,13 @@ pub async fn connect_websocket_with_resume(
                 Err(h2_error) => {
                     warn!(url = %url, error = %format!("{h2_error:#}"), fallback = "http1", "h2 websocket connect failed, falling back");
                     ws_mode_cache::record_failure(url, TransportMode::WsH2).await;
-                    let (ws_stream, issued) =
-                        connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
+                    let (ws_stream, issued, ack_prefix_advertised) =
+                        connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested)
                             .await?;
                     debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
                     Ok(TransportStream::new_http1_with_session(ws_stream, issued)
-                        .with_downgraded_from(downgrade_marker(TransportMode::WsH1)))
+                        .with_downgraded_from(downgrade_marker(TransportMode::WsH1))
+                        .with_ack_prefix_advertised(ack_prefix_advertised))
                 },
             }
         },
@@ -617,7 +630,8 @@ async fn connect_websocket_http1(
     ipv6_first: bool,
     source: &'static str,
     resume_request: Option<SessionId>,
-) -> Result<(H1WsStream, Option<SessionId>)> {
+    ack_prefix_requested: bool,
+) -> Result<(H1WsStream, Option<SessionId>, bool)> {
     let mut connect_guard = TransportConnectGuard::new(source, "http1");
     let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let port = url
@@ -633,7 +647,7 @@ async fn connect_websocket_http1(
                     host: format!("{host}:{port}"),
                 })
             })?;
-    let (ws_stream, issued_session_id) = timeout(HTTP1_WS_CONNECT_TIMEOUT, async {
+    let (ws_stream, issued_session_id, ack_prefix_advertised_by_server) = timeout(HTTP1_WS_CONNECT_TIMEOUT, async {
         let tcp = connect_tcp_socket(server_addr, fwmark).await?;
         // Build a `Request` so we can attach `X-Outline-*` headers; the
         // default form (`url.as_str().into_client_request()`) hides the
@@ -667,6 +681,12 @@ async fn connect_websocket_http1(
                 id.to_hex().parse().expect("hex Session ID is a valid header value"),
             );
         }
+        if ack_prefix_requested {
+            headers.insert(
+                crate::resumption::ACK_PREFIX_HEADER,
+                "1".parse().expect("static header value"),
+            );
+        }
         let (ws_stream, response) = client_async_tls(request, tcp)
             .await
             .context("HTTP/1 websocket handshake failed")?;
@@ -675,7 +695,18 @@ async fn connect_websocket_http1(
             .get(crate::resumption::SESSION_RESPONSE_HEADER)
             .and_then(|v| v.to_str().ok())
             .and_then(SessionId::parse_hex);
-        Ok::<_, anyhow::Error>((ws_stream, issued))
+        // Echo gating mirrors the h2/h3 paths: only report a positive
+        // negotiation when the request advertised the capability AND the
+        // server echoed `1`. A spurious echo without a matching request
+        // is treated as `false` and the receiver will not look for the
+        // Ack-Prefix control frame in the byte stream.
+        let ack_prefix_echoed = ack_prefix_requested
+            && response
+                .headers()
+                .get(crate::resumption::ACK_PREFIX_HEADER)
+                .and_then(|v| v.to_str().ok())
+                == Some("1");
+        Ok::<_, anyhow::Error>((ws_stream, issued, ack_prefix_echoed))
     })
     .await
     .map_err(|_| {
@@ -685,7 +716,7 @@ async fn connect_websocket_http1(
         )
     })??;
     connect_guard.finish("success");
-    Ok((ws_stream, issued_session_id))
+    Ok((ws_stream, issued_session_id, ack_prefix_advertised_by_server))
 }
 
 #[cfg(test)]
