@@ -1,6 +1,9 @@
 mod ss2022;
 mod transport;
 
+#[cfg(test)]
+mod tests;
+
 pub use transport::WsReadDiag;
 
 use anyhow::{Result, anyhow, bail};
@@ -10,6 +13,7 @@ use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use crate::UpstreamTransportGuard;
+use crate::ack_prefix::{FRAME_LEN_V1, ParseResult, parse_v1};
 
 use ss2022::{Ss2022TcpReaderState, parse_ss2022_response_header};
 use transport::{ReadTransport, SocketReadTransport, WsReadTransport, WsStream};
@@ -32,6 +36,21 @@ pub struct TcpShadowsocksReader<T: ReadTransport> {
     /// error (e.g. QUIC APPLICATION_CLOSE / H3_INTERNAL_ERROR).  Callers can
     /// use this to decide whether to report a runtime uplink failure.
     pub closed_cleanly: bool,
+    /// Set by the caller when the WS upgrade negotiated the Ack-Prefix
+    /// Protocol v1 (server echoed `X-Outline-Resume-Ack-Prefix: 1`). When
+    /// `true`, the very first decrypted SS-AEAD payload is treated as
+    /// the 14-byte control frame defined in
+    /// `docs/SESSION-RESUMPTION.md` (server repo) § Ack-Prefix Protocol;
+    /// `read_chunk` parses it transparently, stores the result in
+    /// [`Self::up_acked`], and then continues to the first real data
+    /// chunk so callers never observe the protocol bytes.
+    expect_ack_prefix: bool,
+    /// Server-reported `up_acked` byte count from the v1 control frame,
+    /// or `None` when the protocol was not negotiated, the prefix has
+    /// not yet been parsed, or the frame was malformed (in which case
+    /// `read_chunk` errored out and the session is dropped). Stable
+    /// after the first chunk is decrypted.
+    up_acked: Option<u64>,
 }
 
 pub type WsTcpReader = TcpShadowsocksReader<WsReadTransport>;
@@ -63,6 +82,8 @@ impl TcpShadowsocksReader<WsReadTransport> {
             ss2022: None,
             _lifetime: lifetime,
             closed_cleanly: false,
+            expect_ack_prefix: false,
+            up_acked: None,
         }
     }
 
@@ -92,6 +113,11 @@ impl TcpShadowsocksReader<SocketReadTransport> {
             ss2022: None,
             _lifetime: lifetime,
             closed_cleanly: false,
+            // Plain-socket Shadowsocks (no WebSocket upgrade) does not
+            // carry the Ack-Prefix capability — the protocol is gated on
+            // a successful WS upgrade response. Always off here.
+            expect_ack_prefix: false,
+            up_acked: None,
         }
     }
 }
@@ -115,6 +141,10 @@ impl TcpShadowsocksReader<QuicReadTransport> {
             ss2022: None,
             _lifetime: lifetime,
             closed_cleanly: false,
+            // Raw QUIC bypasses the WS upgrade entirely; no Ack-Prefix
+            // negotiation surfaces here. Always off.
+            expect_ack_prefix: false,
+            up_acked: None,
         }
     }
 }
@@ -126,6 +156,30 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
             response_header_read: false,
         });
         self
+    }
+
+    /// Tells the reader to expect a v1 Ack-Prefix control frame as the
+    /// very first decrypted SS-AEAD payload. Set this when (and only
+    /// when) the WS upgrade response carried
+    /// `X-Outline-Resume-Ack-Prefix: 1` — i.e.
+    /// [`crate::TransportStream::ack_prefix_advertised_by_server`] is
+    /// `true`. The first call to [`Self::read_chunk`] consumes the 14
+    /// prefix bytes, parks the reported offset on
+    /// [`Self::upstream_acked_offset`], and returns the next real
+    /// payload chunk (or recurses if the prefix occupied a chunk by
+    /// itself, as the server's emit always does).
+    pub fn with_expect_ack_prefix(mut self, expect: bool) -> Self {
+        self.expect_ack_prefix = expect;
+        self
+    }
+
+    /// Server-reported `up_acked` byte offset from the v1 Ack-Prefix
+    /// control frame, or `None` when the protocol was not negotiated or
+    /// the prefix has not yet been parsed. Stable after the first
+    /// [`Self::read_chunk`] call returns successfully on a stream where
+    /// [`Self::with_expect_ack_prefix`] was set.
+    pub fn upstream_acked_offset(&self) -> Option<u64> {
+        self.up_acked
     }
 
     pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
@@ -157,7 +211,7 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
                 state.response_header_read = true;
             }
             if !payload_buf.is_empty() {
-                return Ok(payload_buf);
+                return self.intercept_ack_prefix_or_return(payload_buf).await;
             }
             // Empty initial payload is valid in SS2022 (the server had no
             // target data to bundle yet).  Fall through to read the first
@@ -178,7 +232,60 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
 
         let mut payload_buf = self.transport.read_exact(payload_len + SHADOWSOCKS_TAG_LEN, &mut self.closed_cleanly).await?;
         self.decrypt_in_place_session(&mut payload_buf)?;
-        Ok(payload_buf)
+        self.intercept_ack_prefix_or_return(payload_buf).await
+    }
+
+    /// Decision point for the very first decrypted payload: when the
+    /// reader was told to expect a v1 control frame, parse it
+    /// transparently, store `up_acked`, and recurse to fetch the next
+    /// chunk so callers never observe the protocol bytes. Otherwise
+    /// hand the payload through unchanged.
+    ///
+    /// On any parse failure the session is dropped (per spec strict
+    /// handling): the prefix bytes are unrecognised and continuing
+    /// would risk treating control bytes as upstream payload.
+    async fn intercept_ack_prefix_or_return(
+        &mut self,
+        payload_buf: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        if !self.expect_ack_prefix {
+            return Ok(payload_buf);
+        }
+        match parse_v1(&payload_buf) {
+            ParseResult::Valid { up_acked } => {
+                self.up_acked = Some(up_acked);
+                self.expect_ack_prefix = false;
+                if payload_buf.len() > FRAME_LEN_V1 {
+                    // Spec says the server emits the prefix as its own
+                    // AEAD chunk, but we tolerate trailing payload
+                    // bytes — the parser test
+                    // `extra_trailing_bytes_ignored` covers this — by
+                    // returning them as the first data chunk so no
+                    // upstream bytes are dropped.
+                    Ok(payload_buf[FRAME_LEN_V1..].to_vec())
+                } else {
+                    // Exact 14 bytes (the expected case): recurse to
+                    // fetch the next chunk so callers never see an
+                    // empty payload that would be misinterpreted as
+                    // EOF.
+                    Box::pin(self.read_chunk()).await
+                }
+            },
+            ParseResult::TooShort => bail!(
+                "ack-prefix v1 control frame is shorter than {} bytes (got {})",
+                FRAME_LEN_V1,
+                payload_buf.len()
+            ),
+            ParseResult::BadMagic => {
+                bail!("ack-prefix v1 control frame has unexpected magic; dropping session")
+            },
+            ParseResult::UnsupportedVersion(v) => bail!(
+                "ack-prefix control frame announces unsupported version {v}; dropping session"
+            ),
+            ParseResult::ReservedFlagsSet(f) => bail!(
+                "ack-prefix v1 control frame has reserved flags 0x{f:02x} set; dropping session"
+            ),
+        }
     }
 
     /// Decrypt `buf` (layout: `[ciphertext || tag]`) in-place with the session

@@ -588,6 +588,12 @@ async fn do_tcp_ss_setup(
         return Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader)));
     }
 
+    // Capture the negotiated Ack-Prefix bit before `.split()` consumes
+    // the TransportStream — accessor reads off the enum variant, not
+    // the inner sink/stream. False here because no opt-in caller has
+    // wired `ack_prefix_requested = true` yet (Phase 2.4 will), but we
+    // wire the plumbing now so the reader is ready when it does.
+    let expect_ack_prefix = ws_stream.ack_prefix_advertised_by_server();
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = setup.cipher.derive_master_key(setup.password)?;
     let (writer, ctrl_tx) =
@@ -597,7 +603,8 @@ async fn do_tcp_ss_setup(
     let mut writer = TcpWriter::Ws(writer);
     let reader = TcpReader::Ws(reader)
         .with_request_salt(writer.request_salt())
-        .with_diag(diag);
+        .with_diag(diag)
+        .with_expect_ack_prefix(expect_ack_prefix);
     send_initial_ss_target(&mut writer, setup, target, "ws").await?;
     Ok((writer, reader))
 }
