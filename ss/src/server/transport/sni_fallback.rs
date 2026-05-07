@@ -26,7 +26,7 @@
 //!   logs the real client IP, write the captured ClientHello, then
 //!   bidirectionally copy until either side closes.
 
-use std::{io, net::SocketAddr, pin::Pin, sync::Arc, task::{Context, Poll}};
+use std::{collections::HashMap, io, net::SocketAddr, pin::Pin, sync::Arc, task::{Context, Poll}};
 
 use anyhow::{Context as _, Result, anyhow};
 use tokio::{
@@ -35,7 +35,7 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
-use crate::config::{SniBackend, SniFallbackConfig};
+use crate::config::{SniBackend, SniFallbackConfig, SniMatcher};
 
 use super::proxy_protocol::{PpTransport, encode_proxy_protocol};
 
@@ -44,11 +44,125 @@ use super::proxy_protocol::{PpTransport, encode_proxy_protocol};
 #[derive(Clone)]
 pub(in crate::server) struct SniFallbackContext {
     pub(in crate::server) config: Arc<SniFallbackConfig>,
+    /// Precomputed routing table derived from `config`: exact matches
+    /// resolve in O(1) via a hashmap; wildcards fall back to a linear
+    /// scan only when the exact lookup misses.
+    pub(in crate::server) lookup: Arc<SniLookup>,
     /// Inbound listener bind addr — used as the destination for
     /// PROXY-protocol headers. `0.0.0.0` / `[::]` degrade to UNSPEC
     /// (v2) / UNKNOWN (v1) since we don't currently learn the
     /// per-connection local addr.
     pub(in crate::server) inbound_listen: SocketAddr,
+}
+
+impl SniFallbackContext {
+    pub(in crate::server) fn new(
+        config: Arc<SniFallbackConfig>,
+        inbound_listen: SocketAddr,
+    ) -> Self {
+        let lookup = Arc::new(SniLookup::build(&config));
+        Self { config, lookup, inbound_listen }
+    }
+}
+
+/// Where a peeked SNI should land. `Local` keeps the connection on the
+/// inbound TLS terminator; `Backend(idx)` indexes into
+/// [`SniFallbackConfig::backends`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::server) enum SniRoute {
+    Local,
+    Backend(usize),
+}
+
+/// Routing table built once from a [`SniFallbackConfig`]. Hot path is
+/// the exact-match `HashMap`; wildcards and the catch-all backend run
+/// only when the hashmap misses.
+///
+/// Priority on collision: local entries are inserted before backend
+/// entries, so an exact SNI claimed by both wins for `Local`. Backends
+/// are inserted in declaration order, mirroring the previous linear
+/// `find_backend` scan. Note this changes one corner: an exact match
+/// declared anywhere in the table now beats a wildcard declared earlier
+/// — by design, since exact configuration is more specific intent than
+/// a wildcard that happens to subsume it.
+#[derive(Debug)]
+pub(in crate::server) struct SniLookup {
+    exact: HashMap<String, SniRoute>,
+    wildcards: Vec<(SniMatcher, SniRoute)>,
+    /// Index of the catch-all backend (empty `match_sni`), if any.
+    /// Validation guarantees there is at most one and it is the last
+    /// backend, so a `usize` is sufficient.
+    catch_all: Option<usize>,
+    allow_no_sni: bool,
+}
+
+impl SniLookup {
+    pub(in crate::server) fn build(config: &SniFallbackConfig) -> Self {
+        let mut exact: HashMap<String, SniRoute> = HashMap::new();
+        let mut wildcards: Vec<(SniMatcher, SniRoute)> = Vec::new();
+
+        for matcher in &config.match_sni {
+            insert_matcher(&mut exact, &mut wildcards, matcher, SniRoute::Local);
+        }
+
+        let mut catch_all = None;
+        for (idx, backend) in config.backends.iter().enumerate() {
+            if backend.match_sni.is_empty() {
+                catch_all = Some(idx);
+                continue;
+            }
+            for matcher in &backend.match_sni {
+                insert_matcher(&mut exact, &mut wildcards, matcher, SniRoute::Backend(idx));
+            }
+        }
+
+        Self { exact, wildcards, catch_all, allow_no_sni: config.allow_no_sni }
+    }
+
+    /// Resolve a peeked SNI. `sni` must already be lowercased (peek
+    /// path does this). `None` means the ClientHello had no
+    /// `server_name` extension.
+    pub(in crate::server) fn lookup(&self, sni: Option<&str>) -> Option<SniRoute> {
+        match sni {
+            None => {
+                if self.allow_no_sni {
+                    Some(SniRoute::Local)
+                } else {
+                    self.catch_all.map(SniRoute::Backend)
+                }
+            },
+            Some(name) => {
+                if let Some(route) = self.exact.get(name) {
+                    return Some(*route);
+                }
+                for (matcher, route) in &self.wildcards {
+                    if matcher.matches(name) {
+                        return Some(*route);
+                    }
+                }
+                self.catch_all.map(SniRoute::Backend)
+            },
+        }
+    }
+}
+
+fn insert_matcher(
+    exact: &mut HashMap<String, SniRoute>,
+    wildcards: &mut Vec<(SniMatcher, SniRoute)>,
+    matcher: &SniMatcher,
+    route: SniRoute,
+) {
+    match matcher {
+        SniMatcher::Exact(name) => {
+            // First writer wins: local is inserted before backends, and
+            // backends are inserted in declaration order, so this
+            // preserves the historical priority on duplicates.
+            exact.entry(name.clone()).or_insert(route);
+        },
+        SniMatcher::Wildcard { .. } => {
+            wildcards.push((matcher.clone(), route));
+        },
+    }
 }
 
 /// Outcome of [`peek_sni`]. Carries the bytes we already consumed off
@@ -111,39 +225,6 @@ pub(in crate::server) async fn peek_sni(
             },
         }
     }
-}
-
-/// `true` when `sni` matches any whitelist entry. Caller passes a
-/// lowercase SNI (or `None` and the function honours
-/// `config.allow_no_sni`).
-pub(in crate::server) fn sni_matches_ours(
-    config: &SniFallbackConfig,
-    sni: Option<&str>,
-) -> bool {
-    match sni {
-        None => config.allow_no_sni,
-        Some(name) => config.match_sni.iter().any(|m| m.matches(name)),
-    }
-}
-
-/// Returns the first backend whose `match_sni` matches `sni`, or the
-/// first catch-all backend (empty `match_sni`). Returns `None` when no
-/// backend matches.
-pub(in crate::server) fn find_backend<'a>(
-    backends: &'a [SniBackend],
-    sni: Option<&str>,
-) -> Option<&'a SniBackend> {
-    for b in backends {
-        if b.match_sni.is_empty() {
-            return Some(b); // catch-all
-        }
-        if let Some(name) = sni {
-            if b.match_sni.iter().any(|m| m.matches(name)) {
-                return Some(b);
-            }
-        }
-    }
-    None
 }
 
 /// Splice the inbound TCP stream to `backend`, prepending the
@@ -307,15 +388,13 @@ pub(in crate::server) async fn dispatch_sni(
         },
     };
 
-    if sni_matches_ours(&ctx.config, peeked.sni.as_deref()) {
-        return Ok(Some(LocalTlsAccepted {
+    match ctx.lookup.lookup(peeked.sni.as_deref()) {
+        Some(SniRoute::Local) => Ok(Some(LocalTlsAccepted {
             stream: PrependStream::new(peeked.buffered, inbound),
             sni: peeked.sni,
-        }));
-    }
-
-    match find_backend(&ctx.config.backends, peeked.sni.as_deref()) {
-        Some(backend) => {
+        })),
+        Some(SniRoute::Backend(idx)) => {
+            let backend = &ctx.config.backends[idx];
             debug!(
                 ?peer_addr,
                 sni = ?peeked.sni,
@@ -324,6 +403,7 @@ pub(in crate::server) async fn dispatch_sni(
             );
             splice_to_backend(backend, ctx.inbound_listen, inbound, peer_addr, peeked.buffered)
                 .await?;
+            Ok(None)
         },
         None => {
             warn!(
@@ -331,7 +411,7 @@ pub(in crate::server) async fn dispatch_sni(
                 sni = ?peeked.sni,
                 "sni_fallback: no backend matched, dropping connection",
             );
+            Ok(None)
         },
     }
-    Ok(None)
 }

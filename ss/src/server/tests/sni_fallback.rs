@@ -177,19 +177,17 @@ fn sni_ctx(
     proxy_protocol: Option<ProxyProtocolVersion>,
     allow_no_sni: bool,
 ) -> Arc<SniFallbackContext> {
-    Arc::new(SniFallbackContext {
-        config: Arc::new(SniFallbackConfig {
-            match_sni: vec![SniMatcher::Exact("localhost".into())],
-            allow_no_sni,
-            max_client_hello_bytes: 8192,
-            backends: vec![SniBackend {
-                authority: backend.to_string(),
-                match_sni: vec![],
-                proxy_protocol,
-            }],
-        }),
-        inbound_listen,
-    })
+    let config = Arc::new(SniFallbackConfig {
+        match_sni: vec![SniMatcher::Exact("localhost".into())],
+        allow_no_sni,
+        max_client_hello_bytes: 8192,
+        backends: vec![SniBackend {
+            authority: backend.to_string(),
+            match_sni: vec![],
+            proxy_protocol,
+        }],
+    });
+    Arc::new(SniFallbackContext::new(config, inbound_listen))
 }
 
 #[tokio::test]

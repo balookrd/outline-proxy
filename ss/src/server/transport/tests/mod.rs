@@ -1,6 +1,7 @@
 use super::*;
 
 mod proxy_protocol;
+mod sni_fallback;
 
 #[test]
 fn h3_no_error_through_sockudo_io_other_is_benign() {
