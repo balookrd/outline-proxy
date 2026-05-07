@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use futures_util::StreamExt;
 use tracing::{debug, warn};
 
@@ -346,6 +346,52 @@ pub(super) async fn connect_tcp_uplink_fresh(
     let setup = WireSetup::from_uplink(&candidate.uplink);
     let (writer, reader) =
         do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval).await?;
+    Ok(ConnectedTcpUplink {
+        writer,
+        reader,
+        source: TcpUplinkSource::FreshDial,
+        wire_index: 0,
+    })
+}
+
+/// Re-dial a TCP WebSocket session for the mid-session retry path
+/// after a transport reset. Identical to [`connect_tcp_uplink_fresh`]
+/// at its WS branch with two restrictions and one opt-in:
+///
+/// * SS-WS only — VLESS / raw-QUIC / direct-socket carriers do not
+///   negotiate the Ack-Prefix Protocol in v1, so the orchestrator
+///   degrades to "no retry" rather than redialling on a path that
+///   would not give us the offset header.
+/// * No raw-QUIC fallback — even when the uplink is configured for
+///   QUIC, mid-session retry only operates on the SS-WS dial path
+///   for the same reason.
+/// * Advertises `X-Outline-Resume-Ack-Prefix: 1` so the server emits
+///   the v1 control frame and the SS reader can park `up_acked`.
+///
+/// Returns the fresh `(TcpWriter, TcpReader)` ready for replay; the
+/// caller is responsible for inspecting `reader.upstream_acked_offset()`
+/// and pushing replay bytes through the writer before resuming the
+/// relay.
+pub(super) async fn redial_for_mid_session_retry(
+    uplinks: &UplinkManager,
+    candidate: &UplinkCandidate,
+    target: &TargetAddr,
+) -> Result<ConnectedTcpUplink> {
+    if candidate.uplink.transport != UplinkTransport::Ws {
+        bail!(
+            "mid-session retry redial only supports SS-WS uplinks; \
+             uplink {} uses transport {:?}",
+            candidate.uplink.name,
+            candidate.uplink.transport,
+        );
+    }
+    let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+    let ws = uplinks
+        .connect_tcp_ws_fresh_with_ack_prefix(candidate, "socks_tcp_retry")
+        .await?;
+    let setup = WireSetup::from_uplink(&candidate.uplink);
+    let (writer, reader) =
+        do_tcp_ss_setup(ws, &setup, target, "socks_tcp_retry", keepalive_interval).await?;
     Ok(ConnectedTcpUplink {
         writer,
         reader,

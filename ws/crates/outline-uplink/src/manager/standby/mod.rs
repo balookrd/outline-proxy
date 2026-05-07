@@ -128,10 +128,38 @@ impl UplinkManager {
     }
 
     /// Dials a fresh TCP WebSocket connection, bypassing the standby pool.
+    /// The Ack-Prefix capability is *not* advertised — the dial path used
+    /// by initial session setup keeps legacy resume-only semantics. Use
+    /// [`Self::connect_tcp_ws_fresh_with_ack_prefix`] from the
+    /// pinned-relay mid-session retry path to opt in.
     pub async fn connect_tcp_ws_fresh(
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
+    ) -> Result<TransportStream> {
+        self.connect_tcp_ws_fresh_internal(candidate, source, false).await
+    }
+
+    /// Same as [`Self::connect_tcp_ws_fresh`] but advertises
+    /// `X-Outline-Resume-Ack-Prefix: 1` on the upgrade so the server
+    /// emits the v1 control frame on a successful resume hit. Caller
+    /// must consume it via the SS reader's
+    /// `upstream_acked_offset()` (Phase 2.3.d) before treating bytes
+    /// as upstream payload. Used exclusively by the pinned-relay
+    /// mid-session retry orchestrator.
+    pub async fn connect_tcp_ws_fresh_with_ack_prefix(
+        &self,
+        candidate: &UplinkCandidate,
+        source: &'static str,
+    ) -> Result<TransportStream> {
+        self.connect_tcp_ws_fresh_internal(candidate, source, true).await
+    }
+
+    async fn connect_tcp_ws_fresh_internal(
+        &self,
+        candidate: &UplinkCandidate,
+        source: &'static str,
+        ack_prefix_requested: bool,
     ) -> Result<TransportStream> {
         let cache = self.inner.dns_cache.as_ref();
         if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
@@ -147,6 +175,7 @@ impl UplinkManager {
         debug!(
             uplink = %candidate.uplink.name,
             mode = %mode,
+            ack_prefix_requested,
             "no warm-standby TCP websocket available, dialing on-demand"
         );
         let url = candidate
@@ -172,11 +201,7 @@ impl UplinkManager {
                 candidate.uplink.ipv6_first,
                 source,
                 resume_request,
-                // Ack-Prefix capability not advertised yet on the standby
-                // refill path. Phase 2.4 (mid-session retry orchestration)
-                // is what consumes the negotiated bit; until that lands,
-                // the standby pool follows the legacy resume semantics.
-                false,
+                ack_prefix_requested,
             ),
         )
         .await

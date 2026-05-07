@@ -147,6 +147,7 @@ pub async fn serve_tcp_connect(
         run_relay(
             uplinks,
             active,
+            target,
             target_label,
             first_chunk,
             client_read,
