@@ -106,10 +106,18 @@ impl SharedH3Connection {
         server_port: u16,
         path: &str,
         resume_request: Option<crate::resumption::SessionId>,
+        ack_prefix_requested: bool,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
-    ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>)> {
+    ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>, bool)> {
         match self
-            .open_websocket_inner(server_name, server_port, path, resume_request, profile)
+            .open_websocket_inner(
+                server_name,
+                server_port,
+                path,
+                resume_request,
+                ack_prefix_requested,
+                profile,
+            )
             .await
         {
             Ok(ws) => Ok(ws),
@@ -132,8 +140,9 @@ impl SharedH3Connection {
         server_port: u16,
         path: &str,
         resume_request: Option<crate::resumption::SessionId>,
+        ack_prefix_requested: bool,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
-    ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>)> {
+    ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>, bool)> {
         if !self.is_open() {
             bail!("shared h3 connection is already closed");
         }
@@ -147,6 +156,13 @@ impl SharedH3Connection {
         if let Some(id) = resume_request {
             request_builder =
                 request_builder.header(crate::resumption::RESUME_REQUEST_HEADER, id.to_hex());
+        }
+        if ack_prefix_requested {
+            // Capability advertise for Ack-Prefix Protocol v1; mirrors the
+            // h2 path. Server emits the 14-byte control frame (SS-WS path
+            // only, in v1) when it sees this header AND the resume hits.
+            request_builder =
+                request_builder.header(crate::resumption::ACK_PREFIX_HEADER, "1");
         }
         let mut request: Request<()> = request_builder
             .body(())
@@ -191,6 +207,15 @@ impl SharedH3Connection {
             .get(crate::resumption::SESSION_RESPONSE_HEADER)
             .and_then(|v| v.to_str().ok())
             .and_then(crate::resumption::SessionId::parse_hex);
+        // Same gating rationale as the h2 path: trust both sides of the
+        // negotiation; a server that emits the echo without us asking would
+        // still leave us without the control frame in the byte stream.
+        let ack_prefix_advertised_by_server = ack_prefix_requested
+            && response
+                .headers()
+                .get(crate::resumption::ACK_PREFIX_HEADER)
+                .and_then(|v| v.to_str().ok())
+                == Some("1");
 
         let h3_stream = SockudoTransportStream::<SockudoHttp3>::from_h3_client(stream);
         self.streams_opened.fetch_add(1, Ordering::Relaxed);
@@ -204,6 +229,7 @@ impl SharedH3Connection {
                 _shared_connection: Arc::clone(self),
             },
             issued_session_id,
+            ack_prefix_advertised_by_server,
         ))
     }
 }
@@ -335,6 +361,9 @@ struct H3Dialer {
     /// dialer construction so the trait `open_on` method can stay
     /// signature-stable while threading the request through.
     resume_request: Option<crate::resumption::SessionId>,
+    /// Whether to advertise the Ack-Prefix Protocol v1 capability on
+    /// this open. Same threading rationale as `resume_request`.
+    ack_prefix_requested: bool,
     /// Browser identity to mix into the CONNECT request headers, or
     /// `None` when fingerprint diversification is disabled. Threaded
     /// alongside `resume_request` for the same reason — the trait
@@ -379,13 +408,21 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         server_port: u16,
         path: &str,
     ) -> Result<TransportStream> {
-        let (ws, issued_session_id) = conn
-            .open_websocket(server_name, server_port, path, self.resume_request, self.profile)
+        let (ws, issued_session_id, ack_prefix_advertised_by_server) = conn
+            .open_websocket(
+                server_name,
+                server_port,
+                path,
+                self.resume_request,
+                self.ack_prefix_requested,
+                self.profile,
+            )
             .await?;
         Ok(TransportStream::H3 {
             inner: ws,
             issued_session_id,
             downgraded_from: None,
+            ack_prefix_advertised_by_server,
         })
     }
 }
@@ -399,6 +436,7 @@ pub(crate) async fn connect_websocket_h3(
     ipv6_first: bool,
     source: &'static str,
     resume_request: Option<crate::resumption::SessionId>,
+    ack_prefix_requested: bool,
 ) -> Result<TransportStream> {
     if url.scheme() != "wss" {
         bail!("h3 websocket transport currently requires wss:// URLs");
@@ -410,7 +448,7 @@ pub(crate) async fn connect_websocket_h3(
         .ok_or_else(|| anyhow!("URL is missing port"))?;
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
-    let dialer = H3Dialer { resume_request, profile };
+    let dialer = H3Dialer { resume_request, ack_prefix_requested, profile };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused

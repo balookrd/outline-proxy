@@ -224,9 +224,13 @@ impl SharedH2Connection {
         self: &Arc<Self>,
         target_uri: &str,
         resume_request: Option<crate::resumption::SessionId>,
+        ack_prefix_requested: bool,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<TransportStream> {
-        match self.open_websocket_inner(target_uri, resume_request, profile).await {
+        match self
+            .open_websocket_inner(target_uri, resume_request, ack_prefix_requested, profile)
+            .await
+        {
             Ok(ws) => Ok(ws),
             Err(error) => {
                 // Any failure opening a new CONNECT stream on an already-cached
@@ -246,6 +250,7 @@ impl SharedH2Connection {
         self: &Arc<Self>,
         target_uri: &str,
         resume_request: Option<crate::resumption::SessionId>,
+        ack_prefix_requested: bool,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<TransportStream> {
         if !self.is_open() {
@@ -265,6 +270,15 @@ impl SharedH2Connection {
         if let Some(id) = resume_request {
             request_builder =
                 request_builder.header(crate::resumption::RESUME_REQUEST_HEADER, id.to_hex());
+        }
+        if ack_prefix_requested {
+            // Capability advertise for Ack-Prefix Protocol v1. The server
+            // only emits the 14-byte control frame (and only on the SS-WS
+            // path) when it sees this header AND the resume hits AND its
+            // own config enables Ack-Prefix support. Otherwise the header
+            // is a no-op — old servers and the VLESS-WS path ignore it.
+            request_builder =
+                request_builder.header(crate::resumption::ACK_PREFIX_HEADER, "1");
         }
         let mut request: Request<Empty<Bytes>> = request_builder
             .body(Empty::new())
@@ -329,10 +343,23 @@ impl SharedH2Connection {
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
         let shared_connection: Arc<dyn SharedConnectionHealth> = self.clone();
         self.streams_opened.fetch_add(1, Ordering::Relaxed);
+        // Negotiation succeeds only when both peers set the header to "1".
+        // Reading the response header without checking `ack_prefix_requested`
+        // would be safe because spec forbids the server from emitting the
+        // control frame unless the request also advertised the capability,
+        // but gating on both makes the client-side semantics auditable
+        // without trusting the server.
+        let ack_prefix_advertised_by_server = ack_prefix_requested
+            && response
+                .headers()
+                .get(crate::resumption::ACK_PREFIX_HEADER)
+                .and_then(|v| v.to_str().ok())
+                == Some("1");
         Ok(TransportStream::H2 {
             inner: H2WsStream::new_shared(ws, shared_connection),
             issued_session_id,
             downgraded_from: None,
+            ack_prefix_advertised_by_server,
         })
     }
 }
@@ -384,6 +411,12 @@ struct H2Dialer {
     /// signature-stable while threading the request through to
     /// `SharedH2Connection::open_websocket`.
     resume_request: Option<crate::resumption::SessionId>,
+    /// Whether to advertise the Ack-Prefix Protocol v1 capability on
+    /// this open. Threaded alongside `resume_request` so the trait
+    /// signature stays unchanged; the inner builder gates header emission
+    /// on this flag and the response-side echo gates the
+    /// `TransportStream::ack_prefix_advertised_by_server` slot.
+    ack_prefix_requested: bool,
     /// Browser identity to mix into the CONNECT request headers,
     /// or `None` when fingerprint diversification is disabled. Same
     /// rationale as `resume_request` above — captured at dialer
@@ -439,7 +472,13 @@ impl crate::shared_dial::WsDialer for H2Dialer {
             "{scheme}://{}{path}",
             format_authority(server_name, Some(server_port)),
         );
-        conn.open_websocket(&target_uri, self.resume_request, self.profile).await
+        conn.open_websocket(
+            &target_uri,
+            self.resume_request,
+            self.ack_prefix_requested,
+            self.profile,
+        )
+        .await
     }
 }
 
@@ -452,6 +491,7 @@ pub(crate) async fn connect_websocket_h2(
     ipv6_first: bool,
     source: &'static str,
     resume_request: Option<crate::resumption::SessionId>,
+    ack_prefix_requested: bool,
 ) -> Result<TransportStream> {
     let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let port = url
@@ -464,7 +504,7 @@ pub(crate) async fn connect_websocket_h2(
     };
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
-    let dialer = H2Dialer { use_tls, resume_request, profile };
+    let dialer = H2Dialer { use_tls, resume_request, ack_prefix_requested, profile };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused

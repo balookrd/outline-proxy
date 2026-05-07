@@ -172,6 +172,11 @@ impl UplinkManager {
                 candidate.uplink.ipv6_first,
                 source,
                 resume_request,
+                // Ack-Prefix capability not advertised yet on the standby
+                // refill path. Phase 2.4 (mid-session retry orchestration)
+                // is what consumes the negotiated bit; until that lands,
+                // the standby pool follows the legacy resume semantics.
+                false,
             ),
         )
         .await
