@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
@@ -112,6 +113,13 @@ pub(super) async fn try_park_vless_tcp(
         protocol_context: TcpProtocolContext::Vless,
         user_counters,
         upstream_guard: guard,
+        // Ack-Prefix Protocol counter starts at 0 for VLESS-WS in v1.
+        // The actual byte-tracking + control-frame emit on resume hit
+        // for VLESS is a follow-up; until then VLESS resumes behave
+        // exactly as before (parked TcpStream reattach, no replay
+        // signalling). The Arc is wired here so the data model is
+        // uniform across protocols.
+        upstream_bytes_acked: Arc::new(AtomicU64::new(0)),
     };
     debug!(
         user = %owner,

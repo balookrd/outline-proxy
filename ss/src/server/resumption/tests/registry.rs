@@ -100,6 +100,10 @@ async fn make_parked_tcp(metrics: &Arc<Metrics>, owner: &str) -> Parked {
             Protocol::Http2,
             AppProtocol::Shadowsocks,
         ),
+        // Counter is registry-level data; tests of the registry itself
+        // don't exercise the Ack-Prefix relay path, just need a sane
+        // initial value.
+        upstream_bytes_acked: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     })
 }
 

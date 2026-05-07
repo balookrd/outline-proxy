@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::WebSocket;
@@ -102,6 +103,13 @@ pub(in crate::server) struct ResumeContext {
     /// `X-Outline-Session` response header) so that, on disconnect, the
     /// upstream can be parked under a key the client already knows.
     pub(in crate::server) issued_session_id: Option<SessionId>,
+    /// Whether the client advertised the Ack-Prefix Protocol capability
+    /// (`X-Outline-Resume-Ack-Prefix: 1`). When true on a successful
+    /// resume hit the server emits a 14-byte control frame ahead of the
+    /// upstream→client relay so the client can replay only the bytes
+    /// the upstream `TcpStream` has not yet acked.
+    /// See `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1).
+    pub(in crate::server) ack_prefix_requested: bool,
 }
 
 /// Lower-cased name of the request header carrying the Session ID a
@@ -113,6 +121,11 @@ pub(in crate::server) const RESUME_CAPABLE_HEADER: &str = "x-outline-resume-capa
 /// Lower-cased name of the response header carrying the Session ID the
 /// server has assigned to the just-established session.
 pub(in crate::server) const SESSION_RESPONSE_HEADER: &str = "x-outline-session";
+/// Lower-cased name of the request **and** response header used to
+/// negotiate the Ack-Prefix Protocol (v1). Client sets `1` to advertise
+/// support; server echoes `1` to confirm support. See
+/// `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1).
+pub(in crate::server) const ACK_PREFIX_HEADER: &str = "x-outline-resume-ack-prefix";
 
 impl ResumeContext {
     /// Builds a [`ResumeContext`] by inspecting incoming HTTP request
@@ -139,7 +152,16 @@ impl ResumeContext {
         } else {
             None
         };
-        Self { requested_resume, issued_session_id }
+        // Ack-Prefix Protocol capability advertisement. Pre-auth header
+        // read is safe: only the boolean capability bit is exposed, no
+        // session-id existence is leaked. The actual control-frame emit
+        // gates on the post-auth orphan-take hit + this flag.
+        let ack_prefix_requested = registry.enabled()
+            && headers
+                .get(ACK_PREFIX_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.trim() == "1");
+        Self { requested_resume, issued_session_id, ack_prefix_requested }
     }
 
     /// Inserts the `X-Outline-Session` response header carrying the
@@ -149,6 +171,20 @@ impl ResumeContext {
             && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
         {
             headers.insert(SESSION_RESPONSE_HEADER, value);
+        }
+    }
+
+    /// Echoes the `X-Outline-Resume-Ack-Prefix: 1` capability response
+    /// header when the client advertised it. The control frame is still
+    /// gated on a successful post-auth orphan-take, but advertising the
+    /// capability up-front lets the client know to expect it should the
+    /// resume hit. No-op when the client did not advertise.
+    pub(in crate::server) fn issue_ack_prefix_header(
+        &self,
+        headers: &mut axum::http::HeaderMap,
+    ) {
+        if self.ack_prefix_requested {
+            headers.insert(ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
         }
     }
 }
@@ -183,6 +219,21 @@ struct WsTcpRelayState {
     /// the cache write to avoid hammering the LRU mutex on every binary
     /// frame of an established session.
     peer_user_cache_recorded: bool,
+    /// Whether the client advertised the Ack-Prefix Protocol capability
+    /// in its upgrade request. Mirrored from
+    /// [`ResumeContext::ack_prefix_requested`] so the relay loop can
+    /// decide whether to emit the control frame on a resume hit without
+    /// re-threading `ResumeContext` through every helper.
+    ack_prefix_requested: bool,
+    /// Cumulative bytes the relay has successfully written upstream over
+    /// the lifetime of this session. Monotonic; survives parks (the
+    /// `Arc<AtomicU64>` is moved into `ParkedTcp` and back on resume).
+    /// Read by the Ack-Prefix control frame on resume hit so the client
+    /// can replay only the bytes the upstream `TcpStream` has not yet
+    /// acked. Counts plaintext payload bytes (post-AEAD-decrypt for
+    /// SS-WS; raw VLESS payload for VLESS-WS) — same units the client
+    /// tracks on its sent counter.
+    upstream_bytes_acked: Arc<AtomicU64>,
 }
 
 struct WsTcpFrameOutput<'a, Msg> {
@@ -204,6 +255,11 @@ impl WsTcpRelayState {
             issued_session_id: resume.issued_session_id,
             pending_resume_request: resume.requested_resume,
             peer_user_cache_recorded: false,
+            ack_prefix_requested: resume.ack_prefix_requested,
+            // Counter starts at 0 on every fresh session. On resume hit
+            // the parked state's Arc replaces this one — see the resume
+            // branch in `attach_resumed_state_or_dial`.
+            upstream_bytes_acked: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -504,6 +560,11 @@ async fn try_park_on_drop(
         protocol_context: TcpProtocolContext::Ss(user),
         user_counters,
         upstream_guard,
+        // Move the Arc — the relay will get a fresh `Arc<AtomicU64>`
+        // when (and if) it next runs without a resume hit. On a resume
+        // hit the existing Arc is moved back into the new
+        // WsTcpRelayState so the counter stays monotonic across parks.
+        upstream_bytes_acked: Arc::clone(&state.upstream_bytes_acked),
     };
     debug!(
         user = %owner,
@@ -657,6 +718,13 @@ where
             state.upstream_writer = Some(parked.upstream_writer);
             state.upstream_guard = Some(parked.upstream_guard);
             state.upstream_target_display = Some(parked.target_display);
+            // Move the parked counter back into the relay state so the
+            // monotonic upstream-acked count survives this reattach.
+            // Subsequent `forward_plaintext_to_writer` increments will
+            // continue from the value the previous incarnation left
+            // off at — exactly what the Ack-Prefix Protocol contract
+            // requires of `up_acked`.
+            state.upstream_bytes_acked = parked.upstream_bytes_acked;
             plaintext_buffer.drain(..consumed);
             // Subsequent payload bytes (if any) are forwarded by the
             // generic write branch below.
@@ -787,11 +855,21 @@ async fn forward_plaintext_to_writer(
                 .tcp_in(AppProtocol::Shadowsocks, protocol)
                 .increment(plaintext_buffer.len() as u64);
         }
+        let payload_len = plaintext_buffer.len() as u64;
         writer
             .write_all(plaintext_buffer)
             .await
             .context("failed to write decrypted data upstream")
             .map_err(FrameError::Fatal)?;
+        // Bump the per-session upstream-acked counter only on successful
+        // `write_all`. The kernel TCP send buffer accepts the bytes
+        // here — past this point they belong to the upstream socket's
+        // queue, even if the network later drops them. The Ack-Prefix
+        // Protocol contract is "server forwarded N bytes to upstream",
+        // and `write_all` succeeding is exactly that handoff.
+        state
+            .upstream_bytes_acked
+            .fetch_add(payload_len, Ordering::Relaxed);
         plaintext_buffer.clear();
     }
     Ok(())

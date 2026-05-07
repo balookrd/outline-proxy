@@ -101,7 +101,11 @@ pub(super) async fn run_stream(
         None
     };
     let requested_resume = request.addons.resume_id.map(SessionId::from_bytes);
-    let resume_ctx = ResumeContext { requested_resume, issued_session_id };
+    // Ack-Prefix Protocol negotiation is HTTP-header-based and therefore
+    // does not apply to raw-QUIC VLESS sessions (no HTTP layer to carry
+    // the capability advertisement). Always disabled on this path.
+    let resume_ctx =
+        ResumeContext { requested_resume, issued_session_id, ack_prefix_requested: false };
 
     match request.command {
         VlessCommand::Tcp => {

@@ -16,6 +16,7 @@ use std::{
     collections::HashMap,
     net::SocketAddr,
     sync::Arc,
+    sync::atomic::AtomicU64,
 };
 
 use bytes::BytesMut;
@@ -107,6 +108,13 @@ pub(crate) struct ParkedTcp {
     pub(crate) protocol_context: TcpProtocolContext,
     pub(crate) user_counters: Arc<PerUserCounters>,
     pub(crate) upstream_guard: TcpUpstreamGuard,
+    /// Cumulative bytes the relay successfully wrote to
+    /// [`Self::upstream_writer`] over the lifetime of this session.
+    /// Survives parks (the same `Arc` is moved back into the relay
+    /// state on resume hit) so the Ack-Prefix Protocol's `up_acked`
+    /// counter is monotonic across reattaches. See
+    /// `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1).
+    pub(crate) upstream_bytes_acked: Arc<AtomicU64>,
 }
 
 /// Atomic park of a VLESS mux session. The whole multiplex — every
