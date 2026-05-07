@@ -980,19 +980,18 @@ fn xhttp_recovery_cooldown_blocks_recovery_push_until_expiry() {
 }
 
 #[test]
-fn xhttp_post_recovery_grace_absorbs_single_probe_fail() {
+fn xhttp_post_recovery_grace_absorbs_consecutive_probe_fails_until_min_failures() {
     use crate::config::TransportMode;
     use crate::manager::probe::outcome::ProbeOutcome;
 
     let mut cfg = vless_xhttp_primary(); // configured XhttpH3
     cfg.fallbacks = vec![ws_fallback(false)];
-    // min_failures=2 — the grace must require 2 consecutive failures
-    // before re-installing the cap. A single fail is absorbed.
+    // min_failures=2 — grace absorbs 2 attempts, releases on 3rd.
     let manager = manager_with_uplink(cfg, 2);
 
-    // Simulate a successful recovery probe by calling
-    // `clear_mode_downgrade` directly — it stamps
-    // `last_recovery_success_at` so the grace window opens.
+    // Seed a cap, then simulate a successful recovery by calling
+    // `clear_mode_downgrade` directly — it stamps `last_recovery_success_at`
+    // so the grace window opens.
     manager.test_seed_mode_downgrade_for_test(
         0,
         TransportKind::Tcp,
@@ -1000,19 +999,9 @@ fn xhttp_post_recovery_grace_absorbs_single_probe_fail() {
     );
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
     let s = manager.read_status_for_test(0);
-    assert!(
-        s.tcp.mode_downgrade_capped_to.is_none(),
-        "clear after recovery success must drop the cap",
-    );
-    assert!(
-        s.tcp.last_recovery_success_at.is_some(),
-        "clear after recovery success must stamp the grace timestamp",
-    );
+    assert!(s.tcp.mode_downgrade_capped_to.is_none());
+    assert!(s.tcp.last_recovery_success_at.is_some());
 
-    // First post-recovery probe at configured H3 fails — the
-    // descent path normally installs cap=H2 from a single fail
-    // (because the window is currently inactive). Grace must
-    // absorb this first fail.
     let make_failed = || ProbeOutcome {
         tcp_ok: false,
         udp_ok: false,
@@ -1025,22 +1014,26 @@ fn xhttp_post_recovery_grace_absorbs_single_probe_fail() {
     let uplink = manager.uplinks()[0].clone();
     let mut tcp_recovery = Vec::new();
     let mut udp_recovery = Vec::new();
-    let _ = manager.process_probe_ok(
-        0,
-        &uplink,
-        make_failed(),
-        TransportMode::XhttpH3,
-        TransportMode::XhttpH3,
-        &mut tcp_recovery,
-        &mut udp_recovery,
-    );
-    assert!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
-        "single post-recovery probe-fail must NOT re-install the cap (grace absorbs it)",
-    );
 
-    // Second consecutive fail crosses min_failures=2; grace gate
-    // releases and the cap re-installs.
+    // First two consecutive probe-fails inside grace are absorbed.
+    for i in 0..2 {
+        let _ = manager.process_probe_ok(
+            0,
+            &uplink,
+            make_failed(),
+            TransportMode::XhttpH3,
+            TransportMode::XhttpH3,
+            &mut tcp_recovery,
+            &mut udp_recovery,
+        );
+        assert!(
+            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+            "probe-fail #{} inside grace must be absorbed (counter < min_failures)",
+            i + 1,
+        );
+    }
+
+    // Third consecutive fail releases the gate; cap re-installs.
     let _ = manager.process_probe_ok(
         0,
         &uplink,
@@ -1053,7 +1046,87 @@ fn xhttp_post_recovery_grace_absorbs_single_probe_fail() {
     assert_eq!(
         manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
         Some(TransportMode::XhttpH2),
-        "after min_failures consecutive fails grace releases and the cap re-installs",
+        "after `min_failures` absorbed fails the grace releases on the next descent",
+    );
+}
+
+#[test]
+fn xhttp_post_recovery_grace_counter_reset_by_probe_success_between_fails() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary(); // configured XhttpH3
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 2);
+
+    manager.test_seed_mode_downgrade_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::XhttpH2,
+    );
+    manager.clear_mode_downgrade(0, TransportKind::Tcp);
+
+    let make_failed = || ProbeOutcome {
+        tcp_ok: false,
+        udp_ok: false,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let make_ok = || ProbeOutcome {
+        tcp_ok: true,
+        udp_ok: true,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+
+    // Pattern: fail, success, fail, success, fail — five cycles. The
+    // success between fails should reset the grace counter, so the
+    // total absorbed-without-release count is "1 fail since last
+    // success" each time, never reaching min_failures=2.
+    for cycle in 0..3 {
+        let _ = manager.process_probe_ok(
+            0,
+            &uplink,
+            make_failed(),
+            TransportMode::XhttpH3,
+            TransportMode::XhttpH3,
+            &mut tcp_recovery,
+            &mut udp_recovery,
+        );
+        assert!(
+            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+            "cycle {}: lone fail with intervening successes must stay absorbed",
+            cycle,
+        );
+        let _ = manager.process_probe_ok(
+            0,
+            &uplink,
+            make_ok(),
+            TransportMode::XhttpH3,
+            TransportMode::XhttpH3,
+            &mut tcp_recovery,
+            &mut udp_recovery,
+        );
+        assert_eq!(
+            manager.read_status_for_test(0).tcp.post_recovery_grace_descent_attempts,
+            0,
+            "probe success in grace must reset the absorbed-attempts counter",
+        );
+    }
+
+    // Final assertion: cap is still cleared after the mixed pattern.
+    assert!(
+        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+        "isolated fails with successes between are absorbed forever — no cap re-install",
     );
 }
 
@@ -1063,11 +1136,9 @@ fn xhttp_post_recovery_grace_absorbs_silent_fallback_from_dispatcher() {
 
     let mut cfg = vless_xhttp_primary(); // configured XhttpH3
     cfg.fallbacks = vec![ws_fallback(false)];
-    // min_failures=2 — grace must absorb the first silent-fallback
-    // observation, the second releases the gate and re-installs cap.
+    // min_failures=2 — grace absorbs 2 silent fallbacks, releases on 3rd.
     let manager = manager_with_uplink(cfg, 2);
 
-    // Simulate a successful recovery: clear cap, stamp grace.
     manager.test_seed_mode_downgrade_for_test(
         0,
         TransportKind::Tcp,
@@ -1075,23 +1146,23 @@ fn xhttp_post_recovery_grace_absorbs_silent_fallback_from_dispatcher() {
     );
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
 
-    // First user-driven dial right after clear sees an inline silent
-    // fall H3 → H2 (server's H3 path is broken). The dispatcher
-    // calls `note_silent_transport_fallback`. Without the grace
-    // extension this would re-install cap=H2 from a single signal
-    // and produce the visible H2 ↔ H3 flap operators saw.
-    manager.note_silent_transport_fallback(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH3,
-    );
-    assert!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
-        "first silent fallback inside post-recovery grace must NOT re-install the cap",
-    );
+    // First two silent fallbacks (typical dispatcher pattern: each
+    // user-driven dial that observes an inline H3 → H2 fall) are
+    // absorbed by the grace gate.
+    for i in 0..2 {
+        manager.note_silent_transport_fallback(
+            0,
+            TransportKind::Tcp,
+            TransportMode::XhttpH3,
+        );
+        assert!(
+            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+            "silent fallback #{} inside post-recovery grace must be absorbed",
+            i + 1,
+        );
+    }
 
-    // Second silent-fallback observation crosses the grace budget;
-    // gate releases, cap re-installs at H2.
+    // Third silent fallback releases the gate (counter == min_failures).
     manager.note_silent_transport_fallback(
         0,
         TransportKind::Tcp,
@@ -1100,7 +1171,7 @@ fn xhttp_post_recovery_grace_absorbs_silent_fallback_from_dispatcher() {
     assert_eq!(
         manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
         Some(TransportMode::XhttpH2),
-        "second silent fallback inside grace releases the gate and re-installs the cap",
+        "third silent fallback releases the gate and re-installs the cap",
     );
 }
 
@@ -1119,22 +1190,24 @@ fn xhttp_post_recovery_grace_absorbs_runtime_failure_after_recovery() {
     );
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
 
-    // Real-traffic runtime failure on configured carrier right after
-    // recovery clear: typical pattern when H3 silent-falls observed
-    // by the proxy data plane (e.g. peer_closed mid-frame).
-    let err = anyhow::anyhow!("h3 stream reset by peer");
-    manager.note_advanced_mode_dial_failure(0, TransportKind::Tcp, &err);
-    assert!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
-        "first runtime failure inside post-recovery grace must be absorbed",
-    );
+    // First two runtime failures inside grace are absorbed.
+    for i in 0..2 {
+        let err = anyhow::anyhow!("h3 stream reset by peer ({})", i);
+        manager.note_advanced_mode_dial_failure(0, TransportKind::Tcp, &err);
+        assert!(
+            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+            "runtime failure #{} inside post-recovery grace must be absorbed",
+            i + 1,
+        );
+    }
 
-    let err = anyhow::anyhow!("h3 stream reset by peer (2)");
+    // Third releases the gate.
+    let err = anyhow::anyhow!("h3 stream reset by peer (final)");
     manager.note_advanced_mode_dial_failure(0, TransportKind::Tcp, &err);
     assert_eq!(
         manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
         Some(TransportMode::XhttpH2),
-        "second runtime failure inside grace releases the gate",
+        "third runtime failure releases the grace gate",
     );
 }
 
@@ -1153,24 +1226,22 @@ fn xhttp_post_recovery_grace_attempts_reset_on_cap_install() {
     );
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
 
-    // Two absorbed attempts; counter reaches 2.
-    manager.note_silent_transport_fallback(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH3,
-    );
-    manager.note_silent_transport_fallback(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH3,
-    );
+    // Three absorbed attempts; counter reaches 3 (= min_failures).
+    for _ in 0..3 {
+        manager.note_silent_transport_fallback(
+            0,
+            TransportKind::Tcp,
+            TransportMode::XhttpH3,
+        );
+    }
     assert_eq!(
         manager.read_status_for_test(0).tcp.post_recovery_grace_descent_attempts,
-        2,
-        "two absorbed silent fallbacks counted toward the grace budget",
+        3,
+        "three absorbed silent fallbacks counted toward the grace budget",
     );
 
-    // Third silent fallback releases the gate and installs cap.
+    // Fourth silent fallback releases the gate and installs cap
+    // (counter == min_failures, condition `< min_failures` false).
     manager.note_silent_transport_fallback(
         0,
         TransportKind::Tcp,
@@ -1180,7 +1251,7 @@ fn xhttp_post_recovery_grace_attempts_reset_on_cap_install() {
     assert_eq!(
         s.tcp.mode_downgrade_capped_to,
         Some(TransportMode::XhttpH2),
-        "third silent fallback released the gate (min_failures=3 → 2 absorbs + release on 3rd)",
+        "fourth silent fallback released the gate (min_failures=3 → 3 absorbs + release on 4th)",
     );
     assert_eq!(
         s.tcp.post_recovery_grace_descent_attempts, 0,
@@ -1265,42 +1336,63 @@ fn xhttp_recovery_streak_reset_on_descent() {
 }
 
 #[test]
-fn xhttp_recovery_streak_reset_when_cap_re_installed() {
+fn xhttp_recovery_streak_reset_when_cap_changes_via_descent() {
     use crate::config::TransportMode;
-    use crate::manager::mode_downgrade::ModeDowngradeTrigger;
+    use crate::manager::probe::outcome::ProbeOutcome;
 
     let mut cfg = vless_xhttp_primary();
     cfg.fallbacks = vec![ws_fallback(false)];
-    // min_failures=1 so a single ProbeTransportFailure installs the cap.
+    // min_failures=1 so a single probe failure releases descent.
     let manager = manager_with_uplink(cfg, 1);
 
+    // Pre-seed cap=H2, then bump the streak to 1 via a tentative
+    // recovery success (cap stays H2 because threshold = 2). No
+    // call to `clear_mode_downgrade`, so the post-recovery grace
+    // is NOT armed and the descent path runs straight through.
     manager.test_seed_mode_downgrade_for_test(
         0,
         TransportKind::Tcp,
         TransportMode::XhttpH2,
     );
     manager.note_recovery_probe_success(0, TransportKind::Tcp);
-    // streak = 1, cap = H2, threshold = 2 (not met).
-    manager.clear_mode_downgrade(0, TransportKind::Tcp);
-    // Now cap = None, streak reset by clear.
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.recovery_probe_success_streak,
+        1,
+    );
 
-    // Re-install the cap via descent — even if we somehow get a
-    // recovery success notification later, the streak must NOT
-    // count from a stale value.
-    manager.extend_mode_downgrade(
+    // Drive a probe failure at the capped carrier (H2). With
+    // min_failures=1 the in-window descent gate is satisfied
+    // immediately, so the cap descends one rank to H1.
+    let outcome = ProbeOutcome {
+        tcp_ok: false,
+        udp_ok: false,
+        udp_applicable: true,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+    let _ = manager.process_probe_ok(
         0,
-        TransportKind::Tcp,
-        ModeDowngradeTrigger::ProbeTransportFailure(TransportMode::XhttpH3),
+        &uplink,
+        outcome,
+        TransportMode::XhttpH2,
+        TransportMode::XhttpH2,
+        &mut tcp_recovery,
+        &mut udp_recovery,
     );
     let s = manager.read_status_for_test(0);
     assert_eq!(
         s.tcp.mode_downgrade_capped_to,
-        Some(TransportMode::XhttpH2),
-        "descent re-installed the cap",
+        Some(TransportMode::XhttpH1),
+        "descent moved the cap H2 → H1 (cap_changed = true)",
     );
     assert_eq!(
         s.tcp.recovery_probe_success_streak, 0,
-        "cap install resets the recovery streak — any prior tentative successes are stale",
+        "cap_changed resets the recovery streak — prior tentative successes are stale",
     );
 }
 
