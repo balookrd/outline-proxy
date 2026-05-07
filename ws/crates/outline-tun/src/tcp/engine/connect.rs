@@ -192,6 +192,15 @@ async fn do_tcp_ss_setup(
         target: target.to_string(),
     };
 
+    // Snapshot the Ack-Prefix negotiation outcome before any
+    // consume — both VLESS's `vless_tcp_pair_from_ws` and SS-WS's
+    // `.split()` take ownership of the underlying stream halves,
+    // after which the accessor on the enum is gone. TUN engine
+    // never opts in today (the mid-session retry path is the only
+    // opt-in caller), so the bit will be `false`; wiring it now
+    // keeps the reader ready for future opt-in callers.
+    let expect_ack_prefix = ws_stream.ack_prefix_advertised_by_server();
+
     if uplink.transport == UplinkTransport::Vless {
         let uuid = uplink
             .vless_id
@@ -205,15 +214,10 @@ async fn do_tcp_ss_setup(
             diag,
             keepalive_interval,
         );
-        return Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader)));
+        let reader = TcpReader::Vless(reader).with_expect_ack_prefix(expect_ack_prefix);
+        return Ok((TcpWriter::Vless(writer), reader));
     }
 
-    // Snapshot the Ack-Prefix negotiation outcome before `.split()`
-    // consumes the TransportStream — once split, the accessor on the
-    // sink/stream halves is gone. TUN engine never opts in today
-    // (Phase 2.4 work), so the bit will be `false`; wiring it now keeps
-    // the reader ready for future opt-in callers.
-    let expect_ack_prefix = ws_stream.ack_prefix_advertised_by_server();
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let (mut writer, ctrl_tx) =

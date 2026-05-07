@@ -111,29 +111,53 @@ impl TcpReader {
         }
     }
 
-    /// Tells the inner SS-AEAD reader to expect a v1 Ack-Prefix control
-    /// frame as the very first decrypted payload. Forwarded only to the
-    /// WS variant — the SS-WS path is the only one that ever negotiates
-    /// the capability in v1; Socket / VLESS / raw-QUIC variants ignore
-    /// the call so callers can wire it unconditionally.
+    /// Tells the inner reader to expect a v1 Ack-Prefix control
+    /// frame as the very first payload bytes after handshake.
+    /// Forwarded to the WS (SS-WS) and VLESS variants — the
+    /// Socket / raw-QUIC variants ignore the call so callers can
+    /// wire it unconditionally regardless of negotiation outcome.
     pub fn with_expect_ack_prefix(self, expect: bool) -> Self {
         match self {
             Self::Ws(r) => Self::Ws(r.with_expect_ack_prefix(expect)),
+            Self::Vless(r) => Self::Vless(r.with_expect_ack_prefix(expect)),
             other => other,
         }
     }
 
     /// Returns the server-reported `up_acked` byte offset parsed from
-    /// the v1 Ack-Prefix control frame. `None` for non-WS variants and
-    /// for WS variants where the protocol was not negotiated or the
-    /// prefix has not yet been parsed (no `read_chunk` call has
-    /// completed since the upgrade).
+    /// the v1 Ack-Prefix control frame. `None` for non-negotiating
+    /// variants (Socket / raw-QUIC) and for negotiating variants
+    /// where the prefix has not yet been parsed.
     pub fn upstream_acked_offset(&self) -> Option<u64> {
         match self {
             Self::Ws(r) => r.upstream_acked_offset(),
-            Self::Socket(_) | Self::Vless(_) => None,
+            Self::Vless(r) => r.upstream_acked_offset(),
+            Self::Socket(_) => None,
             #[cfg(feature = "quic")]
             Self::QuicSs(_) => None,
+        }
+    }
+
+    /// Drives the v1 Ack-Prefix control frame consume up-front,
+    /// bounded by `timeout`. On success the parsed offset is parked
+    /// on the inner reader and returned; subsequent
+    /// [`Self::upstream_acked_offset`] calls observe the same value.
+    /// `Ok(None)` on no-op (protocol not negotiated, prefix already
+    /// consumed, or the reader is a non-negotiating variant).
+    ///
+    /// Forwarded to the WS (SS-WS) and VLESS variants. Socket /
+    /// raw-QUIC variants return `Ok(None)` without touching the
+    /// network.
+    pub async fn consume_ack_prefix_with_timeout(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> anyhow::Result<Option<u64>> {
+        match self {
+            Self::Ws(r) => r.consume_ack_prefix_with_timeout(timeout).await,
+            Self::Vless(r) => r.consume_ack_prefix_with_timeout(timeout).await,
+            Self::Socket(_) => Ok(None),
+            #[cfg(feature = "quic")]
+            Self::QuicSs(_) => Ok(None),
         }
     }
 

@@ -9,6 +9,7 @@ use socks5_proto::TargetAddr;
 use tokio::sync::oneshot;
 
 use crate::{TransportStream, UpstreamTransportGuard, WsClosed, frame_io_ws::WS_READ_IDLE_TIMEOUT, resumption::SessionId};
+use crate::ack_prefix::{FRAME_LEN_V1, ParseResult, parse_v1};
 
 use super::header::{
     VLESS_CMD_TCP, VLESS_VERSION, build_request_header,
@@ -112,6 +113,25 @@ pub struct VlessTcpReader {
     /// server round-trip — the dial returns immediately and the sink
     /// fires lazily on the first inbound frame.
     session_id_sink: Option<oneshot::Sender<Option<SessionId>>>,
+    /// Set by the caller when the WS upgrade negotiated the v1
+    /// Ack-Prefix Protocol on the VLESS-WS path (server echoed
+    /// `X-Outline-Resume-Ack-Prefix: 1`). When `true`, the very
+    /// first 14 bytes received AFTER the VLESS response header are
+    /// treated as the v1 control frame defined in the SS-RUST repo's
+    /// `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol; the
+    /// reader transparently consumes them, parks the offset on
+    /// [`Self::up_acked`], and returns the next real payload chunk.
+    expect_ack_prefix: bool,
+    /// Server-reported `up_acked` byte count from the v1 control
+    /// frame, or `None` when the protocol was not negotiated, the
+    /// prefix has not yet been parsed, or the frame was malformed.
+    up_acked: Option<u64>,
+    /// Bytes deferred to the *next* call of [`Self::read_chunk`].
+    /// Populated by [`Self::consume_ack_prefix`] when the prefix and
+    /// trailing application data arrived in the same WS frame, so
+    /// the `read_chunk` immediately after `consume_ack_prefix` does
+    /// not silently drop those bytes.
+    pending_tail: Option<Vec<u8>>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
@@ -125,6 +145,9 @@ impl VlessTcpReader {
             pending_header: true,
             header_buf: Vec::new(),
             session_id_sink: None,
+            expect_ack_prefix: false,
+            up_acked: None,
+            pending_tail: None,
             _lifetime: lifetime,
         }
     }
@@ -145,6 +168,9 @@ impl VlessTcpReader {
             pending_header: true,
             header_buf: Vec::new(),
             session_id_sink: Some(sink),
+            expect_ack_prefix: false,
+            up_acked: None,
+            pending_tail: None,
             _lifetime: lifetime,
         }
     }
@@ -155,43 +181,193 @@ impl VlessTcpReader {
         self.source.closed_cleanly()
     }
 
+    /// Tells the reader to expect a v1 Ack-Prefix control frame as
+    /// the very first 14 bytes received AFTER the VLESS response
+    /// header. Set this when (and only when) the WS upgrade response
+    /// carried `X-Outline-Resume-Ack-Prefix: 1` — i.e.
+    /// [`crate::TransportStream::ack_prefix_advertised_by_server`]
+    /// is `true`. The first call to [`Self::read_chunk`] (or the
+    /// preferred [`Self::consume_ack_prefix`] fast path) consumes the
+    /// 14 prefix bytes, parks the reported offset on
+    /// [`Self::upstream_acked_offset`], and returns the next real
+    /// payload chunk.
+    pub fn with_expect_ack_prefix(mut self, expect: bool) -> Self {
+        self.expect_ack_prefix = expect;
+        self
+    }
+
+    /// Server-reported `up_acked` byte offset from the v1 Ack-Prefix
+    /// control frame, or `None` when the protocol was not negotiated
+    /// or the prefix has not yet been parsed.
+    pub fn upstream_acked_offset(&self) -> Option<u64> {
+        self.up_acked
+    }
+
+    /// v1.1 fast path: drives the VLESS response header parse and the
+    /// 14-byte control-frame consume up-front, returning the parsed
+    /// offset BEFORE the relay loop reads any real data. Pair with
+    /// [`Self::consume_ack_prefix_with_timeout`] in production code so
+    /// a server that negotiated the capability but never emits the
+    /// frame cannot stall the orchestrator forever.
+    ///
+    /// Returns `Ok(None)` immediately when the protocol was not
+    /// negotiated (the caller never set
+    /// [`Self::with_expect_ack_prefix`]) or when the prefix has
+    /// already been consumed by a previous call. Any parse failure
+    /// drops the session per spec strict handling.
+    pub async fn consume_ack_prefix(&mut self) -> Result<Option<u64>> {
+        if !self.expect_ack_prefix {
+            return Ok(self.up_acked);
+        }
+        self.ensure_header_parsed().await?;
+        loop {
+            if !self.header_buf.is_empty() {
+                let buffered = std::mem::take(&mut self.header_buf);
+                if let Some(extras) = self.try_consume_prefix_inline(&buffered)? {
+                    if !extras.is_empty() {
+                        self.pending_tail = Some(extras);
+                    }
+                    return Ok(self.up_acked);
+                }
+                self.header_buf = buffered;
+            }
+            let bytes = match self.source.recv_frame().await? {
+                None => return Err(anyhow::Error::from(WsClosed)),
+                Some(b) => b,
+            };
+            self.header_buf.extend_from_slice(&bytes);
+        }
+    }
+
+    /// Same as [`Self::consume_ack_prefix`] but bounded by `timeout`
+    /// — protects the orchestrator against a server that negotiated
+    /// the capability but never emits the frame. On timeout the
+    /// session is dropped (matches the SS-reader `consume_ack_prefix
+    /// _with_timeout` semantics).
+    pub async fn consume_ack_prefix_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<u64>> {
+        match tokio::time::timeout(timeout, self.consume_ack_prefix()).await {
+            Ok(result) => result,
+            Err(_) => bail!(
+                "vless ack-prefix v1 control frame did not arrive within {} ms; \
+                 dropping session",
+                timeout.as_millis(),
+            ),
+        }
+    }
+
     pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
+        // Fast path for the v1.1 orchestrator: hand back any bytes
+        // that arrived bundled with a previously-consumed control
+        // frame so the caller sees them as the first data chunk.
+        if let Some(tail) = self.pending_tail.take() {
+            return Ok(tail);
+        }
+        self.ensure_header_parsed().await?;
+        if self.expect_ack_prefix {
+            loop {
+                if !self.header_buf.is_empty() {
+                    let buffered = std::mem::take(&mut self.header_buf);
+                    if let Some(extras) = self.try_consume_prefix_inline(&buffered)? {
+                        if !extras.is_empty() {
+                            return Ok(extras);
+                        }
+                        // Exact 14-byte prefix; drop into the data
+                        // path and read the next frame.
+                        break;
+                    }
+                    self.header_buf = buffered;
+                }
+                let bytes = match self.source.recv_frame().await? {
+                    None => return Err(anyhow::Error::from(WsClosed)),
+                    Some(b) => b,
+                };
+                self.header_buf.extend_from_slice(&bytes);
+            }
+        }
         loop {
             let bytes = match self.source.recv_frame().await? {
                 None => return Err(anyhow::Error::from(WsClosed)),
                 Some(b) => b,
             };
-            if self.pending_header {
-                self.header_buf.extend_from_slice(&bytes);
-                if self.header_buf.len() < 2 {
-                    continue;
-                }
-                let version = self.header_buf[0];
-                if version != VLESS_VERSION {
-                    bail!("vless bad response version {version:#x}");
-                }
-                let addons_len = self.header_buf[1] as usize;
-                let need = 2 + addons_len;
-                if self.header_buf.len() < need {
-                    continue;
-                }
-                // Resumption-aware reader: pull SESSION_ID out of the
-                // response Addons block and notify the dial-side sink.
-                // Non-resumption readers skip this — the sink is None.
-                if let Some(sink) = self.session_id_sink.take() {
-                    let session_id =
-                        parse_response_addons_session_id(&self.header_buf[2..need]);
-                    let _ = sink.send(session_id);
-                }
-                let tail = self.header_buf.split_off(need);
-                self.header_buf.clear();
-                self.pending_header = false;
-                if !tail.is_empty() {
-                    return Ok(tail);
-                }
+            return Ok(bytes.into());
+        }
+    }
+
+    /// Drives `recv_frame` until the VLESS response header (`[version,
+    /// addons_len, addons…]`) is fully decoded; any trailing bytes
+    /// past the header (data bytes that arrived in the same WS frame)
+    /// remain in `self.header_buf` for the caller to consume next.
+    async fn ensure_header_parsed(&mut self) -> Result<()> {
+        if !self.pending_header {
+            return Ok(());
+        }
+        loop {
+            let bytes = match self.source.recv_frame().await? {
+                None => return Err(anyhow::Error::from(WsClosed)),
+                Some(b) => b,
+            };
+            self.header_buf.extend_from_slice(&bytes);
+            if self.header_buf.len() < 2 {
                 continue;
             }
-            return Ok(bytes.into());
+            let version = self.header_buf[0];
+            if version != VLESS_VERSION {
+                bail!("vless bad response version {version:#x}");
+            }
+            let addons_len = self.header_buf[1] as usize;
+            let need = 2 + addons_len;
+            if self.header_buf.len() < need {
+                continue;
+            }
+            // Resumption-aware reader: pull SESSION_ID out of the
+            // response Addons block and notify the dial-side sink.
+            // Non-resumption readers skip this — the sink is None.
+            if let Some(sink) = self.session_id_sink.take() {
+                let session_id = parse_response_addons_session_id(&self.header_buf[2..need]);
+                let _ = sink.send(session_id);
+            }
+            let tail = self.header_buf.split_off(need);
+            self.header_buf.clear();
+            if !tail.is_empty() {
+                self.header_buf = tail;
+            }
+            self.pending_header = false;
+            return Ok(());
+        }
+    }
+
+    /// Tries to consume a v1 control frame from the front of `buf`.
+    /// Returns `Ok(Some(extras))` on success — `extras` are any
+    /// trailing data bytes after the 14-byte prefix (may be empty for
+    /// the typical exact-14-byte case). Returns `Ok(None)` when `buf`
+    /// has fewer than 14 bytes — the caller should buffer and wait
+    /// for more. Any parse failure surfaces the matching bail-out
+    /// error (drops the session per spec).
+    fn try_consume_prefix_inline(&mut self, buf: &[u8]) -> Result<Option<Vec<u8>>> {
+        if buf.len() < FRAME_LEN_V1 {
+            return Ok(None);
+        }
+        match parse_v1(buf) {
+            ParseResult::Valid { up_acked } => {
+                self.up_acked = Some(up_acked);
+                self.expect_ack_prefix = false;
+                Ok(Some(buf[FRAME_LEN_V1..].to_vec()))
+            },
+            ParseResult::TooShort => Ok(None),
+            ParseResult::BadMagic => bail!(
+                "vless ack-prefix v1 control frame has unexpected magic; dropping session"
+            ),
+            ParseResult::UnsupportedVersion(v) => bail!(
+                "vless ack-prefix control frame announces unsupported version {v}; \
+                 dropping session"
+            ),
+            ParseResult::ReservedFlagsSet(f) => bail!(
+                "vless ack-prefix v1 control frame has reserved flags 0x{f:02x} set; \
+                 dropping session"
+            ),
         }
     }
 }

@@ -240,3 +240,124 @@ async fn upstream_acked_offset_is_none_until_first_read_completes() {
         "before any read, the accessor must report None even when expect_ack_prefix is set",
     );
 }
+
+// ── consume_ack_prefix v1.1 fast path ─────────────────────────────────
+
+#[tokio::test]
+async fn consume_ack_prefix_returns_offset_without_blocking_for_data() {
+    // The whole point of the v1.1 API: the orchestrator can surface
+    // the offset BEFORE the relay loop reads any real data. The
+    // server here sends only the prefix; consume_ack_prefix returns
+    // the offset, then upstream_acked_offset() observes the same
+    // value, and a subsequent read_chunk would block on the next
+    // chunk (we abort the writer to confirm the consume call did
+    // NOT block on data that was never sent).
+    let (mut writer, reader) = ss_socket_pair().await;
+    let mut reader = reader.with_expect_ack_prefix(true);
+    let prefix = build_v1_frame(123_456);
+
+    let writer_task = tokio::spawn(async move {
+        writer.send_chunk(&prefix).await.unwrap();
+        // Hold the writer open; without the consume_ack_prefix path,
+        // a `read_chunk` here would hang waiting for the next chunk.
+        std::future::pending::<()>().await;
+    });
+
+    let parsed = reader.consume_ack_prefix().await.unwrap();
+    assert_eq!(parsed, Some(123_456));
+    assert_eq!(reader.upstream_acked_offset(), Some(123_456));
+
+    writer_task.abort();
+}
+
+#[tokio::test]
+async fn consume_ack_prefix_stashes_extras_for_next_read_chunk() {
+    let (mut writer, reader) = ss_socket_pair().await;
+    let mut reader = reader.with_expect_ack_prefix(true);
+    let mut bundled = build_v1_frame(7).to_vec();
+    bundled.extend_from_slice(b"trailing-data");
+
+    let writer_task = tokio::spawn(async move {
+        writer.send_chunk(&bundled).await.unwrap();
+    });
+
+    assert_eq!(reader.consume_ack_prefix().await.unwrap(), Some(7));
+    // Trailing bytes must surface on the very next read_chunk so no
+    // upstream payload is silently dropped.
+    let chunk = reader.read_chunk().await.unwrap();
+    assert_eq!(chunk, b"trailing-data");
+
+    writer_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn consume_ack_prefix_returns_none_when_protocol_not_negotiated() {
+    let (_writer, mut reader) = ss_socket_pair().await;
+    // Reader was NOT marked with `with_expect_ack_prefix(true)`, so
+    // `consume_ack_prefix` must short-circuit without touching the
+    // wire — proves the no-op call is safe to wire unconditionally
+    // from the orchestrator regardless of negotiation outcome.
+    assert_eq!(reader.consume_ack_prefix().await.unwrap(), None);
+    assert_eq!(reader.upstream_acked_offset(), None);
+}
+
+#[tokio::test]
+async fn consume_ack_prefix_is_idempotent_after_first_call() {
+    let (mut writer, reader) = ss_socket_pair().await;
+    let mut reader = reader.with_expect_ack_prefix(true);
+    let writer_task = tokio::spawn(async move {
+        writer.send_chunk(&build_v1_frame(99)).await.unwrap();
+        std::future::pending::<()>().await;
+    });
+
+    assert_eq!(reader.consume_ack_prefix().await.unwrap(), Some(99));
+    // Second call must NOT re-read; it returns the cached offset and
+    // does not block on more bytes.
+    assert_eq!(reader.consume_ack_prefix().await.unwrap(), Some(99));
+
+    writer_task.abort();
+}
+
+#[tokio::test]
+async fn consume_ack_prefix_with_timeout_surfaces_timeout_when_server_silent() {
+    // Establish the cipher session (writer sends the salt as part of
+    // its construction) but never push the prefix chunk. The reader
+    // expects the prefix and must time out instead of hanging
+    // forever — protects the orchestrator against a server that
+    // negotiated the capability but forgot to emit.
+    let (_writer, reader) = ss_socket_pair().await;
+    let mut reader = reader.with_expect_ack_prefix(true);
+
+    let err = reader
+        .consume_ack_prefix_with_timeout(std::time::Duration::from_millis(100))
+        .await
+        .expect_err("silent server must surface as a timeout");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("did not arrive within"),
+        "expected timeout error, got: {msg}",
+    );
+}
+
+#[tokio::test]
+async fn consume_ack_prefix_drops_session_on_bad_magic() {
+    let (mut writer, reader) = ss_socket_pair().await;
+    let mut reader = reader.with_expect_ack_prefix(true);
+    let mut bad = [0u8; FRAME_LEN_V1];
+    bad[..4].copy_from_slice(b"NOPE");
+    bad[4] = VERSION_V1;
+    bad[6..14].copy_from_slice(&1u64.to_be_bytes());
+
+    let writer_task = tokio::spawn(async move {
+        writer.send_chunk(&bad).await.unwrap();
+    });
+
+    let err = reader
+        .consume_ack_prefix()
+        .await
+        .expect_err("bad magic must surface from the v1.1 entry too");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("unexpected magic"), "expected magic error, got: {msg}");
+
+    writer_task.await.unwrap();
+}

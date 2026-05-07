@@ -104,11 +104,11 @@ pub(super) async fn run_relay(
     let buffer_cap = lb_snapshot.tcp_mid_session_retry_buffer_bytes;
     let configured_budget = lb_snapshot.tcp_mid_session_retry_budget;
     let keepalive_interval = lb_snapshot.tcp_active_keepalive_interval;
-    // Mid-session retry only operates on the SS-WS dial path in v1 —
-    // VLESS-WS and raw-QUIC do not negotiate the capability, and the
-    // SS-direct-socket path bypasses the WS layer entirely. The
-    // orchestrator skips retry for those uplinks rather than dialling
-    // a path that would not give us the offset header.
+    // Mid-session retry operates on WS-family uplinks (SS-WS and
+    // VLESS-WS as of v1.1) — the SS-direct-socket path bypasses the
+    // WS layer and raw-QUIC has no Ack-Prefix support, so the
+    // orchestrator skips retry for those uplinks rather than
+    // dialling a path that would not give us the offset header.
     //
     // Both knobs gate eligibility independently — buffer_bytes=0 OR
     // budget=0 disables retry. This lets operators turn off retry by
@@ -116,7 +116,10 @@ pub(super) async fn run_relay(
     // budget while keeping the buffer warm.
     let retry_eligible = buffer_cap > 0
         && configured_budget > 0
-        && candidate.uplink.transport == UplinkTransport::Ws;
+        && matches!(
+            candidate.uplink.transport,
+            UplinkTransport::Ws | UplinkTransport::Vless,
+        );
     let mut budget: u8 = if retry_eligible { configured_budget } else { 0 };
 
     let ring: Option<Arc<Mutex<ClientUpstreamRingBuffer>>> = retry_eligible
@@ -450,28 +453,51 @@ async fn try_mid_session_retry(
         },
     };
 
-    // v1 simplification: do NOT drive a pre-read against the new
-    // reader to surface `upstream_acked_offset()` here. The SS
-    // reader recurses past the 14-byte prefix into the first real
-    // downlink chunk, which may never arrive on upload-only sessions
-    // (SSH `cat | ssh upload`, an HTTP POST that times out). Instead,
-    // we replay the FULL buffered tail and rely on the server's
-    // idempotent receive path to drop the prefix it has already
-    // acked. The cost is up to `buffer_cap` bytes of redundant
-    // upload after each retry; the alternative — blocking the entire
-    // session on a `read_chunk` that may never return — is worse.
-    // v1.1 should rework the API to surface the offset without a
-    // blocking read (e.g. plumb a `recv_one_chunk_with_timeout`
-    // helper into the SS reader).
+    // v1.1 fast path: drive `consume_ack_prefix_with_timeout` BEFORE
+    // the relay loop resumes so the orchestrator knows the exact
+    // server-acked offset and the replay can be a precise tail
+    // (`replay_from(offset)`) instead of the full buffered backlog.
+    // Falls back to "replay everything" only when the negotiation
+    // collapsed to "off" (server did not echo the capability) — in
+    // that case we have no offset to gate the replay against and the
+    // server's idempotent receive path is what guarantees byte-exact
+    // semantics.
+    //
+    // The 5-second timeout protects against a server that negotiated
+    // the capability but never emits the frame; on timeout the new
+    // transport is dropped and the original transport error is
+    // surfaced to the caller (treated as a `failed_redial` outcome
+    // — the redial itself succeeded but the protocol contract did
+    // not).
+    let server_acked_offset = match connected
+        .reader
+        .consume_ack_prefix_with_timeout(ACK_PREFIX_CONSUME_TIMEOUT)
+        .await
+    {
+        Ok(maybe_offset) => maybe_offset,
+        Err(e) => {
+            metrics::record_mid_session_retry("tcp", group_name, active_name, "failed_redial");
+            return Err(e.context(
+                "mid-session retry: server negotiated Ack-Prefix but did not emit a valid \
+                 control frame within the timeout",
+            ));
+        },
+    };
+
     let replay_bytes = match ring {
         Some(r) => {
             let r_guard = r.lock().await;
-            // Replaying from `oldest_offset()` covers everything in
-            // the buffer; the server's idempotent receive path drops
-            // any prefix it has already acked. This is the v1
-            // simplification described in the comment above.
-            let oldest = r_guard.oldest_offset();
-            match r_guard.replay_from(oldest) {
+            // Prefer the precise offset reported by the server; fall
+            // back to `oldest_offset()` only when the server did not
+            // echo the capability (legacy server, capability disabled
+            // for this session, etc.). The fallback path matches the
+            // v1 behaviour: replay the full buffered tail and let
+            // the server deduplicate.
+            let replay_from_offset = match server_acked_offset {
+                Some(offset) => offset,
+                None => r_guard.oldest_offset(),
+            };
+            match r_guard.replay_from(replay_from_offset) {
                 Ok(bytes) => bytes,
                 Err(ReplayError::OffsetEvicted { .. } | ReplayError::OffsetAhead { .. }) => {
                     metrics::record_mid_session_retry(
@@ -481,7 +507,8 @@ async fn try_mid_session_retry(
                         "failed_replay",
                     );
                     return Err(anyhow!(
-                        "mid-session retry: ring buffer cannot satisfy replay from oldest offset"
+                        "mid-session retry: ring buffer cannot satisfy replay from offset \
+                         {replay_from_offset} (server-reported: {server_acked_offset:?})"
                     ));
                 },
             }
@@ -504,6 +531,14 @@ async fn try_mid_session_retry(
 
     Ok(connected)
 }
+
+/// Bound on how long the orchestrator waits for the server to emit
+/// the v1 control frame after a successful resume hit. The server's
+/// emit happens immediately on resume — the only way this should
+/// fire is if the path between us and the server is broken or the
+/// server is misbehaving; in either case we want to fail fast and
+/// drop the session rather than block the entire pinned relay.
+const ACK_PREFIX_CONSUME_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Sends the buffered uplink tail through the freshly-redialed writer.
 /// Wrapped so the metric attribution stays self-contained at one

@@ -356,17 +356,18 @@ pub(super) async fn connect_tcp_uplink_fresh(
 
 /// Re-dial a TCP WebSocket session for the mid-session retry path
 /// after a transport reset. Identical to [`connect_tcp_uplink_fresh`]
-/// at its WS branch with two restrictions and one opt-in:
+/// at its WS branch with one restriction and one opt-in:
 ///
-/// * SS-WS only — VLESS / raw-QUIC / direct-socket carriers do not
-///   negotiate the Ack-Prefix Protocol in v1, so the orchestrator
-///   degrades to "no retry" rather than redialling on a path that
-///   would not give us the offset header.
+/// * WS-family carriers only (`UplinkTransport::Ws` for SS-WS,
+///   `UplinkTransport::Vless` for VLESS-WS). Direct-socket
+///   Shadowsocks bypasses the WS layer entirely and raw-QUIC has
+///   no Ack-Prefix support in v1.1; the orchestrator degrades to
+///   "no retry" for those uplinks rather than redialling a path
+///   that would not give us the offset header.
 /// * No raw-QUIC fallback — even when the uplink is configured for
-///   QUIC, mid-session retry only operates on the SS-WS dial path
-///   for the same reason.
+///   QUIC, mid-session retry only operates on the WS dial path.
 /// * Advertises `X-Outline-Resume-Ack-Prefix: 1` so the server emits
-///   the v1 control frame and the SS reader can park `up_acked`.
+///   the v1 control frame and the reader can park `up_acked`.
 ///
 /// Returns the fresh `(TcpWriter, TcpReader)` ready for replay; the
 /// caller is responsible for inspecting `reader.upstream_acked_offset()`
@@ -377,10 +378,13 @@ pub(super) async fn redial_for_mid_session_retry(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<ConnectedTcpUplink> {
-    if candidate.uplink.transport != UplinkTransport::Ws {
+    if !matches!(
+        candidate.uplink.transport,
+        UplinkTransport::Ws | UplinkTransport::Vless,
+    ) {
         bail!(
-            "mid-session retry redial only supports SS-WS uplinks; \
-             uplink {} uses transport {:?}",
+            "mid-session retry redial only supports WS-family uplinks (SS-WS or \
+             VLESS-WS); uplink {} uses transport {:?}",
             candidate.uplink.name,
             candidate.uplink.transport,
         );
@@ -612,6 +616,15 @@ async fn do_tcp_ss_setup(
         target: target.to_string(),
     };
 
+    // Capture the negotiated Ack-Prefix bit before any consume —
+    // both VLESS's `vless_tcp_pair_from_ws` and SS-WS's `.split()`
+    // take ownership of the underlying stream halves, after which
+    // the accessor on the enum is gone. The orchestrator's
+    // mid-session retry path (the only opt-in caller today) flips
+    // this bit on by re-dialling with `ack_prefix_requested = true`;
+    // the initial dial leaves it `false`.
+    let expect_ack_prefix = ws_stream.ack_prefix_advertised_by_server();
+
     if setup.transport == UplinkTransport::Vless {
         let uuid = setup
             .vless_id
@@ -631,15 +644,10 @@ async fn do_tcp_ss_setup(
             protocol = "vless",
             "opened VLESS uplink"
         );
-        return Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader)));
+        let reader = TcpReader::Vless(reader).with_expect_ack_prefix(expect_ack_prefix);
+        return Ok((TcpWriter::Vless(writer), reader));
     }
 
-    // Capture the negotiated Ack-Prefix bit before `.split()` consumes
-    // the TransportStream — accessor reads off the enum variant, not
-    // the inner sink/stream. False here because no opt-in caller has
-    // wired `ack_prefix_requested = true` yet (Phase 2.4 will), but we
-    // wire the plumbing now so the reader is ready when it does.
-    let expect_ack_prefix = ws_stream.ack_prefix_advertised_by_server();
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = setup.cipher.derive_master_key(setup.password)?;
     let (writer, ctrl_tx) =
