@@ -1257,6 +1257,32 @@ sudo VERSION=v1.2.3 ./install.sh
 
 `VERSION` и `CHANNEL=nightly` одновременно использовать нельзя.
 
+#### Установка через HTTP(S) прокси
+
+Если с хоста недоступен `github.com` или его CDN для релизов (`objects.githubusercontent.com`), установку можно прогнать через любой HTTP/SOCKS5 прокси, который видит GitHub. Скрипт менять не нужно — `curl` сам подхватывает стандартные proxy-переменные окружения.
+
+Важно: `sudo` по умолчанию вырезает `http_proxy`/`https_proxy` из окружения, поэтому передавай их явно:
+
+```bash
+sudo https_proxy=http://HOST:PORT http_proxy=http://HOST:PORT ./install.sh
+```
+
+или экспортируй и запускай через `sudo -E`:
+
+```bash
+export https_proxy=http://HOST:PORT
+export http_proxy=http://HOST:PORT
+sudo -E ./install.sh
+```
+
+Для SOCKS5 (например, туннель `ssh -D 1080 user@vps`) используй `ALL_PROXY=socks5h://HOST:PORT`. Прокси с авторизацией — `http://USER:PASS@HOST:PORT` (спецсимволы в пароле URL-encode'ить).
+
+Проверить, что прокси работает, до запуска установщика:
+
+```bash
+curl -v --proxy http://HOST:PORT --max-time 20 https://github.com -o /dev/null
+```
+
 ### systemd
 
 Production-ориентированные systemd unit'ы находятся в:
