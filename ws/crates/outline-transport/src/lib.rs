@@ -98,6 +98,7 @@ const HTTP1_WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(feature = "h3")]
 use crate::h3::connect_websocket_h3;
 
+pub mod ack_prefix;
 pub mod collections;
 mod config;
 mod dns;
