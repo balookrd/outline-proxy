@@ -285,6 +285,18 @@ impl UplinkManager {
                     // counter so the next clear (whenever it happens)
                     // starts a fresh budget.
                     per.post_recovery_grace_descent_attempts = 0;
+                    // Any recovery streak accumulated for the previous
+                    // (now-cleared) cap is moot — descent invalidated
+                    // the streak's premise.
+                    per.recovery_probe_success_streak = 0;
+                }
+                if is_recovery_fail {
+                    // A failed recovery probe means the previous
+                    // tentative success(es) (if any) were unlucky —
+                    // start the streak from zero so the next clear
+                    // requires the full threshold of consecutive
+                    // successes again.
+                    per.recovery_probe_success_streak = 0;
                 }
                 if is_recovery_fail {
                     // The configured-carrier recovery probe just failed.
@@ -692,17 +704,14 @@ impl UplinkManager {
     }
 
     /// Clear the downgrade window for `(index, transport)`. Resets the
-    /// deadline, the cap, and the recovery-probe cooldown so the next
-    /// dial returns to the configured mode and the next probe success
-    /// is eligible to schedule recovery (irrelevant in the cleared
-    /// state, but kept consistent for the descent → recovery cycle).
-    /// Stamps `last_recovery_success_at = now` so `extend_mode_downgrade`
-    /// can apply the post-recovery grace window: a single probe-fail
-    /// in the moments after this clear must NOT immediately re-install
-    /// the cap; `min_failures` consecutive failures are required.
-    /// Called when an explicit recovery re-probe confirms that the
-    /// configured carrier is back, or by the reactive walk-up path
-    /// when the family has no rank above the cap to walk to.
+    /// deadline, the cap, the recovery-probe cooldown, the recovery
+    /// success streak, and the post-recovery grace counter so the
+    /// next dial returns to the configured mode and the next descent
+    /// → recovery cycle starts clean. Stamps `last_recovery_success_at`
+    /// so `extend_mode_downgrade` can apply the post-recovery grace
+    /// window. Called by the reactive walk-up's defensive clear arms
+    /// and indirectly via [`Self::note_recovery_probe_success`] once
+    /// the streak threshold is met.
     pub(crate) fn clear_mode_downgrade(&self, index: usize, transport: TransportKind) {
         let now = Instant::now();
         self.inner.with_status_mut(index, |status| match transport {
@@ -712,6 +721,7 @@ impl UplinkManager {
                 status.tcp.recovery_probe_cooldown_until = None;
                 status.tcp.last_recovery_success_at = Some(now);
                 status.tcp.post_recovery_grace_descent_attempts = 0;
+                status.tcp.recovery_probe_success_streak = 0;
             },
             TransportKind::Udp => {
                 status.udp.mode_downgrade_until = None;
@@ -719,8 +729,81 @@ impl UplinkManager {
                 status.udp.recovery_probe_cooldown_until = None;
                 status.udp.last_recovery_success_at = Some(now);
                 status.udp.post_recovery_grace_descent_attempts = 0;
+                status.udp.recovery_probe_success_streak = 0;
             },
         });
+    }
+
+    /// Threshold (consecutive successful recovery probes) required
+    /// before the cap is cleared. A single recovery success only
+    /// proves handshake-level connectivity to the configured carrier;
+    /// on uplinks where the data plane is flaky (server emits stream
+    /// errors after handshake completes — the `xhttp/h3 stream-one
+    /// downlink ended` pattern in the field) the cap would otherwise
+    /// clear after every cap install and immediately re-install on
+    /// the next descent trigger, producing a permanent `H3 ↔ H2` flap.
+    /// Two consecutive recovery successes (separated by at least
+    /// `probe.interval`) raise the bar enough to break the flap.
+    const RECOVERY_SUCCESS_STREAK_THRESHOLD: u32 = 2;
+
+    /// Record a successful configured-carrier recovery probe. The
+    /// cap is cleared **only** when the streak counter reaches
+    /// [`Self::RECOVERY_SUCCESS_STREAK_THRESHOLD`] consecutive
+    /// successes; before that, this is a tentative-success record.
+    /// On a flaky configured carrier this filters out the
+    /// "handshake works once, data plane breaks" cycle that drives
+    /// visible flapping.
+    pub(crate) fn note_recovery_probe_success(
+        &self,
+        index: usize,
+        transport: TransportKind,
+    ) {
+        let mut should_clear = false;
+        let mut new_streak = 0u32;
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            // If the cap is already cleared (e.g. a previous
+            // recovery success in this cycle already met the
+            // threshold) there is nothing to do — a stray duplicate
+            // success notification must not double-stamp grace.
+            if per.mode_downgrade_capped_to.is_none()
+                && per.mode_downgrade_until.is_none()
+            {
+                per.recovery_probe_success_streak = 0;
+                return;
+            }
+            per.recovery_probe_success_streak =
+                per.recovery_probe_success_streak.saturating_add(1);
+            new_streak = per.recovery_probe_success_streak;
+            if new_streak >= Self::RECOVERY_SUCCESS_STREAK_THRESHOLD {
+                should_clear = true;
+            }
+        });
+        let uplink = &self.inner.uplinks[index];
+        let kind_label = match transport {
+            TransportKind::Tcp => "TCP",
+            TransportKind::Udp => "UDP",
+        };
+        if should_clear {
+            debug!(
+                uplink = %uplink.name,
+                kind = ?transport,
+                streak = new_streak,
+                "{kind_label} recovery probe streak met — clearing downgrade window"
+            );
+            self.clear_mode_downgrade(index, transport);
+        } else {
+            debug!(
+                uplink = %uplink.name,
+                kind = ?transport,
+                streak = new_streak,
+                threshold = Self::RECOVERY_SUCCESS_STREAK_THRESHOLD,
+                "{kind_label} recovery probe tentatively succeeded — awaiting another consecutive success before clearing cap"
+            );
+        }
     }
 }
 

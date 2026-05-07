@@ -113,6 +113,23 @@ pub(crate) struct PerTransportStatus {
     /// clear could re-install the cap on its first silent fall, which
     /// is the residual `H3 ↔ H2` flap operators were observing.
     pub(crate) post_recovery_grace_descent_attempts: u32,
+    /// Counter of consecutive successful configured-carrier recovery
+    /// probes. The cap is cleared only when this reaches the
+    /// streak threshold (currently 2) — a single recovery success on
+    /// a flaky configured carrier (handshake passes, real traffic
+    /// streams blow up moments later) is treated as **tentative**;
+    /// a second consecutive success is needed before the cap drops.
+    /// Reset to zero on:
+    ///   * cap install (`cap_changed = true`) — descent ended any
+    ///     pending recovery streak,
+    ///   * `RecoveryReprobeFail` — failed recovery clears the streak,
+    ///   * `clear_mode_downgrade` — cap is gone, streak is moot.
+    /// Without this streak, on uplinks where handshake H3 works but
+    /// the data plane is flaky (server-side issue, e.g.
+    /// `xhttp/h3 stream-one downlink ended`), the recovery probe
+    /// handshake-confirms after each cap install and clears the cap
+    /// every cycle — operators see permanent `H3 ↔ H2` flap.
+    pub(crate) recovery_probe_success_streak: u32,
     /// Per-fallback-wire mode-downgrade slots. Indexed by `wire_index - 1`
     /// (i.e. `[0]` corresponds to `fallbacks[0]`); the primary wire's
     /// downgrade lives in the existing `mode_downgrade_until` /
