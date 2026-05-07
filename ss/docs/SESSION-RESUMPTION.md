@@ -232,6 +232,100 @@ The client maintains a `(SessionId, IssuedAt)` per logical session. When the und
 
 The client SHOULD bound the number of automatic resume attempts (recommended: 1–2) to avoid tight loops on a server that is repeatedly evicting.
 
+## Ack-Prefix Protocol (v1)
+
+The base resumption protocol parks the upstream `TcpStream` on disconnect and reattaches it on a subsequent connect with `X-Outline-Resume`. Bytes that the client sent over WebSocket frames but that never reached the server before the underlying TCP between client and server died are **not** retransmitted by the base protocol — the client cannot tell which of its outbound bytes were forwarded upstream and which were lost in flight, so naive replay would duplicate bytes.
+
+The **Ack-Prefix Protocol** is an opt-in extension that closes this gap for the upstream direction: the server reports back, on every successful resume, the exact byte count it has forwarded upstream, so the client can replay only the bytes that did not make it.
+
+### Capability negotiation
+
+Two cooperating headers; both must be present on both sides for the protocol to engage. Either side missing the capability causes a graceful fall-through to base resume semantics (no replay; client must accept a session-level disconnect).
+
+| Side | Header | Format | Meaning |
+|---|---|---|---|
+| Client request | `X-Outline-Resume-Ack-Prefix` | `1` | Client understands and will parse the ack-prefix control frame on resume hits |
+| Server response | `X-Outline-Resume-Ack-Prefix` | `1` | Server understands the request and will emit the control frame on resume hits |
+
+The capability is independent of `Resume-Capable` / `Resume`: a client that wants the protocol must advertise it on every connect, including the first connect of a session (so the server's response confirms support before the first parked-and-resumed cycle).
+
+### Control frame wire format
+
+When **all** of the following are true, the server emits a single SS-WS or VLESS-WS data frame ahead of any upstream→client relay bytes on a resumed session:
+
+1. The connection is a resume request (`X-Outline-Resume: <id>`).
+2. The orphan-take succeeded (`Resume-Result: hit`).
+3. The owner check passed (authenticated user matches the parked session's owner).
+4. The client advertised `X-Outline-Resume-Ack-Prefix: 1` in the request.
+5. The server advertised `X-Outline-Resume-Ack-Prefix: 1` in the response.
+
+The frame's plaintext payload is exactly 14 bytes:
+
+```
++0  : magic        "ORSM"           4 bytes  ASCII
++4  : version      0x01             1 byte
++5  : flags        0x00             1 byte   reserved (must be 0 in v1)
++6  : up_acked     u64 BE           8 bytes  bytes the server forwarded upstream
+                                              over the lifetime of this session
+                                              (including all prior reattaches)
++14 : (end)
+```
+
+For SS-WS the 14 bytes go through the relay's normal AEAD encryption chain — same shape as any data frame. For VLESS-WS the 14 bytes are the WS frame payload directly.
+
+#### Field semantics
+
+- **`magic`** — fixed ASCII `"ORSM"` (Outline Resume Sync Message). Distinguishes the control frame from accidental upstream bytes that happen to start with the same prefix; no application-level upstream protocol is expected to begin with this exact 4-byte sequence at the start of a session, and the version + flags checks below add a second layer of assurance.
+- **`version`** — `0x01` for this iteration. Future revisions bump this byte; clients that see a higher version they don't know how to parse MUST drop the session and reconnect without the capability rather than assume safe replay.
+- **`flags`** — reserved; clients that see any non-zero bits in v1 MUST drop the session.
+- **`up_acked`** — total bytes of upstream-direction payload the server has successfully written to the upstream `TcpStream` over the lifetime of this session. Counter is monotonic, accumulates across parks and reattaches, never resets. Lives on `ParkedTcp` and is preserved verbatim across the orphan registry.
+
+### Server emission
+
+On a resume hit (post-auth, post-orphan-take), before respawning the upstream→client relay task, the server:
+
+1. Reads the parked state's `upstream_bytes_acked` counter.
+2. Constructs the 14-byte control-frame payload as specified above.
+3. Sends it as the first WS data frame on the new transport, through the SS / VLESS encryption layer of the resuming connection.
+
+Only after the control frame has been written to the WS sink does the server hand off to the standard relay path that copies upstream bytes to the client.
+
+The frame is **not** sent on:
+
+- Fresh sessions (no resume requested).
+- Resume misses (`miss-expired`, `miss-unknown`, `miss-owner`, `miss-capacity`) — the parked state was not attached, there is no meaningful counter.
+- Resume hits where the client did not advertise the capability.
+
+### Client parsing
+
+When the client requested resume **and** advertised the capability, **and** the response carries `X-Outline-Resume-Ack-Prefix: 1`, the client treats the first decrypted data frame on the new transport as the control frame:
+
+1. Validate `magic == "ORSM"` (4 bytes).
+2. Validate `version == 0x01`.
+3. Validate `flags == 0x00`.
+4. Read `up_acked` (8 bytes, big-endian u64).
+
+If validation fails on any check the client MUST drop the session and fall back to a fresh connect without the capability — the wire shape is unrecognised and continuing would risk upstream byte corruption.
+
+If validation succeeds, the client uses `up_acked` as the offset into its replay buffer: bytes 0..`up_acked` were forwarded upstream by the server (already delivered) and MUST be skipped on replay; bytes `up_acked`..`client_up_sent` are in flight and SHOULD be replayed onto the new transport before resuming normal client→upstream forwarding.
+
+If `up_acked > client_up_sent` the protocol invariant is violated (server claims more forwarded than client claims sent) and the client MUST drop the session. If `up_acked` is older than the client's replay buffer's oldest retained offset (the buffer was overwritten because the client sent too many bytes without server acks), the client cannot reconstruct the missing bytes and MUST drop the session.
+
+### Downlink direction
+
+v1 of the Ack-Prefix Protocol covers the **upstream** direction only. The downstream (server→client) direction has no equivalent guarantee — bytes the server emitted to WS that did not reach the client before disconnect are simply lost. Application protocols that require loss-free downstream delivery (e.g. SSH, raw TCP through SS without HTTP-layer retry) are best-effort under v1 resume; protocols with their own application-layer retry (HTTP request bodies, idempotent RPCs) are unaffected.
+
+A future v2 may add a symmetric downstream prefix carrying the client's `down_received` counter, server-side back-buffer of recent downstream bytes, and offset-based replay; this is deferred until operational data shows the upstream-only v1 leaves measurable gaps in real-world traffic.
+
+### Compatibility matrix
+
+| Client capability | Server capability | Resume hit | Behaviour |
+|---|---|---|---|
+| Off | Any | Any | Base resume semantics (no replay; session drop on byte loss) |
+| On | Off | Any | Server doesn't echo capability → client falls back to base |
+| On | On | No (fresh / miss) | No control frame; fresh session; no replay needed |
+| On | On | Yes | Server emits control frame; client parses & replays from offset |
+
 ## Lifecycle Diagram
 
 ```mermaid
@@ -314,7 +408,7 @@ All emitted via the existing Prometheus subsystem.
 
 The following are out of scope for this revision and are intentionally not addressed:
 
-- **Zero-loss replay**. Bytes in flight at the moment of disconnect may be lost. A future revision could add per-frame sequence numbers and ack-based replay, but this requires protocol changes on both sides and was deemed unjustified for the current motivating scenario (intermittent VM-to-VM path issues, not byte-level reliability).
+- **Symmetric (downstream) zero-loss replay**. The Ack-Prefix Protocol v1 (documented above) closes the upstream-direction byte-loss gap (client→server→upstream) but leaves the downstream direction unchanged: bytes the server emitted to WS that did not reach the client before disconnect are lost. Adding symmetric downstream replay requires server-side back-buffering of recent downstream bytes and a client→server `down_received` header; deferred until operational data justifies the cost.
 - **Persistent registry across restarts**. Resume after server restart is not supported. Doing so requires either FD-passing via systemd socket activation or upstream re-establishment from saved state, both of which add significant complexity for marginal benefit.
 - **Server-initiated migration**. The server cannot push a "go to another transport" message to the client. Migration is always initiated by the client when its current transport fails.
 - **Resumption for SS over raw QUIC**. The Shadowsocks protocol has no Addons-equivalent extension point. Clients that need resumption must use Shadowsocks-over-WebSocket, where headers carry the negotiation.

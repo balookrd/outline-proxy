@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use anyhow::{Context, Result, anyhow};
 use metrics::Counter;
@@ -252,6 +253,9 @@ fn try_park_raw_quic_tcp(
         protocol_context: TcpProtocolContext::Vless,
         user_counters,
         upstream_guard,
+        // Ack-Prefix Protocol counter starts at 0 for VLESS raw-QUIC
+        // in v1; control-frame emit on this protocol is a follow-up.
+        upstream_bytes_acked: Arc::new(AtomicU64::new(0)),
     };
     debug!(
         user = %owner,
