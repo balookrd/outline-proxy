@@ -444,6 +444,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `tcp_ws_keepalive_secs`              | `60`               | s     | WS Ping cadence on idle VLESS-over-WS TCP sessions (`0` disables; SS-over-WS ignores)             |
 | `tcp_ws_standby_keepalive_secs`      | `20`               | s     | WS Ping cadence on warm-standby TCP sockets (`0` disables)                                        |
 | `tcp_active_keepalive_secs`          | `20`               | s     | SS2022 0-length keepalive on active SOCKS TCP sessions (`0` disables; SS1 ignores)                |
+| `tcp_mid_session_retry_buffer_bytes` | `262144`           | bytes | per-session ring-buffer cap for the Ack-Prefix mid-session retry path (`0` disables retry; see "Mid-session retry" below) |
 | `vless_udp_max_sessions`             | `256`              | int   | hard cap on concurrent VLESS UDP sessions (LRU-evicted on overflow)                               |
 | `vless_udp_session_idle_secs`        | `60`               | s     | evict VLESS UDP sessions idle longer than this (`0` disables eviction)                            |
 | `vless_udp_janitor_interval_secs`    | `15`               | s     | how often the VLESS UDP janitor scans for idle sessions                                           |
@@ -476,6 +477,37 @@ Mode-vs-scope interaction:
   pattern — one uplink carries everything, others wait.
 - `active_passive` + `per_flow` is legal but has reduced meaning:
   passive uplinks act only as failover targets, not weighted siblings.
+
+Mid-session retry (Ack-Prefix Protocol v1):
+
+- When a pinned SOCKS TCP session loses its upstream transport
+  mid-stream (H3 APPLICATION_CLOSE, NAT eviction, server-initiated
+  reset, etc.), the relay can opt into a one-shot transparent
+  re-dial against the same SS-WS uplink. The new dial advertises
+  `X-Outline-Resume-Ack-Prefix: 1`; an outline-ss-rust server with
+  the feature emits a 14-byte control frame on resume hit reporting
+  the exact upstream byte offset it has acked. The client replays
+  the buffered uplink tail from that offset so the upstream sees
+  every byte exactly once.
+- `tcp_mid_session_retry_buffer_bytes` sets the per-session ring-
+  buffer cap. Default `262144` (256 KiB) — large enough to absorb
+  most HTTP request bodies and idempotent RPC payloads, small enough
+  that holding it for N concurrent sessions stays negligible
+  compared with kernel socket buffers. Set to `0` to disable retry
+  entirely (the buffer is never allocated).
+- v1 sweet spot: HTTP request bodies, idempotent RPCs. NOT for
+  SSH-style downlink-heavy sessions — the protocol intentionally
+  does not replay the downlink direction in v1, so SSH tunnels
+  still observe a downlink byte gap on retry.
+- Gated to SS-WS uplinks (`transport = "ws"`). VLESS-WS / raw QUIC
+  / direct-socket Shadowsocks are no-ops for retry in v1; the
+  relay falls back to the legacy "single shot, propagate error"
+  behaviour with no observable change.
+- Outcomes are exposed on
+  `outline_ws_rust_uplink_mid_session_retries_total{outcome}` with
+  `outcome ∈ {success, failed_redial, failed_replay,
+  buffer_overflow}`. See `docs/SESSION-RESUMPTION.md` § Ack-Prefix
+  Protocol (v1) in the outline-ss-rust repo for the wire format.
 
 Example — `[outline.load_balancing]` for the inline shape, and the same
 fields lifted onto a group:

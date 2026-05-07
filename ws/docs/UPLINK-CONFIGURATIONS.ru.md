@@ -443,6 +443,7 @@ password = "Secret0"
 | `tcp_ws_keepalive_secs`              | `60`               | с     | период WS Ping на простаивающих VLESS-over-WS TCP-сессиях (`0` отключает; SS-over-WS игнорирует) |
 | `tcp_ws_standby_keepalive_secs`      | `20`               | с     | период WS Ping на warm-standby TCP-сокетах (`0` отключает)                                       |
 | `tcp_active_keepalive_secs`          | `20`               | с     | период SS2022 0-байтного keepalive на активных SOCKS TCP-сессиях (`0` отключает; SS1 игнорирует) |
+| `tcp_mid_session_retry_buffer_bytes` | `262144`           | bytes | размер ring-буфера на сессию для Ack-Prefix mid-session retry (`0` отключает retry; см. раздел «Mid-session retry» ниже) |
 | `vless_udp_max_sessions`             | `256`              | int   | жёсткий лимит на одновременные VLESS UDP-сессии (LRU-вытеснение при переполнении)                |
 | `vless_udp_session_idle_secs`        | `60`               | с     | вытеснять VLESS UDP-сессии, простаивавшие дольше этого (`0` отключает вытеснение)                |
 | `vless_udp_janitor_interval_secs`    | `15`               | с     | как часто janitor сканирует idle-сессии VLESS UDP                                                |
@@ -477,6 +478,38 @@ password = "Secret0"
 - `active_passive` + `per_flow` допустимо, но смысл скуднее: пассивные
   аплинки работают только как failover-цели, не как взвешенные
   «соседи».
+
+Mid-session retry (Ack-Prefix Protocol v1):
+
+- Когда у запинённой SOCKS TCP-сессии mid-stream обрывается upstream
+  транспорт (H3 APPLICATION_CLOSE, NAT eviction, server-initiated
+  reset и т.п.), relay может прозрачно сделать одну попытку
+  re-dial на тот же SS-WS аплинк. Новый dial объявляет
+  `X-Outline-Resume-Ack-Prefix: 1`; outline-ss-rust сервер с
+  включённой фичей шлёт 14-байтный control-frame на resume-hit, в
+  котором сообщает точный байтовый offset upstream-байт, которые
+  он успел отправить наверх. Клиент replay'ит хвост из своего
+  uplink-буфера от этого offset'а — upstream видит каждый байт
+  ровно один раз.
+- `tcp_mid_session_retry_buffer_bytes` задаёт лимит ring-буфера на
+  сессию. Дефолт `262144` (256 KiB) — достаточно, чтобы вместить
+  типичные HTTP request bodies и payload'ы идемпотентных RPC, и
+  достаточно мало, чтобы держать N параллельных сессий не было
+  заметно на фоне kernel socket buffers. `0` полностью отключает
+  retry (буфер вообще не аллоцируется).
+- v1 sweet spot — HTTP request bodies, идемпотентные RPC. НЕ для
+  SSH-подобных downlink-heavy сессий: протокол намеренно НЕ
+  replay'ит downlink-направление в v1, поэтому SSH-туннели всё
+  равно увидят пробел в downlink-байтах после retry.
+- Ограничено SS-WS аплинками (`transport = "ws"`). VLESS-WS / raw
+  QUIC / direct-socket Shadowsocks для retry в v1 — no-op; relay
+  падает в legacy-поведение «один shot, прокидываем ошибку
+  наружу» без видимых изменений.
+- Outcome'ы экспортируются в метрику
+  `outline_ws_rust_uplink_mid_session_retries_total{outcome}` со
+  значениями `outcome ∈ {success, failed_redial, failed_replay,
+  buffer_overflow}`. Wire-формат — в `docs/SESSION-RESUMPTION.md` §
+  Ack-Prefix Protocol (v1) репозитория outline-ss-rust.
 
 Пример — `[outline.load_balancing]` для inline-формы и те же поля,
 вынесенные на группу:
