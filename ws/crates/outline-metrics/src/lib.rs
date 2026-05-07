@@ -173,6 +173,7 @@ struct Metrics {
     uplink_health_effective: GaugeVec,
     uplink_latency_seconds: GaugeVec,
     uplink_rtt_ewma_seconds: GaugeVec,
+    uplink_active_wire_rtt_ewma_seconds: GaugeVec,
     uplink_penalty_seconds: GaugeVec,
     uplink_effective_latency_seconds: GaugeVec,
     uplink_score_seconds: GaugeVec,

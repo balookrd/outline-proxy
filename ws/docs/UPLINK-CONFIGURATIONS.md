@@ -951,6 +951,16 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
   right after a wire flip — fallback slot still empty — falls back to
   primary's EWMA for one probe cycle until the per-wire probe stamps
   in.
+- Two Prometheus gauges now expose RTT EWMA at different semantic
+  layers. `outline_ws_rust_uplink_rtt_ewma_seconds{transport,uplink}`
+  keeps the legacy primary-only verdict — useful for seeing the
+  carrier health of the configured primary regardless of which wire
+  is currently doing the work. `outline_ws_rust_uplink_active_wire_rtt_ewma_seconds{transport,uplink}`
+  reports the EWMA of the wire actually carrying traffic; equals the
+  legacy gauge when `active_wire == 0`, reads the matching
+  `fallback_rtt_ewma` slot otherwise. Operators graphing user-visible
+  latency / setting alerts on real-traffic RTT use the active-wire
+  gauge; primary-health alerts stay on the legacy gauge.
 
 #### UDP candidacy
 

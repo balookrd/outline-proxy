@@ -43,6 +43,7 @@ impl Metrics {
             uplink_health_effective: u.uplink_health_effective,
             uplink_latency_seconds: u.uplink_latency_seconds,
             uplink_rtt_ewma_seconds: u.uplink_rtt_ewma_seconds,
+            uplink_active_wire_rtt_ewma_seconds: u.uplink_active_wire_rtt_ewma_seconds,
             uplink_penalty_seconds: u.uplink_penalty_seconds,
             uplink_effective_latency_seconds: u.uplink_effective_latency_seconds,
             uplink_score_seconds: u.uplink_score_seconds,

@@ -949,6 +949,16 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
   сразу после wire-flip'а — fallback-слот пустой — на один probe-
   цикл откатывается на primary EWMA, пока per-wire probe не
   заштампует свежий сэмпл.
+- Две Prometheus-gauge'и отдают RTT EWMA на разных уровнях
+  семантики. `outline_ws_rust_uplink_rtt_ewma_seconds{transport,uplink}`
+  сохраняет legacy primary-only вердикт — пригодится для здоровья
+  именно сконфигурированного primary независимо от того, какой wire
+  сейчас тянет трафик. `outline_ws_rust_uplink_active_wire_rtt_ewma_seconds{transport,uplink}`
+  отдаёт EWMA wire'а, реально несущего трафик; равен legacy gauge
+  при `active_wire == 0`, иначе читает соответствующий
+  `fallback_rtt_ewma` слот. Операторы, графящие user-visible
+  latency / алертящие по real-traffic RTT, используют active-wire
+  gauge; primary-health алерты остаются на legacy gauge.
 
 #### UDP-кандидатура
 

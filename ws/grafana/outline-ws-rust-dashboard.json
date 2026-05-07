@@ -768,11 +768,16 @@
         },
         {
           "expr": "label_replace((outline_ws_rust_uplink_rtt_ewma_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{uplink}} {{transport}} ewma rtt",
+          "legendFormat": "{{instance_short}} {{uplink}} {{transport}} primary ewma",
           "refId": "B"
+        },
+        {
+          "expr": "label_replace((outline_ws_rust_uplink_active_wire_rtt_ewma_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} {{transport}} active-wire ewma",
+          "refId": "C"
         }
       ],
-      "title": "Raw RTT vs EWMA RTT",
+      "title": "Raw RTT vs EWMA RTT (primary + active wire)",
       "type": "timeseries"
     },
     {
