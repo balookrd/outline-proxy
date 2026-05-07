@@ -143,10 +143,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     });
     let sni_fallback = config.sni_fallback.as_ref().map(|cfg| {
         let inbound_listen = config.listen.expect("listen required when sni_fallback is set");
-        Arc::new(SniFallbackContext {
-            config: Arc::new(cfg.clone()),
-            inbound_listen,
-        })
+        Arc::new(SniFallbackContext::new(Arc::new(cfg.clone()), inbound_listen))
     });
     Ok(Built {
         users,
