@@ -188,40 +188,49 @@ impl UplinkManager {
             && probe_at_or_below_cap;
 
         // Post-recovery grace gate (cap currently None): a recovery
-        // probe just successfully cleared the cap within
-        // `mode_downgrade_duration`. The first `min_failures - 1`
-        // descent triggers of ANY kind (probe-fail, silent fallback
-        // observed by a dispatcher dial, runtime failure on real
-        // traffic) are absorbed without re-installing the cap; the
-        // `min_failures`-th attempt releases the gate and lets the
-        // cap re-install at the rank the trigger demands.
+        // probe just successfully cleared the cap. The grace window
+        // absorbs descent triggers (probe-fail, silent fallback,
+        // runtime failure) so an isolated post-clear flap doesn't
+        // immediately re-install the cap. Three properties make the
+        // gate match what operators see in practice:
         //
-        // The dispatcher's `note_silent_transport_fallback` path is
-        // the typical attacker here: right after recovery clears the
-        // cap, the next user-driven dial requests configured (H3),
-        // and on a flaky configured carrier sees an inline silent
-        // fall to the next rank — that's a perfectly valid signal,
-        // but treating it as "cap immediately back to H2" produces
-        // the visible `H3 ↔ H2` flap. Grace converts the first
-        // such observation into a soft warning while the next
-        // recovery probe (after cooldown) confirms whether
-        // configured really is broken.
+        // 1. **Window length = 2 × `mode_downgrade_duration`.** A
+        //    single window of 60 s misses the common pattern of one
+        //    flaky probe every 70-90 s — the fail arrives just past
+        //    the deadline, gate inactive, cap re-installs. 2× covers
+        //    that gap without making grace effectively forever.
+        //
+        // 2. **Renewable on absorbed attempts.** Each absorbed
+        //    descent trigger refreshes `last_recovery_success_at = now`,
+        //    so the window slides forward as long as the system keeps
+        //    receiving descent signals at less than the window length
+        //    apart. With pure-fail patterns the counter still rises
+        //    and eventually releases (see point 3); with mixed
+        //    success/fail patterns the counter resets to zero on
+        //    success (see `record_transport_success`), so isolated
+        //    flaps are absorbed indefinitely while a real all-fail
+        //    streak still releases.
+        //
+        // 3. **Counter cap = `min_failures`.** Releases on the
+        //    `min_failures`-th absorbed attempt without an intervening
+        //    success. Consecutive failures with no success between
+        //    them is the strongest "configured really is broken"
+        //    signal we have, and crossing the operator's `min_failures`
+        //    threshold lets the cap re-install at the demanded rank.
+        //    With `min_failures = 1` this evaluates to "release on
+        //    first attempt", matching the in-window descent gate's
+        //    single-failure-descent semantics.
         //
         // The dedicated `post_recovery_grace_descent_attempts`
         // counter is used (not `consecutive_failures`, which only
         // increments on probe outcomes) so silent / runtime triggers
         // are also counted toward the gate budget.
+        let grace_window = duration.saturating_mul(2);
         let in_post_recovery_grace = last_recovery_success_at
-            .is_some_and(|t| now.duration_since(t) < duration);
-        // Threshold = `min_failures - 1`: absorbs the first
-        // `min_failures - 1` descent attempts, releases on the
-        // `min_failures`-th. With `min_failures = 1` this evaluates
-        // to 0, which means the grace window never absorbs (operator
-        // explicitly opted into single-failure descent), so this
-        // matches the semantics of the in-window descent gate.
+            .is_some_and(|t| now.duration_since(t) < grace_window);
         let grace_gate_active = prev_cap.is_none()
             && in_post_recovery_grace
-            && grace_attempts < probe_min_failures.saturating_sub(1);
+            && grace_attempts < probe_min_failures;
         if grace_gate_active {
             self.inner.with_status_mut(index, |status| {
                 let per = match transport {
@@ -230,6 +239,11 @@ impl UplinkManager {
                 };
                 per.post_recovery_grace_descent_attempts =
                     per.post_recovery_grace_descent_attempts.saturating_add(1);
+                // Slide the grace window forward — descent signals
+                // arriving at < grace_window apart keep the gate
+                // alive; the counter (capped at `min_failures`) is
+                // the bound on total tolerance, not the wall-clock.
+                per.last_recovery_success_at = Some(now);
             });
             return;
         }

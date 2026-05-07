@@ -118,6 +118,18 @@ fn record_transport_success(status: &mut PerTransportStatus, min_failures: u32) 
     // healthy. Clearing unconditionally would make a recently-failed uplink
     // immediately eligible again, causing oscillation under load.
     status.cooldown_until = None;
+    // Probe success in the post-recovery grace window resets the
+    // grace's absorbed-attempts counter — a single success between
+    // two flaky fails is the operational signal that the carrier is
+    // mostly healthy and the previous fail was an outlier. Without
+    // this reset the counter rises monotonically and grace releases
+    // on the `min_failures`-th cumulative absorbed fail, even if
+    // they were spread across hours with successes between them.
+    // Resetting on success keeps the grace gate effective for the
+    // "1 fail per minute + N successes between" pattern that
+    // dominates flaky configured-carrier deployments. A pure-fail
+    // streak (no successes) still bumps the counter to release.
+    status.post_recovery_grace_descent_attempts = 0;
 
     // Early failback: if the active wire on this transport is currently
     // pinned to a fallback (because primary failed enough recent dials)
