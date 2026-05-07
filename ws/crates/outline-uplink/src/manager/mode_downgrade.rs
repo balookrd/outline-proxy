@@ -136,7 +136,13 @@ impl UplinkManager {
         let duration = self.inner.load_balancing.mode_downgrade_duration;
         let new_until = now + duration;
 
-        let (prev_until, prev_cap, consecutive_failures, last_recovery_success_at) = {
+        let (
+            prev_until,
+            prev_cap,
+            consecutive_failures,
+            last_recovery_success_at,
+            grace_attempts,
+        ) = {
             let per = self.inner.read_status(index);
             let snapshot = per.of(transport);
             (
@@ -144,44 +150,31 @@ impl UplinkManager {
                 snapshot.mode_downgrade_capped_to,
                 snapshot.consecutive_failures,
                 snapshot.last_recovery_success_at,
+                snapshot.post_recovery_grace_descent_attempts,
             )
         };
         let window_active = prev_until.is_some_and(|t| t > now);
         let newly_started = prev_until.is_none_or(|t| t < now);
         let advances_deadline = prev_until.is_none_or(|t| t < new_until);
 
-        // Min-failures gate for further descent: when a probe trigger
-        // arrives in an already-capped window and the failed mode is
-        // the same as (or below) the current cap — i.e. the probe
-        // tested the capped carrier and failed — we hold the cap in
-        // place until `consecutive_failures` reaches the operator's
-        // `probe.min_failures` threshold. Without this gate a single
-        // flaky probe at the capped rank pushes the cap one step
-        // deeper for a full TTL even when the capped carrier is
-        // mostly healthy, producing the observed "video stalls every
-        // ~probe_interval" pattern on intermittent H2 paths.
-        //
-        // Post-recovery grace extension: when `prev_cap = None` but a
-        // recovery probe just successfully cleared the cap within
-        // `mode_downgrade_duration`, also apply the same gate to the
-        // first descent. Without this, a single false-positive
-        // probe-fail right after recovery success re-installs the
-        // cap on the next cycle and the dashboard flaps `H2 ↔ H3`
-        // every `mode_downgrade_duration + interval` seconds. The
-        // grace forces `min_failures` consecutive failures before
-        // re-descent, so a one-off post-recovery flap is absorbed.
-        //
-        // `RuntimeFailure` and `SilentTransportFallback` skip this
-        // gate intentionally: real-traffic failures are a stronger
-        // signal than probe failures and warrant immediate descent.
+        // Min-failures gate for further descent (cap currently set):
+        // when a **probe** trigger arrives in an already-capped window
+        // and the failed mode is the same as (or below) the current
+        // cap — i.e. the probe tested the capped carrier and failed —
+        // we hold the cap in place until `consecutive_failures` reaches
+        // `probe.min_failures`. Without this a single flaky probe at
+        // the capped rank pushes the cap one step deeper for a full
+        // TTL even when the capped carrier is mostly healthy. Limited
+        // to probe triggers because `consecutive_failures` is the
+        // probe-only streak counter; runtime / silent-fallback triggers
+        // are stronger real-traffic signals and descend immediately
+        // when the existing cap can still be lowered.
         let probe_trigger = matches!(
             trigger,
             ModeDowngradeTrigger::ProbeTransportFailure(_)
                 | ModeDowngradeTrigger::ProbeConnectFailure(_, _)
         );
         let probe_min_failures = self.inner.probe.min_failures.max(1) as u32;
-        let in_post_recovery_grace = last_recovery_success_at
-            .is_some_and(|t| now.duration_since(t) < duration);
         let probe_at_or_below_cap = match prev_cap {
             Some(prev) => {
                 window_active
@@ -190,18 +183,62 @@ impl UplinkManager {
             },
             None => false,
         };
-        let descent_gated = probe_trigger
+        let descent_gated_at_cap = probe_trigger
             && consecutive_failures < probe_min_failures
-            && (probe_at_or_below_cap || (prev_cap.is_none() && in_post_recovery_grace));
+            && probe_at_or_below_cap;
 
-        // In the post-recovery-grace gate path we have nothing in
-        // `prev_cap` to "hold" — installing `new_cap` would defeat
-        // the grace. Skip the cap-install block entirely; the next
-        // failure will increment `consecutive_failures` and after
-        // `min_failures` total fails the gate releases naturally.
-        if descent_gated && prev_cap.is_none() {
+        // Post-recovery grace gate (cap currently None): a recovery
+        // probe just successfully cleared the cap within
+        // `mode_downgrade_duration`. The first `min_failures - 1`
+        // descent triggers of ANY kind (probe-fail, silent fallback
+        // observed by a dispatcher dial, runtime failure on real
+        // traffic) are absorbed without re-installing the cap; the
+        // `min_failures`-th attempt releases the gate and lets the
+        // cap re-install at the rank the trigger demands.
+        //
+        // The dispatcher's `note_silent_transport_fallback` path is
+        // the typical attacker here: right after recovery clears the
+        // cap, the next user-driven dial requests configured (H3),
+        // and on a flaky configured carrier sees an inline silent
+        // fall to the next rank — that's a perfectly valid signal,
+        // but treating it as "cap immediately back to H2" produces
+        // the visible `H3 ↔ H2` flap. Grace converts the first
+        // such observation into a soft warning while the next
+        // recovery probe (after cooldown) confirms whether
+        // configured really is broken.
+        //
+        // The dedicated `post_recovery_grace_descent_attempts`
+        // counter is used (not `consecutive_failures`, which only
+        // increments on probe outcomes) so silent / runtime triggers
+        // are also counted toward the gate budget.
+        let in_post_recovery_grace = last_recovery_success_at
+            .is_some_and(|t| now.duration_since(t) < duration);
+        // Threshold = `min_failures - 1`: absorbs the first
+        // `min_failures - 1` descent attempts, releases on the
+        // `min_failures`-th. With `min_failures = 1` this evaluates
+        // to 0, which means the grace window never absorbs (operator
+        // explicitly opted into single-failure descent), so this
+        // matches the semantics of the in-window descent gate.
+        let grace_gate_active = prev_cap.is_none()
+            && in_post_recovery_grace
+            && grace_attempts < probe_min_failures.saturating_sub(1);
+        if grace_gate_active {
+            self.inner.with_status_mut(index, |status| {
+                let per = match transport {
+                    TransportKind::Tcp => &mut status.tcp,
+                    TransportKind::Udp => &mut status.udp,
+                };
+                per.post_recovery_grace_descent_attempts =
+                    per.post_recovery_grace_descent_attempts.saturating_add(1);
+            });
             return;
         }
+        // descent_gated_at_cap reuses the existing cap-held path
+        // (`updated_cap = prev` below) — we don't early-return here
+        // because the deadline still needs to be refreshed so the
+        // window survives until the cap is either walked up or the
+        // gate releases on the next failure.
+        let descent_gated = descent_gated_at_cap;
 
         // Cap update rule: monotonically downward inside an active
         // window. If the previous cap is in the same family and already
@@ -243,6 +280,11 @@ impl UplinkManager {
                     // immediately walk back up the cap that
                     // `SilentTransportFallback` / `RuntimeFailure` just set.
                     per.consecutive_successes = 0;
+                    // Cap is back in place — the post-recovery grace
+                    // window is implicitly over. Reset the attempts
+                    // counter so the next clear (whenever it happens)
+                    // starts a fresh budget.
+                    per.post_recovery_grace_descent_attempts = 0;
                 }
                 if is_recovery_fail {
                     // The configured-carrier recovery probe just failed.
@@ -572,6 +614,7 @@ impl UplinkManager {
                 per.mode_downgrade_until = None;
                 per.mode_downgrade_capped_to = None;
                 per.recovery_probe_cooldown_until = None;
+                per.post_recovery_grace_descent_attempts = 0;
                 per.consecutive_successes = 0;
                 outcome = Outcome::Cleared { from: prev_cap };
                 return;
@@ -584,6 +627,7 @@ impl UplinkManager {
                     per.mode_downgrade_until = None;
                     per.mode_downgrade_capped_to = None;
                     per.recovery_probe_cooldown_until = None;
+                    per.post_recovery_grace_descent_attempts = 0;
                     per.consecutive_successes = 0;
                     outcome = Outcome::Cleared { from: prev_cap };
                 },
@@ -667,12 +711,14 @@ impl UplinkManager {
                 status.tcp.mode_downgrade_capped_to = None;
                 status.tcp.recovery_probe_cooldown_until = None;
                 status.tcp.last_recovery_success_at = Some(now);
+                status.tcp.post_recovery_grace_descent_attempts = 0;
             },
             TransportKind::Udp => {
                 status.udp.mode_downgrade_until = None;
                 status.udp.mode_downgrade_capped_to = None;
                 status.udp.recovery_probe_cooldown_until = None;
                 status.udp.last_recovery_success_at = Some(now);
+                status.udp.post_recovery_grace_descent_attempts = 0;
             },
         });
     }

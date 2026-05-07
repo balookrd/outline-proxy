@@ -93,6 +93,26 @@ pub(crate) struct PerTransportStatus {
     /// Set in `clear_mode_downgrade`; runtime / silent-fallback
     /// triggers ignore this — only probe triggers consult the grace.
     pub(crate) last_recovery_success_at: Option<Instant>,
+    /// Counter of descent triggers (probe-fail, silent-fallback,
+    /// runtime-failure) observed inside the post-recovery grace window
+    /// while the cap is currently `None`. The grace gate in
+    /// `extend_mode_downgrade` absorbs the first `min_failures - 1`
+    /// such triggers (cap is **not** re-installed) and releases on
+    /// the `min_failures`-th trigger so the cap can be re-installed.
+    /// Reset to zero on:
+    ///   * a successful recovery / `clear_mode_downgrade` (fresh
+    ///     grace window opens with a clean attempt budget),
+    ///   * cap install (`cap_changed = true`) — once the cap is
+    ///     pinned again the grace path is irrelevant; subsequent
+    ///     descent triggers route through the in-window descent gate
+    ///     using `consecutive_failures`.
+    /// Without this separate counter, silent-fallback / runtime-failure
+    /// triggers from the dispatcher (which do NOT increment
+    /// `consecutive_failures`) would bypass the post-recovery grace
+    /// entirely — every new client connection right after a recovery
+    /// clear could re-install the cap on its first silent fall, which
+    /// is the residual `H3 ↔ H2` flap operators were observing.
+    pub(crate) post_recovery_grace_descent_attempts: u32,
     /// Per-fallback-wire mode-downgrade slots. Indexed by `wire_index - 1`
     /// (i.e. `[0]` corresponds to `fallbacks[0]`); the primary wire's
     /// downgrade lives in the existing `mode_downgrade_until` /
