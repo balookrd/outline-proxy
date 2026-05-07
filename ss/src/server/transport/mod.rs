@@ -159,12 +159,13 @@ pub(super) async fn vless_websocket_upgrade(
     // and minting a fresh, mismatched ID. See the matching note in
     // `tcp_websocket_upgrade`.
     let issued_for_response = resume.issued_session_id;
-    // VLESS-WS deliberately does NOT echo the Ack-Prefix capability
-    // in v1: the on-resume-hit control-frame emit is implemented for
-    // SS-WS only this iteration, and echoing the capability without
-    // emitting the frame would be a spec violation that causes the
-    // client to misread the first byte of the upstream stream as the
-    // prefix. v1.1 will add VLESS-WS emit and start echoing.
+    // v1.1: VLESS-WS now echoes the Ack-Prefix capability and emits
+    // the on-resume-hit control frame, mirroring the SS-WS path.
+    // `state.ack_prefix_requested` (initialised from this `resume`)
+    // gates the actual emit inside `establish_vless_tcp_upstream`
+    // so the response header here matches what the relay will
+    // produce on the wire.
+    let ack_prefix_for_response = resume.ack_prefix_requested;
     let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),
@@ -181,6 +182,11 @@ pub(super) async fn vless_websocket_upgrade(
         response
             .headers_mut()
             .insert(tcp::SESSION_RESPONSE_HEADER, value);
+    }
+    if ack_prefix_for_response {
+        response
+            .headers_mut()
+            .insert(tcp::ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
     }
     response
 }
