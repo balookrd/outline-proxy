@@ -171,6 +171,25 @@ ws_path_udp = "/udp"
 # [[sni_fallback.backends]]
 # backend = "127.0.0.1:10443"
 # # no match_sni = catch-all; must be the last entry
+#
+# Routing: exact `match_sni` entries (across local and every backend)
+# are indexed in a HashMap and resolved first; wildcards are scanned
+# only on miss. Exact always beats wildcard regardless of which list
+# declared it — useful for "wildcard apex stays local, but this one
+# host goes to a backend":
+#
+# [sni_fallback]
+# match_sni = ["*.example.com"]   # apex → local
+# allow_no_sni = false
+#
+# [[sni_fallback.backends]]
+# backend = "127.0.0.1:10443"
+# match_sni = ["px.example.com"]  # exact carve-out wins over the apex wildcard
+# proxy_protocol = "v2"
+#
+# [[sni_fallback.backends]]
+# backend = "127.0.0.1:11443"     # catch-all for SNIs outside *.example.com
+# proxy_protocol = "v1"
 
 [access_keys]
 # Used for generated Outline access keys.
