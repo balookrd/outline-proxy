@@ -447,6 +447,8 @@ password = "Secret0"
 | `tcp_mid_session_retry_budget`       | `1`                | int   | максимум попыток redial mid-session на одну сессию (`0` отключает retry — эквивалент `tcp_mid_session_retry_buffer_bytes = 0`) |
 | `tcp_mid_session_retry_overflow_policy` | `"soft"`        | enum  | поведение при чанке больше cap'а ring-буфера: `"soft"` (дефолт) держит сессию живой и отдаёт `failed_replay` на будущих ретраях; `"hard"` сразу обрывает сессию, чтобы гарантировать ретраебельность остальных |
 | `tcp_mid_session_retry_consume_timeout_secs` | `5`            | с     | верхний предел ожидания v1 Ack-Prefix control frame от сервера при resume hit; защищает pinned relay от молчащего/сломанного сервера |
+| `tcp_symmetric_replay_enabled`       | `true`             | bool  | opt-in в v2 Symmetric Downlink Replay протокол на retry-redial'ах; `false` подавляет v2-advertise без отключения v1.x retry (например, на время постепенного раскатывания серверной стороны) |
+| `tcp_symmetric_replay_max_bytes`     | `1048576`          | байт  | жёсткий cap на принимаемый v2 `replay_len` от сервера; ответы выше этого валят сессию — защита от вредоносного пира, индуцирующего unbounded buffering |
 | `vless_udp_max_sessions`             | `256`              | int   | жёсткий лимит на одновременные VLESS UDP-сессии (LRU-вытеснение при переполнении)                |
 | `vless_udp_session_idle_secs`        | `60`               | с     | вытеснять VLESS UDP-сессии, простаивавшие дольше этого (`0` отключает вытеснение)                |
 | `vless_udp_janitor_interval_secs`    | `15`               | с     | как часто janitor сканирует idle-сессии VLESS UDP                                                |
@@ -526,9 +528,9 @@ Mid-session retry (Ack-Prefix Protocol v1):
   спутник + сотовую связь. Уменьшай на known-low-RTT деплоях;
   большие значения обычно маскируют проблемы с retry-поведением.
 - v1 sweet spot — HTTP request bodies, идемпотентные RPC. НЕ для
-  SSH-подобных downlink-heavy сессий: протокол намеренно НЕ
-  replay'ит downlink-направление в v1, поэтому SSH-туннели всё
-  равно увидят пробел в downlink-байтах после retry.
+  SSH-подобных downlink-heavy сессий *сама по себе*: v1 не
+  replay'ит downlink-направление. Этот gap закрывает протокол v2
+  Symmetric Downlink Replay (см. ниже).
 - Ограничено SS-WS аплинками (`transport = "ws"`). VLESS-WS / raw
   QUIC / direct-socket Shadowsocks для retry в v1 — no-op; relay
   падает в legacy-поведение «один shot, прокидываем ошибку
@@ -536,8 +538,60 @@ Mid-session retry (Ack-Prefix Protocol v1):
 - Outcome'ы экспортируются в метрику
   `outline_ws_rust_uplink_mid_session_retries_total{outcome}` со
   значениями `outcome ∈ {success, failed_redial, failed_replay,
-  buffer_overflow}`. Wire-формат — в `docs/SESSION-RESUMPTION.md` §
-  Ack-Prefix Protocol (v1) репозитория outline-ss-rust.
+  buffer_overflow, downlink_truncated}`. Wire-формат — в
+  `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1)
+  репозитория outline-ss-rust.
+
+Symmetric Downlink Replay (v2):
+
+- Опциональное opt-in расширение поверх v1.x. Закрывает
+  byte-loss gap в **downstream**-направлении (server→client),
+  который v1 оставляет открытым: байты, которые сервер эмитнул
+  в WebSocket, но клиент никогда не наблюдал до того как нижний
+  TCP умер, replay'ятся на следующем resume-hit'е, в порядке,
+  ДО того как пойдут свежие upstream-байты. Обязателен для SSH
+  и других протоколов, рассматривающих байтовый поток как
+  единый упорядоченный лог; для протоколов с собственным
+  application-layer retry (HTTP request bodies, идемпотентные
+  RPC) можно оставить выключенным и полагаться только на v1.
+- Wire-side: клиент анонсирует
+  `X-Outline-Resume-Symmetric-Replay: 1` И сообщает свой
+  текущий `client_acked_offset` через
+  `X-Outline-Resume-Down-Acked: <decimal>`. Сервер эмитит
+  14-байтный control frame `"ORDR"` + replay payload (байты
+  `[client_acked_offset, total_sent_downlink)`) сразу после v1
+  кадра `"ORSM"` на resume-hit'е. Сервер гейтит v2 на
+  (a) v1 тоже договорён и (b) его конфиг
+  `[session_resumption].downlink_buffer_bytes > 0` (default `0`
+  = выключено). Полная спека — в репозитории сервера в файле
+  `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2).
+- `tcp_symmetric_replay_enabled` (default `true`) —
+  операторский переключатель. Capability активен в runtime
+  только когда (a) v1.x retry включён
+  (`tcp_mid_session_retry_buffer_bytes > 0` И
+  `tcp_mid_session_retry_budget > 0`), (b) этот knob включён,
+  (c) сервер эхо'ит обе capability'и. `false` подавляет
+  v2-advertise без отключения v1.x.
+- `tcp_symmetric_replay_max_bytes` (default `1048576` = 1 MiB) —
+  жёсткий cap на v2 `replay_len`, который клиент примет от
+  сервера. Ответы выше этого валят сессию — защита от
+  вредоносного пира, индуцирующего unbounded buffering. Серверы
+  в адекватной конфигурации ставят `downlink_buffer_bytes`
+  сильно ниже этого cap'а (default 64 KiB на сервере), так что
+  он срабатывает только против явно некорректного пира.
+- Политика truncation: когда сервер выставляет
+  `REPLAY_TRUNCATED` (его ring проехал за client-reported
+  offset, например очень долгая парковка или очень маленький
+  серверный буфер), клиент уважает
+  `tcp_mid_session_retry_overflow_policy`: `"soft"` продолжает
+  сессию под irrecoverable downstream gap и инкрементирует
+  `outline_ws_rust_uplink_mid_session_retries_total{outcome="downlink_truncated"}`;
+  `"hard"` обрывает сессию сразу. Используйте то же значение,
+  что и для v1 buffer-overflow, чтобы политика была
+  консистентной.
+- Тот же eligibility-gate, что у v1 — SS-WS / VLESS-WS /
+  VLESS-XHTTP carriers; raw QUIC и direct-socket Shadowsocks
+  вне scope'а (нет HTTP-layer carrier'а для v2-negotiation).
 
 Пример — `[outline.load_balancing]` для inline-формы и те же поля,
 вынесенные на группу:
