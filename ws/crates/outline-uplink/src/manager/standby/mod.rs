@@ -137,7 +137,7 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<TransportStream> {
-        self.connect_tcp_ws_fresh_internal(candidate, source, false).await
+        self.connect_tcp_ws_fresh_internal(candidate, source, false, false, 0).await
     }
 
     /// Same as [`Self::connect_tcp_ws_fresh`] but advertises
@@ -152,7 +152,25 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<TransportStream> {
-        self.connect_tcp_ws_fresh_internal(candidate, source, true).await
+        self.connect_tcp_ws_fresh_internal(candidate, source, true, false, 0).await
+    }
+
+    /// Variant used by the v2 Symmetric Downlink Replay retry path:
+    /// advertises both v1 and v2 capabilities, and reports the
+    /// caller's `client_acked_offset` via the
+    /// `X-Outline-Resume-Down-Acked` request header so the server can
+    /// emit a precise replay slice. Caller is expected to gate this
+    /// on `LoadBalancingConfig::tcp_symmetric_replay_enabled` and to
+    /// have advertised v1 already (the dialer's local v2-on-v1 gate
+    /// double-checks this on the response side).
+    pub async fn connect_tcp_ws_fresh_with_symmetric_replay(
+        &self,
+        candidate: &UplinkCandidate,
+        source: &'static str,
+        client_acked_offset: u64,
+    ) -> Result<TransportStream> {
+        self.connect_tcp_ws_fresh_internal(candidate, source, true, true, client_acked_offset)
+            .await
     }
 
     async fn connect_tcp_ws_fresh_internal(
@@ -160,6 +178,8 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
         ack_prefix_requested: bool,
+        symmetric_replay_requested: bool,
+        client_acked_offset: u64,
     ) -> Result<TransportStream> {
         let cache = self.inner.dns_cache.as_ref();
         if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
@@ -202,13 +222,8 @@ impl UplinkManager {
                 source,
                 resume_request,
                 ack_prefix_requested,
-                // Standby refill never participates in v2 Symmetric
-                // Downlink Replay — that capability is engaged only on
-                // mid-session retry redials in `pinned_relay`. Stays
-                // off here.
-                false,
-                // No prior downstream offset on a fresh standby dial.
-                0,
+                symmetric_replay_requested,
+                client_acked_offset,
             ),
         )
         .await

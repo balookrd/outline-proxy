@@ -124,6 +124,17 @@ impl TcpReader {
         }
     }
 
+    /// Tells the reader to expect a v2 Symmetric Downlink Replay
+    /// frame after the v1 control frame on a resume hit. Forwarded
+    /// to the WS / VLESS variants; Socket / raw-QUIC ignore it.
+    pub fn with_expect_downlink_replay(self, expect: bool) -> Self {
+        match self {
+            Self::Ws(r) => Self::Ws(r.with_expect_downlink_replay(expect)),
+            Self::Vless(r) => Self::Vless(r.with_expect_downlink_replay(expect)),
+            other => other,
+        }
+    }
+
     /// Returns the server-reported `up_acked` byte offset parsed from
     /// the v1 Ack-Prefix control frame. `None` for non-negotiating
     /// variants (Socket / raw-QUIC) and for negotiating variants
@@ -155,6 +166,24 @@ impl TcpReader {
         match self {
             Self::Ws(r) => r.consume_ack_prefix_with_timeout(timeout).await,
             Self::Vless(r) => r.consume_ack_prefix_with_timeout(timeout).await,
+            Self::Socket(_) => Ok(None),
+            #[cfg(feature = "quic")]
+            Self::QuicSs(_) => Ok(None),
+        }
+    }
+
+    /// Drives the v2 Symmetric Downlink Replay frame consume,
+    /// bounded by `timeout` and capped by `max_bytes`. Surfaces the
+    /// outcome (`Replay(payload)` / `Truncated`) to the caller, or
+    /// `Ok(None)` when v2 is not engaged on this reader / variant.
+    pub async fn consume_downlink_replay_with_timeout(
+        &mut self,
+        timeout: std::time::Duration,
+        max_bytes: usize,
+    ) -> anyhow::Result<Option<crate::downlink_replay::DownlinkReplayOutcome>> {
+        match self {
+            Self::Ws(r) => r.consume_downlink_replay_with_timeout(timeout, max_bytes).await,
+            Self::Vless(r) => r.consume_downlink_replay_with_timeout(timeout, max_bytes).await,
             Self::Socket(_) => Ok(None),
             #[cfg(feature = "quic")]
             Self::QuicSs(_) => Ok(None),
