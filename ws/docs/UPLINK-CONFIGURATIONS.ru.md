@@ -446,6 +446,7 @@ password = "Secret0"
 | `tcp_mid_session_retry_buffer_bytes` | `262144`           | bytes | размер ring-буфера на сессию для Ack-Prefix mid-session retry (`0` отключает retry; см. раздел «Mid-session retry» ниже) |
 | `tcp_mid_session_retry_budget`       | `1`                | int   | максимум попыток redial mid-session на одну сессию (`0` отключает retry — эквивалент `tcp_mid_session_retry_buffer_bytes = 0`) |
 | `tcp_mid_session_retry_overflow_policy` | `"soft"`        | enum  | поведение при чанке больше cap'а ring-буфера: `"soft"` (дефолт) держит сессию живой и отдаёт `failed_replay` на будущих ретраях; `"hard"` сразу обрывает сессию, чтобы гарантировать ретраебельность остальных |
+| `tcp_mid_session_retry_consume_timeout_secs` | `5`            | с     | верхний предел ожидания v1 Ack-Prefix control frame от сервера при resume hit; защищает pinned relay от молчащего/сломанного сервера |
 | `vless_udp_max_sessions`             | `256`              | int   | жёсткий лимит на одновременные VLESS UDP-сессии (LRU-вытеснение при переполнении)                |
 | `vless_udp_session_idle_secs`        | `60`               | с     | вытеснять VLESS UDP-сессии, простаивавшие дольше этого (`0` отключает вытеснение)                |
 | `vless_udp_janitor_interval_secs`    | `15`               | с     | как часто janitor сканирует idle-сессии VLESS UDP                                                |
@@ -517,6 +518,13 @@ Mid-session retry (Ack-Prefix Protocol v1):
   интерактивные RPC, где порванный replay испортит state); бери
   `"soft"` (дефолт) для типичного веб-трафика, где живучесть
   сессии — пользовательски видимая метрика.
+- `tcp_mid_session_retry_consume_timeout_secs` ограничивает время
+  ожидания v1 Ack-Prefix control frame от сервера при успешном
+  resume-hit. Сервер шлёт его сразу же; таймаут нужен, чтобы
+  сломанная сетевая дорожка или misbehaving сервер не остановили
+  pinned relay незаметно. Дефолт `5` — комфортно покрывает
+  спутник + сотовую связь. Уменьшай на known-low-RTT деплоях;
+  большие значения обычно маскируют проблемы с retry-поведением.
 - v1 sweet spot — HTTP request bodies, идемпотентные RPC. НЕ для
   SSH-подобных downlink-heavy сессий: протокол намеренно НЕ
   replay'ит downlink-направление в v1, поэтому SSH-туннели всё

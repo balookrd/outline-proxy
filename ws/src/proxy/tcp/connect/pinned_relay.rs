@@ -104,6 +104,7 @@ pub(super) async fn run_relay(
     let buffer_cap = lb_snapshot.tcp_mid_session_retry_buffer_bytes;
     let configured_budget = lb_snapshot.tcp_mid_session_retry_budget;
     let overflow_policy = lb_snapshot.tcp_mid_session_retry_overflow_policy;
+    let consume_timeout = lb_snapshot.tcp_mid_session_retry_consume_timeout;
     let keepalive_interval = lb_snapshot.tcp_active_keepalive_interval;
     // Mid-session retry operates on WS-family uplinks (SS-WS and
     // VLESS-WS as of v1.1) — the SS-direct-socket path bypasses the
@@ -390,6 +391,7 @@ pub(super) async fn run_relay(
                     &candidate,
                     &target,
                     ring.as_deref(),
+                    consume_timeout,
                 )
                 .await
                 {
@@ -465,6 +467,7 @@ async fn try_mid_session_retry(
     candidate: &outline_uplink::UplinkCandidate,
     target: &TargetAddr,
     ring: Option<&Mutex<ClientUpstreamRingBuffer>>,
+    consume_timeout: Duration,
 ) -> Result<ConnectedTcpUplink> {
     let group_name = uplinks.group_name();
 
@@ -486,15 +489,16 @@ async fn try_mid_session_retry(
     // server's idempotent receive path is what guarantees byte-exact
     // semantics.
     //
-    // The 5-second timeout protects against a server that negotiated
-    // the capability but never emits the frame; on timeout the new
-    // transport is dropped and the original transport error is
-    // surfaced to the caller (treated as a `failed_redial` outcome
-    // — the redial itself succeeded but the protocol contract did
-    // not).
+    // `consume_timeout` is sourced from the group's
+    // `tcp_mid_session_retry_consume_timeout_secs` knob (default 5s).
+    // It bounds how long we wait for a server that negotiated the
+    // capability but failed to actually emit the frame; on timeout
+    // the new transport is dropped and the original transport error
+    // is surfaced to the caller as a `failed_redial` outcome — the
+    // redial itself succeeded but the protocol contract did not.
     let server_acked_offset = match connected
         .reader
-        .consume_ack_prefix_with_timeout(ACK_PREFIX_CONSUME_TIMEOUT)
+        .consume_ack_prefix_with_timeout(consume_timeout)
         .await
     {
         Ok(maybe_offset) => maybe_offset,
@@ -554,14 +558,6 @@ async fn try_mid_session_retry(
 
     Ok(connected)
 }
-
-/// Bound on how long the orchestrator waits for the server to emit
-/// the v1 control frame after a successful resume hit. The server's
-/// emit happens immediately on resume — the only way this should
-/// fire is if the path between us and the server is broken or the
-/// server is misbehaving; in either case we want to fail fast and
-/// drop the session rather than block the entire pinned relay.
-const ACK_PREFIX_CONSUME_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Sends the buffered uplink tail through the freshly-redialed writer.
 /// Wrapped so the metric attribution stays self-contained at one

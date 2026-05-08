@@ -127,6 +127,7 @@ async fn build_manager(
             tcp_mid_session_retry_buffer_bytes: 256 * 1024,
             tcp_mid_session_retry_budget: 1,
             tcp_mid_session_retry_overflow_policy: outline_uplink::OverflowPolicy::Soft,
+            tcp_mid_session_retry_consume_timeout: Duration::from_secs(5),
         },
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     )

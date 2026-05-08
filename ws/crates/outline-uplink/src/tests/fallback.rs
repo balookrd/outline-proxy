@@ -268,6 +268,7 @@ fn make_lb(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig 
         tcp_mid_session_retry_buffer_bytes: 256 * 1024,
         tcp_mid_session_retry_budget: 1,
         tcp_mid_session_retry_overflow_policy: crate::OverflowPolicy::Soft,
+        tcp_mid_session_retry_consume_timeout: std::time::Duration::from_secs(5),
     }
 }
 

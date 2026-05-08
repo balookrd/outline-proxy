@@ -447,6 +447,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `tcp_mid_session_retry_buffer_bytes` | `262144`           | bytes | per-session ring-buffer cap for the Ack-Prefix mid-session retry path (`0` disables retry; see "Mid-session retry" below) |
 | `tcp_mid_session_retry_budget`       | `1`                | int   | maximum number of mid-session redial attempts per session (`0` disables retry — equivalent to `tcp_mid_session_retry_buffer_bytes = 0`) |
 | `tcp_mid_session_retry_overflow_policy` | `"soft"`        | enum  | behaviour on a chunk larger than the retry buffer cap: `"soft"` (default) keeps the session alive and surfaces `failed_replay` on future retries; `"hard"` drops the session immediately to guarantee retryability for the rest |
+| `tcp_mid_session_retry_consume_timeout_secs` | `5`            | s     | hard upper bound on how long the orchestrator waits for the v1 Ack-Prefix control frame on a successful resume hit; bounds a misbehaving server from stalling the pinned relay invisibly |
 | `vless_udp_max_sessions`             | `256`              | int   | hard cap on concurrent VLESS UDP sessions (LRU-evicted on overflow)                               |
 | `vless_udp_session_idle_secs`        | `60`               | s     | evict VLESS UDP sessions idle longer than this (`0` disables eviction)                            |
 | `vless_udp_janitor_interval_secs`    | `15`               | s     | how often the VLESS UDP janitor scans for idle sessions                                           |
@@ -516,6 +517,14 @@ Mid-session retry (Ack-Prefix Protocol v1):
   RPCs where a torn replay would corrupt state); pick `"soft"`
   (the default) for general-purpose web traffic where session
   liveness is the user-visible metric.
+- `tcp_mid_session_retry_consume_timeout_secs` bounds how long the
+  orchestrator waits for the server to emit the v1 Ack-Prefix
+  control frame on a successful resume hit. The server's emit
+  happens immediately on resume; the timeout exists to fail fast
+  when the path is broken or the server is misbehaving. Default `5`
+  comfortably absorbs satellite + cellular latencies. Tighten on
+  known-low-RTT deployments; significantly larger values usually
+  mask retry behaviour problems.
 - v1 sweet spot: HTTP request bodies, idempotent RPCs. NOT for
   SSH-style downlink-heavy sessions — the protocol intentionally
   does not replay the downlink direction in v1, so SSH tunnels
