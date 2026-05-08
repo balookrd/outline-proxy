@@ -131,6 +131,22 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
             lb.and_then(|l| l.tcp_mid_session_retry_consume_timeout_secs)
                 .unwrap_or(5),
         ),
+        // Default: `true` — the v2 capability is gated at runtime on
+        // (a) v1.x retry being enabled and (b) the server echoing v2,
+        // so leaving this on is safe even against v1-only servers.
+        // Operators can explicitly disable it to suppress the v2
+        // advertise (e.g. while staging the server-side rollout).
+        tcp_symmetric_replay_enabled: lb
+            .and_then(|l| l.tcp_symmetric_replay_enabled)
+            .unwrap_or(true),
+        // Default: 1 MiB — a generous bound that lets servers using
+        // any reasonable `downlink_buffer_bytes` (default 64 KiB,
+        // realistic upper bound 4-8 MiB) replay freely while
+        // protecting the client from a hostile peer that would
+        // otherwise force unbounded buffering.
+        tcp_symmetric_replay_max_bytes: lb
+            .and_then(|l| l.tcp_symmetric_replay_max_bytes)
+            .unwrap_or(1_048_576),
         vless_udp_mux_limits: {
             let defaults = VlessUdpMuxLimits::default();
             VlessUdpMuxLimits {
