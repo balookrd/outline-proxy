@@ -85,7 +85,10 @@ pub(crate) fn classify_runtime_failure_cause(error: &Error) -> &'static str {
     }
     // String fallback for external-library errors.
     let lower = lower_error(error);
-    if lower.contains("timed out") || lower.contains("timeout") {
+    if lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("did not respond")
+    {
         "timeout"
     } else if lower.contains("connection reset")
         || lower.contains("broken pipe")
@@ -193,6 +196,11 @@ pub(crate) fn classify_runtime_failure_signature(error: &Error) -> &'static str 
         "connect_failed"
     } else if lower.contains("dns resolution returned no addresses") {
         "dns_no_addresses"
+    } else if lower.contains("did not respond") {
+        // chunk-0 / first-upstream-byte deadlines emit their own wording
+        // ("upstream did not respond within Ns") that does not match the
+        // generic timeout strings, so pin it to a dedicated signature.
+        "chunk0_timeout"
     } else if lower.contains("timed out") || lower.contains("timeout") {
         "timeout"
     } else if lower.contains("connection reset") {

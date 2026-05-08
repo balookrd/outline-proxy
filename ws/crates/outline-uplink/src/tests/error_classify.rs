@@ -132,3 +132,20 @@ fn typed_ss2022_errors_are_classified_by_variant() {
     assert_eq!(classify(Ss2022Error::DuplicateOrOutOfOrderUdpPacket), "udp_out_of_order");
     assert_eq!(classify(Ss2022Error::OversizedUdpUplink), "oversized_udp");
 }
+
+#[test]
+fn chunk0_upstream_did_not_respond_classifies_as_timeout() {
+    // Wording emitted by `await_first_upstream_chunk` in
+    // `proxy/tcp/connect/first_chunk.rs` when the per-attempt deadline
+    // elapses without an upstream response. It does not contain the
+    // generic "timeout" / "timed out" tokens, so without the explicit
+    // "did not respond" branch it used to fall through into the
+    // `cause=other / signature=other` bucket on dashboards.
+    let err = anyhow::anyhow!("upstream did not respond within 10s (chunk 0)");
+    assert_eq!(classify_runtime_failure_cause(&err), "timeout");
+    assert_eq!(classify_runtime_failure_signature(&err), "chunk0_timeout");
+
+    let wrapped = err.context("downstream forwarder error");
+    assert_eq!(classify_runtime_failure_cause(&wrapped), "timeout");
+    assert_eq!(classify_runtime_failure_signature(&wrapped), "chunk0_timeout");
+}
