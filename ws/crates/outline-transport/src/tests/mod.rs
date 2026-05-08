@@ -557,6 +557,7 @@ async fn ack_prefix_negotiation_succeeds_when_both_peers_set_header() {
         true,
         // Existing v1 negotiation tests don't exercise v2.
         false,
+        0,
     )
     .await
     .unwrap();
@@ -592,6 +593,7 @@ async fn ack_prefix_flag_stays_false_when_client_does_not_advertise() {
         false,
         // v1 off → v2 also off (gated on v1).
         false,
+        0,
     )
     .await
     .unwrap();
@@ -627,6 +629,7 @@ async fn ack_prefix_flag_stays_false_when_server_does_not_echo() {
         true,
         // Existing v1-silence test doesn't exercise v2.
         false,
+        0,
     )
     .await
     .unwrap();
@@ -787,6 +790,7 @@ async fn symmetric_replay_negotiation_succeeds_when_both_peers_set_both_headers(
         None,
         true,
         true,
+        0,
     )
     .await
     .unwrap();
@@ -828,6 +832,7 @@ async fn symmetric_replay_flag_stays_false_when_client_does_not_advertise_v2() {
         None,
         true,
         false,
+        0,
     )
     .await
     .unwrap();
@@ -868,6 +873,7 @@ async fn symmetric_replay_flag_stays_false_when_server_silent_on_v2_only() {
         None,
         true,
         true,
+        0,
     )
     .await
     .unwrap();
@@ -905,6 +911,7 @@ async fn symmetric_replay_flag_stays_false_when_v1_negotiation_collapsed() {
         None,
         true,
         true,
+        0,
     )
     .await
     .unwrap();

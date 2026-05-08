@@ -514,6 +514,8 @@ pub(super) async fn connect_tcp_fallback_fresh(
         false,
         // v2 Symmetric Downlink Replay is gated on v1; off here too.
         false,
+        // No prior downstream offset on a fresh failover dial.
+        0,
     )
     .await
     .with_context(|| format!(

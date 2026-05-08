@@ -226,10 +226,11 @@ impl SharedH2Connection {
         resume_request: Option<crate::resumption::SessionId>,
         ack_prefix_requested: bool,
         symmetric_replay_requested: bool,
+        client_acked_offset: u64,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<TransportStream> {
         match self
-            .open_websocket_inner(target_uri, resume_request, ack_prefix_requested, symmetric_replay_requested, profile)
+            .open_websocket_inner(target_uri, resume_request, ack_prefix_requested, symmetric_replay_requested, client_acked_offset, profile)
             .await
         {
             Ok(ws) => Ok(ws),
@@ -253,6 +254,7 @@ impl SharedH2Connection {
         resume_request: Option<crate::resumption::SessionId>,
         ack_prefix_requested: bool,
         symmetric_replay_requested: bool,
+        client_acked_offset: u64,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<TransportStream> {
         if !self.is_open() {
@@ -289,6 +291,15 @@ impl SharedH2Connection {
             // enforces that invariant before reaching this point.
             request_builder =
                 request_builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
+        }
+        // v2 client-reported downstream-acked offset. Sent only on
+        // retry redials that also advertise v2 AND when the offset
+        // is non-zero (a fresh session has no prior bytes to claim).
+        if symmetric_replay_requested && client_acked_offset > 0 {
+            request_builder = request_builder.header(
+                crate::resumption::DOWN_ACKED_HEADER,
+                client_acked_offset.to_string(),
+            );
         }
         let mut request: Request<Empty<Bytes>> = request_builder
             .body(Empty::new())
@@ -446,6 +457,10 @@ struct H2Dialer {
     /// already requires `ack_prefix_requested` to be true whenever
     /// this flag is true.
     symmetric_replay_requested: bool,
+    /// v2 client-reported downstream-acked offset. Becomes the
+    /// `X-Outline-Resume-Down-Acked` request header when non-zero
+    /// AND v2 is being advertised.
+    client_acked_offset: u64,
     /// Browser identity to mix into the CONNECT request headers,
     /// or `None` when fingerprint diversification is disabled. Same
     /// rationale as `resume_request` above — captured at dialer
@@ -506,6 +521,7 @@ impl crate::shared_dial::WsDialer for H2Dialer {
             self.resume_request,
             self.ack_prefix_requested,
             self.symmetric_replay_requested,
+            self.client_acked_offset,
             self.profile,
         )
         .await
@@ -523,6 +539,7 @@ pub(crate) async fn connect_websocket_h2(
     resume_request: Option<crate::resumption::SessionId>,
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
+    client_acked_offset: u64,
 ) -> Result<TransportStream> {
     let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let port = url
@@ -540,6 +557,7 @@ pub(crate) async fn connect_websocket_h2(
         resume_request,
         ack_prefix_requested,
         symmetric_replay_requested,
+        client_acked_offset,
         profile,
     };
 

@@ -202,6 +202,8 @@ impl UdpWsTransport {
             // v2 Symmetric Downlink Replay is gated on v1 and likewise
             // does not apply to UDP — opt out.
             false,
+            // No prior downstream offset to claim on UDP transports.
+            0,
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
