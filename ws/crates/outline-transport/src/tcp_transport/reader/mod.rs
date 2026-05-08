@@ -15,6 +15,9 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use crate::UpstreamTransportGuard;
 use crate::ack_prefix::{FRAME_LEN_V1, ParseResult, parse_v1};
+use crate::downlink_replay::{
+    self, DownlinkReplayOutcome, FLAG_REPLAY_TRUNCATED, FRAME_HEADER_LEN_V1 as DOWNLINK_REPLAY_HEADER_LEN_V1,
+};
 
 use ss2022::{Ss2022TcpReaderState, parse_ss2022_response_header};
 use transport::{ReadTransport, SocketReadTransport, WsReadTransport, WsStream};
@@ -66,6 +69,18 @@ pub struct TcpShadowsocksReader<T: ReadTransport> {
     /// `consume_ack_prefix`): `read_chunk`'s inline intercept
     /// returns the tail directly.
     pending_tail: Option<Vec<u8>>,
+    /// Set by the orchestrator when the WS upgrade negotiated the v2
+    /// Symmetric Downlink Replay capability (server echoed
+    /// `X-Outline-Resume-Symmetric-Replay: 1`). When `true`,
+    /// [`Self::consume_downlink_replay_with_timeout`] reads the v2
+    /// `"ORDR"` frame header + payload from the wire after the v1
+    /// frame has been consumed, and surfaces the outcome to the
+    /// caller. `read_chunk` does NOT auto-intercept the v2 frame —
+    /// the orchestrator is required to drive
+    /// `consume_downlink_replay_with_timeout` before resuming the
+    /// relay loop. See `docs/SESSION-RESUMPTION.md` (server repo)
+    /// § Symmetric Downlink Replay (v2).
+    expect_downlink_replay: bool,
 }
 
 pub type WsTcpReader = TcpShadowsocksReader<WsReadTransport>;
@@ -100,6 +115,7 @@ impl TcpShadowsocksReader<WsReadTransport> {
             expect_ack_prefix: false,
             up_acked: None,
             pending_tail: None,
+            expect_downlink_replay: false,
         }
     }
 
@@ -135,6 +151,7 @@ impl TcpShadowsocksReader<SocketReadTransport> {
             expect_ack_prefix: false,
             up_acked: None,
             pending_tail: None,
+            expect_downlink_replay: false,
         }
     }
 }
@@ -163,6 +180,7 @@ impl TcpShadowsocksReader<QuicReadTransport> {
             expect_ack_prefix: false,
             up_acked: None,
             pending_tail: None,
+            expect_downlink_replay: false,
         }
     }
 }
@@ -188,6 +206,18 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
     /// itself, as the server's emit always does).
     pub fn with_expect_ack_prefix(mut self, expect: bool) -> Self {
         self.expect_ack_prefix = expect;
+        self
+    }
+
+    /// Tells the reader to expect a v2 Symmetric Downlink Replay frame
+    /// AFTER the v1 control frame on the new transport. Set this when
+    /// (and only when)
+    /// [`crate::TransportStream::symmetric_replay_advertised_by_server`]
+    /// is `true` AND the orchestrator already plans to call
+    /// [`Self::consume_downlink_replay_with_timeout`] before resuming
+    /// the relay loop.
+    pub fn with_expect_downlink_replay(mut self, expect: bool) -> Self {
+        self.expect_downlink_replay = expect;
         self
     }
 
@@ -256,6 +286,126 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
             Ok(result) => result,
             Err(_) => bail!(
                 "ack-prefix v1 control frame did not arrive within {} ms; dropping session",
+                timeout.as_millis(),
+            ),
+        }
+    }
+
+    /// Drive enough decrypted-chunk reads to pull the full v2
+    /// Symmetric Downlink Replay frame (`"ORDR"` 14-byte header +
+    /// `replay_len` payload bytes) off the wire, and surface the
+    /// outcome to the orchestrator. Caller must invoke this AFTER
+    /// [`Self::consume_ack_prefix`] (or its timeout variant) on a
+    /// stream where the v2 capability was negotiated.
+    ///
+    /// `max_bytes` caps the accepted `replay_len` to guard against a
+    /// malicious or misbehaving server inducing unbounded memory
+    /// pressure; values above the cap kill the session per spec.
+    ///
+    /// Returns:
+    /// - `Ok(None)` if v2 was not negotiated (no-op).
+    /// - `Ok(Some(Replay(payload)))` on the happy path.
+    /// - `Ok(Some(Truncated))` when the server set
+    ///   `REPLAY_TRUNCATED` (caller decides per overflow policy).
+    /// - `Err(_)` on parse failure, payload-cap overflow, or EOF
+    ///   mid-frame.
+    ///
+    /// On success any plaintext bytes that arrived past the v2
+    /// boundary in the same AEAD chunk are stashed in
+    /// [`Self::pending_tail`] so the next [`Self::read_chunk`] hands
+    /// them back as ordinary upstream data.
+    pub async fn consume_downlink_replay(
+        &mut self,
+        max_bytes: usize,
+    ) -> Result<Option<DownlinkReplayOutcome>> {
+        if !self.expect_downlink_replay {
+            return Ok(None);
+        }
+        let mut acc: Vec<u8> = Vec::with_capacity(DOWNLINK_REPLAY_HEADER_LEN_V1);
+        // Take any pending_tail bytes left over from a v1 consume —
+        // they could legitimately be the v2 header arriving in the
+        // same ciphertext record on a future server that fuses the
+        // emit path. Concatenate and continue from there.
+        if let Some(prior) = self.pending_tail.take() {
+            acc.extend_from_slice(&prior);
+        }
+        while acc.len() < DOWNLINK_REPLAY_HEADER_LEN_V1 {
+            let chunk = self.read_one_decrypted_chunk().await?;
+            if chunk.is_empty() {
+                bail!(
+                    "unexpected EOF while reading v2 downlink replay header (got {} bytes)",
+                    acc.len(),
+                );
+            }
+            acc.extend_from_slice(&chunk);
+        }
+        let parse = downlink_replay::parse_v1(&acc[..DOWNLINK_REPLAY_HEADER_LEN_V1]);
+        let (flags, replay_len) = match parse {
+            downlink_replay::ParseResult::Valid { flags, replay_len } => (flags, replay_len),
+            err => return Err(downlink_replay_parse_error(err, acc.len())),
+        };
+        let replay_len_us: usize = replay_len.try_into().map_err(|_| {
+            anyhow!("v2 downlink replay_len {replay_len} too large to address on this platform")
+        })?;
+        if replay_len_us > max_bytes {
+            bail!(
+                "v2 downlink replay_len {replay_len_us} exceeds configured cap {max_bytes}; \
+                 dropping session"
+            );
+        }
+        let truncated = (flags & FLAG_REPLAY_TRUNCATED) != 0;
+        if truncated && replay_len_us != 0 {
+            bail!(
+                "v2 REPLAY_TRUNCATED flag set but replay_len = {replay_len_us}; spec violation"
+            );
+        }
+        let total_needed = DOWNLINK_REPLAY_HEADER_LEN_V1 + replay_len_us;
+        while acc.len() < total_needed {
+            let chunk = self.read_one_decrypted_chunk().await?;
+            if chunk.is_empty() {
+                bail!(
+                    "unexpected EOF while reading v2 downlink replay payload \
+                     (got {} of {} bytes)",
+                    acc.len(),
+                    total_needed,
+                );
+            }
+            acc.extend_from_slice(&chunk);
+        }
+        self.expect_downlink_replay = false;
+        if acc.len() > total_needed {
+            // Bytes past the v2 boundary are real upstream data — stash
+            // them so the next read_chunk surfaces them in order.
+            let trailing = acc[total_needed..].to_vec();
+            self.pending_tail = match self.pending_tail.take() {
+                Some(prior) => {
+                    let mut combined = prior;
+                    combined.extend_from_slice(&trailing);
+                    Some(combined)
+                },
+                None => Some(trailing),
+            };
+        }
+        if truncated {
+            return Ok(Some(DownlinkReplayOutcome::Truncated));
+        }
+        let payload = acc[DOWNLINK_REPLAY_HEADER_LEN_V1..total_needed].to_vec();
+        Ok(Some(DownlinkReplayOutcome::Replay(payload)))
+    }
+
+    /// Same as [`Self::consume_downlink_replay`] but bounded by
+    /// `timeout` — a server that negotiated the capability but never
+    /// emits the v2 frame would otherwise stall the orchestrator
+    /// indefinitely.
+    pub async fn consume_downlink_replay_with_timeout(
+        &mut self,
+        timeout: Duration,
+        max_bytes: usize,
+    ) -> Result<Option<DownlinkReplayOutcome>> {
+        match tokio::time::timeout(timeout, self.consume_downlink_replay(max_bytes)).await {
+            Ok(result) => result,
+            Err(_) => bail!(
+                "v2 downlink replay frame did not arrive within {} ms; dropping session",
                 timeout.as_millis(),
             ),
         }
@@ -403,6 +553,35 @@ fn ack_prefix_parse_error(err: ParseResult, observed_len: usize) -> anyhow::Erro
         ),
         ParseResult::ReservedFlagsSet(f) => anyhow!(
             "ack-prefix v1 control frame has reserved flags 0x{f:02x} set; dropping session"
+        ),
+    }
+}
+
+/// Mirror of [`ack_prefix_parse_error`] for the v2 Symmetric Downlink
+/// Replay frame. Surfaces a session-drop error with a descriptive
+/// reason — the spec mandates "drop the session" on any of these
+/// paths.
+fn downlink_replay_parse_error(
+    err: downlink_replay::ParseResult,
+    observed_len: usize,
+) -> anyhow::Error {
+    match err {
+        downlink_replay::ParseResult::Valid { .. } => {
+            unreachable!("Valid is the success arm")
+        },
+        downlink_replay::ParseResult::TooShort => anyhow!(
+            "v2 downlink replay header is shorter than {} bytes (got {})",
+            DOWNLINK_REPLAY_HEADER_LEN_V1,
+            observed_len,
+        ),
+        downlink_replay::ParseResult::BadMagic => anyhow!(
+            "v2 downlink replay frame has unexpected magic; dropping session"
+        ),
+        downlink_replay::ParseResult::UnsupportedVersion(v) => anyhow!(
+            "v2 downlink replay frame announces unsupported version {v}; dropping session"
+        ),
+        downlink_replay::ParseResult::ReservedFlagsSet(f) => anyhow!(
+            "v2 downlink replay frame has reserved flag bits 0x{f:02x} set; dropping session"
         ),
     }
 }

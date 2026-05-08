@@ -199,6 +199,9 @@ impl UdpWsTransport {
             // SS-UDP transports do not need it and the server only emits
             // the control frame on the SS-WS path. Always opt out here.
             false,
+            // v2 Symmetric Downlink Replay is gated on v1 and likewise
+            // does not apply to UDP — opt out.
+            false,
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;

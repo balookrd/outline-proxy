@@ -151,6 +151,14 @@ pin_project! {
             issued_session_id: Option<SessionId>,
             downgraded_from: Option<TransportMode>,
             ack_prefix_advertised_by_server: bool,
+            // `true` when the server also echoed
+            // `X-Outline-Resume-Symmetric-Replay: 1` on the upgrade
+            // response, opting into the v2 Symmetric Downlink Replay
+            // protocol. Spec gates v2 on v1, so this is `true` only
+            // when `ack_prefix_advertised_by_server` is also `true`.
+            // See `docs/SESSION-RESUMPTION.md` (server repo)
+            // § Symmetric Downlink Replay (v2).
+            symmetric_replay_advertised_by_server: bool,
         },
         H2 {
             #[pin]
@@ -158,6 +166,14 @@ pin_project! {
             issued_session_id: Option<SessionId>,
             downgraded_from: Option<TransportMode>,
             ack_prefix_advertised_by_server: bool,
+            // `true` when the server also echoed
+            // `X-Outline-Resume-Symmetric-Replay: 1` on the upgrade
+            // response, opting into the v2 Symmetric Downlink Replay
+            // protocol. Spec gates v2 on v1, so this is `true` only
+            // when `ack_prefix_advertised_by_server` is also `true`.
+            // See `docs/SESSION-RESUMPTION.md` (server repo)
+            // § Symmetric Downlink Replay (v2).
+            symmetric_replay_advertised_by_server: bool,
         },
         H3 {
             #[pin]
@@ -165,6 +181,14 @@ pin_project! {
             issued_session_id: Option<SessionId>,
             downgraded_from: Option<TransportMode>,
             ack_prefix_advertised_by_server: bool,
+            // `true` when the server also echoed
+            // `X-Outline-Resume-Symmetric-Replay: 1` on the upgrade
+            // response, opting into the v2 Symmetric Downlink Replay
+            // protocol. Spec gates v2 on v1, so this is `true` only
+            // when `ack_prefix_advertised_by_server` is also `true`.
+            // See `docs/SESSION-RESUMPTION.md` (server repo)
+            // § Symmetric Downlink Replay (v2).
+            symmetric_replay_advertised_by_server: bool,
         },
         /// VLESS-over-XHTTP packet-up. The inner stream multiplexes a
         /// long-lived GET (downlink) and a sequence of POSTs (uplink)
@@ -175,6 +199,14 @@ pin_project! {
             issued_session_id: Option<SessionId>,
             downgraded_from: Option<TransportMode>,
             ack_prefix_advertised_by_server: bool,
+            // `true` when the server also echoed
+            // `X-Outline-Resume-Symmetric-Replay: 1` on the upgrade
+            // response, opting into the v2 Symmetric Downlink Replay
+            // protocol. Spec gates v2 on v1, so this is `true` only
+            // when `ack_prefix_advertised_by_server` is also `true`.
+            // See `docs/SESSION-RESUMPTION.md` (server repo)
+            // § Symmetric Downlink Replay (v2).
+            symmetric_replay_advertised_by_server: bool,
         },
     }
 }
@@ -206,6 +238,7 @@ impl TransportStream {
             issued_session_id,
             downgraded_from: None,
             ack_prefix_advertised_by_server: false,
+            symmetric_replay_advertised_by_server: false,
         }
     }
 
@@ -257,6 +290,39 @@ impl TransportStream {
         self
     }
 
+    /// Whether the server echoed `X-Outline-Resume-Symmetric-Replay: 1`
+    /// on the upgrade response, confirming both peers will speak the
+    /// v2 Symmetric Downlink Replay protocol. When `true`, after the
+    /// v1 control frame is consumed the orchestrator must drive
+    /// `consume_downlink_replay_with_timeout` on the reader before
+    /// the relay loop resumes — the server has emitted (or will emit)
+    /// the v2 `"ORDR"` frame as the next bytes on the wire.
+    pub fn symmetric_replay_advertised_by_server(&self) -> bool {
+        match self {
+            TransportStream::Http1 { symmetric_replay_advertised_by_server, .. }
+            | TransportStream::H2 { symmetric_replay_advertised_by_server, .. }
+            | TransportStream::H3 { symmetric_replay_advertised_by_server, .. }
+            | TransportStream::Xhttp { symmetric_replay_advertised_by_server, .. } => {
+                *symmetric_replay_advertised_by_server
+            },
+        }
+    }
+
+    /// Stamp whether the server echoed the v2 capability on the
+    /// upgrade response. Mirror of [`Self::with_ack_prefix_advertised`];
+    /// chainable.
+    pub fn with_symmetric_replay_advertised(mut self, advertised: bool) -> Self {
+        match &mut self {
+            TransportStream::Http1 { symmetric_replay_advertised_by_server, .. }
+            | TransportStream::H2 { symmetric_replay_advertised_by_server, .. }
+            | TransportStream::H3 { symmetric_replay_advertised_by_server, .. }
+            | TransportStream::Xhttp { symmetric_replay_advertised_by_server, .. } => {
+                *symmetric_replay_advertised_by_server = advertised;
+            },
+        }
+        self
+    }
+
     /// Wraps an [`XhttpStream`] freshly returned from `connect_xhttp`,
     /// tagging it with the resume token the server returned in
     /// `X-Outline-Session` (if any). The downgrade slot is filled
@@ -267,6 +333,7 @@ impl TransportStream {
             issued_session_id,
             downgraded_from: None,
             ack_prefix_advertised_by_server: false,
+            symmetric_replay_advertised_by_server: false,
         }
     }
 

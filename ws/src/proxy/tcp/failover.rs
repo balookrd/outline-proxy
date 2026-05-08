@@ -512,6 +512,8 @@ pub(super) async fn connect_tcp_fallback_fresh(
         // Phase 2.4. Until then, the failover dial keeps the legacy
         // resume-only semantics.
         false,
+        // v2 Symmetric Downlink Replay is gated on v1; off here too.
+        false,
     )
     .await
     .with_context(|| format!(
