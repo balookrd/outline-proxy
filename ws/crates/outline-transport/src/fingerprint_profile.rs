@@ -374,32 +374,81 @@ fn host_index(url: &Url) -> usize {
 
 /// Process-wide profile index used by [`Strategy::ProcessStable`].
 ///
-/// Seeded from `$HOSTNAME` / `%COMPUTERNAME%` when available — that
-/// keeps identity stable across restarts on the same machine, which
+/// Seeded from the OS-level hostname when available — that keeps
+/// identity stable across restarts on the same machine, which
 /// matches how a real user with a single browser actually appears to
-/// an on-path observer. When neither variable is set (containers,
-/// minimal sandboxes, `systemd-nspawn` without `--hostname=…`), the
+/// an on-path observer. When the hostname syscall fails or returns
+/// empty (containers without a hostname set, minimal sandboxes), the
 /// seed falls back to `rand::random` at process start: identity then
 /// rotates on every restart but stays consistent for the duration of
 /// the process — still strictly better than per-host split, just not
 /// stable across restarts.
+///
+/// **Why not `$HOSTNAME` env-var?** On Linux / macOS `$HOSTNAME` is a
+/// shell-internal variable (set by bash / zsh in interactive shells),
+/// **not** part of the process environment. systemd, docker, cron,
+/// launchd — none of them propagate it. Reading `std::env::var("HOSTNAME")`
+/// in a daemon-like process therefore returns `None` almost always,
+/// which would make ProcessStable fall through to the random fallback
+/// in production deployments — exactly the opposite of "stable across
+/// restarts". So we call `gethostname(2)` directly. Windows is
+/// different: `%COMPUTERNAME%` IS set on every process by the OS,
+/// so reading env there is correct.
 fn process_index() -> usize {
     static IDX: OnceLock<usize> = OnceLock::new();
-    *IDX.get_or_init(|| {
-        let seed = std::env::var("HOSTNAME")
-            .ok()
-            .or_else(|| std::env::var("COMPUTERNAME").ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        match seed {
-            Some(name) => {
-                let mut hasher = DefaultHasher::new();
-                name.hash(&mut hasher);
-                (hasher.finish() as usize) % PROFILES.len()
-            },
-            None => rand::random::<usize>() % PROFILES.len(),
-        }
+    *IDX.get_or_init(|| match read_hostname() {
+        Some(name) => {
+            let mut hasher = DefaultHasher::new();
+            name.hash(&mut hasher);
+            (hasher.finish() as usize) % PROFILES.len()
+        },
+        None => rand::random::<usize>() % PROFILES.len(),
     })
+}
+
+/// Returns the OS-reported hostname, trimmed and non-empty, or `None`
+/// when the syscall fails or yields an empty string. On Unix uses
+/// `gethostname(2)` directly because `$HOSTNAME` is a shell-internal
+/// variable that daemons never see; on Windows reads
+/// `%COMPUTERNAME%` (which Windows actually puts in the process env).
+#[cfg(unix)]
+fn read_hostname() -> Option<String> {
+    // POSIX `_POSIX_HOST_NAME_MAX` is 255; +1 for NUL gives 256. Real
+    // systems sometimes carry longer names (FQDNs in containers); we
+    // keep the buffer at 256 because the seed only needs *something
+    // stable*, not the full FQDN — truncated bytes still hash to a
+    // stable value.
+    let mut buf = [0u8; 256];
+    // SAFETY: `gethostname` writes up to `buf.len()` bytes into the
+    // pointer we hand it; we own the buffer for the duration of the
+    // call. The function returns 0 on success and sets `errno` on
+    // failure; we only treat 0 as "data available". The result may
+    // not be NUL-terminated when the hostname is exactly buf.len()
+    // bytes, so we scan for the first NUL ourselves and fall back to
+    // the full buffer if there is none.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let s = std::str::from_utf8(&buf[..end]).ok()?.trim();
+    if s.is_empty() { None } else { Some(s.to_string()) }
+}
+
+#[cfg(windows)]
+fn read_hostname() -> Option<String> {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_hostname() -> Option<String> {
+    // No hostname API on the current target — fall through to the
+    // random seed. The caller treats `None` as "no stable seed
+    // available, rotate on restart".
+    None
 }
 
 /// Sec-Fetch-* triplet variant. The values browsers send depend on
