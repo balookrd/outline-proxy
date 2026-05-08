@@ -161,11 +161,17 @@ impl UplinkManager {
         }
         self.store_sticky_route(&routing_key, uplink_index).await;
         // Successful end-to-end connect on this uplink is strong evidence the
-        // data path is alive — clear the runtime-failure streak so a transient
-        // burst of failures does not push it to unhealthy.
+        // data path is alive — clear the runtime-failure streak (and the
+        // parallel chunk-0 streak) so a transient burst of failures does not
+        // push it to unhealthy.
         self.inner.with_status_mut(uplink_index, |status| match transport {
-            TransportKind::Tcp => status.tcp.consecutive_runtime_failures = 0,
-            TransportKind::Udp => status.udp.consecutive_runtime_failures = 0,
+            TransportKind::Tcp => {
+                status.tcp.consecutive_runtime_failures = 0;
+                status.tcp.chunk0_consecutive_failures = 0;
+            },
+            TransportKind::Udp => {
+                status.udp.consecutive_runtime_failures = 0;
+            },
         });
     }
 

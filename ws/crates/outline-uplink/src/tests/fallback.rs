@@ -257,6 +257,7 @@ fn make_lb(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig 
         failure_penalty_halflife: std::time::Duration::from_secs(60),
         mode_downgrade_duration,
         runtime_failure_window: std::time::Duration::from_secs(60),
+        chunk0_failure_window: std::time::Duration::from_secs(300),
         global_udp_strict_health: false,
         udp_ws_keepalive_interval: None,
         tcp_ws_keepalive_interval: None,

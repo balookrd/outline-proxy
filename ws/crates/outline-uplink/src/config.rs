@@ -445,6 +445,22 @@ pub struct LoadBalancingConfig {
     /// Setting this to `Duration::ZERO` keeps the legacy behaviour (no decay,
     /// counter only resets on successful traffic or successful probe).
     pub runtime_failure_window: Duration,
+    /// Time window over which consecutive **chunk-0 timeouts** on a single
+    /// uplink/transport are counted toward the same
+    /// `probe.min_failures`-based health-flip escalation. Chunk-0 timeouts
+    /// indicate a silent upstream — the connection handshake succeeded,
+    /// but no response bytes ever arrived within the deadline — which the
+    /// handshake-only probe cannot detect. They occur sparsely (often a
+    /// few minutes apart on a slowly-degrading server), so the generic
+    /// `runtime_failure_window` (default 60 s) decays the streak before
+    /// it ever reaches the threshold and the active uplink stays pinned
+    /// to a broken upstream. This window is independent and typically
+    /// much wider (default 5 min). A chunk-0 timeout arriving more than
+    /// `chunk0_failure_window` after the previous one resets the
+    /// chunk-0 streak to `1`. `Duration::ZERO` disables the dedicated
+    /// counter (chunk-0 timeouts then only feed the generic
+    /// `consecutive_runtime_failures` like any other failure).
+    pub chunk0_failure_window: Duration,
     /// Interval at which WS ping frames are sent on idle UDP data-path connections
     /// to prevent NAT/firewall timeout disconnections. None disables keepalive.
     pub udp_ws_keepalive_interval: Option<Duration>,

@@ -157,6 +157,15 @@ impl UplinkManager {
         // `Duration::ZERO` disables decay (legacy behaviour) for callers that
         // explicitly want it.
         let runtime_failure_window = self.inner.load_balancing.runtime_failure_window;
+        // Dedicated decay window for the chunk-0 timeout streak. Wider than
+        // `runtime_failure_window` so sparse but recurring chunk-0 timeouts
+        // (silent upstream — handshake passes, no response bytes follow)
+        // accumulate to the same `runtime_failure_threshold` instead of
+        // being decayed away by the generic counter's tighter window.
+        // `Duration::ZERO` disables the dedicated counter (chunk-0
+        // timeouts then only feed the generic `consecutive_runtime_failures`).
+        let chunk0_failure_window = self.inner.load_balancing.chunk0_failure_window;
+        let is_chunk0_timeout = failure_signature == "chunk0_timeout";
         // Data-plane failures only escalate to a health flip when the probe is
         // the authoritative signal AND we are in strict global mode — that is
         // the configuration where `should_keep` ignores cooldown, so without an
@@ -222,6 +231,30 @@ impl UplinkManager {
                         && status.tcp.consecutive_runtime_failures >= runtime_failure_threshold
                     {
                         status.tcp.healthy = Some(false);
+                    }
+                    // Chunk-0 timeouts ride a parallel streak with a wider
+                    // decay window — see `chunk0_failure_window` rationale
+                    // above. This catches the slow-burn pattern that the
+                    // generic counter decays away: the same threshold
+                    // (`probe.min_failures`) flips healthy without waiting
+                    // for a tight cluster of generic errors.
+                    if is_chunk0_timeout && !chunk0_failure_window.is_zero() {
+                        let stale_chunk0 = status
+                            .tcp
+                            .last_chunk0_failure_at
+                            .is_some_and(|t| now.saturating_duration_since(t) > chunk0_failure_window);
+                        if stale_chunk0 {
+                            status.tcp.chunk0_consecutive_failures = 1;
+                        } else {
+                            status.tcp.chunk0_consecutive_failures =
+                                status.tcp.chunk0_consecutive_failures.saturating_add(1);
+                        }
+                        status.tcp.last_chunk0_failure_at = Some(now);
+                        if runtime_health_escalation
+                            && status.tcp.chunk0_consecutive_failures >= runtime_failure_threshold
+                        {
+                            status.tcp.healthy = Some(false);
+                        }
                     }
                     if probe_enabled && !already_in_cooldown {
                         mark_probe_wakeup(
@@ -429,6 +462,7 @@ impl UplinkManager {
                     // bit — even when probe is authoritative, we should not
                     // escalate to a health flip while the data path is alive.
                     status.tcp.consecutive_runtime_failures = 0;
+                    status.tcp.chunk0_consecutive_failures = 0;
                     if !probe_enabled {
                         status.tcp.healthy = Some(true);
                         status.tcp.consecutive_failures = 0;
