@@ -313,9 +313,9 @@ Frame **не** шлётся на:
 
 ### Downstream-направление
 
-v1 Ack-Prefix Протокола покрывает **только upstream**-направление. Downstream (server→client) не имеет эквивалентной гарантии — байты, которые сервер эмитнул в WS, но которые не дошли до клиента до разрыва, просто теряются. Application-протоколы, требующие loss-free downstream-доставки (например, SSH, raw TCP через SS без HTTP-layer retry), best-effort под v1 resume; протоколы со своим application-layer retry (HTTP request bodies, идемпотентные RPC) не страдают.
+v1 Ack-Prefix Протокола покрывает **только upstream**-направление. Downstream (server→client) в v1 не имеет эквивалентной гарантии — байты, которые сервер эмитнул в WS, но которые не дошли до клиента до разрыва, под v1 теряются. Application-протоколы со своим application-layer retry (HTTP request bodies, идемпотентные RPC) не страдают; протоколы, рассматривающие байтовый поток как единый упорядоченный лог (SSH, raw TCP, кастомные бинарные стримы), портят своё состояние при downstream-gap'е.
 
-Будущая v2 может добавить симметричный downstream prefix, несущий `down_received` счётчик клиента, server-side back-buffer недавних downstream-байт, и offset-based replay; отложено до тех пор, пока операционные данные не покажут, что upstream-only v1 оставляет измеримые gap'ы в реальном трафике.
+Симметричное расширение, покрывающее downstream-направление, — это **Ack-Prefix Протокол v2 (Симметричный Downlink Replay)**, описанный ниже. v2 — opt-in поверх v1.
 
 ### Матрица совместимости
 
@@ -325,6 +325,129 @@ v1 Ack-Prefix Протокола покрывает **только upstream**-н
 | On | Off | Any | Сервер не эхо'ит capability → клиент откатывается на базу |
 | On | On | No (fresh / miss) | Control frame не шлётся; свежая сессия; replay не нужен |
 | On | On | Yes | Сервер эмитит control frame; клиент парсит и replay'ит из offset'а |
+
+## Симметричный Downlink Replay (v2)
+
+v1 Ack-Prefix Протокола закрывает gap byte-loss в **upstream**-направлении: байты client→server→upstream, которые перешли через WebSocket, но не дошли до upstream'а до того как нижний TCP умер, могут быть replay'ены без дублирования. Расширение **v2 (Симметричный Downlink Replay)** делает то же для **downstream**-направления: байты server→client, которые сервер эмитнул в WebSocket, но клиент никогда не наблюдал до того как нижний TCP умер.
+
+v2 строится поверх v1. Оба capability'я договариваются независимо, и v2-кадр эмитится **после** v1-кадра на каждом resume-hit'е, где v2 активен. v2 без v1 — не поддерживаемая конфигурация: сервер ОБЯЗАН не эхо'ить `X-Outline-Resume-Symmetric-Replay: 1`, если клиент не анонсировал также `X-Outline-Resume-Ack-Prefix: 1`.
+
+### Negotiation capability'ев
+
+Два кооперирующих заголовка, параллельные v1'овским. Оба должны присутствовать с обеих сторон, чтобы v2 активировался; отсутствие любой стороны откатывает на v1-only или базовый resume по матрице ниже.
+
+| Сторона | Заголовок | Формат | Значение |
+|---|---|---|---|
+| Запрос клиента | `X-Outline-Resume-Symmetric-Replay` | `1` | Клиент понимает фичу и распарсит v2 control frame на resume-hit'ах |
+| Ответ сервера | `X-Outline-Resume-Symmetric-Replay` | `1` | Сервер понимает запрос и эмитнет v2 control frame на resume-hit'ах |
+
+### Передача offset'а от клиента к серверу
+
+Чтобы сервер знал, какой суффикс своих захваченных downstream-байт replay'ить, клиент сообщает свой last-acked downstream offset на resume-запросе:
+
+| Сторона | Заголовок | Формат | Значение |
+|---|---|---|---|
+| Запрос клиента | `X-Outline-Resume-Down-Acked` | десятичный `u64`, без leading zeros, max 2^63−1 | Общее число байт downstream-payload'а, которые клиент успешно форварднул своему SOCKS5-клиенту за всю жизнь этой сессии |
+
+Заголовок шлётся **только** на resume-запросах (несущих `X-Outline-Resume: <id>`), и только когда v2 capability также анонсирован. На первом коннекте сессии prior downstream offset'а нет; заголовок опускается.
+
+Если заголовок malformed (нечисло, overflow, отсутствует на resume-запросе с анонсом v2), сервер трактует его как `0` — эквивалентно «replay'ь всё, что ещё в ринге». Сервер логирует parse failure, но сессию не валит.
+
+### Server-side downlink ring buffer
+
+Когда v2 включён на сервере (`session_resumption.downlink_buffer_bytes > 0`), каждая TCP-несущая сессия поддерживает per-session bounded FIFO недавно эмитнутых downstream-байт:
+
+- Байты пушатся в ринг **до** записи в WS sink, чтобы `total_sent_downlink: Arc<AtomicU64>` всегда отражал то, что сервер обязался отправить. Если WS-write упадёт после push'а, байты остаются в ринге для replay'я на следующем resume-hit'е.
+- Ёмкость ринга — `downlink_buffer_bytes` (конфигурируется; default `65536`). При переполнении самые старые байты вытесняются по FIFO.
+- Ринг и `total_sent_downlink` переезжают в `ParkedTcp` при разрыве и обратно при resume-hit'е. Lifetime-семантика зеркалит v1'овский счётчик `upstream_bytes_acked`.
+- Стоимость памяти на сессию: до `downlink_buffer_bytes` resident, заряжается и для активных сессий (ринг живёт рядом с relay-state'ом), и для припаркованных. При `orphan_global_cap = 10000` и default 64 KiB-буфере worst-case потолок припаркованной стороны — ~640 MiB, сравнимо с существующим UDP back-buffer бюджетом. Операторы могут уменьшить на memory-constrained деплоях, поставив `downlink_buffer_bytes` меньше, или `0`, чтобы выключить v2 целиком.
+
+### Wire-формат — v2 control frame
+
+Эмитится как один SS-WS data frame или VLESS data frame **сразу после** v1 control frame'а на resume-hit'е, где v2 активен. Форма кадра:
+
+```
++0  : magic        "ORDR"           4 байта  ASCII (Outline Resume Downlink Replay)
++4  : version      0x01             1 байт
++5  : flags        bitfield         1 байт   bit 0 = REPLAY_TRUNCATED, bits 1..7 reserved (must be 0)
++6  : replay_len   u64 BE           8 байт   число байт replay-payload'а, идущих следом
++14 : payload      replay_len байт           захваченные сервером downstream-байты
+                                              от offset'а `X-Outline-Resume-Down-Acked`
+                                              до `total_sent_downlink`
+```
+
+Для SS-WS вся 14-байтная шапка + payload идёт через стандартный AEAD-encryption chain relay'я в одной или нескольких ciphertext-записях; клиент демаркирует, прочитав ровно `replay_len` plaintext-байт после шапки, независимо от того как AEAD разбил нижний ciphertext. Для VLESS-WS шапка + payload отправляются как один WS Binary message (конкатенированы, plaintext). Для VLESS-XHTTP — это следующий чанк long-lived response body (packet-up GET) или bidi POST response body (stream-one), всё ещё plaintext, всё ещё конкатенированы шапка + payload.
+
+#### Семантика полей
+
+- **`magic`** — фиксированный ASCII `"ORDR"`. Отличает v2-кадр от v1-кадра и от случайных upstream-байт, которые могут случайно начинаться с такого же префикса.
+- **`version`** — `0x01` для текущей итерации. Будущие ревизии бампят этот байт; клиенты, видящие неизвестную версию, ОБЯЗАНЫ дропнуть сессию и переподключиться без v2 capability'я.
+- **`flags`** — bitfield. v1 этого кадра определяет:
+  - **bit 0** `REPLAY_TRUNCATED` — установлен, когда клиентский offset из `X-Outline-Resume-Down-Acked` старше самого старого байта, ещё хранящегося в ринге сервера (буфер был переполнен во время парковки или offset клиента слишком отстал). Когда установлен, `replay_len` ОБЯЗАН быть `0`, и клиент ОБЯЗАН трактовать свой downstream-стрим как имеющий невосстановимый gap; поведение определяется политикой overflow на стороне клиента (см. ниже).
+  - bits 1..7 зарезервированы; ОБЯЗАНЫ быть 0; клиенты, видящие любой ненулевой reserved-бит, ОБЯЗАНЫ дропнуть сессию.
+- **`replay_len`** — число payload-байт сразу после 14-байтной шапки. Равно `total_sent_downlink − X-Outline-Resume-Down-Acked`, когда запрошенный offset полностью покрыт рингом, `0` при truncation (`REPLAY_TRUNCATED` установлен), `0` когда offset клиента уже равен `total_sent_downlink` (replay'ить нечего; флаг сброшен).
+
+### Порядок операций на resume hit
+
+Когда все три условия истинны (resume hit, v1 активен, v2 активен), сервер перед re-spawn'ом upstream→client relay-таска:
+
+1. Эмитит 14-байтный v1 кадр `"ORSM"`, несущий `up_acked`.
+2. Эмитит v2 кадр `"ORDR"`, шапка + (возможно пустой) payload, несущий downstream replay-slice или truncated-маркер.
+3. Передаёт управление standard relay-пути, копирующему свежие upstream-байты клиенту.
+
+Два кадра гарантированно прибывают в этом порядке в WS sink. Для SS-WS это обеспечено серийным AEAD-кодированием в той же write-задаче; для VLESS-WS / VLESS-XHTTP — серийной WS message-диспетчеризацией на том же sink'е.
+
+### Поведение клиента при приёме
+
+Когда клиент запросил resume **и** анонсировал оба capability'я v1 и v2 **и** ответ сервера несёт оба эха, клиент трактует первые расшифрованные байты на новом транспорте как:
+
+1. v1 frame (14 байт) — парсится точно как в v1; при provision failure — дропать сессию.
+2. v2 frame шапка (14 байт) — валидировать `magic == "ORDR"`, `version == 0x01`, reserved-биты `flags == 0`; при провале — дропать сессию.
+3. Если `REPLAY_TRUNCATED` установлен и `replay_len == 0`: downstream-стрим клиента имеет невосстановимый gap. Поведение определяется `tcp_mid_session_retry_overflow_policy`: `"soft"` продолжает сессию и инкрементирует `outline_ws_rust_uplink_mid_session_retries_total{outcome="downlink_truncated"}`; `"hard"` дропает сессию.
+4. Иначе: прочитать ровно `replay_len` plaintext-байт из транспорта и записать их SOCKS5-клиенту ДО того как любые свежие upstream-байты пойдут. Инкрементировать `client_acked_offset` на `replay_len`.
+5. После того как v2 payload потреблён, транспорт возвращается к нормальной семантике read-loop'а.
+
+Клиент ДОЛЖЕН enforce-ить настраиваемый hard cap на `replay_len` (`tcp_symmetric_replay_max_bytes`, default `1048576` / 1 MiB). Значение больше cap'а ОБЯЗАНО приводить к дропу сессии — защита от вредоносного или некорректного сервера, индуцирующего unbounded memory pressure.
+
+### Матрица совместимости
+
+| v1 клиент | v1 сервер | v2 клиент | v2 сервер | Resume hit | Поведение |
+|---|---|---|---|---|---|
+| Off | Any | Any | Any | Any | Базовая resume-семантика (без replay'я в обе стороны) |
+| On | Off | Any | Any | Any | Сервер не эхо'ит v1 → откат на базу |
+| On | On | Off | Any | Yes | Только v1-кадр; downstream-gap, если есть (legacy v1) |
+| On | On | On | Off | Yes | Сервер не эхо'ит v2 → только v1-кадр |
+| On | On | On | On | No (fresh / miss) | Ни один кадр не эмитится |
+| On | On | On | On | Yes | Оба кадра эмитятся, downstream replay выполнен |
+
+v2 capability, анонсированный без v1, — неопределённая wire-форма и ОБЯЗАН быть отвергнут: сервер ОБЯЗАН не эхо'ить v2, когда клиент не анонсировал также v1, и клиент ОБЯЗАН не анонсировать v2 без анонсирования v1.
+
+### Метрики
+
+| Метрика | Тип | Метки | Описание |
+|---|---|---|---|
+| `orphan_downlink_replay_bytes_total` | counter | `transport` | Байт replay'нуто downstream'ом на v2 resume-hit'ах |
+| `orphan_downlink_replay_truncated_total` | counter | `transport` | Resume-hit'ов, где переполнение ринга вынудило `REPLAY_TRUNCATED` |
+| `orphan_downlink_buf_bytes` | gauge | — | Текущий суммарный объём, занятый припаркованными downlink ring buffer'ами |
+
+### Конфигурация
+
+Единственная новая server-side кнопка живёт в существующей секции `[session_resumption]`:
+
+```toml
+[session_resumption]
+# ... existing keys ...
+downlink_buffer_bytes = 65536  # 0 выключает v2 на стороне сервера
+```
+
+`downlink_buffer_bytes = 0` выключает v2 на сервере: capability никогда не эхо'ится, ring buffer'ы не выделяются.
+
+Соответствующие client-side кнопки живут на `LoadBalancingConfig` рядом с существующими v1.x mid-session retry кнопками:
+
+| Кнопка | Default | Назначение |
+|---|---|---|
+| `tcp_symmetric_replay_enabled` | `true` | Анонсирует ли клиент `X-Outline-Resume-Symmetric-Replay: 1` на retry-redial'ах. `false` откатывает на v1-only |
+| `tcp_symmetric_replay_max_bytes` | `1048576` (1 MiB) | Жёсткий cap на принимаемый v2 `replay_len`. Ответы сервера выше этого валят сессию |
 
 ## Диаграмма жизненного цикла
 
@@ -408,7 +531,6 @@ orphan_global_cap = 10000
 
 Следующее намеренно не покрывается этой ревизией:
 
-- **Симметричный (downstream) zero-loss replay**. Ack-Prefix Протокол v1 (документирован выше) закрывает gap byte-loss в upstream-направлении (client→server→upstream), но оставляет downstream без изменений: байты, которые сервер эмитнул в WS, но не дошли до клиента до разрыва, теряются. Добавление симметричного downstream-replay'я требует server-side back-buffer'а недавних downstream-байт и client→server `down_received` заголовка; отложено до тех пор, пока операционные данные не оправдают стоимость.
 - **Persistent registry через рестарт**. Resume после рестарта сервера не поддерживается. Реализация требует либо передачи FD через systemd socket activation, либо переустановки upstream'а из сохранённого состояния, оба варианта добавляют значительную сложность ради маргинальной выгоды.
 - **Server-initiated migration**. Сервер не может отправить клиенту сообщение «иди на другой транспорт». Миграция всегда инициируется клиентом, когда его текущий транспорт ломается.
 - **Resumption для SS поверх raw QUIC**. У протокола Shadowsocks нет точки расширения, эквивалентной Addons. Клиенты, нуждающиеся в resumption, должны использовать Shadowsocks-over-WebSocket, где negotiation несут заголовки.
