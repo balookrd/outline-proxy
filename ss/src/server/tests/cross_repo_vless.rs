@@ -244,6 +244,7 @@ async fn cross_repo_vless_tcp_ws_h2_round_trip() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
 
@@ -302,6 +303,7 @@ async fn cross_repo_vless_tcp_ws_h1_round_trip() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
 
@@ -424,6 +426,7 @@ async fn cross_repo_vless_tcp_ws_h3_round_trip() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
 
@@ -608,6 +611,7 @@ async fn cross_repo_vless_tcp_ws_h2_resume_reattaches_parked_upstream() -> Resul
         None,
         false,
         false,
+        0,
     )
     .await?;
     let token = stream_a
@@ -655,6 +659,7 @@ async fn cross_repo_vless_tcp_ws_h2_resume_reattaches_parked_upstream() -> Resul
         Some(token),
         false,
         false,
+        0,
     )
     .await?;
     let _issued_b = stream_b.issued_session_id();
@@ -745,6 +750,7 @@ async fn cross_repo_vless_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Resu
         None,
         false,
         false,
+        0,
     )
     .await?;
     assert!(
@@ -792,6 +798,7 @@ async fn cross_repo_vless_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Resu
         Some(token),
         true,
         false,
+        0,
     )
     .await?;
     assert!(
@@ -1135,6 +1142,7 @@ async fn cross_repo_vless_tcp_ws_h3_resume_reattaches_parked_upstream() -> Resul
         None,
         false,
         false,
+        0,
     )
     .await?;
     let token = stream_a
@@ -1179,6 +1187,7 @@ async fn cross_repo_vless_tcp_ws_h3_resume_reattaches_parked_upstream() -> Resul
         Some(token),
         false,
         false,
+        0,
     )
     .await?;
     let _issued_b = stream_b.issued_session_id();
@@ -1305,6 +1314,7 @@ async fn cross_repo_vless_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result
         None,
         false,
         false,
+        0,
     )
     .await?;
     let token = stream_a
@@ -1344,6 +1354,7 @@ async fn cross_repo_vless_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result
         Some(token),
         false,
         false,
+        0,
     )
     .await?;
     assert_eq!(
@@ -1474,6 +1485,7 @@ async fn cross_repo_vless_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result
         None,
         false,
         false,
+        0,
     )
     .await?;
     let token = stream_a
@@ -1512,6 +1524,7 @@ async fn cross_repo_vless_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result
         Some(token),
         false,
         false,
+        0,
     )
     .await?;
     assert_eq!(

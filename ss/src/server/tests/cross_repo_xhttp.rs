@@ -120,6 +120,7 @@ async fn cross_repo_xhttp_packet_up_h2_round_trip() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
 
@@ -167,6 +168,7 @@ async fn cross_repo_xhttp_stream_one_h2_round_trip() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
 
@@ -221,6 +223,7 @@ async fn cross_repo_xhttp_h2_resume_reattaches_parked_upstream() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
     let token = stream_a
@@ -259,6 +262,7 @@ async fn cross_repo_xhttp_h2_resume_reattaches_parked_upstream() -> Result<()> {
         Some(token),
         false,
         false,
+        0,
     )
     .await?;
     // Client B mints its own token (the server cannot tell this
@@ -337,6 +341,7 @@ async fn cross_repo_xhttp_h2_ack_prefix_reports_up_acked_offset() -> Result<()> 
         None,
         false,
         false,
+        0,
     )
     .await?;
     assert!(
@@ -374,6 +379,7 @@ async fn cross_repo_xhttp_h2_ack_prefix_reports_up_acked_offset() -> Result<()> 
         Some(token),
         true,
         false,
+        0,
     )
     .await?;
     assert!(
@@ -546,6 +552,7 @@ async fn cross_repo_xhttp_packet_up_h3_round_trip() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
 
@@ -599,6 +606,7 @@ async fn cross_repo_xhttp_stream_one_h3_round_trip() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
 
@@ -652,6 +660,7 @@ async fn cross_repo_xhttp_packet_up_h3_resume_reattaches_parked_upstream() -> Re
         None,
         false,
         false,
+        0,
     )
     .await?;
     let token = stream_a
@@ -687,6 +696,7 @@ async fn cross_repo_xhttp_packet_up_h3_resume_reattaches_parked_upstream() -> Re
         Some(token),
         false,
         false,
+        0,
     )
     .await?;
     let _issued_b = stream_b.issued_session_id();
@@ -808,6 +818,7 @@ async fn cross_repo_xhttp_h3_to_h2_fallback_with_resume_token() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
     let token = stream_a
@@ -843,6 +854,7 @@ async fn cross_repo_xhttp_h3_to_h2_fallback_with_resume_token() -> Result<()> {
         Some(token),
         false,
         false,
+        0,
     )
     .await?;
     assert_eq!(

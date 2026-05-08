@@ -218,6 +218,7 @@ async fn cross_repo_ss_tcp_ws_h1_round_trip() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
     let (sink, stream) = transport_stream.split();
@@ -333,6 +334,7 @@ async fn cross_repo_ss_tcp_ws_h3_round_trip() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
     let (sink, stream) = transport_stream.split();
@@ -404,6 +406,7 @@ async fn cross_repo_ss_tcp_ws_h2_round_trip() -> Result<()> {
         None,
         false,
         false,
+        0,
     )
     .await?;
     let (sink, stream) = transport_stream.split();
@@ -457,6 +460,22 @@ async fn cross_repo_ss_tcp_ws_h2_round_trip() -> Result<()> {
 /// parks the live SS upstream into the registry under the issued
 /// token.
 async fn setup_ss_ws_server_with_resumption() -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+    setup_ss_ws_server_with_resumption_inner(0).await
+}
+
+/// Variant of [`setup_ss_ws_server_with_resumption`] that lets the
+/// caller turn on the v2 Symmetric Downlink Replay protocol by
+/// configuring a non-zero `downlink_buffer_bytes`. v2 cross-repo
+/// tests use this; v1.x tests use the default (0 = v2 disabled).
+async fn setup_ss_ws_server_with_resumption_v2(
+    downlink_buffer_bytes: usize,
+) -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+    setup_ss_ws_server_with_resumption_inner(downlink_buffer_bytes).await
+}
+
+async fn setup_ss_ws_server_with_resumption_inner(
+    downlink_buffer_bytes: usize,
+) -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
@@ -489,7 +508,7 @@ async fn setup_ss_ws_server_with_resumption() -> Result<(SocketAddr, JoinHandle<
             orphan_ttl_udp_secs: 30,
             orphan_per_user_cap: 4,
             orphan_global_cap: 16,
-            downlink_buffer_bytes: 0,
+            downlink_buffer_bytes,
         }),
         Arc::clone(&metrics),
     )));
@@ -556,6 +575,7 @@ async fn cross_repo_ss_tcp_ws_h2_resume_reattaches_parked_upstream() -> Result<(
         None,
         false,
         false,
+        0,
     )
     .await?;
     let token = stream_a
@@ -611,6 +631,7 @@ async fn cross_repo_ss_tcp_ws_h2_resume_reattaches_parked_upstream() -> Result<(
         Some(token),
         false,
         false,
+        0,
     )
     .await?;
     let _issued_b = stream_b.issued_session_id();
@@ -717,6 +738,8 @@ async fn cross_repo_ss_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Result<
         false,
         // v2 Symmetric Downlink Replay is gated on v1; off here too.
         false,
+        // No prior downstream offset on this fresh dial.
+        0,
     )
     .await?;
     assert!(
@@ -774,6 +797,7 @@ async fn cross_repo_ss_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Result<
         Some(token),
         true,
         false,
+        0,
     )
     .await?;
     assert!(
@@ -822,6 +846,240 @@ async fn cross_repo_ss_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Result<
         "Ack-Prefix offset must equal the upstream byte count forwarded \
          across client A's lifetime (4 bytes from \"ping\"); got {observed:?}",
     );
+
+    let (first, second) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&first, b"ping");
+    assert_eq!(&second, b"helo");
+
+    drop(reader_b);
+    drop(writer_b);
+    drop(ctrl_tx_b);
+    drop(lifetime_b);
+    server.abort();
+    Ok(())
+}
+
+/// v2 Symmetric Downlink Replay round-trip on SS-WS h2.
+///
+/// Verifies the symmetric-replay protocol on the SS-over-WebSocket
+/// carrier end-to-end: client A receives some downstream bytes,
+/// parks, client B reconnects with a non-zero
+/// `X-Outline-Resume-Down-Acked` claiming partial receipt, and the
+/// server emits the v2 "ORDR" frame replaying just the missing
+/// suffix.
+///
+/// Wire-protocol flow exercised:
+///   1. Client A advertises both v1 (`X-Outline-Resume-Ack-Prefix`)
+///      and v2 (`X-Outline-Resume-Symmetric-Replay`). Server echoes
+///      both because `[session_resumption].downlink_buffer_bytes >
+///      0`. Client A's payload "ping" makes it upstream; the echo
+///      "pong" comes back, captured into the server's per-session
+///      downlink ring (total_sent_downlink = 4) BEFORE encryption.
+///   2. Client A drops the WS gracefully → upstream parks with the
+///      ring + `up_acked = 4`.
+///   3. Client B dials with `Resume: <token>` + v1 + v2 + the new
+///      `X-Outline-Resume-Down-Acked: 2` header (claiming it only
+///      observed the first 2 bytes of "pong"). Server emits the
+///      v1 frame (up_acked = 4) followed by the v2 frame (header
+///      with replay_len = 2, payload = "ng" — bytes 2..4 of the
+///      ring).
+///   4. Client B's reader consumes the v1 frame via
+///      `consume_ack_prefix_with_timeout`, then the v2 frame via
+///      `consume_downlink_replay_with_timeout`, asserting the
+///      replay payload equals `b"ng"` and the truncation flag is
+///      clear. Subsequent read_chunk returns the next real upstream
+///      reply ("ackk").
+#[tokio::test]
+async fn cross_repo_ss_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut first = [0_u8; 4];
+        stream.read_exact(&mut first).await?;
+        stream.write_all(b"pong").await?;
+        let mut second = [0_u8; 4];
+        stream.read_exact(&mut second).await?;
+        stream.write_all(b"ackk").await?;
+        Result::<_, anyhow::Error>::Ok((first, second))
+    });
+
+    // 64 KiB ring matches the documented v2 default in the spec.
+    let (listen_addr, server) = setup_ss_ws_server_with_resumption_v2(65_536).await?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!("ws://{listen_addr}/tcp"))?;
+
+    let cipher = CipherKind::Chacha20IetfPoly1305;
+    let master_key = cipher
+        .derive_master_key(SS_PASSWORD)
+        .expect("derive_master_key succeeds for chacha20");
+
+    // ── Client A: v1 + v2 advertised, one round-trip, graceful park
+    let stream_a = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH2,
+        None,
+        false,
+        "cross-repo-ss-ws-symmetric-replay-a",
+        None,
+        // Client A advertises BOTH capabilities so the server's ring
+        // captures from the very first byte. A v2-aware client always
+        // advertises on every connect, mirroring the spec's
+        // "negotiation independent of Resume-Capable" rule.
+        true,
+        true,
+        // No prior downstream offset on the first dial.
+        0,
+    )
+    .await?;
+    assert!(
+        stream_a.ack_prefix_advertised_by_server(),
+        "server must echo v1 when client advertised AND v1.x retry feature is on"
+    );
+    assert!(
+        stream_a.symmetric_replay_advertised_by_server(),
+        "server must echo v2 when client advertised AND \
+         downlink_buffer_bytes > 0"
+    );
+    let token = stream_a
+        .issued_session_id()
+        .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
+    let (sink_a, stream_a_inner) = stream_a.split();
+    let lifetime_a = UpstreamTransportGuard::new(
+        "cross-repo-ss-ws-symmetric-replay-a",
+        "ss-ws-h2",
+    );
+    let (mut writer_a, ctrl_tx_a) = TcpShadowsocksWriter::connect(
+        sink_a,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_a),
+    )
+    .await?;
+    // Client A is the FIRST connect of the session — no v2 frame is
+    // emitted on a fresh dial (only on resume hits). Reader runs
+    // without `with_expect_ack_prefix` / `with_expect_downlink_replay`.
+    let mut reader_a = TcpShadowsocksReader::new(
+        stream_a_inner,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_a),
+        ctrl_tx_a.clone(),
+    );
+
+    let mut first_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    first_payload.extend_from_slice(b"ping");
+    writer_a.send_chunk(&first_payload).await?;
+    let reply_a = reader_a.read_chunk().await?;
+    assert_eq!(&reply_a, b"pong");
+
+    // Graceful Close so the server parks the upstream WITH the
+    // captured downlink ring (containing "pong", total_sent = 4).
+    let _ = ctrl_tx_a.send(Message::Close(None)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(reader_a);
+    drop(writer_a);
+    drop(ctrl_tx_a);
+    drop(lifetime_a);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // ── Client B: resume + v1 + v2 + claim partial receipt of "pong"
+    let stream_b = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH2,
+        None,
+        false,
+        "cross-repo-ss-ws-symmetric-replay-b",
+        Some(token),
+        true,
+        true,
+        // Claim "I received the first 2 bytes of 'pong'" — server
+        // should replay the trailing "ng".
+        2,
+    )
+    .await?;
+    assert!(
+        stream_b.ack_prefix_advertised_by_server(),
+        "server must echo v1 on the resume hit"
+    );
+    assert!(
+        stream_b.symmetric_replay_advertised_by_server(),
+        "server must echo v2 on the resume hit"
+    );
+    let (sink_b, stream_b_inner) = stream_b.split();
+    let lifetime_b = UpstreamTransportGuard::new(
+        "cross-repo-ss-ws-symmetric-replay-b",
+        "ss-ws-h2",
+    );
+    let (mut writer_b, ctrl_tx_b) = TcpShadowsocksWriter::connect(
+        sink_b,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_b),
+    )
+    .await?;
+    let mut reader_b = TcpShadowsocksReader::new(
+        stream_b_inner,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_b),
+        ctrl_tx_b.clone(),
+    )
+    .with_expect_ack_prefix(true)
+    .with_expect_downlink_replay(true);
+
+    // Send the second payload BEFORE consuming the control frames.
+    // The server's resume-attach path runs on the first decrypted
+    // chunk (SS2022 SOCKS5 preamble + payload from this send), at
+    // which point it emits v1 + v2 in order. Without this send, the
+    // server has nothing to react to and the consume calls would
+    // sit in their timeout waiting forever.
+    let mut second_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    second_payload.extend_from_slice(b"helo");
+    writer_b.send_chunk(&second_payload).await?;
+
+    // Pre-consume v1 first — that is the established v1.1 ordering
+    // (orchestrator drives both consumes BEFORE the relay loop).
+    let up_acked = reader_b
+        .consume_ack_prefix_with_timeout(Duration::from_secs(5))
+        .await?;
+    assert_eq!(
+        up_acked,
+        Some(4),
+        "v1 up_acked must reflect 'ping' (4 bytes) forwarded across A's lifetime"
+    );
+
+    // Then the v2 frame: replay_from(2) on the parked ring (which
+    // contains "pong", total_sent = 4) returns "ng" — bytes 2..4.
+    let outcome = reader_b
+        .consume_downlink_replay_with_timeout(
+            Duration::from_secs(5),
+            // Default client max_bytes (1 MiB).
+            1_048_576,
+        )
+        .await?
+        .expect("v2 negotiated → consume must surface an outcome");
+    match outcome {
+        outline_transport::downlink_replay::DownlinkReplayOutcome::Replay(payload) => {
+            assert_eq!(
+                payload,
+                b"ng",
+                "v2 must replay the suffix '[2..4)' of the parked ring (\"pong\")"
+            );
+        },
+        outline_transport::downlink_replay::DownlinkReplayOutcome::Truncated => panic!(
+            "expected Replay outcome, got Truncated — server's ring should retain the full 4-byte 'pong'"
+        ),
+    }
+
+    // After both frames are consumed the relay loop resumes
+    // normally. The upstream's second reply ("ackk") flows through
+    // unmodified.
+    let reply_b = reader_b.read_chunk().await?;
+    assert_eq!(&reply_b, b"ackk");
 
     let (first, second) =
         tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
@@ -954,6 +1212,7 @@ async fn cross_repo_ss_tcp_ws_h3_resume_reattaches_parked_upstream() -> Result<(
         None,
         false,
         false,
+        0,
     )
     .await?;
     let token = stream_a
@@ -1004,6 +1263,7 @@ async fn cross_repo_ss_tcp_ws_h3_resume_reattaches_parked_upstream() -> Result<(
         Some(token),
         false,
         false,
+        0,
     )
     .await?;
     let _issued_b = stream_b.issued_session_id();
@@ -1146,6 +1406,7 @@ async fn cross_repo_ss_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result<()
         None,
         false,
         false,
+        0,
     )
     .await?;
     let token = stream_a
@@ -1193,6 +1454,7 @@ async fn cross_repo_ss_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result<()
         Some(token),
         false,
         false,
+        0,
     )
     .await?;
     assert_eq!(
@@ -1340,6 +1602,7 @@ async fn cross_repo_ss_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result<()
         None,
         false,
         false,
+        0,
     )
     .await?;
     let token = stream_a
@@ -1392,6 +1655,7 @@ async fn cross_repo_ss_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result<()
         Some(token),
         false,
         false,
+        0,
     )
     .await?;
     assert_eq!(
