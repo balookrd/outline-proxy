@@ -65,7 +65,9 @@ pub(super) async fn connect_xhttp_h2(
     ipv6_first: bool,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
-) -> Result<(XhttpStream, Option<SessionId>, bool)> {
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
+) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     let submode = resolve_effective_submode(url, mode).await;
     let host = url
         .host_str()
@@ -110,17 +112,19 @@ pub(super) async fn connect_xhttp_h2(
             session_id: session_id.clone(),
         });
 
-        let (issued_session_id, ack_prefix_echo, driver, active_submode) = match submode {
+        let (issued_session_id, ack_prefix_echo, symmetric_replay_echo, driver, active_submode) = match submode {
             XhttpSubmode::PacketUp => {
                 // Open the GET synchronously so the resume-id
                 // round-trip completes before we hand the stream to
                 // the caller. The body drain is spawned as a
                 // sub-task; POSTs are pipelined per `start_send`.
-                let (issued, echo, body) = open_h2_get(
+                let (issued, echo, sym_echo, body) = open_h2_get(
                     send_request.clone(),
                     &target,
                     resume_request,
                     ack_prefix_requested,
+                    symmetric_replay_requested,
+                    client_acked_offset,
                     profile,
                 )
                 .await?;
@@ -132,7 +136,7 @@ pub(super) async fn connect_xhttp_h2(
                     body,
                     profile,
                 ));
-                (issued, echo, driver, XhttpSubmode::PacketUp)
+                (issued, echo, sym_echo, driver, XhttpSubmode::PacketUp)
             },
             XhttpSubmode::StreamOne => {
                 // Stream-one is a single bidirectional POST: open
@@ -150,17 +154,19 @@ pub(super) async fn connect_xhttp_h2(
                     &target,
                     resume_request,
                     ack_prefix_requested,
+                    symmetric_replay_requested,
+                    client_acked_offset,
                     profile,
                 )
                 .await
                 {
-                    Ok((issued, echo, body, frame_tx)) => {
+                    Ok((issued, echo, sym_echo, body, frame_tx)) => {
                         let driver = tokio::spawn(driver_loop_h2_stream_one(
                             in_tx, out_rx, body, frame_tx,
                         ));
                         crate::xhttp_submode_cache::record_success(url, XhttpSubmode::StreamOne)
                             .await;
-                        (issued, echo, driver, XhttpSubmode::StreamOne)
+                        (issued, echo, sym_echo, driver, XhttpSubmode::StreamOne)
                     },
                     Err(stream_err) => {
                         warn!(
@@ -170,11 +176,13 @@ pub(super) async fn connect_xhttp_h2(
                         );
                         crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
                             .await;
-                        let (issued, echo, body) = open_h2_get(
+                        let (issued, echo, sym_echo, body) = open_h2_get(
                             send_request.clone(),
                             &target,
                             resume_request,
                             ack_prefix_requested,
+                            symmetric_replay_requested,
+                            client_acked_offset,
                             profile,
                         )
                         .await?;
@@ -186,7 +194,7 @@ pub(super) async fn connect_xhttp_h2(
                             body,
                             profile,
                         ));
-                        (issued, echo, driver, XhttpSubmode::PacketUp)
+                        (issued, echo, sym_echo, driver, XhttpSubmode::PacketUp)
                     },
                 }
             },
@@ -207,6 +215,7 @@ pub(super) async fn connect_xhttp_h2(
             },
             issued_session_id,
             ack_prefix_echo,
+            symmetric_replay_echo,
         ))
     };
 
@@ -227,8 +236,10 @@ async fn open_h2_get(
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(Option<SessionId>, bool, hyper::body::Incoming)> {
+) -> Result<(Option<SessionId>, bool, bool, hyper::body::Incoming)> {
     let mut builder = Request::builder()
         .method(Method::GET)
         .uri(target.full_uri())
@@ -240,6 +251,15 @@ async fn open_h2_get(
     }
     if ack_prefix_requested {
         builder = builder.header(ACK_PREFIX_HEADER, "1");
+    }
+    if symmetric_replay_requested {
+        builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
+    }
+    if symmetric_replay_requested && client_acked_offset > 0 {
+        builder = builder.header(
+            crate::resumption::DOWN_ACKED_HEADER,
+            client_acked_offset.to_string(),
+        );
     }
     let mut req = builder
         .body(empty_request_body())
@@ -263,7 +283,11 @@ async fn open_h2_get(
     // Echo gating: same shape as the WS H1/H2/H3 paths — only report
     // a positive negotiation when we asked AND the server echoed.
     let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
-    Ok((issued, echo, resp.into_body()))
+    // v2 echo: requires v1 echo (per spec, v2 without v1 is undefined).
+    let sym_echo = symmetric_replay_requested
+        && echo
+        && super::parse_symmetric_replay_echo(resp.headers());
+    Ok((issued, echo, sym_echo, resp.into_body()))
 }
 
 /// Stream-one carrier on h2: a single bidirectional POST whose
@@ -276,9 +300,12 @@ async fn open_h2_stream_one(
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(
     Option<SessionId>,
+    bool,
     bool,
     hyper::body::Incoming,
     mpsc::Sender<hyper::body::Frame<Bytes>>,
@@ -304,6 +331,15 @@ async fn open_h2_stream_one(
     if ack_prefix_requested {
         builder = builder.header(ACK_PREFIX_HEADER, "1");
     }
+    if symmetric_replay_requested {
+        builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
+    }
+    if symmetric_replay_requested && client_acked_offset > 0 {
+        builder = builder.header(
+            crate::resumption::DOWN_ACKED_HEADER,
+            client_acked_offset.to_string(),
+        );
+    }
     let mut req = builder
         .body(body)
         .context("failed to build xhttp stream-one request")?;
@@ -324,7 +360,10 @@ async fn open_h2_stream_one(
     }
     let issued = parse_session_response(resp.headers());
     let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
-    Ok((issued, echo, resp.into_body(), frame_tx))
+    let sym_echo = symmetric_replay_requested
+        && echo
+        && super::parse_symmetric_replay_echo(resp.headers());
+    Ok((issued, echo, sym_echo, resp.into_body(), frame_tx))
 }
 
 async fn driver_loop_h2_stream_one(
