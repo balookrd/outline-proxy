@@ -122,6 +122,9 @@ pub(super) async fn try_park_vless_tcp(
         // resumed state's own counter (restored from this Arc on
         // the resume reattach).
         upstream_bytes_acked: Arc::clone(&state.upstream_bytes_acked),
+        // v2 Symmetric Downlink Replay ring is `None` until phase 5
+        // (VLESS-WS capture+emit) wires per-session allocation.
+        downlink_ring: None,
     };
     debug!(
         user = %owner,

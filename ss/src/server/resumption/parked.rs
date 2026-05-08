@@ -25,11 +25,13 @@ use tokio::net::{
     tcp::{OwnedReadHalf, OwnedWriteHalf},
 };
 
+use parking_lot::Mutex;
+
 use crate::{
     crypto::UserKey,
     metrics::{PerUserCounters, TcpUpstreamGuard},
     protocol::vless::VlessUser,
-    server::nat::NatKey,
+    server::{nat::NatKey, resumption::downlink_ring::DownlinkRing},
 };
 
 /// Variant-erased payload of a parked session entry.
@@ -115,6 +117,17 @@ pub(crate) struct ParkedTcp {
     /// counter is monotonic across reattaches. See
     /// `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1).
     pub(crate) upstream_bytes_acked: Arc<AtomicU64>,
+    /// Per-session bounded ring buffer of recently-emitted downstream
+    /// bytes, backing the v2 Symmetric Downlink Replay protocol.
+    /// Allocated when `session_resumption.downlink_buffer_bytes > 0`
+    /// at session-handshake time and shared with the relay loop;
+    /// `None` when v2 is disabled. Survives parks alongside the
+    /// upstream halves: the same `Arc` is moved back into the relay
+    /// state on resume hit so `total_sent` is monotonic across
+    /// reattaches. See `docs/SESSION-RESUMPTION.md` § Symmetric
+    /// Downlink Replay (v2).
+    #[allow(dead_code)] // wired by phases 4-6 (per-carrier capture+emit).
+    pub(crate) downlink_ring: Option<Arc<Mutex<DownlinkRing>>>,
 }
 
 /// Atomic park of a VLESS mux session. The whole multiplex — every

@@ -151,6 +151,20 @@ pub(in crate::server::transport) struct VlessRelayState {
     /// triggers emission of the 14-byte v1 control frame as the first
     /// WS Binary message AFTER the standard VLESS response header.
     pub(in crate::server::transport) ack_prefix_requested: bool,
+    /// Whether the client advertised the v2 Symmetric Downlink Replay
+    /// capability AND the server has v2 enabled. When true on a
+    /// resume hit the relay emits the v2 `"ORDR"` frame as a
+    /// separate WS Binary message immediately after the v1 frame.
+    /// Implies `ack_prefix_requested == true`.
+    #[allow(dead_code)] // wired by phase 5 (VLESS-WS capture+emit).
+    pub(in crate::server::transport) symmetric_replay_requested: bool,
+    /// Client-reported `X-Outline-Resume-Down-Acked` offset from the
+    /// request side. Used by the resume-emit path to compute
+    /// `replay_from(offset)` against the parked downlink ring. `0`
+    /// when no v2 negotiation occurred or the request did not carry
+    /// the header.
+    #[allow(dead_code)] // wired by phase 5 (VLESS-WS capture+emit).
+    pub(in crate::server::transport) client_acked_offset_request: u64,
     /// Per-session counter of plaintext bytes the relay has forwarded
     /// to the upstream socket. Same units the client tracks on its
     /// uplink ring buffer; survives park/resume because the `Arc` is
@@ -179,6 +193,8 @@ impl VlessRelayState {
             issued_session_id: resume.issued_session_id,
             pending_resume_request: resume.requested_resume,
             ack_prefix_requested: resume.ack_prefix_requested,
+            symmetric_replay_requested: resume.symmetric_replay_requested,
+            client_acked_offset_request: resume.client_acked_offset,
             upstream_bytes_acked: Arc::new(AtomicU64::new(0)),
         }
     }

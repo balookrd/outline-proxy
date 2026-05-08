@@ -256,6 +256,11 @@ fn try_park_raw_quic_tcp(
         // Ack-Prefix Protocol counter starts at 0 for VLESS raw-QUIC
         // in v1; control-frame emit on this protocol is a follow-up.
         upstream_bytes_acked: Arc::new(AtomicU64::new(0)),
+        // v2 Symmetric Downlink Replay is not active on raw-QUIC for
+        // the same reason v1 emit isn't — no HTTP-headers carrier for
+        // the negotiation. Field stays `None` here and changes only
+        // if/when raw-QUIC gets its own VLESS-Addons-based v2 hook.
+        downlink_ring: None,
     };
     debug!(
         user = %owner,

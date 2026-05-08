@@ -13,6 +13,11 @@ pub(crate) struct ResumptionConfig {
     pub(crate) orphan_ttl_udp: Duration,
     pub(crate) orphan_per_user_cap: usize,
     pub(crate) orphan_global_cap: usize,
+    /// Per-session capacity of the v2 Symmetric Downlink Replay ring
+    /// buffer. `0` keeps v2 server-side disabled even when the rest of
+    /// session resumption is enabled — the capability is never
+    /// echoed and the relay path skips ring allocation.
+    pub(crate) downlink_buffer_bytes: usize,
 }
 
 impl ResumptionConfig {
@@ -25,7 +30,15 @@ impl ResumptionConfig {
             orphan_ttl_udp: Duration::from_secs(30),
             orphan_per_user_cap: 4,
             orphan_global_cap: 10_000,
+            downlink_buffer_bytes: 0,
         }
+    }
+
+    /// Whether the v2 Symmetric Downlink Replay protocol is enabled
+    /// server-side: requires both the parent feature on and a
+    /// non-zero ring capacity.
+    pub(crate) fn symmetric_replay_enabled(&self) -> bool {
+        self.enabled && self.downlink_buffer_bytes > 0
     }
 }
 
@@ -43,6 +56,7 @@ impl From<&SessionResumptionConfig> for ResumptionConfig {
             orphan_ttl_udp: Duration::from_secs(cfg.orphan_ttl_udp_secs),
             orphan_per_user_cap: cfg.orphan_per_user_cap,
             orphan_global_cap: cfg.orphan_global_cap,
+            downlink_buffer_bytes: cfg.downlink_buffer_bytes,
         }
     }
 }

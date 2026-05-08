@@ -104,6 +104,10 @@ async fn make_parked_tcp(metrics: &Arc<Metrics>, owner: &str) -> Parked {
         // don't exercise the Ack-Prefix relay path, just need a sane
         // initial value.
         upstream_bytes_acked: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        // Registry tests never touch the v2 Symmetric Downlink Replay
+        // ring; absence (`None`) is the same shape the registry sees
+        // for any session whose carrier doesn't activate v2.
+        downlink_ring: None,
     })
 }
 

@@ -79,6 +79,7 @@ pub(super) async fn setup_xhttp_server_with_resumption(
                 orphan_ttl_udp_secs: 30,
                 orphan_per_user_cap: 4,
                 orphan_global_cap: 16,
+                downlink_buffer_bytes: 0,
             }),
             Arc::clone(&metrics),
         )))

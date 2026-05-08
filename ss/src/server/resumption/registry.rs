@@ -98,6 +98,23 @@ impl OrphanRegistry {
         self.config.enabled
     }
 
+    /// Whether the v2 Symmetric Downlink Replay protocol is enabled
+    /// server-side: requires both the parent feature on and a
+    /// non-zero ring capacity. Used by header-parsing + capability
+    /// echo paths to gate v2 advertisement. See
+    /// `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2).
+    pub(crate) fn symmetric_replay_enabled(&self) -> bool {
+        self.config.symmetric_replay_enabled()
+    }
+
+    /// Per-session downlink ring buffer capacity in bytes. `0` means
+    /// v2 is off. Used by relay paths that allocate the ring at
+    /// session-handshake time.
+    #[allow(dead_code)] // wired by phases 4-6 (per-carrier capture+emit).
+    pub(crate) fn downlink_buffer_bytes(&self) -> usize {
+        self.config.downlink_buffer_bytes
+    }
+
     /// Mints a fresh server-issued Session ID without registering anything.
     /// The ID is committed to the registry only when [`Self::park`] is called.
     pub(crate) fn mint_session_id(&self) -> Option<SessionId> {
