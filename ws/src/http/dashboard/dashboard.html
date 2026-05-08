@@ -957,8 +957,8 @@ function renderInstanceBody(panel, instance, groups) {
         row.className = "row";
         row.innerHTML = `
           <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
-          <div>${protocolPill(uplink)}${fallbackChainPill(uplink)}${fingerprintChip(uplink)}</div>
-          <div><span class="status-pill ${rowTone}">${label}</span></div>
+          <div>${protocolPill(uplink)}${fallbackChainPill(uplink)}</div>
+          <div><span class="status-pill ${rowTone}">${label}</span>${fingerprintChip(uplink)}</div>
           <div class="${legHealth(uplink, 'tcp') === false ? "muted-cell" : ""}">${legHealth(uplink, 'tcp') === false ? "down" : "ok"}</div>
           <div class="${legHealth(uplink, 'udp') === false ? "muted-cell" : ""}">${legHealth(uplink, 'udp') === false ? "down" : "ok"}</div>
           <div class="muted-cell">${weightCell(uplink)}</div>
