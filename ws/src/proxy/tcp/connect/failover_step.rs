@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use outline_metrics as metrics;
 use outline_uplink::{TransportKind, UplinkManager};
@@ -125,10 +125,18 @@ pub(super) async fn failover_to_next_candidate(
     let candidates = uplinks
         .tcp_failover_candidates(target, active.index)
         .await;
+    let candidates_total = candidates.len();
     let Some(next_candidate) = candidates
         .into_iter()
         .find(|c| !tried_indexes.contains(&c.index))
     else {
+        warn!(
+            from_uplink = %active.name,
+            target = %target,
+            tried_count = tried_indexes.len(),
+            candidates_total,
+            "TCP chunk-0 cross-uplink failover exhausted: no untried candidate left"
+        );
         return Ok(FailoverStep::NoCandidate);
     };
     tried_indexes.insert(next_candidate.index);
@@ -136,6 +144,13 @@ pub(super) async fn failover_to_next_candidate(
     let reconnected = match connect_tcp_uplink(uplinks, &next_candidate, target).await {
         Ok(v) => v,
         Err(connect_err) => {
+            warn!(
+                from_uplink = %active.name,
+                to_uplink = %next_candidate.uplink.name,
+                target = %target,
+                error = %format!("{connect_err:#}"),
+                "TCP chunk-0 cross-uplink failover dial failed; surfacing error to caller"
+            );
             uplinks
                 .report_runtime_failure(
                     next_candidate.index,

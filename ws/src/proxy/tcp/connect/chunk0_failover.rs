@@ -251,6 +251,27 @@ pub(super) async fn try_uplinks(
                 );
 
                 if !can_failover {
+                    let total_uplinks = uplinks.uplinks().len();
+                    let reason = if !strict_transport {
+                        "non-strict transport"
+                    } else if replay.overflow {
+                        "client body exceeded chunk-0 replay buffer"
+                    } else if tried_indexes.len() >= total_uplinks {
+                        "every uplink already tried this session"
+                    } else {
+                        "unknown can_failover gate"
+                    };
+                    warn!(
+                        uplink = %active.name,
+                        target = %target,
+                        attempted_uplinks = ?attempted_uplinks,
+                        tried_count = tried_indexes.len(),
+                        total_uplinks,
+                        replay_overflow = replay.overflow,
+                        strict_transport,
+                        reason,
+                        "TCP chunk-0 failover gated off; cannot fail over to another uplink"
+                    );
                     attribute_terminal_chunk0_failure(
                         uplinks,
                         active,
