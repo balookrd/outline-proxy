@@ -135,12 +135,22 @@ pub fn record_failover(transport: &'static str, group: &str, from_uplink: &str, 
 }
 
 /// Records the outcome of one mid-session retry attempt on the
-/// pinned-relay path. `outcome` should be one of the four canonical
-/// values described on the `outline_ws_rust_uplink_mid_session_retries_total`
-/// metric registration: `success`, `failed_redial`, `failed_replay`,
-/// or `buffer_overflow`. Passing other values is technically allowed
-/// (Prometheus does not validate label cardinality at insert time)
-/// but defeats the dashboard's pre-built panels.
+/// pinned-relay path. `outcome` should be one of the canonical values
+/// described on the `outline_ws_rust_uplink_mid_session_retries_total`
+/// metric registration:
+/// - `success` — retry replayed the v1 uplink suffix and (when v2 was
+///   engaged) the v2 downlink suffix without truncation;
+/// - `failed_redial` — the redial itself or the v1/v2 control-frame
+///   consume timed out / errored;
+/// - `failed_replay` — the v1 uplink replay write failed mid-suffix;
+/// - `buffer_overflow` — the v1 client-side ring buffer overflowed
+///   under `tcp_mid_session_retry_overflow_policy = "soft"`;
+/// - `downlink_truncated` — v2 was engaged and the server's `ORDR`
+///   frame carried `REPLAY_TRUNCATED`; honoured under the same
+///   overflow policy.
+/// Passing other values is technically allowed (Prometheus does not
+/// validate label cardinality at insert time) but defeats the
+/// dashboard's pre-built panels.
 pub fn record_mid_session_retry(
     transport: &'static str,
     group: &str,
