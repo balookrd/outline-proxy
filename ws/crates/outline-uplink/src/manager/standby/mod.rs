@@ -202,6 +202,11 @@ impl UplinkManager {
                 source,
                 resume_request,
                 ack_prefix_requested,
+                // Standby refill never participates in v2 Symmetric
+                // Downlink Replay — that capability is engaged only on
+                // mid-session retry redials in `pinned_relay`. Stays
+                // off here.
+                false,
             ),
         )
         .await

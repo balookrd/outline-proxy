@@ -100,6 +100,7 @@ use crate::h3::connect_websocket_h3;
 
 pub mod ack_prefix;
 pub mod collections;
+pub mod downlink_replay;
 mod config;
 mod dns;
 mod dns_cache;
@@ -285,7 +286,10 @@ pub async fn connect_websocket_with_source(
     ipv6_first: bool,
     source: &'static str,
 ) -> Result<TransportStream> {
-    connect_websocket_with_resume(cache, url, mode, fwmark, ipv6_first, source, None, false).await
+    // Source-only callers do not participate in v1/v2 capability
+    // negotiation — both flags stay `false` and the dial is a vanilla
+    // session.
+    connect_websocket_with_resume(cache, url, mode, fwmark, ipv6_first, source, None, false, false).await
 }
 
 /// Variant of [`connect_websocket_with_source`] that participates in
@@ -311,6 +315,7 @@ pub async fn connect_websocket_with_resume(
     source: &'static str,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
 ) -> Result<TransportStream> {
     let requested = mode;
     // Two independent per-host caches are queried here: the WS one
@@ -349,7 +354,7 @@ pub async fn connect_websocket_with_resume(
                 .with_downgraded_from(downgrade_marker(TransportMode::WsH1))
                 .with_ack_prefix_advertised(ack_prefix_advertised))
         },
-        TransportMode::WsH2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested).await {
+        TransportMode::WsH2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h2", "websocket transport connected");
                 ws_mode_cache::record_success(url, TransportMode::WsH2).await;
@@ -373,7 +378,7 @@ pub async fn connect_websocket_with_resume(
             },
         },
         #[cfg(feature = "h3")]
-        TransportMode::WsH3 => match connect_websocket_h3(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested).await {
+        TransportMode::WsH3 => match connect_websocket_h3(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h3", "websocket transport connected");
                 ws_mode_cache::record_success(url, TransportMode::WsH3).await;
@@ -387,7 +392,7 @@ pub async fn connect_websocket_with_resume(
                     "h3 websocket connect failed, falling back"
                 );
                 ws_mode_cache::record_failure(url, TransportMode::WsH3).await;
-                match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested).await {
+                match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested).await {
                     Ok(stream) => {
                         debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                         // Note: we deliberately do NOT call `record_success(H2)` here.
@@ -421,7 +426,7 @@ pub async fn connect_websocket_with_resume(
         TransportMode::WsH3 => {
             warn!(url = %url, "H3 requested but compiled without h3 feature, falling back to h2");
             ws_mode_cache::record_failure(url, TransportMode::WsH3).await;
-            match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested).await {
+            match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested).await {
                 Ok(stream) => {
                     debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                     // See sibling H3 success branch: do not clear the cap here.

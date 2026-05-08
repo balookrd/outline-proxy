@@ -132,6 +132,17 @@ pub struct VlessTcpReader {
     /// the `read_chunk` immediately after `consume_ack_prefix` does
     /// not silently drop those bytes.
     pending_tail: Option<Vec<u8>>,
+    /// Set by the orchestrator when the WS / XHTTP upgrade negotiated
+    /// the v2 Symmetric Downlink Replay capability (server echoed
+    /// `X-Outline-Resume-Symmetric-Replay: 1`). When `true`,
+    /// [`Self::consume_downlink_replay_with_timeout`] reads the v2
+    /// `"ORDR"` frame from the wire after the v1 frame has been
+    /// consumed, and surfaces the outcome to the orchestrator.
+    /// `read_chunk` does NOT auto-intercept the v2 frame — orchestrator
+    /// must drive `consume_downlink_replay_with_timeout` before the
+    /// relay loop resumes. See `docs/SESSION-RESUMPTION.md` (server
+    /// repo) § Symmetric Downlink Replay (v2).
+    expect_downlink_replay: bool,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
@@ -148,6 +159,7 @@ impl VlessTcpReader {
             expect_ack_prefix: false,
             up_acked: None,
             pending_tail: None,
+            expect_downlink_replay: false,
             _lifetime: lifetime,
         }
     }
@@ -171,6 +183,7 @@ impl VlessTcpReader {
             expect_ack_prefix: false,
             up_acked: None,
             pending_tail: None,
+            expect_downlink_replay: false,
             _lifetime: lifetime,
         }
     }
@@ -193,6 +206,17 @@ impl VlessTcpReader {
     /// payload chunk.
     pub fn with_expect_ack_prefix(mut self, expect: bool) -> Self {
         self.expect_ack_prefix = expect;
+        self
+    }
+
+    /// Tells the reader to expect a v2 Symmetric Downlink Replay frame
+    /// AFTER the v1 control frame on the new transport. Set when
+    /// [`crate::TransportStream::symmetric_replay_advertised_by_server`]
+    /// is `true` AND the orchestrator plans to call
+    /// [`Self::consume_downlink_replay_with_timeout`] before resuming
+    /// the relay loop.
+    pub fn with_expect_downlink_replay(mut self, expect: bool) -> Self {
+        self.expect_downlink_replay = expect;
         self
     }
 
@@ -252,6 +276,118 @@ impl VlessTcpReader {
             Ok(result) => result,
             Err(_) => bail!(
                 "vless ack-prefix v1 control frame did not arrive within {} ms; \
+                 dropping session",
+                timeout.as_millis(),
+            ),
+        }
+    }
+
+    /// Drive enough underlying frames to pull the full v2 Symmetric
+    /// Downlink Replay frame (`"ORDR"` 14-byte header + `replay_len`
+    /// payload bytes) and surface the outcome to the orchestrator.
+    /// Caller MUST invoke this AFTER [`Self::consume_ack_prefix`] (or
+    /// its timeout variant) on a stream where the v2 capability was
+    /// negotiated.
+    ///
+    /// `max_bytes` caps the accepted `replay_len` to guard against a
+    /// malicious server forcing unbounded buffering; payloads above
+    /// the cap kill the session per spec.
+    ///
+    /// On success, plaintext bytes that arrived past the v2 boundary
+    /// in the same WS frame are stashed in [`Self::pending_tail`] so
+    /// the next [`Self::read_chunk`] surfaces them in order.
+    pub async fn consume_downlink_replay(
+        &mut self,
+        max_bytes: usize,
+    ) -> Result<Option<crate::downlink_replay::DownlinkReplayOutcome>> {
+        if !self.expect_downlink_replay {
+            return Ok(None);
+        }
+        // Pre-read into the working buffer: v1 consume may have left
+        // trailing bytes in `pending_tail` that turn out to be the v2
+        // header. Take them, then top up via `recv_frame()` until we
+        // have at least the 14-byte header.
+        let mut acc: Vec<u8> = Vec::with_capacity(crate::downlink_replay::FRAME_HEADER_LEN_V1);
+        if let Some(prior) = self.pending_tail.take() {
+            acc.extend_from_slice(&prior);
+        }
+        while acc.len() < crate::downlink_replay::FRAME_HEADER_LEN_V1 {
+            let bytes = match self.source.recv_frame().await? {
+                None => bail!(
+                    "unexpected EOF while reading v2 downlink replay header (got {} bytes)",
+                    acc.len(),
+                ),
+                Some(b) => b,
+            };
+            acc.extend_from_slice(&bytes);
+        }
+        let parse = crate::downlink_replay::parse_v1(
+            &acc[..crate::downlink_replay::FRAME_HEADER_LEN_V1],
+        );
+        let (flags, replay_len) = match parse {
+            crate::downlink_replay::ParseResult::Valid { flags, replay_len } => (flags, replay_len),
+            err => return Err(downlink_replay_parse_error_vless(err, acc.len())),
+        };
+        let replay_len_us: usize = replay_len.try_into().map_err(|_| {
+            anyhow!(
+                "v2 downlink replay_len {replay_len} too large to address on this platform"
+            )
+        })?;
+        if replay_len_us > max_bytes {
+            bail!(
+                "v2 downlink replay_len {replay_len_us} exceeds configured cap {max_bytes}; \
+                 dropping session"
+            );
+        }
+        let truncated = (flags & crate::downlink_replay::FLAG_REPLAY_TRUNCATED) != 0;
+        if truncated && replay_len_us != 0 {
+            bail!(
+                "v2 REPLAY_TRUNCATED flag set but replay_len = {replay_len_us}; spec violation"
+            );
+        }
+        let total_needed = crate::downlink_replay::FRAME_HEADER_LEN_V1 + replay_len_us;
+        while acc.len() < total_needed {
+            let bytes = match self.source.recv_frame().await? {
+                None => bail!(
+                    "unexpected EOF while reading v2 downlink replay payload \
+                     (got {} of {} bytes)",
+                    acc.len(),
+                    total_needed,
+                ),
+                Some(b) => b,
+            };
+            acc.extend_from_slice(&bytes);
+        }
+        self.expect_downlink_replay = false;
+        if acc.len() > total_needed {
+            let trailing = acc[total_needed..].to_vec();
+            self.pending_tail = match self.pending_tail.take() {
+                Some(prior) => {
+                    let mut combined = prior;
+                    combined.extend_from_slice(&trailing);
+                    Some(combined)
+                },
+                None => Some(trailing),
+            };
+        }
+        if truncated {
+            return Ok(Some(crate::downlink_replay::DownlinkReplayOutcome::Truncated));
+        }
+        let payload = acc[crate::downlink_replay::FRAME_HEADER_LEN_V1..total_needed].to_vec();
+        Ok(Some(crate::downlink_replay::DownlinkReplayOutcome::Replay(payload)))
+    }
+
+    /// Same as [`Self::consume_downlink_replay`] but bounded by
+    /// `timeout` — symmetric to v1's `consume_ack_prefix_with_timeout`.
+    pub async fn consume_downlink_replay_with_timeout(
+        &mut self,
+        timeout: Duration,
+        max_bytes: usize,
+    ) -> Result<Option<crate::downlink_replay::DownlinkReplayOutcome>> {
+        match tokio::time::timeout(timeout, self.consume_downlink_replay(max_bytes)).await {
+            Ok(result) => result,
+            Err(_) => bail!(
+                "vless v2 downlink replay frame did not arrive within {} ms; \
                  dropping session",
                 timeout.as_millis(),
             ),
@@ -375,6 +511,36 @@ impl VlessTcpReader {
                  dropping session"
             ),
         }
+    }
+}
+
+/// Mirror of the SS reader's `downlink_replay_parse_error`: surfaces a
+/// session-drop error with vless-specific wording. Spec mandates "drop
+/// the session" on any of these paths.
+fn downlink_replay_parse_error_vless(
+    err: crate::downlink_replay::ParseResult,
+    observed_len: usize,
+) -> anyhow::Error {
+    match err {
+        crate::downlink_replay::ParseResult::Valid { .. } => {
+            unreachable!("Valid is the success arm")
+        },
+        crate::downlink_replay::ParseResult::TooShort => anyhow!(
+            "vless v2 downlink replay header is shorter than {} bytes (got {})",
+            crate::downlink_replay::FRAME_HEADER_LEN_V1,
+            observed_len,
+        ),
+        crate::downlink_replay::ParseResult::BadMagic => anyhow!(
+            "vless v2 downlink replay frame has unexpected magic; dropping session"
+        ),
+        crate::downlink_replay::ParseResult::UnsupportedVersion(v) => anyhow!(
+            "vless v2 downlink replay frame announces unsupported version {v}; \
+             dropping session"
+        ),
+        crate::downlink_replay::ParseResult::ReservedFlagsSet(f) => anyhow!(
+            "vless v2 downlink replay frame has reserved flag bits 0x{f:02x} set; \
+             dropping session"
+        ),
     }
 }
 

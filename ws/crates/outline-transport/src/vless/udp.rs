@@ -143,6 +143,9 @@ impl VlessUdpTransport {
             // gates emit on the SS-WS path. The capability bit stays off
             // here so the server never echoes the response header.
             false,
+            // v2 Symmetric Downlink Replay is gated on v1 and equally
+            // off on the UDP path.
+            false,
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;

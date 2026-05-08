@@ -225,10 +225,11 @@ impl SharedH2Connection {
         target_uri: &str,
         resume_request: Option<crate::resumption::SessionId>,
         ack_prefix_requested: bool,
+        symmetric_replay_requested: bool,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<TransportStream> {
         match self
-            .open_websocket_inner(target_uri, resume_request, ack_prefix_requested, profile)
+            .open_websocket_inner(target_uri, resume_request, ack_prefix_requested, symmetric_replay_requested, profile)
             .await
         {
             Ok(ws) => Ok(ws),
@@ -251,6 +252,7 @@ impl SharedH2Connection {
         target_uri: &str,
         resume_request: Option<crate::resumption::SessionId>,
         ack_prefix_requested: bool,
+        symmetric_replay_requested: bool,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<TransportStream> {
         if !self.is_open() {
@@ -279,6 +281,14 @@ impl SharedH2Connection {
             // is a no-op — old servers and the VLESS-WS path ignore it.
             request_builder =
                 request_builder.header(crate::resumption::ACK_PREFIX_HEADER, "1");
+        }
+        if symmetric_replay_requested {
+            // v2 Symmetric Downlink Replay capability advertise. Spec
+            // gates v2 on v1, so this is only meaningful when
+            // `ack_prefix_requested` is also true; the orchestrator
+            // enforces that invariant before reaching this point.
+            request_builder =
+                request_builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
         }
         let mut request: Request<Empty<Bytes>> = request_builder
             .body(Empty::new())
@@ -355,11 +365,24 @@ impl SharedH2Connection {
                 .get(crate::resumption::ACK_PREFIX_HEADER)
                 .and_then(|v| v.to_str().ok())
                 == Some("1");
+        // v2 echo gate: server must echo the v2 header AND the v1 echo
+        // must have come back too (per spec, v2 without v1 is undefined
+        // and the server is required to suppress it). The
+        // `ack_prefix_advertised_by_server` check enforces the latter
+        // even if a buggy server echoes v2 alone.
+        let symmetric_replay_advertised_by_server = symmetric_replay_requested
+            && ack_prefix_advertised_by_server
+            && response
+                .headers()
+                .get(crate::resumption::SYMMETRIC_REPLAY_HEADER)
+                .and_then(|v| v.to_str().ok())
+                == Some("1");
         Ok(TransportStream::H2 {
             inner: H2WsStream::new_shared(ws, shared_connection),
             issued_session_id,
             downgraded_from: None,
             ack_prefix_advertised_by_server,
+            symmetric_replay_advertised_by_server,
         })
     }
 }
@@ -417,6 +440,12 @@ struct H2Dialer {
     /// on this flag and the response-side echo gates the
     /// `TransportStream::ack_prefix_advertised_by_server` slot.
     ack_prefix_requested: bool,
+    /// Whether to advertise the v2 Symmetric Downlink Replay capability
+    /// on this open. Spec gates v2 on v1; the dialer does not enforce
+    /// the invariant locally — the orchestrator above this layer
+    /// already requires `ack_prefix_requested` to be true whenever
+    /// this flag is true.
+    symmetric_replay_requested: bool,
     /// Browser identity to mix into the CONNECT request headers,
     /// or `None` when fingerprint diversification is disabled. Same
     /// rationale as `resume_request` above — captured at dialer
@@ -476,6 +505,7 @@ impl crate::shared_dial::WsDialer for H2Dialer {
             &target_uri,
             self.resume_request,
             self.ack_prefix_requested,
+            self.symmetric_replay_requested,
             self.profile,
         )
         .await
@@ -492,6 +522,7 @@ pub(crate) async fn connect_websocket_h2(
     source: &'static str,
     resume_request: Option<crate::resumption::SessionId>,
     ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
 ) -> Result<TransportStream> {
     let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let port = url
@@ -504,7 +535,13 @@ pub(crate) async fn connect_websocket_h2(
     };
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
-    let dialer = H2Dialer { use_tls, resume_request, ack_prefix_requested, profile };
+    let dialer = H2Dialer {
+        use_tls,
+        resume_request,
+        ack_prefix_requested,
+        symmetric_replay_requested,
+        profile,
+    };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused

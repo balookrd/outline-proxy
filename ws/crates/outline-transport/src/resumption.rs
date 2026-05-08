@@ -120,6 +120,21 @@ pub const SESSION_RESPONSE_HEADER: &str = "x-outline-session";
 /// wire format and full negotiation rules.
 pub const ACK_PREFIX_HEADER: &str = "x-outline-resume-ack-prefix";
 
+/// Lower-cased name of the request **and** response header used to
+/// negotiate the v2 Symmetric Downlink Replay capability (`1` to
+/// advertise / confirm). Per spec the server MUST suppress this
+/// echo when the client did not also advertise [`ACK_PREFIX_HEADER`]
+/// or when the server's own ring is disabled (`downlink_buffer_bytes
+/// == 0`). See `docs/SESSION-RESUMPTION.md` § Symmetric Downlink
+/// Replay (v2) for the wire format and gating rules.
+pub const SYMMETRIC_REPLAY_HEADER: &str = "x-outline-resume-symmetric-replay";
+
+/// Lower-cased name of the request-only header carrying the client's
+/// last-acked downstream offset on a v2 resume request. Decimal
+/// `u64`, max value `2^63 − 1`. Sent only on retry redials that
+/// also carry [`ACK_PREFIX_HEADER`] AND [`SYMMETRIC_REPLAY_HEADER`].
+pub const DOWN_ACKED_HEADER: &str = "x-outline-resume-down-acked";
+
 /// Process-wide cache of the last server-issued [`SessionId`] for each
 /// logical uplink. Callers (the warm-standby refill, fresh dials in
 /// `connect_tcp_ws_fresh`, the probe path that wants to opt-in) read
