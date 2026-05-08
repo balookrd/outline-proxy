@@ -10,6 +10,20 @@ use crate::snapshot_types::UplinkManagerSnapshot;
 // MetricFamily data after the lock is released.
 static RENDER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+// Stable label set for `uplink_mode_downgrade_capped_to_info` — must
+// stay in sync with `Display for outline_transport::TransportMode`.
+// Adding a new TransportMode variant requires extending this list so
+// that `mode` label values cover every cap the dispatcher can pick.
+const MODE_DOWNGRADE_CAP_LABELS: &[&str] = &[
+    "ws_h1",
+    "ws_h2",
+    "ws_h3",
+    "quic",
+    "xhttp_h1",
+    "xhttp_h2",
+    "xhttp_h3",
+];
+
 impl Metrics {
     fn update_snapshot_metrics(&self, snapshots: &[UplinkManagerSnapshot]) {
         self.uplink_health.reset();
@@ -25,6 +39,8 @@ impl Metrics {
         self.uplink_standby_ready.reset();
         self.uplink_active_wire_index.reset();
         self.uplink_active_wire_pin_remaining_seconds.reset();
+        self.uplink_mode_downgrade_remaining_seconds.reset();
+        self.uplink_mode_downgrade_capped_to_info.reset();
         self.uplink_configured_fallbacks_count.reset();
         self.sticky_routes_by_uplink.reset();
         self.sticky_routes_total.reset();
@@ -163,6 +179,36 @@ impl Metrics {
                 self.uplink_cooldown_seconds
                     .with_label_values(&[group, "udp", &uplink.name])
                     .set(cooldown_ms as f64 / 1000.0);
+            }
+
+            // Mode-downgrade window state. Both gauges are emitted only
+            // when a window is active so a healthy uplink does not pollute
+            // the namespace with always-zero series. The cap label set
+            // covers every TransportMode variant the dispatcher can pick
+            // as a fallback ceiling; only the active cap is set to 1.
+            if let Some(remaining_ms) = uplink.h3_tcp_downgrade_until_ms {
+                self.uplink_mode_downgrade_remaining_seconds
+                    .with_label_values(&[group, "tcp", &uplink.name])
+                    .set(remaining_ms as f64 / 1000.0);
+            }
+            if let Some(remaining_ms) = uplink.h3_udp_downgrade_until_ms {
+                self.uplink_mode_downgrade_remaining_seconds
+                    .with_label_values(&[group, "udp", &uplink.name])
+                    .set(remaining_ms as f64 / 1000.0);
+            }
+            if let Some(cap) = uplink.tcp_mode_capped_to.as_deref() {
+                for mode in MODE_DOWNGRADE_CAP_LABELS {
+                    self.uplink_mode_downgrade_capped_to_info
+                        .with_label_values(&[group, "tcp", &uplink.name, mode])
+                        .set(if *mode == cap { 1 } else { 0 });
+                }
+            }
+            if let Some(cap) = uplink.udp_mode_capped_to.as_deref() {
+                for mode in MODE_DOWNGRADE_CAP_LABELS {
+                    self.uplink_mode_downgrade_capped_to_info
+                        .with_label_values(&[group, "udp", &uplink.name, mode])
+                        .set(if *mode == cap { 1 } else { 0 });
+                }
             }
 
             self.uplink_standby_ready

@@ -183,6 +183,8 @@ struct Metrics {
     uplink_standby_ready: IntGaugeVec,
     uplink_active_wire_index: IntGaugeVec,
     uplink_active_wire_pin_remaining_seconds: GaugeVec,
+    uplink_mode_downgrade_remaining_seconds: GaugeVec,
+    uplink_mode_downgrade_capped_to_info: IntGaugeVec,
     uplink_configured_fallbacks_count: IntGaugeVec,
     selection_mode_info: IntGaugeVec,
     routing_scope_info: IntGaugeVec,
