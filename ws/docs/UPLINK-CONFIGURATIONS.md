@@ -448,6 +448,8 @@ fields are optional; omitted fields fall back to the defaults below.
 | `tcp_mid_session_retry_budget`       | `1`                | int   | maximum number of mid-session redial attempts per session (`0` disables retry — equivalent to `tcp_mid_session_retry_buffer_bytes = 0`) |
 | `tcp_mid_session_retry_overflow_policy` | `"soft"`        | enum  | behaviour on a chunk larger than the retry buffer cap: `"soft"` (default) keeps the session alive and surfaces `failed_replay` on future retries; `"hard"` drops the session immediately to guarantee retryability for the rest |
 | `tcp_mid_session_retry_consume_timeout_secs` | `5`            | s     | hard upper bound on how long the orchestrator waits for the v1 Ack-Prefix control frame on a successful resume hit; bounds a misbehaving server from stalling the pinned relay invisibly |
+| `tcp_symmetric_replay_enabled`       | `true`             | bool  | opt into the v2 Symmetric Downlink Replay protocol on retry redials; flip to `false` to suppress the v2 advertise without disabling v1.x retry (e.g. while staging the server-side rollout) |
+| `tcp_symmetric_replay_max_bytes`     | `1048576`          | bytes | hard cap on accepted v2 `replay_len` from the server; replies above this drop the session — protection against a hostile peer forcing unbounded buffering |
 | `vless_udp_max_sessions`             | `256`              | int   | hard cap on concurrent VLESS UDP sessions (LRU-evicted on overflow)                               |
 | `vless_udp_session_idle_secs`        | `60`               | s     | evict VLESS UDP sessions idle longer than this (`0` disables eviction)                            |
 | `vless_udp_janitor_interval_secs`    | `15`               | s     | how often the VLESS UDP janitor scans for idle sessions                                           |
@@ -526,9 +528,9 @@ Mid-session retry (Ack-Prefix Protocol v1):
   known-low-RTT deployments; significantly larger values usually
   mask retry behaviour problems.
 - v1 sweet spot: HTTP request bodies, idempotent RPCs. NOT for
-  SSH-style downlink-heavy sessions — the protocol intentionally
-  does not replay the downlink direction in v1, so SSH tunnels
-  still observe a downlink byte gap on retry.
+  SSH-style downlink-heavy sessions on its own — v1 does not
+  replay the downlink direction. The v2 Symmetric Downlink Replay
+  protocol (see below) closes that gap.
 - Gated to SS-WS uplinks (`transport = "ws"`). VLESS-WS / raw QUIC
   / direct-socket Shadowsocks are no-ops for retry in v1; the
   relay falls back to the legacy "single shot, propagate error"
@@ -536,8 +538,56 @@ Mid-session retry (Ack-Prefix Protocol v1):
 - Outcomes are exposed on
   `outline_ws_rust_uplink_mid_session_retries_total{outcome}` with
   `outcome ∈ {success, failed_redial, failed_replay,
-  buffer_overflow}`. See `docs/SESSION-RESUMPTION.md` § Ack-Prefix
-  Protocol (v1) in the outline-ss-rust repo for the wire format.
+  buffer_overflow, downlink_truncated}`. See
+  `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1) in the
+  outline-ss-rust repo for the wire format.
+
+Symmetric Downlink Replay (v2):
+
+- Optional opt-in extension on top of v1.x. Closes the
+  byte-loss gap in the **downstream** direction (server→client)
+  that v1 leaves open: bytes the server emitted to the WebSocket
+  but the client never observed before the carrier TCP died are
+  replayed on the next resume hit, in order, BEFORE any fresh
+  upstream traffic flows. Required for SSH and other protocols
+  that treat the byte stream as a single ordered log; an
+  application-layer-retried protocol (HTTP request bodies,
+  idempotent RPCs) can leave this off and rely on v1 only.
+- Wire side: client advertises
+  `X-Outline-Resume-Symmetric-Replay: 1` AND reports its current
+  `client_acked_offset` via `X-Outline-Resume-Down-Acked: <decimal>`.
+  Server emits a 14-byte `"ORDR"` control frame + replay payload
+  (bytes `[client_acked_offset, total_sent_downlink)`) immediately
+  after the v1 `"ORSM"` frame on the resume hit. Server gates v2
+  on (a) v1 also being negotiated and (b) its
+  `[session_resumption].downlink_buffer_bytes > 0` config knob
+  (default `0` = disabled). Full spec lives in the server repo's
+  `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2).
+- `tcp_symmetric_replay_enabled` (default `true`) — operator
+  switch. The capability is engaged at runtime only when (a)
+  v1.x retry is enabled (`tcp_mid_session_retry_buffer_bytes > 0`
+  AND `tcp_mid_session_retry_budget > 0`), (b) this knob is on,
+  AND (c) the server echoes both v1 and v2 capabilities. Setting
+  to `false` suppresses the v2 advertise without touching v1.x.
+- `tcp_symmetric_replay_max_bytes` (default `1048576` = 1 MiB) —
+  hard cap on the v2 `replay_len` the client will accept. Server
+  replies above this drop the session per spec; protects against
+  a hostile peer forcing unbounded buffering. Servers in a sane
+  deployment configure `downlink_buffer_bytes` well below this
+  cap (default 64 KiB on the server side), so this fires only on
+  a genuinely misbehaving peer.
+- Truncation policy: when the server signals
+  `REPLAY_TRUNCATED` (its ring rolled past the client-reported
+  offset, e.g. very long park or very small server buffer), the
+  client respects `tcp_mid_session_retry_overflow_policy`:
+  `"soft"` continues the session under an irrecoverable
+  downstream gap and increments
+  `outline_ws_rust_uplink_mid_session_retries_total{outcome="downlink_truncated"}`;
+  `"hard"` drops the session immediately. Use the same value as
+  for the v1 buffer-overflow case to keep policy consistent.
+- Same eligibility gate as v1 — SS-WS / VLESS-WS / VLESS-XHTTP
+  carriers; raw QUIC and direct-socket Shadowsocks are out of
+  scope (no HTTP-layer carrier for the v2 negotiation).
 
 Example — `[outline.load_balancing]` for the inline shape, and the same
 fields lifted onto a group:
