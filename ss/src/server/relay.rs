@@ -17,11 +17,14 @@ use tokio::{
     sync::Notify,
 };
 
+use parking_lot::Mutex;
+
 use crate::{
     crypto::{AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE},
     metrics::{AppProtocol, Metrics, Protocol},
 };
 
+use super::resumption::downlink_ring::DownlinkRing;
 use super::scratch::ScratchBuf;
 
 /// Upper bound for the greedy-drain loop in [`relay_upstream_to_client`]
@@ -77,6 +80,16 @@ pub(in crate::server) async fn relay_upstream_to_client<R, S>(
     app_protocol: AppProtocol,
     user_id: Arc<str>,
     cancel: Option<Arc<Notify>>,
+    // v2 Symmetric Downlink Replay capture point. When `Some`, every
+    // plaintext chunk read from `upstream_reader` is pushed into the
+    // ring BEFORE encryption — so on park the ring contains exactly
+    // what the client received (modulo bytes already in the WS sink
+    // queue, which are tolerated as sub-chunk gaps). Push happens
+    // synchronously and the lock is held for the duration of one
+    // `push` call (no `.await` while held). Sessions that did not
+    // negotiate v2 pass `None`. See `docs/SESSION-RESUMPTION.md`
+    // § Symmetric Downlink Replay (v2).
+    downlink_ring: Option<Arc<Mutex<DownlinkRing>>>,
 ) -> Result<UpstreamRelayOutcome<R>>
 where
     R: AsyncRead + Unpin,
@@ -146,6 +159,14 @@ where
                 }
 
                 target_to_client.increment(read as u64);
+                // v2 capture: push plaintext into the per-session ring
+                // BEFORE encryption so `total_sent` always reflects
+                // what the server has committed to send. If the WS
+                // sink subsequently fails, the bytes remain in the
+                // ring for replay on the next resume hit.
+                if let Some(ring) = downlink_ring.as_ref() {
+                    ring.lock().push(&buffer);
+                }
                 encryptor.encrypt_chunk(&buffer, &mut out_buf)?;
                 let ciphertext = out_buf.split().freeze();
                 aead_overhead_out
