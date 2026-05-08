@@ -388,11 +388,46 @@ impl UplinkManager {
                 // here — the snapshot path runs outside it, so reading
                 // the global is the right baseline for "what would a
                 // fresh dial under this uplink see".
-                fingerprint_profile_strategy: uplink
-                    .fingerprint_profile
-                    .unwrap_or_else(outline_transport::current_fingerprint_profile_strategy)
-                    .as_str()
-                    .to_string(),
+                fingerprint_profile_strategy: {
+                    let strategy = uplink
+                        .fingerprint_profile
+                        .unwrap_or_else(outline_transport::current_fingerprint_profile_strategy);
+                    strategy.as_str().to_string()
+                },
+                // Active profile name for the primary dial URL under the
+                // effective strategy. We look up the profile *here* (not
+                // in the renderer) so the snapshot reflects the current
+                // OnceLock-frozen pool rather than letting the dashboard
+                // re-do the hash. `tcp_dial_url` covers WS / VLESS / XHTTP;
+                // `udp_dial_url` is the fallback for UDP-only uplinks.
+                // Plain Shadowsocks (no URL) returns `None` — the
+                // fingerprint module's HTTP-header surface doesn't apply
+                // to a raw socket, so showing a profile would be a lie.
+                fingerprint_profile_name: {
+                    let strategy = uplink
+                        .fingerprint_profile
+                        .unwrap_or_else(outline_transport::current_fingerprint_profile_strategy);
+                    use outline_transport::FingerprintProfileStrategy;
+                    match strategy {
+                        FingerprintProfileStrategy::None => None,
+                        // `Random` rotates per dial — there is no "the"
+                        // active profile a snapshot can pin. Surface
+                        // the strategy token so the dashboard chip
+                        // still renders something meaningful instead
+                        // of going dark.
+                        FingerprintProfileStrategy::Random => Some("random".to_string()),
+                        FingerprintProfileStrategy::PerHostStable => uplink
+                            .tcp_dial_url()
+                            .or_else(|| uplink.udp_dial_url())
+                            .and_then(|url| {
+                                outline_transport::fingerprint_profile::select_with_strategy(
+                                    url,
+                                    FingerprintProfileStrategy::PerHostStable,
+                                )
+                                .map(|p| p.name.to_string())
+                            }),
+                    }
+                },
             });
         }
 

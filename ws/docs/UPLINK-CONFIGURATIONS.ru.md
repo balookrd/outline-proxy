@@ -866,14 +866,26 @@ Strategy»** в верхней строке статуса рядом с `Select
 пустые ячейки серые, так что активное распределение видно сразу.
 
 Встроенный HTML-дашборд control-plane'а рисует per-uplink чип
-с надписью `FP: Stable` (синий) или `FP: Random` (фиолетовый)
-рядом с протокол-pill в каждой строке аплинка, у которого
-эффективная стратегия не дефолтная. Аплинки на `none` чипа не
-получают — типичный opt-out-deployment визуально не меняется.
-Tooltip чипа несёт сырой lowercase-токен
-(`fingerprint_profile_strategy = per_host_stable`), чтобы оператор
-сразу мог сопоставить значение с Prometheus-лейблом и
-snapshot-полем без перевода между формами.
+с **именем активного профиля** (например, `Chrome 130 macOS`)
+рядом с протокол-pill в каждой строке аплинка, где эффективная
+стратегия не равна `none`. Цвет — по семейству: синий для
+стабильных профилей (Chrome / Firefox / Safari / Edge под
+`per_host_stable`) и фиолетовый для `Random` — оператор сразу
+видит, идентичность приколота или ротируется. Аплинки на `none`
+чипа не получают — типичный opt-out-deployment визуально не меняется.
+Tooltip несёт и сырой id профиля, и стратегию
+(`fingerprint_profile_name = chrome-130-macos · strategy = per_host_stable`),
+чтобы отрисованный лейбл сразу сопоставлялся с Prometheus-лейблом
+`strategy` и snapshot-полем без перевода между формами.
+
+Активный профиль вычисляется в snapshot-билдере через
+`select_with_strategy(primary_dial_url, effective_strategy)` —
+сначала `tcp_dial_url()`, при его отсутствии — `udp_dial_url()`
+(для UDP-only аплинков); для plain-Shadowsocks (нет URL) профиль
+не считается. Поле в snapshot называется
+`UplinkSnapshot::fingerprint_profile_name` и проходит через
+topology JSON как `fingerprint_profile_name` (опускается, если
+отсутствует).
 
 ### Per-uplink override
 

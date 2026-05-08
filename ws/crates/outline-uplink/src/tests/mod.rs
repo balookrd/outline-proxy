@@ -1024,6 +1024,86 @@ async fn confirm_selected_uplink_updates_global_sticky_route() {
 }
 
 #[tokio::test]
+async fn snapshot_reports_fingerprint_profile_name_per_strategy() {
+    use outline_transport::FingerprintProfileStrategy;
+    // Three uplinks, three strategies — none / per_host_stable /
+    // random — each one through a per-uplink override (we can't flip
+    // the process-wide global from a test because `init_strategy`
+    // wraps a `OnceLock`, and other tests in this binary may have
+    // already set it).
+    let mut none = make_uplink("none-uplink", "wss://none.example.com/tcp");
+    none.fingerprint_profile = None;
+    let mut stable = make_uplink("stable-uplink", "wss://stable.example.com/tcp");
+    stable.fingerprint_profile = Some(FingerprintProfileStrategy::PerHostStable);
+    let mut random = make_uplink("random-uplink", "wss://random.example.com/tcp");
+    random.fingerprint_profile = Some(FingerprintProfileStrategy::Random);
+
+    let manager =
+        UplinkManager::new_for_test("test", vec![none, stable, random], probe_disabled(), lb())
+            .unwrap();
+
+    let snapshot = manager.snapshot().await;
+
+    let u_none = &snapshot.uplinks[0];
+    assert_eq!(u_none.fingerprint_profile_strategy, "none");
+    assert!(
+        u_none.fingerprint_profile_name.is_none(),
+        "strategy=none must not surface a profile name; got {:?}",
+        u_none.fingerprint_profile_name,
+    );
+
+    let u_stable = &snapshot.uplinks[1];
+    assert_eq!(u_stable.fingerprint_profile_strategy, "per_host_stable");
+    let stable_name = u_stable
+        .fingerprint_profile_name
+        .as_deref()
+        .expect("strategy=per_host_stable must surface a profile name");
+    let pool: &[&str] = &[
+        "chrome-130-windows",
+        "chrome-130-macos",
+        "firefox-130-windows",
+        "firefox-130-macos",
+        "safari-17-macos",
+        "edge-130-windows",
+    ];
+    assert!(
+        pool.contains(&stable_name),
+        "expected pool member, got {stable_name:?}",
+    );
+
+    let u_random = &snapshot.uplinks[2];
+    assert_eq!(u_random.fingerprint_profile_strategy, "random");
+    // `random` is intentionally surfaced as the literal token rather
+    // than a per-snapshot pick — a snapshot can't pin "the" active
+    // profile when the strategy rotates per dial.
+    assert_eq!(u_random.fingerprint_profile_name.as_deref(), Some("random"));
+}
+
+#[tokio::test]
+async fn snapshot_fingerprint_profile_name_is_stable_for_same_host() {
+    use outline_transport::FingerprintProfileStrategy;
+    // Two uplinks pointing at the same `host:port` must land on the
+    // same profile under PerHostStable — that's the point of the
+    // strategy. The dashboard chip would lie if a refresh moved the
+    // identity around.
+    let mut a = make_uplink("a", "wss://shared.example.com/tcp");
+    a.fingerprint_profile = Some(FingerprintProfileStrategy::PerHostStable);
+    let mut b = make_uplink("b", "wss://shared.example.com/udp");
+    b.fingerprint_profile = Some(FingerprintProfileStrategy::PerHostStable);
+
+    let manager = UplinkManager::new_for_test("test", vec![a, b], probe_disabled(), lb()).unwrap();
+    let snapshot = manager.snapshot().await;
+
+    let name_a = snapshot.uplinks[0].fingerprint_profile_name.as_deref();
+    let name_b = snapshot.uplinks[1].fingerprint_profile_name.as_deref();
+    assert!(name_a.is_some());
+    assert_eq!(
+        name_a, name_b,
+        "same host:port must yield the same profile under PerHostStable",
+    );
+}
+
+#[tokio::test]
 async fn runtime_failover_does_not_promote_global_active_when_probe_enabled() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;

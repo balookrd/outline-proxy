@@ -405,21 +405,46 @@ function groupConfigChips(group) {
     <span class="cfg-chip scope" title="routing_scope"><span>⌘</span><span class="cfg-key">Scope:</span><span>${escapeHtml(scope)}</span></span>
     <span class="cfg-chip ${fbCls}" title="auto_failback"><span>↺</span><span class="cfg-key">Auto-failback:</span><span>${fbLabel}</span></span>`;
 }
-// Render a small chip describing the **effective** browser-fingerprint
-// strategy for an uplink — visible only when the strategy is non-default
-// (`per_host_stable` or `random`). The `none` case is hidden so the
-// row stays readable for the common deployment that has not opted in.
-// `snapshot.fingerprint_profile_strategy` is always lowercase
-// snake_case (see `outline_transport::fingerprint_profile::Strategy::as_str`)
-// and may be absent on stale snapshots — both `undefined` and `"none"`
-// suppress the chip.
+// Render a small chip showing the active browser-fingerprint profile
+// for an uplink. The chip is visible only when there is *something*
+// to show — i.e. when the snapshot's `fingerprint_profile_name` is
+// populated. That field comes from the snapshot builder running
+// `select_with_strategy(primary_dial_url, effective_strategy)`, so:
+//   * `per_host_stable` → concrete profile id like `chrome-130-macos`,
+//   * `random` → the literal `"random"` (no fixed profile applies),
+//   * `none` (or shadowsocks-over-raw-socket) → field absent → no chip.
+// `prettyProfileName` translates the kebab-case id into a human label
+// (`Chrome 130 macOS`) so the chip reads as identity, not config.
+function prettyProfileName(name) {
+  if (!name) return "";
+  if (name === "random") return "Random";
+  // Pool ids are `<family>-<version>-<os>`. Anything else is shown
+  // verbatim — keeps an unrecognised id (post-refresh) visible
+  // instead of silently turning into a blank chip.
+  const parts = name.split("-");
+  if (parts.length !== 3) return name;
+  const [family, version, os] = parts;
+  const familyLabel = family.charAt(0).toUpperCase() + family.slice(1);
+  let osLabel;
+  if (os === "macos") osLabel = "macOS";
+  else if (os === "windows") osLabel = "Windows";
+  else if (os === "linux") osLabel = "Linux";
+  else osLabel = os.charAt(0).toUpperCase() + os.slice(1);
+  return `${familyLabel} ${version} ${osLabel}`;
+}
 function fingerprintChip(uplink) {
-  const strategy = uplink && uplink.fingerprint_profile_strategy;
-  if (!strategy || strategy === "none") return "";
-  const cls = strategy === "random" ? "fp-random" : "fp-stable";
-  const label = strategy === "random" ? "Random" : "Stable";
-  const title = `fingerprint_profile_strategy = ${strategy}`;
-  return `<span class="cfg-chip ${cls}" title="${escapeHtml(title)}"><span>⊛</span><span class="cfg-key">FP:</span><span>${escapeHtml(label)}</span></span>`;
+  const name = uplink && uplink.fingerprint_profile_name;
+  if (!name) return "";
+  const strategy = uplink.fingerprint_profile_strategy || "";
+  // `random` rotates per dial — colour-code it differently from the
+  // stable variants so an operator can tell at a glance whether the
+  // identity is pinned (blue) or rolling (purple).
+  const cls = (strategy === "random" || name === "random") ? "fp-random" : "fp-stable";
+  const label = prettyProfileName(name);
+  const title = strategy
+    ? `fingerprint_profile_name = ${name} · strategy = ${strategy}`
+    : `fingerprint_profile_name = ${name}`;
+  return `<span class="cfg-chip ${cls}" title="${escapeHtml(title)}"><span>⊛</span><span>${escapeHtml(label)}</span></span>`;
 }
 function protocolLabel(transport) {
   const v = String(transport || "").toLowerCase();

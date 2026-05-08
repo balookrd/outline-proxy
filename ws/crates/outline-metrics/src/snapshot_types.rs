@@ -178,6 +178,26 @@ pub struct UplinkSnapshot {
     /// `outline_ws_rust_uplink_fingerprint_profile_strategy_info` and
     /// as a JSON field on the `/snapshot` control endpoint.
     pub fingerprint_profile_strategy: String,
+    /// Active profile **name** (e.g. `chrome-130-macos`) for the
+    /// uplink's primary dial URL under the effective strategy. Lets
+    /// the dashboard render `Chrome 130 macOS` instead of the bare
+    /// strategy token, so an operator sees what's actually on the
+    /// wire. The exact value comes from
+    /// `outline_transport::fingerprint_profile::select_with_strategy`
+    /// against `UplinkConfig::tcp_dial_url()` (or `udp_dial_url()`
+    /// when no TCP URL is configured).
+    ///
+    /// `Some("chrome-130-macos")` — strategy = `per_host_stable`,
+    /// stable per `(host, port)`.
+    /// `Some("random")` — strategy = `random`, no fixed profile
+    /// applies (the snapshot can't show "the" active profile because
+    /// it changes per dial), but the chip still surfaces "rotation
+    /// in effect".
+    /// `None` — strategy = `none`, or the uplink has no URL-based
+    /// dial path (Shadowsocks-over-raw-socket — fingerprint never
+    /// applies there).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint_profile_name: Option<String>,
 }
 
 #[doc(hidden)]

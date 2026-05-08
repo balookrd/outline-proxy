@@ -136,6 +136,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 tcp_active_wire_pin_remaining_ms: None,
                 udp_active_wire_pin_remaining_ms: None,
                 fingerprint_profile_strategy: "none".to_string(),
+                fingerprint_profile_name: None,
             },
             UplinkSnapshot {
                 index: 1,
@@ -228,8 +229,10 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 // Pin a non-default strategy on this uplink so the
                 // topology test can check both the "field omitted on
                 // none" and "field present on non-default" branches in
-                // the same fixture.
+                // the same fixture. The matching profile name is what
+                // the dashboard chip actually shows.
                 fingerprint_profile_strategy: "per_host_stable".to_string(),
+                fingerprint_profile_name: Some("chrome-130-macos".to_string()),
             },
         ],
         sticky_routes: vec![StickyRouteSnapshot {
@@ -365,6 +368,28 @@ fn topology_serialises_non_default_fingerprint_profile_strategy() {
     let json: Value = serde_json::to_value(topology).unwrap();
     let u1 = &json["instance"]["groups"][0]["uplinks"][1];
     assert_eq!(u1["fingerprint_profile_strategy"], "per_host_stable");
+}
+
+#[test]
+fn topology_serialises_active_fingerprint_profile_name() {
+    // The dashboard chip prefers profile-name over strategy: the chip
+    // reads `Chrome 130 macOS` rather than `Stable`. The field rides
+    // through topology JSON unchanged so the HTML side can pretty-
+    // format it without reaching into rustc-side logic. The fixture
+    // pins `chrome-130-macos` on uplink 1 and leaves uplink 0 on
+    // `none` (no profile applies), so this test exercises both
+    // branches in one go.
+    let topology = ControlTopologyResponse {
+        instance: build_instance_topology(&snapshot_fixture()),
+    };
+    let json: Value = serde_json::to_value(topology).unwrap();
+    let u0 = &json["instance"]["groups"][0]["uplinks"][0];
+    let u1 = &json["instance"]["groups"][0]["uplinks"][1];
+    assert!(
+        u0.get("fingerprint_profile_name").is_none(),
+        "default `none` uplink must not carry a profile name; got {u0}",
+    );
+    assert_eq!(u1["fingerprint_profile_name"], "chrome-130-macos");
 }
 
 #[test]
