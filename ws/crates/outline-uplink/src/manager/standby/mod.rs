@@ -207,6 +207,8 @@ impl UplinkManager {
                 // mid-session retry redials in `pinned_relay`. Stays
                 // off here.
                 false,
+                // No prior downstream offset on a fresh standby dial.
+                0,
             ),
         )
         .await

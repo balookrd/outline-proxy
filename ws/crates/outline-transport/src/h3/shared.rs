@@ -108,6 +108,7 @@ impl SharedH3Connection {
         resume_request: Option<crate::resumption::SessionId>,
         ack_prefix_requested: bool,
         symmetric_replay_requested: bool,
+        client_acked_offset: u64,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>, bool, bool)> {
         match self
@@ -118,6 +119,7 @@ impl SharedH3Connection {
                 resume_request,
                 ack_prefix_requested,
                 symmetric_replay_requested,
+                client_acked_offset,
                 profile,
             )
             .await
@@ -144,6 +146,7 @@ impl SharedH3Connection {
         resume_request: Option<crate::resumption::SessionId>,
         ack_prefix_requested: bool,
         symmetric_replay_requested: bool,
+        client_acked_offset: u64,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>, bool, bool)> {
         if !self.is_open() {
@@ -173,6 +176,13 @@ impl SharedH3Connection {
             // orchestrator above this layer.
             request_builder =
                 request_builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
+        }
+        // v2 client-reported downstream-acked offset header.
+        if symmetric_replay_requested && client_acked_offset > 0 {
+            request_builder = request_builder.header(
+                crate::resumption::DOWN_ACKED_HEADER,
+                client_acked_offset.to_string(),
+            );
         }
         let mut request: Request<()> = request_builder
             .body(())
@@ -389,6 +399,9 @@ struct H3Dialer {
     /// Spec gates v2 on v1; the orchestrator above this layer enforces
     /// the invariant.
     symmetric_replay_requested: bool,
+    /// v2 client-reported downstream-acked offset for the
+    /// `X-Outline-Resume-Down-Acked` request header.
+    client_acked_offset: u64,
     /// Browser identity to mix into the CONNECT request headers, or
     /// `None` when fingerprint diversification is disabled. Threaded
     /// alongside `resume_request` for the same reason — the trait
@@ -441,6 +454,7 @@ impl crate::shared_dial::WsDialer for H3Dialer {
                 self.resume_request,
                 self.ack_prefix_requested,
                 self.symmetric_replay_requested,
+                self.client_acked_offset,
                 self.profile,
             )
             .await?;
@@ -465,6 +479,7 @@ pub(crate) async fn connect_websocket_h3(
     resume_request: Option<crate::resumption::SessionId>,
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
+    client_acked_offset: u64,
 ) -> Result<TransportStream> {
     if url.scheme() != "wss" {
         bail!("h3 websocket transport currently requires wss:// URLs");
@@ -480,6 +495,7 @@ pub(crate) async fn connect_websocket_h3(
         resume_request,
         ack_prefix_requested,
         symmetric_replay_requested,
+        client_acked_offset,
         profile,
     };
 
