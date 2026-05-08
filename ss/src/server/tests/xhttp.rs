@@ -52,6 +52,16 @@ pub(super) async fn setup_xhttp_server_with_resumption(
     base_path: &'static str,
     resumption: bool,
 ) -> Result<(SocketAddr, JoinHandle<Result<()>>, Arc<XhttpRegistry>)> {
+    setup_xhttp_server_with_resumption_v2(base_path, resumption, 0).await
+}
+
+/// Variant that turns on the v2 Symmetric Downlink Replay protocol
+/// by configuring a non-zero `downlink_buffer_bytes`.
+pub(super) async fn setup_xhttp_server_with_resumption_v2(
+    base_path: &'static str,
+    resumption: bool,
+    downlink_buffer_bytes: usize,
+) -> Result<(SocketAddr, JoinHandle<Result<()>>, Arc<XhttpRegistry>)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
@@ -79,7 +89,7 @@ pub(super) async fn setup_xhttp_server_with_resumption(
                 orphan_ttl_udp_secs: 30,
                 orphan_per_user_cap: 4,
                 orphan_global_cap: 16,
-                downlink_buffer_bytes: 0,
+                downlink_buffer_bytes,
             }),
             Arc::clone(&metrics),
         )))

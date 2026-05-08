@@ -434,6 +434,168 @@ async fn cross_repo_xhttp_h2_ack_prefix_reports_up_acked_offset() -> Result<()> 
     Ok(())
 }
 
+/// v2 Symmetric Downlink Replay round-trip on VLESS-XHTTP h2.
+///
+/// Mirror of the VLESS-WS v2 test on the XHTTP carrier. The
+/// VLESS-XHTTP path reuses `VlessRelayState` and `relay_vless
+/// _upstream_to_client`, so the v2 capture+emit wiring landed in
+/// the VLESS-WS commit fires here automatically. This test pins
+/// the behaviour end-to-end on the XHTTP packet-up h2 transport.
+#[tokio::test]
+async fn cross_repo_xhttp_h2_symmetric_replay_returns_downlink_suffix() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut first = [0_u8; 4];
+        stream.read_exact(&mut first).await?;
+        stream.write_all(b"pong").await?;
+        let mut second = [0_u8; 4];
+        stream.read_exact(&mut second).await?;
+        stream.write_all(b"ackk").await?;
+        Result::<_, anyhow::Error>::Ok((first, second))
+    });
+
+    let (listen_addr, server, registry) =
+        super::xhttp::setup_xhttp_server_with_resumption_v2("/xh", true, 65_536).await?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!("http://{listen_addr}/xh"))?;
+
+    // ── Client A: v1 + v2 advertised so the ring captures from byte 0
+    let mut stream_a = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        None,
+        false,
+        "cross-repo-xhttp-symmetric-replay-a",
+        None,
+        true,
+        true,
+        0,
+    )
+    .await?;
+    assert!(
+        stream_a.ack_prefix_advertised_by_server(),
+        "server must echo v1 on the XHTTP response when v2 is also advertised + supported"
+    );
+    assert!(
+        stream_a.symmetric_replay_advertised_by_server(),
+        "server must echo v2 on the XHTTP response when downlink_buffer_bytes > 0"
+    );
+    let token = stream_a
+        .issued_session_id()
+        .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
+
+    let handshake_a = build_vless_tcp_handshake(upstream_addr, b"ping")?;
+    stream_a.send(Message::Binary(Bytes::from(handshake_a))).await?;
+    let received_a = read_binary_until_at_least(&mut stream_a, 6).await?;
+    assert_eq!(&received_a[..2], &[VERSION, 0x00]);
+    assert_eq!(&received_a[2..6], b"pong");
+
+    // Park via uplink-EOF on the XHTTP registry-side session (the
+    // packet-up GET response lives here; closing its uplink half
+    // signals the relay to exit + park).
+    let session = registry
+        .first_session()
+        .ok_or_else(|| anyhow::anyhow!("session A missing from registry"))?;
+    session.close_uplink();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(stream_a);
+
+    // ── Client B: resume + v1 + v2 + claim partial receipt
+    let stream_b = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        None,
+        false,
+        "cross-repo-xhttp-symmetric-replay-b",
+        Some(token),
+        true,
+        true,
+        // The server's ring captures only relay-forwarded bytes
+        // (the VLESS response header is sent directly via
+        // `outbound.data_tx` and is not pushed). Total captured
+        // through A's lifetime = "pong" (4 bytes). Claim 2 of
+        // those 4, expect "ng" replayed.
+        2,
+    )
+    .await?;
+    assert!(
+        stream_b.ack_prefix_advertised_by_server(),
+        "server must echo v1 on the XHTTP resume hit"
+    );
+    assert!(
+        stream_b.symmetric_replay_advertised_by_server(),
+        "server must echo v2 on the XHTTP resume hit"
+    );
+
+    let lifetime_b = UpstreamTransportGuard::new(
+        "cross-repo-xhttp-symmetric-replay-b",
+        "vless-xhttp-h2",
+    );
+    let target_b = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
+    let diag_b = outline_transport::WsReadDiag::default();
+    let uuid_b = parse_uuid(TEST_UUID)?;
+    let (mut writer_b, mut reader_b) = vless_tcp_pair_from_ws(
+        stream_b,
+        &uuid_b,
+        &target_b,
+        Arc::clone(&lifetime_b),
+        diag_b,
+        None,
+    );
+    reader_b = reader_b
+        .with_expect_ack_prefix(true)
+        .with_expect_downlink_replay(true);
+
+    writer_b.send_chunk(b"helo").await?;
+
+    let up_acked = reader_b
+        .consume_ack_prefix_with_timeout(Duration::from_secs(5))
+        .await?;
+    assert_eq!(
+        up_acked,
+        Some(4),
+        "v1 up_acked must equal 'ping' (4 bytes) forwarded across A's lifetime"
+    );
+
+    let outcome = reader_b
+        .consume_downlink_replay_with_timeout(
+            Duration::from_secs(5),
+            1_048_576,
+        )
+        .await?
+        .expect("v2 negotiated → consume must surface an outcome");
+    match outcome {
+        outline_transport::downlink_replay::DownlinkReplayOutcome::Replay(payload) => {
+            assert_eq!(
+                payload,
+                b"ng",
+                "v2 must replay the suffix '[2..4)' of the parked ring (\"pong\")"
+            );
+        },
+        outline_transport::downlink_replay::DownlinkReplayOutcome::Truncated => panic!(
+            "expected Replay outcome, got Truncated — server's ring should retain all 4 bytes"
+        ),
+    }
+
+    let reply_b = reader_b.read_chunk().await?;
+    assert_eq!(reply_b, b"ackk");
+
+    let (first, second) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&first, b"ping");
+    assert_eq!(&second, b"helo");
+
+    drop(reader_b);
+    drop(writer_b);
+    drop(lifetime_b);
+    server.abort();
+    Ok(())
+}
+
 // ── h3 (TLS+QUIC) cross-repo tests ─────────────────────────────────────────
 
 /// Spins up a real server with only an h3 (QUIC) listener — no
