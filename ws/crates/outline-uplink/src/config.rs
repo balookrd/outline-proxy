@@ -572,6 +572,30 @@ pub struct LoadBalancingConfig {
     /// indicate the deployment has retry behaviour problems the
     /// timeout is masking.
     pub tcp_mid_session_retry_consume_timeout: Duration,
+    /// Whether the client opts into the v2 Symmetric Downlink Replay
+    /// protocol on mid-session retry redials. Per spec v2 is gated on
+    /// v1: the client only advertises
+    /// `X-Outline-Resume-Symmetric-Replay: 1` when it is also
+    /// advertising `X-Outline-Resume-Ack-Prefix: 1`, AND the v1.x
+    /// retry stack is enabled (`tcp_mid_session_retry_buffer_bytes > 0`
+    /// and `tcp_mid_session_retry_budget > 0`).
+    ///
+    /// Default: `true`. When the wire-protocol partner is known to
+    /// only support v1.x (older `outline-ss-rust`) the operator can
+    /// flip this to `false` to suppress the v2 advertise without
+    /// disabling v1.x retry. See `docs/SESSION-RESUMPTION.md` (server
+    /// repo) § Symmetric Downlink Replay (v2).
+    pub tcp_symmetric_replay_enabled: bool,
+    /// Hard cap on the v2 `replay_len` the client will accept from
+    /// the server. Replies above this drop the session per spec —
+    /// guards against a malicious or misbehaving server inducing
+    /// unbounded memory pressure on the client.
+    ///
+    /// Default: `1_048_576` bytes (1 MiB). Servers in a sane
+    /// deployment configure `downlink_buffer_bytes` well below this
+    /// cap (default 64 KiB), so the cap fires only on a genuinely
+    /// hostile peer.
+    pub tcp_symmetric_replay_max_bytes: usize,
 }
 
 /// Policy for the `tcp_mid_session_retry_overflow_policy` knob.

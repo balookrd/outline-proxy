@@ -338,6 +338,12 @@ pub(super) struct UplinkGroupSection {
     /// Default: 5 seconds. See the same-named field on
     /// `LoadBalancingConfig` for full semantics.
     pub(super) tcp_mid_session_retry_consume_timeout_secs: Option<u64>,
+    /// Per-group override of `tcp_symmetric_replay_enabled`. Default
+    /// inherits the top-level value (`true`).
+    pub(super) tcp_symmetric_replay_enabled: Option<bool>,
+    /// Per-group override of `tcp_symmetric_replay_max_bytes`. Default
+    /// inherits the top-level value (`1_048_576`).
+    pub(super) tcp_symmetric_replay_max_bytes: Option<usize>,
     /// Per-group override of top-level `[probe]`; unspecified fields inherit.
     pub(super) probe: Option<ProbeSection>,
 }
@@ -474,4 +480,15 @@ pub(super) struct LoadBalancingSection {
     /// the same-named field on `UplinkGroupSection` for full
     /// semantics. Default: `5`.
     pub(super) tcp_mid_session_retry_consume_timeout_secs: Option<u64>,
+    /// Whether to opt into the v2 Symmetric Downlink Replay protocol
+    /// on mid-session retry redials. Default: `true`. Setting `false`
+    /// suppresses the v2 advertise without disabling v1.x retry. See
+    /// `docs/SESSION-RESUMPTION.md` (server repo) § Symmetric
+    /// Downlink Replay (v2).
+    pub(super) tcp_symmetric_replay_enabled: Option<bool>,
+    /// Hard cap on the v2 `replay_len` the client will accept from
+    /// the server. Default: `1_048_576` (1 MiB). Replies above this
+    /// drop the session — protection against a malicious server
+    /// inducing unbounded memory pressure on the client.
+    pub(super) tcp_symmetric_replay_max_bytes: Option<usize>,
 }

@@ -76,6 +76,8 @@ async fn classify_decision_unknown_group_falls_back_to_default() {
         tcp_mid_session_retry_budget: 1,
         tcp_mid_session_retry_overflow_policy: outline_uplink::OverflowPolicy::Soft,
         tcp_mid_session_retry_consume_timeout: Duration::from_secs(5),
+        tcp_symmetric_replay_enabled: true,
+        tcp_symmetric_replay_max_bytes: 1_048_576,
     };
 
     let manager = UplinkManager::new_for_test("my-default", vec![uplink], probe, lb).unwrap();

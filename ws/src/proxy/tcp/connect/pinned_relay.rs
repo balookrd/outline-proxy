@@ -129,6 +129,17 @@ pub(super) async fn run_relay(
 
     let client_read = Arc::new(Mutex::new(client_read));
     let client_write = Arc::new(Mutex::new(client_write));
+    // Cumulative bytes the downlink task has successfully forwarded to
+    // the SOCKS5 client over the lifetime of this session. Survives
+    // mid-session retries unchanged — the same `Arc` is cloned into
+    // each iteration's downlink closure. Used by the v2 Symmetric
+    // Downlink Replay path on retry redial: the orchestrator reads
+    // this counter and emits it as `X-Outline-Resume-Down-Acked`,
+    // which the server uses to compute `replay_from(offset)` against
+    // its parked downlink ring. Always tracked (regardless of whether
+    // v2 is configured) so the counter is consistent if v2 is toggled
+    // mid-deployment via config reload.
+    let client_acked_offset = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     // Per-iteration owned values. After a successful redial they are
     // replaced with the fresh transport; until that moment, the closures
@@ -273,6 +284,7 @@ pub(super) async fn run_relay(
         let name_for_downlink = Arc::clone(&active_name);
         let manager_for_downlink = uplinks.clone();
         let cw_for_downlink = Arc::clone(&client_write);
+        let acked_for_downlink = Arc::clone(&client_acked_offset);
         let mut downlink_reader = reader;
         let downlink_first_chunk = first_chunk_for_iter.take();
         let downlink = async move {
@@ -291,6 +303,13 @@ pub(super) async fn run_relay(
                         .await
                         .map_err(ClientIo::WriteFailed)?;
                     drop(cw_guard);
+                    // Increment AFTER the write succeeds — the v2
+                    // counter is the offset of bytes that have actually
+                    // reached the SOCKS5 client. A failed write is
+                    // accounted for via session teardown, not by
+                    // bumping the counter.
+                    acked_for_downlink
+                        .fetch_add(fc.len() as u64, std::sync::atomic::Ordering::Relaxed);
                     let _ = activity_for_downlink.send(());
                     manager_for_downlink
                         .report_active_traffic(active_index, TransportKind::Tcp)
@@ -337,6 +356,11 @@ pub(super) async fn run_relay(
                     .await
                     .map_err(ClientIo::WriteFailed)?;
                 drop(cw_guard);
+                // v2 downlink counter: bump after the write completes
+                // so the reported offset only ever reflects bytes the
+                // SOCKS5 client has observed.
+                acked_for_downlink
+                    .fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
                 let _ = activity_for_downlink.send(());
                 manager_for_downlink
                     .report_active_traffic(active_index, TransportKind::Tcp)
