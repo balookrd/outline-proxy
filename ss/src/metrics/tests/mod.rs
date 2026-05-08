@@ -221,3 +221,31 @@ fn user_counters_increments_visible_in_render() {
         "outline_ss_udp_payload_bytes_total{user=\"alice\",app_protocol=\"shadowsocks\",protocol=\"http3\",direction=\"target_to_client\"} 64"
     ));
 }
+
+#[test]
+fn orphan_downlink_v2_metrics_render() {
+    let metrics = Metrics::new(&test_config());
+
+    metrics.record_orphan_downlink_replay_bytes("tcp", 0);
+    metrics.record_orphan_downlink_replay_bytes("tcp", 1500);
+    metrics.record_orphan_downlink_replay_bytes("tcp", 2500);
+    metrics.record_orphan_downlink_replay_truncated("tcp");
+    metrics.record_orphan_downlink_replay_truncated("tcp");
+    metrics.set_orphan_downlink_buf_bytes(8192.0);
+
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.contains("outline_ss_orphan_downlink_replay_bytes_total{transport=\"tcp\"} 4000"),
+        "replay bytes counter missing or wrong value:\n{rendered}",
+    );
+    assert!(
+        rendered.contains(
+            "outline_ss_orphan_downlink_replay_truncated_total{transport=\"tcp\"} 2"
+        ),
+        "truncated counter missing or wrong value:\n{rendered}",
+    );
+    assert!(
+        rendered.contains("outline_ss_orphan_downlink_buf_bytes 8192"),
+        "buf-bytes gauge missing or wrong value:\n{rendered}",
+    );
+}

@@ -536,6 +536,47 @@ impl Metrics {
         });
     }
 
+    /// Counts plaintext bytes the server replayed in a v2 Symmetric
+    /// Downlink Replay frame (`ORDR`) on a resume hit. Called once per
+    /// emitted frame with the payload length; `bytes == 0` is a no-op
+    /// so callers can wire this unconditionally on every emit including
+    /// `Truncated` cases (which carry an empty payload).
+    pub fn record_orphan_downlink_replay_bytes(&self, transport: &'static str, bytes: u64) {
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_orphan_downlink_replay_bytes_total",
+                "transport" => transport
+            )
+            .increment(bytes);
+        });
+    }
+
+    /// Counts a resume hit on which the v2 downlink replay frame had
+    /// the REPLAY_TRUNCATED flag set — eviction rolled past the
+    /// requested offset, the ring was absent (operator enabled v2
+    /// mid-session), or the client claimed bytes the server never
+    /// emitted (`OffsetAhead`).
+    pub fn record_orphan_downlink_replay_truncated(&self, transport: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_orphan_downlink_replay_truncated_total",
+                "transport" => transport
+            )
+            .increment(1);
+        });
+    }
+
+    /// Sets the gauge tracking the total bytes currently retained in
+    /// v2 downlink ring buffers across all parked TCP orphan sessions.
+    /// Refreshed by [`OrphanRegistry`] on every park / resume hit /
+    /// eviction so it tracks the dominant memory cost of the v2
+    /// feature in near-real-time.
+    pub fn set_orphan_downlink_buf_bytes(&self, value: f64) {
+        with_local_recorder(&self.recorder, || {
+            gauge!("outline_ss_orphan_downlink_buf_bytes").set(value);
+        });
+    }
+
     // ── TLS handshake failures ────────────────────────────────────────────────
 
     /// Counts a TLS handshake that failed before the application got a
