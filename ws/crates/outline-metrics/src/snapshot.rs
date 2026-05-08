@@ -24,6 +24,15 @@ const MODE_DOWNGRADE_CAP_LABELS: &[&str] = &[
     "xhttp_h3",
 ];
 
+// Stable label set for `uplink_fingerprint_profile_strategy_info` —
+// must stay in sync with `outline_transport::FingerprintProfileStrategy::as_str`
+// (which is itself the wire-format contract for the snapshot's
+// `fingerprint_profile_strategy` field). Adding a new strategy
+// variant means extending this list so the gauge publishes a 0 row
+// for the inactive ones; otherwise a stale 1 from a prior scrape
+// could linger.
+const FINGERPRINT_STRATEGY_LABELS: &[&str] = &["none", "per_host_stable", "random"];
+
 impl Metrics {
     fn update_snapshot_metrics(&self, snapshots: &[UplinkManagerSnapshot]) {
         self.uplink_health.reset();
@@ -48,6 +57,7 @@ impl Metrics {
         self.routing_scope_info.reset();
         self.global_active_uplink_info.reset();
         self.per_uplink_active_uplink_info.reset();
+        self.uplink_fingerprint_profile_strategy_info.reset();
 
         for snapshot in snapshots {
             self.update_group_metrics(snapshot);
@@ -217,6 +227,21 @@ impl Metrics {
             self.uplink_standby_ready
                 .with_label_values(&[group, "udp", &uplink.name])
                 .set(i64::try_from(uplink.standby_udp_ready).unwrap_or(i64::MAX));
+
+            // Fingerprint-profile strategy: low-cardinality info gauge.
+            // Published unconditionally so an operator can confirm the
+            // knob landed even when the strategy is `none` (the default
+            // — silence here would be ambiguous between "feature off"
+            // and "snapshot pipeline broken").
+            for label in FINGERPRINT_STRATEGY_LABELS {
+                self.uplink_fingerprint_profile_strategy_info
+                    .with_label_values(&[group, &uplink.name, label])
+                    .set(if *label == uplink.fingerprint_profile_strategy {
+                        1
+                    } else {
+                        0
+                    });
+            }
 
             // Active-wire visibility: published unconditionally for uplinks
             // with at least one fallback so dashboards can pin a panel on

@@ -756,6 +756,20 @@ Accepted values:
   one identity per `(host, port)` for the lifetime of the process.
 - `"random"` — fresh profile on every dial.
 
+The same value can be set on the command line or via environment,
+which **overrides** the top-level TOML key (per-uplink overrides
+still win on top of either source — same precedence as
+`--listen` / `--metrics-listen`):
+
+```sh
+outline-ws-rust --fingerprint-profile stable
+# or:
+OUTLINE_FINGERPRINT_PROFILE=random outline-ws-rust
+```
+
+Accepts the same alias set as the TOML key. Useful for one-shot
+opt-in tests against a deployed config without editing the file.
+
 For embedded callers (tests, custom binaries) the strategy can also be
 wired directly via the Rust API; the bootstrap binary picks the
 config value at startup:
@@ -767,6 +781,22 @@ use outline_transport::{
 
 init_fingerprint_profile_strategy(FingerprintProfileStrategy::PerHostStable);
 ```
+
+### Observability
+
+`tracing::info!` logs each `(host, port, profile)` triple the first
+time it is observed in the process — useful for verifying that the
+strategy actually engaged after a config change.
+
+Prometheus exposes `outline_ws_rust_uplink_fingerprint_profile_strategy_info`
+with labels `group`, `uplink`, and `strategy` (one of `none`,
+`per_host_stable`, `random`). The gauge is `1` on the active strategy
+and `0` on the others, published unconditionally — an absent series
+points at a snapshot-pipeline bug, not at the feature being off.
+The series reflects the **effective** strategy: per-uplink override
+when set, otherwise the process-wide default. The same string is
+available on the `/snapshot` control endpoint as the
+`fingerprint_profile_strategy` field on each uplink entry.
 
 ### Per-uplink override
 

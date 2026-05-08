@@ -192,6 +192,7 @@ struct Metrics {
     per_uplink_active_uplink_info: IntGaugeVec,
     sticky_routes_total: IntGaugeVec,
     sticky_routes_by_uplink: IntGaugeVec,
+    uplink_fingerprint_profile_strategy_info: IntGaugeVec,
 }
 
 // ── Stub (prometheus feature disabled) ────────────────────────────────────

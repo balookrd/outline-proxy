@@ -77,6 +77,7 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         udp_active_wire: 0,
         tcp_active_wire_pin_remaining_ms: None,
         udp_active_wire_pin_remaining_ms: None,
+        fingerprint_profile_strategy: "none".to_string(),
     }
 }
 
@@ -247,6 +248,108 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     assert!(
         rendered.contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 1")
     );
+}
+
+#[test]
+fn render_prometheus_exports_uplink_fingerprint_profile_strategy_info() {
+    let _guard = test_guard();
+    init();
+
+    let mut stable = snapshot_uplink("senko");
+    stable.fingerprint_profile_strategy = "per_host_stable".to_string();
+    let off = snapshot_uplink("nuxt"); // default = "none"
+
+    let rendered = render_prometheus(&[UplinkManagerSnapshot {
+        group: "main".to_string(),
+        generated_at_unix_ms: 0,
+        load_balancing_mode: "active_passive".to_string(),
+        routing_scope: "global".to_string(),
+        global_active_uplink: None,
+        global_active_reason: None,
+        tcp_active_uplink: None,
+        tcp_active_reason: None,
+        udp_active_uplink: None,
+        udp_active_reason: None,
+        uplinks: vec![stable, off],
+        sticky_routes: Vec::new(),
+        auto_failback: false,
+    }])
+    .expect("render metrics");
+
+    // Active strategy reports 1, the others 0 — same info-style shape
+    // as `selection_mode_info`. The metric is published unconditionally
+    // (even for the default `none` strategy) so an absent series is a
+    // pipeline bug, not "feature off".
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"senko\"} 1"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"none\",uplink=\"senko\"} 0"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"random\",uplink=\"senko\"} 0"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"none\",uplink=\"nuxt\"} 1"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"nuxt\"} 0"
+    ));
+}
+
+#[test]
+fn render_prometheus_clears_stale_uplink_fingerprint_profile_strategy() {
+    // First scrape pins `senko` to per_host_stable. Second scrape
+    // flips the override to `none`. The previous `strategy=per_host_stable`
+    // gauge MUST flip back to 0; otherwise an operator looking at the
+    // dashboard would see "stable" forever after a single transient
+    // override.
+    let _guard = test_guard();
+    init();
+
+    let mut stable = snapshot_uplink("senko");
+    stable.fingerprint_profile_strategy = "per_host_stable".to_string();
+    render_prometheus(&[UplinkManagerSnapshot {
+        group: "main".to_string(),
+        generated_at_unix_ms: 0,
+        load_balancing_mode: "active_passive".to_string(),
+        routing_scope: "global".to_string(),
+        global_active_uplink: None,
+        global_active_reason: None,
+        tcp_active_uplink: None,
+        tcp_active_reason: None,
+        udp_active_uplink: None,
+        udp_active_reason: None,
+        uplinks: vec![stable],
+        sticky_routes: Vec::new(),
+        auto_failback: false,
+    }])
+    .expect("render first metrics");
+
+    let off = snapshot_uplink("senko"); // default = "none"
+    let rendered = render_prometheus(&[UplinkManagerSnapshot {
+        group: "main".to_string(),
+        generated_at_unix_ms: 0,
+        load_balancing_mode: "active_passive".to_string(),
+        routing_scope: "global".to_string(),
+        global_active_uplink: None,
+        global_active_reason: None,
+        tcp_active_uplink: None,
+        tcp_active_reason: None,
+        udp_active_uplink: None,
+        udp_active_reason: None,
+        uplinks: vec![off],
+        sticky_routes: Vec::new(),
+        auto_failback: false,
+    }])
+    .expect("render second metrics");
+
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"senko\"} 0"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"none\",uplink=\"senko\"} 1"
+    ));
 }
 
 #[test]

@@ -189,6 +189,32 @@ fn strategy_from_str_rejects_unknown_aliases() {
 }
 
 #[test]
+fn strategy_as_str_round_trips_through_from_str() {
+    // Wire-format contract: snapshot field, Prometheus label, and TOML
+    // alias all use this exact set. Renaming a variant here is a
+    // breaking change for the Prometheus consumer, so the round-trip
+    // test fails if the canonical token drifts.
+    for s in [Strategy::None, Strategy::PerHostStable, Strategy::Random] {
+        let parsed = Strategy::from_str(s.as_str())
+            .unwrap_or_else(|e| panic!("{} did not round-trip: {e}", s.as_str()));
+        assert_eq!(parsed, s);
+    }
+    assert_eq!(Strategy::None.as_str(), "none");
+    assert_eq!(Strategy::PerHostStable.as_str(), "per_host_stable");
+    assert_eq!(Strategy::Random.as_str(), "random");
+}
+
+#[test]
+fn current_strategy_returns_default_when_init_was_skipped() {
+    // The OnceLock can only be set once per process; the binary tests
+    // never call `init_strategy`, so this should always read the
+    // default. If a future change starts populating it as a side
+    // effect of importing the module, snapshot consumers (Prometheus
+    // and the dashboard JSON) would silently flip — catch that here.
+    assert_eq!(crate::fingerprint_profile::current_strategy(), Strategy::None);
+}
+
+#[test]
 fn note_first_use_returns_true_only_on_first_call() {
     // Hostname is unique per test so the process-global dedup set is
     // not poisoned by other tests in this binary.

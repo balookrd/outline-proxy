@@ -119,6 +119,7 @@ pub(super) struct UplinkFields {
     pub(super) per_uplink_active_uplink_info: IntGaugeVec,
     pub(super) sticky_routes_total: IntGaugeVec,
     pub(super) sticky_routes_by_uplink: IntGaugeVec,
+    pub(super) uplink_fingerprint_profile_strategy_info: IntGaugeVec,
 }
 
 pub(super) fn build(registry: &Registry) -> UplinkFields {
@@ -353,6 +354,18 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         "Current number of sticky routes pinned to each uplink.",
         ["group", "uplink"]
     );
+    let uplink_fingerprint_profile_strategy_info = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info",
+        "Effective browser-fingerprint diversification strategy for this uplink. \
+         The label `strategy` is one of `none`, `per_host_stable`, `random`; \
+         the gauge is 1 on the active strategy and 0 on the others. Effective \
+         means the per-uplink override if set, otherwise the process-wide \
+         default wired by `--fingerprint-profile` / top-level \
+         `fingerprint_profile`.",
+        ["group", "uplink", "strategy"]
+    );
 
     UplinkFields {
         uplink_selected_total,
@@ -385,5 +398,6 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         per_uplink_active_uplink_info,
         sticky_routes_total,
         sticky_routes_by_uplink,
+        uplink_fingerprint_profile_strategy_info,
     }
 }

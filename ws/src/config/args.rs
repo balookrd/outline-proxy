@@ -129,4 +129,17 @@ pub struct Args {
     /// the migration (e.g. `ProtectSystem=strict` with a read-only /etc).
     #[arg(long)]
     pub migrate_config: bool,
+
+    /// Browser fingerprint diversification strategy. Overrides the
+    /// top-level `fingerprint_profile` config key. Per-uplink
+    /// `[[outline.uplinks]].fingerprint_profile` overrides still win
+    /// on top of this. Accepts the same alias set as the TOML key:
+    /// `off` / `none` / `disabled` (default), `stable` /
+    /// `per_host_stable` / `per-host`, `random`.
+    #[arg(
+        long,
+        env = "OUTLINE_FINGERPRINT_PROFILE",
+        help = "Browser fingerprint diversification: off | stable | random (overrides top-level config)"
+    )]
+    pub fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
 }
