@@ -75,6 +75,12 @@ pub(super) const RESUME_CAPABLE_HEADER: &str = "x-outline-resume-capable";
 /// Cross-transport session resumption: server → client.
 pub(super) const SESSION_RESPONSE_HEADER: &str = "x-outline-session";
 
+/// Ack-Prefix Protocol v1.2 capability negotiation header. Identical
+/// name to the WS-upgrade path's `crate::resumption::ACK_PREFIX_HEADER`
+/// — kept in sync as a private constant here so the XHTTP carrier
+/// does not have to depend on the WS module just for the literal.
+pub(super) const ACK_PREFIX_HEADER: &str = "x-outline-resume-ack-prefix";
+
 /// Submode selector. Picked from the dial URL's query string
 /// (`?mode=stream-one` selects stream-one; anything else, including
 /// no query, means packet-up). The mode is not threaded through
@@ -204,19 +210,29 @@ pub(crate) async fn connect_xhttp(
     fwmark: Option<u32>,
     ipv6_first: bool,
     resume_request: Option<SessionId>,
-) -> Result<(XhttpStream, Option<SessionId>)> {
+    ack_prefix_requested: bool,
+) -> Result<(XhttpStream, Option<SessionId>, bool)> {
     match mode {
         TransportMode::XhttpH2 => {
-            h2::connect_xhttp_h2(cache, url, mode, fwmark, ipv6_first, resume_request).await
+            h2::connect_xhttp_h2(
+                cache, url, mode, fwmark, ipv6_first, resume_request, ack_prefix_requested,
+            )
+            .await
         },
         TransportMode::XhttpH1 => {
             let submode = resolve_effective_submode(url, mode).await;
-            h1::connect_xhttp_h1(cache, url, submode, fwmark, ipv6_first, resume_request).await
+            h1::connect_xhttp_h1(
+                cache, url, submode, fwmark, ipv6_first, resume_request, ack_prefix_requested,
+            )
+            .await
         },
         #[cfg(feature = "h3")]
         TransportMode::XhttpH3 => {
             let submode = resolve_effective_submode(url, mode).await;
-            h3::connect_xhttp_h3(cache, url, submode, fwmark, ipv6_first, resume_request).await
+            h3::connect_xhttp_h3(
+                cache, url, submode, fwmark, ipv6_first, resume_request, ack_prefix_requested,
+            )
+            .await
         },
         #[cfg(not(feature = "h3"))]
         TransportMode::XhttpH3 => {
@@ -231,6 +247,16 @@ pub(super) fn parse_session_response(headers: &http::HeaderMap) -> Option<Sessio
         .get(SESSION_RESPONSE_HEADER)
         .and_then(|v| v.to_str().ok())
         .and_then(SessionId::parse_hex)
+}
+
+/// Reads the server-side echo of `X-Outline-Resume-Ack-Prefix: 1`.
+/// Mirrors the WS-upgrade detection logic in `connect_websocket_with
+/// _resume`'s H1/H2/H3 paths: returns `true` when (and only when)
+/// the response carries the literal `"1"`. Caller is expected to
+/// AND this with their own `ack_prefix_requested` so an unsolicited
+/// echo from the server is treated as `false`.
+pub(super) fn parse_ack_prefix_echo(headers: &http::HeaderMap) -> bool {
+    headers.get(ACK_PREFIX_HEADER).and_then(|v| v.to_str().ok()) == Some("1")
 }
 
 pub(super) fn default_port_for(use_tls: bool) -> u16 {

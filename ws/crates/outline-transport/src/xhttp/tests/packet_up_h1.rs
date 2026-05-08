@@ -78,8 +78,8 @@ async fn xhttp_h1_client_round_trip_through_mock_server() -> Result<()> {
     let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
 
-    let (mut stream, issued) =
-        super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH1, None, false, None).await?;
+    let (mut stream, issued, _ack_prefix_echo) =
+        super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH1, None, false, None, false).await?;
     // The mock does not echo `X-Outline-Session`; the resume token
     // path is exercised in the cross-repo end-to-end test against
     // a real outline-ss-rust server.
@@ -129,7 +129,7 @@ async fn xhttp_h1_silently_coerces_stream_one_to_packet_up() -> Result<()> {
     let cache = DnsCache::new(Duration::from_secs(30));
 
     let result =
-        super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH1, None, false, None).await;
+        super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH1, None, false, None, false).await;
     let err = match result {
         Ok(_) => panic!("expected dial failure (no server), got an open session"),
         Err(error) => error,

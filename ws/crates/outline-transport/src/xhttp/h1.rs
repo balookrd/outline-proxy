@@ -48,10 +48,10 @@ use crate::connect_tcp_socket;
 
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
 use super::{
-    INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, RequestBody, XhttpStream, XhttpSubmode, XhttpTarget,
-    default_port_for, empty_request_body, full_request_body, generate_session_id,
-    parse_session_response,
+    ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY,
+    RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, RequestBody, XhttpStream, XhttpSubmode,
+    XhttpTarget, default_port_for, empty_request_body, full_request_body, generate_session_id,
+    parse_ack_prefix_echo, parse_session_response,
 };
 
 /// Same dial budget as the h2/h3 paths — keeps fallback windows
@@ -72,7 +72,8 @@ pub(super) async fn connect_xhttp_h1(
     fwmark: Option<u32>,
     ipv6_first: bool,
     resume_request: Option<SessionId>,
-) -> Result<(XhttpStream, Option<SessionId>)> {
+    ack_prefix_requested: bool,
+) -> Result<(XhttpStream, Option<SessionId>, bool)> {
     if !matches!(submode, XhttpSubmode::PacketUp) {
         bail!("xhttp/h1 carrier supports packet-up only (got submode {submode:?})");
     }
@@ -134,8 +135,8 @@ pub(super) async fn connect_xhttp_h1(
         // Open the GET synchronously so the resume-id round-trip
         // completes before we hand the stream to the caller. Mirrors
         // the h2/h3 packet-up dial shape.
-        let (issued_session_id, body) =
-            open_h1_get(down_send, &target, resume_request, profile).await?;
+        let (issued_session_id, ack_prefix_echo, body) =
+            open_h1_get(down_send, &target, resume_request, ack_prefix_requested, profile).await?;
         let driver = tokio::spawn(driver_loop_h1(
             up_send,
             target.clone(),
@@ -147,7 +148,7 @@ pub(super) async fn connect_xhttp_h1(
 
         debug!(
             %url, %session_id, mode = "xhttp_h1",
-            ?issued_session_id, ?resume_request,
+            ?issued_session_id, ?resume_request, ack_prefix_requested, ack_prefix_echo,
             "xhttp h1 session opened"
         );
         Ok::<_, anyhow::Error>((
@@ -158,6 +159,7 @@ pub(super) async fn connect_xhttp_h1(
                 XhttpSubmode::PacketUp,
             ),
             issued_session_id,
+            ack_prefix_echo,
         ))
     };
 
@@ -215,8 +217,9 @@ async fn open_h1_get(
     mut send: http1::SendRequest<RequestBody>,
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
+    ack_prefix_requested: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(Option<SessionId>, hyper::body::Incoming)> {
+) -> Result<(Option<SessionId>, bool, hyper::body::Incoming)> {
     let mut builder = Request::builder()
         .method(Method::GET)
         .uri(target.full_uri())
@@ -225,6 +228,9 @@ async fn open_h1_get(
         .header(RESUME_CAPABLE_HEADER, "1");
     if let Some(id) = resume_request {
         builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
+    }
+    if ack_prefix_requested {
+        builder = builder.header(ACK_PREFIX_HEADER, "1");
     }
     let mut req = builder
         .body(empty_request_body())
@@ -245,7 +251,8 @@ async fn open_h1_get(
         bail!("xhttp/h1 GET returned {}", resp.status());
     }
     let issued = parse_session_response(resp.headers());
-    Ok((issued, resp.into_body()))
+    let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
+    Ok((issued, echo, resp.into_body()))
 }
 
 async fn driver_loop_h1(
