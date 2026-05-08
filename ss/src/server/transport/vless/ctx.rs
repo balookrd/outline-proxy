@@ -156,15 +156,22 @@ pub(in crate::server::transport) struct VlessRelayState {
     /// resume hit the relay emits the v2 `"ORDR"` frame as a
     /// separate WS Binary message immediately after the v1 frame.
     /// Implies `ack_prefix_requested == true`.
-    #[allow(dead_code)] // wired by phase 5 (VLESS-WS capture+emit).
     pub(in crate::server::transport) symmetric_replay_requested: bool,
     /// Client-reported `X-Outline-Resume-Down-Acked` offset from the
     /// request side. Used by the resume-emit path to compute
     /// `replay_from(offset)` against the parked downlink ring. `0`
     /// when no v2 negotiation occurred or the request did not carry
     /// the header.
-    #[allow(dead_code)] // wired by phase 5 (VLESS-WS capture+emit).
     pub(in crate::server::transport) client_acked_offset_request: u64,
+    /// Per-session bounded ring buffer for the v2 Symmetric Downlink
+    /// Replay protocol. Allocated lazily at upstream-handshake time
+    /// when [`Self::symmetric_replay_requested`] is `true`. The
+    /// VLESS-WS relay loop pushes every plaintext chunk into the
+    /// ring before the WS Binary send; on park the same `Arc` is
+    /// moved into [`ParkedTcp::downlink_ring`] and back on resume
+    /// hit. `None` means v2 is not engaged on this session.
+    pub(in crate::server::transport) downlink_ring:
+        Option<Arc<parking_lot::Mutex<crate::server::resumption::downlink_ring::DownlinkRing>>>,
     /// Per-session counter of plaintext bytes the relay has forwarded
     /// to the upstream socket. Same units the client tracks on its
     /// uplink ring buffer; survives park/resume because the `Arc` is
@@ -196,6 +203,9 @@ impl VlessRelayState {
             symmetric_replay_requested: resume.symmetric_replay_requested,
             client_acked_offset_request: resume.client_acked_offset,
             upstream_bytes_acked: Arc::new(AtomicU64::new(0)),
+            // v2 ring is allocated lazily at upstream-handshake time.
+            // On resume hit it is restored from `ParkedTcp::downlink_ring`.
+            downlink_ring: None,
         }
     }
 }
