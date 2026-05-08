@@ -41,6 +41,25 @@ pub(crate) struct PerTransportStatus {
     /// data transfer or a successful probe), causing eventual spurious
     /// `healthy = Some(false)` flips and active-uplink flapping.
     pub(crate) last_runtime_failure_at: Option<Instant>,
+    /// Consecutive chunk-0 timeouts observed by the dispatch path on this
+    /// transport. Tracked separately from [`Self::consecutive_runtime_failures`]
+    /// because chunk-0 timeouts are a strong upstream-down signal — the
+    /// connection handshake succeeded but the upstream produced zero
+    /// response bytes within the deadline, which uniquely indicates a
+    /// silent server / network condition that the probe (handshake-only)
+    /// cannot see. The streak is decayed by
+    /// [`LoadBalancingConfig::chunk0_failure_window`], typically much wider
+    /// than `runtime_failure_window`, so chunk-0 timeouts that are too
+    /// sparse to escalate via the generic counter still accumulate here
+    /// and trigger an active-uplink switch via
+    /// `runtime_health_escalation` after `probe.min_failures` of them.
+    pub(crate) chunk0_consecutive_failures: u32,
+    /// Timestamp of the previous chunk-0 timeout on this transport.
+    /// Used to decay [`Self::chunk0_consecutive_failures`]: a new chunk-0
+    /// timeout arriving more than
+    /// [`LoadBalancingConfig::chunk0_failure_window`] after this timestamp
+    /// resets the streak to 1 instead of incrementing.
+    pub(crate) last_chunk0_failure_at: Option<Instant>,
     /// When set, connections must use a lower-rank carrier than the
     /// configured one until this instant because the configured one
     /// (H3, raw QUIC, XHTTP-H3, XHTTP-H2) produced repeated transport

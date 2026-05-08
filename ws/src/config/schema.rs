@@ -291,6 +291,13 @@ pub(super) struct UplinkGroupSection {
     /// 1 instead of incrementing. `0` disables decay (legacy behaviour).
     /// Default: 60.
     pub(super) runtime_failure_window_secs: Option<u64>,
+    /// Window over which consecutive **chunk-0 timeouts** on a single
+    /// uplink/transport are counted toward the same `probe.min_failures`
+    /// health-flip escalation. Independent of `runtime_failure_window` and
+    /// typically much wider so sparse chunk-0 timeouts (silent upstream
+    /// pattern) still accumulate and trigger an active-uplink switch.
+    /// `0` disables the dedicated counter. Default: 300 (5 min).
+    pub(super) chunk0_failure_window_secs: Option<u64>,
     /// In `routing_scope = "global"`, gate the active uplink on UDP health
     /// alongside TCP health. Default: `false` — UDP failures are
     /// informational and do not kick the active. `true` restores pre-1.4.x
@@ -429,6 +436,13 @@ pub(super) struct LoadBalancingSection {
     /// 1 instead of incrementing. `0` disables decay (legacy behaviour).
     /// Default: 60.
     pub(super) runtime_failure_window_secs: Option<u64>,
+    /// Window over which consecutive **chunk-0 timeouts** on a single
+    /// uplink/transport are counted toward the same `probe.min_failures`
+    /// health-flip escalation. Independent of `runtime_failure_window` and
+    /// typically much wider so sparse chunk-0 timeouts (silent upstream
+    /// pattern) still accumulate and trigger an active-uplink switch.
+    /// `0` disables the dedicated counter. Default: 300 (5 min).
+    pub(super) chunk0_failure_window_secs: Option<u64>,
     /// In `routing_scope = "global"`, gate the active uplink on UDP health
     /// alongside TCP health. Default: `false` — UDP failures are
     /// informational and do not kick the active. `true` restores pre-1.4.x

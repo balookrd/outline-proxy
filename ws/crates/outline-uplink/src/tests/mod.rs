@@ -35,6 +35,7 @@ fn lb() -> LoadBalancingConfig {
         failure_penalty_halflife: Duration::from_secs(60),
         mode_downgrade_duration: Duration::from_secs(60),
         runtime_failure_window: Duration::from_secs(60),
+        chunk0_failure_window: Duration::from_secs(300),
         global_udp_strict_health: false,
         udp_ws_keepalive_interval: None,
         tcp_ws_keepalive_interval: None,
@@ -1260,6 +1261,164 @@ async fn sparse_runtime_failures_still_escalate_when_window_is_zero() {
         Some(false),
         "with decay disabled, two sparse failures still flip health to false"
     );
+}
+
+// Regression: chunk-0 timeouts on a silently-degraded upstream arrive too
+// far apart to clear `probe.min_failures` inside `runtime_failure_window`,
+// but must still escalate via the dedicated `chunk0_failure_window` streak
+// — that is the whole point of routing this signal separately.
+#[tokio::test]
+async fn sparse_chunk0_timeouts_escalate_via_dedicated_window() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    // Generic window short enough that the second chunk-0 timeout falls
+    // outside it and the generic counter resets.
+    config.runtime_failure_window = Duration::from_millis(50);
+    // Dedicated chunk-0 window wide enough to span the inter-arrival gap
+    // (real-world default is 5 min; here scaled to test cadence).
+    config.chunk0_failure_window = Duration::from_millis(500);
+    config.failure_cooldown = Duration::from_millis(10);
+    let mut probe = probe_disabled();
+    probe.ws.enabled = true;
+    probe.min_failures = 2;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe,
+        config,
+    )
+    .unwrap();
+    set_tcp_status(&manager, 0, true, 20).await;
+    set_tcp_status(&manager, 1, true, 30).await;
+    manager
+        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed")
+        .await;
+
+    let chunk0_err = || anyhow!("upstream did not respond within 10s (chunk 0)");
+    manager
+        .report_runtime_failure(0, TransportKind::Tcp, &chunk0_err())
+        .await;
+    // Sleep past `runtime_failure_window` but within `chunk0_failure_window`.
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    manager
+        .report_runtime_failure(0, TransportKind::Tcp, &chunk0_err())
+        .await;
+
+    let status = manager.inner.read_status(0);
+    assert_eq!(
+        status.tcp.consecutive_runtime_failures, 1,
+        "generic counter still decays — only the chunk-0 streak should escalate"
+    );
+    assert_eq!(
+        status.tcp.chunk0_consecutive_failures, 2,
+        "two chunk-0 timeouts inside chunk0_failure_window must accumulate"
+    );
+    assert_eq!(
+        status.tcp.healthy,
+        Some(false),
+        "dedicated streak must flip health to false at the same threshold"
+    );
+}
+
+// Counter-regression: zeroing `chunk0_failure_window` disables the
+// dedicated counter — chunk-0 timeouts then only feed the generic
+// counter, so spaced-out ones decay away just like any other failure
+// and never escalate health to false.
+#[tokio::test]
+async fn sparse_chunk0_timeouts_do_not_escalate_when_window_is_zero() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    config.runtime_failure_window = Duration::from_millis(50);
+    config.chunk0_failure_window = Duration::ZERO;
+    config.failure_cooldown = Duration::from_millis(10);
+    let mut probe = probe_disabled();
+    probe.ws.enabled = true;
+    probe.min_failures = 2;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe,
+        config,
+    )
+    .unwrap();
+    set_tcp_status(&manager, 0, true, 20).await;
+    set_tcp_status(&manager, 1, true, 30).await;
+    manager
+        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed")
+        .await;
+
+    let chunk0_err = || anyhow!("upstream did not respond within 10s (chunk 0)");
+    manager
+        .report_runtime_failure(0, TransportKind::Tcp, &chunk0_err())
+        .await;
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    manager
+        .report_runtime_failure(0, TransportKind::Tcp, &chunk0_err())
+        .await;
+
+    let status = manager.inner.read_status(0);
+    assert_eq!(
+        status.tcp.chunk0_consecutive_failures, 0,
+        "dedicated counter must stay at zero when window is disabled"
+    );
+    assert_eq!(
+        status.tcp.healthy,
+        Some(true),
+        "without the dedicated counter, sparse chunk-0 timeouts cannot escalate"
+    );
+}
+
+// Successful traffic on the same uplink/transport must clear both the
+// generic runtime-failure streak and the chunk-0 streak — otherwise a
+// previous bad run would carry over and a subsequent chunk-0 burst could
+// flip health on the very first new error.
+#[tokio::test]
+async fn active_traffic_clears_both_runtime_and_chunk0_streaks() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    config.runtime_failure_window = Duration::from_secs(60);
+    config.chunk0_failure_window = Duration::from_secs(300);
+    config.failure_cooldown = Duration::from_millis(10);
+    let mut probe = probe_disabled();
+    probe.ws.enabled = true;
+    probe.min_failures = 5;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![make_uplink("primary", "wss://primary.example.com/tcp")],
+        probe,
+        config,
+    )
+    .unwrap();
+    set_tcp_status(&manager, 0, true, 20).await;
+
+    manager
+        .report_runtime_failure(
+            0,
+            TransportKind::Tcp,
+            &anyhow!("upstream did not respond within 10s (chunk 0)"),
+        )
+        .await;
+    manager
+        .report_runtime_failure(0, TransportKind::Tcp, &anyhow!("generic timeout"))
+        .await;
+    let pre = manager.inner.read_status(0);
+    assert!(pre.tcp.consecutive_runtime_failures > 0);
+    assert!(pre.tcp.chunk0_consecutive_failures > 0);
+
+    manager.report_active_traffic(0, TransportKind::Tcp).await;
+
+    let post = manager.inner.read_status(0);
+    assert_eq!(post.tcp.consecutive_runtime_failures, 0);
+    assert_eq!(post.tcp.chunk0_consecutive_failures, 0);
 }
 
 #[tokio::test]

@@ -42,6 +42,16 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         runtime_failure_window: Duration::from_secs(
             lb.and_then(|l| l.runtime_failure_window_secs).unwrap_or(60),
         ),
+        // Default: 5 minutes — wide enough that sparse but recurring
+        // chunk-0 timeouts (one every couple of minutes — the typical
+        // signature of a silently-degraded upstream) accumulate to the
+        // `probe.min_failures` threshold instead of being decayed away
+        // by the much shorter generic `runtime_failure_window`. `0`
+        // disables the dedicated counter; chunk-0 timeouts then only
+        // feed the generic counter like any other failure.
+        chunk0_failure_window: Duration::from_secs(
+            lb.and_then(|l| l.chunk0_failure_window_secs).unwrap_or(300),
+        ),
         global_udp_strict_health: lb
             .and_then(|l| l.global_udp_strict_health)
             .unwrap_or(false),
