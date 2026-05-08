@@ -789,33 +789,70 @@ function fallbackChainPill(uplink) {
 }
 function activeProtocolChip(group) {
   const byName = new Map((group.uplinks || []).map(u => [u.name, u]));
+  // `legs` lists which legs the chip is supposed to reflect. The
+  // global-active candidate covers both legs of one uplink and may
+  // split into per-leg chips when its TCP and UDP active wires
+  // diverge; the TCP / UDP candidates fire only when the active
+  // *uplink* differs across legs and stay single-leg.
   const candidates = [];
-  if (group.global_active_uplink) candidates.push(["Active", group.global_active_uplink]);
+  if (group.global_active_uplink) candidates.push({ scope: "Active", name: group.global_active_uplink, legs: ["tcp", "udp"] });
   if (group.tcp_active_uplink && group.tcp_active_uplink !== group.global_active_uplink) {
-    candidates.push(["TCP", group.tcp_active_uplink]);
+    candidates.push({ scope: "TCP", name: group.tcp_active_uplink, legs: ["tcp"] });
   }
   if (group.udp_active_uplink && group.udp_active_uplink !== group.global_active_uplink && group.udp_active_uplink !== group.tcp_active_uplink) {
-    candidates.push(["UDP", group.udp_active_uplink]);
+    candidates.push({ scope: "UDP", name: group.udp_active_uplink, legs: ["udp"] });
   }
   if (!candidates.length) return "";
-  return candidates.map(([scope, name]) => {
-    const u = byName.get(name);
-    if (!u) return "";
-    const t = String(u.transport || "").toLowerCase();
-    const cls = t === "vless" || t === "shadowsocks" || t === "ws" ? `proto-${t}` : "";
-    const isUdp = scope === "UDP";
-    const configured = isUdp ? u.udp_mode : u.tcp_mode;
-    const effective = (isUdp ? u.udp_mode_effective : u.tcp_mode_effective) || configured;
-    const downgraded = !!(isUdp ? u.udp_downgrade_active : u.tcp_downgrade_active) && configured !== effective;
-    const submode = (isUdp ? u.udp_xhttp_submode : u.tcp_xhttp_submode) || null;
-    const submodeEff = (isUdp ? u.udp_xhttp_submode_effective : u.tcp_xhttp_submode_effective) || submode;
-    const submodeDg = !!(isUdp ? u.udp_xhttp_submode_downgrade_active : u.tcp_xhttp_submode_downgrade_active) && submode !== submodeEff;
-    const dg = downgraded ? " proto-downgraded" : "";
-    const star = downgraded ? "<span class=\"proto-dg\">↘</span>" : "";
-    const [submodeHtml, submodeTitle] = submodeSuffix(submode, submodeEff, submodeDg);
-    const baseTitle = downgraded ? downgradeTitle(configured, effective, scope) : "";
+  // Resolve the **active wire**'s shape on a leg. Reading
+  // `u.tcp_mode` alone left the chip stuck on primary's configured
+  // mode even after a fallback wire took over — the operator saw the
+  // wire chain in the row flip but the header chip stayed put.
+  // Walking `configured_wire_chain[active_wire]` first makes the chip
+  // track the wire actually carrying traffic; the uplink-level
+  // fields stay as a fallback for snapshots that pre-date the
+  // per-wire chain (older instances mid rolling-deploy).
+  const wireShape = (u, leg) => {
+    const isUdp = leg === "udp";
+    const wireIdx = isUdp ? (u.udp_active_wire || 0) : (u.tcp_active_wire || 0);
+    const chain = Array.isArray(u.configured_wire_chain) ? u.configured_wire_chain : [];
+    const w = chain[wireIdx] || null;
+    const upMode = isUdp ? u.udp_mode : u.tcp_mode;
+    const upEff = isUdp ? u.udp_mode_effective : u.tcp_mode_effective;
+    const upDg = isUdp ? u.udp_downgrade_active : u.tcp_downgrade_active;
+    const upSm = isUdp ? u.udp_xhttp_submode : u.tcp_xhttp_submode;
+    const upSmEff = isUdp ? u.udp_xhttp_submode_effective : u.tcp_xhttp_submode_effective;
+    const upSmDg = isUdp ? u.udp_xhttp_submode_downgrade_active : u.tcp_xhttp_submode_downgrade_active;
+    const transport = String((w && w.transport) || u.transport || "").toLowerCase();
+    const configured = (w && w[`${leg}_mode`]) || upMode || null;
+    const effective = (w && w[`${leg}_mode_effective`]) || upEff || configured;
+    const downgraded = !!((w && w[`${leg}_downgrade_active`]) || upDg) && !!configured && configured !== effective;
+    const submode = (w && w[`${leg}_xhttp_submode`]) || upSm || null;
+    const submodeEff = upSmEff || submode;
+    const submodeDg = !!upSmDg && submode !== submodeEff;
+    return { transport, configured, effective, downgraded, submode, submodeEff, submodeDg };
+  };
+  const renderChip = (scope, s) => {
+    const cls = s.transport === "vless" || s.transport === "shadowsocks" || s.transport === "ws" ? `proto-${s.transport}` : "";
+    const dg = s.downgraded ? " proto-downgraded" : "";
+    const star = s.downgraded ? "<span class=\"proto-dg\">↘</span>" : "";
+    const [submodeHtml, submodeTitle] = submodeSuffix(s.submode, s.submodeEff, s.submodeDg);
+    const baseTitle = s.downgraded ? downgradeTitle(s.configured, s.effective, scope) : "";
     const title = submodeTitle ? (baseTitle ? `${baseTitle} · ${submodeTitle}` : submodeTitle) : baseTitle;
-    return `<span class="cfg-chip"><span>⇄</span><span class="cfg-key">${scope}:</span><span class="proto-pill ${cls}${dg}" title="${escapeHtml(title)}" style="margin-left:2px">${escapeHtml(stackLabel(t, effective))}${star}${submodeHtml}</span></span>`;
+    return `<span class="cfg-chip"><span>⇄</span><span class="cfg-key">${scope}:</span><span class="proto-pill ${cls}${dg}" title="${escapeHtml(title)}" style="margin-left:2px">${escapeHtml(stackLabel(s.transport, s.effective))}${star}${submodeHtml}</span></span>`;
+  };
+  const shapeKey = (s) => `${s.transport}|${s.effective || ""}|${s.submode || ""}|${s.submodeEff || ""}|${s.submodeDg ? 1 : 0}|${s.downgraded ? 1 : 0}`;
+  return candidates.flatMap(({ scope, name, legs }) => {
+    const u = byName.get(name);
+    if (!u) return [];
+    if (legs.length === 1) return [renderChip(scope, wireShape(u, legs[0]))];
+    // Two-leg "Active" chip: collapse when both legs share a wire
+    // shape; split into TCP+UDP chips when they diverge so the
+    // header reflects each leg's actual carrier instead of averaging
+    // them behind a single primary mode.
+    const tcp = wireShape(u, "tcp");
+    const udp = wireShape(u, "udp");
+    if (shapeKey(tcp) === shapeKey(udp)) return [renderChip(scope, tcp)];
+    return [renderChip("TCP", tcp), renderChip("UDP", udp)];
   }).join("");
 }
 function uplinkRole(u) {
