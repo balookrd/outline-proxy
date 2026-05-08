@@ -114,6 +114,13 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         tcp_mid_session_retry_overflow_policy: lb
             .and_then(|l| l.tcp_mid_session_retry_overflow_policy)
             .unwrap_or(OverflowPolicy::Soft),
+        // Default: 5 seconds — comfortably above any reasonable RTT,
+        // short enough that a misbehaving server cannot stall the
+        // pinned relay invisibly.
+        tcp_mid_session_retry_consume_timeout: Duration::from_secs(
+            lb.and_then(|l| l.tcp_mid_session_retry_consume_timeout_secs)
+                .unwrap_or(5),
+        ),
         vless_udp_mux_limits: {
             let defaults = VlessUdpMuxLimits::default();
             VlessUdpMuxLimits {

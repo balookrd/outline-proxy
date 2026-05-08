@@ -541,6 +541,21 @@ pub struct LoadBalancingConfig {
     /// AND `tcp_mid_session_retry_budget > 0`; with retry disabled
     /// the ring is never allocated and overflow cannot occur.
     pub tcp_mid_session_retry_overflow_policy: OverflowPolicy,
+    /// Hard upper bound on how long the orchestrator waits for the
+    /// server to emit the v1 Ack-Prefix control frame on a successful
+    /// resume hit. The server's emit happens immediately on resume —
+    /// the only way this fires is a broken network path or a
+    /// misbehaving server, in which case we want to fail fast and
+    /// drop the session rather than block the entire pinned relay.
+    ///
+    /// Default: 5 seconds — comfortably above any reasonable RTT
+    /// (including high-latency satellite + cellular paths) but short
+    /// enough that a stuck session does not pin its own state for an
+    /// observable user-visible delay. Tighter values are valid on
+    /// known-low-RTT deployments; significantly larger values
+    /// indicate the deployment has retry behaviour problems the
+    /// timeout is masking.
+    pub tcp_mid_session_retry_consume_timeout: Duration,
 }
 
 /// Policy for the `tcp_mid_session_retry_overflow_policy` knob.

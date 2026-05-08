@@ -1189,6 +1189,7 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             tcp_mid_session_retry_buffer_bytes: 256 * 1024,
             tcp_mid_session_retry_budget: 1,
             tcp_mid_session_retry_overflow_policy: outline_uplink::OverflowPolicy::Soft,
+            tcp_mid_session_retry_consume_timeout: Duration::from_secs(5),
         },
     )
     .unwrap()

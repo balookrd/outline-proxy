@@ -197,6 +197,8 @@ fn load_balancing_config_from_group(section: &UplinkGroupSection) -> Result<outl
         tcp_mid_session_retry_buffer_bytes: section.tcp_mid_session_retry_buffer_bytes,
         tcp_mid_session_retry_budget: section.tcp_mid_session_retry_budget,
         tcp_mid_session_retry_overflow_policy: section.tcp_mid_session_retry_overflow_policy,
+        tcp_mid_session_retry_consume_timeout_secs: section
+            .tcp_mid_session_retry_consume_timeout_secs,
     };
     load_balancing_config(Some(&shim))
 }

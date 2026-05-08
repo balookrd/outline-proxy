@@ -326,6 +326,11 @@ pub(super) struct UplinkGroupSection {
     /// rest. See the same-named field on `LoadBalancingConfig` for
     /// full semantics.
     pub(super) tcp_mid_session_retry_overflow_policy: Option<outline_uplink::OverflowPolicy>,
+    /// Hard upper bound on how long the orchestrator waits for the
+    /// v1 Ack-Prefix control frame on a successful resume hit.
+    /// Default: 5 seconds. See the same-named field on
+    /// `LoadBalancingConfig` for full semantics.
+    pub(super) tcp_mid_session_retry_consume_timeout_secs: Option<u64>,
     /// Per-group override of top-level `[probe]`; unspecified fields inherit.
     pub(super) probe: Option<ProbeSection>,
 }
@@ -450,4 +455,9 @@ pub(super) struct LoadBalancingSection {
     /// the same-named field on `UplinkGroupSection` for full
     /// semantics. Default: `"soft"`.
     pub(super) tcp_mid_session_retry_overflow_policy: Option<outline_uplink::OverflowPolicy>,
+    /// Hard upper bound on how long the orchestrator waits for the
+    /// v1 Ack-Prefix control frame on a successful resume hit. See
+    /// the same-named field on `UplinkGroupSection` for full
+    /// semantics. Default: `5`.
+    pub(super) tcp_mid_session_retry_consume_timeout_secs: Option<u64>,
 }
