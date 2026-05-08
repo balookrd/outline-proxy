@@ -432,19 +432,53 @@ function prettyProfileName(name) {
   else osLabel = os.charAt(0).toUpperCase() + os.slice(1);
   return `${familyLabel} ${version} ${osLabel}`;
 }
-function fingerprintChip(uplink) {
-  const name = uplink && uplink.fingerprint_profile_name;
+// Shared HTML builder for the fingerprint chip. Both the per-uplink
+// chip (Status column) and the group-level chip (header) render the
+// same shape — colour, glyph, tooltip — so a single helper keeps
+// them in lockstep when the styling shifts.
+function renderFingerprintChip(name, strategy) {
   if (!name) return "";
-  const strategy = uplink.fingerprint_profile_strategy || "";
-  // `random` rotates per dial — colour-code it differently from the
-  // stable variants so an operator can tell at a glance whether the
-  // identity is pinned (blue) or rolling (purple).
   const cls = (strategy === "random" || name === "random") ? "fp-random" : "fp-stable";
   const label = prettyProfileName(name);
   const title = strategy
     ? `fingerprint_profile_name = ${name} · strategy = ${strategy}`
     : `fingerprint_profile_name = ${name}`;
   return `<span class="cfg-chip ${cls}" title="${escapeHtml(title)}"><span>⊛</span><span>${escapeHtml(label)}</span></span>`;
+}
+function fingerprintChip(uplink) {
+  const name = uplink && uplink.fingerprint_profile_name;
+  if (!name) return "";
+  return renderFingerprintChip(name, uplink.fingerprint_profile_strategy || "");
+}
+// `process_stable` / `random` produce one identity for the whole
+// process, so every uplink in the group reports the same name —
+// in that case the per-uplink chip is redundant and the operator
+// gets a single chip in the group header instead. PerHostStable
+// (and any future heterogeneous case) keeps the per-uplink chip
+// because each uplink resolves to its own identity.
+//
+// Returns `true` when *all* uplinks share the same
+// `fingerprint_profile_name` (including all-empty, which means the
+// group is on `none` and no chip is shown anywhere). `false`
+// otherwise — render mode falls back to per-uplink chips.
+function groupFingerprintIsHomogeneous(group) {
+  const uplinks = (group && group.uplinks) || [];
+  if (uplinks.length === 0) return false;
+  const first = uplinks[0] && uplinks[0].fingerprint_profile_name;
+  return uplinks.every(u => ((u && u.fingerprint_profile_name) || undefined) === (first || undefined));
+}
+// Group-header version of the chip. Visible only when all uplinks in
+// the group share the same fingerprint identity (the `process_stable`
+// / `random` case) — in the heterogeneous case the per-uplink chips
+// in the Status column carry the information instead.
+function groupFingerprintChip(group) {
+  const uplinks = (group && group.uplinks) || [];
+  if (uplinks.length === 0) return "";
+  if (!groupFingerprintIsHomogeneous(group)) return "";
+  const first = uplinks[0];
+  const name = first && first.fingerprint_profile_name;
+  if (!name) return ""; // homogeneous-but-all-`none` → nothing to show
+  return renderFingerprintChip(name, (first && first.fingerprint_profile_strategy) || "");
 }
 function protocolLabel(transport) {
   const v = String(transport || "").toLowerCase();
@@ -922,6 +956,11 @@ function renderInstanceBody(panel, instance, groups) {
       const groupCollapsed = state.collapsedGroups.has(groupKey);
       const activeInGroup = (group.uplinks || []).filter(isActive).length;
       const activeProtoChip = activeProtocolChip(group);
+      // Homogeneous fingerprint → one chip in the header; per-uplink
+      // chips suppressed below. Heterogeneous → no header chip,
+      // per-uplink chips render normally.
+      const fpHomogeneous = groupFingerprintIsHomogeneous(group);
+      const groupFpChip = fpHomogeneous ? groupFingerprintChip(group) : "";
       groupEl.className = "group-table" + (groupCollapsed ? " collapsed" : "");
       groupEl.innerHTML = `
         <div class="group-table-head">
@@ -930,7 +969,7 @@ function renderInstanceBody(panel, instance, groups) {
             <span class="group-count">${(group.uplinks || []).length} uplinks</span>
           </div>
           <div class="group-table-meta">
-            <div class="cfg-chips">${groupConfigChips(group)}${activeProtoChip}</div>
+            <div class="cfg-chips">${groupConfigChips(group)}${groupFpChip}${activeProtoChip}</div>
             <span class="cfg-active">${activeInGroup} active</span>
             <span class="collapse-chev">⌃</span>
           </div>
@@ -958,7 +997,7 @@ function renderInstanceBody(panel, instance, groups) {
         row.innerHTML = `
           <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
           <div>${protocolPill(uplink)}${fallbackChainPill(uplink)}</div>
-          <div><span class="status-pill ${rowTone}">${label}</span>${fingerprintChip(uplink)}</div>
+          <div><span class="status-pill ${rowTone}">${label}</span>${fpHomogeneous ? '' : fingerprintChip(uplink)}</div>
           <div class="${legHealth(uplink, 'tcp') === false ? "muted-cell" : ""}">${legHealth(uplink, 'tcp') === false ? "down" : "ok"}</div>
           <div class="${legHealth(uplink, 'udp') === false ? "muted-cell" : ""}">${legHealth(uplink, 'udp') === false ? "down" : "ok"}</div>
           <div class="muted-cell">${weightCell(uplink)}</div>
