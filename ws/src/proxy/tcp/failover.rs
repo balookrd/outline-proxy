@@ -377,6 +377,14 @@ pub(super) async fn redial_for_mid_session_retry(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
     target: &TargetAddr,
+    // v2 Symmetric Downlink Replay parameters. When
+    // `symmetric_replay_enabled` is `true`, the redial advertises
+    // `X-Outline-Resume-Symmetric-Replay: 1` and reports
+    // `client_acked_offset` via the
+    // `X-Outline-Resume-Down-Acked` request header so the server can
+    // emit a precise downlink replay slice on the resume hit.
+    symmetric_replay_enabled: bool,
+    client_acked_offset: u64,
 ) -> Result<ConnectedTcpUplink> {
     if !matches!(
         candidate.uplink.transport,
@@ -390,9 +398,19 @@ pub(super) async fn redial_for_mid_session_retry(
         );
     }
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
-    let ws = uplinks
-        .connect_tcp_ws_fresh_with_ack_prefix(candidate, "socks_tcp_retry")
-        .await?;
+    let ws = if symmetric_replay_enabled {
+        uplinks
+            .connect_tcp_ws_fresh_with_symmetric_replay(
+                candidate,
+                "socks_tcp_retry",
+                client_acked_offset,
+            )
+            .await?
+    } else {
+        uplinks
+            .connect_tcp_ws_fresh_with_ack_prefix(candidate, "socks_tcp_retry")
+            .await?
+    };
     let setup = WireSetup::from_uplink(&candidate.uplink);
     let (writer, reader) =
         do_tcp_ss_setup(ws, &setup, target, "socks_tcp_retry", keepalive_interval).await?;
@@ -628,6 +646,7 @@ async fn do_tcp_ss_setup(
     // this bit on by re-dialling with `ack_prefix_requested = true`;
     // the initial dial leaves it `false`.
     let expect_ack_prefix = ws_stream.ack_prefix_advertised_by_server();
+    let expect_downlink_replay = ws_stream.symmetric_replay_advertised_by_server();
 
     if setup.transport == UplinkTransport::Vless {
         let uuid = setup
@@ -648,7 +667,9 @@ async fn do_tcp_ss_setup(
             protocol = "vless",
             "opened VLESS uplink"
         );
-        let reader = TcpReader::Vless(reader).with_expect_ack_prefix(expect_ack_prefix);
+        let reader = TcpReader::Vless(reader)
+            .with_expect_ack_prefix(expect_ack_prefix)
+            .with_expect_downlink_replay(expect_downlink_replay);
         return Ok((TcpWriter::Vless(writer), reader));
     }
 
@@ -662,7 +683,8 @@ async fn do_tcp_ss_setup(
     let reader = TcpReader::Ws(reader)
         .with_request_salt(writer.request_salt())
         .with_diag(diag)
-        .with_expect_ack_prefix(expect_ack_prefix);
+        .with_expect_ack_prefix(expect_ack_prefix)
+        .with_expect_downlink_replay(expect_downlink_replay);
     send_initial_ss_target(&mut writer, setup, target, "ws").await?;
     Ok((writer, reader))
 }

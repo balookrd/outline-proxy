@@ -12,7 +12,7 @@ use outline_metrics as metrics;
 use outline_transport::TcpWriter;
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 
-use outline_uplink::{TransportKind, UplinkManager, UplinkTransport};
+use outline_uplink::{OverflowPolicy, TransportKind, UplinkManager, UplinkTransport};
 
 use super::super::failover::{
     ActiveTcpUplink, ConnectedTcpUplink, redial_for_mid_session_retry,
@@ -105,6 +105,8 @@ pub(super) async fn run_relay(
     let configured_budget = lb_snapshot.tcp_mid_session_retry_budget;
     let overflow_policy = lb_snapshot.tcp_mid_session_retry_overflow_policy;
     let consume_timeout = lb_snapshot.tcp_mid_session_retry_consume_timeout;
+    let symmetric_replay_enabled = lb_snapshot.tcp_symmetric_replay_enabled;
+    let symmetric_replay_max_bytes = lb_snapshot.tcp_symmetric_replay_max_bytes;
     let keepalive_interval = lb_snapshot.tcp_active_keepalive_interval;
     // Mid-session retry operates on WS-family uplinks (SS-WS and
     // VLESS-WS as of v1.1) — the SS-direct-socket path bypasses the
@@ -409,17 +411,27 @@ pub(super) async fn run_relay(
                     "mid-session transport reset; attempting Ack-Prefix retry"
                 );
 
-                let connected = match try_mid_session_retry(
+                // Snapshot the v2 offset BEFORE the redial — this
+                // is the count of downstream bytes the SOCKS5 client
+                // has observed across the whole session lifetime; the
+                // server uses it to compute `replay_from(offset)` on
+                // its parked downlink ring.
+                let client_acked_now = client_acked_offset.load(std::sync::atomic::Ordering::Relaxed);
+                let (connected, downlink_replay) = match try_mid_session_retry(
                     &uplinks,
                     &active_name,
                     &candidate,
                     &target,
                     ring.as_deref(),
                     consume_timeout,
+                    symmetric_replay_enabled,
+                    symmetric_replay_max_bytes,
+                    client_acked_now,
+                    overflow_policy,
                 )
                 .await
                 {
-                    Ok(connected) => connected,
+                    Ok(result) => result,
                     Err(retry_err) => {
                         warn!(
                             uplink = %active_name,
@@ -439,14 +451,18 @@ pub(super) async fn run_relay(
                 );
                 debug!(
                     uplink = %active_name,
+                    v2_replay_bytes = downlink_replay.as_ref().map(Vec::len),
                     "mid-session retry succeeded; resuming relay on fresh transport"
                 );
                 let ConnectedTcpUplink { writer: new_writer, reader: new_reader, .. } = connected;
                 writer = new_writer;
                 reader = new_reader;
-                // No first_chunk on subsequent iterations — the replay
-                // covers the uplink side; the downlink simply continues
-                // reading from the new transport.
+                // v2 replay payload (when the server emitted one)
+                // becomes the next iteration's `first_chunk_for_iter`
+                // so the downlink task flushes it to the SOCKS5
+                // client BEFORE pulling fresh upstream bytes — this
+                // is what closes the downstream byte-loss gap.
+                first_chunk_for_iter = downlink_replay;
                 continue;
             },
         }
@@ -492,10 +508,22 @@ async fn try_mid_session_retry(
     target: &TargetAddr,
     ring: Option<&Mutex<ClientUpstreamRingBuffer>>,
     consume_timeout: Duration,
-) -> Result<ConnectedTcpUplink> {
+    symmetric_replay_enabled: bool,
+    symmetric_replay_max_bytes: usize,
+    client_acked_offset: u64,
+    overflow_policy: OverflowPolicy,
+) -> Result<(ConnectedTcpUplink, Option<Vec<u8>>)> {
     let group_name = uplinks.group_name();
 
-    let mut connected = match redial_for_mid_session_retry(uplinks, candidate, target).await {
+    let mut connected = match redial_for_mid_session_retry(
+        uplinks,
+        candidate,
+        target,
+        symmetric_replay_enabled,
+        client_acked_offset,
+    )
+    .await
+    {
         Ok(c) => c,
         Err(e) => {
             metrics::record_mid_session_retry("tcp", group_name, active_name, "failed_redial");
@@ -580,7 +608,68 @@ async fn try_mid_session_retry(
         }
     }
 
-    Ok(connected)
+    // v2 Symmetric Downlink Replay: when the server echoed v2 on the
+    // resume hit, drive the v2 frame consume here AFTER the v1
+    // consume has parked the up_acked offset. Returns the replay
+    // payload (or `None` when v2 was not negotiated / collapsed to
+    // off / overflow_policy = soft on truncation).
+    let downlink_replay_payload = match connected
+        .reader
+        .consume_downlink_replay_with_timeout(consume_timeout, symmetric_replay_max_bytes)
+        .await
+    {
+        Ok(None) => None,
+        Ok(Some(outline_transport::downlink_replay::DownlinkReplayOutcome::Replay(payload))) => {
+            metrics::add_bytes(
+                "tcp",
+                "downlink_replay",
+                group_name,
+                active_name,
+                payload.len(),
+            );
+            if payload.is_empty() {
+                None
+            } else {
+                Some(payload)
+            }
+        },
+        Ok(Some(outline_transport::downlink_replay::DownlinkReplayOutcome::Truncated)) => {
+            metrics::record_mid_session_retry(
+                "tcp",
+                group_name,
+                active_name,
+                "downlink_truncated",
+            );
+            match overflow_policy {
+                OverflowPolicy::Hard => {
+                    return Err(anyhow!(
+                        "mid-session retry: server signalled REPLAY_TRUNCATED on v2 \
+                         downlink replay; tcp_mid_session_retry_overflow_policy = \"hard\" \
+                         drops the session"
+                    ));
+                },
+                OverflowPolicy::Soft => {
+                    warn!(
+                        uplink = %active_name,
+                        client_acked_offset,
+                        "v2 downlink replay truncated by server ring; downstream stream has \
+                         an irrecoverable gap, continuing under overflow_policy = soft"
+                    );
+                    None
+                },
+            }
+        },
+        Err(e) => {
+            metrics::record_mid_session_retry("tcp", group_name, active_name, "failed_redial");
+            return Err(e.context(
+                "mid-session retry: server negotiated v2 Symmetric Downlink Replay but did \
+                 not emit a valid frame within the timeout",
+            ));
+        },
+    };
+    let _ = symmetric_replay_enabled; // currently informational; gated on echo
+
+    Ok((connected, downlink_replay_payload))
 }
 
 /// Sends the buffered uplink tail through the freshly-redialed writer.
