@@ -331,6 +331,114 @@ fn render_prometheus_clears_previous_global_active_uplink() {
     ));
 }
 
+#[test]
+fn render_prometheus_exports_mode_downgrade_state() {
+    let _guard = test_guard();
+    init();
+
+    let mut uplink = snapshot_uplink("nuxt");
+    uplink.h3_tcp_downgrade_until_ms = Some(45_000);
+    uplink.tcp_mode_capped_to = Some("xhttp_h2".to_string());
+
+    let rendered = render_prometheus(&[UplinkManagerSnapshot {
+        group: "main".to_string(),
+        generated_at_unix_ms: 0,
+        load_balancing_mode: "active_passive".to_string(),
+        routing_scope: "global".to_string(),
+        global_active_uplink: None,
+        global_active_reason: None,
+        tcp_active_uplink: None,
+        tcp_active_reason: None,
+        udp_active_uplink: None,
+        udp_active_reason: None,
+        uplinks: vec![uplink],
+        sticky_routes: Vec::new(),
+        auto_failback: false,
+    }])
+    .expect("render metrics");
+
+    assert!(
+        rendered.contains(
+            "outline_ws_rust_uplink_mode_downgrade_remaining_seconds{group=\"main\",transport=\"tcp\",uplink=\"nuxt\"}",
+        ),
+        "remaining_seconds gauge missing in:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "outline_ws_rust_uplink_mode_downgrade_capped_to_info{group=\"main\",mode=\"xhttp_h2\",transport=\"tcp\",uplink=\"nuxt\"} 1",
+        ),
+        "active cap label not set to 1 in:\n{rendered}"
+    );
+    // Spot-check that two unrelated mode labels are emitted at 0 — without
+    // a stable zero-fill the dashboard cannot tell "no cap" apart from "scrape
+    // missed".
+    assert!(
+        rendered.contains(
+            "outline_ws_rust_uplink_mode_downgrade_capped_to_info{group=\"main\",mode=\"ws_h3\",transport=\"tcp\",uplink=\"nuxt\"} 0",
+        ),
+        "non-active cap label not zeroed in:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "outline_ws_rust_uplink_mode_downgrade_capped_to_info{group=\"main\",mode=\"quic\",transport=\"tcp\",uplink=\"nuxt\"} 0",
+        ),
+        "non-active cap label not zeroed in:\n{rendered}"
+    );
+}
+
+#[test]
+fn render_prometheus_clears_previous_mode_downgrade_window() {
+    let _guard = test_guard();
+    init();
+
+    let mut downgraded = snapshot_uplink("nuxt");
+    downgraded.h3_tcp_downgrade_until_ms = Some(30_000);
+    downgraded.tcp_mode_capped_to = Some("xhttp_h2".to_string());
+
+    render_prometheus(&[UplinkManagerSnapshot {
+        group: "main".to_string(),
+        generated_at_unix_ms: 0,
+        load_balancing_mode: "active_passive".to_string(),
+        routing_scope: "global".to_string(),
+        global_active_uplink: None,
+        global_active_reason: None,
+        tcp_active_uplink: None,
+        tcp_active_reason: None,
+        udp_active_uplink: None,
+        udp_active_reason: None,
+        uplinks: vec![downgraded],
+        sticky_routes: Vec::new(),
+        auto_failback: false,
+    }])
+    .expect("render first metrics");
+
+    let rendered = render_prometheus(&[UplinkManagerSnapshot {
+        group: "main".to_string(),
+        generated_at_unix_ms: 0,
+        load_balancing_mode: "active_passive".to_string(),
+        routing_scope: "global".to_string(),
+        global_active_uplink: None,
+        global_active_reason: None,
+        tcp_active_uplink: None,
+        tcp_active_reason: None,
+        udp_active_uplink: None,
+        udp_active_reason: None,
+        uplinks: vec![snapshot_uplink("nuxt")],
+        sticky_routes: Vec::new(),
+        auto_failback: false,
+    }])
+    .expect("render second metrics");
+
+    assert!(
+        !rendered.contains("outline_ws_rust_uplink_mode_downgrade_remaining_seconds{"),
+        "remaining_seconds series should be cleared after window expires:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("outline_ws_rust_uplink_mode_downgrade_capped_to_info{"),
+        "capped_to_info series should be cleared after window expires:\n{rendered}"
+    );
+}
+
 #[cfg(feature = "tun")]
 #[test]
 fn init_exports_zero_value_tun_udp_forward_error_series() {

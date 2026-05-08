@@ -110,6 +110,8 @@ pub(super) struct UplinkFields {
     pub(super) uplink_standby_ready: IntGaugeVec,
     pub(super) uplink_active_wire_index: IntGaugeVec,
     pub(super) uplink_active_wire_pin_remaining_seconds: GaugeVec,
+    pub(super) uplink_mode_downgrade_remaining_seconds: GaugeVec,
+    pub(super) uplink_mode_downgrade_capped_to_info: IntGaugeVec,
     pub(super) uplink_configured_fallbacks_count: IntGaugeVec,
     pub(super) selection_mode_info: IntGaugeVec,
     pub(super) routing_scope_info: IntGaugeVec,
@@ -287,6 +289,28 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         "Number of fallback transports declared under `[[outline.uplinks.fallbacks]]` for this uplink. Identity-level (no transport label).",
         ["group", "uplink"]
     );
+    let uplink_mode_downgrade_remaining_seconds = register_labeled!(
+        registry,
+        GaugeVec,
+        "outline_ws_rust_uplink_mode_downgrade_remaining_seconds",
+        "Seconds remaining on the per-uplink mode-downgrade window for this transport. \
+         Visible only while a window is active (runtime-failure / probe-failure / \
+         silent-fallback have set or extended `mode_downgrade_until`); the metric \
+         is cleared once the window expires. Manual switch via the control plane \
+         resets this to 0 instantly.",
+        ["group", "transport", "uplink"]
+    );
+    let uplink_mode_downgrade_capped_to_info = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_rust_uplink_mode_downgrade_capped_to_info",
+        "Family-aware ceiling carrier the dispatcher returns from `effective_*_mode` \
+         while the per-uplink mode-downgrade window is active. The label `mode` \
+         carries the capped carrier (one of `ws_h2`, `ws_h1`, `xhttp_h2`, `xhttp_h1`, \
+         `quic`); the gauge is 1 on the active cap and 0 on every other mode. All \
+         labels are 0 when no cap is set.",
+        ["group", "transport", "uplink", "mode"]
+    );
     let selection_mode_info = register_labeled!(
         registry,
         IntGaugeVec,
@@ -352,6 +376,8 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_standby_ready,
         uplink_active_wire_index,
         uplink_active_wire_pin_remaining_seconds,
+        uplink_mode_downgrade_remaining_seconds,
+        uplink_mode_downgrade_capped_to_info,
         uplink_configured_fallbacks_count,
         selection_mode_info,
         routing_scope_info,

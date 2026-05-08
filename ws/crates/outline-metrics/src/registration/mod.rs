@@ -53,6 +53,8 @@ impl Metrics {
             uplink_standby_ready: u.uplink_standby_ready,
             uplink_active_wire_index: u.uplink_active_wire_index,
             uplink_active_wire_pin_remaining_seconds: u.uplink_active_wire_pin_remaining_seconds,
+            uplink_mode_downgrade_remaining_seconds: u.uplink_mode_downgrade_remaining_seconds,
+            uplink_mode_downgrade_capped_to_info: u.uplink_mode_downgrade_capped_to_info,
             uplink_configured_fallbacks_count: u.uplink_configured_fallbacks_count,
             selection_mode_info: u.selection_mode_info,
             routing_scope_info: u.routing_scope_info,
