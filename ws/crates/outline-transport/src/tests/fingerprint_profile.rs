@@ -244,6 +244,25 @@ fn select_with_process_stable_returns_same_profile_across_hosts() {
 }
 
 #[test]
+fn read_hostname_returns_something_on_typical_systems() {
+    // The seed source for ProcessStable across restarts. Linux /
+    // macOS / Windows test runners always have a hostname set —
+    // `gethostname(2)` returns the current value; an empty result
+    // would silently push ProcessStable into the per-restart-random
+    // fallback, which is what we want to catch.
+    //
+    // Container CI without a hostname IS possible (e.g.
+    // `docker run --hostname=""`), in which case the assertion
+    // would fail meaningfully — operators should explicitly set a
+    // hostname there for stability. Local dev never hits that.
+    let h = crate::fingerprint_profile::read_hostname()
+        .expect("gethostname must succeed on the test runner");
+    assert!(!h.is_empty(), "hostname should not be empty");
+    // Sanity: trimmed string, no embedded NULs.
+    assert!(!h.contains('\0'), "hostname must be NUL-trimmed: {h:?}");
+}
+
+#[test]
 fn select_with_process_stable_is_idempotent_within_process() {
     // Repeated calls within one process must hit the cached
     // OnceLock-backed index — calling twice in a row must not flip

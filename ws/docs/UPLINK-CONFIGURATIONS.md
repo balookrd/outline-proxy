@@ -791,12 +791,18 @@ Two stable strategies are offered. **`process_stable` (the
 recommended default)** picks one identity at process start and uses
 it for every dial regardless of which uplink fires — matching how a
 real user with a single browser appears to an on-path observer:
-one source IP, one User-Agent. Pick is seeded from `$HOSTNAME` /
-`%COMPUTERNAME%` when available, so identity stays stable across
-restarts on the same machine; in container / sandbox environments
-without a hostname the seed falls back to a fresh `rand` pick at
-process start (still stable for the duration of the process,
-rotates on restart).
+one source IP, one User-Agent. The pick is seeded from the OS-level
+hostname (`gethostname(2)` on Unix, `%COMPUTERNAME%` from the
+process environment on Windows), so identity stays stable across
+restarts on the same machine. In containers / sandboxes started
+without an explicit hostname (`docker run --hostname=""`,
+`unshare --uts /bin/sh -c …` and friends), the syscall returns no
+useful value and the seed falls back to a fresh `rand` pick at
+process start — still stable for the duration of the process,
+rotates on restart. Operators who want a deterministic identity in
+a container should pass `--hostname` (Docker), `Hostname=` (systemd)
+or the equivalent runtime knob; reading the shell variable
+`$HOSTNAME` will *not* work because daemons don't inherit it.
 
 `per_host_stable` is the legacy peer-split: profile is hashed from
 `(host, port)`, so each peer sees one consistent identity but
