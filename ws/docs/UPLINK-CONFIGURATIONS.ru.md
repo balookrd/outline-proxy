@@ -855,7 +855,25 @@ init_fingerprint_profile_strategy(FingerprintProfileStrategy::PerHostStable);
 Метрика отражает **эффективную** стратегию: per-uplink override
 если задан, иначе глобальный дефолт. Та же строка доступна в JSON
 с `/snapshot` как поле `fingerprint_profile_strategy` у каждого
-аплинка.
+аплинка — поле опускается из JSON, когда стратегия равна `none`,
+поэтому старые snapshot-консьюмеры получают ту же форму, что и до
+появления этого ключа.
+
+В пакетной Grafana-дашборде есть stat-панель **«Fingerprint
+Strategy»** в верхней строке статуса рядом с `Selection Mode`,
+`Routing Scope` и `Active Uplink`. Каждая ячейка показывает, сколько
+аплинков в выбранном фильтре `group` сейчас на каждой стратегии;
+пустые ячейки серые, так что активное распределение видно сразу.
+
+Встроенный HTML-дашборд control-plane'а рисует per-uplink чип
+с надписью `FP: Stable` (синий) или `FP: Random` (фиолетовый)
+рядом с протокол-pill в каждой строке аплинка, у которого
+эффективная стратегия не дефолтная. Аплинки на `none` чипа не
+получают — типичный opt-out-deployment визуально не меняется.
+Tooltip чипа несёт сырой lowercase-токен
+(`fingerprint_profile_strategy = per_host_stable`), чтобы оператор
+сразу мог сопоставить значение с Prometheus-лейблом и
+snapshot-полем без перевода между формами.
 
 ### Per-uplink override
 

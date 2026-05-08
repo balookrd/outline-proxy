@@ -1336,6 +1336,71 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Effective browser-fingerprint diversification strategy by uplink count. `strategy` label is one of `none`, `per_host_stable`, `random` and reflects the per-uplink override when set, otherwise the process-wide default from `--fingerprint-profile` / top-level `fingerprint_profile`. Each cell shows how many uplinks in the selected group(s) currently sit on that strategy. If the binary was launched without `init_fingerprint_profile_strategy` the entire population reads `none`.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "rgba(120, 120, 120, 0.45)",
+                "value": null
+              },
+              {
+                "color": "#33A02C",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 18,
+        "y": 29
+      },
+      "id": 213,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace(sum by (instance, strategy) (outline_ws_rust_uplink_fingerprint_profile_strategy_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "instant": true,
+          "legendFormat": "{{instance_short}} {{strategy}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Fingerprint Strategy",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
           "color": {
