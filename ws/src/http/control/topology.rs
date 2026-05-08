@@ -155,6 +155,19 @@ struct ControlUplinkTopology {
     /// primary, in ms. `None` when the primary is active or no pin is in flight.
     tcp_active_wire_pin_remaining_ms: Option<u128>,
     udp_active_wire_pin_remaining_ms: Option<u128>,
+    /// Effective browser-fingerprint diversification strategy on this
+    /// uplink (per-uplink override if set, otherwise process-wide default).
+    /// Lowercase snake_case: `none` / `per_host_stable` / `random`. The
+    /// dashboard renders a chip when the value is non-default; the field
+    /// is omitted from JSON when it equals `none` so older snapshot
+    /// consumers (and the common opt-out deployment) keep the same wire
+    /// shape they had before this field landed.
+    #[serde(skip_serializing_if = "is_none_strategy")]
+    fingerprint_profile_strategy: String,
+}
+
+fn is_none_strategy(s: &str) -> bool {
+    s == "none"
 }
 
 /// Resolve the effective submode for one direction. Returns the
@@ -350,6 +363,7 @@ fn build_uplink_topology(
         udp_active_wire: uplink.udp_active_wire,
         tcp_active_wire_pin_remaining_ms: uplink.tcp_active_wire_pin_remaining_ms,
         udp_active_wire_pin_remaining_ms: uplink.udp_active_wire_pin_remaining_ms,
+        fingerprint_profile_strategy: uplink.fingerprint_profile_strategy.clone(),
     }
 }
 

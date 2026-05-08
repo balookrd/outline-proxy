@@ -846,7 +846,27 @@ points at a snapshot-pipeline bug, not at the feature being off.
 The series reflects the **effective** strategy: per-uplink override
 when set, otherwise the process-wide default. The same string is
 available on the `/snapshot` control endpoint as the
-`fingerprint_profile_strategy` field on each uplink entry.
+`fingerprint_profile_strategy` field on each uplink entry — the field
+is omitted from the JSON when the strategy resolves to `none`, so
+older snapshot consumers see the same wire shape they had before
+this knob landed.
+
+The bundled Grafana dashboard ships a stat panel **"Fingerprint
+Strategy"** in the top-status row alongside `Selection Mode`,
+`Routing Scope`, and `Active Uplink`. Each cell shows how many uplinks
+in the selected `group` filter currently sit on each strategy bucket;
+zero buckets stay greyed-out so the active distribution reads at a
+glance.
+
+The bundled HTML control-plane dashboard renders a per-uplink chip
+labelled `FP: Stable` (blue) or `FP: Random` (purple) next to the
+protocol pill on every row whose effective strategy is non-default.
+Uplinks on `none` get no chip — the common opt-out deployment stays
+visually unchanged. The chip's tooltip carries the raw lowercase
+token (`fingerprint_profile_strategy = per_host_stable`) so an
+operator looking at the dashboard can correlate immediately with the
+Prometheus label and the snapshot JSON without translating between
+forms.
 
 ### Per-uplink override
 

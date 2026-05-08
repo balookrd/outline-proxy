@@ -171,6 +171,8 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .cfg-chip.scope { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
 .cfg-chip.fb-on { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
 .cfg-chip.fb-off { background: var(--gray-soft); color: var(--muted); border-color: var(--line); }
+.cfg-chip.fp-stable { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
+.cfg-chip.fp-random { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
 .cfg-active { color: var(--green-strong); font-weight: 600; white-space: nowrap; }
 .rows { width: 100%; }
 .rows-head,.row { display: grid; grid-template-columns: minmax(120px, 1.3fr) minmax(90px, .9fr) minmax(90px, .8fr) minmax(90px, .8fr) minmax(80px, .7fr) minmax(80px, .7fr) minmax(120px, 1fr) 100px; gap: 12px; align-items: center; padding: 13px 18px; }
@@ -402,6 +404,22 @@ function groupConfigChips(group) {
     <span class="cfg-chip mode" title="load_balancing_mode"><span>⚖</span><span class="cfg-key">Mode:</span><span>${escapeHtml(mode)}</span></span>
     <span class="cfg-chip scope" title="routing_scope"><span>⌘</span><span class="cfg-key">Scope:</span><span>${escapeHtml(scope)}</span></span>
     <span class="cfg-chip ${fbCls}" title="auto_failback"><span>↺</span><span class="cfg-key">Auto-failback:</span><span>${fbLabel}</span></span>`;
+}
+// Render a small chip describing the **effective** browser-fingerprint
+// strategy for an uplink — visible only when the strategy is non-default
+// (`per_host_stable` or `random`). The `none` case is hidden so the
+// row stays readable for the common deployment that has not opted in.
+// `snapshot.fingerprint_profile_strategy` is always lowercase
+// snake_case (see `outline_transport::fingerprint_profile::Strategy::as_str`)
+// and may be absent on stale snapshots — both `undefined` and `"none"`
+// suppress the chip.
+function fingerprintChip(uplink) {
+  const strategy = uplink && uplink.fingerprint_profile_strategy;
+  if (!strategy || strategy === "none") return "";
+  const cls = strategy === "random" ? "fp-random" : "fp-stable";
+  const label = strategy === "random" ? "Random" : "Stable";
+  const title = `fingerprint_profile_strategy = ${strategy}`;
+  return `<span class="cfg-chip ${cls}" title="${escapeHtml(title)}"><span>⊛</span><span class="cfg-key">FP:</span><span>${escapeHtml(label)}</span></span>`;
 }
 function protocolLabel(transport) {
   const v = String(transport || "").toLowerCase();
@@ -914,7 +932,7 @@ function renderInstanceBody(panel, instance, groups) {
         row.className = "row";
         row.innerHTML = `
           <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
-          <div>${protocolPill(uplink)}${fallbackChainPill(uplink)}</div>
+          <div>${protocolPill(uplink)}${fallbackChainPill(uplink)}${fingerprintChip(uplink)}</div>
           <div><span class="status-pill ${rowTone}">${label}</span></div>
           <div class="${legHealth(uplink, 'tcp') === false ? "muted-cell" : ""}">${legHealth(uplink, 'tcp') === false ? "down" : "ok"}</div>
           <div class="${legHealth(uplink, 'udp') === false ? "muted-cell" : ""}">${legHealth(uplink, 'udp') === false ? "down" : "ok"}</div>

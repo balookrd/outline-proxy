@@ -225,7 +225,11 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_active_wire: 0,
                 tcp_active_wire_pin_remaining_ms: Some(7_500),
                 udp_active_wire_pin_remaining_ms: None,
-                fingerprint_profile_strategy: "none".to_string(),
+                // Pin a non-default strategy on this uplink so the
+                // topology test can check both the "field omitted on
+                // none" and "field present on non-default" branches in
+                // the same fixture.
+                fingerprint_profile_strategy: "per_host_stable".to_string(),
             },
         ],
         sticky_routes: vec![StickyRouteSnapshot {
@@ -330,6 +334,37 @@ fn topology_serialization_shape_has_active_flags() {
     let u0 = &json["instance"]["groups"][0]["uplinks"][0];
     assert_eq!(u0["configured_fallbacks"], serde_json::json!([]));
     assert_eq!(u0["tcp_active_wire"], 0);
+}
+
+#[test]
+fn topology_omits_fingerprint_profile_strategy_when_default() {
+    // The first fixture uplink reads `none` (default), so the JSON for
+    // it must NOT carry the field at all — `skip_serializing_if` keeps
+    // the wire shape backward-compatible for older snapshot consumers
+    // that don't yet know about fingerprint diversification.
+    let topology = ControlTopologyResponse {
+        instance: build_instance_topology(&snapshot_fixture()),
+    };
+    let json: Value = serde_json::to_value(topology).unwrap();
+    let u0 = &json["instance"]["groups"][0]["uplinks"][0];
+    assert!(
+        u0.get("fingerprint_profile_strategy").is_none(),
+        "default `none` strategy must not be serialised; got {u0}",
+    );
+}
+
+#[test]
+fn topology_serialises_non_default_fingerprint_profile_strategy() {
+    // The second fixture uplink pins `per_host_stable`, so the field
+    // must show up verbatim — the dashboard's `fingerprintChip` keys
+    // on this exact lowercase token, and the Prometheus label uses
+    // the same string, so renaming a variant is detected here.
+    let topology = ControlTopologyResponse {
+        instance: build_instance_topology(&snapshot_fixture()),
+    };
+    let json: Value = serde_json::to_value(topology).unwrap();
+    let u1 = &json["instance"]["groups"][0]["uplinks"][1];
+    assert_eq!(u1["fingerprint_profile_strategy"], "per_host_stable");
 }
 
 #[test]
