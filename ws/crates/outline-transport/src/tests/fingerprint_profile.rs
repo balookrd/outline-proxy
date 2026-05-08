@@ -170,13 +170,34 @@ fn strategy_from_str_accepts_documented_aliases() {
     assert_eq!(Strategy::from_str("off").unwrap(), Strategy::None);
     assert_eq!(Strategy::from_str("none").unwrap(), Strategy::None);
     assert_eq!(Strategy::from_str("DISABLED").unwrap(), Strategy::None);
-    assert_eq!(Strategy::from_str("stable").unwrap(), Strategy::PerHostStable);
+    // The bare `stable` alias intentionally maps to ProcessStable —
+    // that's the safer recommended default, and operators carrying
+    // older configs get the better behaviour automatically. Those
+    // who *specifically* want the per-host split must spell
+    // `per_host_stable` in full.
+    assert_eq!(Strategy::from_str("stable").unwrap(), Strategy::ProcessStable);
+    assert_eq!(
+        Strategy::from_str("process").unwrap(),
+        Strategy::ProcessStable,
+    );
+    assert_eq!(
+        Strategy::from_str("process_stable").unwrap(),
+        Strategy::ProcessStable,
+    );
+    assert_eq!(
+        Strategy::from_str("process-stable").unwrap(),
+        Strategy::ProcessStable,
+    );
     assert_eq!(
         Strategy::from_str("per_host_stable").unwrap(),
         Strategy::PerHostStable,
     );
     assert_eq!(
         Strategy::from_str("per-host-stable").unwrap(),
+        Strategy::PerHostStable,
+    );
+    assert_eq!(
+        Strategy::from_str("per-host").unwrap(),
         Strategy::PerHostStable,
     );
     assert_eq!(Strategy::from_str("random").unwrap(), Strategy::Random);
@@ -194,14 +215,47 @@ fn strategy_as_str_round_trips_through_from_str() {
     // alias all use this exact set. Renaming a variant here is a
     // breaking change for the Prometheus consumer, so the round-trip
     // test fails if the canonical token drifts.
-    for s in [Strategy::None, Strategy::PerHostStable, Strategy::Random] {
+    for s in Strategy::ALL.iter().copied() {
         let parsed = Strategy::from_str(s.as_str())
             .unwrap_or_else(|e| panic!("{} did not round-trip: {e}", s.as_str()));
         assert_eq!(parsed, s);
     }
     assert_eq!(Strategy::None.as_str(), "none");
     assert_eq!(Strategy::PerHostStable.as_str(), "per_host_stable");
+    assert_eq!(Strategy::ProcessStable.as_str(), "process_stable");
     assert_eq!(Strategy::Random.as_str(), "random");
+}
+
+#[test]
+fn select_with_process_stable_returns_same_profile_across_hosts() {
+    // ProcessStable is the whole-process identity strategy: all
+    // dials in this binary, regardless of dial URL, must land on
+    // the same profile — that's the entire point compared to
+    // PerHostStable, where a single source IP would otherwise leak
+    // multiple browser identities to a global on-path observer.
+    let url_a: Url = "wss://aeza.example.com/SECRET/tcp".parse().unwrap();
+    let url_b: Url = "wss://senko.example.com:8443/different/path".parse().unwrap();
+    let url_c: Url = "https://nuxt.example.com:443/xhttp".parse().unwrap();
+    let pa = select_with_strategy(&url_a, Strategy::ProcessStable).unwrap();
+    let pb = select_with_strategy(&url_b, Strategy::ProcessStable).unwrap();
+    let pc = select_with_strategy(&url_c, Strategy::ProcessStable).unwrap();
+    assert_eq!(pa.name, pb.name);
+    assert_eq!(pa.name, pc.name);
+}
+
+#[test]
+fn select_with_process_stable_is_idempotent_within_process() {
+    // Repeated calls within one process must hit the cached
+    // OnceLock-backed index — calling twice in a row must not flip
+    // the picked profile. (Tests can't validate cross-process
+    // stability, only within-process; the cross-restart guarantee
+    // is documented behaviour driven by `$HOSTNAME` seeding.)
+    let url: Url = "wss://example.com/SECRET/tcp".parse().unwrap();
+    let first = select_with_strategy(&url, Strategy::ProcessStable).unwrap();
+    for _ in 0..16 {
+        let again = select_with_strategy(&url, Strategy::ProcessStable).unwrap();
+        assert_eq!(first.name, again.name);
+    }
 }
 
 #[test]

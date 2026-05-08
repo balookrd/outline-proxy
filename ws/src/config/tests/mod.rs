@@ -1160,7 +1160,15 @@ fn config_deserialises_fingerprint_profile_aliases() {
         ("\"off\"", Fp::None),
         ("\"none\"", Fp::None),
         ("\"disabled\"", Fp::None),
-        ("\"stable\"", Fp::PerHostStable),
+        // `stable` shorthand now points at the safer ProcessStable —
+        // operators carrying older configs get the better behaviour
+        // automatically. The `per_host_*` aliases keep the legacy
+        // semantics for callers who specifically want the per-peer
+        // split (rare; should be discouraged in docs).
+        ("\"stable\"", Fp::ProcessStable),
+        ("\"process\"", Fp::ProcessStable),
+        ("\"process_stable\"", Fp::ProcessStable),
+        ("\"process-stable\"", Fp::ProcessStable),
         ("\"per_host_stable\"", Fp::PerHostStable),
         ("\"per-host-stable\"", Fp::PerHostStable),
         ("\"per-host\"", Fp::PerHostStable),
@@ -1212,7 +1220,9 @@ async fn load_config_threads_fingerprint_profile_into_app_config() {
 
     let args = super::Args::parse_from(["test"]);
     let config = load_config(&path, &args).await.unwrap();
-    assert_eq!(config.fingerprint_profile, Fp::PerHostStable);
+    // `stable` is now the alias for `process_stable` — the safer
+    // single-identity-per-process default.
+    assert_eq!(config.fingerprint_profile, Fp::ProcessStable);
 }
 
 #[tokio::test]
@@ -1263,7 +1273,7 @@ async fn load_config_threads_per_uplink_fingerprint_profile_override() {
         tcp_mode = "h2"
         method = "chacha20-ietf-poly1305"
         password = "Secret0"
-        fingerprint_profile = "stable"
+        fingerprint_profile = "per_host_stable"
 
         [[outline.uplinks]]
         name = "xray-shaped"
@@ -1292,6 +1302,9 @@ async fn load_config_threads_per_uplink_fingerprint_profile_override() {
     let config = load_config(&path, &args).await.unwrap();
     let uplinks = &config.groups[0].uplinks;
     assert_eq!(uplinks.len(), 3);
+    // `per_host_stable` spelled out in full keeps the legacy
+    // peer-split behaviour; the bare `stable` shorthand would
+    // resolve to the new ProcessStable default instead.
     assert_eq!(uplinks[0].fingerprint_profile, Some(Fp::PerHostStable));
     assert_eq!(uplinks[1].fingerprint_profile, Some(Fp::None));
     assert_eq!(
@@ -1352,5 +1365,7 @@ async fn cli_fingerprint_profile_applies_when_top_level_key_is_missing() {
 
     let args = super::Args::parse_from(["test", "--fingerprint-profile", "stable"]);
     let config = load_config(&path, &args).await.unwrap();
-    assert_eq!(config.fingerprint_profile, Fp::PerHostStable);
+    // `stable` on the CLI follows the same alias rules as the TOML
+    // key — and `stable` is now ProcessStable, not PerHostStable.
+    assert_eq!(config.fingerprint_profile, Fp::ProcessStable);
 }

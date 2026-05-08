@@ -45,9 +45,28 @@ pub enum Strategy {
     #[default]
     None,
     /// Same profile for the same `(host, port)` for the lifetime
-    /// of the process. An on-path observer sees one identity per
-    /// peer instead of a per-dial reshuffle.
+    /// of the process. An on-path observer of **one** peer sees a
+    /// single identity per peer — but if the same observer also
+    /// sees the client's other peers (global DPI, ISP-level
+    /// inspection, anti-bot CDN engine watching all fronted hosts)
+    /// the per-host hash produces **different** browser identities
+    /// for the same source IP, which is itself a strong signal.
+    /// Use only when peers are fully decoupled across observers
+    /// (different AS, different jurisdictions); otherwise prefer
+    /// [`Self::ProcessStable`].
     PerHostStable,
+    /// Same profile across **every** dial in this process. An
+    /// observer sees the source IP consistently as one browser
+    /// identity, matching how a real user actually behaves. The
+    /// pick is seeded from `$HOSTNAME` / `%COMPUTERNAME%` when
+    /// available, so identity stays the same across restarts on
+    /// the same machine; in container / sandbox environments where
+    /// no hostname is set, the seed falls back to a fresh random
+    /// pick at process start (identity rotates on restart, but
+    /// remains stable for the duration of the process). This is
+    /// the recommended default whenever the operator has no
+    /// specific reason to prefer a per-peer split.
+    ProcessStable,
     /// Fresh random profile on every dial. Useful when probing or
     /// when a peer-stable identity is undesirable (testing).
     Random,
@@ -62,6 +81,7 @@ impl Strategy {
         match self {
             Self::None => "none",
             Self::PerHostStable => "per_host_stable",
+            Self::ProcessStable => "process_stable",
             Self::Random => "random",
         }
     }
@@ -70,8 +90,12 @@ impl Strategy {
     /// renderers iterate this so an info-style gauge can publish a
     /// 0 row for inactive strategies before flipping the active one
     /// to 1.
-    pub const ALL: &'static [Strategy] =
-        &[Strategy::None, Strategy::PerHostStable, Strategy::Random];
+    pub const ALL: &'static [Strategy] = &[
+        Strategy::None,
+        Strategy::PerHostStable,
+        Strategy::ProcessStable,
+        Strategy::Random,
+    ];
 }
 
 impl std::fmt::Display for Strategy {
@@ -85,7 +109,16 @@ impl std::str::FromStr for Strategy {
     fn from_str(s: &str) -> Result<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "" | "off" | "none" | "disabled" => Ok(Self::None),
-            "stable" | "per_host_stable" | "per-host-stable" | "per-host" => {
+            // `stable` is intentionally NOT an alias for `per_host_stable`
+            // anymore — it now resolves to `process_stable`, the
+            // recommended default. Operators upgrading from older configs
+            // get the safer behaviour automatically; those who specifically
+            // want the per-host split must spell `per_host_stable` /
+            // `per-host` in full.
+            "stable" | "process" | "process_stable" | "process-stable" => {
+                Ok(Self::ProcessStable)
+            },
+            "per_host_stable" | "per-host-stable" | "per-host" | "per_host" => {
                 Ok(Self::PerHostStable)
             },
             "random" => Ok(Self::Random),
@@ -325,6 +358,7 @@ pub fn select_with_strategy(url: &Url, strategy: Strategy) -> Option<&'static Pr
     match strategy {
         Strategy::None => None,
         Strategy::PerHostStable => Some(&PROFILES[host_index(url)]),
+        Strategy::ProcessStable => Some(&PROFILES[process_index()]),
         Strategy::Random => Some(&PROFILES[rand::random::<usize>() % PROFILES.len()]),
     }
 }
@@ -336,6 +370,36 @@ fn host_index(url: &Url) -> usize {
     host.hash(&mut hasher);
     port.hash(&mut hasher);
     (hasher.finish() as usize) % PROFILES.len()
+}
+
+/// Process-wide profile index used by [`Strategy::ProcessStable`].
+///
+/// Seeded from `$HOSTNAME` / `%COMPUTERNAME%` when available — that
+/// keeps identity stable across restarts on the same machine, which
+/// matches how a real user with a single browser actually appears to
+/// an on-path observer. When neither variable is set (containers,
+/// minimal sandboxes, `systemd-nspawn` without `--hostname=…`), the
+/// seed falls back to `rand::random` at process start: identity then
+/// rotates on every restart but stays consistent for the duration of
+/// the process — still strictly better than per-host split, just not
+/// stable across restarts.
+fn process_index() -> usize {
+    static IDX: OnceLock<usize> = OnceLock::new();
+    *IDX.get_or_init(|| {
+        let seed = std::env::var("HOSTNAME")
+            .ok()
+            .or_else(|| std::env::var("COMPUTERNAME").ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        match seed {
+            Some(name) => {
+                let mut hasher = DefaultHasher::new();
+                name.hash(&mut hasher);
+                (hasher.finish() as usize) % PROFILES.len()
+            },
+            None => rand::random::<usize>() % PROFILES.len(),
+        }
+    })
 }
 
 /// Sec-Fetch-* triplet variant. The values browsers send depend on

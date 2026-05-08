@@ -1026,23 +1026,37 @@ async fn confirm_selected_uplink_updates_global_sticky_route() {
 #[tokio::test]
 async fn snapshot_reports_fingerprint_profile_name_per_strategy() {
     use outline_transport::FingerprintProfileStrategy;
-    // Three uplinks, three strategies — none / per_host_stable /
-    // random — each one through a per-uplink override (we can't flip
-    // the process-wide global from a test because `init_strategy`
-    // wraps a `OnceLock`, and other tests in this binary may have
-    // already set it).
+    // Four uplinks, four strategies — none / per_host_stable /
+    // process_stable / random — each one through a per-uplink
+    // override (we can't flip the process-wide global from a test
+    // because `init_strategy` wraps a `OnceLock`, and other tests
+    // in this binary may have already set it).
     let mut none = make_uplink("none-uplink", "wss://none.example.com/tcp");
     none.fingerprint_profile = None;
-    let mut stable = make_uplink("stable-uplink", "wss://stable.example.com/tcp");
-    stable.fingerprint_profile = Some(FingerprintProfileStrategy::PerHostStable);
+    let mut per_host = make_uplink("per-host-uplink", "wss://per-host.example.com/tcp");
+    per_host.fingerprint_profile = Some(FingerprintProfileStrategy::PerHostStable);
+    let mut process = make_uplink("process-uplink", "wss://process.example.com/tcp");
+    process.fingerprint_profile = Some(FingerprintProfileStrategy::ProcessStable);
     let mut random = make_uplink("random-uplink", "wss://random.example.com/tcp");
     random.fingerprint_profile = Some(FingerprintProfileStrategy::Random);
 
-    let manager =
-        UplinkManager::new_for_test("test", vec![none, stable, random], probe_disabled(), lb())
-            .unwrap();
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![none, per_host, process, random],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
 
     let snapshot = manager.snapshot().await;
+    let pool: &[&str] = &[
+        "chrome-130-windows",
+        "chrome-130-macos",
+        "firefox-130-windows",
+        "firefox-130-macos",
+        "safari-17-macos",
+        "edge-130-windows",
+    ];
 
     let u_none = &snapshot.uplinks[0];
     assert_eq!(u_none.fingerprint_profile_strategy, "none");
@@ -1052,31 +1066,67 @@ async fn snapshot_reports_fingerprint_profile_name_per_strategy() {
         u_none.fingerprint_profile_name,
     );
 
-    let u_stable = &snapshot.uplinks[1];
-    assert_eq!(u_stable.fingerprint_profile_strategy, "per_host_stable");
-    let stable_name = u_stable
+    let u_per_host = &snapshot.uplinks[1];
+    assert_eq!(u_per_host.fingerprint_profile_strategy, "per_host_stable");
+    let per_host_name = u_per_host
         .fingerprint_profile_name
         .as_deref()
         .expect("strategy=per_host_stable must surface a profile name");
-    let pool: &[&str] = &[
-        "chrome-130-windows",
-        "chrome-130-macos",
-        "firefox-130-windows",
-        "firefox-130-macos",
-        "safari-17-macos",
-        "edge-130-windows",
-    ];
     assert!(
-        pool.contains(&stable_name),
-        "expected pool member, got {stable_name:?}",
+        pool.contains(&per_host_name),
+        "expected pool member, got {per_host_name:?}",
     );
 
-    let u_random = &snapshot.uplinks[2];
+    let u_process = &snapshot.uplinks[2];
+    assert_eq!(u_process.fingerprint_profile_strategy, "process_stable");
+    let process_name = u_process
+        .fingerprint_profile_name
+        .as_deref()
+        .expect("strategy=process_stable must surface a profile name");
+    assert!(
+        pool.contains(&process_name),
+        "expected pool member, got {process_name:?}",
+    );
+
+    let u_random = &snapshot.uplinks[3];
     assert_eq!(u_random.fingerprint_profile_strategy, "random");
     // `random` is intentionally surfaced as the literal token rather
     // than a per-snapshot pick — a snapshot can't pin "the" active
     // profile when the strategy rotates per dial.
     assert_eq!(u_random.fingerprint_profile_name.as_deref(), Some("random"));
+}
+
+#[tokio::test]
+async fn snapshot_process_stable_yields_same_profile_for_all_uplinks() {
+    use outline_transport::FingerprintProfileStrategy;
+    // The whole point of ProcessStable: one identity for the entire
+    // process, regardless of which uplink dials. A previous user
+    // report showed four uplinks under `Stable` (PerHostStable)
+    // surfacing four distinct browsers from the same source IP —
+    // an instant red flag for any global on-path observer.
+    // ProcessStable must collapse those to one.
+    let mut a = make_uplink("aeza", "wss://aeza.example.com/SECRET/tcp");
+    a.fingerprint_profile = Some(FingerprintProfileStrategy::ProcessStable);
+    let mut b = make_uplink("garage", "wss://garage.example.com/SECRET/tcp");
+    b.fingerprint_profile = Some(FingerprintProfileStrategy::ProcessStable);
+    let mut c = make_uplink("nuxt", "wss://nuxt.example.com/different/tcp");
+    c.fingerprint_profile = Some(FingerprintProfileStrategy::ProcessStable);
+
+    let manager =
+        UplinkManager::new_for_test("test", vec![a, b, c], probe_disabled(), lb()).unwrap();
+    let snapshot = manager.snapshot().await;
+
+    let names: Vec<_> = snapshot
+        .uplinks
+        .iter()
+        .map(|u| u.fingerprint_profile_name.as_deref())
+        .collect();
+    assert!(names.iter().all(|n| n.is_some()), "process_stable must populate name on every uplink: {names:?}");
+    let first = names[0];
+    assert!(
+        names.iter().all(|n| *n == first),
+        "process_stable must yield the same identity for every uplink in this process; got {names:?}",
+    );
 }
 
 #[tokio::test]
