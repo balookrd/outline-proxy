@@ -291,10 +291,56 @@ fn render_prometheus_exports_uplink_fingerprint_profile_strategy_info() {
         "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"random\",uplink=\"senko\"} 0"
     ));
     assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"process_stable\",uplink=\"senko\"} 0"
+    ));
+    assert!(rendered.contains(
         "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"none\",uplink=\"nuxt\"} 1"
     ));
     assert!(rendered.contains(
         "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"nuxt\"} 0"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"process_stable\",uplink=\"nuxt\"} 0"
+    ));
+}
+
+#[test]
+fn render_prometheus_publishes_process_stable_strategy_label() {
+    // ProcessStable is the recommended default; the gauge must
+    // expose a series for it just like the other two strategies
+    // so an alert "no uplink is on process_stable" or a panel
+    // "how many uplinks rotated to random" can fire / render.
+    let _guard = test_guard();
+    init();
+
+    let mut process = snapshot_uplink("aeza");
+    process.fingerprint_profile_strategy = "process_stable".to_string();
+
+    let rendered = render_prometheus(&[UplinkManagerSnapshot {
+        group: "main".to_string(),
+        generated_at_unix_ms: 0,
+        load_balancing_mode: "active_passive".to_string(),
+        routing_scope: "global".to_string(),
+        global_active_uplink: None,
+        global_active_reason: None,
+        tcp_active_uplink: None,
+        tcp_active_reason: None,
+        udp_active_uplink: None,
+        udp_active_reason: None,
+        uplinks: vec![process],
+        sticky_routes: Vec::new(),
+        auto_failback: false,
+    }])
+    .expect("render metrics");
+
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"process_stable\",uplink=\"aeza\"} 1"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"aeza\"} 0"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"random\",uplink=\"aeza\"} 0"
     ));
 }
 

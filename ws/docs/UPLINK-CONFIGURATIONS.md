@@ -785,9 +785,29 @@ WS / XHTTP dials can mix in browser-style identification headers
 DPI rule keying on "WS upgrade missing User-Agent" stops separating
 this client from real browser traffic. The pool ships six profiles:
 Chrome 130 (Windows + macOS), Firefox 130 (Windows + macOS),
-Safari 17 (macOS), Edge 130 (Windows). Selection is per `(host, port)`
-under the stable strategy, so a single peer keeps a single identity
-across reconnects.
+Safari 17 (macOS), Edge 130 (Windows).
+
+Two stable strategies are offered. **`process_stable` (the
+recommended default)** picks one identity at process start and uses
+it for every dial regardless of which uplink fires — matching how a
+real user with a single browser appears to an on-path observer:
+one source IP, one User-Agent. Pick is seeded from `$HOSTNAME` /
+`%COMPUTERNAME%` when available, so identity stays stable across
+restarts on the same machine; in container / sandbox environments
+without a hostname the seed falls back to a fresh `rand` pick at
+process start (still stable for the duration of the process,
+rotates on restart).
+
+`per_host_stable` is the legacy peer-split: profile is hashed from
+`(host, port)`, so each peer sees one consistent identity but
+**different** peers see different identities from the same source
+IP. Useful only when peers are fully decoupled across observers
+(different ASes, different jurisdictions, no global DPI on the
+client's path). For most deployments this leaks "automated
+multi-pseudo-client" because a global observer correlates: the
+same source IP shouldn't produce four browser identities in 30
+seconds against four different hosts. Prefer `process_stable`
+unless you have a specific reason.
 
 The knob is opt-in. Default behaviour leaves the wire shape exactly
 as in pre-fingerprint builds — no headers added beyond
@@ -796,15 +816,25 @@ key in `config.toml`:
 
 ```toml
 # top-level — sibling of [socks5], [metrics], [outline], [[uplink_group]]
-fingerprint_profile = "stable"
+fingerprint_profile = "stable"   # alias for `process_stable` — recommended
 ```
 
 Accepted values:
 
 - `"off"` / `"none"` / `"disabled"` / omitted — default, no headers added.
-- `"stable"` / `"per_host_stable"` / `"per-host-stable"` / `"per-host"` —
-  one identity per `(host, port)` for the lifetime of the process.
-- `"random"` — fresh profile on every dial.
+- `"stable"` / `"process"` / `"process_stable"` / `"process-stable"` —
+  **recommended.** One identity for the entire process; a real-user
+  shape on the wire from the perspective of any observer.
+- `"per_host_stable"` / `"per-host-stable"` / `"per-host"` — legacy
+  per-peer split; see caveat above.
+- `"random"` — fresh profile on every dial. Useful for testing or
+  when peer-stable identity is itself undesirable.
+
+> Note: the bare `stable` shorthand previously aliased to
+> `per_host_stable`. It now resolves to `process_stable`. Operators
+> carrying older configs spelling `stable` get the safer behaviour
+> automatically; those who specifically want the per-peer split
+> must spell `per_host_stable` in full.
 
 The same value can be set on the command line or via environment,
 which **overrides** the top-level TOML key (per-uplink overrides
@@ -829,7 +859,7 @@ use outline_transport::{
     init_fingerprint_profile_strategy, FingerprintProfileStrategy,
 };
 
-init_fingerprint_profile_strategy(FingerprintProfileStrategy::PerHostStable);
+init_fingerprint_profile_strategy(FingerprintProfileStrategy::ProcessStable);
 ```
 
 ### Observability
@@ -840,7 +870,7 @@ strategy actually engaged after a config change.
 
 Prometheus exposes `outline_ws_rust_uplink_fingerprint_profile_strategy_info`
 with labels `group`, `uplink`, and `strategy` (one of `none`,
-`per_host_stable`, `random`). The gauge is `1` on the active strategy
+`per_host_stable`, `process_stable`, `random`). The gauge is `1` on the active strategy
 and `0` on the others, published unconditionally — an absent series
 points at a snapshot-pipeline bug, not at the feature being off.
 The series reflects the **effective** strategy: per-uplink override
@@ -863,11 +893,12 @@ showing the **active profile** (e.g. `Chrome 130 macOS`) next to the
 protocol pill on every row where the effective strategy resolves to
 something other than `none`. The chip is colour-coded by family:
 blue for the stable profiles (Chrome / Firefox / Safari / Edge under
-`per_host_stable`) and purple for `Random` — at-a-glance the operator
-can tell whether the identity is pinned or rolling. Uplinks on `none`
-get no chip — the common opt-out deployment stays visually unchanged.
-The tooltip carries both the raw profile id and the strategy
-(`fingerprint_profile_name = chrome-130-macos · strategy = per_host_stable`)
+`process_stable` or `per_host_stable`) and purple for `Random` —
+at-a-glance the operator can tell whether the identity is pinned or
+rolling. Uplinks on `none` get no chip — the common opt-out
+deployment stays visually unchanged. The tooltip carries both the
+raw profile id and the strategy
+(`fingerprint_profile_name = chrome-130-macos · strategy = process_stable`)
 so the rendered label can be correlated immediately with the
 Prometheus `strategy` label and the snapshot JSON without translating
 between forms.

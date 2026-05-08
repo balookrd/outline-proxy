@@ -31,7 +31,8 @@ const MODE_DOWNGRADE_CAP_LABELS: &[&str] = &[
 // variant means extending this list so the gauge publishes a 0 row
 // for the inactive ones; otherwise a stale 1 from a prior scrape
 // could linger.
-const FINGERPRINT_STRATEGY_LABELS: &[&str] = &["none", "per_host_stable", "random"];
+const FINGERPRINT_STRATEGY_LABELS: &[&str] =
+    &["none", "per_host_stable", "process_stable", "random"];
 
 impl Metrics {
     fn update_snapshot_metrics(&self, snapshots: &[UplinkManagerSnapshot]) {

@@ -416,13 +416,22 @@ impl UplinkManager {
                         // still renders something meaningful instead
                         // of going dark.
                         FingerprintProfileStrategy::Random => Some("random".to_string()),
-                        FingerprintProfileStrategy::PerHostStable => uplink
+                        // PerHostStable / ProcessStable: both resolve
+                        // to a deterministic pool entry once `select_with_strategy`
+                        // sees a URL. PerHostStable hashes by host:port,
+                        // ProcessStable returns the process-wide pick
+                        // and ignores the URL — but we still gate on
+                        // "uplink has a URL" because Shadowsocks-over-
+                        // raw-socket has no HTTP-headers surface, so
+                        // claiming a profile applied there would be a
+                        // lie on the dashboard.
+                        FingerprintProfileStrategy::PerHostStable
+                        | FingerprintProfileStrategy::ProcessStable => uplink
                             .tcp_dial_url()
                             .or_else(|| uplink.udp_dial_url())
                             .and_then(|url| {
                                 outline_transport::fingerprint_profile::select_with_strategy(
-                                    url,
-                                    FingerprintProfileStrategy::PerHostStable,
+                                    url, strategy,
                                 )
                                 .map(|p| p.name.to_string())
                             }),

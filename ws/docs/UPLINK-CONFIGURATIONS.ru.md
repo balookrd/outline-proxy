@@ -792,8 +792,29 @@ Sec-Fetch-*), чтобы простое DPI-правило вида «WS-upgrade
 User-Agent» больше не отделяло клиент от реального браузерного
 трафика. В пул входит шесть профилей: Chrome 130 (Windows + macOS),
 Firefox 130 (Windows + macOS), Safari 17 (macOS), Edge 130 (Windows).
-Под стратегией PerHostStable выбор детерминирован по `(host, port)`,
-поэтому один пир видит одну идентичность через все реконнекты.
+
+Доступны две стабильные стратегии. **`process_stable`
+(рекомендуемый дефолт)** выбирает одну идентичность на старте
+процесса и использует её на каждом дозвоне независимо от того, какой
+аплинк сработал — ровно так, как реальный пользователь с одним
+браузером выглядит для on-path-наблюдателя: один source IP, один
+User-Agent. Выбор сидируется из `$HOSTNAME` / `%COMPUTERNAME%`,
+когда переменная доступна, поэтому идентичность стабильна между
+рестартами на одной машине; в контейнерах / sandbox без hostname
+сид падает на `rand` при старте процесса (всё ещё стабильно в
+пределах процесса, но ротируется при перезапуске).
+
+`per_host_stable` — это легаси-разрез по пирам: профиль хешится из
+`(host, port)`, поэтому каждый пир видит одну консистентную
+идентичность, но **разные** пиры видят **разные** идентичности
+от того же source IP. Полезно только когда пиры полностью
+развязаны между наблюдателями (разные AS, разные юрисдикции,
+никакого глобального DPI на пути клиента). Для большинства
+deployment'ов это сливает «автоматизированный мульти-pseudo-клиент»,
+потому что глобальный наблюдатель коррелирует: один и тот же
+source IP не должен производить четыре browser identity за 30
+секунд против четырёх разных хостов. Предпочтительно
+`process_stable`, если нет конкретной причины наоборот.
 
 Тумблер opt-in. По умолчанию форма провода полностью совпадает с тем,
 что было до этого изменения — никаких новых заголовков, кроме
@@ -802,16 +823,26 @@ Firefox 130 (Windows + macOS), Safari 17 (macOS), Edge 130 (Windows).
 
 ```toml
 # верхний уровень — рядом с [socks5], [metrics], [outline], [[uplink_group]]
-fingerprint_profile = "stable"
+fingerprint_profile = "stable"   # алиас `process_stable` — рекомендуется
 ```
 
 Допустимые значения:
 
 - `"off"` / `"none"` / `"disabled"` / отсутствие ключа — по умолчанию,
   заголовки не добавляются.
-- `"stable"` / `"per_host_stable"` / `"per-host-stable"` / `"per-host"` —
-  одна идентичность на пару `(host, port)` на всё время жизни процесса.
-- `"random"` — свежий профиль на каждый дозвон.
+- `"stable"` / `"process"` / `"process_stable"` / `"process-stable"` —
+  **рекомендуется.** Одна идентичность на весь процесс; форма
+  реального пользователя для любого наблюдателя.
+- `"per_host_stable"` / `"per-host-stable"` / `"per-host"` — легаси
+  per-peer split; см. оговорку выше.
+- `"random"` — свежий профиль на каждый дозвон. Полезно для тестов
+  или когда стабильная идентичность сама по себе нежелательна.
+
+> Важное изменение: ранее короткий `stable` алиасился в
+> `per_host_stable`. Теперь он резолвится в `process_stable`.
+> Операторы со старыми конфигами с `stable` автоматически
+> получают более безопасное поведение; те, кому нужен именно
+> per-peer split, должны прописать `per_host_stable` полностью.
 
 То же значение можно задать через CLI или переменную окружения —
 это **переопределяет** top-level ключ из TOML (per-uplink override
@@ -837,7 +868,7 @@ use outline_transport::{
     init_fingerprint_profile_strategy, FingerprintProfileStrategy,
 };
 
-init_fingerprint_profile_strategy(FingerprintProfileStrategy::PerHostStable);
+init_fingerprint_profile_strategy(FingerprintProfileStrategy::ProcessStable);
 ```
 
 ### Наблюдаемость
@@ -849,7 +880,7 @@ init_fingerprint_profile_strategy(FingerprintProfileStrategy::PerHostStable);
 В Prometheus метрика
 `outline_ws_rust_uplink_fingerprint_profile_strategy_info` несёт
 лейблы `group`, `uplink`, `strategy` (одно из `none`,
-`per_host_stable`, `random`). Gauge равен `1` на активной стратегии
+`per_host_stable`, `process_stable`, `random`). Gauge равен `1` на активной стратегии
 и `0` на остальных, публикуется безусловно — отсутствующая серия
 означает баг в snapshot-пайплайне, а не выключенную фичу.
 Метрика отражает **эффективную** стратегию: per-uplink override
@@ -870,11 +901,11 @@ Strategy»** в верхней строке статуса рядом с `Select
 рядом с протокол-pill в каждой строке аплинка, где эффективная
 стратегия не равна `none`. Цвет — по семейству: синий для
 стабильных профилей (Chrome / Firefox / Safari / Edge под
-`per_host_stable`) и фиолетовый для `Random` — оператор сразу
-видит, идентичность приколота или ротируется. Аплинки на `none`
-чипа не получают — типичный opt-out-deployment визуально не меняется.
-Tooltip несёт и сырой id профиля, и стратегию
-(`fingerprint_profile_name = chrome-130-macos · strategy = per_host_stable`),
+`process_stable` или `per_host_stable`) и фиолетовый для `Random` —
+оператор сразу видит, идентичность приколота или ротируется.
+Аплинки на `none` чипа не получают — типичный opt-out-deployment
+визуально не меняется. Tooltip несёт и сырой id профиля, и стратегию
+(`fingerprint_profile_name = chrome-130-macos · strategy = process_stable`),
 чтобы отрисованный лейбл сразу сопоставлялся с Prometheus-лейблом
 `strategy` и snapshot-полем без перевода между формами.
 

@@ -134,12 +134,16 @@ pub struct Args {
     /// top-level `fingerprint_profile` config key. Per-uplink
     /// `[[outline.uplinks]].fingerprint_profile` overrides still win
     /// on top of this. Accepts the same alias set as the TOML key:
-    /// `off` / `none` / `disabled` (default), `stable` /
-    /// `per_host_stable` / `per-host`, `random`.
+    /// `off` / `none` / `disabled` (default), `stable` / `process` /
+    /// `process_stable` (recommended — one identity per process),
+    /// `per_host_stable` / `per-host` (legacy peer-split behaviour),
+    /// `random`. Note: `stable` is the alias for `process_stable` —
+    /// older configs spelling `stable` get the safer behaviour
+    /// automatically.
     #[arg(
         long,
         env = "OUTLINE_FINGERPRINT_PROFILE",
-        help = "Browser fingerprint diversification: off | stable | random (overrides top-level config)"
+        help = "Browser fingerprint diversification: off | stable | per_host_stable | random (overrides top-level config; `stable` = `process_stable`)"
     )]
     pub fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
 }
