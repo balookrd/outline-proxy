@@ -299,14 +299,12 @@ struct WsTcpRelayState {
     /// resume hit the relay loop emits the v2 `"ORDR"` frame
     /// immediately after the v1 `"ORSM"` frame. Implies
     /// `ack_prefix_requested == true` (gate enforced at parse time).
-    #[allow(dead_code)] // wired by phase 4 (SS-WS capture+emit).
     symmetric_replay_requested: bool,
     /// Client-reported `X-Outline-Resume-Down-Acked` offset from the
     /// request side. Used by the resume-emit path to compute
     /// `replay_from(offset)` against the parked downlink ring. `0`
     /// when no v2 negotiation occurred or the request did not carry
     /// the header.
-    #[allow(dead_code)] // wired by phase 4 (SS-WS capture+emit).
     client_acked_offset_request: u64,
     /// Cumulative bytes the relay has successfully written upstream over
     /// the lifetime of this session. Monotonic; survives parks (the
@@ -317,6 +315,15 @@ struct WsTcpRelayState {
     /// SS-WS; raw VLESS payload for VLESS-WS) — same units the client
     /// tracks on its sent counter.
     upstream_bytes_acked: Arc<AtomicU64>,
+    /// Per-session bounded ring buffer for the v2 Symmetric Downlink
+    /// Replay protocol. Allocated lazily at upstream-handshake time
+    /// when [`Self::symmetric_replay_requested`] is `true` (v2
+    /// negotiated and server-side enabled). The relay loop pushes
+    /// every plaintext chunk into the ring before encryption; on
+    /// park the same `Arc` is moved into [`ParkedTcp::downlink_ring`]
+    /// and back on resume hit. `None` means v2 is not engaged on
+    /// this session and the ring is never allocated.
+    downlink_ring: Option<Arc<parking_lot::Mutex<crate::server::resumption::downlink_ring::DownlinkRing>>>,
 }
 
 struct WsTcpFrameOutput<'a, Msg> {
@@ -345,6 +352,11 @@ impl WsTcpRelayState {
             // the parked state's Arc replaces this one — see the resume
             // branch in `attach_resumed_state_or_dial`.
             upstream_bytes_acked: Arc::new(AtomicU64::new(0)),
+            // v2 ring is allocated lazily at upstream-handshake time
+            // (when v2 negotiation is confirmed and the registry has
+            // capacity > 0). On resume hit it is restored from
+            // `ParkedTcp::downlink_ring`.
+            downlink_ring: None,
         }
     }
 }
@@ -650,11 +662,11 @@ async fn try_park_on_drop(
         // hit the existing Arc is moved back into the new
         // WsTcpRelayState so the counter stays monotonic across parks.
         upstream_bytes_acked: Arc::clone(&state.upstream_bytes_acked),
-        // v2 Symmetric Downlink Replay ring is `None` until phase 4
-        // (SS-WS capture+emit) wires the per-session allocation; the
-        // field exists from this commit forward so the registry layout
-        // stays stable across the rollout.
-        downlink_ring: None,
+        // v2 Symmetric Downlink Replay ring: move the per-session ring
+        // into the parked entry so a subsequent resume hit can replay
+        // the contiguous suffix `[client_acked_offset, total_sent)`.
+        // `None` means v2 was never engaged on this session.
+        downlink_ring: state.downlink_ring.take(),
     };
     debug!(
         user = %owner,
@@ -812,6 +824,95 @@ where
                 );
             }
 
+            // v2 Symmetric Downlink Replay: emit the "ORDR" frame
+            // immediately after the v1 frame when the protocol is
+            // engaged. Replay payload is the contiguous suffix
+            // `[client_acked_offset_request, total_sent_downlink)` from
+            // the parked ring; missing-ring or eviction-rolled-past
+            // surfaces as REPLAY_TRUNCATED + replay_len = 0. The frame
+            // goes through the same AEAD encryptor + WS sink, in serial
+            // order with the v1 frame.
+            // See `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2).
+            if state.symmetric_replay_requested {
+                use crate::server::resumption::downlink_ring::ReplayOutcome;
+                let (flags, payload) = match parked.downlink_ring.as_ref() {
+                    None => {
+                        // The session was parked from a path that did
+                        // not run the v2 ring (e.g. operator enabled
+                        // v2 mid-session or the prior carrier did not
+                        // capture). Honest answer is TRUNCATED.
+                        (0x01u8, Vec::new())
+                    },
+                    Some(ring) => {
+                        let outcome = ring.lock().replay_from(state.client_acked_offset_request);
+                        match outcome {
+                            ReplayOutcome::Available(bytes) => (0x00u8, bytes),
+                            ReplayOutcome::Truncated => (0x01u8, Vec::new()),
+                            ReplayOutcome::OffsetAhead => {
+                                warn!(
+                                    user = user.id(),
+                                    path = %route.path,
+                                    client_offset = state.client_acked_offset_request,
+                                    "v2 client claims more downstream bytes than server emitted; \
+                                     treating as truncated"
+                                );
+                                (0x01u8, Vec::new())
+                            },
+                        }
+                    },
+                };
+                let payload_len = payload.len() as u64;
+                let mut frame = Vec::with_capacity(14 + payload.len());
+                frame.extend_from_slice(b"ORDR");
+                frame.push(0x01); // version
+                frame.push(flags);
+                frame.extend_from_slice(&payload_len.to_be_bytes());
+                frame.extend_from_slice(&payload);
+                let mut out = bytes::BytesMut::new();
+                encryptor
+                    .encrypt_chunk(&frame, &mut out)
+                    .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
+                let ciphertext = out.split().freeze();
+                let make_binary = outbound.make_binary;
+                outbound
+                    .data_tx
+                    .send(make_binary(ciphertext))
+                    .await
+                    .map_err(|_| {
+                        FrameError::Fatal(anyhow!(
+                            "v2 downlink replay frame send failed: WS data channel closed"
+                        ))
+                    })?;
+                debug!(
+                    user = user.id(),
+                    path = %route.path,
+                    client_offset = state.client_acked_offset_request,
+                    replay_len = payload_len,
+                    truncated = (flags & 0x01) != 0,
+                    "emitted v2 downlink replay frame on resume hit",
+                );
+            }
+
+            // Restore the parked downlink ring onto the new relay
+            // state so subsequent upstream→client bytes continue
+            // accumulating into the same buffer; survives any
+            // future park.
+            if state.symmetric_replay_requested {
+                state.downlink_ring = parked.downlink_ring.clone().or_else(|| {
+                    // Parked ring was absent (mid-deployment v2 enable).
+                    // Allocate a fresh empty one so subsequent captures
+                    // are retained for the next resume hit.
+                    let cap = server.orphan_registry.downlink_buffer_bytes();
+                    if cap > 0 {
+                        Some(Arc::new(parking_lot::Mutex::new(
+                            crate::server::resumption::downlink_ring::DownlinkRing::new(cap),
+                        )))
+                    } else {
+                        None
+                    }
+                });
+            }
+            let ring_for_task = state.downlink_ring.clone();
             let tx = outbound.data_tx.clone();
             let make_binary = outbound.make_binary;
             let make_close = outbound.make_close;
@@ -837,6 +938,7 @@ where
                     AppProtocol::Shadowsocks,
                     relay_user_id,
                     Some(cancel_for_task),
+                    ring_for_task,
                 )
                 .await
             }));
@@ -928,6 +1030,19 @@ where
         // legacy single-arm mode.
         let cancel = Arc::new(Notify::new());
         let cancel_for_task = Arc::clone(&cancel);
+        // v2 ring allocation at fresh-dial time. The capability bit on
+        // `state.symmetric_replay_requested` is already gated at parse
+        // time on (a) v1 also requested and (b) registry has v2
+        // capacity > 0, so a `true` flag here is safe to honour.
+        if state.symmetric_replay_requested && state.downlink_ring.is_none() {
+            let cap = server.orphan_registry.downlink_buffer_bytes();
+            if cap > 0 {
+                state.downlink_ring = Some(Arc::new(parking_lot::Mutex::new(
+                    crate::server::resumption::downlink_ring::DownlinkRing::new(cap),
+                )));
+            }
+        }
+        let ring_for_task = state.downlink_ring.clone();
         state.upstream_to_client = Some(tokio::spawn(async move {
             super::super::relay::relay_upstream_to_client(
                 upstream_reader,
@@ -943,6 +1058,7 @@ where
                 AppProtocol::Shadowsocks,
                 relay_user_id,
                 Some(cancel_for_task),
+                ring_for_task,
             )
             .await
         }));

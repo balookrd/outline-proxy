@@ -126,7 +126,6 @@ pub(crate) struct ParkedTcp {
     /// state on resume hit so `total_sent` is monotonic across
     /// reattaches. See `docs/SESSION-RESUMPTION.md` § Symmetric
     /// Downlink Replay (v2).
-    #[allow(dead_code)] // wired by phases 4-6 (per-carrier capture+emit).
     pub(crate) downlink_ring: Option<Arc<Mutex<DownlinkRing>>>,
 }
 

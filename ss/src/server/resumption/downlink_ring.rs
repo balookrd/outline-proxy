@@ -1,10 +1,3 @@
-// Phase-2 scaffolding for v2 Symmetric Downlink Replay: the wire
-// format module + ParkedTcp field land before any callers do.
-// Phases 4-6 (per-carrier capture+emit) wire the relay sites that
-// invoke `push` / `replay_from`, at which point this attribute is
-// removed.
-#![allow(dead_code)]
-
 //! Bounded ring buffer of recently-sent downlink chunks, addressed by
 //! absolute byte offsets. Backs the Ack-Prefix Protocol v2 (Symmetric
 //! Downlink Replay) feature on the server side: when an in-flight WS
@@ -114,6 +107,7 @@ impl DownlinkRing {
     /// Total bytes ever pushed (including bytes already evicted, and
     /// the truncated prefix of any oversized chunk). Equals the
     /// absolute offset of the next byte to be recorded.
+    #[allow(dead_code)] // surfaced for diagnostics / future metrics
     pub(crate) fn total_sent(&self) -> u64 {
         self.total_sent
     }

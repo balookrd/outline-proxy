@@ -173,8 +173,10 @@ async fn run_stream(
     let relay_user_id = Arc::clone(&user_id);
     let upstream_to_client = async move {
         // Raw SS over QUIC is out of scope for resumption (see
-        // docs/SESSION-RESUMPTION.md "Non-Goals"); pass `None` to keep
-        // the legacy single-arm read loop and discard the outcome.
+        // docs/SESSION-RESUMPTION.md "Non-Goals"); pass `None` for the
+        // cancel signal to keep the legacy single-arm read loop, and
+        // `None` for the v2 downlink ring since this carrier never
+        // negotiates the Symmetric Downlink Replay protocol.
         relay_upstream_to_client(
             upstream_reader,
             sink,
@@ -183,6 +185,7 @@ async fn run_stream(
             Protocol::QuicRaw,
             crate::metrics::AppProtocol::Shadowsocks,
             relay_user_id,
+            None,
             None,
         )
         .await
