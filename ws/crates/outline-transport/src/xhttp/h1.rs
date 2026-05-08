@@ -73,7 +73,9 @@ pub(super) async fn connect_xhttp_h1(
     ipv6_first: bool,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
-) -> Result<(XhttpStream, Option<SessionId>, bool)> {
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
+) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     if !matches!(submode, XhttpSubmode::PacketUp) {
         bail!("xhttp/h1 carrier supports packet-up only (got submode {submode:?})");
     }
@@ -135,8 +137,16 @@ pub(super) async fn connect_xhttp_h1(
         // Open the GET synchronously so the resume-id round-trip
         // completes before we hand the stream to the caller. Mirrors
         // the h2/h3 packet-up dial shape.
-        let (issued_session_id, ack_prefix_echo, body) =
-            open_h1_get(down_send, &target, resume_request, ack_prefix_requested, profile).await?;
+        let (issued_session_id, ack_prefix_echo, symmetric_replay_echo, body) = open_h1_get(
+            down_send,
+            &target,
+            resume_request,
+            ack_prefix_requested,
+            symmetric_replay_requested,
+            client_acked_offset,
+            profile,
+        )
+        .await?;
         let driver = tokio::spawn(driver_loop_h1(
             up_send,
             target.clone(),
@@ -160,6 +170,7 @@ pub(super) async fn connect_xhttp_h1(
             ),
             issued_session_id,
             ack_prefix_echo,
+            symmetric_replay_echo,
         ))
     };
 
@@ -218,8 +229,10 @@ async fn open_h1_get(
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(Option<SessionId>, bool, hyper::body::Incoming)> {
+) -> Result<(Option<SessionId>, bool, bool, hyper::body::Incoming)> {
     let mut builder = Request::builder()
         .method(Method::GET)
         .uri(target.full_uri())
@@ -231,6 +244,15 @@ async fn open_h1_get(
     }
     if ack_prefix_requested {
         builder = builder.header(ACK_PREFIX_HEADER, "1");
+    }
+    if symmetric_replay_requested {
+        builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
+    }
+    if symmetric_replay_requested && client_acked_offset > 0 {
+        builder = builder.header(
+            crate::resumption::DOWN_ACKED_HEADER,
+            client_acked_offset.to_string(),
+        );
     }
     let mut req = builder
         .body(empty_request_body())
@@ -252,7 +274,10 @@ async fn open_h1_get(
     }
     let issued = parse_session_response(resp.headers());
     let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
-    Ok((issued, echo, resp.into_body()))
+    let sym_echo = symmetric_replay_requested
+        && echo
+        && super::parse_symmetric_replay_echo(resp.headers());
+    Ok((issued, echo, sym_echo, resp.into_body()))
 }
 
 async fn driver_loop_h1(

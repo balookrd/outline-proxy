@@ -211,18 +211,36 @@ pub(crate) async fn connect_xhttp(
     ipv6_first: bool,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
-) -> Result<(XhttpStream, Option<SessionId>, bool)> {
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
+) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     match mode {
         TransportMode::XhttpH2 => {
             h2::connect_xhttp_h2(
-                cache, url, mode, fwmark, ipv6_first, resume_request, ack_prefix_requested,
+                cache,
+                url,
+                mode,
+                fwmark,
+                ipv6_first,
+                resume_request,
+                ack_prefix_requested,
+                symmetric_replay_requested,
+                client_acked_offset,
             )
             .await
         },
         TransportMode::XhttpH1 => {
             let submode = resolve_effective_submode(url, mode).await;
             h1::connect_xhttp_h1(
-                cache, url, submode, fwmark, ipv6_first, resume_request, ack_prefix_requested,
+                cache,
+                url,
+                submode,
+                fwmark,
+                ipv6_first,
+                resume_request,
+                ack_prefix_requested,
+                symmetric_replay_requested,
+                client_acked_offset,
             )
             .await
         },
@@ -230,7 +248,15 @@ pub(crate) async fn connect_xhttp(
         TransportMode::XhttpH3 => {
             let submode = resolve_effective_submode(url, mode).await;
             h3::connect_xhttp_h3(
-                cache, url, submode, fwmark, ipv6_first, resume_request, ack_prefix_requested,
+                cache,
+                url,
+                submode,
+                fwmark,
+                ipv6_first,
+                resume_request,
+                ack_prefix_requested,
+                symmetric_replay_requested,
+                client_acked_offset,
             )
             .await
         },
@@ -257,6 +283,16 @@ pub(super) fn parse_session_response(headers: &http::HeaderMap) -> Option<Sessio
 /// echo from the server is treated as `false`.
 pub(super) fn parse_ack_prefix_echo(headers: &http::HeaderMap) -> bool {
     headers.get(ACK_PREFIX_HEADER).and_then(|v| v.to_str().ok()) == Some("1")
+}
+
+/// Reads the server-side echo of `X-Outline-Resume-Symmetric-Replay: 1`.
+/// Caller ANDs this with their own `symmetric_replay_requested` AND
+/// the v1 echo to enforce the spec's v2-on-v1 gate locally.
+pub(super) fn parse_symmetric_replay_echo(headers: &http::HeaderMap) -> bool {
+    headers
+        .get(crate::resumption::SYMMETRIC_REPLAY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        == Some("1")
 }
 
 pub(super) fn default_port_for(use_tls: bool) -> u16 {

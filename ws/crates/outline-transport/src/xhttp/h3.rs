@@ -81,7 +81,9 @@ pub(super) async fn connect_xhttp_h3(
     ipv6_first: bool,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
-) -> Result<(XhttpStream, Option<SessionId>, bool)> {
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
+) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     let host = url
         .host_str()
         .ok_or_else(|| anyhow!("xhttp/h3 url missing host: {url}"))?
@@ -131,13 +133,15 @@ pub(super) async fn connect_xhttp_h3(
         let (in_tx, in_rx) = mpsc::channel::<Result<Message, WsError>>(INBOUND_CHANNEL_CAPACITY);
         let (out_tx, out_rx) = mpsc::channel::<Message>(OUTBOUND_CHANNEL_CAPACITY);
 
-        let (issued_session_id, ack_prefix_echo, driver, active_submode) = match submode {
+        let (issued_session_id, ack_prefix_echo, symmetric_replay_echo, driver, active_submode) = match submode {
             XhttpSubmode::PacketUp => {
-                let (issued, echo, request_stream) = open_h3_get(
+                let (issued, echo, sym_echo, request_stream) = open_h3_get(
                     send_request.clone(),
                     &target,
                     resume_request,
                     ack_prefix_requested,
+                    symmetric_replay_requested,
+                    client_acked_offset,
                     profile,
                 )
                 .await?;
@@ -149,7 +153,7 @@ pub(super) async fn connect_xhttp_h3(
                     request_stream,
                     profile,
                 ));
-                (issued, echo, driver, XhttpSubmode::PacketUp)
+                (issued, echo, sym_echo, driver, XhttpSubmode::PacketUp)
             },
             XhttpSubmode::StreamOne => {
                 // The h3 client closes the connection with `H3_NO_ERROR`
@@ -173,11 +177,13 @@ pub(super) async fn connect_xhttp_h3(
                     &target,
                     resume_request,
                     ack_prefix_requested,
+                    symmetric_replay_requested,
+                    client_acked_offset,
                     profile,
                 )
                 .await
                 {
-                    Ok((issued, echo, request_stream)) => {
+                    Ok((issued, echo, sym_echo, request_stream)) => {
                         let driver = tokio::spawn(driver_loop_h3_stream_one(
                             send_request,
                             in_tx,
@@ -186,7 +192,7 @@ pub(super) async fn connect_xhttp_h3(
                         ));
                         crate::xhttp_submode_cache::record_success(url, XhttpSubmode::StreamOne)
                             .await;
-                        (issued, echo, driver, XhttpSubmode::StreamOne)
+                        (issued, echo, sym_echo, driver, XhttpSubmode::StreamOne)
                     },
                     Err(stream_err) => {
                         warn!(
@@ -196,11 +202,13 @@ pub(super) async fn connect_xhttp_h3(
                         );
                         crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
                             .await;
-                        let (issued, echo, request_stream) = open_h3_get(
+                        let (issued, echo, sym_echo, request_stream) = open_h3_get(
                             send_request.clone(),
                             &target,
                             resume_request,
                             ack_prefix_requested,
+                            symmetric_replay_requested,
+                            client_acked_offset,
                             profile,
                         )
                         .await?;
@@ -212,7 +220,7 @@ pub(super) async fn connect_xhttp_h3(
                             request_stream,
                             profile,
                         ));
-                        (issued, echo, driver, XhttpSubmode::PacketUp)
+                        (issued, echo, sym_echo, driver, XhttpSubmode::PacketUp)
                     },
                 }
             },
@@ -227,6 +235,7 @@ pub(super) async fn connect_xhttp_h3(
             XhttpStream::from_channels(in_rx, out_tx, AbortOnDrop::new(driver), active_submode),
             issued_session_id,
             ack_prefix_echo,
+            symmetric_replay_echo,
         ))
     };
 
@@ -304,9 +313,12 @@ async fn open_h3_get(
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(
     Option<SessionId>,
+    bool,
     bool,
     h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
 )> {
@@ -320,6 +332,15 @@ async fn open_h3_get(
     }
     if ack_prefix_requested {
         builder = builder.header(ACK_PREFIX_HEADER, "1");
+    }
+    if symmetric_replay_requested {
+        builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
+    }
+    if symmetric_replay_requested && client_acked_offset > 0 {
+        builder = builder.header(
+            crate::resumption::DOWN_ACKED_HEADER,
+            client_acked_offset.to_string(),
+        );
     }
     let mut req = builder
         .body(())
@@ -355,7 +376,10 @@ async fn open_h3_get(
         .and_then(|v| v.to_str().ok())
         .and_then(SessionId::parse_hex);
     let echo = ack_prefix_requested && super::parse_ack_prefix_echo(resp.headers());
-    Ok((issued, echo, stream))
+    let sym_echo = symmetric_replay_requested
+        && echo
+        && super::parse_symmetric_replay_echo(resp.headers());
+    Ok((issued, echo, sym_echo, stream))
 }
 
 async fn driver_loop_h3(
@@ -422,9 +446,12 @@ async fn open_h3_stream_one(
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(
     Option<SessionId>,
+    bool,
     bool,
     h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
 )> {
@@ -438,6 +465,15 @@ async fn open_h3_stream_one(
     }
     if ack_prefix_requested {
         builder = builder.header(ACK_PREFIX_HEADER, "1");
+    }
+    if symmetric_replay_requested {
+        builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
+    }
+    if symmetric_replay_requested && client_acked_offset > 0 {
+        builder = builder.header(
+            crate::resumption::DOWN_ACKED_HEADER,
+            client_acked_offset.to_string(),
+        );
     }
     let mut req = builder
         .body(())
@@ -470,7 +506,10 @@ async fn open_h3_stream_one(
         .and_then(|v| v.to_str().ok())
         .and_then(SessionId::parse_hex);
     let echo = ack_prefix_requested && super::parse_ack_prefix_echo(resp.headers());
-    Ok((issued, echo, stream))
+    let sym_echo = symmetric_replay_requested
+        && echo
+        && super::parse_symmetric_replay_echo(resp.headers());
+    Ok((issued, echo, sym_echo, stream))
 }
 
 async fn driver_loop_h3_stream_one(

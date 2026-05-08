@@ -473,15 +473,18 @@ pub async fn connect_websocket_with_resume(
                 ipv6_first,
                 resume_request,
                 ack_prefix_requested,
+                symmetric_replay_requested,
+                client_acked_offset,
             )
             .await
             {
-                Ok((stream, issued, ack_prefix_advertised)) => {
+                Ok((stream, issued, ack_prefix_advertised, symmetric_replay_advertised)) => {
                     debug!(url = %url, selected_mode = "xhttp_h3", ?issued, "xhttp h3 connected");
                     xhttp_mode_cache::record_success(url, mode).await;
                     Ok(TransportStream::new_xhttp(stream, issued)
                         .with_downgraded_from(downgrade_marker(mode))
-                        .with_ack_prefix_advertised(ack_prefix_advertised))
+                        .with_ack_prefix_advertised(ack_prefix_advertised)
+                        .with_symmetric_replay_advertised(symmetric_replay_advertised))
                 },
                 Err(h3_error) => {
                     warn!(
@@ -498,6 +501,8 @@ pub async fn connect_websocket_with_resume(
                         ipv6_first,
                         resume_request,
                         ack_prefix_requested,
+                        symmetric_replay_requested,
+                        client_acked_offset,
                         TransportMode::XhttpH3,
                     )
                     .await
@@ -512,26 +517,32 @@ pub async fn connect_websocket_with_resume(
                 ipv6_first,
                 resume_request,
                 ack_prefix_requested,
+                symmetric_replay_requested,
+                client_acked_offset,
                 TransportMode::XhttpH2,
             )
             .await
         },
         TransportMode::XhttpH1 => {
-            let (stream, issued, ack_prefix_advertised) = crate::xhttp::connect_xhttp(
-                cache,
-                url,
-                mode,
-                fwmark,
-                ipv6_first,
-                resume_request,
-                ack_prefix_requested,
-            )
-            .await?;
+            let (stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
+                crate::xhttp::connect_xhttp(
+                    cache,
+                    url,
+                    mode,
+                    fwmark,
+                    ipv6_first,
+                    resume_request,
+                    ack_prefix_requested,
+                    symmetric_replay_requested,
+                    client_acked_offset,
+                )
+                .await?;
             debug!(url = %url, selected_mode = "xhttp_h1", ?issued, "xhttp h1 connected");
             xhttp_mode_cache::record_success(url, mode).await;
             Ok(TransportStream::new_xhttp(stream, issued)
                 .with_downgraded_from(downgrade_marker(mode))
-                .with_ack_prefix_advertised(ack_prefix_advertised))
+                .with_ack_prefix_advertised(ack_prefix_advertised)
+                .with_symmetric_replay_advertised(symmetric_replay_advertised))
         },
     }
 }
@@ -548,6 +559,8 @@ async fn connect_xhttp_h2_with_h1_fallback(
     ipv6_first: bool,
     resume_request: Option<SessionId>,
     ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
     requested: TransportMode,
 ) -> Result<TransportStream> {
     let downgraded_from = |actual: TransportMode| -> Option<TransportMode> {
@@ -561,10 +574,12 @@ async fn connect_xhttp_h2_with_h1_fallback(
         ipv6_first,
         resume_request,
         ack_prefix_requested,
+        symmetric_replay_requested,
+        client_acked_offset,
     )
     .await
     {
-        Ok((stream, issued, ack_prefix_advertised)) => {
+        Ok((stream, issued, ack_prefix_advertised, symmetric_replay_advertised)) => {
             debug!(
                 url = %url,
                 selected_mode = "xhttp_h2",
@@ -582,7 +597,8 @@ async fn connect_xhttp_h2_with_h1_fallback(
             }
             Ok(TransportStream::new_xhttp(stream, issued)
                 .with_downgraded_from(downgraded_from(TransportMode::XhttpH2))
-                .with_ack_prefix_advertised(ack_prefix_advertised))
+                .with_ack_prefix_advertised(ack_prefix_advertised)
+                .with_symmetric_replay_advertised(symmetric_replay_advertised))
         },
         Err(h2_error) => {
             warn!(
@@ -593,16 +609,19 @@ async fn connect_xhttp_h2_with_h1_fallback(
                 "xhttp h2 dial failed, falling back"
             );
             xhttp_mode_cache::record_failure(url, TransportMode::XhttpH2).await;
-            let (stream, issued, ack_prefix_advertised) = crate::xhttp::connect_xhttp(
-                cache,
-                url,
-                TransportMode::XhttpH1,
-                fwmark,
-                ipv6_first,
-                resume_request,
-                ack_prefix_requested,
-            )
-            .await?;
+            let (stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
+                crate::xhttp::connect_xhttp(
+                    cache,
+                    url,
+                    TransportMode::XhttpH1,
+                    fwmark,
+                    ipv6_first,
+                    resume_request,
+                    ack_prefix_requested,
+                    symmetric_replay_requested,
+                    client_acked_offset,
+                )
+                .await?;
             debug!(
                 url = %url,
                 selected_mode = "xhttp_h1",
@@ -612,7 +631,8 @@ async fn connect_xhttp_h2_with_h1_fallback(
             );
             Ok(TransportStream::new_xhttp(stream, issued)
                 .with_downgraded_from(downgraded_from(TransportMode::XhttpH1))
-                .with_ack_prefix_advertised(ack_prefix_advertised))
+                .with_ack_prefix_advertised(ack_prefix_advertised)
+                .with_symmetric_replay_advertised(symmetric_replay_advertised))
         },
     }
 }
