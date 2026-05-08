@@ -103,9 +103,15 @@ pub(super) async fn run_stream(
     let requested_resume = request.addons.resume_id.map(SessionId::from_bytes);
     // Ack-Prefix Protocol negotiation is HTTP-header-based and therefore
     // does not apply to raw-QUIC VLESS sessions (no HTTP layer to carry
-    // the capability advertisement). Always disabled on this path.
-    let resume_ctx =
-        ResumeContext { requested_resume, issued_session_id, ack_prefix_requested: false };
+    // the capability advertisement). Always disabled on this path; v2
+    // (Symmetric Downlink Replay) is gated on v1 and likewise off.
+    let resume_ctx = ResumeContext {
+        requested_resume,
+        issued_session_id,
+        ack_prefix_requested: false,
+        symmetric_replay_requested: false,
+        client_acked_offset: 0,
+    };
 
     match request.command {
         VlessCommand::Tcp => {

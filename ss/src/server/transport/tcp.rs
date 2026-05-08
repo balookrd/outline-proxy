@@ -110,6 +110,27 @@ pub(in crate::server) struct ResumeContext {
     /// the upstream `TcpStream` has not yet acked.
     /// See `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1).
     pub(in crate::server) ack_prefix_requested: bool,
+    /// Whether the client advertised the Symmetric Downlink Replay
+    /// (v2) capability (`X-Outline-Resume-Symmetric-Replay: 1`). Per
+    /// spec, v2 cannot be active without v1, and the server side must
+    /// also have a non-zero `downlink_buffer_bytes`; both gates are
+    /// applied at parse time, so a `true` value here already implies
+    /// `ack_prefix_requested == true` AND the registry has v2 capacity
+    /// configured. See `docs/SESSION-RESUMPTION.md` § Symmetric
+    /// Downlink Replay (v2).
+    pub(in crate::server) symmetric_replay_requested: bool,
+    /// Client-reported `X-Outline-Resume-Down-Acked` offset on a v2
+    /// resume request. Counts plaintext downstream bytes the client
+    /// has successfully forwarded to its SOCKS5 client over the
+    /// session lifetime. Defaults to `0` when:
+    ///
+    /// - the request is not a resume request,
+    /// - v2 capability is not requested,
+    /// - the header is absent, or
+    /// - the header is malformed (per spec the server treats malformed
+    ///   as `0` and proceeds — equivalent to "replay everything still
+    ///   in the ring").
+    pub(in crate::server) client_acked_offset: u64,
 }
 
 /// Lower-cased name of the request header carrying the Session ID a
@@ -126,6 +147,19 @@ pub(in crate::server) const SESSION_RESPONSE_HEADER: &str = "x-outline-session";
 /// support; server echoes `1` to confirm support. See
 /// `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1).
 pub(in crate::server) const ACK_PREFIX_HEADER: &str = "x-outline-resume-ack-prefix";
+/// Lower-cased name of the request **and** response header used to
+/// negotiate the Symmetric Downlink Replay (v2) capability. Client
+/// sets `1` to advertise support; server echoes `1` to confirm — but
+/// only when v1 was also negotiated AND server-side
+/// `downlink_buffer_bytes > 0`. See `docs/SESSION-RESUMPTION.md`
+/// § Symmetric Downlink Replay (v2).
+pub(in crate::server) const SYMMETRIC_REPLAY_HEADER: &str = "x-outline-resume-symmetric-replay";
+/// Lower-cased name of the request-only header carrying the client's
+/// last-acked downstream offset for v2 resume hits. Decimal `u64`,
+/// max `2^63 − 1`; absent or malformed values are treated as `0` per
+/// spec. See `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay
+/// (v2).
+pub(in crate::server) const DOWN_ACKED_HEADER: &str = "x-outline-resume-down-acked";
 
 impl ResumeContext {
     /// Builds a [`ResumeContext`] by inspecting incoming HTTP request
@@ -161,7 +195,55 @@ impl ResumeContext {
                 .get(ACK_PREFIX_HEADER)
                 .and_then(|v| v.to_str().ok())
                 .is_some_and(|v| v.trim() == "1");
-        Self { requested_resume, issued_session_id, ack_prefix_requested }
+        // v2 Symmetric Downlink Replay capability. Per spec, v2 cannot
+        // exist without v1, and the server side must have a non-zero
+        // `downlink_buffer_bytes` to participate. Both gates are
+        // applied here so downstream code can trust a `true` flag
+        // unconditionally.
+        let symmetric_replay_requested = ack_prefix_requested
+            && registry.symmetric_replay_enabled()
+            && headers
+                .get(SYMMETRIC_REPLAY_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.trim() == "1");
+        // Client-reported downstream-ack offset. Only meaningful on a
+        // resume request that also advertises v2; all other paths see
+        // `0`. Per spec a malformed value is treated as `0` (replay
+        // everything still in the server's ring) — we log at debug to
+        // avoid a noisy WARN on a header an old proxy might forward
+        // unfiltered, but the parse failure is observable.
+        let client_acked_offset = if symmetric_replay_requested
+            && requested_resume.is_some()
+        {
+            match headers
+                .get(DOWN_ACKED_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.trim())
+            {
+                Some(value) if !value.is_empty() => match value.parse::<u64>() {
+                    Ok(n) => n,
+                    Err(error) => {
+                        debug!(
+                            ?error,
+                            value,
+                            "malformed X-Outline-Resume-Down-Acked; \
+                             treating as 0 per spec",
+                        );
+                        0
+                    },
+                },
+                _ => 0,
+            }
+        } else {
+            0
+        };
+        Self {
+            requested_resume,
+            issued_session_id,
+            ack_prefix_requested,
+            symmetric_replay_requested,
+            client_acked_offset,
+        }
     }
 
     /// Inserts the `X-Outline-Session` response header carrying the
@@ -212,6 +294,20 @@ struct WsTcpRelayState {
     /// decide whether to emit the control frame on a resume hit without
     /// re-threading `ResumeContext` through every helper.
     ack_prefix_requested: bool,
+    /// Whether the client advertised the v2 Symmetric Downlink Replay
+    /// capability AND the server has v2 enabled. When true on a
+    /// resume hit the relay loop emits the v2 `"ORDR"` frame
+    /// immediately after the v1 `"ORSM"` frame. Implies
+    /// `ack_prefix_requested == true` (gate enforced at parse time).
+    #[allow(dead_code)] // wired by phase 4 (SS-WS capture+emit).
+    symmetric_replay_requested: bool,
+    /// Client-reported `X-Outline-Resume-Down-Acked` offset from the
+    /// request side. Used by the resume-emit path to compute
+    /// `replay_from(offset)` against the parked downlink ring. `0`
+    /// when no v2 negotiation occurred or the request did not carry
+    /// the header.
+    #[allow(dead_code)] // wired by phase 4 (SS-WS capture+emit).
+    client_acked_offset_request: u64,
     /// Cumulative bytes the relay has successfully written upstream over
     /// the lifetime of this session. Monotonic; survives parks (the
     /// `Arc<AtomicU64>` is moved into `ParkedTcp` and back on resume).
@@ -243,6 +339,8 @@ impl WsTcpRelayState {
             pending_resume_request: resume.requested_resume,
             peer_user_cache_recorded: false,
             ack_prefix_requested: resume.ack_prefix_requested,
+            symmetric_replay_requested: resume.symmetric_replay_requested,
+            client_acked_offset_request: resume.client_acked_offset,
             // Counter starts at 0 on every fresh session. On resume hit
             // the parked state's Arc replaces this one — see the resume
             // branch in `attach_resumed_state_or_dial`.
@@ -552,6 +650,11 @@ async fn try_park_on_drop(
         // hit the existing Arc is moved back into the new
         // WsTcpRelayState so the counter stays monotonic across parks.
         upstream_bytes_acked: Arc::clone(&state.upstream_bytes_acked),
+        // v2 Symmetric Downlink Replay ring is `None` until phase 4
+        // (SS-WS capture+emit) wires the per-session allocation; the
+        // field exists from this commit forward so the registry layout
+        // stays stable across the rollout.
+        downlink_ring: None,
     };
     debug!(
         user = %owner,

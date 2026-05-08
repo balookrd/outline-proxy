@@ -243,6 +243,7 @@ async fn cross_repo_vless_tcp_ws_h2_round_trip() -> Result<()> {
         "cross-repo-vless-ws",
         None,
         false,
+        false,
     )
     .await?;
 
@@ -299,6 +300,7 @@ async fn cross_repo_vless_tcp_ws_h1_round_trip() -> Result<()> {
         false,
         "cross-repo-vless-ws-h1",
         None,
+        false,
         false,
     )
     .await?;
@@ -421,6 +423,7 @@ async fn cross_repo_vless_tcp_ws_h3_round_trip() -> Result<()> {
         "cross-repo-vless-ws-h3",
         None,
         false,
+        false,
     )
     .await?;
 
@@ -541,6 +544,7 @@ async fn setup_vless_ws_server_with_resumption(
             orphan_ttl_udp_secs: 30,
             orphan_per_user_cap: 4,
             orphan_global_cap: 16,
+            downlink_buffer_bytes: 0,
         }),
         Arc::clone(&metrics),
     )));
@@ -603,6 +607,7 @@ async fn cross_repo_vless_tcp_ws_h2_resume_reattaches_parked_upstream() -> Resul
         "cross-repo-vless-ws-h2-resume-a",
         None,
         false,
+        false,
     )
     .await?;
     let token = stream_a
@@ -648,6 +653,7 @@ async fn cross_repo_vless_tcp_ws_h2_resume_reattaches_parked_upstream() -> Resul
         false,
         "cross-repo-vless-ws-h2-resume-b",
         Some(token),
+        false,
         false,
     )
     .await?;
@@ -738,6 +744,7 @@ async fn cross_repo_vless_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Resu
         "cross-repo-vless-ws-ack-prefix-a",
         None,
         false,
+        false,
     )
     .await?;
     assert!(
@@ -784,6 +791,7 @@ async fn cross_repo_vless_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Resu
         "cross-repo-vless-ws-ack-prefix-b",
         Some(token),
         true,
+        false,
     )
     .await?;
     assert!(
@@ -885,6 +893,7 @@ async fn setup_vless_raw_quic_server_with_resumption()
             orphan_ttl_udp_secs: 30,
             orphan_per_user_cap: 4,
             orphan_global_cap: 16,
+            downlink_buffer_bytes: 0,
         }),
         Arc::clone(&metrics),
     )));
@@ -1053,6 +1062,7 @@ async fn setup_vless_ws_h3_server_with_resumption(
             orphan_ttl_udp_secs: 30,
             orphan_per_user_cap: 4,
             orphan_global_cap: 16,
+            downlink_buffer_bytes: 0,
         }),
         Arc::clone(&metrics),
     )));
@@ -1124,6 +1134,7 @@ async fn cross_repo_vless_tcp_ws_h3_resume_reattaches_parked_upstream() -> Resul
         "cross-repo-vless-ws-h3-resume-a",
         None,
         false,
+        false,
     )
     .await?;
     let token = stream_a
@@ -1166,6 +1177,7 @@ async fn cross_repo_vless_tcp_ws_h3_resume_reattaches_parked_upstream() -> Resul
         false,
         "cross-repo-vless-ws-h3-resume-b",
         Some(token),
+        false,
         false,
     )
     .await?;
@@ -1229,6 +1241,7 @@ async fn setup_vless_ws_h2_tls_server_with_resumption(
             orphan_ttl_udp_secs: 30,
             orphan_per_user_cap: 4,
             orphan_global_cap: 16,
+            downlink_buffer_bytes: 0,
         }),
         Arc::clone(&metrics),
     )));
@@ -1291,6 +1304,7 @@ async fn cross_repo_vless_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result
         "cross-repo-vless-fallback-a",
         None,
         false,
+        false,
     )
     .await?;
     let token = stream_a
@@ -1328,6 +1342,7 @@ async fn cross_repo_vless_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result
         false,
         "cross-repo-vless-fallback-b",
         Some(token),
+        false,
         false,
     )
     .await?;
@@ -1398,6 +1413,7 @@ async fn setup_vless_ws_h1_only_server_with_resumption(
             orphan_ttl_udp_secs: 30,
             orphan_per_user_cap: 4,
             orphan_global_cap: 16,
+            downlink_buffer_bytes: 0,
         }),
         Arc::clone(&metrics),
     )));
@@ -1457,6 +1473,7 @@ async fn cross_repo_vless_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result
         "cross-repo-vless-h2-h1-fallback-a",
         None,
         false,
+        false,
     )
     .await?;
     let token = stream_a
@@ -1493,6 +1510,7 @@ async fn cross_repo_vless_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result
         false,
         "cross-repo-vless-h2-h1-fallback-b",
         Some(token),
+        false,
         false,
     )
     .await?;

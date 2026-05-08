@@ -582,6 +582,12 @@ pub struct SessionResumptionConfig {
     pub orphan_ttl_udp_secs: u64,
     pub orphan_per_user_cap: usize,
     pub orphan_global_cap: usize,
+    /// Per-session downlink ring buffer capacity for the v2 Symmetric
+    /// Downlink Replay protocol. `0` disables v2 server-side: the
+    /// capability is never echoed and ring buffers are never
+    /// allocated. See `docs/SESSION-RESUMPTION.md` § Symmetric
+    /// Downlink Replay (v2).
+    pub downlink_buffer_bytes: usize,
 }
 
 impl Default for SessionResumptionConfig {
@@ -593,6 +599,10 @@ impl Default for SessionResumptionConfig {
             orphan_ttl_udp_secs: 30,
             orphan_per_user_cap: 4,
             orphan_global_cap: 10_000,
+            // v2 disabled by default — operators opt in by setting a
+            // non-zero value once the wire-protocol partner (newer
+            // outline-ws-rust) is rolled out.
+            downlink_buffer_bytes: 0,
         }
     }
 }
@@ -614,6 +624,9 @@ impl SessionResumptionConfig {
             orphan_global_cap: section
                 .orphan_global_cap
                 .unwrap_or(defaults.orphan_global_cap),
+            downlink_buffer_bytes: section
+                .downlink_buffer_bytes
+                .unwrap_or(defaults.downlink_buffer_bytes),
         }
     }
 }

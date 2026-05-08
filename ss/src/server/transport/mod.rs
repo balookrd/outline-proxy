@@ -100,6 +100,12 @@ pub(super) async fn tcp_websocket_upgrade(
     // the relay, but the response header lets the client decide
     // whether to expect the prefix on its first decoded WS frame.
     let ack_prefix_for_response = resume.ack_prefix_requested;
+    // v2 Symmetric Downlink Replay capability echo. The parsing layer
+    // already gated this on (a) `ack_prefix_requested == true` and
+    // (b) the registry having `downlink_buffer_bytes > 0`, so a true
+    // value here means the response header is safe to emit and the
+    // client can rely on the v2 frame appearing on resume hits.
+    let symmetric_replay_for_response = resume.symmetric_replay_requested;
     let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
@@ -123,6 +129,12 @@ pub(super) async fn tcp_websocket_upgrade(
         response
             .headers_mut()
             .insert(tcp::ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
+    }
+    if symmetric_replay_for_response {
+        response.headers_mut().insert(
+            tcp::SYMMETRIC_REPLAY_HEADER,
+            axum::http::HeaderValue::from_static("1"),
+        );
     }
     response
 }
@@ -166,6 +178,12 @@ pub(super) async fn vless_websocket_upgrade(
     // so the response header here matches what the relay will
     // produce on the wire.
     let ack_prefix_for_response = resume.ack_prefix_requested;
+    // v2 Symmetric Downlink Replay capability echo. The parsing layer
+    // already gated this on (a) `ack_prefix_requested == true` and
+    // (b) the registry having `downlink_buffer_bytes > 0`, so a true
+    // value here means the response header is safe to emit and the
+    // client can rely on the v2 frame appearing on resume hits.
+    let symmetric_replay_for_response = resume.symmetric_replay_requested;
     let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),
@@ -187,6 +205,12 @@ pub(super) async fn vless_websocket_upgrade(
         response
             .headers_mut()
             .insert(tcp::ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
+    }
+    if symmetric_replay_for_response {
+        response.headers_mut().insert(
+            tcp::SYMMETRIC_REPLAY_HEADER,
+            axum::http::HeaderValue::from_static("1"),
+        );
     }
     response
 }

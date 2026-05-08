@@ -295,6 +295,12 @@ pub(super) struct SessionResumptionSection {
     pub orphan_ttl_udp_secs: Option<u64>,
     pub orphan_per_user_cap: Option<usize>,
     pub orphan_global_cap: Option<usize>,
+    /// Per-session downlink ring buffer capacity for the v2 Symmetric
+    /// Downlink Replay protocol. `0` (the default) disables v2
+    /// server-side: the capability is never echoed and ring buffers
+    /// are never allocated. See `docs/SESSION-RESUMPTION.md`
+    /// § Symmetric Downlink Replay (v2).
+    pub downlink_buffer_bytes: Option<usize>,
 }
 
 pub(super) fn load_file_config(path: &Path) -> Result<FileConfig> {

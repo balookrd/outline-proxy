@@ -24,7 +24,9 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, Protocol, Transport};
 
 use super::super::super::state::AppState;
-use super::super::tcp::{ACK_PREFIX_HEADER, ResumeContext, SESSION_RESPONSE_HEADER};
+use super::super::tcp::{
+    ACK_PREFIX_HEADER, ResumeContext, SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER,
+};
 use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::{
@@ -233,6 +235,10 @@ async fn xhttp_get(
     // moves into `spawn_relay` — the field is still needed by the
     // response-header echo at the bottom of this handler.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
+    // v2 Symmetric Downlink Replay echo. Gated at parse time on
+    // (a) v1 also requested and (b) registry has v2 capacity, so a
+    // true value here is safe to surface in the response.
+    let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
     let (session, created) = state.registry.get_or_create(
         &session_id,
         resume_for_create.issued_session_id,
@@ -279,6 +285,11 @@ async fn xhttp_get(
             .headers_mut()
             .insert(ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
     }
+    if symmetric_replay_for_response {
+        response
+            .headers_mut()
+            .insert(SYMMETRIC_REPLAY_HEADER, axum::http::HeaderValue::from_static("1"));
+    }
     response
 }
 
@@ -321,6 +332,10 @@ async fn xhttp_post(
     // in `xhttp_get`: the response-header echo at the bottom needs
     // the field after `resume_for_create` is gone.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
+    // v2 Symmetric Downlink Replay echo. Gated at parse time on
+    // (a) v1 also requested and (b) registry has v2 capacity, so a
+    // true value here is safe to surface in the response.
+    let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
 
     // Auto-create on seq=0 so a client that POSTs before its GET
     // is allowed to establish the session. Refuse seq>0 against a
@@ -402,6 +417,9 @@ async fn xhttp_post(
     if ack_prefix_for_response {
         resp_headers.insert(ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
     }
+    if symmetric_replay_for_response {
+        resp_headers.insert(SYMMETRIC_REPLAY_HEADER, axum::http::HeaderValue::from_static("1"));
+    }
     response
 }
 
@@ -441,6 +459,10 @@ async fn xhttp_stream_one(
     // Snapshot before the move into `spawn_relay`. Same pattern as
     // `xhttp_get` / `xhttp_post`.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
+    // v2 Symmetric Downlink Replay echo. Gated at parse time on
+    // (a) v1 also requested and (b) registry has v2 capacity, so a
+    // true value here is safe to surface in the response.
+    let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
     let (session, created) = state.registry.get_or_create(
         &session_id,
         resume_for_create.issued_session_id,
@@ -518,6 +540,11 @@ async fn xhttp_stream_one(
         response
             .headers_mut()
             .insert(ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
+    }
+    if symmetric_replay_for_response {
+        response
+            .headers_mut()
+            .insert(SYMMETRIC_REPLAY_HEADER, axum::http::HeaderValue::from_static("1"));
     }
     response
 }

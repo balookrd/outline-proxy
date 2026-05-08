@@ -12,6 +12,7 @@
 
 pub(crate) mod ack_prefix;
 mod config;
+pub(crate) mod downlink_ring;
 mod parked;
 mod registry;
 mod session_id;
