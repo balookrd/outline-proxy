@@ -289,6 +289,33 @@ impl OrphanRegistry {
             .filter(|entry| entry.value().parked.kind() == kind)
             .count();
         self.metrics.set_orphan_current(kind, count as f64);
+        // The v2 downlink ring only lives on TCP entries, but a UDP
+        // park can still evict a TCP entry by the global cap — so
+        // refresh the bytes gauge unconditionally here, not just when
+        // `kind == "tcp"`. Cheap (one O(N) walk) and avoids a separate
+        // sampler.
+        self.refresh_downlink_buf_gauge();
+    }
+
+    /// Walks every parked TCP entry, sums the bytes currently retained
+    /// in its v2 downlink ring (if allocated), and publishes the total
+    /// on the `outline_ss_orphan_downlink_buf_bytes` gauge. O(N) in the
+    /// number of parked TCP sessions and grabs each ring's `parking_lot`
+    /// mutex briefly; called from event handlers that are already O(N)
+    /// or rarer.
+    fn refresh_downlink_buf_gauge(&self) {
+        let total: u64 = self
+            .by_id
+            .iter()
+            .filter_map(|entry| match &entry.value().parked {
+                Parked::Tcp(tcp) => tcp
+                    .downlink_ring
+                    .as_ref()
+                    .map(|ring| ring.lock().buffered_bytes() as u64),
+                _ => None,
+            })
+            .sum();
+        self.metrics.set_orphan_downlink_buf_bytes(total as f64);
     }
 
     /// Returns the Session ID with the earliest deadline. O(N), but only

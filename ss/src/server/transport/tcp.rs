@@ -668,9 +668,18 @@ async fn try_park_on_drop(
         // `None` means v2 was never engaged on this session.
         downlink_ring: state.downlink_ring.take(),
     };
+    let ring_diag = parked.downlink_ring.as_ref().map(|ring| {
+        let g = ring.lock();
+        (g.oldest_offset(), g.total_sent(), g.buffered_bytes())
+    });
+    let (ring_oldest, ring_total, ring_buffered) = ring_diag.unwrap_or((0, 0, 0));
     debug!(
         user = %owner,
         path = %route.path,
+        ring_present = ring_diag.is_some(),
+        ring_oldest_offset = ring_oldest,
+        ring_total_sent = ring_total,
+        ring_buffered_bytes = ring_buffered,
         "parking tcp upstream into orphan registry",
     );
     server.orphan_registry.park(session_id, Parked::Tcp(parked));
@@ -835,19 +844,23 @@ where
             // See `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2).
             if state.symmetric_replay_requested {
                 use crate::server::resumption::downlink_ring::ReplayOutcome;
-                let (flags, payload) = match parked.downlink_ring.as_ref() {
+                let (flags, payload, ring_diag) = match parked.downlink_ring.as_ref() {
                     None => {
                         // The session was parked from a path that did
                         // not run the v2 ring (e.g. operator enabled
                         // v2 mid-session or the prior carrier did not
                         // capture). Honest answer is TRUNCATED.
-                        (0x01u8, Vec::new())
+                        (0x01u8, Vec::new(), None)
                     },
                     Some(ring) => {
-                        let outcome = ring.lock().replay_from(state.client_acked_offset_request);
+                        let guard = ring.lock();
+                        let diag = (guard.oldest_offset(), guard.total_sent());
+                        let outcome =
+                            guard.replay_from(state.client_acked_offset_request);
+                        drop(guard);
                         match outcome {
-                            ReplayOutcome::Available(bytes) => (0x00u8, bytes),
-                            ReplayOutcome::Truncated => (0x01u8, Vec::new()),
+                            ReplayOutcome::Available(bytes) => (0x00u8, bytes, Some(diag)),
+                            ReplayOutcome::Truncated => (0x01u8, Vec::new(), Some(diag)),
                             ReplayOutcome::OffsetAhead => {
                                 warn!(
                                     user = user.id(),
@@ -856,12 +869,19 @@ where
                                     "v2 client claims more downstream bytes than server emitted; \
                                      treating as truncated"
                                 );
-                                (0x01u8, Vec::new())
+                                (0x01u8, Vec::new(), Some(diag))
                             },
                         }
                     },
                 };
                 let payload_len = payload.len() as u64;
+                let truncated = (flags & 0x01) != 0;
+                server
+                    .metrics
+                    .record_orphan_downlink_replay_bytes("tcp", payload_len);
+                if truncated {
+                    server.metrics.record_orphan_downlink_replay_truncated("tcp");
+                }
                 let mut frame = Vec::with_capacity(14 + payload.len());
                 frame.extend_from_slice(b"ORDR");
                 frame.push(0x01); // version
@@ -883,12 +903,15 @@ where
                             "v2 downlink replay frame send failed: WS data channel closed"
                         ))
                     })?;
+                let (ring_oldest, ring_total) = ring_diag.unwrap_or((0, 0));
                 debug!(
                     user = user.id(),
                     path = %route.path,
                     client_offset = state.client_acked_offset_request,
                     replay_len = payload_len,
-                    truncated = (flags & 0x01) != 0,
+                    truncated,
+                    ring_oldest_offset = ring_oldest,
+                    ring_total_sent = ring_total,
                     "emitted v2 downlink replay frame on resume hit",
                 );
             }

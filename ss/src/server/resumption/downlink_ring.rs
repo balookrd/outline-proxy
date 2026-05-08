@@ -107,7 +107,6 @@ impl DownlinkRing {
     /// Total bytes ever pushed (including bytes already evicted, and
     /// the truncated prefix of any oversized chunk). Equals the
     /// absolute offset of the next byte to be recorded.
-    #[allow(dead_code)] // surfaced for diagnostics / future metrics
     pub(crate) fn total_sent(&self) -> u64 {
         self.total_sent
     }
@@ -122,7 +121,6 @@ impl DownlinkRing {
     }
 
     /// Number of bytes currently held in the ring.
-    #[allow(dead_code)]
     pub(crate) fn buffered_bytes(&self) -> usize {
         self.current_bytes
     }

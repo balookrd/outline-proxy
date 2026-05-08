@@ -210,6 +210,23 @@ pub(super) fn register_descriptions() {
         "Currently parked orphan sessions awaiting cross-transport resumption, by kind."
     );
     describe_counter!(
+        "outline_ss_orphan_downlink_replay_bytes_total",
+        "Plaintext bytes replayed to resuming clients via the v2 Symmetric \
+         Downlink Replay protocol (`ORDR` frame payload), by transport."
+    );
+    describe_counter!(
+        "outline_ss_orphan_downlink_replay_truncated_total",
+        "Resume hits where the v2 downlink replay frame carried REPLAY_TRUNCATED \
+         — the requested offset preceded the ring's oldest retained byte, \
+         the parked ring was absent, or the client claimed bytes the server \
+         never emitted. By transport."
+    );
+    describe_gauge!(
+        "outline_ss_orphan_downlink_buf_bytes",
+        "Sum of bytes currently retained in v2 Symmetric Downlink Replay \
+         ring buffers across parked TCP orphan sessions."
+    );
+    describe_counter!(
         "outline_ss_tls_handshake_failed_total",
         "TLS handshake failures on the TCP listener grouped by classified reason."
     );
