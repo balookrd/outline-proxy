@@ -47,7 +47,8 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 
 use outline_transport::{
-    DnsCache as ClientDnsCache, TransportMode, TransportStream, connect_websocket_with_resume,
+    DnsCache as ClientDnsCache, TargetAddr, TransportMode, TransportStream,
+    UpstreamTransportGuard, connect_websocket_with_resume, vless::vless_tcp_pair_from_ws,
 };
 
 use super::super::nat::NatTable;
@@ -65,7 +66,7 @@ use super::xhttp::{
 use crate::config::H3Alpn;
 use crate::crypto::UserKey;
 use crate::metrics::Metrics;
-use crate::protocol::vless::{VERSION, VlessUser};
+use crate::protocol::vless::{VERSION, VlessUser, parse_uuid};
 
 /// Drains binary frames from the client stream until the
 /// accumulated payload reaches `expected` bytes (or the stream
@@ -278,6 +279,145 @@ async fn cross_repo_xhttp_h2_resume_reattaches_parked_upstream() -> Result<()> {
     assert_eq!(&second, b"helo");
 
     drop(stream_b);
+    server.abort();
+    Ok(())
+}
+
+/// End-to-end check of the v1.2 Ack-Prefix Protocol on the
+/// VLESS-over-XHTTP path — companion to the SS-WS and VLESS-WS
+/// cross-repo tests in `cross_repo_ss.rs` and `cross_repo_vless.rs`.
+///
+/// Drives client A through one round-trip without the capability,
+/// parks the upstream on a clean uplink-EOF, then reconnects as
+/// client B with both `X-Outline-Resume: <token>` AND
+/// `X-Outline-Resume-Ack-Prefix: 1`. Asserts:
+///
+///   1. The server echoes the capability header on the resume hit
+///      (proves the v1.2 echo wiring landed on the XHTTP carrier).
+///   2. `consume_ack_prefix_with_timeout` on the client's
+///      `VlessTcpReader` returns the parsed offset BEFORE any data
+///      `read_chunk` runs (proves the v1.1 fast path works for
+///      VLESS-over-XHTTP just like for VLESS-WS).
+///   3. The reported `up_acked` matches the upstream byte count the
+///      server forwarded across A's lifetime — exactly 4 bytes
+///      (`"ping"`).
+#[tokio::test]
+async fn cross_repo_xhttp_h2_ack_prefix_reports_up_acked_offset() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut first = [0_u8; 4];
+        stream.read_exact(&mut first).await?;
+        stream.write_all(b"pong").await?;
+        let mut second = [0_u8; 4];
+        stream.read_exact(&mut second).await?;
+        stream.write_all(b"ackk").await?;
+        Result::<_, anyhow::Error>::Ok((first, second))
+    });
+
+    let (listen_addr, server, registry) =
+        setup_xhttp_server_with_resumption("/xh", true).await?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!("http://{listen_addr}/xh"))?;
+
+    // ── Client A: legacy dial (no Ack-Prefix), one round-trip,
+    //              graceful uplink-EOF so the upstream parks ─────
+    let mut stream_a = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        None,
+        false,
+        "cross-repo-xhttp-ack-prefix-a",
+        None,
+        false,
+    )
+    .await?;
+    assert!(
+        !stream_a.ack_prefix_advertised_by_server(),
+        "client A did not advertise → server must not echo on the XHTTP GET response",
+    );
+    let token = stream_a
+        .issued_session_id()
+        .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
+
+    let handshake_a = build_vless_tcp_handshake(upstream_addr, b"ping")?;
+    stream_a.send(Message::Binary(Bytes::from(handshake_a))).await?;
+    let received_a = read_binary_until_at_least(&mut stream_a, 6).await?;
+    assert_eq!(&received_a[..2], &[VERSION, 0x00]);
+    assert_eq!(&received_a[2..6], b"pong");
+
+    // Park: uplink-EOF on the registry-side session. The relay
+    // observes EOF, exits, and the cleanup path parks the upstream
+    // under `token`.
+    let session = registry
+        .first_session()
+        .ok_or_else(|| anyhow::anyhow!("session A missing from registry"))?;
+    session.close_uplink();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(stream_a);
+
+    // ── Client B: resume + Ack-Prefix advertise ────────────────
+    let stream_b = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        None,
+        false,
+        "cross-repo-xhttp-ack-prefix-b",
+        Some(token),
+        true,
+    )
+    .await?;
+    assert!(
+        stream_b.ack_prefix_advertised_by_server(),
+        "server must echo X-Outline-Resume-Ack-Prefix: 1 on a XHTTP-VLESS resume hit \
+         when the client advertised the capability",
+    );
+
+    // Wrap the resumed stream in the higher-level VLESS pair so we
+    // can drive `consume_ack_prefix_with_timeout` like the VLESS-WS
+    // test does. `vless_tcp_pair_from_ws` works for `TransportStream
+    // ::Xhttp` too — `from_ws_frames` is generic over the variant.
+    let lifetime_b =
+        UpstreamTransportGuard::new("cross-repo-xhttp-ack-prefix-b", "vless-xhttp-h2");
+    let target_b = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
+    let diag_b = outline_transport::WsReadDiag::default();
+    let uuid_b = parse_uuid(TEST_UUID)?;
+    let (mut writer_b, mut reader_b) = vless_tcp_pair_from_ws(
+        stream_b,
+        &uuid_b,
+        &target_b,
+        Arc::clone(&lifetime_b),
+        diag_b,
+        None,
+    );
+    reader_b = reader_b.with_expect_ack_prefix(true);
+
+    writer_b.send_chunk(b"helo").await?;
+
+    let offset = reader_b
+        .consume_ack_prefix_with_timeout(Duration::from_secs(5))
+        .await?;
+    assert_eq!(
+        offset,
+        Some(4),
+        "xhttp Ack-Prefix offset must equal upstream byte count from client A's \"ping\"",
+    );
+    assert_eq!(reader_b.upstream_acked_offset(), Some(4));
+
+    let reply_b = reader_b.read_chunk().await?;
+    assert_eq!(reply_b, b"ackk", "vless-over-xhttp echo via resumed upstream");
+
+    let (first, second) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&first, b"ping");
+    assert_eq!(&second, b"helo");
+
+    drop(reader_b);
+    drop(writer_b);
+    drop(lifetime_b);
     server.abort();
     Ok(())
 }
