@@ -35,10 +35,10 @@ use crate::{TransportOperation, connect_tcp_socket};
 
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
 use super::{
-    INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, RequestBody, XhttpStream, XhttpSubmode, XhttpTarget,
-    default_port_for, empty_request_body, full_request_body, generate_session_id,
-    parse_session_response, resolve_effective_submode,
+    ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY,
+    RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, RequestBody, XhttpStream, XhttpSubmode,
+    XhttpTarget, default_port_for, empty_request_body, full_request_body, generate_session_id,
+    parse_ack_prefix_echo, parse_session_response, resolve_effective_submode,
 };
 
 /// Time budget for the initial dial: TCP + TLS + h2 handshake +
@@ -64,7 +64,8 @@ pub(super) async fn connect_xhttp_h2(
     fwmark: Option<u32>,
     ipv6_first: bool,
     resume_request: Option<SessionId>,
-) -> Result<(XhttpStream, Option<SessionId>)> {
+    ack_prefix_requested: bool,
+) -> Result<(XhttpStream, Option<SessionId>, bool)> {
     let submode = resolve_effective_submode(url, mode).await;
     let host = url
         .host_str()
@@ -109,14 +110,20 @@ pub(super) async fn connect_xhttp_h2(
             session_id: session_id.clone(),
         });
 
-        let (issued_session_id, driver, active_submode) = match submode {
+        let (issued_session_id, ack_prefix_echo, driver, active_submode) = match submode {
             XhttpSubmode::PacketUp => {
                 // Open the GET synchronously so the resume-id
                 // round-trip completes before we hand the stream to
                 // the caller. The body drain is spawned as a
                 // sub-task; POSTs are pipelined per `start_send`.
-                let (issued, body) =
-                    open_h2_get(send_request.clone(), &target, resume_request, profile).await?;
+                let (issued, echo, body) = open_h2_get(
+                    send_request.clone(),
+                    &target,
+                    resume_request,
+                    ack_prefix_requested,
+                    profile,
+                )
+                .await?;
                 let driver = tokio::spawn(driver_loop_h2(
                     send_request,
                     target.clone(),
@@ -125,7 +132,7 @@ pub(super) async fn connect_xhttp_h2(
                     body,
                     profile,
                 ));
-                (issued, driver, XhttpSubmode::PacketUp)
+                (issued, echo, driver, XhttpSubmode::PacketUp)
             },
             XhttpSubmode::StreamOne => {
                 // Stream-one is a single bidirectional POST: open
@@ -138,16 +145,22 @@ pub(super) async fn connect_xhttp_h2(
                 // forward the streaming request body), so trying
                 // the simpler carrier on the surviving connection
                 // recovers without burning a fresh handshake.
-                match open_h2_stream_one(send_request.clone(), &target, resume_request, profile)
-                    .await
+                match open_h2_stream_one(
+                    send_request.clone(),
+                    &target,
+                    resume_request,
+                    ack_prefix_requested,
+                    profile,
+                )
+                .await
                 {
-                    Ok((issued, body, frame_tx)) => {
+                    Ok((issued, echo, body, frame_tx)) => {
                         let driver = tokio::spawn(driver_loop_h2_stream_one(
                             in_tx, out_rx, body, frame_tx,
                         ));
                         crate::xhttp_submode_cache::record_success(url, XhttpSubmode::StreamOne)
                             .await;
-                        (issued, driver, XhttpSubmode::StreamOne)
+                        (issued, echo, driver, XhttpSubmode::StreamOne)
                     },
                     Err(stream_err) => {
                         warn!(
@@ -157,9 +170,14 @@ pub(super) async fn connect_xhttp_h2(
                         );
                         crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
                             .await;
-                        let (issued, body) =
-                            open_h2_get(send_request.clone(), &target, resume_request, profile)
-                                .await?;
+                        let (issued, echo, body) = open_h2_get(
+                            send_request.clone(),
+                            &target,
+                            resume_request,
+                            ack_prefix_requested,
+                            profile,
+                        )
+                        .await?;
                         let driver = tokio::spawn(driver_loop_h2(
                             send_request,
                             target.clone(),
@@ -168,7 +186,7 @@ pub(super) async fn connect_xhttp_h2(
                             body,
                             profile,
                         ));
-                        (issued, driver, XhttpSubmode::PacketUp)
+                        (issued, echo, driver, XhttpSubmode::PacketUp)
                     },
                 }
             },
@@ -176,7 +194,7 @@ pub(super) async fn connect_xhttp_h2(
 
         debug!(
             %url, %session_id, mode = "xhttp_h2", ?submode, ?active_submode,
-            ?issued_session_id, ?resume_request,
+            ?issued_session_id, ?resume_request, ack_prefix_requested, ack_prefix_echo,
             "xhttp session opened"
         );
         Ok::<_, anyhow::Error>((
@@ -188,6 +206,7 @@ pub(super) async fn connect_xhttp_h2(
                 _driver: AbortOnDrop::new(driver),
             },
             issued_session_id,
+            ack_prefix_echo,
         ))
     };
 
@@ -207,8 +226,9 @@ async fn open_h2_get(
     mut send: http2::SendRequest<RequestBody>,
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
+    ack_prefix_requested: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(Option<SessionId>, hyper::body::Incoming)> {
+) -> Result<(Option<SessionId>, bool, hyper::body::Incoming)> {
     let mut builder = Request::builder()
         .method(Method::GET)
         .uri(target.full_uri())
@@ -217,6 +237,9 @@ async fn open_h2_get(
         .header(RESUME_CAPABLE_HEADER, "1");
     if let Some(id) = resume_request {
         builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
+    }
+    if ack_prefix_requested {
+        builder = builder.header(ACK_PREFIX_HEADER, "1");
     }
     let mut req = builder
         .body(empty_request_body())
@@ -237,7 +260,10 @@ async fn open_h2_get(
         bail!("xhttp GET returned {}", resp.status());
     }
     let issued = parse_session_response(resp.headers());
-    Ok((issued, resp.into_body()))
+    // Echo gating: same shape as the WS H1/H2/H3 paths — only report
+    // a positive negotiation when we asked AND the server echoed.
+    let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
+    Ok((issued, echo, resp.into_body()))
 }
 
 /// Stream-one carrier on h2: a single bidirectional POST whose
@@ -249,9 +275,11 @@ async fn open_h2_stream_one(
     mut send: http2::SendRequest<RequestBody>,
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
+    ack_prefix_requested: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(
     Option<SessionId>,
+    bool,
     hyper::body::Incoming,
     mpsc::Sender<hyper::body::Frame<Bytes>>,
 )> {
@@ -273,6 +301,9 @@ async fn open_h2_stream_one(
     if let Some(id) = resume_request {
         builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
     }
+    if ack_prefix_requested {
+        builder = builder.header(ACK_PREFIX_HEADER, "1");
+    }
     let mut req = builder
         .body(body)
         .context("failed to build xhttp stream-one request")?;
@@ -292,7 +323,8 @@ async fn open_h2_stream_one(
         bail!("xhttp stream-one returned {}", resp.status());
     }
     let issued = parse_session_response(resp.headers());
-    Ok((issued, resp.into_body(), frame_tx))
+    let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
+    Ok((issued, echo, resp.into_body(), frame_tx))
 }
 
 async fn driver_loop_h2_stream_one(

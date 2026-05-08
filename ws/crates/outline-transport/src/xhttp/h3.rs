@@ -32,7 +32,7 @@ use crate::TransportOperation;
 
 use super::stream::io_ws_err;
 use super::{
-    INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
+    ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
     RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, XhttpStream, XhttpSubmode,
     XhttpTarget, generate_session_id,
 };
@@ -80,7 +80,8 @@ pub(super) async fn connect_xhttp_h3(
     fwmark: Option<u32>,
     ipv6_first: bool,
     resume_request: Option<SessionId>,
-) -> Result<(XhttpStream, Option<SessionId>)> {
+    ack_prefix_requested: bool,
+) -> Result<(XhttpStream, Option<SessionId>, bool)> {
     let host = url
         .host_str()
         .ok_or_else(|| anyhow!("xhttp/h3 url missing host: {url}"))?
@@ -130,10 +131,16 @@ pub(super) async fn connect_xhttp_h3(
         let (in_tx, in_rx) = mpsc::channel::<Result<Message, WsError>>(INBOUND_CHANNEL_CAPACITY);
         let (out_tx, out_rx) = mpsc::channel::<Message>(OUTBOUND_CHANNEL_CAPACITY);
 
-        let (issued_session_id, driver, active_submode) = match submode {
+        let (issued_session_id, ack_prefix_echo, driver, active_submode) = match submode {
             XhttpSubmode::PacketUp => {
-                let (issued, request_stream) =
-                    open_h3_get(send_request.clone(), &target, resume_request, profile).await?;
+                let (issued, echo, request_stream) = open_h3_get(
+                    send_request.clone(),
+                    &target,
+                    resume_request,
+                    ack_prefix_requested,
+                    profile,
+                )
+                .await?;
                 let driver = tokio::spawn(driver_loop_h3(
                     send_request,
                     target.clone(),
@@ -142,7 +149,7 @@ pub(super) async fn connect_xhttp_h3(
                     request_stream,
                     profile,
                 ));
-                (issued, driver, XhttpSubmode::PacketUp)
+                (issued, echo, driver, XhttpSubmode::PacketUp)
             },
             XhttpSubmode::StreamOne => {
                 // The h3 client closes the connection with `H3_NO_ERROR`
@@ -161,10 +168,16 @@ pub(super) async fn connect_xhttp_h3(
                 // on this network path, packet-up usually still works
                 // because it issues one short bidi stream per POST
                 // instead of one long-lived one.
-                match open_h3_stream_one(send_request.clone(), &target, resume_request, profile)
-                    .await
+                match open_h3_stream_one(
+                    send_request.clone(),
+                    &target,
+                    resume_request,
+                    ack_prefix_requested,
+                    profile,
+                )
+                .await
                 {
-                    Ok((issued, request_stream)) => {
+                    Ok((issued, echo, request_stream)) => {
                         let driver = tokio::spawn(driver_loop_h3_stream_one(
                             send_request,
                             in_tx,
@@ -173,7 +186,7 @@ pub(super) async fn connect_xhttp_h3(
                         ));
                         crate::xhttp_submode_cache::record_success(url, XhttpSubmode::StreamOne)
                             .await;
-                        (issued, driver, XhttpSubmode::StreamOne)
+                        (issued, echo, driver, XhttpSubmode::StreamOne)
                     },
                     Err(stream_err) => {
                         warn!(
@@ -183,9 +196,14 @@ pub(super) async fn connect_xhttp_h3(
                         );
                         crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
                             .await;
-                        let (issued, request_stream) =
-                            open_h3_get(send_request.clone(), &target, resume_request, profile)
-                                .await?;
+                        let (issued, echo, request_stream) = open_h3_get(
+                            send_request.clone(),
+                            &target,
+                            resume_request,
+                            ack_prefix_requested,
+                            profile,
+                        )
+                        .await?;
                         let driver = tokio::spawn(driver_loop_h3(
                             send_request,
                             target.clone(),
@@ -194,7 +212,7 @@ pub(super) async fn connect_xhttp_h3(
                             request_stream,
                             profile,
                         ));
-                        (issued, driver, XhttpSubmode::PacketUp)
+                        (issued, echo, driver, XhttpSubmode::PacketUp)
                     },
                 }
             },
@@ -202,12 +220,13 @@ pub(super) async fn connect_xhttp_h3(
 
         debug!(
             %url, %session_id, mode = "xhttp_h3", ?submode, ?active_submode,
-            ?issued_session_id, ?resume_request,
+            ?issued_session_id, ?resume_request, ack_prefix_requested, ack_prefix_echo,
             "xhttp h3 session opened"
         );
         Ok::<_, anyhow::Error>((
             XhttpStream::from_channels(in_rx, out_tx, AbortOnDrop::new(driver), active_submode),
             issued_session_id,
+            ack_prefix_echo,
         ))
     };
 
@@ -284,8 +303,13 @@ async fn open_h3_get(
     mut send: SendRequest<h3_quinn::OpenStreams, Bytes>,
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
+    ack_prefix_requested: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(Option<SessionId>, h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>)> {
+) -> Result<(
+    Option<SessionId>,
+    bool,
+    h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+)> {
     let mut builder = Request::builder()
         .method(Method::GET)
         .uri(target.full_uri())
@@ -293,6 +317,9 @@ async fn open_h3_get(
         .header(RESUME_CAPABLE_HEADER, "1");
     if let Some(id) = resume_request {
         builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
+    }
+    if ack_prefix_requested {
+        builder = builder.header(ACK_PREFIX_HEADER, "1");
     }
     let mut req = builder
         .body(())
@@ -327,7 +354,8 @@ async fn open_h3_get(
         .get(SESSION_RESPONSE_HEADER)
         .and_then(|v| v.to_str().ok())
         .and_then(SessionId::parse_hex);
-    Ok((issued, stream))
+    let echo = ack_prefix_requested && super::parse_ack_prefix_echo(resp.headers());
+    Ok((issued, echo, stream))
 }
 
 async fn driver_loop_h3(
@@ -393,8 +421,13 @@ async fn open_h3_stream_one(
     mut send: SendRequest<h3_quinn::OpenStreams, Bytes>,
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
+    ack_prefix_requested: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(Option<SessionId>, h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>)> {
+) -> Result<(
+    Option<SessionId>,
+    bool,
+    h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+)> {
     let mut builder = Request::builder()
         .method(Method::POST)
         .uri(target.full_uri_with_submode(XhttpSubmode::StreamOne))
@@ -402,6 +435,9 @@ async fn open_h3_stream_one(
         .header(RESUME_CAPABLE_HEADER, "1");
     if let Some(id) = resume_request {
         builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
+    }
+    if ack_prefix_requested {
+        builder = builder.header(ACK_PREFIX_HEADER, "1");
     }
     let mut req = builder
         .body(())
@@ -433,7 +469,8 @@ async fn open_h3_stream_one(
         .get(SESSION_RESPONSE_HEADER)
         .and_then(|v| v.to_str().ok())
         .and_then(SessionId::parse_hex);
-    Ok((issued, stream))
+    let echo = ack_prefix_requested && super::parse_ack_prefix_echo(resp.headers());
+    Ok((issued, echo, stream))
 }
 
 async fn driver_loop_h3_stream_one(
