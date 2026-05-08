@@ -135,6 +135,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_active_wire: 0,
                 tcp_active_wire_pin_remaining_ms: None,
                 udp_active_wire_pin_remaining_ms: None,
+                fingerprint_profile_strategy: "none".to_string(),
             },
             UplinkSnapshot {
                 index: 1,
@@ -224,6 +225,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_active_wire: 0,
                 tcp_active_wire_pin_remaining_ms: Some(7_500),
                 udp_active_wire_pin_remaining_ms: None,
+                fingerprint_profile_strategy: "none".to_string(),
             },
         ],
         sticky_routes: vec![StickyRouteSnapshot {

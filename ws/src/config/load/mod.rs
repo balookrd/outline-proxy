@@ -115,9 +115,14 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     // byte-identical to pre-knob builds. Opt-in via `fingerprint_profile`
     // in the top-level config; serde already turns the string aliases
     // ("stable", "random", "off", …) into the right enum variant.
-    let fingerprint_profile = file
-        .as_ref()
-        .and_then(|f| f.fingerprint_profile)
+    // CLI / env (`--fingerprint-profile` / `OUTLINE_FINGERPRINT_PROFILE`)
+    // wins over the TOML key, mirroring how `--listen` / `--metrics-listen`
+    // shadow their `[socks5]` / `[metrics]` siblings. Per-uplink
+    // overrides are independent and still apply on top of whichever
+    // process-wide value lands here.
+    let fingerprint_profile = args
+        .fingerprint_profile
+        .or_else(|| file.as_ref().and_then(|f| f.fingerprint_profile))
         .unwrap_or_default();
 
     // State file path priority: CLI flag > config key > default (config

@@ -169,6 +169,15 @@ pub struct UplinkSnapshot {
     /// UDP counterpart to [`Self::tcp_active_wire_pin_remaining_ms`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub udp_active_wire_pin_remaining_ms: Option<u128>,
+    /// Effective browser-fingerprint diversification strategy on this
+    /// uplink: the per-uplink override when set, otherwise the
+    /// process-wide default from `init_fingerprint_profile_strategy`
+    /// (CLI `--fingerprint-profile` or top-level `fingerprint_profile`
+    /// TOML key). One of the lowercase tokens `none`, `per_host_stable`,
+    /// `random`. Surfaced as the `strategy` label on
+    /// `outline_ws_rust_uplink_fingerprint_profile_strategy_info` and
+    /// as a JSON field on the `/snapshot` control endpoint.
+    pub fingerprint_profile_strategy: String,
 }
 
 #[doc(hidden)]

@@ -1299,3 +1299,58 @@ async fn load_config_threads_per_uplink_fingerprint_profile_override() {
         "uplink without explicit override must inherit (not synthesise) the field"
     );
 }
+
+#[tokio::test]
+async fn cli_fingerprint_profile_overrides_top_level_config_key() {
+    use outline_transport::FingerprintProfileStrategy as Fp;
+
+    // The TOML pins `stable`, but the operator passed
+    // `--fingerprint-profile random` on the command line. CLI must
+    // win — same precedence rule as `--listen` / `--metrics-listen`.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+        fingerprint_profile = "stable"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test", "--fingerprint-profile", "random"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert_eq!(config.fingerprint_profile, Fp::Random);
+}
+
+#[tokio::test]
+async fn cli_fingerprint_profile_applies_when_top_level_key_is_missing() {
+    use outline_transport::FingerprintProfileStrategy as Fp;
+
+    // Default TOML has no `fingerprint_profile` key — without the CLI
+    // flag it would resolve to `Strategy::None`. The flag opts the
+    // process in to `per_host_stable` without editing the file.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test", "--fingerprint-profile", "stable"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert_eq!(config.fingerprint_profile, Fp::PerHostStable);
+}

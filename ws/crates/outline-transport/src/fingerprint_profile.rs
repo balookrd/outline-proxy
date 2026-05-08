@@ -53,6 +53,33 @@ pub enum Strategy {
     Random,
 }
 
+impl Strategy {
+    /// Stable, lowercase, snake_case label for this variant. Used as a
+    /// Prometheus label value and as a snapshot field — the dashboard
+    /// alerts and config reload tests both key on this exact string,
+    /// so renaming a variant here is a wire-format break.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::PerHostStable => "per_host_stable",
+            Self::Random => "random",
+        }
+    }
+
+    /// Every label value [`Self::as_str`] can return. Snapshot
+    /// renderers iterate this so an info-style gauge can publish a
+    /// 0 row for inactive strategies before flipping the active one
+    /// to 1.
+    pub const ALL: &'static [Strategy] =
+        &[Strategy::None, Strategy::PerHostStable, Strategy::Random];
+}
+
+impl std::fmt::Display for Strategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl std::str::FromStr for Strategy {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self> {
@@ -192,7 +219,17 @@ pub fn init_strategy(strategy: Strategy) {
     let _ = STRATEGY.set(strategy);
 }
 
-fn current_strategy() -> Strategy {
+/// Returns the process-wide strategy set by [`init_strategy`], or
+/// the default ([`Strategy::None`]) when nothing was wired. Snapshot
+/// builders read this to surface the active default on the
+/// dashboard / Prometheus when the per-uplink override is absent.
+///
+/// Note: this is the **declared** default, not the strategy the next
+/// dial will actually see — a task-local override pushed via
+/// [`with_strategy_override`] supersedes this for the duration of the
+/// scope. The snapshot path runs outside any such scope, so this is
+/// the right value to show on the dashboard.
+pub fn current_strategy() -> Strategy {
     STRATEGY.get().copied().unwrap_or_default()
 }
 

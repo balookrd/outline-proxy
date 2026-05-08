@@ -382,6 +382,17 @@ impl UplinkManager {
                     .active_wire_pinned_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
+                // Effective strategy: per-uplink override wins, otherwise
+                // the process-wide default wired by `init_strategy`. The
+                // task-local `with_strategy_override` scope is irrelevant
+                // here — the snapshot path runs outside it, so reading
+                // the global is the right baseline for "what would a
+                // fresh dial under this uplink see".
+                fingerprint_profile_strategy: uplink
+                    .fingerprint_profile
+                    .unwrap_or_else(outline_transport::current_fingerprint_profile_strategy)
+                    .as_str()
+                    .to_string(),
             });
         }
 

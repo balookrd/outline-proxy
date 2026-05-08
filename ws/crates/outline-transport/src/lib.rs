@@ -252,7 +252,9 @@ pub async fn xhttp_stream_one_block_remaining(url: &url::Url) -> Option<std::tim
 // (User-Agent, Accept-*, Sec-Fetch-*). Default (knob unset) leaves the
 // wire shape byte-identical to pre-profile builds.
 pub use fingerprint_profile::{
-    Strategy as FingerprintProfileStrategy, init_strategy as init_fingerprint_profile_strategy,
+    Strategy as FingerprintProfileStrategy,
+    current_strategy as current_fingerprint_profile_strategy,
+    init_strategy as init_fingerprint_profile_strategy,
 };
 
 // Transport lifetime guards — published because the uplink crate pairs a
