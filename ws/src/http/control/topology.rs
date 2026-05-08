@@ -158,12 +158,23 @@ struct ControlUplinkTopology {
     /// Effective browser-fingerprint diversification strategy on this
     /// uplink (per-uplink override if set, otherwise process-wide default).
     /// Lowercase snake_case: `none` / `per_host_stable` / `random`. The
-    /// dashboard renders a chip when the value is non-default; the field
-    /// is omitted from JSON when it equals `none` so older snapshot
-    /// consumers (and the common opt-out deployment) keep the same wire
-    /// shape they had before this field landed.
+    /// dashboard reads this to colour the chip; the field is omitted
+    /// from JSON when it equals `none` so older snapshot consumers
+    /// (and the common opt-out deployment) keep the same wire shape
+    /// they had before this field landed.
     #[serde(skip_serializing_if = "is_none_strategy")]
     fingerprint_profile_strategy: String,
+    /// Active profile name (`chrome-130-macos`, `firefox-130-windows`,
+    /// `safari-17-macos`, `edge-130-windows`, …) for the uplink's
+    /// primary dial URL under the effective strategy. The dashboard
+    /// renders this directly inside the FP chip so the operator sees
+    /// the actual identity on the wire instead of just the strategy
+    /// token. `Some("random")` for `random` strategy (rotation, no
+    /// stable identity); absent for `none` strategy or
+    /// Shadowsocks-over-raw-socket uplinks where no URL-based dial
+    /// path engages the fingerprint module.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fingerprint_profile_name: Option<String>,
 }
 
 fn is_none_strategy(s: &str) -> bool {
@@ -364,6 +375,7 @@ fn build_uplink_topology(
         tcp_active_wire_pin_remaining_ms: uplink.tcp_active_wire_pin_remaining_ms,
         udp_active_wire_pin_remaining_ms: uplink.udp_active_wire_pin_remaining_ms,
         fingerprint_profile_strategy: uplink.fingerprint_profile_strategy.clone(),
+        fingerprint_profile_name: uplink.fingerprint_profile_name.clone(),
     }
 }
 

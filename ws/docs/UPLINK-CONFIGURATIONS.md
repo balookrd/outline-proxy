@@ -859,14 +859,27 @@ zero buckets stay greyed-out so the active distribution reads at a
 glance.
 
 The bundled HTML control-plane dashboard renders a per-uplink chip
-labelled `FP: Stable` (blue) or `FP: Random` (purple) next to the
-protocol pill on every row whose effective strategy is non-default.
-Uplinks on `none` get no chip — the common opt-out deployment stays
-visually unchanged. The chip's tooltip carries the raw lowercase
-token (`fingerprint_profile_strategy = per_host_stable`) so an
-operator looking at the dashboard can correlate immediately with the
-Prometheus label and the snapshot JSON without translating between
-forms.
+showing the **active profile** (e.g. `Chrome 130 macOS`) next to the
+protocol pill on every row where the effective strategy resolves to
+something other than `none`. The chip is colour-coded by family:
+blue for the stable profiles (Chrome / Firefox / Safari / Edge under
+`per_host_stable`) and purple for `Random` — at-a-glance the operator
+can tell whether the identity is pinned or rolling. Uplinks on `none`
+get no chip — the common opt-out deployment stays visually unchanged.
+The tooltip carries both the raw profile id and the strategy
+(`fingerprint_profile_name = chrome-130-macos · strategy = per_host_stable`)
+so the rendered label can be correlated immediately with the
+Prometheus `strategy` label and the snapshot JSON without translating
+between forms.
+
+The active profile is computed in the snapshot builder by running
+`select_with_strategy(primary_dial_url, effective_strategy)` —
+`tcp_dial_url()` first, falling back to `udp_dial_url()` for
+UDP-only uplinks, and skipped entirely for plain Shadowsocks
+uplinks (no URL → no profile). Surfaced as
+`UplinkSnapshot::fingerprint_profile_name` and forwarded through
+the topology JSON as `fingerprint_profile_name` (omitted when
+absent).
 
 ### Per-uplink override
 
