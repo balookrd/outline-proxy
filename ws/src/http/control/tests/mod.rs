@@ -232,7 +232,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 // the same fixture. The matching profile name is what
                 // the dashboard chip actually shows.
                 fingerprint_profile_strategy: "per_host_stable".to_string(),
-                fingerprint_profile_name: Some("chrome-130-macos".to_string()),
+                fingerprint_profile_name: Some("chrome-142-macos".to_string()),
             },
         ],
         sticky_routes: vec![StickyRouteSnapshot {
@@ -379,7 +379,7 @@ fn topology_serialises_active_fingerprint_profile_name() {
     // reads `Chrome 130 macOS` rather than `Stable`. The field rides
     // through topology JSON unchanged so the HTML side can pretty-
     // format it without reaching into rustc-side logic. The fixture
-    // pins `chrome-130-macos` on uplink 1 and leaves uplink 0 on
+    // pins `chrome-142-macos` on uplink 1 and leaves uplink 0 on
     // `none` (no profile applies), so this test exercises both
     // branches in one go.
     let topology = ControlTopologyResponse {
@@ -392,7 +392,7 @@ fn topology_serialises_active_fingerprint_profile_name() {
         u0.get("fingerprint_profile_name").is_none(),
         "default `none` uplink must not carry a profile name; got {u0}",
     );
-    assert_eq!(u1["fingerprint_profile_name"], "chrome-130-macos");
+    assert_eq!(u1["fingerprint_profile_name"], "chrome-142-macos");
 }
 
 #[test]

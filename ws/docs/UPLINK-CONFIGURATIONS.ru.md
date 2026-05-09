@@ -860,8 +860,8 @@ WS / XHTTP-дозвоны могут подмешивать браузерные
 идентификации (`User-Agent`, `Accept-*`, семейство Sec-CH-UA,
 Sec-Fetch-*), чтобы простое DPI-правило вида «WS-upgrade без
 User-Agent» больше не отделяло клиент от реального браузерного
-трафика. В пул входит шесть профилей: Chrome 130 (Windows + macOS),
-Firefox 130 (Windows + macOS), Safari 17 (macOS), Edge 130 (Windows).
+трафика. В пул входит шесть профилей: Chrome 142 (Windows + macOS),
+Firefox 150 (Windows + macOS), Safari 19 (macOS), Edge 142 (Windows).
 
 Доступны две стабильные стратегии. **`process_stable`
 (рекомендуемый дефолт)** выбирает одну идентичность на старте
@@ -974,7 +974,7 @@ Strategy»** в верхней строке статуса рядом с `Select
 пустые ячейки серые, так что активное распределение видно сразу.
 
 Встроенный HTML-дашборд control-plane'а рисует per-uplink чип
-с **именем активного профиля** (например, `Chrome 130 macOS`)
+с **именем активного профиля** (например, `Chrome 142 macOS`)
 рядом с протокол-pill в каждой строке аплинка, где эффективная
 стратегия не равна `none`. Цвет — по семейству: синий для
 стабильных профилей (Chrome / Firefox / Safari / Edge под
@@ -982,7 +982,7 @@ Strategy»** в верхней строке статуса рядом с `Select
 оператор сразу видит, идентичность приколота или ротируется.
 Аплинки на `none` чипа не получают — типичный opt-out-deployment
 визуально не меняется. Tooltip несёт и сырой id профиля, и стратегию
-(`fingerprint_profile_name = chrome-130-macos · strategy = process_stable`),
+(`fingerprint_profile_name = chrome-142-macos · strategy = process_stable`),
 чтобы отрисованный лейбл сразу сопоставлялся с Prometheus-лейблом
 `strategy` и snapshot-полем без перевода между формами.
 
