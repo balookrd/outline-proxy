@@ -1,6 +1,18 @@
-//! HTTP data-path probe.  Sends a HEAD request through the Shadowsocks
-//! tunnel and verifies the response-status line — HEAD keeps probe traffic
-//! tiny even when the configured URL points at a large object.
+//! HTTP / HTTPS data-path probe.
+//!
+//! For `http://` URLs sends a HEAD request through the tunnel and verifies
+//! the response-status line — HEAD keeps probe traffic tiny even when the
+//! configured URL points at a large object.
+//!
+//! For `https://` URLs runs only the inner TLS handshake to the named SNI
+//! through the tunnel: ClientHello → ServerHello/Certificate → Finished →
+//! close-notify. This catches `chunk0_timeout`-class failures where the
+//! outer transport handshake to the uplink server succeeds but the inner
+//! TLS handshake to a real product edge gets interfered with by DPI /
+//! upstream filtering. No HTTP exchange happens after the handshake — a
+//! TLS-handshake-only probe matches the observed failure signature
+//! (server_hello / certificate never arrive) without paying for an extra
+//! application-layer round trip.
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -9,7 +21,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use tokio::sync::Semaphore;
 use tracing::debug;
 
-use outline_transport::{DnsCache, TcpReader, TcpWriter};
+use outline_transport::{
+    DnsCache, TcpReader, TcpWriter, TlsClientConnection, TlsServerName,
+    build_https_probe_client_config,
+};
 
 use crate::config::{HttpProbeConfig, TargetAddr, UplinkConfig, UplinkTransport, TransportMode};
 use crate::manager::probe::warm_tcp::{self, WarmTcpProbe, WarmTcpProbeSlot};
@@ -27,14 +42,18 @@ pub(super) async fn run_http_probe(
     warm_slot: Option<&WarmTcpProbeSlot>,
 ) -> Result<(bool, Option<TransportMode>)> {
     let url = probe.next_url();
-    if url.scheme() != "http" {
-        bail!("only http:// probe URLs are currently supported");
+    let scheme = url.scheme();
+    if scheme != "http" && scheme != "https" {
+        bail!("only http:// and https:// probe URLs are supported");
     }
+    let is_https = scheme == "https";
 
     let host = url
         .host_str()
         .ok_or_else(|| anyhow!("http probe URL is missing host: {}", url))?;
-    let port = url.port_or_known_default().unwrap_or(80);
+    let port = url
+        .port_or_known_default()
+        .unwrap_or(if is_https { 443 } else { 80 });
     let target = if let Ok(ip) = host.parse::<IpAddr>() {
         match ip {
             IpAddr::V4(v4) => TargetAddr::IpV4(v4, port),
@@ -73,17 +92,26 @@ pub(super) async fn run_http_probe(
     // server's tunnel stays bound to the probe target across cycles.
     // Plain Shadowsocks (direct UDP socket) gets `None` — no slot is
     // populated for it.
-    let warm_taken = warm_slot.and_then(|slot| warm_tcp::take_if_matches(slot, effective_tcp_mode));
+    //
+    // HTTPS probes always fresh-dial: the warm pool tracks plain HTTP
+    // keep-alive state, not TLS-session state, and reusing a pipe that
+    // was bound to one TLS SNI would break the next cycle's handshake.
+    let warm_taken = if is_https {
+        None
+    } else {
+        warm_slot.and_then(|slot| warm_tcp::take_if_matches(slot, effective_tcp_mode))
+    };
     let (mut writer, mut reader, downgraded_from, dialed_fresh) = match warm_taken {
         Some(WarmTcpProbe::Vless { writer, reader, .. })
         | Some(WarmTcpProbe::Ws { writer, reader, .. }) => (writer, reader, None, false),
         None => {
+            let dial_label = if is_https { "HTTPS probe" } else { "HTTP probe" };
             let (w, r, downgraded) = connect_probe_tcp(
                 cache,
                 uplink,
                 &target,
-                "probe_http",
-                "HTTP probe",
+                if is_https { "probe_https" } else { "probe_http" },
+                dial_label,
                 effective_tcp_mode,
                 dial_limit,
             )
@@ -92,22 +120,35 @@ pub(super) async fn run_http_probe(
         },
     };
 
-    let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: "http" };
+    let probe_label: &'static str = if is_https { "https" } else { "http" };
+    let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: probe_label };
     // Skip the SOCKS5 target prefix on a reused VLESS pipe — the server
     // already locked the tunnel onto the probe target at dial time. Sending
     // it again would corrupt the upstream HTTP byte stream.
     let send_socks5_prefix = needs_socks5_target && dialed_fresh;
-    let result = exchange_http_probe(
-        &mut writer,
-        &mut reader,
-        host,
-        port,
-        &path,
-        &target_wire,
-        send_socks5_prefix,
-        &bytes,
-    )
-    .await;
+    let result = if is_https {
+        run_https_handshake_probe(
+            &mut writer,
+            &mut reader,
+            host,
+            &target_wire,
+            send_socks5_prefix,
+            &bytes,
+        )
+        .await
+    } else {
+        exchange_http_probe(
+            &mut writer,
+            &mut reader,
+            host,
+            port,
+            &path,
+            &target_wire,
+            send_socks5_prefix,
+            &bytes,
+        )
+        .await
+    };
 
     let server_will_close = result.as_ref().map(|r| r.server_will_close).unwrap_or(true);
     let status_ok = result.as_ref().map(|r| r.status_ok).unwrap_or(false);
@@ -118,8 +159,10 @@ pub(super) async fn run_http_probe(
     // (VLESS or SS-over-WS). A downgrade marker also disqualifies —
     // `effective_tcp_mode` for the next cycle will be different and
     // `take_if_matches` would reject it anyway; close now so the upstream
-    // socket goes away promptly.
-    let keep_warm = probe_err.is_none()
+    // socket goes away promptly. HTTPS probes are excluded because their
+    // pipe carries TLS state that the warm pool cannot represent.
+    let keep_warm = !is_https
+        && probe_err.is_none()
         && status_ok
         && !server_will_close
         && downgraded_from.is_none()
@@ -138,7 +181,7 @@ pub(super) async fn run_http_probe(
                 // `warm_slot.is_some()` would be false. Defend against
                 // misuse by closing instead of mis-tagging.
                 UplinkTransport::Shadowsocks => {
-                    close_probe_tcp_writer(&uplink.name, "http", &mut writer).await;
+                    close_probe_tcp_writer(&uplink.name, probe_label, &mut writer).await;
                     return match probe_err {
                         Some(err) => Err(err),
                         None => Ok((status_ok, downgraded_from)),
@@ -151,13 +194,13 @@ pub(super) async fn run_http_probe(
         debug!(
             uplink = %uplink.name,
             transport = "tcp",
-            probe = "http",
+            probe = probe_label,
             url = %url,
             dialed_fresh,
             server_will_close,
-            "closing probe transport after HTTP probe"
+            "closing probe transport after probe"
         );
-        close_probe_tcp_writer(&uplink.name, "http", &mut writer).await;
+        close_probe_tcp_writer(&uplink.name, probe_label, &mut writer).await;
     }
     match probe_err {
         Some(err) => Err(err),
@@ -170,6 +213,8 @@ struct HttpProbeResult {
     /// `true` if the response signalled the server intends to close the
     /// connection (`Connection: close`, or HTTP/1.0 without explicit
     /// `keep-alive`). Used to gate whether the warm slot may keep the pipe.
+    /// Always `true` for the HTTPS handshake-only probe — its pipe is
+    /// never warm-pooled regardless.
     server_will_close: bool,
 }
 
@@ -280,6 +325,93 @@ async fn exchange_http_probe(
         status_ok: (200..400).contains(&status),
         server_will_close,
     })
+}
+
+/// I/O half of the HTTPS probe: drives the already-connected (writer, reader)
+/// pair through the SOCKS5 prefix (when applicable) and a TLS handshake to
+/// the named SNI, terminated with `close_notify`. No HTTP exchange follows
+/// the handshake — the goal is to reproduce the user-flow chunk-0 pattern
+/// (ClientHello → silent upstream) so DPI / upstream filtering of TLS
+/// records surfaces as a probe failure that flips uplink health.
+async fn run_https_handshake_probe(
+    writer: &mut TcpWriter,
+    reader: &mut TcpReader,
+    host: &str,
+    target_wire: &[u8],
+    needs_socks5_target: bool,
+    bytes: &BytesRecorder<'_>,
+) -> Result<HttpProbeResult> {
+    if needs_socks5_target {
+        writer
+            .send_chunk(target_wire)
+            .await
+            .context("failed to send HTTPS probe target")?;
+        bytes.outgoing(target_wire.len());
+    }
+
+    // ALPN list mimics a typical browser. Server-side filtering that
+    // discriminates by ALPN (e.g. dropping `h2` while passing `http/1.1`)
+    // would otherwise be invisible to a probe that omits ALPN entirely.
+    let config = build_https_probe_client_config(&[b"h2", b"http/1.1"]);
+    let server_name = TlsServerName::try_from(host.to_string())
+        .map_err(|e| anyhow!("invalid TLS server name {host}: {e}"))?;
+    let mut conn = TlsClientConnection::new(config, server_name)
+        .context("failed to construct TLS client connection")?;
+
+    // Drive the handshake using rustls' synchronous state-machine API.
+    // Pump pending writes out via `send_chunk` and feed server bytes in
+    // by reading the next chunk. The outer `probe.timeout` (applied in
+    // `probe::probe_uplink`) bounds the total wait — there is no inner
+    // deadline here, so a silent upstream surfaces as a probe-level
+    // timeout exactly the way `chunk0_timeout` surfaces on user flows.
+    while conn.is_handshaking() {
+        if conn.wants_write() {
+            let mut wire = Vec::with_capacity(2048);
+            while conn.wants_write() {
+                conn.write_tls(&mut wire)
+                    .context("rustls write_tls failed")?;
+            }
+            if !wire.is_empty() {
+                writer
+                    .send_chunk(&wire)
+                    .await
+                    .context("failed to forward TLS records to upstream")?;
+                bytes.outgoing(wire.len());
+            }
+        } else {
+            let chunk = reader
+                .read_chunk()
+                .await
+                .context("failed to read TLS records from upstream")?;
+            if chunk.is_empty() {
+                bail!("TLS probe transport closed before handshake completed");
+            }
+            bytes.incoming(chunk.len());
+            let chunk_bytes: &[u8] = &chunk;
+            let chunk_len = chunk_bytes.len();
+            let mut cursor = std::io::Cursor::new(chunk_bytes);
+            while (cursor.position() as usize) < chunk_len {
+                conn.read_tls(&mut cursor)
+                    .context("rustls read_tls failed")?;
+            }
+            conn.process_new_packets()
+                .context("TLS handshake processing failed")?;
+        }
+    }
+
+    // Send `close_notify`: best-effort, the handshake itself succeeded
+    // so a write failure here does not invalidate the probe outcome.
+    conn.send_close_notify();
+    let mut wire = Vec::new();
+    while conn.wants_write() {
+        let _ = conn.write_tls(&mut wire);
+    }
+    if !wire.is_empty() {
+        let _ = writer.send_chunk(&wire).await;
+        bytes.outgoing(wire.len());
+    }
+
+    Ok(HttpProbeResult { status_ok: true, server_will_close: true })
 }
 
 fn find_end_of_headers(buf: &[u8]) -> Option<usize> {

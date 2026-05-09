@@ -178,6 +178,15 @@ pub use xhttp::XhttpSubmode;
 #[cfg(any(test, feature = "test-tls"))]
 pub use tls::install_test_tls_root;
 
+// HTTPS data-path probe: re-export the rustls types it needs so the probe
+// crate can drive a TLS handshake over our chunk-based tunnel without
+// taking a direct rustls dependency. `build_https_probe_client_config`
+// shares root-store / test-override plumbing with every other dial in
+// this crate (see [`tls::build_client_config`]).
+pub use rustls::ClientConnection as TlsClientConnection;
+pub use rustls::pki_types::ServerName as TlsServerName;
+pub use tls::build_https_probe_client_config;
+
 // DNS cache: shared by every resolve path in the main binary.
 pub use dns::resolve_host_with_preference;
 pub use dns_cache::{DEFAULT_DNS_CACHE_CAPACITY, DEFAULT_DNS_CACHE_TTL, DnsCache};
