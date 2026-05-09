@@ -638,12 +638,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (uplink, transport, result) (rate(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))",
-          "legendFormat": "{{transport}} {{uplink}} {{result}}",
+          "expr": "sum by (uplink, transport, probe, result) (rate(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))",
+          "legendFormat": "{{transport}} {{uplink}} {{probe}} {{result}}",
           "refId": "A"
         }
       ],
-      "title": "Probe Runs (success/error)",
+      "title": "Probe Runs (success/error, by sub-probe)",
       "type": "timeseries"
     },
     {
@@ -664,8 +664,8 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.99, sum by (uplink, transport, le) (rate(outline_ws_rust_probe_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{transport}} {{uplink}}",
+          "expr": "histogram_quantile(0.99, sum by (uplink, transport, probe, le) (rate(outline_ws_rust_probe_duration_seconds_bucket{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval])))",
+          "legendFormat": "p99 {{transport}} {{uplink}} {{probe}}",
           "refId": "A"
         },
         {
@@ -674,7 +674,7 @@
           "refId": "B"
         }
       ],
-      "title": "Probe p99 & Active-Wire RTT",
+      "title": "Probe p99 & Active-Wire RTT (by sub-probe)",
       "type": "timeseries"
     },
     {
@@ -737,6 +737,102 @@
         }
       ],
       "title": "Mode-Downgrade Active Cap",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 72},
+      "id": 60,
+      "panels": [],
+      "title": "Probe vs User-Flow Correlation — did the probe catch what users caught?",
+      "type": "row"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "Two series on a shared timeline: (A) chunk0_timeout rate observed by user flows (the actual symptom — handshake forwarded but no response bytes back), and (B) probe-error rate aggregated across all sub-probes. If the shapes track each other, the probe is exercising the same path as user traffic and `healthy = false` will follow on schedule. If A spikes while B stays flat, the probe is blind to the failure pattern: the dispatch path keeps tying new flows to a degraded uplink (per-flow rescue masks the issue), the global active never moves, and users see a split across uplinks. After the HTTPS-handshake probe is wired up, both lines should rise and fall together — that is the signal the probe is doing its job. Panels labelled by uplink + sub-probe so it is obvious which probe (http / https / ws) is the one tracking user reality.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 5, "lineWidth": 1, "showPoints": "auto"},
+          "unit": "ops"
+        }
+      },
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 73},
+      "id": 61,
+      "options": {
+        "legend": {"calcs": ["max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "expr": "sum by (uplink, transport) (rate(outline_ws_rust_uplink_runtime_failure_signatures_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",signature=\"chunk0_timeout\"}[$__rate_interval]))",
+          "legendFormat": "user-flow chunk0_timeout · {{transport}} {{uplink}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (uplink, transport, probe) (rate(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",result=\"err\"}[$__rate_interval]))",
+          "legendFormat": "probe error · {{transport}} {{uplink}} {{probe}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Probe Errors vs User-Flow chunk0_timeout (correlation)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "Sticky-split detector. When the global active uplink degrades but probe still reports it healthy, individual TCP/UDP flows escape via per-flow rescue (cross-uplink failover) — and because strict-global + probe-enabled refuses to repoint the global active on a per-session success, every NEW flow then re-tries the still-pinned degraded uplink and either rescues again or pays the chunk0_timeout. Browser-tab sessions end up scattered across both uplinks: the user sees a split (some sites via uplink A, some via B) until either probe catches up, or all rescued flows drain naturally. The split window is exactly when {cross-uplink failover rate > 0} AND {uplink_health{from_uplink} == 1}: rescue is happening but the global pointer hasn't moved. After the HTTPS probe is wired up this gap should shrink — probe failure trips healthy=0 within probe.min_failures cycles, the active slides off, and new flows stop re-trying the degraded peer.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "auto"},
+          "unit": "ops"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 81},
+      "id": 62,
+      "options": {
+        "legend": {"calcs": ["max", "sum"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "expr": "sum by (from_uplink, to_uplink, transport) (rate(outline_ws_rust_uplink_failovers_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",transport=~\"tcp|udp\"}[$__rate_interval]))",
+          "legendFormat": "cross-uplink rescue · {{transport}} {{from_uplink}}→{{to_uplink}}",
+          "refId": "A"
+        },
+        {
+          "expr": "outline_ws_rust_uplink_health{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "legendFormat": "health · {{transport}} {{uplink}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Sticky-Split Detector — rescue × health",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "How often the probe-driven escalation actually fires. Each bar = one transition of `outline_ws_rust_uplink_health` (1↔0) over the rate-window — i.e. one moment when the probe verdict became authoritative enough to move the global active uplink. A flat-zero series during a chunk0_timeout episode visible elsewhere on this dashboard means the probe never crossed `min_failures` consecutive failures: either the probe-target is too easy (legacy plain http://example.com pattern) or `min_failures` / `runtime_failure_window` need a tighter setting. Healthy churn (1-2 flips/hour during a real outage, then 0) is the expected shape after the HTTPS probe is in place.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 1, "showPoints": "never"},
+          "unit": "none"
+        }
+      },
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 81},
+      "id": 63,
+      "options": {
+        "legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      },
+      "targets": [
+        {
+          "expr": "sum by (uplink, transport) (changes(outline_ws_rust_uplink_health{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))",
+          "legendFormat": "{{transport}} {{uplink}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Health Flips (per rate-window)",
       "type": "timeseries"
     }
   ],
