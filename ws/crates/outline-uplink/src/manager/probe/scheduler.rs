@@ -20,6 +20,7 @@ pub(super) fn should_skip_probe_cycle_for_recent_activity(
     status: &UplinkStatus,
     now: Instant,
     interval: Duration,
+    chunk0_failure_window: Duration,
 ) -> bool {
     let tcp_active = status
         .tcp
@@ -27,6 +28,24 @@ pub(super) fn should_skip_probe_cycle_for_recent_activity(
         .is_some_and(|t| now.duration_since(t) < interval);
     let tcp_currently_healthy = status.tcp.healthy == Some(true);
     let tcp_no_cooldown = !cooldown_active(status, TransportKind::Tcp, now);
+    // Override: do not skip the cycle when a chunk-0 timeout was observed
+    // recently, even if real traffic is otherwise flowing through the
+    // uplink. Rescued user-flows (failover_step recovers chunk-0 stalls
+    // by handing off to a fallback wire) keep `last_active` fresh, so
+    // the activity check would silence the probe right when its signal
+    // matters most — exactly during a chunk-0 storm. Probing while the
+    // signal is fresh is what lets `runtime_health_escalation` /
+    // `health_effective` catch up and surface the symptom on the
+    // dashboard.
+    let chunk0_signal_fresh = !chunk0_failure_window.is_zero()
+        && (status
+            .tcp
+            .last_chunk0_failure_at
+            .is_some_and(|t| now.saturating_duration_since(t) < chunk0_failure_window)
+            || status.tcp.chunk0_consecutive_failures > 0);
+    if chunk0_signal_fresh {
+        return false;
+    }
     tcp_active && tcp_currently_healthy && tcp_no_cooldown
 }
 
@@ -131,12 +150,13 @@ impl UplinkManager {
                 let status = self.inner.read_status(index);
                 let s = &status;
                 let threshold = self.inner.probe.interval;
+                let chunk0_failure_window = self.inner.load_balancing.chunk0_failure_window;
                 // Recent traffic is enough to skip the probe only while there
                 // is no active runtime-failure cooldown. Once a cooldown is
                 // set, we must run the probe even in global scope so it can
                 // confirm whether the active uplink is actually broken and let
                 // strict selection move new sessions away from it.
-                if should_skip_probe_cycle_for_recent_activity(s, now, threshold) {
+                if should_skip_probe_cycle_for_recent_activity(s, now, threshold, chunk0_failure_window) {
                     let udp_active =
                         s.udp.last_active.is_some_and(|t| now.duration_since(t) < threshold);
                     debug!(
