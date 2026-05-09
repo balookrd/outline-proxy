@@ -208,8 +208,7 @@ The project is intentionally practical, but there are still boundaries:
 - [`config-router.toml`](config-router.toml) - example router configuration
 - [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) - hardened systemd unit
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) - main operational dashboard
-- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) - `tun2tcp` dashboard
-- [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json) - startup and traffic-switch burst diagnostics for native Shadowsocks mode
+- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json) - situational hang diagnostics
 - [`src/bootstrap/`](src/bootstrap) - startup sequence: listener binding and persistent state store
 - [`src/config/`](src/config) - configuration loading, schema, and validated types
 - [`src/proxy/`](src/proxy) - SOCKS5 TCP/UDP ingress handlers (dispatcher, TCP failover, UDP relay)
@@ -1189,8 +1188,7 @@ For direct `transport = "shadowsocks"` UDP uplinks, the same oversized checks st
 Grafana dashboards:
 
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
-- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json)
-- [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json)
+- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json)
 
 The experimental uplinks/control-plane Grafana dashboard is intentionally not packaged; use the built-in `/dashboard` UI for multi-instance uplink activation.
 
