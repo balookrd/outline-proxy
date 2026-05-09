@@ -48,6 +48,7 @@ async fn classify_decision_unknown_group_falls_back_to_default() {
         http: None,
         dns: None,
         tcp: None,
+            tls: None,
     };
     let lb = LoadBalancingConfig {
         mode: LoadBalancingMode::ActiveActive,

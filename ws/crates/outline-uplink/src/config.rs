@@ -338,11 +338,16 @@ pub struct ProbeConfig {
     pub http: Option<HttpProbeConfig>,
     pub dns: Option<DnsProbeConfig>,
     pub tcp: Option<TcpProbeConfig>,
+    pub tls: Option<TlsProbeConfig>,
 }
 
 impl ProbeConfig {
     pub fn enabled(&self) -> bool {
-        self.ws.enabled || self.http.is_some() || self.dns.is_some() || self.tcp.is_some()
+        self.ws.enabled
+            || self.http.is_some()
+            || self.dns.is_some()
+            || self.tcp.is_some()
+            || self.tls.is_some()
     }
 }
 
@@ -400,6 +405,47 @@ impl DnsProbeConfig {
 pub struct TcpProbeConfig {
     pub host: String,
     pub port: u16,
+}
+
+/// One target for the TLS handshake-only data-path probe. Carries the SNI to
+/// advertise on `ClientHello` (`host`) and the upstream port to dial through
+/// the tunnel (typically `443`). The probe loop rotates through the configured
+/// list one entry per cycle, exactly like [`HttpProbeConfig`].
+#[derive(Debug, Clone)]
+pub struct TlsProbeTarget {
+    pub host: String,
+    pub port: u16,
+}
+
+/// TLS handshake-only probe configuration. Performs `ClientHello → ServerHello
+/// / Certificate → Finished → close_notify` through the uplink tunnel against
+/// a real product SNI (e.g. `www.youtube.com:443`) — without any HTTP exchange
+/// after the handshake. Reproduces the user-flow `chunk0_timeout` pattern when
+/// upstream filtering silently drops `ServerHello` bytes for specific SNIs;
+/// the plain HTTP probe never exercises TLS at all and so is blind to that
+/// failure mode.
+#[derive(Debug, Clone)]
+pub struct TlsProbeConfig {
+    pub targets: Vec<TlsProbeTarget>,
+    cursor: Arc<AtomicUsize>,
+}
+
+impl TlsProbeConfig {
+    pub fn new(targets: Vec<TlsProbeTarget>) -> Result<Self> {
+        if targets.is_empty() {
+            return Err(anyhow!("tls probe requires at least one target"));
+        }
+        Ok(Self { targets, cursor: Arc::new(AtomicUsize::new(0)) })
+    }
+
+    /// Atomically advance the rotation cursor and return the next target.
+    /// Each call yields the next entry in the configured list, wrapping at
+    /// the end so cycles spread across SNIs and per-SNI filtering is
+    /// surfaced instead of being masked by a single still-reachable target.
+    pub fn next_target(&self) -> &TlsProbeTarget {
+        let i = self.cursor.fetch_add(1, Ordering::Relaxed) % self.targets.len();
+        &self.targets[i]
+    }
 }
 
 // ── LoadBalancingConfig ──────────────────────────────────────────────────────

@@ -1163,6 +1163,7 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             http: None,
             dns: None,
             tcp: None,
+        tls: None,
         },
         LoadBalancingConfig {
             mode: outline_uplink::LoadBalancingMode::ActiveActive,

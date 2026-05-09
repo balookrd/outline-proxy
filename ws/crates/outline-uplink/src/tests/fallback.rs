@@ -287,6 +287,7 @@ fn make_probe(min_failures: usize) -> ProbeConfig {
         http: None,
         dns: None,
         tcp: None,
+        tls: None,
     }
 }
 

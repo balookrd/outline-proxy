@@ -4,7 +4,8 @@ use anyhow::{Context, Result};
 use tracing::warn;
 
 use outline_uplink::{
-    DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, WsProbeConfig,
+    DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, TlsProbeConfig,
+    TlsProbeTarget, WsProbeConfig,
 };
 
 use super::super::schema::ProbeSection;
@@ -32,6 +33,25 @@ pub(super) fn load_probe_config(probe: Option<&ProbeSection>) -> Result<ProbeCon
         host: tcp.host.clone(),
         port: tcp.port.unwrap_or(80),
     });
+    let tls = probe
+        .and_then(|p| p.tls.as_ref())
+        .map(|tls| -> Result<TlsProbeConfig> {
+            let raw = match (&tls.targets, &tls.target) {
+                (Some(list), _) if !list.is_empty() => list.clone(),
+                (_, Some(single)) => vec![single.clone()],
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "[probe.tls] requires `target = \"host:port\"` or `targets = [...]`"
+                    ));
+                },
+            };
+            let targets: Result<Vec<TlsProbeTarget>> = raw
+                .iter()
+                .map(|spec| parse_tls_target(spec))
+                .collect();
+            TlsProbeConfig::new(targets?).context("invalid [probe.tls]")
+        })
+        .transpose()?;
 
     // Defaults chosen to be safe for upstream Shadowsocks stacks that apply
     // per-IP rate limits / replay-filter back-pressure on a burst of fresh
@@ -77,5 +97,44 @@ pub(super) fn load_probe_config(probe: Option<&ProbeSection>) -> Result<ProbeCon
         http,
         dns,
         tcp,
+        tls,
     })
+}
+
+/// Parse a `"host:port"` (or bare `"host"`) probe target. Bare host defaults
+/// to port 443 — the natural choice for a TLS-handshake probe. IPv6 literals
+/// must be bracketed (`[::1]:443`); the bracket-aware split happens before
+/// the `:` lookup so unbracketed `::1:443` would be rejected as an invalid
+/// host, which mirrors what the operator likely meant.
+fn parse_tls_target(spec: &str) -> Result<TlsProbeTarget> {
+    let (host, port_opt) = if let Some(rest) = spec.strip_prefix('[') {
+        let close = rest
+            .find(']')
+            .ok_or_else(|| anyhow::anyhow!("tls probe target {spec:?} has unbalanced `[`"))?;
+        let host = rest[..close].to_string();
+        let after = &rest[close + 1..];
+        if after.is_empty() {
+            (host, None)
+        } else {
+            let port_str = after
+                .strip_prefix(':')
+                .ok_or_else(|| anyhow::anyhow!("tls probe target {spec:?}: expected `:port` after `]`"))?;
+            (host, Some(port_str))
+        }
+    } else if let Some((host, port_str)) = spec.rsplit_once(':') {
+        (host.to_string(), Some(port_str))
+    } else {
+        (spec.to_string(), None)
+    };
+
+    let port = match port_opt {
+        Some(s) => s
+            .parse::<u16>()
+            .with_context(|| format!("tls probe target {spec:?}: invalid port {s:?}"))?,
+        None => 443,
+    };
+    if host.is_empty() {
+        return Err(anyhow::anyhow!("tls probe target {spec:?}: empty host"));
+    }
+    Ok(TlsProbeTarget { host, port })
 }

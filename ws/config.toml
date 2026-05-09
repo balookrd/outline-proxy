@@ -135,6 +135,26 @@ server = "1.1.1.1"
 port = 53
 name = "example.com"
 
+# TLS handshake-only data-path probe. Drives ClientHello → ServerHello/Certificate
+# → Finished → close_notify through the uplink tunnel against a real product SNI,
+# without any HTTP exchange afterwards. Reproduces the user-flow chunk0_timeout
+# pattern when upstream filtering silently drops TLS records for specific SNIs —
+# a failure mode the plain HTTP probe cannot see (it never exercises TLS).
+#
+# Mutually exclusive with [outline.probe.http] / [outline.probe.tcp]: when this
+# block is set it is the application-level sub-probe that runs each cycle, so
+# the per-cycle handshake count stays bounded. Metrics use probe="tls" — split
+# it out on the dashboard's "Probe Runs (success/error, by sub-probe)" panel.
+#
+# Targets are "host:port" (port defaults to 443). The probe rotates through
+# the list one entry per cycle so per-SNI filtering surfaces instead of being
+# masked by a single still-reachable target.
+# [outline.probe.tls]
+# targets = [
+#   "www.youtube.com:443",
+#   "www.instagram.com",     # bare host → port 443
+# ]
+
 # ── Load-balancing template (legacy single-group shape only) ─────────────────
 # [outline.load_balancing] is used ONLY when no [[uplink_group]] is declared
 # (inline single-uplink shorthand path). When [[uplink_group]] is present —

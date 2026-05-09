@@ -139,7 +139,7 @@ pub(super) fn load_groups(
 }
 
 /// Field-by-field merge of a probe template with a per-group override.
-/// Sub-tables (ws/http/dns/tcp) are replaced whole-sale — if the group
+/// Sub-tables (ws/http/dns/tcp/tls) are replaced whole-sale — if the group
 /// overrides `[uplink_group.probe.http]`, the template's `[probe.http]` is
 /// dropped entirely, not merged field-by-field.
 pub(super) fn merge_probe_section(
@@ -161,6 +161,7 @@ pub(super) fn merge_probe_section(
             http: o.http.clone().or_else(|| t.http.clone()),
             dns: o.dns.clone().or_else(|| t.dns.clone()),
             tcp: o.tcp.clone().or_else(|| t.tcp.clone()),
+            tls: o.tls.clone().or_else(|| t.tls.clone()),
         }),
     }
 }

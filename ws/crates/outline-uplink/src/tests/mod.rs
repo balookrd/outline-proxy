@@ -84,6 +84,7 @@ fn probe_disabled() -> ProbeConfig {
         http: None,
         dns: None,
         tcp: None,
+        tls: None,
     }
 }
 
@@ -744,6 +745,7 @@ async fn global_scope_with_strict_udp_switches_when_active_udp_probe_is_unhealth
             http: None,
             dns: None,
             tcp: None,
+        tls: None,
         },
         config,
     )
@@ -856,6 +858,7 @@ async fn global_scope_switches_only_on_probe_confirmed_failure_when_probe_enable
             http: None,
             dns: None,
             tcp: None,
+        tls: None,
         },
         config.clone(),
     )
@@ -1175,6 +1178,7 @@ async fn runtime_failover_does_not_promote_global_active_when_probe_enabled() {
             http: None,
             dns: None,
             tcp: None,
+        tls: None,
         },
         config,
     )
