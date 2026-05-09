@@ -2340,3 +2340,92 @@ async fn fallback_wire_downgrade_is_monotonic_within_window() {
     );
 }
 
+// ── Primary-probe escalation gate when sticky on a verified fallback ────────
+//
+// After active_wire has shifted to a fallback that the fallback-wire probe
+// (or any successful user-flow dial) has stamped as alive within the
+// runtime_failure_window, a continuing primary-probe failure must NOT:
+//   * tick `consecutive_failures` further (which would eventually flip
+//     `healthy = false` for an uplink that is actually delivering),
+//   * re-arm the mode-downgrade window (which would otherwise be re-applied
+//     on every probe cycle indefinitely while primary stayed broken).
+// This prevents the "primary stuck broken, fallback fine, mode-downgrade
+// window glows forever" pattern operators see when probe targets a path
+// that a real DPI / upstream filter has eaten.
+
+#[test]
+fn primary_probe_err_skipped_when_active_fallback_recently_alive() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Pre-stage: sticky already on the first fallback, with a recent
+    // last_any_wire_success stamp. This is the steady-state of a uplink
+    // whose primary has been broken for a while but whose fallback is OK.
+    manager.test_seed_active_fallback_with_recent_success(
+        0,
+        TransportKind::Tcp,
+        1,
+        tokio::time::Instant::now(),
+    );
+    manager.test_seed_active_fallback_with_recent_success(
+        0,
+        TransportKind::Udp,
+        1,
+        tokio::time::Instant::now(),
+    );
+
+    manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("primary still 404"));
+
+    let status = manager.read_status_for_test(0);
+    assert_eq!(
+        status.tcp.consecutive_failures, 0,
+        "primary probe failure must not tick consecutive_failures while sticky on a verified fallback",
+    );
+    assert_eq!(
+        status.udp.consecutive_failures, 0,
+        "udp side is gated identically",
+    );
+    assert!(
+        status.tcp.mode_downgrade_until.is_none(),
+        "primary probe failure must not re-arm the TCP mode-downgrade window in this state",
+    );
+    assert!(
+        status.udp.mode_downgrade_until.is_none(),
+        "primary probe failure must not re-arm the UDP mode-downgrade window in this state",
+    );
+    assert_eq!(
+        status.tcp.active_wire, 1,
+        "active_wire must stay on the verified fallback",
+    );
+}
+
+#[test]
+fn primary_probe_err_still_escalates_with_no_recent_success_on_active_fallback() {
+    // Same staging as above, but `last_any_wire_success` is stale (older
+    // than `runtime_failure_window`). The gate must NOT engage —
+    // legacy escalation runs as before, since nothing currently confirms
+    // that the fallback is delivering.
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Move sticky to fallback with a deliberately stale success stamp:
+    // 10 minutes ago is well past the default runtime_failure_window.
+    let stale = tokio::time::Instant::now() - std::time::Duration::from_secs(600);
+    manager.test_seed_active_fallback_with_recent_success(
+        0,
+        TransportKind::Tcp,
+        1,
+        stale,
+    );
+
+    manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("primary 404"));
+
+    let status = manager.read_status_for_test(0);
+    assert_eq!(
+        status.tcp.consecutive_failures, 1,
+        "stale fallback success must NOT engage the gate; consecutive_failures \
+         ticks as before",
+    );
+}

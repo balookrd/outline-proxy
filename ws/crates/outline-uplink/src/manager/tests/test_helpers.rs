@@ -115,6 +115,33 @@ impl UplinkManager {
         self.process_probe_err(index, &uplink, error, effective_tcp, effective_udp);
     }
 
+    /// Test helper: pre-stage `(active_wire, last_any_wire_success)` into
+    /// the "sticky on a fallback that is verifiably alive" state, which is
+    /// the precondition gate for `should_skip_primary_probe_escalation`.
+    /// Inline tests use it to drive a primary-probe failure into the gate
+    /// without needing to first synthesise a separate fallback-wire-probe
+    /// success. `consecutive_failures` is reset to zero so the test starts
+    /// from a clean streak.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn test_seed_active_fallback_with_recent_success(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+        active_wire: u8,
+        success_at: tokio::time::Instant,
+    ) {
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                crate::types::TransportKind::Tcp => &mut status.tcp,
+                crate::types::TransportKind::Udp => &mut status.udp,
+            };
+            per.active_wire = active_wire;
+            per.last_any_wire_success = Some(success_at);
+            per.consecutive_failures = 0;
+        });
+    }
+
     /// Test helper: directly seed the primary mode-downgrade window for
     /// `(index, transport)` with `cap` and a fresh deadline. Lets tests
     /// pre-stage the system into "previously degraded" state without
