@@ -20,13 +20,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::sync::Semaphore;
 use tracing::debug;
+use url::Url;
 
 use outline_transport::{
     DnsCache, TcpReader, TcpWriter, TlsClientConnection, TlsServerName,
     build_https_probe_client_config,
 };
 
-use crate::config::{HttpProbeConfig, TargetAddr, UplinkConfig, UplinkTransport, TransportMode};
+use crate::config::{TargetAddr, UplinkConfig, UplinkTransport, TransportMode};
 use crate::manager::probe::warm_tcp::{self, WarmTcpProbe, WarmTcpProbeSlot};
 
 use super::metrics::BytesRecorder;
@@ -36,12 +37,11 @@ pub(super) async fn run_http_probe(
     cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
-    probe: &HttpProbeConfig,
+    url: &Url,
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: TransportMode,
     warm_slot: Option<&WarmTcpProbeSlot>,
 ) -> Result<(bool, Option<TransportMode>)> {
-    let url = probe.next_url();
     let scheme = url.scheme();
     if scheme != "http" && scheme != "https" {
         bail!("only http:// and https:// probe URLs are supported");

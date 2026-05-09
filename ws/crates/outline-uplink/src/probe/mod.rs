@@ -155,16 +155,26 @@ async fn run_tcp_probe(
         downgraded_from = downgraded_from.or(marker);
     }
     if let Some(http_probe) = &probe.http {
+        // Pull the URL once here so we can attribute the metric label to the
+        // sub-probe family the URL actually selects (`https` runs the inner
+        // TLS-handshake-only branch in `run_http_probe`; `http` keeps the
+        // legacy plain HEAD path). The URL is then handed to `run_http_probe`
+        // so it does not advance the rotation cursor a second time.
+        let url = http_probe.next_url();
+        let probe_label: &'static str = match url.scheme() {
+            "https" => "https",
+            _ => "http",
+        };
         let (ok, marker) = record_attempt(
             group,
             &uplink.name,
             "tcp",
-            "http",
+            probe_label,
             run_http_probe(
                 cache,
                 group,
                 uplink,
-                http_probe,
+                url,
                 Arc::clone(&dial_limit),
                 effective_tcp_mode,
                 warm_tcp_slot.as_ref(),
