@@ -636,13 +636,19 @@ Merge rules:
   `max_dials`, `min_failures`, `attempts`) are merged field-by-field with
   the template — fields not set in the override fall back to
   `[outline.probe]`.
-- **Sub-tables** (`ws` / `http` / `dns` / `tcp`) are replaced wholesale.
-  If a group sets `[uplink_group.probe.http]`, the template's
+- **Sub-tables** (`ws` / `http` / `dns` / `tcp` / `tls`) are replaced
+  wholesale. If a group sets `[uplink_group.probe.http]`, the template's
   `[outline.probe.http]` is dropped for that group — repeat every field
   you still want.
-- **Activation requires at least one of `ws` / `http` / `dns`** in the
-  resulting (post-merge) probe config; otherwise the probe loop will not
-  start for that group.
+- **Activation requires at least one of `ws` / `http` / `dns` / `tcp` /
+  `tls`** in the resulting (post-merge) probe config; otherwise the
+  probe loop will not start for that group.
+- **Application-level sub-probes are mutually exclusive.** Only one of
+  `tls` / `http` / `tcp` runs per cycle to bound the per-cycle handshake
+  count. Priority is `tls` → `http` → `tcp`: when `[outline.probe.tls]`
+  is set, the `http` and `tcp` sub-tables are silently skipped each
+  cycle. `ws` and `dns` always run alongside whichever of the three is
+  active.
 
 Example — the `backup` group probes less aggressively, swaps the HTTP
 target, and reuses the template's WS / DNS sub-tables:
@@ -694,13 +700,69 @@ url = "http://backup-canary.example.net/"
 
 - `ws`: set `[uplink_group.probe.ws] enabled = false` in the override —
   `WsProbeConfig` carries an explicit `enabled` flag.
-- `http` / `dns` / `tcp`: cannot be disabled per group. The merge uses
-  `override.or(template)` ([groups.rs:160](src/config/load/groups.rs:160)),
+- `http` / `dns` / `tcp` / `tls`: cannot be disabled per group. The merge
+  uses `override.or(template)` ([groups.rs:160](src/config/load/groups.rs:160)),
   so an omitted sub-table inherits the template's value, and there is no
   syntax for "explicit none". To run a group without one of these probes
   while another group keeps it, remove the sub-table from
   `[outline.probe]` and re-declare it only inside the groups that need
   it via `[uplink_group.probe.<kind>]`.
+
+## TLS handshake-only data-path probe (`[outline.probe.tls]`)
+
+The plain HTTP probe drives a `HEAD` request through the tunnel against
+a configured `http://...` URL — it never exercises TLS, so an upstream
+filter that silently drops `ServerHello` records for specific SNIs is
+invisible to it. The user-flow `chunk0_timeout` failure mode (handshake
+to the uplink server succeeds, ClientHello is forwarded to the upstream
+target, no response bytes ever come back) therefore goes unnoticed:
+`uplink_health` stays `1`, the streak that would flip it never reaches
+`probe.min_failures`, and per-flow rescue keeps absorbing the symptom.
+
+`[outline.probe.tls]` closes that gap. It opens the same tunnel as the
+HTTP probe and then drives a real `ClientHello → ServerHello /
+Certificate → Finished → close_notify` handshake against a configured
+`(SNI, port)` target. No HTTP exchange follows — the goal is to
+reproduce the chunk-0 wait-for-server-bytes shape exactly, so the
+probe fails on the same conditions user flows do and the runtime
+escalation path (`probe-driven healthy=false → uplink dropped from
+selection → global active slides off`) actually fires.
+
+```toml
+[outline.probe.tls]
+# Targets are "host:port" strings; bare host defaults to port 443.
+# IPv6 hosts use bracketed form: "[::1]:443".
+# The probe rotates one entry per cycle so per-SNI filtering surfaces
+# instead of being masked by one always-reachable target.
+targets = [
+  "www.youtube.com:443",
+  "www.instagram.com",     # → port 443
+]
+```
+
+Choosing targets:
+
+- Pick SNIs the deployment's user traffic actually hits, not stub
+  origins like `example.com`. The probe is only useful when its target
+  is sensitive to the same upstream filter the user flows are.
+- Two to four targets is plenty. Probes pay one fresh handshake per
+  uplink per cycle, and rotation across the list spreads cycle load.
+- Skip self-hosted SNIs (your own uplink server's WS host) — the WS
+  sub-probe already covers that path.
+
+Metrics emit `probe="tls"`. Split it out from `probe="http"` /
+`probe="ws"` on the dashboard's "Probe Runs (success/error, by
+sub-probe)" panel to see the new signal independently. In a TLS-DPI
+episode the `probe="tls" result="error"` series should track the
+user-flow `runtime_failure_signatures_total{signature="chunk0_timeout"}`
+shape; if it stays flat while user flows pile up, the chosen targets
+are not under the same filter and need rotating.
+
+Mutually exclusive with `[outline.probe.http]` and `[outline.probe.tcp]`
+inside one cycle (priority: `tls` → `http` → `tcp`). It is fine to
+leave a `[outline.probe.http]` block in the template for groups that
+do not declare `tls` — the cycle picks the highest-priority block that
+is set.
 
 ## Downgrade window mechanics
 

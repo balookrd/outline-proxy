@@ -173,6 +173,7 @@ tun2udp + tun2tcp"]
 - WebSocket connectivity-пробы (handshake TCP+TLS+WS; без ping/pong — серверы редко отвечают на WebSocket ping control frames)
 - реальные HTTP-пробы через `websocket-stream`
 - реальные DNS-пробы через `websocket-packet`
+- TLS-handshake-пробы к реальному product SNI через туннель — воспроизводят user-flow chunk-0 паттерн, когда upstream-фильтр тихо режет `ServerHello`, что обычная HTTP-проба не видит
 - ограничение параллельности проб
 - отдельная изоляция dial'ов для проб
 - немедленное пробуждение probe loop при runtime-сбое для ускорения обнаружения
@@ -199,7 +200,7 @@ tun2udp + tun2tcp"]
 
 - `tun2tcp` ориентирован на production, но всё ещё не эквивалентен ядерному TCP-стеку.
 - Не-echo ICMP на TUN не поддерживаются.
-- HTTP-проба поддерживает только `http://`, не `https://`; `probe.tcp` должен указывать на сервис, который сам первым отправляет данные, например SSH или SMTP, а не на типичный HTTP/HTTPS-порт.
+- HTTP-проба поддерживает только `http://` — для HTTPS используйте отдельный блок `[outline.probe.tls]`, который выполняет TLS handshake (без HTTP-обмена) к настроенному SNI. `probe.tcp` должен указывать на сервис, который сам первым отправляет данные, например SSH или SMTP, а не на типичный HTTP/HTTPS-порт.
 - TCP failover безопасен до начала полезного обмена данными; живые установленные TCP-туннели не мигрируют прозрачно между аплинками.
 
 ## Структура репозитория
@@ -587,6 +588,19 @@ urls = [
 # не тянул тело ответа через uplink. Любой HTTP-статус в диапазоне `200..400`
 # считается успехом — `301`/`302` редиректы тоже подходят.
 
+# Опционально: TLS-handshake проба. Воспроизводит user-flow chunk-0 паттерн,
+# когда upstream-фильтр тихо режет `ServerHello` для конкретных SNI — для
+# `[outline.probe.http]` это невидимо, потому что plain HTTP TLS не делает.
+# Взаимоисключается с `[outline.probe.http]` / `[outline.probe.tcp]`
+# (приоритет: tls → http → tcp). Метрики идут под `probe="tls"`. См.
+# docs/UPLINK-CONFIGURATIONS.ru.md «TLS-handshake проба data-path» по
+# поводу выбора целей.
+# [outline.probe.tls]
+# targets = [
+#   "www.youtube.com:443",
+#   "www.instagram.com",  # bare host → порт 443
+# ]
+
 [outline.probe.dns]
 server = "1.1.1.1"
 port = 53
@@ -737,7 +751,7 @@ via = "main"
 - `h3_downgrade_secs` (per-group, по умолчанию `60`, принимается также как `mode_downgrade_secs`): сколько секунд аплинк, получивший сбой на «продвинутом» режиме (H3 application-level error либо провал dial / handshake raw QUIC) — для `transport = "ws"` и `transport = "vless"`, — будет использовать H2-fallback (далее H2 → H1 при необходимости внутри `connect_websocket_with_source`) перед повторной попыткой исходного режима. Установите `0`, чтобы отключить автоматический даунгрейд.
 - `state_path` (опционально): путь к TOML-файлу, в котором сохраняется выбор активного аплинка между рестартами. По умолчанию — путь к конфигу с заменой расширения на `.state.toml` (например, `config.toml` → `config.state.toml`). Если файл не удаётся открыть на запись (например, конфиг находится в `/etc/` с `ProtectSystem=strict`), при старте выводится предупреждение и процесс продолжает работу без персистентности. Прилагаемые systemd-юниты задают `STATE_PATH=/var/lib/outline-ws-rust/state.toml`, чтобы состояние попадало в записываемую директорию. Сохраняется только выбор активного аплинка (по имени); EWMA и штрафы не сохраняются — они восстанавливаются за один цикл проб после рестарта.
 - Группы аплинков (`[[uplink_group]]`) полностью изолированы в runtime: у каждой свой probe loop, standby pool, sticky-routes, активный аплинк и load-balancing политика.
-- `[outline.probe]` — шаблон: каждая группа его наследует, а `[uplink_group.probe]` переопределяет поля по отдельности. Подтаблицы пробников (`ws`/`http`/`dns`/`tcp`) заменяются целиком — если группа задаёт `[uplink_group.probe.http]`, шаблонный `[outline.probe.http]` для неё игнорируется.
+- `[outline.probe]` — шаблон: каждая группа его наследует, а `[uplink_group.probe]` переопределяет поля по отдельности. Подтаблицы пробников (`ws`/`http`/`dns`/`tcp`/`tls`) заменяются целиком — если группа задаёт `[uplink_group.probe.http]`, шаблонный `[outline.probe.http]` для неё игнорируется. Application-level пробы (`http`/`tcp`/`tls`) взаимоисключающие: один цикл выполняет одну, приоритет `tls → http → tcp`.
 - Имена аплинков должны быть глобально уникальны по всем группам (Prometheus-метрики пока используют лейбл `uplink="..."` без квалификатора группы).
 - Устаревшая секция `[bypass]` удалена. Мигрируйте bypass-префиксы в `[[route]]` с `via = "direct"`. Загрузка конфига с оставшейся `[bypass]`-таблицей завершится с явным сообщением о миграции.
 - Аплинки, шаблон пробника и настройки load-balancing живут под `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). Старая плоская форма с top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]` по-прежнему принимается для обратной совместимости и на старте логирует deprecation-предупреждение — мигрируйте в секцию `[outline]`. Без `[[uplinks]]` top-level `tcp_ws_url` / `password` / CLI-флаги (`--tcp-ws-url`, `--password`, ...) синтезируют single-uplink группу `default` как shorthand.
@@ -943,7 +957,7 @@ Runtime failover:
 
 - пробы не запускаются, пока настройки проб явно не сконфигурированы
 - одна секция `[probe]` не включает ни одну проверку
-- должна присутствовать хотя бы одна из: `[probe.ws]`, `[probe.http]`, `[probe.dns]`
+- должна присутствовать хотя бы одна из: `[probe.ws]`, `[probe.http]`, `[probe.dns]`, `[probe.tcp]`, `[probe.tls]`
 
 Аплинки без `udp_ws_url` считаются TCP-only: UDP health state и standby-слоты для них не создаются и не отслеживаются, UDP-результаты проб не влияют на их UDP health метрику.
 
