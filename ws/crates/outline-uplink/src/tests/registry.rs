@@ -48,6 +48,7 @@ fn make_group(name: &str, uplink_names: &[&str]) -> UplinkGroupConfig {
             http: None,
             dns: None,
             tcp: None,
+        tls: None,
         },
         load_balancing: LoadBalancingConfig {
             mode: LoadBalancingMode::ActiveActive,

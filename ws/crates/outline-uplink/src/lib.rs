@@ -21,8 +21,8 @@ mod types;
 pub use config::{
     CipherKind, DnsProbeConfig, FallbackTransport, HttpProbeConfig, LoadBalancingConfig,
     LoadBalancingMode, OverflowPolicy, ProbeConfig, RoutingScope, ServerAddr, TargetAddr,
-    TcpProbeConfig, UplinkConfig, UplinkGroupConfig, UplinkTransport, VlessUdpMuxLimits,
-    WsProbeConfig, TransportMode,
+    TcpProbeConfig, TlsProbeConfig, TlsProbeTarget, UplinkConfig, UplinkGroupConfig,
+    UplinkTransport, VlessUdpMuxLimits, WsProbeConfig, TransportMode,
 };
 pub use share_link::VlessShareLink;
 #[cfg(test)]

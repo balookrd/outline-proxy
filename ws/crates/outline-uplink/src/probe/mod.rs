@@ -8,6 +8,7 @@ pub(crate) mod dns;
 pub(crate) mod http;
 mod metrics;
 mod tcp_tunnel;
+pub(crate) mod tls;
 mod transport;
 mod ws;
 
@@ -29,6 +30,7 @@ use self::dns::run_dns_probe;
 use self::http::run_http_probe;
 use self::metrics::record_attempt;
 use self::tcp_tunnel::run_tcp_tunnel_probe;
+use self::tls::run_tls_probe;
 use self::ws::{run_quic_handshake_probe, run_tcp_socket_probe, run_udp_socket_probe, run_ws_probe};
 use super::manager::probe::outcome::ProbeOutcome;
 use super::manager::probe::warm_tcp::WarmTcpProbeSlot;
@@ -154,22 +156,40 @@ async fn run_tcp_probe(
         let marker = record_attempt(group, &uplink.name, "tcp", "ws", ws_attempt).await?;
         downgraded_from = downgraded_from.or(marker);
     }
-    if let Some(http_probe) = &probe.http {
-        // Pull the URL once here so we can attribute the metric label to the
-        // sub-probe family the URL actually selects (`https` runs the inner
-        // TLS-handshake-only branch in `run_http_probe`; `http` keeps the
-        // legacy plain HEAD path). The URL is then handed to `run_http_probe`
-        // so it does not advance the rotation cursor a second time.
-        let url = http_probe.next_url();
-        let probe_label: &'static str = match url.scheme() {
-            "https" => "https",
-            _ => "http",
-        };
+    // TLS handshake-only sub-probe takes precedence over the application-level
+    // HTTP/TCP variants: when configured, it most closely reproduces the
+    // user-flow `chunk0_timeout` failure mode (silent upstream after
+    // ClientHello) so health flips fire on the right signal. Mutually
+    // exclusive with `[probe.http]` / `[probe.tcp]` for the same reason
+    // those two are: only one application-level probe runs per cycle to
+    // bound the per-cycle handshake count.
+    if let Some(tls_probe) = &probe.tls {
+        let target_spec = tls_probe.next_target();
         let (ok, marker) = record_attempt(
             group,
             &uplink.name,
             "tcp",
-            probe_label,
+            "tls",
+            run_tls_probe(
+                cache,
+                group,
+                uplink,
+                target_spec,
+                Arc::clone(&dial_limit),
+                effective_tcp_mode,
+            ),
+        )
+        .await?;
+        downgraded_from = downgraded_from.or(marker);
+        return Ok((ok, Some(started.elapsed()), downgraded_from));
+    }
+    if let Some(http_probe) = &probe.http {
+        let url = http_probe.next_url();
+        let (ok, marker) = record_attempt(
+            group,
+            &uplink.name,
+            "tcp",
+            "http",
             run_http_probe(
                 cache,
                 group,

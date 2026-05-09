@@ -385,6 +385,7 @@ pub(super) struct ProbeSection {
     pub(super) http: Option<HttpProbeSection>,
     pub(super) dns: Option<DnsProbeSection>,
     pub(super) tcp: Option<TcpProbeSection>,
+    pub(super) tls: Option<TlsProbeSection>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -414,6 +415,18 @@ pub(super) struct DnsProbeSection {
 pub(super) struct TcpProbeSection {
     pub(super) host: String,
     pub(super) port: Option<u16>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub(super) struct TlsProbeSection {
+    /// Single target form (legacy / convenience). Either `target` or
+    /// `targets` must be set; if both are set, `targets` wins.
+    /// Accepts `"host:port"` or just `"host"` (port defaults to 443).
+    pub(super) target: Option<String>,
+    /// Rotation list. Each entry is `"host:port"` (or `"host"` for port 443);
+    /// the probe advances through the list one entry per cycle, surfacing
+    /// per-SNI filtering instead of masking it behind one still-reachable target.
+    pub(super) targets: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

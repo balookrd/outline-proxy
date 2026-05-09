@@ -314,6 +314,7 @@ fn probe_disabled() -> ProbeConfig {
         http: None,
         dns: None,
         tcp: None,
+            tls: None,
     }
 }
 
