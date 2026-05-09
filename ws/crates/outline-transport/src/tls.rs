@@ -35,6 +35,16 @@ pub(crate) fn build_client_config(alpn_protocols: &[&[u8]]) -> Arc<ClientConfig>
     build_client_config_with_roots(roots, alpn_protocols)
 }
 
+/// Public wrapper over [`build_client_config`] used by the HTTPS data-path
+/// probe. Sibling to the existing transport callers, with the same root
+/// store and test-override behaviour — separated only because probe code
+/// lives outside this crate and would otherwise reach into a `pub(crate)`
+/// helper. ALPN list controls what the probe handshake advertises (typical
+/// caller passes `[b"h2", b"http/1.1"]` to mimic a browser).
+pub fn build_https_probe_client_config(alpn_protocols: &[&[u8]]) -> Arc<ClientConfig> {
+    build_client_config(alpn_protocols)
+}
+
 /// Same as [`build_client_config`] but with a caller-supplied root store.
 /// Used by the test override path so cross-repo integration tests can
 /// pin a self-signed root without touching the global webpki list.
