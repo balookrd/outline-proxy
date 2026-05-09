@@ -132,18 +132,19 @@ fn advance_active_wire_on_probe_failure(
     if total_wires <= 1 {
         return false;
     }
-    // Snap back to primary when the auto-failback pin has expired. The
-    // `active_wire` reader (`UplinkManager::active_wire`) does this lazily
-    // on read, but on a passive uplink with no client traffic the reader
-    // is never called between probe cycles — without an explicit reset
-    // here, the storage stays pinned to the fallback wire forever after
-    // the pin's nominal expiry. The next probe failure would then bail
-    // out via the `active_wire != 0` guard below and never re-pin, so
-    // the operator sees the chain's pin badge tick down to zero and
-    // disappear with no new pin replacing it.
+    // Pin expiry only clears the pin — it does NOT force active back to
+    // primary. The previous behaviour produced a periodic
+    // `0 → 1 → 2 → 0 → 1 → 2 → …` cycle whenever primary stayed broken:
+    // every pin window, active was snapped to 0, the next probe failure
+    // re-advanced to 1, the dial path eventually moved sticky from 1 to
+    // 2 again, the next pin window snapped back to 0, and so on. Real
+    // user-flows kept getting steered through known-broken wires once
+    // per pin window. Auto-failback to primary now belongs solely to
+    // `record_transport_success`'s early-failback block, which fires
+    // when probe genuinely confirms primary recovered — not on a
+    // wall-clock timer.
     if let Some(until) = status.active_wire_pinned_until {
         if until <= now {
-            status.active_wire = 0;
             status.active_wire_pinned_until = None;
             status.active_wire_streak = 0;
         }

@@ -81,10 +81,18 @@ impl UplinkManager {
     }
 
     /// Read the currently-active wire index for `uplink_index` on `transport`.
-    /// Performs an inline auto-failback check: if the pin has expired, the
-    /// active wire is snapped back to `0` (primary) before the value is
-    /// returned. Caller-visible side effect: subsequent calls observe the
-    /// snap-back without needing a separate `tick`.
+    /// Performs an inline pin-expiry check: if the auto-failback pin has
+    /// expired, the pin is cleared so the state machine is free to advance
+    /// again on the next failure — but the active wire itself is **not**
+    /// forced back to primary. Auto-failback to primary is probe-driven
+    /// (the early-failback block in `record_transport_success` snaps active
+    /// back to 0 once `min_failures` consecutive primary probes succeed),
+    /// not timer-driven, so an active fallback wire that is actually
+    /// delivering traffic stays in place until probe confirms primary
+    /// recovery. The previous timer-driven snap forced a periodic `0 → 1
+    /// → 2 → 0` cycle through known-broken wires whenever primary
+    /// remained dead, walking real user-flows back through every failed
+    /// wire each pin window — fixed here.
     ///
     /// Always `0` for uplinks declared without `[[outline.uplinks.fallbacks]]`.
     pub fn active_wire(&self, uplink_index: usize, transport: TransportKind) -> u8 {
@@ -96,15 +104,6 @@ impl UplinkManager {
             };
             if let Some(until) = st.active_wire_pinned_until {
                 if until <= now {
-                    if st.active_wire != 0 {
-                        info!(
-                            uplink_index,
-                            transport = ?transport,
-                            previous_wire = st.active_wire,
-                            "auto-failback timer expired, snapping active wire back to primary",
-                        );
-                    }
-                    st.active_wire = 0;
                     st.active_wire_pinned_until = None;
                     st.active_wire_streak = 0;
                 }
