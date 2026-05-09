@@ -207,8 +207,7 @@ tun2udp + tun2tcp"]
 - [`config.toml`](config.toml) — пример конфигурации (TOML)
 - [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — hardened systemd unit
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) — основной операционный дашборд
-- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) — дашборд `tun2tcp`
-- [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json) — диагностика стартового и переключательного burst в native Shadowsocks
+- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json) — диагностика ситуативных hang'ов
 - [`src/proxy/`](src/proxy) — обработчики TCP/UDP ingress для SOCKS5
 - [`crates/outline-uplink/`](crates/outline-uplink) — выбор аплинка, пробы, failover и standby-логика
 - [`crates/outline-transport/`](crates/outline-transport) — WebSocket / HTTP-2 / HTTP-3 / raw-QUIC / VLESS / direct-Shadowsocks транспорты + кросс-транспортный `ResumeCache`
@@ -1186,8 +1185,7 @@ Snapshot дескрипторов включает общее количеств
 Дашборды Grafana:
 
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
-- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json)
-- [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json)
+- [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json)
 
 Экспериментальный Grafana-дешборд для uplinks/control-plane намеренно не поставляется; для multi-instance активации аплинков используйте встроенный UI `/dashboard`.
 
