@@ -46,6 +46,59 @@ fn record_transport_failure(
     }
 }
 
+/// Decide whether a primary-wire probe failure should *not* drive any of the
+/// escalation paths (`record_transport_failure`,
+/// `advance_active_wire_on_probe_failure`, `extend_mode_downgrade(... Probe*)`)
+/// because `active_wire` is already on a fallback that is demonstrably
+/// carrying traffic.
+///
+/// The default probe path always targets the primary wire
+/// ([`UplinkConfig::tcp_dial_url`] / `udp_dial_url` ignore `active_wire`),
+/// so a primary that is permanently broken — for example because DPI started
+/// dropping the configured carrier — produces a probe failure on every cycle
+/// even after the system has already shifted `active_wire` to wire 1 and
+/// real user traffic is flowing through the fallback. Without this gate
+/// each cycle re-stamps:
+///
+///   * `consecutive_failures` (eventually flipping `healthy = false` for an
+///     uplink that is actually delivering traffic),
+///   * a fresh `mode_downgrade` window (capping the dispatcher to a lower
+///     carrier on every probe interval indefinitely, even though the
+///     fallback wire neither needs the cap nor fails on it),
+///
+/// producing the visible "primary still broken, sticky on fallback, traffic
+/// fine, but `mode_downgrade` window glows forever" pattern.
+///
+/// Returns `true` (skip escalation) when:
+///   * `active_wire != 0` — sticky has already moved off primary;
+///   * `runtime_failure_window` is non-zero (a zero window disables decay
+///     altogether — operators who pin that explicitly want eternal
+///     accumulation, so we honour it);
+///   * `last_any_wire_success` was stamped within the window — proof that
+///     *some* wire (active fallback, validated by `run_fallback_wire_probe`,
+///     or any successful user-flow dial) is delivering. The fallback-wire
+///     probe walk runs whenever the primary outcome is failing
+///     ([scheduler.rs:257](crate::manager::probe::scheduler)), so the
+///     stamp is kept fresh as long as the fallback is actually reachable.
+///
+/// Whenever any of those is missing, the legacy escalation path runs as
+/// before — primary is the only signal we trust.
+fn should_skip_primary_probe_escalation(
+    status: &PerTransportStatus,
+    runtime_failure_window: Duration,
+    now: Instant,
+) -> bool {
+    if status.active_wire == 0 {
+        return false;
+    }
+    if runtime_failure_window.is_zero() {
+        return false;
+    }
+    status
+        .last_any_wire_success
+        .is_some_and(|t| now.saturating_duration_since(t) < runtime_failure_window)
+}
+
 /// Symmetric pair of `record_transport_success`'s early-failback block:
 /// when the probe (which always targets the primary wire in this
 /// iteration) has failed `min_failures` consecutive times AND the
@@ -253,6 +306,17 @@ impl UplinkManager {
         // the sync status critical section ends (drain is async).
         let mut tcp_transitioned_to_fallback = false;
         let mut udp_transitioned_to_fallback = false;
+        let runtime_failure_window = load_balancing.runtime_failure_window;
+        // Snapshot the gate *before* the mutation closure so the
+        // `extend_mode_downgrade` branches below (which run outside the
+        // status lock) see the same decision the in-closure branches did.
+        let (tcp_skip_escalation, udp_skip_escalation) = {
+            let s = self.inner.read_status(index);
+            (
+                should_skip_primary_probe_escalation(&s.tcp, runtime_failure_window, now),
+                should_skip_primary_probe_escalation(&s.udp, runtime_failure_window, now),
+            )
+        };
         self.inner.with_status_mut(index, |status| {
             status.last_checked = Some(now);
             status.tcp.latency = result.tcp_latency;
@@ -260,37 +324,41 @@ impl UplinkManager {
             update_rtt_ewma(&mut status.tcp.rtt_ewma, result.tcp_latency, rtt_ewma_alpha);
             update_rtt_ewma(&mut status.udp.rtt_ewma, result.udp_latency, rtt_ewma_alpha);
             if !result.tcp_ok {
-                record_transport_failure(&mut status.tcp, now, min_failures, &load_balancing);
-                // Probe-driven failover: when the primary wire has failed
-                // `min_failures` consecutive probes and a fallback exists,
-                // advance `active_wire` so the next session that lands on
-                // this uplink lands on the fallback directly. Critical for
-                // active_passive groups where the passive uplinks get
-                // probed but no client traffic; without this their
-                // `active_wire` state machine never moves (only dial-loop
-                // failures drive it through `record_wire_outcome`), so the
-                // first session after promotion would still try the dead
-                // primary and only learn through chunk-0 stall.
-                tcp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
-                    &mut status.tcp,
-                    uplink_total_wires,
-                    min_failures,
-                    now,
-                    pin_duration,
-                );
-            } else {
-                record_transport_success(&mut status.tcp, min_failures, grace_window);
-            }
-            if result.udp_applicable {
-                if !result.udp_ok {
-                    record_transport_failure(&mut status.udp, now, min_failures, &load_balancing);
-                    udp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
-                        &mut status.udp,
+                if !tcp_skip_escalation {
+                    record_transport_failure(&mut status.tcp, now, min_failures, &load_balancing);
+                    // Probe-driven failover: when the primary wire has failed
+                    // `min_failures` consecutive probes and a fallback exists,
+                    // advance `active_wire` so the next session that lands on
+                    // this uplink lands on the fallback directly. Critical for
+                    // active_passive groups where the passive uplinks get
+                    // probed but no client traffic; without this their
+                    // `active_wire` state machine never moves (only dial-loop
+                    // failures drive it through `record_wire_outcome`), so the
+                    // first session after promotion would still try the dead
+                    // primary and only learn through chunk-0 stall.
+                    tcp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
+                        &mut status.tcp,
                         uplink_total_wires,
                         min_failures,
                         now,
                         pin_duration,
                     );
+                }
+            } else {
+                record_transport_success(&mut status.tcp, min_failures, grace_window);
+            }
+            if result.udp_applicable {
+                if !result.udp_ok {
+                    if !udp_skip_escalation {
+                        record_transport_failure(&mut status.udp, now, min_failures, &load_balancing);
+                        udp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
+                            &mut status.udp,
+                            uplink_total_wires,
+                            min_failures,
+                            now,
+                            pin_duration,
+                        );
+                    }
                 } else {
                     record_transport_success(&mut status.udp, min_failures, grace_window);
                 }
@@ -368,14 +436,14 @@ impl UplinkManager {
         // descent. Recovery probes (above) plus the reactive walk-up
         // path together restore the cap as soon as the capped carrier
         // proves stable again.
-        if !result.tcp_ok {
+        if !result.tcp_ok && !tcp_skip_escalation {
             self.extend_mode_downgrade(
                 index,
                 TransportKind::Tcp,
                 ModeDowngradeTrigger::ProbeTransportFailure(effective_tcp_mode),
             );
         }
-        if result.udp_applicable && !result.udp_ok {
+        if result.udp_applicable && !result.udp_ok && !udp_skip_escalation {
             self.extend_mode_downgrade(
                 index,
                 TransportKind::Udp,
@@ -447,35 +515,45 @@ impl UplinkManager {
         let error_text = format!("{error:#}");
         let pin_duration = self.inner.load_balancing.mode_downgrade_duration;
         let uplink_total_wires = 1 + uplink.fallbacks.len();
+        let runtime_failure_window = load_balancing.runtime_failure_window;
+        let (tcp_skip_escalation, udp_skip_escalation) = {
+            let s = self.inner.read_status(index);
+            (
+                should_skip_primary_probe_escalation(&s.tcp, runtime_failure_window, now),
+                should_skip_primary_probe_escalation(&s.udp, runtime_failure_window, now),
+            )
+        };
         // Capture transitions for post-critical-section side effects (warm-
         // standby pool drain). Same pattern as `process_probe_ok`.
         let mut tcp_transitioned_to_fallback = false;
         let mut udp_transitioned_to_fallback = false;
         self.inner.with_status_mut(index, |status| {
             status.last_checked = Some(now);
-            record_transport_failure(&mut status.tcp, now, min_failures, &load_balancing);
-            // Mirror `process_probe_ok`'s probe-driven active-wire advance.
-            // Without this, a probe that errors out (WS handshake timeout,
-            // 404 on the XHTTP URL, TLS failure — anything that aborts the
-            // probe machinery itself before producing a `ProbeOutcome`)
-            // never flips `active_wire` even after `min_failures`
-            // consecutive errors, so a passive uplink whose primary is
-            // reachable enough to handshake but broken at the application
-            // layer would stay pinned to wire 0 forever — defeating the
-            // failover for the most common real-world failure mode (server
-            // disabled XHTTP but kept TLS / HTTPS responding).
-            tcp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
-                &mut status.tcp,
-                uplink_total_wires,
-                min_failures,
-                now,
-                pin_duration,
-            );
+            if !tcp_skip_escalation {
+                record_transport_failure(&mut status.tcp, now, min_failures, &load_balancing);
+                // Mirror `process_probe_ok`'s probe-driven active-wire advance.
+                // Without this, a probe that errors out (WS handshake timeout,
+                // 404 on the XHTTP URL, TLS failure — anything that aborts the
+                // probe machinery itself before producing a `ProbeOutcome`)
+                // never flips `active_wire` even after `min_failures`
+                // consecutive errors, so a passive uplink whose primary is
+                // reachable enough to handshake but broken at the application
+                // layer would stay pinned to wire 0 forever — defeating the
+                // failover for the most common real-world failure mode (server
+                // disabled XHTTP but kept TLS / HTTPS responding).
+                tcp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
+                    &mut status.tcp,
+                    uplink_total_wires,
+                    min_failures,
+                    now,
+                    pin_duration,
+                );
+            }
             // Only penalise UDP when it is actually configured.  The probe Err
             // path is usually a TCP connect failure; penalising UDP here when
             // there is no udp_ws_url would permanently mark UDP unhealthy for
             // TCP-only uplinks.
-            if uplink.supports_udp() {
+            if uplink.supports_udp() && !udp_skip_escalation {
                 record_transport_failure(&mut status.udp, now, min_failures, &load_balancing);
                 udp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
                     &mut status.udp,
@@ -505,12 +583,14 @@ impl UplinkManager {
         }
         // Probe-level failure (ws connect / timeout).  Same H3 downgrade logic
         // as the tcp_ok=false case above; helper is a no-op for non-WS/non-H3.
-        self.extend_mode_downgrade(
-            index,
-            TransportKind::Tcp,
-            ModeDowngradeTrigger::ProbeConnectFailure(&error, effective_tcp_mode),
-        );
-        if uplink.supports_udp() {
+        if !tcp_skip_escalation {
+            self.extend_mode_downgrade(
+                index,
+                TransportKind::Tcp,
+                ModeDowngradeTrigger::ProbeConnectFailure(&error, effective_tcp_mode),
+            );
+        }
+        if uplink.supports_udp() && !udp_skip_escalation {
             self.extend_mode_downgrade(
                 index,
                 TransportKind::Udp,

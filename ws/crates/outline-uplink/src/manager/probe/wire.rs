@@ -35,7 +35,7 @@ use outline_transport::DnsCache;
 use crate::config::{ProbeConfig, UplinkConfig};
 
 use super::super::super::probe::probe_uplink;
-use super::super::super::types::{Uplink, UplinkManager};
+use super::super::super::types::{TransportKind, Uplink, UplinkManager};
 
 /// Decide which fallback wire to probe in this cycle. Returns `None` when
 /// the uplink has no fallbacks or no fallback should be probed.
@@ -103,6 +103,9 @@ impl UplinkManager {
         let effective_tcp_mode = wire_view.tcp_dial_mode();
         let effective_udp_mode = wire_view.udp_dial_mode();
 
+        let total_wires = 1 + uplink.fallbacks.len();
+        let wire_index_u8 = u8::try_from(wire_index).unwrap_or(u8::MAX);
+
         let result = match timeout(
             probe.timeout.saturating_mul(2).saturating_add(std::time::Duration::from_secs(1)),
             probe_uplink(
@@ -127,6 +130,21 @@ impl UplinkManager {
                     error = %error,
                     "fallback-wire probe failed",
                 );
+                // The active fallback wire failed at the probe-machinery
+                // level (handshake error / TLS reject / etc.). Without this,
+                // a passive uplink whose fallback silently breaks would
+                // stay pinned to the dead wire forever — neither the dial
+                // loop (no traffic to drive `record_wire_outcome`) nor the
+                // primary probe (still pointing at wire 0) sees the
+                // failure. Feeding the outcome through `record_wire_outcome`
+                // reuses the existing per-wire streak machinery: when
+                // `min_failures` consecutive fallback-wire probes fail,
+                // the active wire advances to the next wire in the chain,
+                // mirroring how a real client dial would push it forward.
+                self.record_wire_outcome(index, TransportKind::Tcp, wire_index_u8, false, total_wires);
+                if uplink.supports_udp() {
+                    self.record_wire_outcome(index, TransportKind::Udp, wire_index_u8, false, total_wires);
+                }
                 return;
             },
             Err(_) => {
@@ -135,13 +153,16 @@ impl UplinkManager {
                     wire_index,
                     "fallback-wire probe timed out",
                 );
+                self.record_wire_outcome(index, TransportKind::Tcp, wire_index_u8, false, total_wires);
+                if uplink.supports_udp() {
+                    self.record_wire_outcome(index, TransportKind::Udp, wire_index_u8, false, total_wires);
+                }
                 return;
             },
         };
 
         let now = Instant::now();
         let alpha = self.inner.load_balancing.rtt_ewma_alpha;
-        let wire_index_u8 = u8::try_from(wire_index).unwrap_or(u8::MAX);
         self.inner.with_status_mut(index, |status| {
             if result.tcp_ok {
                 status.tcp.last_any_wire_success = Some(now);
@@ -160,6 +181,17 @@ impl UplinkManager {
                     .record_fallback_wire_latency(wire_index_u8, result.udp_latency, alpha);
             }
         });
+        // Per-transport outcome of the fallback-wire probe. `record_wire_outcome`
+        // increments `active_wire_streak` on `success=false` when the failed
+        // wire matches the current active wire and resets it on any success;
+        // when the streak crosses `min_failures` it advances `active_wire`
+        // to the next wire in the chain. This is the only path that moves
+        // sticky off a fallback wire on a passive uplink (no client traffic
+        // to drive `record_wire_outcome` from the dial path).
+        self.record_wire_outcome(index, TransportKind::Tcp, wire_index_u8, result.tcp_ok, total_wires);
+        if result.udp_applicable {
+            self.record_wire_outcome(index, TransportKind::Udp, wire_index_u8, result.udp_ok, total_wires);
+        }
         debug!(
             uplink = %uplink.name,
             wire_index,
