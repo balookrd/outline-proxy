@@ -42,7 +42,19 @@ pub(super) async fn run_probe_attempt_with_timeout(
     warm_tcp_slot: Option<WarmTcpProbeSlot>,
     warm_udp_slot: Option<WarmUdpProbeSlot>,
 ) -> Result<ProbeOutcome> {
-    let tcp_budget = (probe.ws.enabled || probe.http.is_some() || probe.tcp.is_some()) as u32;
+    // Outer probe-cycle deadline budget: each enabled application-level
+    // sub-probe (ws / http / tcp-tunnel / tls / dns) may cost up to
+    // `probe.timeout` on the wire. Without `tls` here, a config that uses
+    // only `[probe.tls] + [probe.dns]` lands `tcp_budget = 0`, the cycle
+    // gets `timeout_duration = 1 × probe.timeout + 1s` instead of the
+    // intended `2 × probe.timeout + 1s`, and a TLS handshake that runs
+    // close to the per-attempt deadline can be aborted by the outer
+    // wrapper before `record_attempt` finalises — leaving `probe="tls"`
+    // metrics flat at zero while DNS still passes.
+    let tcp_budget = (probe.ws.enabled
+        || probe.http.is_some()
+        || probe.tcp.is_some()
+        || probe.tls.is_some()) as u32;
     let udp_budget = (uplink.supports_udp() && (probe.ws.enabled || probe.dns.is_some())) as u32;
     let transport_budgets = (tcp_budget + udp_budget).max(1);
     let timeout_duration = probe
