@@ -124,6 +124,15 @@ max_dials = 2
 # overrides the skip independently of this flag.
 # skip_when_active = true
 
+# Liveness-probe override: even with `skip_when_active = true`, force a
+# probe cycle to run after this many seconds without one. Provides a
+# regular "pulse" in `probe_runs_total{probe=...}` so dashboards never
+# go flat-zero on healthy active uplinks, and operators get continuous
+# coverage of "is this uplink's probe target still reachable?". Set to
+# 0 to disable the override (legacy behaviour: skip can hold forever
+# while traffic flows). Default 300 seconds (5 minutes).
+# liveness_interval_secs = 300
+
 [outline.probe.ws]
 enabled = true
 

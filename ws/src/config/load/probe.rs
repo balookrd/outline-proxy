@@ -105,6 +105,9 @@ pub(super) fn load_probe_config(probe: Option<&ProbeSection>) -> Result<ProbeCon
         min_failures: probe.and_then(|p| p.min_failures).unwrap_or(3).max(1),
         attempts,
         skip_when_active: probe.and_then(|p| p.skip_when_active).unwrap_or(true),
+        liveness_interval: Duration::from_secs(
+            probe.and_then(|p| p.liveness_interval_secs).unwrap_or(300),
+        ),
         ws: WsProbeConfig {
             enabled: probe
                 .and_then(|p| p.ws.as_ref())

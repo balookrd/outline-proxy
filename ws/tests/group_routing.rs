@@ -32,10 +32,12 @@ fn probe_disabled() -> ProbeConfig {
         min_failures: 1,
         attempts: 1,
         skip_when_active: true,
+        liveness_interval: std::time::Duration::from_secs(300),
         ws: WsProbeConfig { enabled: false },
         http: None,
         dns: None,
         tcp: None,
+        tls: None,
     }
 }
 

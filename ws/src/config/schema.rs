@@ -389,6 +389,11 @@ pub(super) struct ProbeSection {
     /// When false, disables the "skip probe when uplink already carries
     /// healthy traffic" optimisation. Default true (skip enabled).
     pub(super) skip_when_active: Option<bool>,
+    /// Liveness-probe interval in seconds. Even when the activity-based
+    /// skip would otherwise hold, force a probe cycle to run after this
+    /// many seconds without one. `0` disables the override; defaults to
+    /// 300 (5 minutes).
+    pub(super) liveness_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
