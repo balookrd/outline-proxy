@@ -1059,12 +1059,12 @@ async fn snapshot_reports_fingerprint_profile_name_per_strategy() {
 
     let snapshot = manager.snapshot().await;
     let pool: &[&str] = &[
-        "chrome-130-windows",
-        "chrome-130-macos",
-        "firefox-130-windows",
-        "firefox-130-macos",
-        "safari-17-macos",
-        "edge-130-windows",
+        "chrome-142-windows",
+        "chrome-142-macos",
+        "firefox-150-windows",
+        "firefox-150-macos",
+        "safari-19-macos",
+        "edge-142-windows",
     ];
 
     let u_none = &snapshot.uplinks[0];

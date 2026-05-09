@@ -162,7 +162,7 @@ pub struct Profile {
 /// re-detecting this binary). To refresh: update each `user_agent`
 /// and `sec_ch_ua` field in the table below, bump the constant to
 /// the current `date +%s`, then re-run the suite.
-pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_777_593_600; // 2026-05-01 00:00 UTC
+pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_778_284_800; // 2026-05-09 00:00 UTC
 
 /// Maximum tolerated age of [`PROFILES`] before the staleness test
 /// fails. Six months is short enough to keep up with browser-major
@@ -179,28 +179,34 @@ pub const REFRESH_PERIOD_SECS: u64 = 180 * 24 * 60 * 60;
 /// expects to see across many independent peers.
 pub const PROFILES: &[Profile] = &[
     Profile {
-        name: "chrome-130-windows",
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        name: "chrome-142-windows",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
-        sec_ch_ua: Some("\"Chromium\";v=\"130\", \"Google Chrome\";v=\"130\", \"Not?A_Brand\";v=\"99\""),
+        sec_ch_ua: Some("\"Chromium\";v=\"142\", \"Google Chrome\";v=\"142\", \"Not?A_Brand\";v=\"99\""),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"Windows\""),
     },
     Profile {
-        name: "chrome-130-macos",
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        name: "chrome-142-macos",
+        // Chrome on macOS still pins `10_15_7` (Catalina) in the UA
+        // string — Google froze that in 2021 to stop User-Agent
+        // leaking the real macOS version. Recent Chrome stable still
+        // ships the same string in 2026, so we mirror it. The actual
+        // OS version travels via `Sec-CH-UA-Platform-Version` when
+        // negotiated; we don't advertise that header in this pool.
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
-        sec_ch_ua: Some("\"Chromium\";v=\"130\", \"Google Chrome\";v=\"130\", \"Not?A_Brand\";v=\"99\""),
+        sec_ch_ua: Some("\"Chromium\";v=\"142\", \"Google Chrome\";v=\"142\", \"Not?A_Brand\";v=\"99\""),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"macOS\""),
     },
     Profile {
-        name: "firefox-130-windows",
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0",
+        name: "firefox-150-windows",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         accept_language: "en-US,en;q=0.5",
         accept_encoding: "gzip, deflate, br, zstd",
@@ -209,8 +215,14 @@ pub const PROFILES: &[Profile] = &[
         sec_ch_ua_platform: None,
     },
     Profile {
-        name: "firefox-130-macos",
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.6; rv:130.0) Gecko/20100101 Firefox/130.0",
+        name: "firefox-150-macos",
+        // Firefox uses the actual macOS major in its UA (unlike
+        // Chrome's frozen `10_15_7`). macOS 16 (Tahoe) is current
+        // stable as of 2026-05; Firefox follows via
+        // `Intel Mac OS X 16.4`. Apple-silicon machines still
+        // surface as `Intel Mac OS X` here — Firefox has no separate
+        // ARM string in the UA.
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 16.4; rv:150.0) Gecko/20100101 Firefox/150.0",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         accept_language: "en-US,en;q=0.5",
         accept_encoding: "gzip, deflate, br, zstd",
@@ -219,12 +231,17 @@ pub const PROFILES: &[Profile] = &[
         sec_ch_ua_platform: None,
     },
     Profile {
-        name: "safari-17-macos",
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+        // Safari major releases ride the macOS yearly cadence:
+        // Safari 17 (Sonoma, 2023), Safari 18 (Sequoia, 2024),
+        // Safari 19 (Tahoe, 2025). Patch 19.4 is the May-2026
+        // stable; the UA still pins `10_15_7` like Chrome does.
+        name: "safari-19-macos",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/19.4 Safari/605.1.15",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         accept_language: "en-US,en;q=0.9",
-        // Safari does not advertise `zstd` even on Sonoma — keep the
-        // list short so the profile reads as Safari rather than
+        // Safari still does NOT advertise `zstd` as of 19.x — Apple
+        // has not shipped the algorithm in WebKit. Keep the list
+        // short so the profile reads as Safari rather than
         // Chrome-with-different-UA.
         accept_encoding: "gzip, deflate, br",
         sec_ch_ua: None,
@@ -232,12 +249,12 @@ pub const PROFILES: &[Profile] = &[
         sec_ch_ua_platform: None,
     },
     Profile {
-        name: "edge-130-windows",
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+        name: "edge-142-windows",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
-        sec_ch_ua: Some("\"Chromium\";v=\"130\", \"Microsoft Edge\";v=\"130\", \"Not?A_Brand\";v=\"99\""),
+        sec_ch_ua: Some("\"Chromium\";v=\"142\", \"Microsoft Edge\";v=\"142\", \"Not?A_Brand\";v=\"99\""),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"Windows\""),
     },
