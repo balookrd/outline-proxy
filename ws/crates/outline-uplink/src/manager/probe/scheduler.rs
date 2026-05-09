@@ -155,8 +155,15 @@ impl UplinkManager {
                 // is no active runtime-failure cooldown. Once a cooldown is
                 // set, we must run the probe even in global scope so it can
                 // confirm whether the active uplink is actually broken and let
-                // strict selection move new sessions away from it.
-                if should_skip_probe_cycle_for_recent_activity(s, now, threshold, chunk0_failure_window) {
+                // strict selection move new sessions away from it. Operators
+                // can disable the skip entirely via `skip_when_active = false`
+                // — useful when they want continuous probe coverage on
+                // dashboards even for the active uplink (the trade-off is
+                // ~1 extra application-level handshake per cycle per active
+                // uplink).
+                if self.inner.probe.skip_when_active
+                    && should_skip_probe_cycle_for_recent_activity(s, now, threshold, chunk0_failure_window)
+                {
                     let udp_active =
                         s.udp.last_active.is_some_and(|t| now.duration_since(t) < threshold);
                     debug!(

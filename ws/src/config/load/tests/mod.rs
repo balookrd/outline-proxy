@@ -20,7 +20,8 @@ fn probe(interval: Option<u64>, timeout: Option<u64>) -> ProbeSection {
         http: None,
         dns: None,
         tcp: None,
-            tls: None,
+        tls: None,
+        skip_when_active: None,
     }
 }
 

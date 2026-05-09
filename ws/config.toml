@@ -115,6 +115,14 @@ interval_secs = 30
 timeout_secs = 10
 max_concurrent = 4
 max_dials = 2
+# When true (default), probe cycles are skipped on uplinks that are already
+# carrying healthy traffic — re-validation handshakes would only repeat what
+# the data plane already confirmed and add load on upstream rate limiters.
+# Set to false to keep probing active uplinks every interval (useful when
+# operators want continuous probe-metric coverage on dashboards even for
+# uplinks the data plane is exercising). An in-flight chunk-0 streak still
+# overrides the skip independently of this flag.
+# skip_when_active = true
 
 [outline.probe.ws]
 enabled = true

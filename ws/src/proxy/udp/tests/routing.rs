@@ -44,11 +44,12 @@ async fn classify_decision_unknown_group_falls_back_to_default() {
         max_dials: 2,
         min_failures: 3,
         attempts: 1,
+        skip_when_active: true,
         ws: WsProbeConfig { enabled: false },
         http: None,
         dns: None,
         tcp: None,
-            tls: None,
+        tls: None,
     };
     let lb = LoadBalancingConfig {
         mode: LoadBalancingMode::ActiveActive,
