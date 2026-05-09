@@ -345,6 +345,19 @@ pub struct ProbeConfig {
     /// overrides the skip independently of this flag — the chunk-0 signal
     /// is too important to silence even when probes are otherwise quiet.
     pub skip_when_active: bool,
+    /// Liveness-probe override: even when [`Self::skip_when_active`] is
+    /// true and the activity check would otherwise skip the cycle, run
+    /// the probe at least once every `liveness_interval` so dashboard
+    /// `probe_runs_total{probe=...}` rate stays non-zero on healthy
+    /// always-active uplinks and operators get continuous coverage of
+    /// "can this uplink still reach the configured probe target". Set
+    /// to `Duration::ZERO` to disable the override (legacy behaviour:
+    /// skip can hold forever as long as traffic flows). Default is 5
+    /// minutes, picked to be comfortably above the typical
+    /// `probe.interval` so the override does not trigger every cycle
+    /// but still surfaces "probe target unreachable" within a few
+    /// minutes of the underlying problem.
+    pub liveness_interval: Duration,
     pub ws: WsProbeConfig,
     pub http: Option<HttpProbeConfig>,
     pub dns: Option<DnsProbeConfig>,

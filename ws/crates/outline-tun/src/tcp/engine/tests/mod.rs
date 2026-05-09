@@ -1160,6 +1160,7 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             min_failures: 1,
             attempts: 1,
             skip_when_active: true,
+            liveness_interval: std::time::Duration::from_secs(300),
             ws: WsProbeConfig { enabled: false },
             http: None,
             dns: None,

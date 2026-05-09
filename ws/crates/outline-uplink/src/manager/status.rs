@@ -230,6 +230,19 @@ pub(crate) struct UplinkStatus {
     pub(crate) udp: PerTransportStatus,
     pub(crate) last_error: Option<String>,
     pub(crate) last_checked: Option<Instant>,
+    /// Wall-clock timestamp of the most recent probe cycle that actually
+    /// ran on this uplink (i.e. NOT a cycle that exited via the
+    /// activity-based skip). Used by the liveness-probe override in
+    /// `should_skip_probe_cycle_for_recent_activity`: when
+    /// `liveness_interval` is set and this stamp is older than the
+    /// interval, the cycle runs unconditionally — guarantees a periodic
+    /// "pulse" of probe metrics on uplinks that otherwise stay in skip
+    /// mode forever because they keep carrying traffic. Distinct from
+    /// `last_checked`, which is updated by `process_probe_ok` /
+    /// `process_probe_err` *after* the probe completes — by the time a
+    /// skipped cycle decides whether to skip, the writer has not run
+    /// yet, so we need a separate "last not-skipped" stamp.
+    pub(crate) last_full_probe_at: Option<Instant>,
 }
 
 impl UplinkStatus {

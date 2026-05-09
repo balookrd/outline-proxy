@@ -21,6 +21,7 @@ pub(super) fn should_skip_probe_cycle_for_recent_activity(
     now: Instant,
     interval: Duration,
     chunk0_failure_window: Duration,
+    liveness_interval: Duration,
 ) -> bool {
     let tcp_active = status
         .tcp
@@ -28,15 +29,15 @@ pub(super) fn should_skip_probe_cycle_for_recent_activity(
         .is_some_and(|t| now.duration_since(t) < interval);
     let tcp_currently_healthy = status.tcp.healthy == Some(true);
     let tcp_no_cooldown = !cooldown_active(status, TransportKind::Tcp, now);
-    // Override: do not skip the cycle when a chunk-0 timeout was observed
-    // recently, even if real traffic is otherwise flowing through the
-    // uplink. Rescued user-flows (failover_step recovers chunk-0 stalls
-    // by handing off to a fallback wire) keep `last_active` fresh, so
-    // the activity check would silence the probe right when its signal
-    // matters most — exactly during a chunk-0 storm. Probing while the
-    // signal is fresh is what lets `runtime_health_escalation` /
-    // `health_effective` catch up and surface the symptom on the
-    // dashboard.
+    // Override 1 — chunk-0 freshness: do not skip the cycle when a chunk-0
+    // timeout was observed recently, even if real traffic is otherwise
+    // flowing through the uplink. Rescued user-flows (failover_step
+    // recovers chunk-0 stalls by handing off to a fallback wire) keep
+    // `last_active` fresh, so the activity check would silence the probe
+    // right when its signal matters most — exactly during a chunk-0
+    // storm. Probing while the signal is fresh is what lets
+    // `runtime_health_escalation` / `health_effective` catch up and
+    // surface the symptom on the dashboard.
     let chunk0_signal_fresh = !chunk0_failure_window.is_zero()
         && (status
             .tcp
@@ -44,6 +45,22 @@ pub(super) fn should_skip_probe_cycle_for_recent_activity(
             .is_some_and(|t| now.saturating_duration_since(t) < chunk0_failure_window)
             || status.tcp.chunk0_consecutive_failures > 0);
     if chunk0_signal_fresh {
+        return false;
+    }
+    // Override 2 — liveness: even on a perfectly healthy active uplink,
+    // run the probe at least once every `liveness_interval` so the
+    // metric `probe_runs_total{probe=...}` keeps a non-zero rate on
+    // dashboards and operators get a continuous "this probe target is
+    // still reachable through this path" signal. `Duration::ZERO`
+    // disables the override (legacy behaviour: skip can hold
+    // indefinitely while traffic flows). The first cycle after process
+    // start has `last_full_probe_at = None`, which satisfies the
+    // override and bootstraps the pulse without a special case.
+    if !liveness_interval.is_zero()
+        && status
+            .last_full_probe_at
+            .is_none_or(|t| now.saturating_duration_since(t) >= liveness_interval)
+    {
         return false;
     }
     tcp_active && tcp_currently_healthy && tcp_no_cooldown
@@ -151,6 +168,7 @@ impl UplinkManager {
                 let s = &status;
                 let threshold = self.inner.probe.interval;
                 let chunk0_failure_window = self.inner.load_balancing.chunk0_failure_window;
+                let liveness_interval = self.inner.probe.liveness_interval;
                 // Recent traffic is enough to skip the probe only while there
                 // is no active runtime-failure cooldown. Once a cooldown is
                 // set, we must run the probe even in global scope so it can
@@ -160,9 +178,18 @@ impl UplinkManager {
                 // — useful when they want continuous probe coverage on
                 // dashboards even for the active uplink (the trade-off is
                 // ~1 extra application-level handshake per cycle per active
-                // uplink).
+                // uplink). The liveness override (`liveness_interval`) is
+                // weaker — it lets skip hold up to that duration, then
+                // forces a single cycle to pulse metrics, then can skip
+                // again until the next interval. Default 5 min.
                 if self.inner.probe.skip_when_active
-                    && should_skip_probe_cycle_for_recent_activity(s, now, threshold, chunk0_failure_window)
+                    && should_skip_probe_cycle_for_recent_activity(
+                        s,
+                        now,
+                        threshold,
+                        chunk0_failure_window,
+                        liveness_interval,
+                    )
                 {
                     let udp_active =
                         s.udp.last_active.is_some_and(|t| now.duration_since(t) < threshold);
@@ -176,6 +203,19 @@ impl UplinkManager {
                     continue;
                 }
             }
+            // Past the skip gate — this cycle will run. Stamp
+            // `last_full_probe_at` *now* so the liveness override in
+            // `should_skip_probe_cycle_for_recent_activity` can read the
+            // freshness on the next cycle without depending on the probe
+            // result. Stamping early (vs. after the probe finishes via
+            // `process_probe_ok` / `process_probe_err`) ensures a probe
+            // that errors out hard still resets the liveness window —
+            // otherwise a series of timeout-aborted cycles would
+            // pin-pong the override every cycle instead of every
+            // `liveness_interval`.
+            self.inner.with_status_mut(index, |s| {
+                s.last_full_probe_at = Some(now);
+            });
 
             let uplink = uplink.clone();
             let probe = self.inner.probe.clone();

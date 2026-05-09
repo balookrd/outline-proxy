@@ -45,6 +45,7 @@ fn make_group(name: &str, uplink_names: &[&str]) -> UplinkGroupConfig {
             min_failures: 3,
             attempts: 1,
             skip_when_active: true,
+            liveness_interval: std::time::Duration::from_secs(300),
             ws: WsProbeConfig { enabled: false },
             http: None,
             dns: None,

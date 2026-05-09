@@ -284,6 +284,7 @@ fn make_probe(min_failures: usize) -> ProbeConfig {
         min_failures,
         attempts: 1,
         skip_when_active: true,
+        liveness_interval: std::time::Duration::from_secs(300),
         ws: WsProbeConfig { enabled: false },
         http: None,
         dns: None,
