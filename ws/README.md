@@ -173,6 +173,7 @@ tun2udp + tun2tcp"]
 - WebSocket connectivity probes (TCP+TLS+WS handshake; no ping/pong — servers rarely respond to WebSocket ping control frames)
 - real HTTP probes over `websocket-stream`
 - real DNS probes over `websocket-packet`
+- TLS handshake-only probes against a real product SNI through the tunnel — reproduces the user-flow chunk-0 failure pattern when upstream filtering silently drops `ServerHello` records, which the plain HTTP probe cannot see
 - probe concurrency limits
 - separate probe dial isolation
 - immediate probe wakeup on runtime failure to accelerate detection
@@ -199,7 +200,7 @@ The project is intentionally practical, but there are still boundaries:
 
 - `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
 - Non-echo ICMP traffic on TUN is not supported.
-- `probe.http` supports `http://` only, not `https://`. `probe.tcp` should target a speak-first TCP service such as SSH or SMTP, not a typical HTTP/HTTPS port.
+- `probe.http` supports `http://` only — for HTTPS use the dedicated `[outline.probe.tls]` block, which drives a TLS handshake (no HTTP exchange) against a configured SNI. `probe.tcp` should target a speak-first TCP service such as SSH or SMTP, not a typical HTTP/HTTPS port.
 - TCP failover is safe before useful payload exchange; live established TCP tunnels cannot be migrated transparently between uplinks.
 
 ## Repository Layout
@@ -591,6 +592,19 @@ urls = [
 # checks do not download response bodies through the uplink. Any HTTP status
 # in the `200..400` range counts as success — `301`/`302` redirects are fine.
 
+# Optional: TLS handshake-only probe. Reproduces the user-flow chunk-0
+# pattern when upstream filtering silently drops `ServerHello` records for
+# specific SNIs — invisible to `[outline.probe.http]` because plain HTTP
+# never exercises TLS. Mutually exclusive with `[outline.probe.http]` /
+# `[outline.probe.tcp]` (priority: tls → http → tcp). Metrics emit
+# `probe="tls"`. See docs/UPLINK-CONFIGURATIONS.md "TLS handshake-only
+# data-path probe" for target selection guidance.
+# [outline.probe.tls]
+# targets = [
+#   "www.youtube.com:443",
+#   "www.instagram.com",  # bare host → port 443
+# ]
+
 [outline.probe.dns]
 server = "1.1.1.1"
 port = 53
@@ -742,7 +756,7 @@ via = "main"
 - `h3_downgrade_secs` (per-group, default `60`, also accepted as `mode_downgrade_secs`): how long an uplink that experienced a failure on its advanced mode — H3 application-level error (e.g. `H3_INTERNAL_ERROR`) **or** raw-QUIC dial / handshake failure — stays in H2 fallback mode before the original mode is retried. Applies to both `transport = "ws"` and `transport = "vless"`. Set to `0` to disable automatic downgrade.
 - `state_path` (optional): path to a TOML file where the active-uplink selection is persisted across restarts. Defaults to the config file path with the extension replaced by `.state.toml` (e.g. `config.toml` → `config.state.toml`). If the file cannot be written (e.g. config lives in a read-only `/etc/` directory under `ProtectSystem=strict`), the process logs a warning at startup and continues without persistence. The bundled systemd units set `STATE_PATH=/var/lib/outline-ws-rust/state.toml` so the state lands in the writable state directory. Only the active-uplink selection is persisted (by uplink name); EWMA and penalty values are not — they are re-established within one probe cycle after restart.
 - Uplink groups (`[[uplink_group]]`) each hold their own probe loop, standby pool, sticky-routes store, active-uplink state, and load-balancing policy — groups are fully isolated at runtime.
-- `[outline.probe]` acts as a template: each group inherits it, and `[uplink_group.probe]` overrides individual fields per group. Probe sub-tables (`ws`/`http`/`dns`/`tcp`) are replaced wholesale — if a group sets `[uplink_group.probe.http]`, the template's `[outline.probe.http]` is dropped for that group.
+- `[outline.probe]` acts as a template: each group inherits it, and `[uplink_group.probe]` overrides individual fields per group. Probe sub-tables (`ws`/`http`/`dns`/`tcp`/`tls`) are replaced wholesale — if a group sets `[uplink_group.probe.http]`, the template's `[outline.probe.http]` is dropped for that group. Application-level probes (`http`/`tcp`/`tls`) are mutually exclusive: one runs per cycle, priority `tls → http → tcp`.
 - Uplink names must be globally unique across all groups (Prometheus labels currently use `uplink="..."` without a group qualifier).
 - The legacy `[bypass]` section has been removed. Migrate bypass prefixes to a `[[route]]` with `via = "direct"`. Loading a config that still has a `[bypass]` table fails with an explicit migration error.
 - Uplinks, the probe template, and load-balancing settings all live under `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). The older flat layout with top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]` is still accepted for backwards compatibility and logs a deprecation warning on startup — migrate to the `[outline]` section. Without any `[[uplinks]]` entry, top-level `tcp_ws_url` / `password` / CLI flags (`--tcp-ws-url`, `--password`, …) synthesise a single-uplink `default` group as a shorthand.
@@ -948,7 +962,7 @@ Probe activation rules:
 
 - probes do not start unless probe settings are explicitly configured
 - `[probe]` alone does not enable any check
-- at least one of `[probe.ws]`, `[probe.http]`, or `[probe.dns]` must be present
+- at least one of `[probe.ws]`, `[probe.http]`, `[probe.dns]`, `[probe.tcp]`, or `[probe.tls]` must be present
 
 Uplinks without a `udp_ws_url` are treated as TCP-only: UDP health state and standby slots are not created or tracked for them, and UDP-related probe outcomes do not affect their UDP health metric.
 

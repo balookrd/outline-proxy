@@ -639,13 +639,19 @@ warm_standby_tcp = 1
 - **Скалярные поля** (`interval_secs`, `timeout_secs`, `max_concurrent`,
   `max_dials`, `min_failures`, `attempts`) мержатся пофилдово — поля,
   не указанные в override, наследуются из `[outline.probe]`.
-- **Саб-таблицы** (`ws` / `http` / `dns` / `tcp`) заменяются целиком.
-  Если группа задаёт `[uplink_group.probe.http]`, шаблонная
+- **Саб-таблицы** (`ws` / `http` / `dns` / `tcp` / `tls`) заменяются
+  целиком. Если группа задаёт `[uplink_group.probe.http]`, шаблонная
   `[outline.probe.http]` для этой группы отбрасывается полностью —
   все нужные поля надо повторить.
 - **Чтобы пробы запустились**, в результирующей (после мержа)
-  конфигурации должна остаться хотя бы одна из `ws` / `http` / `dns`,
-  иначе probe-loop для группы не стартует.
+  конфигурации должна остаться хотя бы одна из `ws` / `http` / `dns` /
+  `tcp` / `tls`, иначе probe-loop для группы не стартует.
+- **Application-уровневые саб-пробы взаимоисключающие.** В одном цикле
+  выполняется только одна из `tls` / `http` / `tcp` — это ограничивает
+  количество handshake'ов за цикл. Приоритет: `tls` → `http` → `tcp`:
+  если задана `[outline.probe.tls]`, саб-таблицы `http` и `tcp` молча
+  пропускаются. `ws` и `dns` всегда работают параллельно с активной
+  из трёх.
 
 Пример: группа `backup` пробит реже, использует свой HTTP-таргет, а WS
 и DNS-саб-таблицы наследует из шаблона:
@@ -697,13 +703,70 @@ url = "http://backup-canary.example.net/"
 
 - `ws`: задайте `[uplink_group.probe.ws] enabled = false` в override —
   у `WsProbeConfig` есть явное поле `enabled`.
-- `http` / `dns` / `tcp`: выключить per-group нельзя. Мерж использует
-  `override.or(template)` ([groups.rs:160](src/config/load/groups.rs:160)),
-  поэтому пропущенная саб-таблица наследует значение из шаблона, и
-  способа задать «явное None» нет. Если нужно, чтобы одна группа
-  работала без какой-то из этих проб, а другая — с ней, уберите
-  саб-таблицу из `[outline.probe]` и объявите её только в нужных
-  группах через `[uplink_group.probe.<тип>]`.
+- `http` / `dns` / `tcp` / `tls`: выключить per-group нельзя. Мерж
+  использует `override.or(template)`
+  ([groups.rs:160](src/config/load/groups.rs:160)), поэтому пропущенная
+  саб-таблица наследует значение из шаблона, и способа задать «явное
+  None» нет. Если нужно, чтобы одна группа работала без какой-то из
+  этих проб, а другая — с ней, уберите саб-таблицу из `[outline.probe]`
+  и объявите её только в нужных группах через
+  `[uplink_group.probe.<тип>]`.
+
+## TLS-handshake проба data-path (`[outline.probe.tls]`)
+
+Plain HTTP проба гонит `HEAD` через туннель к настроенному
+`http://...`-URL — никакого TLS она не делает, так что upstream-фильтр,
+тихо режущий `ServerHello` для конкретных SNI, для неё невидим.
+User-flow паттерн `chunk0_timeout` (handshake к серверу-uplink прошёл,
+ClientHello переслан upstream-цели, ответных байт не приходит) при этом
+проходит мимо: `uplink_health` остаётся `1`, streak до
+`probe.min_failures` не доходит, per-flow rescue гасит симптом.
+
+`[outline.probe.tls]` закрывает этот пробел. Открывает тот же туннель,
+что HTTP-проба, и поверх него гонит реальный `ClientHello →
+ServerHello / Certificate → Finished → close_notify` к настроенной
+паре `(SNI, port)`. Никакого HTTP-обмена после handshake — цель
+воспроизвести точно тот же «жду ответных байт» паттерн, чтобы probe
+падал на тех же условиях, что user-flow, и runtime-эскалация
+(`probe-driven healthy=false → uplink выпадает из selection → global
+active съезжает`) реально срабатывала.
+
+```toml
+[outline.probe.tls]
+# Цели в формате "host:port"; bare host = порт 443 по умолчанию.
+# IPv6 — в квадратных скобках: "[::1]:443".
+# Probe ротирует список по одной записи за цикл — фильтрация по
+# конкретному SNI всплывает наружу, а не маскируется одной
+# всегда-доступной целью.
+targets = [
+  "www.youtube.com:443",
+  "www.instagram.com",     # → порт 443
+]
+```
+
+Как выбирать цели:
+
+- Берите SNI, по которым реально ходит пользовательский трафик
+  деплоймента, а не stub-origins типа `example.com`. Probe полезен
+  только когда его цель чувствительна к тому же upstream-фильтру,
+  что и user-flows.
+- Двух-четырёх целей достаточно. Probe платит один свежий handshake
+  на uplink за цикл, ротация по списку размывает cycle-load.
+- Не включайте свой собственный uplink-host — outer transport уже
+  покрывается WS sub-probe.
+
+Метрики пишутся под label `probe="tls"`. Разделите его от `probe="http"`
+/ `probe="ws"` на панели «Probe Runs (success/error, by sub-probe)»,
+чтобы видеть новый сигнал отдельно. В эпизоде TLS-DPI серия
+`probe="tls" result="error"` должна повторять форму
+`runtime_failure_signatures_total{signature="chunk0_timeout"}`
+у user-flow; если она остаётся плоской на пиках user-flow — выбранные
+SNI не попадают под тот же фильтр, нужны другие.
+
+Взаимоисключаются с `[outline.probe.http]` и `[outline.probe.tcp]`
+в одном цикле (приоритет: `tls` → `http` → `tcp`). Можно оставить
+`[outline.probe.http]` в шаблоне для групп, которые не объявляют
+`tls` — цикл выберет блок с наивысшим приоритетом из заданных.
 
 ## Механика окна даунгрейда
 
