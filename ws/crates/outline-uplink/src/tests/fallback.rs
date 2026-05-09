@@ -399,7 +399,15 @@ fn tcp_and_udp_active_wires_advance_independently() {
 }
 
 #[test]
-fn active_wire_snaps_back_to_primary_on_pin_expiry() {
+fn active_wire_stays_on_fallback_after_pin_expiry() {
+    // Pin expiry no longer force-snaps active back to primary — it only
+    // clears the pin so the state machine is free to advance again on
+    // the next failure. Auto-failback to primary is probe-driven (the
+    // early-failback block in `record_transport_success` requires
+    // `min_failures` consecutive primary probe successes), not
+    // timer-driven; this prevents the periodic `0 → 1 → 2 → 0` cycle
+    // that previously walked user-flows back through known-broken
+    // wires every pin window when primary stayed dead.
     let mut cfg = vless_xhttp_primary();
     cfg.fallbacks = vec![ws_fallback(false)];
     let very_short_pin = std::time::Duration::from_millis(50);
@@ -417,8 +425,17 @@ fn active_wire_snaps_back_to_primary_on_pin_expiry() {
     std::thread::sleep(std::time::Duration::from_millis(80));
     assert_eq!(
         manager.active_wire(0, TransportKind::Tcp),
-        0,
-        "expired pin snaps active back to primary",
+        1,
+        "expired pin must NOT force active back to primary; the pin clears \
+         silently and active stays on the fallback that has been carrying \
+         traffic until probe explicitly confirms primary recovered",
+    );
+    // Pin itself is cleared, so a subsequent failure on the active wire
+    // can advance the state machine again.
+    let snap = manager.read_status_for_test(0);
+    assert!(
+        snap.tcp.active_wire_pinned_until.is_none(),
+        "expired pin must be cleared on next read",
     );
 }
 
@@ -521,10 +538,17 @@ fn probe_err_advances_active_wire_to_fallback() {
 }
 
 #[test]
-fn probe_err_re_pins_after_pin_expiry_when_primary_still_failing() {
+fn probe_err_after_pin_expiry_does_not_re_advance_when_active_already_on_fallback() {
+    // Updated semantics: pin expiry only clears the pin, it does NOT force
+    // active back to primary. Therefore a primary-probe failure arriving
+    // after the pin has expired hits the `active_wire != 0` guard inside
+    // `advance_active_wire_on_probe_failure` and is a no-op for the
+    // active-wire state machine — there is no period during which the
+    // failure is allowed to walk active back to primary just to re-pin
+    // it on the same fallback again. The flap that the previous test
+    // pinned is exactly what the rewrite removes.
     let mut cfg = vless_xhttp_primary();
     cfg.fallbacks = vec![ws_fallback(false)];
-    // Short pin window so we can wait it out in a unit test.
     let very_short_pin = std::time::Duration::from_millis(40);
     let manager = UplinkManager::new_for_test(
         "test",
@@ -538,27 +562,24 @@ fn probe_err_re_pins_after_pin_expiry_when_primary_still_failing() {
     manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("primary 404"));
     let status = manager.read_status_for_test(0);
     assert_eq!(status.tcp.active_wire, 1);
-    let first_pin = status.tcp.active_wire_pinned_until.expect("pin set on first flip");
+    assert!(status.tcp.active_wire_pinned_until.is_some(), "pin set on first flip");
 
-    // Wait the pin out. Without the pin-expiry reset inside
-    // `advance_active_wire_on_probe_failure`, the next probe failure
-    // would bail out via the `active_wire != 0` guard (storage stayed at
-    // 1 because no traffic ever called the lazy reader on a passive
-    // uplink) and the chain's pin badge would tick to zero and never
-    // refresh.
+    // Wait the pin out.
     std::thread::sleep(very_short_pin + std::time::Duration::from_millis(10));
 
-    // Second probe failure after pin expiry: must re-pin, not no-op.
+    // Second probe failure after pin expiry: pin gets cleared but active
+    // stays on the fallback. No re-pin, no churn.
     manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("primary still 404"));
     let status = manager.read_status_for_test(0);
     assert_eq!(
         status.tcp.active_wire, 1,
-        "post-expiry probe failure must re-flip back to the fallback wire",
+        "active must remain on the fallback wire — pin expiry is not a \
+         signal to re-test primary",
     );
-    let second_pin = status.tcp.active_wire_pinned_until.expect("re-pin set on second flip");
     assert!(
-        second_pin > first_pin,
-        "second pin must extend past the original pin's deadline",
+        status.tcp.active_wire_pinned_until.is_none(),
+        "pin remains cleared; no spurious re-pin on the fallback that is \
+         already active",
     );
 }
 
