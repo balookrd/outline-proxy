@@ -162,6 +162,7 @@ pub(super) fn merge_probe_section(
             dns: o.dns.clone().or_else(|| t.dns.clone()),
             tcp: o.tcp.clone().or_else(|| t.tcp.clone()),
             tls: o.tls.clone().or_else(|| t.tls.clone()),
+            skip_when_active: o.skip_when_active.or(t.skip_when_active),
         }),
     }
 }

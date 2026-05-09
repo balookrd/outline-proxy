@@ -104,6 +104,7 @@ pub(super) fn load_probe_config(probe: Option<&ProbeSection>) -> Result<ProbeCon
         max_dials: probe.and_then(|p| p.max_dials).unwrap_or(2).max(1),
         min_failures: probe.and_then(|p| p.min_failures).unwrap_or(3).max(1),
         attempts,
+        skip_when_active: probe.and_then(|p| p.skip_when_active).unwrap_or(true),
         ws: WsProbeConfig {
             enabled: probe
                 .and_then(|p| p.ws.as_ref())

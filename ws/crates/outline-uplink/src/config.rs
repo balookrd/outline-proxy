@@ -334,6 +334,17 @@ pub struct ProbeConfig {
     /// so the total time per cycle can be up to
     /// `attempts × (per-transport probe timeout budget + 500 ms)`. Default: 2.
     pub attempts: usize,
+    /// When true (default), probe cycles are skipped on uplinks that are
+    /// already carrying real traffic, are probe-confirmed healthy, and have
+    /// no active runtime cooldown — the uplink is proving itself by data
+    /// transfer, so re-validating with extra handshakes is wasted load on
+    /// the upstream rate limiter. Set to false to disable this optimisation
+    /// and run probes on every interval regardless of traffic, e.g. when an
+    /// operator wants always-on probe metric coverage on dashboards even
+    /// for the active uplink. Note that an in-flight chunk-0 streak still
+    /// overrides the skip independently of this flag — the chunk-0 signal
+    /// is too important to silence even when probes are otherwise quiet.
+    pub skip_when_active: bool,
     pub ws: WsProbeConfig,
     pub http: Option<HttpProbeConfig>,
     pub dns: Option<DnsProbeConfig>,

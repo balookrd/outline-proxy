@@ -386,6 +386,9 @@ pub(super) struct ProbeSection {
     pub(super) dns: Option<DnsProbeSection>,
     pub(super) tcp: Option<TcpProbeSection>,
     pub(super) tls: Option<TlsProbeSection>,
+    /// When false, disables the "skip probe when uplink already carries
+    /// healthy traffic" optimisation. Default true (skip enabled).
+    pub(super) skip_when_active: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

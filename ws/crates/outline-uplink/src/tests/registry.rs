@@ -44,6 +44,7 @@ fn make_group(name: &str, uplink_names: &[&str]) -> UplinkGroupConfig {
             max_dials: 2,
             min_failures: 3,
             attempts: 1,
+            skip_when_active: true,
             ws: WsProbeConfig { enabled: false },
             http: None,
             dns: None,

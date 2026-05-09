@@ -283,6 +283,7 @@ fn make_probe(min_failures: usize) -> ProbeConfig {
         max_dials: 1,
         min_failures,
         attempts: 1,
+        skip_when_active: true,
         ws: WsProbeConfig { enabled: false },
         http: None,
         dns: None,
