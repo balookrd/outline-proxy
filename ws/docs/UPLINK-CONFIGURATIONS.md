@@ -730,13 +730,20 @@ selection → global active slides off`) actually fires.
 
 ```toml
 [outline.probe.tls]
-# Targets are "host:port" strings; bare host defaults to port 443.
-# IPv6 hosts use bracketed form: "[::1]:443".
+# Each target is one of:
+#   - full URL:           "https://www.youtube.com/"
+#   - URL with port:      "https://www.youtube.com:8443/"
+#   - bare host:port:     "www.youtube.com:443"
+#   - bare host:          "www.instagram.com"     # → port 443
+#   - bracketed IPv6:     "[::1]:8443"
+# The URL form accepts only `https://` (TLS-handshake-only probe makes
+# no sense over `http://`). Path/query/fragment are ignored — this probe
+# never sends an HTTP request, only a TLS handshake.
 # The probe rotates one entry per cycle so per-SNI filtering surfaces
 # instead of being masked by one always-reachable target.
 targets = [
-  "www.youtube.com:443",
-  "www.instagram.com",     # → port 443
+  "https://www.youtube.com/",
+  "www.instagram.com",
 ]
 ```
 

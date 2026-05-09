@@ -733,14 +733,21 @@ active съезжает`) реально срабатывала.
 
 ```toml
 [outline.probe.tls]
-# Цели в формате "host:port"; bare host = порт 443 по умолчанию.
-# IPv6 — в квадратных скобках: "[::1]:443".
+# Каждая цель — одна из форм:
+#   - полный URL:         "https://www.youtube.com/"
+#   - URL с портом:       "https://www.youtube.com:8443/"
+#   - host:port:          "www.youtube.com:443"
+#   - bare host:          "www.instagram.com"   # → порт 443
+#   - IPv6 в скобках:     "[::1]:8443"
+# URL-форма принимает только `https://` (TLS-handshake-only проба не
+# имеет смысла поверх `http://`). Путь/query/fragment игнорируются —
+# проба не шлёт HTTP-запрос, только TLS handshake.
 # Probe ротирует список по одной записи за цикл — фильтрация по
 # конкретному SNI всплывает наружу, а не маскируется одной
 # всегда-доступной целью.
 targets = [
-  "www.youtube.com:443",
-  "www.instagram.com",     # → порт 443
+  "https://www.youtube.com/",
+  "www.instagram.com",
 ]
 ```
 

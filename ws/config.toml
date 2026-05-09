@@ -146,12 +146,14 @@ name = "example.com"
 # the per-cycle handshake count stays bounded. Metrics use probe="tls" — split
 # it out on the dashboard's "Probe Runs (success/error, by sub-probe)" panel.
 #
-# Targets are "host:port" (port defaults to 443). The probe rotates through
-# the list one entry per cycle so per-SNI filtering surfaces instead of being
-# masked by a single still-reachable target.
+# Each target is one of: "https://host[:port][/path]" (full URL, scheme must
+# be https), "host:port", or bare "host" (port defaults to 443). IPv6 hosts
+# use bracketed form: "[::1]:443". The probe rotates through the list one
+# entry per cycle so per-SNI filtering surfaces instead of being masked by
+# a single still-reachable target.
 # [outline.probe.tls]
 # targets = [
-#   "www.youtube.com:443",
+#   "https://www.youtube.com/",
 #   "www.instagram.com",     # bare host → port 443
 # ]
 
