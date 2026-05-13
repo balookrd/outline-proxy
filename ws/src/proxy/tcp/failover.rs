@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 
 use outline_transport::{
     TcpReader, TcpWriter,
-    TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
+    TcpShadowsocksReader, TcpShadowsocksWriter, UplinkConnectionBinding, UpstreamTransportGuard,
     connect_shadowsocks_tcp_with_source, connect_websocket_with_resume,
     global_resume_cache,
 };
@@ -255,8 +255,9 @@ async fn connect_tcp_uplink_primary(
         )
         .await?;
         let setup = WireSetup::from_uplink(&candidate.uplink);
+        let binding = tcp_binding(uplinks, setup.name);
         let (writer, reader) =
-            do_tcp_ss_setup_socket(stream, &setup, target, "socks_tcp").await?;
+            do_tcp_ss_setup_socket(stream, &setup, target, "socks_tcp", binding).await?;
         return Ok(ConnectedTcpUplink {
             writer,
             reader,
@@ -272,7 +273,8 @@ async fn connect_tcp_uplink_primary(
     // retry with a fresh on-demand dial — without recording a runtime failure.
     if let Some(ws) = uplinks.try_take_tcp_standby(candidate).await {
         let setup = WireSetup::from_uplink(&candidate.uplink);
-        match do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval).await {
+        let binding = tcp_binding(uplinks, setup.name);
+        match do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval, binding).await {
             Ok((writer, reader)) => {
                 return Ok(ConnectedTcpUplink {
                     writer,
@@ -344,8 +346,9 @@ pub(super) async fn connect_tcp_uplink_fresh(
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "socks_tcp").await?;
     let setup = WireSetup::from_uplink(&candidate.uplink);
+    let binding = tcp_binding(uplinks, setup.name);
     let (writer, reader) =
-        do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval).await?;
+        do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval, binding).await?;
     Ok(ConnectedTcpUplink {
         writer,
         reader,
@@ -412,8 +415,9 @@ pub(super) async fn redial_for_mid_session_retry(
             .await?
     };
     let setup = WireSetup::from_uplink(&candidate.uplink);
+    let binding = tcp_binding(uplinks, setup.name);
     let (writer, reader) =
-        do_tcp_ss_setup(ws, &setup, target, "socks_tcp_retry", keepalive_interval).await?;
+        do_tcp_ss_setup(ws, &setup, target, "socks_tcp_retry", keepalive_interval, binding).await?;
     Ok(ConnectedTcpUplink {
         writer,
         reader,
@@ -464,7 +468,9 @@ pub(super) async fn connect_tcp_fallback_fresh(
             source,
         )
         .await?;
-        let (writer, reader) = do_tcp_ss_setup_socket(stream, &setup, target, source).await?;
+        let binding = tcp_binding(uplinks, setup.name);
+        let (writer, reader) =
+            do_tcp_ss_setup_socket(stream, &setup, target, source, binding).await?;
         // Feed the dial latency into the uplink's RTT EWMA so score-based
         // selection between uplinks reflects this wire's real quality
         // when it is the sticky-active one. See doc comment above on the
@@ -555,7 +561,9 @@ pub(super) async fn connect_tcp_fallback_fresh(
     }
     global_resume_cache().store_if_issued(resume_key, ws.issued_session_id());
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
-    let (writer, reader) = do_tcp_ss_setup(ws, &setup, target, source, keepalive_interval).await?;
+    let binding = tcp_binding(uplinks, setup.name);
+    let (writer, reader) =
+        do_tcp_ss_setup(ws, &setup, target, source, keepalive_interval, binding).await?;
     // Feed the dial latency into the uplink's RTT EWMA — see SS branch
     // above for the rationale.
     uplinks
@@ -622,15 +630,25 @@ impl<'a> WireSetup<'a> {
     }
 }
 
+/// Build the per-connection uplink-attribution tag used by
+/// `UpstreamTransportGuard::Drop` to maintain the open-connection gauge and
+/// classify the close against the currently-active uplink. Lives here (not in
+/// `outline-uplink`) because the binding is per-connection and only the
+/// dispatch layer knows which group + uplink the connection actually rides.
+fn tcp_binding(uplinks: &UplinkManager, uplink_name: &str) -> UplinkConnectionBinding {
+    UplinkConnectionBinding::new(uplinks.group_name(), "tcp", uplink_name)
+}
+
 async fn do_tcp_ss_setup(
     ws_stream: outline_transport::TransportStream,
     setup: &WireSetup<'_>,
     target: &TargetAddr,
     source: &'static str,
     keepalive_interval: Option<std::time::Duration>,
+    binding: UplinkConnectionBinding,
 ) -> Result<(TcpWriter, TcpReader)> {
     let shared_conn_info = ws_stream.shared_connection_info();
-    let lifetime = UpstreamTransportGuard::new(source, "tcp");
+    let lifetime = UpstreamTransportGuard::new_with_uplink(source, "tcp", binding);
     let diag = outline_transport::WsReadDiag {
         conn_id: shared_conn_info.map(|(id, _)| id),
         mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
@@ -694,10 +712,11 @@ async fn do_tcp_ss_setup_socket(
     setup: &WireSetup<'_>,
     target: &TargetAddr,
     source: &'static str,
+    binding: UplinkConnectionBinding,
 ) -> Result<(TcpWriter, TcpReader)> {
     let (reader_half, writer_half) = stream.into_split();
     let master_key = setup.cipher.derive_master_key(setup.password)?;
-    let lifetime = UpstreamTransportGuard::new(source, "tcp");
+    let lifetime = UpstreamTransportGuard::new_with_uplink(source, "tcp", binding);
     let writer = TcpShadowsocksWriter::connect_socket(
         writer_half,
         setup.cipher,

@@ -10,9 +10,9 @@ use socks5_proto::TargetAddr;
 use url::Url;
 
 use crate::{
-    DnsCache, TransportOperation, TransportStream, UpstreamTransportGuard, WsClosed,
-    config::TransportMode, connect_websocket_with_resume, connect_websocket_with_source,
-    frame_io_ws::WS_READ_IDLE_TIMEOUT, resumption::SessionId,
+    DnsCache, TransportOperation, TransportStream, UplinkConnectionBinding,
+    UpstreamTransportGuard, WsClosed, config::TransportMode, connect_websocket_with_resume,
+    connect_websocket_with_source, frame_io_ws::WS_READ_IDLE_TIMEOUT, resumption::SessionId,
 };
 
 use super::header::{
@@ -158,6 +158,16 @@ impl VlessUdpTransport {
         let downgraded_from = ws_stream.downgraded_from();
         let transport = Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval);
         Ok((transport, issued, downgraded_from))
+    }
+
+    /// Attribute this VLESS UDP session to a concrete uplink so its lifetime
+    /// drives `outline_ws_rust_uplink_open_connections` and the matching
+    /// close-classification counter. Same constraints as
+    /// [`crate::UdpWsTransport::with_uplink_binding`] — call before sharing
+    /// the inner guard `Arc`.
+    pub fn with_uplink_binding(mut self, binding: UplinkConnectionBinding) -> Self {
+        UpstreamTransportGuard::attach_uplink_binding(&mut self._lifetime, binding);
+        self
     }
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {

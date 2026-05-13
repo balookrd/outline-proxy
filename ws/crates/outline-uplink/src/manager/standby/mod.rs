@@ -270,13 +270,22 @@ impl UplinkManager {
         target: &socks5_proto::TargetAddr,
         source: &'static str,
     ) -> Result<(outline_transport::TcpWriter, outline_transport::TcpReader)> {
-        use outline_transport::UpstreamTransportGuard;
+        use outline_transport::{UplinkConnectionBinding, UpstreamTransportGuard};
         let cache = self.inner.dns_cache.as_ref();
         let uplink = &candidate.uplink;
         let url = uplink
             .tcp_dial_url()
             .ok_or_else(|| anyhow!("uplink {} missing dial URL for quic transport", uplink.name))?;
-        let lifetime = UpstreamTransportGuard::new(source, "tcp");
+        // Attribute every raw-QUIC TCP dial to the owning uplink so closes
+        // land in `outline_ws_rust_uplink_open_connections` / the
+        // `*_uplink_connection_close_total{classification}` counter alongside
+        // the WS path's contribution.
+        let binding = UplinkConnectionBinding::new(
+            self.inner.group_name.as_str(),
+            "tcp",
+            uplink.name.as_str(),
+        );
+        let lifetime = UpstreamTransportGuard::new_with_uplink(source, "tcp", binding);
         let started = Instant::now();
         let (writer, reader) = match uplink.transport {
             UplinkTransport::Vless => {
@@ -374,7 +383,19 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<UdpSessionTransport> {
+        use outline_transport::UplinkConnectionBinding;
         let cache = self.inner.dns_cache.as_ref();
+        // Per-uplink attribution for the open-connection gauge / close-time
+        // classification counter. Built once per dial because every code path
+        // below ends in a transport that owns its own `_lifetime` guard
+        // attached via `with_uplink_binding`.
+        let binding = || {
+            UplinkConnectionBinding::new(
+                self.inner.group_name.as_str(),
+                "udp",
+                candidate.uplink.name.as_str(),
+            )
+        };
         if candidate.uplink.transport == UplinkTransport::Shadowsocks {
             metrics::record_warm_standby_acquire(
                 "udp",
@@ -403,6 +424,7 @@ impl UplinkManager {
                 &candidate.uplink.password,
                 source,
             )
+            .map(|t| t.with_uplink_binding(binding()))
             .map(UdpSessionTransport::Ss);
         }
 
@@ -433,7 +455,8 @@ impl UplinkManager {
                     candidate.uplink.ipv6_first,
                     source,
                     self.inner.load_balancing.vless_udp_mux_limits,
-                );
+                )
+                .with_uplink_binding(binding());
                 // WS fallback factory: same uplink parameters as the QUIC
                 // mux, but mode forced to H2 — the H3-downgrade window
                 // recorded by the on_fallback callback below makes any
@@ -460,6 +483,7 @@ impl UplinkManager {
                             requested,
                         );
                     });
+                let factory_binding = binding();
                 let ws_factory: outline_transport::WsFallbackFactory = Box::new(move || {
                     VlessUdpSessionMux::new_with_limits(
                         dns_cache,
@@ -473,6 +497,7 @@ impl UplinkManager {
                         limits,
                     )
                     .with_on_downgrade(Some(factory_on_downgrade))
+                    .with_uplink_binding(factory_binding)
                 });
                 let manager = self.clone();
                 let index = candidate.index;
@@ -510,7 +535,8 @@ impl UplinkManager {
                 self.inner.load_balancing.udp_ws_keepalive_interval,
                 self.inner.load_balancing.vless_udp_mux_limits,
             )
-            .with_on_downgrade(Some(on_downgrade));
+            .with_on_downgrade(Some(on_downgrade))
+            .with_uplink_binding(binding());
             return Ok(UdpSessionTransport::Vless(mux));
         }
 
@@ -526,6 +552,7 @@ impl UplinkManager {
                 source,
                 self.inner.load_balancing.udp_ws_keepalive_interval,
             )
+            .map(|t| t.with_uplink_binding(binding()))
             .map(UdpSessionTransport::Ss);
         }
 
@@ -572,7 +599,9 @@ impl UplinkManager {
                         started.elapsed(),
                     )
                     .await;
-                    return Ok(UdpSessionTransport::Ss(transport));
+                    return Ok(UdpSessionTransport::Ss(
+                        transport.with_uplink_binding(binding()),
+                    ));
                 },
                 Err(e) => {
                     tracing::warn!(
@@ -616,7 +645,7 @@ impl UplinkManager {
         if let Some(requested) = udp_downgraded_from {
             self.note_silent_transport_fallback(candidate.index, TransportKind::Udp, requested);
         }
-        Ok(UdpSessionTransport::Ss(transport))
+        Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())))
     }
 
     pub(crate) async fn refill_all_standby(&self) {

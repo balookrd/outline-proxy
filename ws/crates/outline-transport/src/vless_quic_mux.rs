@@ -36,7 +36,10 @@ use url::Url;
 use crate::quic::vless_udp::VlessUdpQuicSession;
 use crate::quic_connect::connect_vless_udp_session_quic;
 use crate::vless::VlessUdpMuxLimits;
-use crate::{AbortOnDrop, DnsCache, TransportOperation, UpstreamTransportGuard, WsClosed};
+use crate::{
+    AbortOnDrop, DnsCache, TransportOperation, UplinkConnectionBinding, UpstreamTransportGuard,
+    WsClosed,
+};
 
 pub struct VlessUdpQuicMux {
     dial: VlessUdpQuicDialer,
@@ -114,6 +117,15 @@ impl VlessUdpQuicMux {
             _janitor_task: janitor_task,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         }
+    }
+
+    /// Attribute the QUIC mux's lifetime guard to a concrete uplink so it
+    /// participates in `outline_ws_rust_uplink_open_connections` and the
+    /// matching close-classification counter alongside per-session lifetimes.
+    /// Same constraints as [`crate::UdpWsTransport::with_uplink_binding`].
+    pub fn with_uplink_binding(mut self, binding: UplinkConnectionBinding) -> Self {
+        UpstreamTransportGuard::attach_uplink_binding(&mut self._lifetime, binding);
+        self
     }
 
     pub async fn send_packet(&self, socks5_payload: &[u8]) -> Result<()> {

@@ -5317,6 +5317,279 @@
       ],
       "title": "v2 Downlink Replay Throughput",
       "type": "timeseries"
+    },
+    {
+      "type": "row",
+      "title": "Inactive Uplink Leak (Global / Per-Uplink)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 88
+      },
+      "id": 220
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Live count of upstream transports still attached to an uplink that is no longer the active one for its (group, transport) — i.e. sessions that survived a Global / PerUplink switchover and continue to consume the old uplink's resources until they finish naturally. Non-zero is expected briefly after a switch (TCP cannot migrate); a value that fails to drain over time is the leak signal. Built by subtracting the active-uplink indicator from the open-connection gauge: any uplink with `global_active_uplink_info != 1` (or `per_uplink_active_uplink_info != 1` for the matching transport) but with open connections counts here.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 50
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 89
+      },
+      "id": 221,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(\n  outline_ws_rust_uplink_open_connections{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}\n  unless on(instance, group, uplink) (outline_ws_rust_global_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} == 1)\n  unless on(instance, group, transport, uplink) label_replace(outline_ws_rust_per_uplink_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} == 1, \"transport\", \"$1\", \"proto\", \"(.*)\")\n)",
+          "legendFormat": "stranded",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Stranded Connections on Inactive Uplinks (now)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Currently open upstream transports per uplink, split by `transport` (tcp/udp). After a Global / PerUplink switchover the new active uplink starts climbing while the old one continues to drain — that drain rate is the recovery speed. Cross-check with `outline_ws_rust_global_active_uplink_info` to identify which series belongs to the active vs the stranded uplink.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 6,
+        "y": 89
+      },
+      "id": 222,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, group, transport, uplink) (outline_ws_rust_uplink_open_connections{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{group}}/{{uplink}}/{{transport}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Open Connections by Uplink",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Rate of upstream-transport closes on uplinks that were no longer active at close time, broken down by uplink. Spikes after a switchover are normal (stranded TCP sessions finishing naturally); a sustained non-zero rate without a recent switch suggests sessions are being dialled through a non-active uplink — typically a stale sticky route, a warm-standby pool that pre-dates the switch, or a `PerUplink`/`Global` mode misconfiguration. Pairs with the gauge above: integral of this rate ≈ delta of stranded gauge between scrapes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 97
+      },
+      "id": 223,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, group, transport, uplink) (rate(outline_ws_rust_uplink_connection_close_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",classification=\"inactive\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{group}}/{{uplink}}/{{transport}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Inactive Uplink Close Rate (Leak)",
+      "type": "timeseries"
     }
   ],
   "preload": false,

@@ -140,6 +140,16 @@ async fn dial_udp_fallback(
     let cache = uplinks.dns_cache();
     let source = "socks_udp_fb";
     let dial_started = std::time::Instant::now();
+    // Per-uplink attribution stays on the parent uplink even when a fallback
+    // wire actually carries the traffic — fallbacks share their parent's
+    // identity for routing/metrics purposes.
+    let binding = || {
+        outline_transport::UplinkConnectionBinding::new(
+            uplinks.group_name(),
+            "udp",
+            parent.uplink.name.as_str(),
+        )
+    };
 
     match fallback.transport {
         UplinkTransport::Shadowsocks => {
@@ -164,6 +174,7 @@ async fn dial_udp_fallback(
                 &fallback.password,
                 source,
             )
+            .map(|t| t.with_uplink_binding(binding()))
             .map(UdpSessionTransport::Ss)?;
             uplinks
                 .report_connection_latency(
@@ -224,7 +235,7 @@ async fn dial_udp_fallback(
                     dial_started.elapsed(),
                 )
                 .await;
-            Ok(UdpSessionTransport::Ss(transport))
+            Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())))
         },
         UplinkTransport::Vless => {
             // VLESS-as-fallback on UDP. We support the WS / XHTTP modes here
@@ -285,7 +296,8 @@ async fn dial_udp_fallback(
                     fallback.ipv6_first,
                     source,
                     limits,
-                );
+                )
+                .with_uplink_binding(binding());
                 // Factory for the WS fallback inside the hybrid mux. Mode
                 // pinned to WsH2 so the post-QUIC retry path is
                 // deterministic — the wire-aware downgrade window above
@@ -299,6 +311,7 @@ async fn dial_udp_fallback(
                 let factory_limits = limits;
                 let factory_uuid = uuid;
                 let factory_on_downgrade = Arc::clone(&on_downgrade);
+                let factory_binding = binding();
                 let ws_factory: WsFallbackFactory = Box::new(move || {
                     VlessUdpSessionMux::new_with_limits(
                         factory_dns_cache,
@@ -312,6 +325,7 @@ async fn dial_udp_fallback(
                         factory_limits,
                     )
                     .with_on_downgrade(Some(factory_on_downgrade))
+                    .with_uplink_binding(factory_binding)
                 });
                 // QUIC → WS pivot notifier: write a `Quic` downgrade
                 // observation into the fallback wire's slot so the next
@@ -352,7 +366,8 @@ async fn dial_udp_fallback(
                 keepalive,
                 limits,
             )
-            .with_on_downgrade(Some(on_downgrade));
+            .with_on_downgrade(Some(on_downgrade))
+            .with_uplink_binding(binding());
             uplinks
                 .report_connection_latency(
                     parent.index,
