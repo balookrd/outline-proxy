@@ -63,6 +63,8 @@ impl Metrics {
             sticky_routes_total: u.sticky_routes_total,
             sticky_routes_by_uplink: u.sticky_routes_by_uplink,
             uplink_fingerprint_profile_strategy_info: u.uplink_fingerprint_profile_strategy_info,
+            uplink_open_connections: u.uplink_open_connections,
+            uplink_connection_close_total: u.uplink_connection_close_total,
             probe_runs_total: p.probe_runs_total,
             probe_duration_seconds: p.probe_duration_seconds,
             probe_bytes_total: p.probe_bytes_total,

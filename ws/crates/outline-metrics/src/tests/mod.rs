@@ -701,3 +701,77 @@ fn metric_value(rendered: &str, metric: &str) -> Option<f64> {
         .lines()
         .find_map(|line| line.strip_prefix(metric)?.trim().parse::<f64>().ok())
 }
+
+// ── Per-uplink open-connection / leak-detection metrics ─────────────────
+
+#[test]
+fn uplink_open_connections_gauge_round_trips() {
+    let _guard = test_guard();
+    init();
+
+    add_uplink_open_connections("main", "tcp", "primary", 3);
+    add_uplink_open_connections("main", "tcp", "primary", -1);
+    add_uplink_open_connections("main", "udp", "secondary", 2);
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    assert!(
+        rendered.contains(
+            "outline_ws_rust_uplink_open_connections{group=\"main\",transport=\"tcp\",uplink=\"primary\"} 2",
+        ),
+        "tcp gauge missing or wrong in:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "outline_ws_rust_uplink_open_connections{group=\"main\",transport=\"udp\",uplink=\"secondary\"} 2",
+        ),
+        "udp gauge missing or wrong in:\n{rendered}"
+    );
+}
+
+#[test]
+fn uplink_close_classification_active_vs_inactive_vs_unknown() {
+    let _guard = test_guard();
+    init();
+    crate::active_uplink::reset_for_tests();
+
+    // Group running in `Global` scope with `senko` currently active.
+    set_global_active_uplink("g1", Some("senko"));
+    assert_eq!(
+        current_active_uplink("g1", "tcp").as_deref(),
+        Some("senko"),
+        "global active should win for both transports"
+    );
+
+    record_uplink_connection_close("g1", "tcp", "senko", "active");
+    record_uplink_connection_close("g1", "tcp", "nuxt", "inactive");
+
+    // Group running in `PerUplink` scope (no global) with split TCP/UDP.
+    set_per_uplink_active_uplink("g2", "tcp", Some("alpha"));
+    set_per_uplink_active_uplink("g2", "udp", Some("beta"));
+    assert_eq!(current_active_uplink("g2", "tcp").as_deref(), Some("alpha"));
+    assert_eq!(current_active_uplink("g2", "udp").as_deref(), Some("beta"));
+    record_uplink_connection_close("g2", "udp", "beta", "active");
+    record_uplink_connection_close("g2", "udp", "alpha", "inactive");
+
+    // Group running in `PerFlow` (no active publication at all): the binding
+    // resolves to `None` and the close lands in the `unknown` bucket.
+    assert!(current_active_uplink("g3", "tcp").is_none());
+    record_uplink_connection_close("g3", "tcp", "edge", "unknown");
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_connection_close_total{classification=\"active\",group=\"g1\",transport=\"tcp\",uplink=\"senko\"} 1"
+    ), "active close missing in:\n{rendered}");
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_connection_close_total{classification=\"inactive\",group=\"g1\",transport=\"tcp\",uplink=\"nuxt\"} 1"
+    ), "inactive close missing in:\n{rendered}");
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_connection_close_total{classification=\"active\",group=\"g2\",transport=\"udp\",uplink=\"beta\"} 1"
+    ), "per-uplink active close missing in:\n{rendered}");
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_connection_close_total{classification=\"inactive\",group=\"g2\",transport=\"udp\",uplink=\"alpha\"} 1"
+    ), "per-uplink inactive close missing in:\n{rendered}");
+    assert!(rendered.contains(
+        "outline_ws_rust_uplink_connection_close_total{classification=\"unknown\",group=\"g3\",transport=\"tcp\",uplink=\"edge\"} 1"
+    ), "per-flow unknown close missing in:\n{rendered}");
+}

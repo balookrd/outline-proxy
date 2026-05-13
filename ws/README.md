@@ -1190,6 +1190,28 @@ On Linux, the process also emits a periodic descriptor inventory log:
 The descriptor snapshot includes total open FDs plus a breakdown for sockets, pipes, anon inodes, regular files, and other descriptor types.
 
 `outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}`, and `outline_ws_rust_sticky_routes_total` expose selector configuration and active-uplink state.
+
+Per-uplink open-connection accounting (used to detect connections leaking
+into a non-active uplink after a `Global` / `PerUplink` switchover) is
+exported by:
+
+- `outline_ws_rust_uplink_open_connections{group, transport, uplink}` — gauge
+  of currently open upstream transports attributed to each uplink. After a
+  switchover the new active uplink ramps up while the old one drains; a
+  series that fails to drain is the leak signal.
+- `outline_ws_rust_uplink_connection_close_total{group, transport, uplink, classification}`
+  — counter of upstream-transport closes, classified at close time as
+  `active` (the uplink was still active), `inactive` (the active pointer
+  had moved elsewhere — a stranded session draining), or `unknown`
+  (`PerFlow` scope where no active pointer exists).
+  `rate(...{classification="inactive"}[5m])` is the drain rate after a
+  switchover; sustained non-zero outside a recent switch points at a stale
+  sticky route or warm-standby pool.
+
+Both are wired to the dashboard row `Inactive Uplink Leak (Global / Per-Uplink)`
+in `grafana/outline-ws-rust-dashboard.json`. Probe / health-check
+connections are intentionally *not* attributed — the metrics cover only
+user-traffic dials.
 When TUN UDP forwarding fails before a packet can be delivered upstream, `outline_ws_rust_tun_udp_forward_errors_total{reason}` breaks that down into `all_uplinks_failed`, `transport_error`, `connect_failed`, and `other`.
 Oversized SOCKS5 UDP packets dropped before uplink forwarding, and oversized UDP responses dropped before client delivery, are exported as `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing"}`.
 Local ICMP echo handling is exported separately via `outline_ws_rust_tun_icmp_local_replies_total{ip_family}`.

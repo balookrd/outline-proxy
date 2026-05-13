@@ -19,8 +19,8 @@ use crate::frame_io::DatagramChannel;
 use crate::frame_io_ws::{WS_READ_IDLE_TIMEOUT, from_ws_datagrams};
 
 use super::{
-    DnsCache, UpstreamTransportGuard, TransportStream, connect_websocket_with_resume,
-    connect_websocket_with_source,
+    DnsCache, TransportStream, UplinkConnectionBinding, UpstreamTransportGuard,
+    connect_websocket_with_resume, connect_websocket_with_source,
 };
 use crate::resumption::SessionId;
 
@@ -252,6 +252,17 @@ impl UdpWsTransport {
                     .map(|_| ())
             },
         }
+    }
+
+    /// Attribute this UDP transport to a concrete uplink so its lifetime
+    /// participates in `outline_ws_rust_uplink_open_connections` and the
+    /// matching close-classification counter. Must be called before the
+    /// transport is wrapped in any further `Arc<>` or shared state — the
+    /// inner guard is mutated through `Arc::get_mut`, which only succeeds
+    /// while the constructor is the sole owner.
+    pub fn with_uplink_binding(mut self, binding: UplinkConnectionBinding) -> Self {
+        UpstreamTransportGuard::attach_uplink_binding(&mut self._lifetime, binding);
+        self
     }
 
     pub async fn read_packet(&self) -> Result<Bytes> {

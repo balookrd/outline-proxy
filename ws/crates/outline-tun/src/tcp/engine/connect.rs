@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 use outline_metrics as metrics;
 use outline_transport::{
     TcpReader, TcpWriter,
-    TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
+    TcpShadowsocksReader, TcpShadowsocksWriter, UplinkConnectionBinding, UpstreamTransportGuard,
     connect_shadowsocks_tcp_with_source,
 };
 use socks5_proto::TargetAddr;
@@ -120,7 +120,8 @@ async fn connect_tcp_uplink(
             "tun_tcp",
         )
         .await?;
-        return do_tcp_ss_setup_socket(stream, &candidate.uplink, target).await;
+        let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
+        return do_tcp_ss_setup_socket(stream, &candidate.uplink, target, binding).await;
     }
 
     // Raw QUIC (VLESS-over-QUIC or SS-over-QUIC) is shared via the per-ALPN
@@ -161,7 +162,8 @@ async fn connect_tcp_uplink(
     // stale (fails before any server bytes arrive), discard it silently and
     // retry with a fresh on-demand dial — without recording a runtime failure.
     if let Some(ws) = uplinks.try_take_tcp_standby(candidate).await {
-        match do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval).await {
+        let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
+        match do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval, binding).await {
             Ok(v) => return Ok(v),
             Err(e) => {
                 debug!(
@@ -174,7 +176,12 @@ async fn connect_tcp_uplink(
     }
 
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "tun_tcp").await?;
-    do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval).await
+    let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
+    do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval, binding).await
+}
+
+fn tun_tcp_binding(uplinks: &UplinkManager, uplink_name: &str) -> UplinkConnectionBinding {
+    UplinkConnectionBinding::new(uplinks.group_name(), "tcp", uplink_name)
 }
 
 async fn do_tcp_ss_setup(
@@ -182,9 +189,10 @@ async fn do_tcp_ss_setup(
     uplink: &outline_uplink::UplinkConfig,
     target: &TargetAddr,
     keepalive_interval: Option<std::time::Duration>,
+    binding: UplinkConnectionBinding,
 ) -> Result<(TcpWriter, TcpReader)> {
     let shared_conn_info = ws_stream.shared_connection_info();
-    let lifetime = UpstreamTransportGuard::new("tun_tcp", "tcp");
+    let lifetime = UpstreamTransportGuard::new_with_uplink("tun_tcp", "tcp", binding);
     let diag = outline_transport::WsReadDiag {
         conn_id: shared_conn_info.map(|(id, _)| id),
         mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
@@ -240,10 +248,11 @@ async fn do_tcp_ss_setup_socket(
     stream: tokio::net::TcpStream,
     uplink: &outline_uplink::UplinkConfig,
     target: &TargetAddr,
+    binding: UplinkConnectionBinding,
 ) -> Result<(TcpWriter, TcpReader)> {
     let (reader_half, writer_half) = stream.into_split();
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
-    let lifetime = UpstreamTransportGuard::new("tun_tcp", "tcp");
+    let lifetime = UpstreamTransportGuard::new_with_uplink("tun_tcp", "tcp", binding);
     let mut writer = TcpShadowsocksWriter::connect_socket(
         writer_half,
         uplink.cipher,

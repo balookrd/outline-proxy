@@ -28,8 +28,8 @@ use tracing::debug;
 use url::Url;
 
 use crate::{
-    AbortOnDrop, DnsCache, TransportOperation, UpstreamTransportGuard, WsClosed,
-    config::TransportMode, resumption::SessionId,
+    AbortOnDrop, DnsCache, TransportOperation, UplinkConnectionBinding, UpstreamTransportGuard,
+    WsClosed, config::TransportMode, resumption::SessionId,
 };
 
 use super::udp::VlessUdpWsTransport;
@@ -283,6 +283,15 @@ impl VlessUdpSessionMux {
     /// is silently clamped to H2 — the "vless/ws/h3 stays put" symptom.
     pub fn with_on_downgrade(mut self, hook: Option<VlessUdpDowngradeNotifier>) -> Self {
         self.on_downgrade = hook;
+        self
+    }
+
+    /// Attribute the mux's lifetime guard to a concrete uplink so it
+    /// participates in `outline_ws_rust_uplink_open_connections` and the
+    /// matching close-classification counter alongside per-session lifetimes.
+    /// Same constraints as [`crate::UdpWsTransport::with_uplink_binding`].
+    pub fn with_uplink_binding(mut self, binding: UplinkConnectionBinding) -> Self {
+        UpstreamTransportGuard::attach_uplink_binding(&mut self._lifetime, binding);
         self
     }
 

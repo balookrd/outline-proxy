@@ -39,6 +39,41 @@ pub fn add_upstream_transports_active(source: &'static str, protocol: &'static s
         .add(delta);
 }
 
+/// Adjust the per-uplink open-connection gauge. `transport` is the wire-side
+/// label (`"tcp"` or `"udp"`); `delta` is `+1` on dial completion and `-1`
+/// on close.
+///
+/// The gauge is the principal observability hook for "stranded sessions on
+/// non-active uplinks" in `Global` / `PerUplink` modes — see
+/// [`record_uplink_connection_close`] for the matching close-time counter.
+pub fn add_uplink_open_connections(group: &str, transport: &str, uplink: &str, delta: i64) {
+    METRICS
+        .uplink_open_connections
+        .with_label_values(&[group, transport, uplink])
+        .add(delta);
+}
+
+/// Record an upstream-transport close, classified against the currently-active
+/// uplink for this group + transport. `classification` should be one of
+/// `"active"`, `"inactive"`, or `"unknown"`; passing other strings is allowed
+/// but defeats the dashboard panel `Inactive uplink leak rate`.
+///
+/// Callers that own a binding should consult [`current_active_uplink`] and
+/// pass the resolved tag rather than asserting against a stale snapshot.
+///
+/// [`current_active_uplink`]: crate::current_active_uplink
+pub fn record_uplink_connection_close(
+    group: &str,
+    transport: &str,
+    uplink: &str,
+    classification: &'static str,
+) {
+    METRICS
+        .uplink_connection_close_total
+        .with_label_values(&[group, transport, uplink, classification])
+        .inc();
+}
+
 pub fn record_request(command: &'static str) {
     METRICS.socks_requests_total.with_label_values(&[command]).inc();
 }

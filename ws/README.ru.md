@@ -1188,6 +1188,28 @@ Snapshot дескрипторов включает общее количеств
 
 `outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}` и `outline_ws_rust_sticky_routes_total` экспортируют конфигурацию селектора и состояние активного uplink.
 
+Учёт открытых соединений по uplink (используется для детекции утекания
+коннектов в неактивный uplink после переключения active в режимах
+`Global` / `PerUplink`) экспортируется через:
+
+- `outline_ws_rust_uplink_open_connections{group, transport, uplink}` —
+  gauge с текущим числом открытых upstream-транспортов, привязанных к
+  конкретному uplink. После переключения новый active поднимается, старый
+  понемногу слив сессии заканчивает; серия, которая не сходит к нулю —
+  сигнал утечки.
+- `outline_ws_rust_uplink_connection_close_total{group, transport, uplink, classification}`
+  — счётчик закрытий upstream-транспортов с классификацией на момент close:
+  `active` (uplink всё ещё активный), `inactive` (active уже сменился —
+  дренаж осиротевшей сессии), `unknown` (`PerFlow` scope без понятия
+  active). `rate(...{classification="inactive"}[5m])` показывает скорость
+  слива после переключения; устойчивое ненулевое значение вне недавнего
+  switchover указывает на устаревший sticky route или warm-standby пул.
+
+Обе метрики выведены в строку `Inactive Uplink Leak (Global / Per-Uplink)`
+дашборда `grafana/outline-ws-rust-dashboard.json`. Probe / health-check
+коннекты намеренно НЕ привязаны — метрики покрывают только
+пользовательский трафик.
+
 При ошибке UDP-forwarding в TUN метрика `outline_ws_rust_tun_udp_forward_errors_total{reason}` разбивает их по: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
 Дроп oversized SOCKS5 UDP-пакетов до отправки в uplink и oversized UDP-ответов до отправки клиенту экспортируется как `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing"}`.
 

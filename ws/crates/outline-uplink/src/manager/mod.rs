@@ -153,9 +153,34 @@ impl UplinkManager {
             udp: initial_udp,
             udp_reason: initial_udp.map(|_| "restored from state".to_string()),
         });
+        let group_name: String = group_name.into();
+        // Seed the sync active-uplink snapshot consulted by
+        // `UpstreamTransportGuard::Drop` so the very first connection close —
+        // including any closes that occur while the probe loop is still
+        // warming up — gets classified against the persisted active uplink
+        // (or `unknown` when no persisted state exists). Without this seed,
+        // every close before the first `set_active_uplink_index_for_transport`
+        // call would land in the `unknown` bucket.
+        if let Some(idx) = initial_global {
+            outline_metrics::set_global_active_uplink(&group_name, Some(uplinks[idx].name.as_str()));
+        }
+        if let Some(idx) = initial_tcp {
+            outline_metrics::set_per_uplink_active_uplink(
+                &group_name,
+                "tcp",
+                Some(uplinks[idx].name.as_str()),
+            );
+        }
+        if let Some(idx) = initial_udp {
+            outline_metrics::set_per_uplink_active_uplink(
+                &group_name,
+                "udp",
+                Some(uplinks[idx].name.as_str()),
+            );
+        }
         Ok(Self {
             inner: Arc::new(UplinkManagerInner {
-                group_name: group_name.into(),
+                group_name,
                 uplinks,
                 probe,
                 load_balancing,

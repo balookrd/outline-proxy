@@ -770,6 +770,8 @@ impl UplinkManager {
         reason: impl Into<String>,
     ) {
         let reason = reason.into();
+        let uplink_name = self.inner.uplinks[uplink_index].name.as_str();
+        let group_name = self.inner.group_name.as_str();
         if self.strict_global_active_uplink() {
             let mut active = self.inner.active_uplinks.write().await;
             let changed = active.global != Some(uplink_index);
@@ -777,6 +779,12 @@ impl UplinkManager {
             if changed || active.global_reason.is_none() || reason == "manual switch" {
                 active.global_reason = Some(reason.clone());
             }
+            // Mirror to the sync snapshot consulted by `UpstreamTransportGuard`'s
+            // `Drop` to classify a closing connection as belonging to the
+            // active uplink or to a stranded one. Done while we hold the
+            // async write so the two views never disagree across a pending
+            // close racing with the switch.
+            outline_metrics::set_global_active_uplink(group_name, Some(uplink_name));
         } else if self.strict_per_uplink_active_uplink() {
             match transport {
                 TransportKind::Tcp => {
@@ -786,6 +794,11 @@ impl UplinkManager {
                     if changed || active.tcp_reason.is_none() || reason == "manual switch" {
                         active.tcp_reason = Some(reason.clone());
                     }
+                    outline_metrics::set_per_uplink_active_uplink(
+                        group_name,
+                        "tcp",
+                        Some(uplink_name),
+                    );
                 },
                 TransportKind::Udp => {
                     let mut active = self.inner.active_uplinks.write().await;
@@ -794,27 +807,31 @@ impl UplinkManager {
                     if changed || active.udp_reason.is_none() || reason == "manual switch" {
                         active.udp_reason = Some(reason.clone());
                     }
+                    outline_metrics::set_per_uplink_active_uplink(
+                        group_name,
+                        "udp",
+                        Some(uplink_name),
+                    );
                 },
             }
         }
 
         if let Some(store) = &self.inner.state_store {
-            let uplink_name = self.inner.uplinks[uplink_index].name.clone();
-            let group_name = &self.inner.group_name;
+            let uplink_name_owned = uplink_name.to_string();
             if self.strict_global_active_uplink() {
                 store
-                    .update_active(group_name, Some(Some(uplink_name)), None, None)
+                    .update_active(group_name, Some(Some(uplink_name_owned)), None, None)
                     .await;
             } else {
                 match transport {
                     TransportKind::Tcp => {
                         store
-                            .update_active(group_name, None, Some(Some(uplink_name)), None)
+                            .update_active(group_name, None, Some(Some(uplink_name_owned)), None)
                             .await;
                     },
                     TransportKind::Udp => {
                         store
-                            .update_active(group_name, None, None, Some(Some(uplink_name)))
+                            .update_active(group_name, None, None, Some(Some(uplink_name_owned)))
                             .await;
                     },
                 }

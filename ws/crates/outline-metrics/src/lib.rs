@@ -15,6 +15,11 @@
 mod snapshot_types;
 pub use snapshot_types::*;
 
+mod active_uplink;
+pub use active_uplink::{
+    current_active_uplink, set_global_active_uplink, set_per_uplink_active_uplink,
+};
+
 #[cfg(feature = "prometheus")]
 mod process;
 #[cfg(feature = "prometheus")]
@@ -49,11 +54,12 @@ pub use self::snapshot::render_prometheus;
 #[cfg(feature = "prometheus")]
 pub use self::transport::{
     DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL, add_bytes, add_probe_bytes,
-    add_transport_connects_active, add_udp_datagram, add_upstream_transports_active,
-    record_dropped_oversized_udp_packet, record_failover, record_metrics_http_request,
-    record_mid_session_retry, record_probe, record_probe_wakeup, record_request,
-    record_runtime_failure, record_runtime_failure_cause, record_runtime_failure_other_detail,
-    record_runtime_failure_signature, record_runtime_failure_suppressed, record_transport_connect,
+    add_transport_connects_active, add_udp_datagram, add_uplink_open_connections,
+    add_upstream_transports_active, record_dropped_oversized_udp_packet, record_failover,
+    record_metrics_http_request, record_mid_session_retry, record_probe, record_probe_wakeup,
+    record_request, record_runtime_failure, record_runtime_failure_cause,
+    record_runtime_failure_other_detail, record_runtime_failure_signature,
+    record_runtime_failure_suppressed, record_transport_connect, record_uplink_connection_close,
     record_uplink_selected, record_upstream_transport, record_warm_standby_acquire,
     record_warm_standby_refill,
 };
@@ -193,6 +199,8 @@ struct Metrics {
     sticky_routes_total: IntGaugeVec,
     sticky_routes_by_uplink: IntGaugeVec,
     uplink_fingerprint_profile_strategy_info: IntGaugeVec,
+    uplink_open_connections: IntGaugeVec,
+    uplink_connection_close_total: IntCounterVec,
 }
 
 // ── Stub (prometheus feature disabled) ────────────────────────────────────

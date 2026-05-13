@@ -269,7 +269,7 @@ pub use fingerprint_profile::{
 
 // Transport lifetime guards — published because the uplink crate pairs a
 // `UpstreamTransportGuard` to every connection it hands out.
-pub use guards::UpstreamTransportGuard;
+pub use guards::{UplinkConnectionBinding, UpstreamTransportGuard};
 
 /// Sweep H2 (and H3 when enabled) shared-connection caches, removing entries
 /// whose underlying connection is no longer open.  Should be called

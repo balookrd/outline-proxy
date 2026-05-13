@@ -120,6 +120,8 @@ pub(super) struct UplinkFields {
     pub(super) sticky_routes_total: IntGaugeVec,
     pub(super) sticky_routes_by_uplink: IntGaugeVec,
     pub(super) uplink_fingerprint_profile_strategy_info: IntGaugeVec,
+    pub(super) uplink_open_connections: IntGaugeVec,
+    pub(super) uplink_connection_close_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> UplinkFields {
@@ -366,6 +368,34 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
          `fingerprint_profile`.",
         ["group", "uplink", "strategy"]
     );
+    let uplink_open_connections = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_rust_uplink_open_connections",
+        "Currently open upstream transports attributed to this uplink, by transport \
+         (`tcp`/`udp`). Incremented when a connection is dialled through the uplink, \
+         decremented on close. In `Global` / `PerUplink` `active_passive` modes a \
+         non-zero reading on a non-active uplink means stranded sessions still alive \
+         after a switchover (the established TCP/UDP path cannot migrate when the \
+         active pointer flips). Cross-reference with `outline_ws_rust_global_active_uplink_info` \
+         / `outline_ws_rust_per_uplink_active_uplink_info` to flag the leak — see the \
+         dashboard panel `Inactive uplink open connections (leak)`.",
+        ["group", "transport", "uplink"]
+    );
+    let uplink_connection_close_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_rust_uplink_connection_close_total",
+        "Upstream transports closed, classified by whether the uplink they were dialled \
+         through was still the active one at close time. `classification` is \
+         `active` when the uplink was still active, `inactive` when the active pointer \
+         had flipped to a different uplink in the meantime (the connection was a \
+         stranded survivor of a switchover), or `unknown` when no active-uplink snapshot \
+         was available (e.g. `PerFlow` scope where the concept does not apply). \
+         `rate(... {classification=\"inactive\"}[5m])` measures the speed at which \
+         leaked sessions drain after a switchover.",
+        ["group", "transport", "uplink", "classification"]
+    );
 
     UplinkFields {
         uplink_selected_total,
@@ -399,5 +429,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         sticky_routes_total,
         sticky_routes_by_uplink,
         uplink_fingerprint_profile_strategy_info,
+        uplink_open_connections,
+        uplink_connection_close_total,
     }
 }
