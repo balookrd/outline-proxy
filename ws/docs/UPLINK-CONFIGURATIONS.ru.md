@@ -62,7 +62,7 @@ weight = 1.0
     per-uplink окно даунгрейда; диспетчер проваливается в WS-путь, где
     `effective_tcp_mode` теперь возвращает `WsH2`.
   - h2 handshake падает на том же дозвоне →
-    `connect_websocket_with_resume` инлайн опускается до `ws_h1`.
+    `connect_transport` инлайн опускается до `ws_h1`.
   - В пределах окна даунгрейда каждый новый TCP-дозвон полностью
     пропускает QUIC и стартует с H2.
 - **UDP fallback:** `quic → ws_h2 → ws_h1`. Та же логика, что и у TCP.
@@ -93,7 +93,7 @@ weight = 1.0
 ```
 
 - **TCP fallback:** `ws_h3 → ws_h2 → ws_h1`. Инлайн-fallback внутри
-  `connect_websocket_with_resume`. Каждый шаг — это новый handshake на
+  `connect_transport`. Каждый шаг — это новый handshake на
   тот же `tcp_ws_url`. Провал `ws_h3` дополнительно записывает host-level
   cap в `ws_mode_cache`, поэтому последующие дозвоны в пределах TTL
   кэша пропускают H3 ещё до того, как сработает per-uplink окно
@@ -101,7 +101,7 @@ weight = 1.0
 - **UDP fallback:** `ws_h3 → ws_h2 → ws_h1`. Та же логика на UDP-WS пути.
 - **Resume:** TCP и UDP получают по своему слоту в
   `global_resume_cache` (`<uplink>#tcp` / `<uplink>#udp`). Инлайн
-  H3→H2→H1 fallback внутри `connect_websocket_with_resume` пробрасывает
+  H3→H2→H1 fallback внутри `connect_transport` пробрасывает
   один и тот же `resume_request` через все три carrier'а.
 
 ## 4. VLESS over raw QUIC
@@ -156,7 +156,7 @@ weight = 1.0
 ```
 
 - **TCP fallback:** `ws_h3 → ws_h2 → ws_h1`. Инлайн-fallback в
-  `connect_websocket_with_resume`, аналогично SS-over-WS.
+  `connect_transport`, аналогично SS-over-WS.
 - **UDP fallback:** `ws_h3 → ws_h2 → ws_h1`. UDP мультиплексируется в
   той же WS-сессии, что и TCP, так что carrier общий, и маркер
   даунгрейда распространяется на оба направления.
@@ -824,7 +824,7 @@ SNI не попадают под тот же фильтр, нужны други
 
 Когда оба слоя дают одно и то же ограничение, `effective_*_mode`
 авторитетен для роутинга, а host-кэш управляет инлайн-клампом
-`connect_websocket_with_resume`.
+`connect_transport`.
 
 ## Механика session resumption
 

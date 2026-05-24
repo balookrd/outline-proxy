@@ -150,7 +150,7 @@ async fn connect_tcp_uplink(
                     );
                     // Fall through to the WS path below; effective_tcp_mode
                     // will now return H2 for the rest of the downgrade window,
-                    // and connect_websocket_with_source handles H2 → H1.
+                    // and connect_transport handles H2 → H1.
                 }
             }
         }

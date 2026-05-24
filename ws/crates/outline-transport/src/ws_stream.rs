@@ -261,7 +261,7 @@ impl TransportStream {
     /// frame — see [`crate::ack_prefix::parse_v1`].
     ///
     /// Always `false` for transports that do not yet implement the
-    /// negotiation (callers below `connect_websocket_with_resume` that
+    /// negotiation (callers below `connect_transport` that
     /// wrap raw streams via `new_http1` keep the default).
     pub fn ack_prefix_advertised_by_server(&self) -> bool {
         match self {
@@ -276,7 +276,7 @@ impl TransportStream {
 
     /// Stamp whether the server echoed the Ack-Prefix capability on the
     /// upgrade response. Chainable; intended to be called inside
-    /// `connect_websocket_with_resume` immediately after decoding the
+    /// `connect_transport` immediately after decoding the
     /// upgrade response, alongside `with_downgraded_from`.
     pub fn with_ack_prefix_advertised(mut self, advertised: bool) -> Self {
         match &mut self {
@@ -365,7 +365,7 @@ impl TransportStream {
 
     /// Stamp the originally-requested mode so the caller can detect that
     /// this stream is the result of a fallback. Chainable; intended to be
-    /// called inside `connect_websocket_with_resume` immediately before
+    /// called inside `connect_transport` immediately before
     /// returning the stream.
     pub fn with_downgraded_from(mut self, requested: Option<TransportMode>) -> Self {
         match &mut self {

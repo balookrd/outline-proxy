@@ -16,7 +16,7 @@ use crate::probe::build_http_probe_request;
 use crate::selection::{effective_latency, score_latency};
 use crate::manager::status::{PenaltyState, PerTransportStatus, UplinkStatus};
 use crate::types::{TransportKind, UplinkManager};
-use outline_transport::connect_websocket_with_source;
+use outline_transport::{DialNetworkOptions, TransportDialOptions, connect_transport};
 use tokio::time::Instant;
 
 fn lb() -> LoadBalancingConfig {
@@ -1770,13 +1770,12 @@ async fn standby_tcp_keepalive_sends_ping_and_preserves_pool_entry() {
     )
     .unwrap();
 
-    let ws = connect_websocket_with_source(
-        manager.dns_cache(),
-        &url,
-        TransportMode::WsH1,
-        None,
-        false,
-        "test_standby",
+    let ws = connect_transport(
+        TransportDialOptions::new(manager.dns_cache(), &url, TransportMode::WsH1, "test_standby")
+            .with_network(DialNetworkOptions {
+                fwmark: None,
+                ipv6_first: false,
+            }),
     )
     .await
     .unwrap();
@@ -2071,7 +2070,7 @@ async fn note_silent_transport_fallback_xhttp_h3_caps_to_xhttp_h2() {
 async fn note_silent_transport_fallback_xhttp_multi_step_caps_to_xhttp_h1() {
     // Multi-step convergence: after the first XhttpH3 fallback the
     // cap is XhttpH2; the dispatcher then dials XhttpH2 directly. If
-    // h2 also fails, the inline fallback in `connect_websocket_with_resume`
+    // h2 also fails, the inline fallback in `connect_transport`
     // lands at XhttpH1 and emits a second `SilentTransportFallback`,
     // this time carrying `XhttpH2`. The cap must descend to
     // `XhttpH1` — never raise back to XhttpH2 inside the same window.

@@ -64,7 +64,7 @@ impl Default for VlessUdpMuxLimits {
 
 /// Synchronous callback fired by the mux the first time a per-target dial
 /// silently downgrades from H3 to H2/H1 (host-level `ws_mode_cache` clamp
-/// or inline H3-handshake fallback inside `connect_websocket_with_resume`).
+/// or inline H3-handshake fallback inside `connect_transport`).
 /// Receives the originally-requested mode so the uplink-manager caller can
 /// record it via `note_silent_transport_fallback`. Distinct from the
 /// QUIC-only `vless_udp_hybrid::FallbackNotifier` which carries an error
@@ -276,7 +276,7 @@ impl VlessUdpSessionMux {
     /// Attach a downgrade-detection hook fired the first time a per-target
     /// dial returns a stream that was silently downgraded from H3 to H2/H1
     /// by the transport layer (host-level `ws_mode_cache` clamp or inline
-    /// fallback inside `connect_websocket_with_resume`). Latched: fires at
+    /// fallback inside `connect_transport`). Latched: fires at
     /// most once per mux instance regardless of how many subsequent dials
     /// also see the downgrade. Without this, `effective_udp_mode` keeps
     /// reporting H3 in the uplink-manager while every actual session dial

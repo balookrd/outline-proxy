@@ -10,9 +10,10 @@ use socks5_proto::TargetAddr;
 use url::Url;
 
 use crate::{
-    DnsCache, TransportOperation, TransportStream, UplinkConnectionBinding,
-    UpstreamTransportGuard, WsClosed, config::TransportMode, connect_websocket_with_resume,
-    connect_websocket_with_source, frame_io_ws::WS_READ_IDLE_TIMEOUT, resumption::SessionId,
+    DialNetworkOptions, DialResumeOptions, DnsCache, TransportDialOptions, TransportOperation,
+    TransportStream, UplinkConnectionBinding, UpstreamTransportGuard, WsClosed,
+    config::TransportMode, connect_transport, frame_io_ws::WS_READ_IDLE_TIMEOUT,
+    resumption::SessionId,
 };
 
 use super::header::{
@@ -97,9 +98,12 @@ impl VlessUdpTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
-        let ws_stream = connect_websocket_with_source(cache, url, mode, fwmark, ipv6_first, source)
-            .await
-            .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+        let ws_stream = connect_transport(
+            TransportDialOptions::new(cache, url, mode, source)
+                .with_network(DialNetworkOptions { fwmark, ipv6_first }),
+        )
+        .await
+        .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
         Ok(Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval))
     }
 
@@ -113,7 +117,7 @@ impl VlessUdpTransport {
     /// - `issued_session_id` is `Some` iff the server's WS Upgrade response
     ///   carried `X-Outline-Session`.
     /// - `downgraded_from` is `Some(requested_mode)` iff the underlying
-    ///   `connect_websocket_with_resume` produced a stream at a lower mode
+    ///   `connect_transport` produced a stream at a lower mode
     ///   than requested (clamp via `ws_mode_cache` or inline H3→H2/H1
     ///   fallback). The `VlessUdpSessionMux` reports this through its
     ///   `on_downgrade` hook so the uplink-manager mirrors the downgrade
@@ -131,23 +135,21 @@ impl VlessUdpTransport {
         keepalive_interval: Option<Duration>,
         resume_request: Option<SessionId>,
     ) -> Result<(Self, Option<SessionId>, Option<TransportMode>)> {
-        let ws_stream = connect_websocket_with_resume(
-            cache,
-            url,
-            mode,
-            fwmark,
-            ipv6_first,
-            source,
-            resume_request,
-            // VLESS-UDP carriers do not advertise Ack-Prefix; the server
-            // gates emit on the SS-WS path. The capability bit stays off
-            // here so the server never echoes the response header.
-            false,
-            // v2 Symmetric Downlink Replay is gated on v1 and equally
-            // off on the UDP path.
-            false,
-            // No prior downstream offset to claim on UDP transports.
-            0,
+        let ws_stream = connect_transport(
+            TransportDialOptions::new(cache, url, mode, source)
+                .with_network(DialNetworkOptions { fwmark, ipv6_first })
+                .with_resume(DialResumeOptions {
+                    resume_request,
+                    // VLESS-UDP carriers do not advertise Ack-Prefix; the server
+                    // gates emit on the SS-WS path. The capability bit stays off
+                    // here so the server never echoes the response header.
+                    ack_prefix_requested: false,
+                    // v2 Symmetric Downlink Replay is gated on v1 and equally
+                    // off on the UDP path.
+                    symmetric_replay_requested: false,
+                    // No prior downstream offset to claim on UDP transports.
+                    client_acked_offset: 0,
+                }),
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;

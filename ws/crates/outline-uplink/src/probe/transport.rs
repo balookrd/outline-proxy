@@ -16,9 +16,9 @@ use tokio::sync::Semaphore;
 use tracing::debug;
 
 use outline_transport::{
-    DnsCache, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
-    TransportOperation, UpstreamTransportGuard, connect_shadowsocks_tcp_with_source,
-    connect_websocket_with_source,
+    DialNetworkOptions, DnsCache, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
+    TransportDialOptions, TransportOperation, UpstreamTransportGuard,
+    connect_shadowsocks_tcp_with_source, connect_transport,
 };
 
 use crate::config::{TargetAddr, UplinkConfig, UplinkTransport, TransportMode};
@@ -29,7 +29,7 @@ use crate::config::{TargetAddr, UplinkConfig, UplinkTransport, TransportMode};
 /// spans; `probe_label` is used only to build human-readable error contexts.
 ///
 /// The third tuple element is `Some(requested_mode)` iff the underlying
-/// `connect_websocket_with_source` returned a stream at a lower mode than
+/// `connect_transport` returned a stream at a lower mode than
 /// asked for (host-level `ws_mode_cache` clamp or inline H3→H2/H1 fallback).
 /// The probe orchestrator surfaces this through `ProbeOutcome` so the
 /// uplink-manager can mirror the downgrade into its per-uplink window even
@@ -115,16 +115,20 @@ pub(super) async fn connect_probe_tcp(
         UplinkTransport::Ws => {
             let ws_stream = crate::dial::dial_in_uplink_scope(
                 uplink,
-                connect_websocket_with_source(
-                    cache,
-                    uplink
-                        .tcp_ws_url
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
-                    effective_tcp_mode,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    source,
+                connect_transport(
+                    TransportDialOptions::new(
+                        cache,
+                        uplink
+                            .tcp_ws_url
+                            .as_ref()
+                            .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
+                        effective_tcp_mode,
+                        source,
+                    )
+                    .with_network(DialNetworkOptions {
+                        fwmark: uplink.fwmark,
+                        ipv6_first: uplink.ipv6_first,
+                    }),
                 ),
             )
             .await
@@ -162,15 +166,19 @@ pub(super) async fn connect_probe_tcp(
         UplinkTransport::Vless => {
             let ws_stream = crate::dial::dial_in_uplink_scope(
                 uplink,
-                connect_websocket_with_source(
-                    cache,
-                    uplink
-                        .tcp_dial_url()
-                        .ok_or_else(|| anyhow!("uplink {} missing vless dial URL", uplink.name))?,
-                    effective_tcp_mode,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    source,
+                connect_transport(
+                    TransportDialOptions::new(
+                        cache,
+                        uplink
+                            .tcp_dial_url()
+                            .ok_or_else(|| anyhow!("uplink {} missing vless dial URL", uplink.name))?,
+                        effective_tcp_mode,
+                        source,
+                    )
+                    .with_network(DialNetworkOptions {
+                        fwmark: uplink.fwmark,
+                        ipv6_first: uplink.ipv6_first,
+                    }),
                 ),
             )
             .await
@@ -254,4 +262,3 @@ pub(super) async fn close_probe_tcp_writer(
         );
     }
 }
-

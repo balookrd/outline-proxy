@@ -52,7 +52,7 @@ pub(crate) enum ModeDowngradeTrigger<'a> {
     RecoveryReprobeFail,
     /// A dial succeeded but at a lower mode than requested — the host-level
     /// `ws_mode_cache` clamp or inline H3→H2/H1 fallback inside
-    /// `connect_websocket_with_resume` silently produced a downgraded
+    /// `connect_transport` silently produced a downgraded
     /// stream. Carries the originally-requested mode for the log message.
     /// Fired from probe / refill / fresh-dial / mux paths so the per-uplink
     /// `mode_downgrade_until` window stays in sync with the actually-dialable
@@ -416,7 +416,7 @@ impl UplinkManager {
 
     /// Public entry-point for callers that observe a transport-level WS-mode
     /// downgrade after a *successful* dial — the `ws_mode_cache` clamped the
-    /// requested mode or `connect_websocket_with_resume` ran an inline
+    /// requested mode or `connect_transport` ran an inline
     /// fallback. Distinct from `note_advanced_mode_dial_failure` so the log
     /// reflects "silent fallback" rather than "runtime error", which makes
     /// the operational signal accurate when this fires from the probe loop,

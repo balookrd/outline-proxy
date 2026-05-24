@@ -4,7 +4,9 @@ use tokio::time::{Instant, timeout};
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
-use outline_transport::{TransportStream, connect_websocket_with_source};
+use outline_transport::{
+    DialNetworkOptions, TransportDialOptions, TransportStream, connect_transport,
+};
 
 use crate::config::UplinkTransport;
 use crate::error_classify::StandbyProbeExpected;
@@ -126,7 +128,7 @@ impl<'a> StandbyCtx<'a> {
         // Raw QUIC has its own connection-cache layer (per-ALPN
         // SharedConnectionRegistry); the warm-standby WebSocket pool is
         // not used. Dialing here would just bail in
-        // `connect_websocket_with_source`.
+        // `connect_transport`.
         if self.mode == outline_transport::TransportMode::Quic {
             return;
         }
@@ -147,13 +149,12 @@ impl<'a> StandbyCtx<'a> {
 
             let ws = crate::dial::dial_in_uplink_scope(
                 &self.uplink,
-                connect_websocket_with_source(
-                    cache,
-                    url,
-                    self.mode,
-                    self.uplink.fwmark,
-                    self.uplink.ipv6_first,
-                    self.refill_source,
+                connect_transport(
+                    TransportDialOptions::new(cache, url, self.mode, self.refill_source)
+                        .with_network(DialNetworkOptions {
+                            fwmark: self.uplink.fwmark,
+                            ipv6_first: self.uplink.ipv6_first,
+                        }),
                 ),
             )
             .await

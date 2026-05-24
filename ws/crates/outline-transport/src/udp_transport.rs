@@ -19,8 +19,8 @@ use crate::frame_io::DatagramChannel;
 use crate::frame_io_ws::{WS_READ_IDLE_TIMEOUT, from_ws_datagrams};
 
 use super::{
-    DnsCache, TransportStream, UplinkConnectionBinding, UpstreamTransportGuard,
-    connect_websocket_with_resume, connect_websocket_with_source,
+    DialNetworkOptions, DialResumeOptions, DnsCache, TransportDialOptions, TransportStream,
+    UplinkConnectionBinding, UpstreamTransportGuard, connect_transport,
 };
 use crate::resumption::SessionId;
 
@@ -153,9 +153,12 @@ impl UdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
-        let ws_stream = connect_websocket_with_source(cache, url, mode, fwmark, ipv6_first, source)
-            .await
-            .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+        let ws_stream = connect_transport(
+            TransportDialOptions::new(cache, url, mode, source)
+                .with_network(DialNetworkOptions { fwmark, ipv6_first }),
+        )
+        .await
+        .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
         Self::from_websocket(ws_stream, cipher, password, source, keepalive_interval)
     }
 
@@ -169,7 +172,7 @@ impl UdpWsTransport {
     /// - `issued_session_id` is `Some` iff the server's WS Upgrade response
     ///   carried `X-Outline-Session`.
     /// - `downgraded_from` is `Some(requested_mode)` iff the underlying
-    ///   `connect_websocket_with_resume` produced a stream at a lower mode
+    ///   `connect_transport` produced a stream at a lower mode
     ///   than requested (clamp via `ws_mode_cache` or inline H3→H2/H1
     ///   fallback). The uplink-manager caller mirrors this into its
     ///   per-uplink `mode_downgrade_until` window so routing/metrics see a
@@ -187,23 +190,21 @@ impl UdpWsTransport {
         keepalive_interval: Option<Duration>,
         resume_request: Option<SessionId>,
     ) -> Result<(Self, Option<SessionId>, Option<TransportMode>)> {
-        let ws_stream = connect_websocket_with_resume(
-            cache,
-            url,
-            mode,
-            fwmark,
-            ipv6_first,
-            source,
-            resume_request,
-            // Ack-Prefix Protocol is a TCP-side mid-session retry feature;
-            // SS-UDP transports do not need it and the server only emits
-            // the control frame on the SS-WS path. Always opt out here.
-            false,
-            // v2 Symmetric Downlink Replay is gated on v1 and likewise
-            // does not apply to UDP — opt out.
-            false,
-            // No prior downstream offset to claim on UDP transports.
-            0,
+        let ws_stream = connect_transport(
+            TransportDialOptions::new(cache, url, mode, source)
+                .with_network(DialNetworkOptions { fwmark, ipv6_first })
+                .with_resume(DialResumeOptions {
+                    resume_request,
+                    // Ack-Prefix Protocol is a TCP-side mid-session retry feature;
+                    // SS-UDP transports do not need it and the server only emits
+                    // the control frame on the SS-WS path. Always opt out here.
+                    ack_prefix_requested: false,
+                    // v2 Symmetric Downlink Replay is gated on v1 and likewise
+                    // does not apply to UDP; opt out.
+                    symmetric_replay_requested: false,
+                    // No prior downstream offset to claim on UDP transports.
+                    client_acked_offset: 0,
+                }),
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;

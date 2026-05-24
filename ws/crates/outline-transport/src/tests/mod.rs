@@ -1,5 +1,4 @@
 use super::*;
-use shadowsocks_crypto::CipherKind;
 #[cfg(feature = "metrics")]
 use crate::config::TransportMode;
 #[cfg(feature = "metrics")]
@@ -8,6 +7,7 @@ use bytes::Bytes;
 use http::{Method, Request, Response, Version};
 #[cfg(feature = "metrics")]
 use http_body_util::Empty;
+use shadowsocks_crypto::CipherKind;
 use std::sync::Arc;
 #[cfg(feature = "metrics")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -165,6 +165,28 @@ impl TestH2Server {
 }
 
 #[cfg(feature = "metrics")]
+async fn connect_test_transport(
+    url: &Url,
+    mode: TransportMode,
+    source: &'static str,
+) -> TransportStream {
+    connect_test_transport_with_resume(url, mode, source, DialResumeOptions::default()).await
+}
+
+#[cfg(feature = "metrics")]
+async fn connect_test_transport_with_resume(
+    url: &Url,
+    mode: TransportMode,
+    source: &'static str,
+    resume: DialResumeOptions,
+) -> TransportStream {
+    let cache = DnsCache::default();
+    connect_transport(TransportDialOptions::new(&cache, url, mode, source).with_resume(resume))
+        .await
+        .unwrap()
+}
+
+#[cfg(feature = "metrics")]
 async fn serve_h2_websocket_connection(
     stream: TcpStream,
     connect_requests: Arc<AtomicUsize>,
@@ -211,12 +233,8 @@ async fn h2_reuses_shared_connection_for_non_probe_sources() {
     let server = TestH2Server::start().await;
     let url = server.url();
 
-    let ws_one = connect_websocket_with_source(&DnsCache::default(), &url, TransportMode::WsH2, None, false, "test_h2")
-        .await
-        .unwrap();
-    let ws_two = connect_websocket_with_source(&DnsCache::default(), &url, TransportMode::WsH2, None, false, "test_h2")
-        .await
-        .unwrap();
+    let ws_one = connect_test_transport(&url, TransportMode::WsH2, "test_h2").await;
+    let ws_two = connect_test_transport(&url, TransportMode::WsH2, "test_h2").await;
 
     assert!(matches!(ws_one, TransportStream::H2 { .. }));
     assert!(matches!(ws_two, TransportStream::H2 { .. }));
@@ -229,12 +247,8 @@ async fn h2_probe_sources_do_not_reuse_shared_connections() {
     let server = TestH2Server::start().await;
     let url = server.url();
 
-    let ws_one = connect_websocket_with_source(&DnsCache::default(), &url, TransportMode::WsH2, None, false, "probe_ws")
-        .await
-        .unwrap();
-    let ws_two = connect_websocket_with_source(&DnsCache::default(), &url, TransportMode::WsH2, None, false, "probe_ws")
-        .await
-        .unwrap();
+    let ws_one = connect_test_transport(&url, TransportMode::WsH2, "probe_ws").await;
+    let ws_two = connect_test_transport(&url, TransportMode::WsH2, "probe_ws").await;
 
     assert!(matches!(ws_one, TransportStream::H2 { .. }));
     assert!(matches!(ws_two, TransportStream::H2 { .. }));
@@ -253,16 +267,7 @@ async fn ws_mode_cache_clamp_marks_stream_as_downgraded_from_requested() {
     let url = server.url();
     super::ws_mode_cache::record_failure(&url, TransportMode::WsH3).await;
 
-    let stream = connect_websocket_with_source(
-        &DnsCache::default(),
-        &url,
-        TransportMode::WsH3,
-        None,
-        false,
-        "test_downgrade_clamp",
-    )
-    .await
-    .unwrap();
+    let stream = connect_test_transport(&url, TransportMode::WsH3, "test_downgrade_clamp").await;
 
     assert!(matches!(stream, TransportStream::H2 { .. }));
     assert_eq!(stream.downgraded_from(), Some(TransportMode::WsH3));
@@ -309,16 +314,7 @@ async fn dial_at_requested_mode_carries_no_downgrade_marker() {
     let server = TestH2Server::start().await;
     let url = server.url();
 
-    let stream = connect_websocket_with_source(
-        &DnsCache::default(),
-        &url,
-        TransportMode::WsH2,
-        None,
-        false,
-        "test_no_downgrade",
-    )
-    .await
-    .unwrap();
+    let stream = connect_test_transport(&url, TransportMode::WsH2, "test_no_downgrade").await;
 
     assert!(matches!(stream, TransportStream::H2 { .. }));
     assert_eq!(stream.downgraded_from(), None);
@@ -332,7 +328,7 @@ async fn vless_udp_mux_invokes_on_downgrade_hook_after_clamp_and_latches() {
     use std::net::Ipv4Addr;
 
     // Pre-populate the per-host clamp so any H3 dial against this URL is
-    // silently routed to H2 inside `connect_websocket_with_resume`. The mux
+    // silently routed to H2 inside `connect_transport`. The mux
     // should observe `downgraded_from = Some(H3)` on its first per-target
     // dial and fire the hook exactly once.
     let server = TestH2Server::start().await;
@@ -443,7 +439,7 @@ async fn vless_udp_mux_resets_downgrade_latch_after_recovery_dial() {
 // ── Ack-Prefix Protocol v1 capability negotiation ─────────────────────────────
 //
 // These tests cover the request-side advertise + response-side echo glue
-// for `connect_websocket_with_resume`. The wire-format parser itself is
+// for `connect_transport`. The wire-format parser itself is
 // tested in `tests/ack_prefix.rs`; here we verify that:
 //   1. Advertise + echo → `ack_prefix_advertised_by_server() == true`.
 //   2. No advertise → flag stays `false`, regardless of server behaviour.
@@ -546,21 +542,18 @@ async fn ack_prefix_negotiation_succeeds_when_both_peers_set_header() {
     let server = TestH2AckPrefixServer::start(true).await;
     let url = server.url();
 
-    let stream = connect_websocket_with_resume(
-        &DnsCache::default(),
+    let stream = connect_test_transport_with_resume(
         &url,
         TransportMode::WsH2,
-        None,
-        false,
         "test_ack_prefix_pos",
-        None,
-        true,
-        // Existing v1 negotiation tests don't exercise v2.
-        false,
-        0,
+        DialResumeOptions {
+            ack_prefix_requested: true,
+            // Existing v1 negotiation tests don't exercise v2.
+            symmetric_replay_requested: false,
+            ..DialResumeOptions::default()
+        },
     )
-    .await
-    .unwrap();
+    .await;
 
     assert!(matches!(stream, TransportStream::H2 { .. }));
     assert!(
@@ -582,21 +575,18 @@ async fn ack_prefix_flag_stays_false_when_client_does_not_advertise() {
     let server = TestH2AckPrefixServer::start(true).await;
     let url = server.url();
 
-    let stream = connect_websocket_with_resume(
-        &DnsCache::default(),
+    let stream = connect_test_transport_with_resume(
         &url,
         TransportMode::WsH2,
-        None,
-        false,
         "test_ack_prefix_no_advertise",
-        None,
-        false,
-        // v1 off → v2 also off (gated on v1).
-        false,
-        0,
+        DialResumeOptions {
+            ack_prefix_requested: false,
+            // v1 off -> v2 also off (gated on v1).
+            symmetric_replay_requested: false,
+            ..DialResumeOptions::default()
+        },
     )
-    .await
-    .unwrap();
+    .await;
 
     assert!(matches!(stream, TransportStream::H2 { .. }));
     assert!(
@@ -618,21 +608,18 @@ async fn ack_prefix_flag_stays_false_when_server_does_not_echo() {
     let server = TestH2AckPrefixServer::start(false).await;
     let url = server.url();
 
-    let stream = connect_websocket_with_resume(
-        &DnsCache::default(),
+    let stream = connect_test_transport_with_resume(
         &url,
         TransportMode::WsH2,
-        None,
-        false,
         "test_ack_prefix_silent_server",
-        None,
-        true,
-        // Existing v1-silence test doesn't exercise v2.
-        false,
-        0,
+        DialResumeOptions {
+            ack_prefix_requested: true,
+            // Existing v1-silence test doesn't exercise v2.
+            symmetric_replay_requested: false,
+            ..DialResumeOptions::default()
+        },
     )
-    .await
-    .unwrap();
+    .await;
 
     assert!(matches!(stream, TransportStream::H2 { .. }));
     assert!(
@@ -780,20 +767,17 @@ async fn symmetric_replay_negotiation_succeeds_when_both_peers_set_both_headers(
     let server = TestH2SymmetricReplayServer::start(true, true).await;
     let url = server.url();
 
-    let stream = connect_websocket_with_resume(
-        &DnsCache::default(),
+    let stream = connect_test_transport_with_resume(
         &url,
         TransportMode::WsH2,
-        None,
-        false,
         "test_symmetric_replay_pos",
-        None,
-        true,
-        true,
-        0,
+        DialResumeOptions {
+            ack_prefix_requested: true,
+            symmetric_replay_requested: true,
+            ..DialResumeOptions::default()
+        },
     )
-    .await
-    .unwrap();
+    .await;
 
     assert!(matches!(stream, TransportStream::H2 { .. }));
     assert!(
@@ -822,25 +806,19 @@ async fn symmetric_replay_flag_stays_false_when_client_does_not_advertise_v2() {
     let server = TestH2SymmetricReplayServer::start(true, true).await;
     let url = server.url();
 
-    let stream = connect_websocket_with_resume(
-        &DnsCache::default(),
+    let stream = connect_test_transport_with_resume(
         &url,
         TransportMode::WsH2,
-        None,
-        false,
         "test_symmetric_replay_no_v2_advertise",
-        None,
-        true,
-        false,
-        0,
+        DialResumeOptions {
+            ack_prefix_requested: true,
+            symmetric_replay_requested: false,
+            ..DialResumeOptions::default()
+        },
     )
-    .await
-    .unwrap();
+    .await;
 
-    assert!(
-        server.last_request_v1_advertised(),
-        "v1 still advertised independently",
-    );
+    assert!(server.last_request_v1_advertised(), "v1 still advertised independently",);
     assert!(
         !server.last_request_v2_advertised(),
         "client must NOT send v2 header when symmetric_replay_requested = false",
@@ -863,20 +841,17 @@ async fn symmetric_replay_flag_stays_false_when_server_silent_on_v2_only() {
     let server = TestH2SymmetricReplayServer::start(true, false).await;
     let url = server.url();
 
-    let stream = connect_websocket_with_resume(
-        &DnsCache::default(),
+    let stream = connect_test_transport_with_resume(
         &url,
         TransportMode::WsH2,
-        None,
-        false,
         "test_symmetric_replay_silent_v2_server",
-        None,
-        true,
-        true,
-        0,
+        DialResumeOptions {
+            ack_prefix_requested: true,
+            symmetric_replay_requested: true,
+            ..DialResumeOptions::default()
+        },
     )
-    .await
-    .unwrap();
+    .await;
 
     assert!(
         server.last_request_v1_advertised() && server.last_request_v2_advertised(),
@@ -901,20 +876,17 @@ async fn symmetric_replay_flag_stays_false_when_v1_negotiation_collapsed() {
     let server = TestH2SymmetricReplayServer::start(false, false).await;
     let url = server.url();
 
-    let stream = connect_websocket_with_resume(
-        &DnsCache::default(),
+    let stream = connect_test_transport_with_resume(
         &url,
         TransportMode::WsH2,
-        None,
-        false,
         "test_symmetric_replay_v1_collapsed",
-        None,
-        true,
-        true,
-        0,
+        DialResumeOptions {
+            ack_prefix_requested: true,
+            symmetric_replay_requested: true,
+            ..DialResumeOptions::default()
+        },
     )
-    .await
-    .unwrap();
+    .await;
 
     assert!(
         !stream.ack_prefix_advertised_by_server(),

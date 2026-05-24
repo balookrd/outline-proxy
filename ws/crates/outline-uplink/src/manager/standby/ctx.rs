@@ -36,7 +36,7 @@ pub(super) struct StandbyCtx<'a> {
     pub(super) refill_lock: &'a Mutex<()>,
     /// Prometheus label fragment (`"tcp"` / `"udp"`).
     pub(super) label: &'static str,
-    /// Source tag passed to `connect_websocket_with_source` during refill.
+    /// Source tag passed to `connect_transport` during refill.
     pub(super) refill_source: &'static str,
     pub(super) desired: usize,
     pub(super) url: Option<&'a Url>,
