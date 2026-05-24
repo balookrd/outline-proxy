@@ -36,8 +36,7 @@ use std::{
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
-use bytes::Bytes;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use sockudo_ws::{
     Config as H3WsConfig, Http3 as H3Transport, WebSocketServer as H3WebSocketServer,
 };
@@ -51,7 +50,7 @@ use url::Url;
 
 use outline_transport::{
     CipherKind, DnsCache as ClientDnsCache, TcpShadowsocksReader, TcpShadowsocksWriter,
-    TransportMode, UpstreamTransportGuard, connect_ss_tcp_quic, connect_websocket_with_resume,
+    TransportMode, UpstreamTransportGuard, connect_ss_tcp_quic,
 };
 
 use super::super::bootstrap::serve_listener;
@@ -63,6 +62,7 @@ use super::super::{
     DnsCache, Services, SsTcpCtx, UdpServices, build_app, build_user_routes, build_users,
     serve_h3_server, serve_ss_tcp_listener,
 };
+use super::connect_websocket_with_resume;
 use super::sample_config;
 use crate::config::H3Alpn;
 use crate::crypto::UserKey;

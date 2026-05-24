@@ -48,7 +48,7 @@ use url::Url;
 
 use outline_transport::{
     DnsCache as ClientDnsCache, TargetAddr, TransportMode, TransportStream, UpstreamTransportGuard,
-    connect_websocket_with_resume, vless::vless_tcp_pair_from_ws,
+    vless::vless_tcp_pair_from_ws,
 };
 
 use super::super::nat::NatTable;
@@ -58,6 +58,7 @@ use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
 use super::super::transport::XhttpRegistry;
 use super::super::{DnsCache, build_app, serve_h3_server};
+use super::connect_websocket_with_resume;
 use super::sample_config;
 use super::xhttp::{
     TEST_UUID, build_vless_tcp_handshake, setup_xhttp_server, setup_xhttp_server_with_resumption,
