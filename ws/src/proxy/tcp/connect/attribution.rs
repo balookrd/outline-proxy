@@ -37,9 +37,7 @@ pub(super) async fn attribute_terminal_chunk0_failure(
                 .report_runtime_failure(active.index, TransportKind::Tcp, chunk0_error)
                 .await;
         } else if crate::error_class::is_ws_closed(chunk0_error) {
-            uplinks
-                .report_upstream_close(active.index, TransportKind::Tcp)
-                .await;
+            uplinks.report_upstream_close(active.index, TransportKind::Tcp).await;
         }
     } else {
         warn!(

@@ -14,22 +14,22 @@ pub(crate) mod sticky;
 #[path = "tests/test_helpers.rs"]
 mod test_helpers;
 
-pub(crate) use reporting::log_uplink_summary_named;
 pub use reporting::deduplicate_attempted_uplink_names;
+pub(crate) use reporting::log_uplink_summary_named;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
-use tokio::sync::{watch, Notify, RwLock, Semaphore};
+use anyhow::{Result, bail};
+use tokio::sync::{Notify, RwLock, Semaphore, watch};
 
 use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
 
-use super::state::StateStore;
-use super::types::{TransportKind, Uplink, UplinkManager};
 use self::standby_pool::StandbyPool;
 use self::state::{ActiveUplinks, UplinkManagerInner};
 use self::status::UplinkStatus;
+use super::state::StateStore;
+use super::types::{TransportKind, Uplink, UplinkManager};
 
 impl UplinkManager {
     pub async fn initialize_strict_active_selection(&self) {
@@ -162,7 +162,10 @@ impl UplinkManager {
         // every close before the first `set_active_uplink_index_for_transport`
         // call would land in the `unknown` bucket.
         if let Some(idx) = initial_global {
-            outline_metrics::set_global_active_uplink(&group_name, Some(uplinks[idx].name.as_str()));
+            outline_metrics::set_global_active_uplink(
+                &group_name,
+                Some(uplinks[idx].name.as_str()),
+            );
         }
         if let Some(idx) = initial_tcp {
             outline_metrics::set_per_uplink_active_uplink(

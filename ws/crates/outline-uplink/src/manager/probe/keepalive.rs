@@ -81,10 +81,8 @@ impl UplinkManager {
         // Pre-build the wire payloads once per tick: every uplink uses
         // the same probe configuration, and the build cost is dominated
         // by a few small allocations rather than the round-trip itself.
-        let dns_query: Option<Arc<Vec<u8>>> = probe
-            .dns
-            .as_ref()
-            .map(|cfg| Arc::new(build_dns_query(&cfg.name)));
+        let dns_query: Option<Arc<Vec<u8>>> =
+            probe.dns.as_ref().map(|cfg| Arc::new(build_dns_query(&cfg.name)));
         // SS-over-WS UDP additionally needs the target wire form
         // prefixed to every datagram (per SS-UDP framing). Build it
         // once and pass alongside the bare DNS query.
@@ -115,10 +113,7 @@ impl UplinkManager {
         };
 
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
-            if !matches!(
-                uplink.transport,
-                UplinkTransport::Vless | UplinkTransport::Ws,
-            ) {
+            if !matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ws,) {
                 continue;
             }
             // UDP keepalive. The Vless and Ws variants of the warm slot
@@ -129,9 +124,7 @@ impl UplinkManager {
             // status so dashboards see fresh measurements even when the
             // regular probe loop is skipping cycles for active uplinks
             // (see `should_skip_probe_cycle_for_recent_activity`).
-            if let (Some(query), Some(ss_payload)) =
-                (dns_query.as_ref(), ss_udp_payload.as_ref())
-            {
+            if let (Some(query), Some(ss_payload)) = (dns_query.as_ref(), ss_udp_payload.as_ref()) {
                 let slot = self.inner.warm_udp_probe_slot(index);
                 let rtt = tokio::time::timeout(
                     keepalive_per_tick_timeout(probe.timeout),
@@ -192,12 +185,7 @@ impl UplinkManager {
     /// JSON, Prometheus gauges via metrics that read from status) sees
     /// fresh values even when the real probe loop has skipped this
     /// uplink for the last N cycles.
-    fn record_keepalive_latency(
-        &self,
-        index: usize,
-        transport: TransportKind,
-        rtt: Duration,
-    ) {
+    fn record_keepalive_latency(&self, index: usize, transport: TransportKind, rtt: Duration) {
         let alpha = self.inner.load_balancing.rtt_ewma_alpha;
         self.inner.with_status_mut(index, |status| {
             let per = match transport {

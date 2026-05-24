@@ -84,8 +84,7 @@ impl TunTcpEngine {
                             }) => {
                                 let ip_family = ip_family_from_version(key.version);
                                 drop(state);
-                                if let Err(error) =
-                                    engine.inner.writer.write_packet(&packet).await
+                                if let Err(error) = engine.inner.writer.write_packet(&packet).await
                                 {
                                     warn!(
                                         error = %format!("{error:#}"),
@@ -96,11 +95,7 @@ impl TunTcpEngine {
                                 }
                                 let (group_name, uplink_name) =
                                     super::super::key_group_and_uplink(&flow).await;
-                                metrics::record_tun_tcp_event(
-                                    &group_name,
-                                    &uplink_name,
-                                    event,
-                                );
+                                metrics::record_tun_tcp_event(&group_name, &uplink_name, event);
                                 metrics::record_tun_packet(
                                     "upstream_to_tun",
                                     ip_family,
@@ -116,9 +111,7 @@ impl TunTcpEngine {
                                     "failed to plan TUN TCP flow maintenance"
                                 );
                                 drop(state);
-                                engine
-                                    .abort_flow_with_rst(&key, "retransmit_build_error")
-                                    .await;
+                                engine.abort_flow_with_rst(&key, "retransmit_build_error").await;
                                 continue 'flows;
                             },
                         }

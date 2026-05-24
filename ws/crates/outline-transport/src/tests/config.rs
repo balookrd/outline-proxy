@@ -16,13 +16,11 @@ fn deserialize_accepts_http1_and_h1_alias() {
     use serde::de::IntoDeserializer;
     use serde::de::value::{Error as DeError, StrDeserializer};
 
-    let canonical = TransportMode::deserialize::<StrDeserializer<DeError>>(
-        "http1".into_deserializer(),
-    )
-    .unwrap();
-    let alias =
-        TransportMode::deserialize::<StrDeserializer<DeError>>("h1".into_deserializer())
+    let canonical =
+        TransportMode::deserialize::<StrDeserializer<DeError>>("http1".into_deserializer())
             .unwrap();
+    let alias =
+        TransportMode::deserialize::<StrDeserializer<DeError>>("h1".into_deserializer()).unwrap();
     assert_eq!(canonical, TransportMode::WsH1);
     assert_eq!(alias, TransportMode::WsH1);
 }

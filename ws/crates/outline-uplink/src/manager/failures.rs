@@ -216,10 +216,9 @@ impl UplinkManager {
                     // cycles for the slow signal to confirm what every new
                     // connection is already observing.
                     let stale_streak = !runtime_failure_window.is_zero()
-                        && status
-                            .tcp
-                            .last_runtime_failure_at
-                            .is_some_and(|t| now.saturating_duration_since(t) > runtime_failure_window);
+                        && status.tcp.last_runtime_failure_at.is_some_and(|t| {
+                            now.saturating_duration_since(t) > runtime_failure_window
+                        });
                     if stale_streak {
                         status.tcp.consecutive_runtime_failures = 1;
                     } else {
@@ -239,10 +238,9 @@ impl UplinkManager {
                     // (`probe.min_failures`) flips healthy without waiting
                     // for a tight cluster of generic errors.
                     if is_chunk0_timeout && !chunk0_failure_window.is_zero() {
-                        let stale_chunk0 = status
-                            .tcp
-                            .last_chunk0_failure_at
-                            .is_some_and(|t| now.saturating_duration_since(t) > chunk0_failure_window);
+                        let stale_chunk0 = status.tcp.last_chunk0_failure_at.is_some_and(|t| {
+                            now.saturating_duration_since(t) > chunk0_failure_window
+                        });
                         if stale_chunk0 {
                             status.tcp.chunk0_consecutive_failures = 1;
                         } else {
@@ -278,10 +276,9 @@ impl UplinkManager {
                         status.udp.healthy = Some(false);
                     }
                     let stale_streak = !runtime_failure_window.is_zero()
-                        && status
-                            .udp
-                            .last_runtime_failure_at
-                            .is_some_and(|t| now.saturating_duration_since(t) > runtime_failure_window);
+                        && status.udp.last_runtime_failure_at.is_some_and(|t| {
+                            now.saturating_duration_since(t) > runtime_failure_window
+                        });
                     if stale_streak {
                         status.udp.consecutive_runtime_failures = 1;
                     } else {

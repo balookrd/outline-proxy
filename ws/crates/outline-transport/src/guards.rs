@@ -110,11 +110,7 @@ impl UpstreamTransportGuard {
     pub fn new(source: &'static str, protocol: &'static str) -> Arc<Self> {
         add_upstream_transports_active(source, protocol, 1);
         record_upstream_transport(source, protocol, "opened");
-        Arc::new(Self {
-            source,
-            protocol,
-            uplink_binding: None,
-        })
+        Arc::new(Self { source, protocol, uplink_binding: None })
     }
 
     /// Construct a guard attributed to a concrete uplink. In addition to the

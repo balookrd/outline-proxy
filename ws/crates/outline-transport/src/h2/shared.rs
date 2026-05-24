@@ -29,14 +29,11 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tracing::info;
 use url::Url;
 
-use crate::{
-    AbortOnDrop, TransportStream, SharedConnectionHealth,
-    DnsCache, connect_tcp_socket,
-};
 use crate::shared_cache::{
     ConnCloseLog, SharedConnectionRegistry, classify_by_substrings, log_conn_close,
 };
 use crate::url_utils::{format_authority, websocket_path};
+use crate::{AbortOnDrop, DnsCache, SharedConnectionHealth, TransportStream, connect_tcp_socket};
 
 use super::H2WsStream;
 
@@ -230,7 +227,14 @@ impl SharedH2Connection {
         profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<TransportStream> {
         match self
-            .open_websocket_inner(target_uri, resume_request, ack_prefix_requested, symmetric_replay_requested, client_acked_offset, profile)
+            .open_websocket_inner(
+                target_uri,
+                resume_request,
+                ack_prefix_requested,
+                symmetric_replay_requested,
+                client_acked_offset,
+                profile,
+            )
             .await
         {
             Ok(ws) => Ok(ws),
@@ -281,8 +285,7 @@ impl SharedH2Connection {
             // path) when it sees this header AND the resume hits AND its
             // own config enables Ack-Prefix support. Otherwise the header
             // is a no-op — old servers and the VLESS-WS path ignore it.
-            request_builder =
-                request_builder.header(crate::resumption::ACK_PREFIX_HEADER, "1");
+            request_builder = request_builder.header(crate::resumption::ACK_PREFIX_HEADER, "1");
         }
         if symmetric_replay_requested {
             // v2 Symmetric Downlink Replay capability advertise. Spec
@@ -296,10 +299,8 @@ impl SharedH2Connection {
         // retry redials that also advertise v2 AND when the offset
         // is non-zero (a fresh session has no prior bytes to claim).
         if symmetric_replay_requested && client_acked_offset > 0 {
-            request_builder = request_builder.header(
-                crate::resumption::DOWN_ACKED_HEADER,
-                client_acked_offset.to_string(),
-            );
+            request_builder = request_builder
+                .header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
         }
         let mut request: Request<Empty<Bytes>> = request_builder
             .body(Empty::new())
@@ -484,7 +485,12 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         false
     }
 
-    fn make_key(&self, server_name: &str, server_port: u16, fwmark: Option<u32>) -> H2ConnectionKey {
+    fn make_key(
+        &self,
+        server_name: &str,
+        server_port: u16,
+        fwmark: Option<u32>,
+    ) -> H2ConnectionKey {
         H2ConnectionKey::new(server_name, server_port, self.use_tls, fwmark)
     }
 
@@ -495,7 +501,9 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         fwmark: Option<u32>,
         cache_key: Option<H2ConnectionKey>,
     ) -> Result<Arc<SharedH2Connection>> {
-        Ok(Arc::new(connect_h2_connection(addr, server_name, self.use_tls, fwmark, cache_key).await?))
+        Ok(Arc::new(
+            connect_h2_connection(addr, server_name, self.use_tls, fwmark, cache_key).await?,
+        ))
     }
 
     async fn open_on(
@@ -512,10 +520,8 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         // as 404 against a `/vless` route. The h1 fallback masked this
         // for years because tungstenite normalises the URL itself.
         let path = if path.is_empty() { "/" } else { path };
-        let target_uri = format!(
-            "{scheme}://{}{path}",
-            format_authority(server_name, Some(server_port)),
-        );
+        let target_uri =
+            format!("{scheme}://{}{path}", format_authority(server_name, Some(server_port)),);
         conn.open_websocket(
             &target_uri,
             self.resume_request,
@@ -564,10 +570,16 @@ pub(crate) async fn connect_websocket_h2(
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.
-        crate::shared_dial::connect_ws_reused(&dialer, cache, host, port, &path, fwmark, ipv6_first, source).await
+        crate::shared_dial::connect_ws_reused(
+            &dialer, cache, host, port, &path, fwmark, ipv6_first, source,
+        )
+        .await
     } else {
         // Probes never share connections; fresh dial with no cache interaction.
-        crate::shared_dial::connect_ws_probe(&dialer, cache, host, port, &path, fwmark, ipv6_first, source).await
+        crate::shared_dial::connect_ws_probe(
+            &dialer, cache, host, port, &path, fwmark, ipv6_first, source,
+        )
+        .await
     }
 }
 
@@ -645,7 +657,7 @@ async fn connect_h2_connection(
                 let class = classify_h2_close(&error_text);
                 let expected = is_expected_h2_close(&error_text);
                 log_conn_close(fields, Some(&error_text), class, expected);
-            }
+            },
         }
     }));
 
@@ -670,13 +682,7 @@ fn classify_h2_close(error: &str) -> &'static str {
             (&["timed out", "timeout", "keepalive"], "timeout"),
             (&["tls", "certificate", "handshake"], "tls"),
             (
-                &[
-                    "broken pipe",
-                    "connection reset",
-                    "connection closed",
-                    "eof",
-                    "unexpected end",
-                ],
+                &["broken pipe", "connection reset", "connection closed", "eof", "unexpected end"],
                 "eof",
             ),
             (&["operation was canceled", "operation was cancelled"], "cancelled"),

@@ -6,10 +6,10 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tracing::info;
 
-use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
-use outline_metrics as metrics;
-use socks5_proto::{SOCKS_REP_SUCCESS, TargetAddr, send_reply, socket_addr_to_target};
 use crate::proxy::TcpTimeouts;
+use outline_metrics as metrics;
+use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
+use socks5_proto::{SOCKS_REP_SUCCESS, TargetAddr, send_reply, socket_addr_to_target};
 
 // Direct TCP sessions (bypass-routed) are held open as long as both sides
 // keep the connection alive.  Applications such as DNS-over-HTTPS/TLS clients

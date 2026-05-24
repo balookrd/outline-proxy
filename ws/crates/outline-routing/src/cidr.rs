@@ -142,12 +142,13 @@ fn merge_v6(mut ranges: Vec<[u128; 2]>) -> Vec<[u128; 2]> {
     let mut out: Vec<[u128; 2]> = Vec::with_capacity(ranges.len());
     for [start, end] in ranges {
         if let Some(last) = out.last_mut()
-            && start <= last[1].saturating_add(1) {
-                if end > last[1] {
-                    last[1] = end;
-                }
-                continue;
+            && start <= last[1].saturating_add(1)
+        {
+            if end > last[1] {
+                last[1] = end;
             }
+            continue;
+        }
         out.push([start, end]);
     }
     out

@@ -100,9 +100,7 @@ pub(crate) fn quic_client_config(alpn: &[u8]) -> quinn::ClientConfig {
     let mut transport = quinn::TransportConfig::default();
     transport.keep_alive_interval(Some(Duration::from_secs(10)));
     transport.max_idle_timeout(Some(
-        Duration::from_secs(30)
-            .try_into()
-            .expect("valid client idle timeout"),
+        Duration::from_secs(30).try_into().expect("valid client idle timeout"),
     ));
     transport.datagram_receive_buffer_size(Some(64 * 1024));
     transport.datagram_send_buffer_size(64 * 1024);

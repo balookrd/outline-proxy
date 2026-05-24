@@ -70,14 +70,14 @@ pub(crate) fn log_conn_close(
                 id, peer, mode, age_secs, streams, class,
                 "{mode} connection closed"
             );
-        }
+        },
         Some(err) if is_expected => {
             info!(
                 target: "outline_transport::conn_life",
                 id, peer, mode, age_secs, streams, class, error = %err,
                 "{mode} connection closed"
             );
-        }
+        },
         Some(err) => {
             info!(
                 target: "outline_transport::conn_life",
@@ -85,7 +85,7 @@ pub(crate) fn log_conn_close(
                 "{mode} connection closed with error"
             );
             error!("{mode} connection error: {err}");
-        }
+        },
     }
 }
 
@@ -110,7 +110,11 @@ pub(crate) struct ConnectionKey {
 
 impl ConnectionKey {
     pub(crate) fn new(server_name: &str, server_port: u16, fwmark: Option<u32>) -> Self {
-        Self { server_name: Arc::from(server_name), server_port, fwmark }
+        Self {
+            server_name: Arc::from(server_name),
+            server_port,
+            fwmark,
+        }
     }
 }
 

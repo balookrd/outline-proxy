@@ -20,9 +20,8 @@ pub(super) async fn read_json<T: for<'de> Deserialize<'de>>(
             json_error(StatusCode::BAD_REQUEST, "failed to read request body")
         })?
         .to_bytes();
-    serde_json::from_slice::<T>(&body).map_err(|e| {
-        json_error_owned(StatusCode::BAD_REQUEST, format!("invalid JSON: {e}"))
-    })
+    serde_json::from_slice::<T>(&body)
+        .map_err(|e| json_error_owned(StatusCode::BAD_REQUEST, format!("invalid JSON: {e}")))
 }
 
 pub(super) fn json_error_owned(status: StatusCode, message: String) -> ControlResponse {

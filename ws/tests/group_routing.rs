@@ -9,9 +9,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use outline_routing::{
-    RouteRule, RouteTarget, RoutingTable, RoutingTableConfig,
-};
+use outline_routing::{RouteRule, RouteTarget, RoutingTable, RoutingTableConfig};
 use outline_transport::TransportMode;
 use outline_uplink::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TransportKind, UplinkConfig,
@@ -63,7 +61,8 @@ fn lb() -> LoadBalancingConfig {
         tcp_ws_keepalive_interval: None,
         tcp_ws_standby_keepalive_interval: None,
         tcp_active_keepalive_interval: None,
-        warm_probe_keepalive_interval: None,        auto_failback: false,
+        warm_probe_keepalive_interval: None,
+        auto_failback: false,
         vless_udp_mux_limits: VlessUdpMuxLimits::default(),
         tcp_mid_session_retry_buffer_bytes: 256 * 1024,
         tcp_mid_session_retry_budget: 1,
@@ -99,31 +98,30 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
 }
 
 fn two_group_registry() -> UplinkRegistry {
-    UplinkRegistry::new(vec![
-        UplinkGroupConfig {
-            name: "main".to_string(),
-            uplinks: vec![
-                make_uplink("primary", "wss://main.example.com/tcp"),
-                make_uplink("secondary", "wss://main2.example.com/tcp"),
-            ],
-            probe: probe_disabled(),
-            load_balancing: lb(),
-        },
-        UplinkGroupConfig {
-            name: "backup".to_string(),
-            uplinks: vec![make_uplink("edge", "wss://backup.example.com/tcp")],
-            probe: probe_disabled(),
-            load_balancing: lb(),
-        },
-    ], std::sync::Arc::new(outline_transport::DnsCache::default()))
+    UplinkRegistry::new(
+        vec![
+            UplinkGroupConfig {
+                name: "main".to_string(),
+                uplinks: vec![
+                    make_uplink("primary", "wss://main.example.com/tcp"),
+                    make_uplink("secondary", "wss://main2.example.com/tcp"),
+                ],
+                probe: probe_disabled(),
+                load_balancing: lb(),
+            },
+            UplinkGroupConfig {
+                name: "backup".to_string(),
+                uplinks: vec![make_uplink("edge", "wss://backup.example.com/tcp")],
+                probe: probe_disabled(),
+                load_balancing: lb(),
+            },
+        ],
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    )
     .unwrap()
 }
 
-fn route_rule(
-    prefixes: &[&str],
-    target: RouteTarget,
-    fallback: Option<RouteTarget>,
-) -> RouteRule {
+fn route_rule(prefixes: &[&str], target: RouteTarget, fallback: Option<RouteTarget>) -> RouteRule {
     RouteRule {
         inline_prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
         files: Vec::new(),
@@ -181,12 +179,8 @@ async fn runtime_failure_in_one_group_does_not_affect_another() {
     backup.test_set_tcp_health(0, true, 40).await;
 
     // Report a runtime failure on main's uplink 0 (probe disabled → flips healthy).
-    main.report_runtime_failure(
-        0,
-        TransportKind::Tcp,
-        &anyhow::anyhow!("connection reset"),
-    )
-    .await;
+    main.report_runtime_failure(0, TransportKind::Tcp, &anyhow::anyhow!("connection reset"))
+        .await;
 
     // main's uplink 0 is now unhealthy.
     assert_eq!(main.test_tcp_healthy(0).await, Some(false));
@@ -264,10 +258,7 @@ async fn routing_table_drop_target_works() {
     let table = RoutingTable::compile(&cfg).await.unwrap();
 
     assert_eq!(table.resolve(&v4(192, 168, 1, 1)).await.primary, RouteTarget::Drop);
-    assert_eq!(
-        table.resolve(&v4(8, 8, 8, 8)).await.primary,
-        RouteTarget::Group("main".into())
-    );
+    assert_eq!(table.resolve(&v4(8, 8, 8, 8)).await.primary, RouteTarget::Group("main".into()));
 }
 
 // ── 3. Fallback between groups ───────────────────────────────────────────────
@@ -432,20 +423,23 @@ async fn udp_health_is_independent_across_groups() {
 
 #[test]
 fn registry_rejects_duplicate_uplink_names_across_groups() {
-    let result = UplinkRegistry::new(vec![
-        UplinkGroupConfig {
-            name: "g1".to_string(),
-            uplinks: vec![make_uplink("shared-name", "wss://a.example.com/tcp")],
-            probe: probe_disabled(),
-            load_balancing: lb(),
-        },
-        UplinkGroupConfig {
-            name: "g2".to_string(),
-            uplinks: vec![make_uplink("shared-name", "wss://b.example.com/tcp")],
-            probe: probe_disabled(),
-            load_balancing: lb(),
-        },
-    ], std::sync::Arc::new(outline_transport::DnsCache::default()));
+    let result = UplinkRegistry::new(
+        vec![
+            UplinkGroupConfig {
+                name: "g1".to_string(),
+                uplinks: vec![make_uplink("shared-name", "wss://a.example.com/tcp")],
+                probe: probe_disabled(),
+                load_balancing: lb(),
+            },
+            UplinkGroupConfig {
+                name: "g2".to_string(),
+                uplinks: vec![make_uplink("shared-name", "wss://b.example.com/tcp")],
+                probe: probe_disabled(),
+                load_balancing: lb(),
+            },
+        ],
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
     let err = result.unwrap_err();
     assert!(
         format!("{err:#}").contains("shared-name"),
@@ -455,20 +449,23 @@ fn registry_rejects_duplicate_uplink_names_across_groups() {
 
 #[test]
 fn registry_rejects_duplicate_group_names() {
-    let result = UplinkRegistry::new(vec![
-        UplinkGroupConfig {
-            name: "same".to_string(),
-            uplinks: vec![make_uplink("u1", "wss://a.example.com/tcp")],
-            probe: probe_disabled(),
-            load_balancing: lb(),
-        },
-        UplinkGroupConfig {
-            name: "same".to_string(),
-            uplinks: vec![make_uplink("u2", "wss://b.example.com/tcp")],
-            probe: probe_disabled(),
-            load_balancing: lb(),
-        },
-    ], std::sync::Arc::new(outline_transport::DnsCache::default()));
+    let result = UplinkRegistry::new(
+        vec![
+            UplinkGroupConfig {
+                name: "same".to_string(),
+                uplinks: vec![make_uplink("u1", "wss://a.example.com/tcp")],
+                probe: probe_disabled(),
+                load_balancing: lb(),
+            },
+            UplinkGroupConfig {
+                name: "same".to_string(),
+                uplinks: vec![make_uplink("u2", "wss://b.example.com/tcp")],
+                probe: probe_disabled(),
+                load_balancing: lb(),
+            },
+        ],
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
     let err = result.unwrap_err();
     assert!(
         format!("{err:#}").contains("same"),
@@ -524,19 +521,10 @@ async fn inverted_rule_routes_everything_not_in_set_through_primary() {
     let table = RoutingTable::compile(&cfg).await.unwrap();
 
     // Public IP: not in private ranges → inverted rule matches → tunnel.
-    assert_eq!(
-        table.resolve(&v4(8, 8, 8, 8)).await.primary,
-        RouteTarget::Group("main".into())
-    );
+    assert_eq!(table.resolve(&v4(8, 8, 8, 8)).await.primary, RouteTarget::Group("main".into()));
     // Private IP: in the set → inverted rule does NOT match → default (Direct).
-    assert_eq!(
-        table.resolve(&v4(10, 1, 2, 3)).await.primary,
-        RouteTarget::Direct
-    );
-    assert_eq!(
-        table.resolve(&v4(192, 168, 1, 1)).await.primary,
-        RouteTarget::Direct
-    );
+    assert_eq!(table.resolve(&v4(10, 1, 2, 3)).await.primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&v4(192, 168, 1, 1)).await.primary, RouteTarget::Direct);
 }
 
 // ── 8. UDP route cache invalidation ──────────────────────────────────────────

@@ -131,12 +131,7 @@ impl TunTcpEngine {
                 }
                 metrics::record_tun_tcp_async_connect("connected");
                 // Spawn a plain reader for the direct stream.
-                engine.spawn_direct_upstream_reader(
-                    key.clone(),
-                    flow.clone(),
-                    read_half,
-                    close_rx,
-                );
+                engine.spawn_direct_upstream_reader(key.clone(), flow.clone(), read_half, close_rx);
                 metrics::record_uplink_selected(
                     "tcp",
                     metrics::DIRECT_GROUP_LABEL,
@@ -242,11 +237,7 @@ impl TunTcpEngine {
                 close_upstream_writer(Some(Arc::clone(&upstream_writer))).await;
             }
 
-            metrics::record_uplink_selected(
-                "tcp",
-                manager.group_name(),
-                &candidate.uplink.name,
-            );
+            metrics::record_uplink_selected("tcp", manager.group_name(), &candidate.uplink.name);
             info!(
                 flow_id,
                 uplink = %candidate.uplink.name,

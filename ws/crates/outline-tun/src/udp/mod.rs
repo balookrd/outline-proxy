@@ -52,12 +52,7 @@ fn build_udp_payload(target: &TargetAddr, payload: &[u8]) -> Result<Vec<u8>> {
 /// Record a UDP datagram and its byte count in one call. Every site that
 /// emits `add_udp_datagram` also emits the matching `add_bytes("udp", ...)`,
 /// so collapsing them removes the risk of one getting out of sync.
-pub(super) fn record_udp_xfer(
-    direction: &'static str,
-    group: &str,
-    uplink: &str,
-    bytes: usize,
-) {
+pub(super) fn record_udp_xfer(direction: &'static str, group: &str, uplink: &str, bytes: usize) {
     metrics::add_udp_datagram(direction, group, uplink);
     metrics::add_bytes("udp", direction, group, uplink, bytes);
 }
@@ -65,10 +60,7 @@ pub(super) fn record_udp_xfer(
 /// Returns `true` when a flow bound to `flow_index` must be torn down
 /// because its group is in strict-active-uplink mode and has repointed to a
 /// different uplink.
-pub(super) async fn should_migrate_flow(
-    manager: &UplinkManager,
-    flow_index: usize,
-) -> bool {
+pub(super) async fn should_migrate_flow(manager: &UplinkManager, flow_index: usize) -> bool {
     if !manager.strict_active_uplink_for(TransportKind::Udp) {
         return false;
     }

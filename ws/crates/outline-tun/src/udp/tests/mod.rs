@@ -1,5 +1,5 @@
-use super::wire::{build_ipv4_udp_packet, build_ipv6_udp_packet};
 use super::parse_udp_packet;
+use super::wire::{build_ipv4_udp_packet, build_ipv6_udp_packet};
 use crate::wire::IpVersion;
 use crate::wire::test_utils::{
     IP_PROTOCOL_UDP, assert_ipv4_header_checksum_valid, assert_transport_checksum_valid,

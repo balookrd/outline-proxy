@@ -13,14 +13,8 @@ use crate::xhttp_submode_cache::{effective_submode, gc, record_failure, record_s
 #[tokio::test]
 async fn no_entry_passes_requested_submode_through_unchanged() {
     let url: Url = "https://no-entry-submode.test:443/xhttp".parse().unwrap();
-    assert_eq!(
-        effective_submode(&url, XhttpSubmode::StreamOne).await,
-        XhttpSubmode::StreamOne,
-    );
-    assert_eq!(
-        effective_submode(&url, XhttpSubmode::PacketUp).await,
-        XhttpSubmode::PacketUp,
-    );
+    assert_eq!(effective_submode(&url, XhttpSubmode::StreamOne).await, XhttpSubmode::StreamOne,);
+    assert_eq!(effective_submode(&url, XhttpSubmode::PacketUp).await, XhttpSubmode::PacketUp,);
 }
 
 #[tokio::test]
@@ -33,10 +27,7 @@ async fn record_failure_stream_one_clamps_subsequent_stream_one_to_packet_up() {
         "stream-one failure must clamp the next stream-one dial to packet-up",
     );
     // PacketUp requests are not affected by the cache.
-    assert_eq!(
-        effective_submode(&url, XhttpSubmode::PacketUp).await,
-        XhttpSubmode::PacketUp,
-    );
+    assert_eq!(effective_submode(&url, XhttpSubmode::PacketUp).await, XhttpSubmode::PacketUp,);
 }
 
 #[tokio::test]
@@ -57,10 +48,7 @@ async fn record_failure_packet_up_is_noop() {
 async fn record_success_clears_block() {
     let url: Url = "https://success-clears-submode.test:443/xhttp".parse().unwrap();
     record_failure(&url, XhttpSubmode::StreamOne).await;
-    assert_eq!(
-        effective_submode(&url, XhttpSubmode::StreamOne).await,
-        XhttpSubmode::PacketUp,
-    );
+    assert_eq!(effective_submode(&url, XhttpSubmode::StreamOne).await, XhttpSubmode::PacketUp,);
     record_success(&url, XhttpSubmode::StreamOne).await;
     assert_eq!(
         effective_submode(&url, XhttpSubmode::StreamOne).await,

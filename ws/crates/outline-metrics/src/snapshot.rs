@@ -14,15 +14,8 @@ static RENDER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 // stay in sync with `Display for outline_transport::TransportMode`.
 // Adding a new TransportMode variant requires extending this list so
 // that `mode` label values cover every cap the dispatcher can pick.
-const MODE_DOWNGRADE_CAP_LABELS: &[&str] = &[
-    "ws_h1",
-    "ws_h2",
-    "ws_h3",
-    "quic",
-    "xhttp_h1",
-    "xhttp_h2",
-    "xhttp_h3",
-];
+const MODE_DOWNGRADE_CAP_LABELS: &[&str] =
+    &["ws_h1", "ws_h2", "ws_h3", "quic", "xhttp_h1", "xhttp_h2", "xhttp_h3"];
 
 // Stable label set for `uplink_fingerprint_profile_strategy_info` —
 // must stay in sync with `outline_transport::FingerprintProfileStrategy::as_str`

@@ -5,13 +5,13 @@
 //! and the optional read-only metrics and authenticated control-plane HTTP
 //! listeners ([`http`]).
 
-pub mod config;
 pub(crate) mod client_io;
+pub mod config;
 pub(crate) mod error_class;
-pub mod memory;
-pub mod metrics;
 #[cfg(any(feature = "metrics", feature = "control", feature = "dashboard"))]
 pub mod http;
+pub mod memory;
+pub mod metrics;
 pub mod proxy;
 
 mod bootstrap;

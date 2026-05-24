@@ -21,7 +21,7 @@ use outline_transport::{
     connect_shadowsocks_tcp_with_source, connect_transport,
 };
 
-use crate::config::{TargetAddr, UplinkConfig, UplinkTransport, TransportMode};
+use crate::config::{TargetAddr, TransportMode, UplinkConfig, UplinkTransport};
 
 /// Connects a probe's Shadowsocks TCP stream (WebSocket or direct socket) and
 /// returns the framed writer/reader halves plus a downgrade marker.  `source`
@@ -45,15 +45,11 @@ pub(super) async fn connect_probe_tcp(
 ) -> Result<(TcpWriter, TcpReader, Option<TransportMode>)> {
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
-    let _permit = dial_limit
-        .acquire_owned()
-        .await
-        .expect("probe dial semaphore closed");
+    let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
 
     #[cfg(feature = "quic")]
     if effective_tcp_mode == TransportMode::Quic
-        && (uplink.transport == UplinkTransport::Ws
-            || uplink.transport == UplinkTransport::Vless)
+        && (uplink.transport == UplinkTransport::Ws || uplink.transport == UplinkTransport::Vless)
     {
         let url = uplink
             .tcp_dial_url()
@@ -84,7 +80,7 @@ pub(super) async fn connect_probe_tcp(
                 // Raw QUIC bypasses the WS layer, so there is no
                 // `ws_mode_cache` clamp to surface here.
                 Ok((TcpWriter::Vless(w), TcpReader::Vless(r), None))
-            }
+            },
             UplinkTransport::Ws => {
                 let (w, r) = crate::dial::dial_in_uplink_scope(
                     uplink,
@@ -106,7 +102,7 @@ pub(super) async fn connect_probe_tcp(
                 let request_salt = w.request_salt();
                 let r = r.with_request_salt(request_salt);
                 Ok((TcpWriter::QuicSs(w), TcpReader::QuicSs(r), None))
-            }
+            },
             _ => unreachable!(),
         };
     }
@@ -152,15 +148,10 @@ pub(super) async fn connect_probe_tcp(
                 uplink: uplink.name.clone(),
                 target: target.to_string(),
             };
-            let reader = TcpShadowsocksReader::new(
-                ws_stream,
-                uplink.cipher,
-                &master_key,
-                lifetime,
-                ctrl_tx,
-            )
-            .with_request_salt(request_salt)
-            .with_diag(diag);
+            let reader =
+                TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
+                    .with_request_salt(request_salt)
+                    .with_diag(diag);
             Ok((TcpWriter::Ws(writer), TcpReader::Ws(reader), downgraded_from))
         },
         UplinkTransport::Vless => {
@@ -169,9 +160,9 @@ pub(super) async fn connect_probe_tcp(
                 connect_transport(
                     TransportDialOptions::new(
                         cache,
-                        uplink
-                            .tcp_dial_url()
-                            .ok_or_else(|| anyhow!("uplink {} missing vless dial URL", uplink.name))?,
+                        uplink.tcp_dial_url().ok_or_else(|| {
+                            anyhow!("uplink {} missing vless dial URL", uplink.name)
+                        })?,
                         effective_tcp_mode,
                         source,
                     )
@@ -198,12 +189,7 @@ pub(super) async fn connect_probe_tcp(
                 target: target.to_string(),
             };
             let (writer, reader) = outline_transport::vless::vless_tcp_pair_from_ws(
-                ws_stream,
-                uuid,
-                target,
-                lifetime,
-                diag,
-                None,
+                ws_stream, uuid, target, lifetime, diag, None,
             );
             Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader), downgraded_from))
         },
@@ -230,13 +216,9 @@ pub(super) async fn connect_probe_tcp(
                 Arc::clone(&lifetime),
             )?;
             let request_salt = writer.request_salt();
-            let reader = TcpShadowsocksReader::new_socket(
-                reader_half,
-                uplink.cipher,
-                &master_key,
-                lifetime,
-            )
-            .with_request_salt(request_salt);
+            let reader =
+                TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
+                    .with_request_salt(request_salt);
             // Direct shadowsocks socket has no WS layer to downgrade.
             Ok((TcpWriter::Socket(writer), TcpReader::Socket(reader), None))
         },

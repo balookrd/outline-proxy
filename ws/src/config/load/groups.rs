@@ -3,7 +3,9 @@ use anyhow::{Result, anyhow, bail};
 use outline_uplink::{UplinkConfig, UplinkGroupConfig};
 
 use super::super::args::Args;
-use super::super::schema::{ConfigFile, LoadBalancingSection, OutlineSection, ProbeSection, UplinkGroupSection};
+use super::super::schema::{
+    ConfigFile, LoadBalancingSection, OutlineSection, ProbeSection, UplinkGroupSection,
+};
 use super::balancing::load_balancing_config;
 use super::probe::load_probe_config;
 use super::uplinks::{cli_uplink_override_requested, load_uplinks};
@@ -18,7 +20,8 @@ pub(super) fn load_groups(
         // Legacy single-group path — reuse existing flat-config logic.
         let uplinks = load_uplinks(outline, args)?;
         let probe = load_probe_config(outline.and_then(|o| o.probe.as_ref()))?;
-        let load_balancing = load_balancing_config(outline.and_then(|o| o.load_balancing.as_ref()))?;
+        let load_balancing =
+            load_balancing_config(outline.and_then(|o| o.load_balancing.as_ref()))?;
         return Ok(vec![UplinkGroupConfig {
             name: super::DEFAULT_GROUP.to_string(),
             uplinks,
@@ -93,10 +96,7 @@ pub(super) fn load_groups(
             )
         })?;
         let group_index = *name_to_index.get(group_name.as_str()).ok_or_else(|| {
-            anyhow!(
-                "[[uplinks]] entry {} references unknown group \"{group_name}\"",
-                index + 1
-            )
+            anyhow!("[[uplinks]] entry {} references unknown group \"{group_name}\"", index + 1)
         })?;
         let resolved: UplinkConfig =
             super::uplinks::ResolvedUplinkInput::from_section(index, uplink).try_into()?;
@@ -158,7 +158,9 @@ pub(super) fn merge_probe_section(
 /// Adapter: build a `LoadBalancingConfig` from the LB fields embedded in
 /// `[[uplink_group]]` (same field names / defaults as legacy
 /// `[load_balancing]`).
-fn load_balancing_config_from_group(section: &UplinkGroupSection) -> Result<outline_uplink::LoadBalancingConfig> {
+fn load_balancing_config_from_group(
+    section: &UplinkGroupSection,
+) -> Result<outline_uplink::LoadBalancingConfig> {
     let shim = LoadBalancingSection {
         mode: section.mode,
         routing_scope: section.routing_scope,

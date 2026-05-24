@@ -32,9 +32,8 @@ pub(crate) fn classify_tun_udp_forward_error(error: &Error) -> &'static str {
             TransportOperation::WebSocketRead
             | TransportOperation::WebSocketSend
             | TransportOperation::SocketShutdown => "transport_error",
-            TransportOperation::Connect { .. } | TransportOperation::DnsResolveNoAddresses { .. } => {
-                "connect_failed"
-            },
+            TransportOperation::Connect { .. }
+            | TransportOperation::DnsResolveNoAddresses { .. } => "connect_failed",
         };
     }
     "other"

@@ -8,8 +8,8 @@ use tracing::{debug, warn};
 
 use outline_metrics as metrics;
 use outline_routing::RouteTarget;
-use socks5_proto::{SocksRequest, TargetAddr, negotiate};
 use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
+use socks5_proto::{SocksRequest, TargetAddr, negotiate};
 
 use super::ProxyConfig;
 
@@ -26,10 +26,7 @@ pub(crate) enum Route {
     /// Policy-blocked (SOCKS5 REP=0x02 for TCP; silent drop for UDP).
     Drop,
     /// Forward through this group's uplink manager.
-    Group {
-        name: Arc<str>,
-        manager: UplinkManager,
-    },
+    Group { name: Arc<str>, manager: UplinkManager },
 }
 
 /// Hard cap on how long a client may take to complete the SOCKS5 method
@@ -102,22 +99,16 @@ async fn resolve_dispatch(
     };
     let decision = router.resolve(target).await;
     let direct_fwmark = config.direct_fwmark;
-    apply_fallback_strategy(
-        registry,
-        decision.primary,
-        decision.fallback,
-        transport,
-        |t| match t {
-            RouteTarget::Direct => Route::Direct { fwmark: direct_fwmark },
-            RouteTarget::Drop => Route::Drop,
-            RouteTarget::Group(name) => {
-                let manager = registry
-                    .group_by_name(&name)
-                    .unwrap_or_else(|| registry.default_group());
-                Route::Group { name, manager }
-            },
+    apply_fallback_strategy(registry, decision.primary, decision.fallback, transport, |t| match t {
+        RouteTarget::Direct => Route::Direct { fwmark: direct_fwmark },
+        RouteTarget::Drop => Route::Drop,
+        RouteTarget::Group(name) => {
+            let manager = registry
+                .group_by_name(&name)
+                .unwrap_or_else(|| registry.default_group());
+            Route::Group { name, manager }
         },
-    )
+    })
     .await
 }
 

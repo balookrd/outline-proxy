@@ -70,10 +70,7 @@ struct Entry {
 /// for non-XHTTP modes — the call sites are uniform across the
 /// dispatcher, so a non-XHTTP request transparently falls through.
 fn is_xhttp(mode: TransportMode) -> bool {
-    matches!(
-        mode,
-        TransportMode::XhttpH1 | TransportMode::XhttpH2 | TransportMode::XhttpH3
-    )
+    matches!(mode, TransportMode::XhttpH1 | TransportMode::XhttpH2 | TransportMode::XhttpH3)
 }
 
 /// Rank inside the XHTTP family. Lower = more downgraded. Used to

@@ -8,11 +8,11 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::Duration;
 
+use shadowsocks_crypto::CipherKind;
 use shadowsocks_crypto::{
     SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet, derive_subkey, encrypt, encrypt_udp_packet,
     increment_nonce,
 };
-use shadowsocks_crypto::CipherKind;
 use socks5_proto::TargetAddr;
 
 #[test]

@@ -107,11 +107,14 @@ fn connect_with_context_at_call_site_is_classified() {
 
 #[test]
 fn typed_connect_and_dns_failures_are_classified() {
-    let err = Error::new(TransportOperation::Connect { target: "TCP socket to 1.2.3.4:443".into() });
+    let err = Error::new(TransportOperation::Connect {
+        target: "TCP socket to 1.2.3.4:443".into(),
+    });
     assert_eq!(classify_runtime_failure_signature(&err), "connect_failed");
     assert_eq!(classify_runtime_failure_cause(&err), "connect");
 
-    let err = Error::new(TransportOperation::DnsResolveNoAddresses { host: "example.com:443".into() });
+    let err =
+        Error::new(TransportOperation::DnsResolveNoAddresses { host: "example.com:443".into() });
     assert_eq!(classify_runtime_failure_signature(&err), "dns_no_addresses");
     assert_eq!(classify_runtime_failure_cause(&err), "connect");
 }

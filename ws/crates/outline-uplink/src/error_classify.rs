@@ -85,9 +85,7 @@ pub(crate) fn classify_runtime_failure_cause(error: &Error) -> &'static str {
     }
     // String fallback for external-library errors.
     let lower = lower_error(error);
-    if lower.contains("timed out")
-        || lower.contains("timeout")
-        || lower.contains("did not respond")
+    if lower.contains("timed out") || lower.contains("timeout") || lower.contains("did not respond")
     {
         "timeout"
     } else if lower.contains("connection reset")

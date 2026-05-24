@@ -91,9 +91,8 @@ pub(super) async fn try_uplinks(
     let mut rbuf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
 
     loop {
-        let can_failover = strict_transport
-            && !replay.overflow
-            && tried_indexes.len() < uplinks.uplinks().len();
+        let can_failover =
+            strict_transport && !replay.overflow && tried_indexes.len() < uplinks.uplinks().len();
         // `attempt_timeout` is mutable because `replay.overflow` can flip to
         // true mid-iteration (when the client body exceeds
         // MAX_CHUNK0_FAILOVER_BUF).  Once replay is no longer possible,
@@ -131,13 +130,11 @@ pub(super) async fn try_uplinks(
             Ok(chunk) if chunk.is_empty() => {
                 client_write.shutdown().await.context("client shutdown failed")?;
                 return Ok(None);
-            }
+            },
             Ok(chunk) => {
                 // Flush deferred failure records now that we have proof the
                 // session is alive via a different uplink.
-                for DeferredFailure { index, uplink, error } in
-                    deferred_failures.drain(..)
-                {
+                for DeferredFailure { index, uplink, error } in deferred_failures.drain(..) {
                     debug!(
                         uplink = %uplink,
                         error = %format!("{error:#}"),
@@ -149,7 +146,7 @@ pub(super) async fn try_uplinks(
                         .await;
                 }
                 return Ok(Some(chunk));
-            }
+            },
             Err(ref e) if active.reader.closed_cleanly() => {
                 debug!(
                     uplink = %active.name,
@@ -158,7 +155,7 @@ pub(super) async fn try_uplinks(
                 );
                 client_write.shutdown().await.context("client shutdown failed")?;
                 return Ok(None);
-            }
+            },
             Err(e) => {
                 let mut chunk0_error = e;
 
@@ -184,9 +181,10 @@ pub(super) async fn try_uplinks(
                     {
                         Ok(()) => continue,
                         Err(connect_err) => {
-                            chunk0_error = connect_err
-                                .context("fresh dial retry after warm-standby chunk-0 failure failed");
-                        }
+                            chunk0_error = connect_err.context(
+                                "fresh dial retry after warm-standby chunk-0 failure failed",
+                            );
+                        },
                     }
                 }
 
@@ -228,11 +226,11 @@ pub(super) async fn try_uplinks(
                         Ok(()) => {
                             rst_retries_on_current_uplink = attempt_num;
                             continue;
-                        }
+                        },
                         Err(connect_err) => {
                             chunk0_error = connect_err
                                 .context("fresh dial retry after chunk-0 transport reset failed");
-                        }
+                        },
                     }
                 }
 
@@ -315,7 +313,7 @@ pub(super) async fn try_uplinks(
                         // Fall through → loop restarts with the new uplink.
                     },
                 }
-            }
+            },
         }
     }
 }

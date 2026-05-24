@@ -37,9 +37,7 @@ pub(in crate::tcp) fn segment_requires_ack(
     payload_len: usize,
     rcv_nxt: u32,
 ) -> bool {
-    payload_len != 0
-        || (flags & TCP_FLAG_FIN) != 0
-        || seq_lt(sequence_number, rcv_nxt)
+    payload_len != 0 || (flags & TCP_FLAG_FIN) != 0 || seq_lt(sequence_number, rcv_nxt)
 }
 
 // Final ACK of the three-way handshake: client ACKs our SYN+ACK exactly

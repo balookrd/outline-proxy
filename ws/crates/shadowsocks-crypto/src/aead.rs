@@ -99,13 +99,28 @@ impl AeadCipher {
         let tag: &[u8] = &tag_arr;
         match self {
             Self::Chacha(c) => c
-                .decrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut buf[..split_at], tag.into())
+                .decrypt_in_place_detached(
+                    ChaNonce::from_slice(nonce),
+                    b"",
+                    &mut buf[..split_at],
+                    tag.into(),
+                )
                 .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_CHACHA })?,
             Self::Aes128(c) => c
-                .decrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buf[..split_at], tag.into())
+                .decrypt_in_place_detached(
+                    AesNonce::from_slice(nonce),
+                    b"",
+                    &mut buf[..split_at],
+                    tag.into(),
+                )
                 .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_AES_128 })?,
             Self::Aes256(c) => c
-                .decrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buf[..split_at], tag.into())
+                .decrypt_in_place_detached(
+                    AesNonce::from_slice(nonce),
+                    b"",
+                    &mut buf[..split_at],
+                    tag.into(),
+                )
                 .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_AES_256 })?,
         };
         buf.truncate(split_at);

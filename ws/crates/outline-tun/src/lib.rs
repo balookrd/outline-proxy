@@ -4,9 +4,9 @@
 //! dispatches traffic to two relay engines: a stateful userspace TCP stack
 //! (`tun2tcp`) and a stateless UDP forwarder (`tun2udp`).
 
-pub mod config;
 mod atomic_counter;
 mod classify;
+pub mod config;
 pub(crate) mod defrag;
 mod device;
 mod engine;

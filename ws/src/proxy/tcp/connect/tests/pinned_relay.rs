@@ -6,8 +6,8 @@ use outline_transport::{
 };
 use outline_uplink::{
     CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TargetAddr,
-    UplinkCandidate, UplinkConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
-    TransportMode,
+    TransportMode, UplinkCandidate, UplinkConfig, UplinkTransport, VlessUdpMuxLimits,
+    WsProbeConfig,
 };
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -87,7 +87,7 @@ fn make_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
-        }
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -150,10 +150,7 @@ async fn run_relay_keepalive_does_not_extend_idle_timeout() {
         socks_upstream_idle: Duration::from_millis(50),
         direct_idle: Duration::from_secs(120),
     };
-    let target = outline_transport::TargetAddr::IpV4(
-        std::net::Ipv4Addr::new(127, 0, 0, 1),
-        9999,
-    );
+    let target = outline_transport::TargetAddr::IpV4(std::net::Ipv4Addr::new(127, 0, 0, 1), 9999);
     let relay_task = tokio::spawn(async move {
         run_relay(
             manager,

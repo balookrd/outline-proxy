@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use crate::utils::maybe_shrink_hash_map;
-use outline_metrics as metrics;
 use crate::wire::IpVersion;
+use outline_metrics as metrics;
 
 use self::chunk::{ChunkInsertOutcome, insert_chunk};
 use self::v4::{Ipv4Fragment, Ipv4FragmentSet, Ipv4Key, inspect_ipv4};
@@ -388,7 +388,11 @@ impl TunDefragmenter {
 }
 
 fn inspect_packet(packet: &[u8]) -> Result<PacketInspection<'_>> {
-    let version = packet.first().copied().ok_or_else(|| anyhow::anyhow!("empty TUN packet"))? >> 4;
+    let version = packet
+        .first()
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("empty TUN packet"))?
+        >> 4;
     match version {
         4 => inspect_ipv4(packet),
         6 => inspect_ipv6(packet),

@@ -26,8 +26,8 @@
 use tokio::time::Instant;
 use tracing::{debug, info};
 
-use crate::types::{TransportKind, UplinkManager};
 use super::standby::resume_cache_key;
+use crate::types::{TransportKind, UplinkManager};
 
 impl UplinkManager {
     /// Drain the warm-standby deque for `(uplink_index, transport)`.

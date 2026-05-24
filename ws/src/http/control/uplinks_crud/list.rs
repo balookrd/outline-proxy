@@ -6,16 +6,13 @@ use http::StatusCode;
 use tokio::fs;
 use toml_edit::DocumentMut;
 
-use crate::http::control::{ControlResponse, json_error, json_response};
 use crate::http::control::server::ControlState;
+use crate::http::control::{ControlResponse, json_error, json_response};
 
 use super::mutate::{find_outline_uplink_index, get_or_init_outline_uplinks};
 use super::payload::{UplinkListEntry, UplinkListResponse, table_to_json};
 
-pub(super) async fn handle_list(
-    state: Arc<ControlState>,
-    query: Option<&str>,
-) -> ControlResponse {
+pub(super) async fn handle_list(state: Arc<ControlState>, query: Option<&str>) -> ControlResponse {
     let mut filter_group: Option<String> = None;
     let mut filter_name: Option<String> = None;
     if let Some(q) = query {

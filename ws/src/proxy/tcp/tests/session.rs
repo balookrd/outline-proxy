@@ -26,10 +26,13 @@ async fn drive_tcp_session_tasks_aborts_uplink_when_downlink_finishes_first() {
         Ok::<(), anyhow::Error>(())
     };
 
-    tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)))
-        .await
-        .expect("driver should return once downlink finishes")
-        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)),
+    )
+    .await
+    .expect("driver should return once downlink finishes")
+    .unwrap();
     tokio::time::timeout(Duration::from_secs(1), uplink_dropped.notified())
         .await
         .expect("uplink should be dropped when downlink wins");
@@ -39,18 +42,20 @@ async fn drive_tcp_session_tasks_aborts_uplink_when_downlink_finishes_first() {
 async fn drive_tcp_session_tasks_waits_for_downlink_after_socket_half_close() {
     let downlink_completed = std::sync::Arc::new(Notify::new());
     let downlink_completed_clone = std::sync::Arc::clone(&downlink_completed);
-    let uplink =
-        async move { Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished) };
+    let uplink = async move { Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished) };
     let downlink = async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
         downlink_completed_clone.notify_one();
         Ok::<(), anyhow::Error>(())
     };
 
-    tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)))
-        .await
-        .expect("driver should wait for downlink after client EOF")
-        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)),
+    )
+    .await
+    .expect("driver should wait for downlink after client EOF")
+    .unwrap();
     tokio::time::timeout(Duration::from_secs(1), downlink_completed.notified())
         .await
         .expect("downlink should be allowed to finish");
@@ -142,17 +147,19 @@ async fn drive_tcp_session_tasks_activity_resets_idle_deadline() {
 async fn drive_tcp_session_tasks_aborts_downlink_after_websocket_client_eof() {
     let downlink_dropped = std::sync::Arc::new(Notify::new());
     let downlink_dropped_clone = std::sync::Arc::clone(&downlink_dropped);
-    let uplink =
-        async move { Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::CloseSession) };
+    let uplink = async move { Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::CloseSession) };
     let downlink = async move {
         let _drop_signal = DropSignal { notify: downlink_dropped_clone };
         std::future::pending::<Result<(), anyhow::Error>>().await
     };
 
-    tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)))
-        .await
-        .expect("driver should return once websocket-backed client EOF is observed")
-        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)),
+    )
+    .await
+    .expect("driver should return once websocket-backed client EOF is observed")
+    .unwrap();
     tokio::time::timeout(Duration::from_secs(1), downlink_dropped.notified())
         .await
         .expect("downlink should be aborted after websocket-backed client EOF");

@@ -8,10 +8,10 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
 
-use socks5_proto::TargetAddr;
 use outline_metrics as metrics;
 use outline_transport::is_dropped_oversized_udp_error;
 use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
+use socks5_proto::TargetAddr;
 
 use super::transport::{
     ActiveUdpTransport, close_active_udp_transport, failover_udp_transport,
@@ -69,11 +69,15 @@ impl GroupUdpContext {
                 &replacement.uplink_name,
                 payload.len(),
             );
-            self.manager.report_active_traffic(replacement.index, TransportKind::Udp).await;
+            self.manager
+                .report_active_traffic(replacement.index, TransportKind::Udp)
+                .await;
         } else {
             metrics::add_udp_datagram("client_to_upstream", group, &uplink_name);
             metrics::add_bytes("udp", "client_to_upstream", group, &uplink_name, payload.len());
-            self.manager.report_active_traffic(active_index, TransportKind::Udp).await;
+            self.manager
+                .report_active_traffic(active_index, TransportKind::Udp)
+                .await;
         }
         Ok(())
     }

@@ -193,6 +193,10 @@ cargo release-router-musl-armv7
 четыре пробела, reordered imports/modules и Rust 2021 rustfmt settings, хотя
 crate edition — Rust 2024. Перед завершением Rust-изменений запускайте
 `cargo fmt --all`.
+- `cargo fmt --all` может затронуть vendored path dependencies. Не включайте
+  format-only изменения в `vendor/*` в обычные коммиты; после форматирования
+  проверяйте `git status --short vendor` и откатывайте такие изменения, если
+  vendor-код не был явной целью задачи.
 
 ## Ожидания по документации
 

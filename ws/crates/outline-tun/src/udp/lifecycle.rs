@@ -2,29 +2,35 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::{Result, bail};
 use crate::udp::AllUdpUplinksFailed;
+use anyhow::{Result, bail};
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
 use outline_transport::{AbortOnDrop, UdpSessionTransport};
-use socks5_proto::TargetAddr;
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
+use socks5_proto::TargetAddr;
 
-use super::wire::build_response_packet;
 use super::types::{
     DirectUdpFlowState, bump_last_seen_if_current, drain_idle_flows, flow_is_current,
 };
+use super::wire::build_response_packet;
 use super::{
     TUN_FLOW_CLEANUP_INTERVAL, TunUdpEngine, UdpFlowKey, UdpFlowState, ip_family_from_version,
     ip_to_target,
 };
 
 pub(super) enum CloseWork {
-    Tunnel { flow: Arc<Mutex<UdpFlowState>>, reason: &'static str },
-    Direct { flow: Arc<Mutex<DirectUdpFlowState>>, reason: &'static str },
+    Tunnel {
+        flow: Arc<Mutex<UdpFlowState>>,
+        reason: &'static str,
+    },
+    Direct {
+        flow: Arc<Mutex<DirectUdpFlowState>>,
+        reason: &'static str,
+    },
 }
 
 impl TunUdpEngine {
@@ -43,16 +49,13 @@ impl TunUdpEngine {
     /// slow) runs without holding any map lock and without blocking the
     /// calling task. Each close request is dispatched to its own spawned
     /// task for full concurrency.
-    pub(super) fn spawn_cleanup_pool(
-        &self,
-        mut rx: mpsc::UnboundedReceiver<CloseWork>,
-    ) {
+    pub(super) fn spawn_cleanup_pool(&self, mut rx: mpsc::UnboundedReceiver<CloseWork>) {
         tokio::spawn(async move {
             while let Some(work) = rx.recv().await {
                 match work {
                     CloseWork::Tunnel { flow, reason } => {
                         tokio::spawn(close_udp_flow(flow, reason));
-                    }
+                    },
                     CloseWork::Direct { flow, reason } => {
                         tokio::spawn(async move {
                             // The reader task is wrapped in `AbortOnDrop`,
@@ -74,7 +77,7 @@ impl TunUdpEngine {
                             );
                             drop(flow);
                         });
-                    }
+                    },
                 }
             }
         });
@@ -84,11 +87,7 @@ impl TunUdpEngine {
         let _ = self.inner.close_tx.send(CloseWork::Tunnel { flow, reason });
     }
 
-    fn enqueue_close_direct(
-        &self,
-        flow: Arc<Mutex<DirectUdpFlowState>>,
-        reason: &'static str,
-    ) {
+    fn enqueue_close_direct(&self, flow: Arc<Mutex<DirectUdpFlowState>>, reason: &'static str) {
         let _ = self.inner.close_tx.send(CloseWork::Direct { flow, reason });
     }
 
@@ -377,10 +376,7 @@ async fn oldest_flow_key(
     oldest.map(|(k, _)| k)
 }
 
-pub(crate) async fn close_udp_flow(
-    flow: Arc<Mutex<UdpFlowState>>,
-    reason: &'static str,
-) {
+pub(crate) async fn close_udp_flow(flow: Arc<Mutex<UdpFlowState>>, reason: &'static str) {
     // Lock briefly to snapshot the fields we need, then release so the
     // async `transport.close()` does not hold the per-flow Mutex.
     let (id, transport, group, uplink, created_at) = {

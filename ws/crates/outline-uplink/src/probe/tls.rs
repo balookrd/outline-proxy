@@ -65,11 +65,23 @@ pub(super) async fn run_tls_probe(
     // a different SNI on the next cycle. Always fresh dial — the cost is
     // bounded by `probe.interval` (default 30 s+) so the extra handshakes
     // are negligible.
-    let (mut writer, mut reader, downgraded_from) =
-        connect_probe_tcp(cache, uplink, &target, "probe_tls", "TLS probe", effective_tcp_mode, dial_limit)
-            .await?;
+    let (mut writer, mut reader, downgraded_from) = connect_probe_tcp(
+        cache,
+        uplink,
+        &target,
+        "probe_tls",
+        "TLS probe",
+        effective_tcp_mode,
+        dial_limit,
+    )
+    .await?;
 
-    let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: "tls" };
+    let bytes = BytesRecorder {
+        group,
+        uplink: &uplink.name,
+        transport: "tcp",
+        probe: "tls",
+    };
     let result = drive_tls_handshake(
         &mut writer,
         &mut reader,
@@ -139,8 +151,7 @@ pub(super) async fn drive_tls_handshake(
         if conn.wants_write() {
             let mut wire = Vec::with_capacity(2048);
             while conn.wants_write() {
-                conn.write_tls(&mut wire)
-                    .context("rustls write_tls failed")?;
+                conn.write_tls(&mut wire).context("rustls write_tls failed")?;
             }
             if !wire.is_empty() {
                 writer
@@ -162,8 +173,7 @@ pub(super) async fn drive_tls_handshake(
             let chunk_len = chunk_bytes.len();
             let mut cursor = std::io::Cursor::new(chunk_bytes);
             while (cursor.position() as usize) < chunk_len {
-                conn.read_tls(&mut cursor)
-                    .context("rustls read_tls failed")?;
+                conn.read_tls(&mut cursor).context("rustls read_tls failed")?;
             }
             conn.process_new_packets()
                 .context("TLS handshake processing failed")?;

@@ -129,7 +129,10 @@ impl Sink<Message> for XhttpStream {
         Poll::Ready(Ok(()))
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_close(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Result<(), Self::Error>> {
         self.closed = true;
         // Closes our half of the channel. The driver task observes
         // this through `outbound.recv()` returning None and exits,

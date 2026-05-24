@@ -1,4 +1,4 @@
-use super::super::{TCP_FLAG_FIN, TCP_FLAG_SYN, ParsedTcpPacket};
+use super::super::{ParsedTcpPacket, TCP_FLAG_FIN, TCP_FLAG_SYN};
 
 pub(in crate::tcp) fn seq_lt(lhs: u32, rhs: u32) -> bool {
     (lhs.wrapping_sub(rhs) as i32) < 0

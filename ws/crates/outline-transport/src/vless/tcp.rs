@@ -8,12 +8,15 @@ use bytes::Bytes;
 use socks5_proto::TargetAddr;
 use tokio::sync::oneshot;
 
-use crate::{TransportStream, UpstreamTransportGuard, WsClosed, frame_io_ws::WS_READ_IDLE_TIMEOUT, resumption::SessionId};
 use crate::ack_prefix::{FRAME_LEN_V1, ParseResult, parse_v1};
+use crate::{
+    TransportStream, UpstreamTransportGuard, WsClosed, frame_io_ws::WS_READ_IDLE_TIMEOUT,
+    resumption::SessionId,
+};
 
 use super::header::{
-    VLESS_CMD_TCP, VLESS_VERSION, build_request_header,
-    build_vless_tcp_request_header_with_resume, parse_response_addons_session_id,
+    VLESS_CMD_TCP, VLESS_VERSION, build_request_header, build_vless_tcp_request_header_with_resume,
+    parse_response_addons_session_id,
 };
 
 /// VLESS TCP writer. Emits the request header on the first `send_chunk`
@@ -53,8 +56,7 @@ impl VlessTcpWriter {
         lifetime: Arc<UpstreamTransportGuard>,
         resume_id: Option<&[u8; 16]>,
     ) -> Self {
-        let header =
-            build_vless_tcp_request_header_with_resume(uuid, target, true, resume_id);
+        let header = build_vless_tcp_request_header_with_resume(uuid, target, true, resume_id);
         Self {
             sink: Some(sink),
             pending_header: Some(header),
@@ -321,17 +323,14 @@ impl VlessTcpReader {
             };
             acc.extend_from_slice(&bytes);
         }
-        let parse = crate::downlink_replay::parse_v1(
-            &acc[..crate::downlink_replay::FRAME_HEADER_LEN_V1],
-        );
+        let parse =
+            crate::downlink_replay::parse_v1(&acc[..crate::downlink_replay::FRAME_HEADER_LEN_V1]);
         let (flags, replay_len) = match parse {
             crate::downlink_replay::ParseResult::Valid { flags, replay_len } => (flags, replay_len),
             err => return Err(downlink_replay_parse_error_vless(err, acc.len())),
         };
         let replay_len_us: usize = replay_len.try_into().map_err(|_| {
-            anyhow!(
-                "v2 downlink replay_len {replay_len} too large to address on this platform"
-            )
+            anyhow!("v2 downlink replay_len {replay_len} too large to address on this platform")
         })?;
         if replay_len_us > max_bytes {
             bail!(
@@ -341,9 +340,7 @@ impl VlessTcpReader {
         }
         let truncated = (flags & crate::downlink_replay::FLAG_REPLAY_TRUNCATED) != 0;
         if truncated && replay_len_us != 0 {
-            bail!(
-                "v2 REPLAY_TRUNCATED flag set but replay_len = {replay_len_us}; spec violation"
-            );
+            bail!("v2 REPLAY_TRUNCATED flag set but replay_len = {replay_len_us}; spec violation");
         }
         let total_needed = crate::downlink_replay::FRAME_HEADER_LEN_V1 + replay_len_us;
         while acc.len() < total_needed {
@@ -499,9 +496,9 @@ impl VlessTcpReader {
                 Ok(Some(buf[FRAME_LEN_V1..].to_vec()))
             },
             ParseResult::TooShort => Ok(None),
-            ParseResult::BadMagic => bail!(
-                "vless ack-prefix v1 control frame has unexpected magic; dropping session"
-            ),
+            ParseResult::BadMagic => {
+                bail!("vless ack-prefix v1 control frame has unexpected magic; dropping session")
+            },
             ParseResult::UnsupportedVersion(v) => bail!(
                 "vless ack-prefix control frame announces unsupported version {v}; \
                  dropping session"
@@ -530,9 +527,9 @@ fn downlink_replay_parse_error_vless(
             crate::downlink_replay::FRAME_HEADER_LEN_V1,
             observed_len,
         ),
-        crate::downlink_replay::ParseResult::BadMagic => anyhow!(
-            "vless v2 downlink replay frame has unexpected magic; dropping session"
-        ),
+        crate::downlink_replay::ParseResult::BadMagic => {
+            anyhow!("vless v2 downlink replay frame has unexpected magic; dropping session")
+        },
         crate::downlink_replay::ParseResult::UnsupportedVersion(v) => anyhow!(
             "vless v2 downlink replay frame announces unsupported version {v}; \
              dropping session"

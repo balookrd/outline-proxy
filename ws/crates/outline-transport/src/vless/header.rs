@@ -53,7 +53,9 @@ pub fn build_vless_tcp_request_header_with_resume(
 }
 
 fn encode_request_addons(resume_capable: bool, resume_id: Option<&[u8; 16]>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(if resume_capable { 3 } else { 0 } + if resume_id.is_some() { 18 } else { 0 });
+    let mut out = Vec::with_capacity(
+        if resume_capable { 3 } else { 0 } + if resume_id.is_some() { 18 } else { 0 },
+    );
     if resume_capable {
         out.push(ADDON_TAG_RESUME_CAPABLE);
         out.push(1);

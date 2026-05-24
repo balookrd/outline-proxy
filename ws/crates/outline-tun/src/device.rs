@@ -8,9 +8,9 @@ use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
 #[cfg(target_os = "linux")]
 use anyhow::anyhow;
+use anyhow::{Context, Result, bail};
 use tracing::warn;
 
 use crate::config::TunConfig;

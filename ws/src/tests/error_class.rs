@@ -33,8 +33,8 @@ fn typed_websocket_closed_is_detected() {
 
 #[test]
 fn typed_io_error_connection_reset_detected_regardless_of_os_code() {
-    use std::io;
     use crate::client_io::ClientIo;
+    use std::io;
     let io_err = io::Error::from(io::ErrorKind::ConnectionReset);
     let error = anyhow::Error::from(ClientIo::ReadFailed(io_err));
     assert!(is_expected_client_disconnect(&error));
@@ -42,8 +42,8 @@ fn typed_io_error_connection_reset_detected_regardless_of_os_code() {
 
 #[test]
 fn typed_io_error_broken_pipe_detected() {
-    use std::io;
     use crate::client_io::ClientIo;
+    use std::io;
     let io_err = io::Error::from(io::ErrorKind::BrokenPipe);
     let error = anyhow::Error::from(ClientIo::WriteFailed(io_err));
     assert!(is_client_write_disconnect(&error));
@@ -51,8 +51,8 @@ fn typed_io_error_broken_pipe_detected() {
 
 #[test]
 fn client_write_reset_is_not_hidden_as_expected_disconnect() {
-    use std::io;
     use crate::client_io::ClientIo;
+    use std::io;
     let io_err = io::Error::from(io::ErrorKind::ConnectionReset);
     let error = anyhow::Error::from(ClientIo::WriteFailed(io_err));
     assert!(!is_expected_client_disconnect(&error));
@@ -67,8 +67,8 @@ fn udp_relay_recv_reset_is_expected_client_disconnect() {
     // that `is_client_read_failure` could not detect — so a legitimate
     // client-closed-socket event was misclassified as an upstream runtime
     // failure. Now wrapped as `ClientIo::ReadFailed`.
-    use std::io;
     use crate::client_io::ClientIo;
+    use std::io;
     let io_err = io::Error::from(io::ErrorKind::ConnectionReset);
     let error = anyhow::Error::from(ClientIo::ReadFailed(io_err));
     assert!(is_expected_client_disconnect(&error));
@@ -77,8 +77,8 @@ fn udp_relay_recv_reset_is_expected_client_disconnect() {
 
 #[test]
 fn socks5_negotiation_reset_is_expected_client_disconnect() {
-    use std::io;
     use socks5_proto::Socks5Error;
+    use std::io;
     let io_err = io::Error::from(io::ErrorKind::ConnectionReset);
     let error = anyhow::Error::from(Socks5Error::Io {
         context: "reading method negotiation header",
@@ -90,8 +90,8 @@ fn socks5_negotiation_reset_is_expected_client_disconnect() {
 
 #[test]
 fn socks5_write_failure_is_not_expected_client_disconnect() {
-    use std::io;
     use socks5_proto::Socks5Error;
+    use std::io;
     let io_err = io::Error::from(io::ErrorKind::ConnectionReset);
     let error = anyhow::Error::from(Socks5Error::Io {
         context: "writing method selection",

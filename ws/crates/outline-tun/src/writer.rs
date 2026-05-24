@@ -56,11 +56,10 @@ impl SharedTunWriter {
     /// one IP packet to the kernel.
     pub(crate) async fn write_packet(&self, packet: &[u8]) -> Result<()> {
         match &self.inner {
-            SharedTunWriterInner::Async(fd) => {
-                fd.async_io(Interest::WRITABLE, |f| write_tun_packet(f, packet))
-                    .await
-                    .context("failed to write packet to TUN")
-            },
+            SharedTunWriterInner::Async(fd) => fd
+                .async_io(Interest::WRITABLE, |f| write_tun_packet(f, packet))
+                .await
+                .context("failed to write packet to TUN"),
             #[cfg(test)]
             SharedTunWriterInner::Blocking(mutex) => mutex
                 .lock()

@@ -12,16 +12,16 @@ use anyhow::Context;
 use tokio::net::UdpSocket;
 use tracing::info;
 
-use crate::atomic_counter::CounterU64;
-use outline_metrics as metrics;
-use outline_transport::{AbortOnDrop, is_dropped_oversized_udp_error};
-use crate::{SharedTunWriter, TunRoute, TunRouting};
-use socks5_proto::TargetAddr;
 use super::lifecycle::CloseWork;
 use super::types::{
     DirectFlowTable, DirectUdpFlowState, FlowTable, UdpFlowKey, bump_last_seen_if_current,
 };
 use super::wire::ParsedUdpPacket;
+use crate::atomic_counter::CounterU64;
+use crate::{SharedTunWriter, TunRoute, TunRouting};
+use outline_metrics as metrics;
+use outline_transport::{AbortOnDrop, is_dropped_oversized_udp_error};
+use socks5_proto::TargetAddr;
 
 #[derive(Clone)]
 pub struct TunUdpEngine {
@@ -161,8 +161,7 @@ impl TunUdpEngine {
                         return Ok(());
                     },
                     TunRoute::Group { manager, .. } => {
-                        let (id, t, index, name) =
-                            self.create_flow(key.clone(), &manager).await?;
+                        let (id, t, index, name) = self.create_flow(key.clone(), &manager).await?;
                         (id, t, index, name, manager)
                     },
                 }
@@ -226,17 +225,16 @@ impl TunUdpEngine {
     ) -> Result<()> {
         let target_addr = SocketAddr::new(key.remote_ip, key.remote_port);
         let bind_addr = match key.remote_ip {
-            std::net::IpAddr::V4(_) => SocketAddr::new(
-                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-                0,
-            ),
-            std::net::IpAddr::V6(_) => SocketAddr::new(
-                std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
-                0,
-            ),
+            std::net::IpAddr::V4(_) => {
+                SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0)
+            },
+            std::net::IpAddr::V6(_) => {
+                SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0)
+            },
         };
-        let std_sock = outline_net::bind_udp_socket(bind_addr, fwmark)
-            .with_context(|| format!("failed to bind direct UDP socket for TUN flow to {remote_target}"))?;
+        let std_sock = outline_net::bind_udp_socket(bind_addr, fwmark).with_context(|| {
+            format!("failed to bind direct UDP socket for TUN flow to {remote_target}")
+        })?;
         let sock = Arc::new(UdpSocket::from_std(std_sock)?);
         sock.send_to(&packet.payload, target_addr)
             .await

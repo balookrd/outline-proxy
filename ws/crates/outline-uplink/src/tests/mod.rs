@@ -12,9 +12,9 @@ use crate::config::{
     CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TargetAddr,
     TransportMode, UplinkConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
 };
+use crate::manager::status::{PenaltyState, PerTransportStatus, UplinkStatus};
 use crate::probe::build_http_probe_request;
 use crate::selection::{effective_latency, score_latency};
-use crate::manager::status::{PenaltyState, PerTransportStatus, UplinkStatus};
 use crate::types::{TransportKind, UplinkManager};
 use outline_transport::{DialNetworkOptions, TransportDialOptions, connect_transport};
 use tokio::time::Instant;
@@ -41,7 +41,8 @@ fn lb() -> LoadBalancingConfig {
         tcp_ws_keepalive_interval: None,
         tcp_ws_standby_keepalive_interval: None,
         tcp_active_keepalive_interval: None,
-        warm_probe_keepalive_interval: None,        auto_failback: false,
+        warm_probe_keepalive_interval: None,
+        auto_failback: false,
         vless_udp_mux_limits: VlessUdpMuxLimits::default(),
         tcp_mid_session_retry_buffer_bytes: 256 * 1024,
         tcp_mid_session_retry_budget: 1,
@@ -663,7 +664,8 @@ async fn global_scope_prioritizes_tcp_quality_over_udp_quality() {
 }
 
 #[tokio::test]
-async fn global_scope_with_strict_udp_switches_udp_away_from_tcp_selected_uplink_when_udp_is_down() {
+async fn global_scope_with_strict_udp_switches_udp_away_from_tcp_selected_uplink_when_udp_is_down()
+{
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
@@ -749,7 +751,7 @@ async fn global_scope_with_strict_udp_switches_when_active_udp_probe_is_unhealth
             http: None,
             dns: None,
             tcp: None,
-        tls: None,
+            tls: None,
         },
         config,
     )
@@ -864,7 +866,7 @@ async fn global_scope_switches_only_on_probe_confirmed_failure_when_probe_enable
             http: None,
             dns: None,
             tcp: None,
-        tls: None,
+            tls: None,
         },
         config.clone(),
     )
@@ -1081,10 +1083,7 @@ async fn snapshot_reports_fingerprint_profile_name_per_strategy() {
         .fingerprint_profile_name
         .as_deref()
         .expect("strategy=per_host_stable must surface a profile name");
-    assert!(
-        pool.contains(&per_host_name),
-        "expected pool member, got {per_host_name:?}",
-    );
+    assert!(pool.contains(&per_host_name), "expected pool member, got {per_host_name:?}",);
 
     let u_process = &snapshot.uplinks[2];
     assert_eq!(u_process.fingerprint_profile_strategy, "process_stable");
@@ -1092,10 +1091,7 @@ async fn snapshot_reports_fingerprint_profile_name_per_strategy() {
         .fingerprint_profile_name
         .as_deref()
         .expect("strategy=process_stable must surface a profile name");
-    assert!(
-        pool.contains(&process_name),
-        "expected pool member, got {process_name:?}",
-    );
+    assert!(pool.contains(&process_name), "expected pool member, got {process_name:?}",);
 
     let u_random = &snapshot.uplinks[3];
     assert_eq!(u_random.fingerprint_profile_strategy, "random");
@@ -1130,7 +1126,10 @@ async fn snapshot_process_stable_yields_same_profile_for_all_uplinks() {
         .iter()
         .map(|u| u.fingerprint_profile_name.as_deref())
         .collect();
-    assert!(names.iter().all(|n| n.is_some()), "process_stable must populate name on every uplink: {names:?}");
+    assert!(
+        names.iter().all(|n| n.is_some()),
+        "process_stable must populate name on every uplink: {names:?}"
+    );
     let first = names[0];
     assert!(
         names.iter().all(|n| *n == first),
@@ -1156,10 +1155,7 @@ async fn snapshot_fingerprint_profile_name_is_stable_for_same_host() {
     let name_a = snapshot.uplinks[0].fingerprint_profile_name.as_deref();
     let name_b = snapshot.uplinks[1].fingerprint_profile_name.as_deref();
     assert!(name_a.is_some());
-    assert_eq!(
-        name_a, name_b,
-        "same host:port must yield the same profile under PerHostStable",
-    );
+    assert_eq!(name_a, name_b, "same host:port must yield the same profile under PerHostStable",);
 }
 
 #[tokio::test]
@@ -1186,7 +1182,7 @@ async fn runtime_failover_does_not_promote_global_active_when_probe_enabled() {
             http: None,
             dns: None,
             tcp: None,
-        tls: None,
+            tls: None,
         },
         config,
     )
@@ -1772,10 +1768,7 @@ async fn standby_tcp_keepalive_sends_ping_and_preserves_pool_entry() {
 
     let ws = connect_transport(
         TransportDialOptions::new(manager.dns_cache(), &url, TransportMode::WsH1, "test_standby")
-            .with_network(DialNetworkOptions {
-                fwmark: None,
-                ipv6_first: false,
-            }),
+            .with_network(DialNetworkOptions { fwmark: None, ipv6_first: false }),
     )
     .await
     .unwrap();

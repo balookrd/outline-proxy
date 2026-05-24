@@ -41,15 +41,15 @@ pub async fn serve_tcp_connect(
         Route::Direct { fwmark } => {
             info!(target = %target, "TCP route: direct connection");
             return relay_tcp_direct(client, target, fwmark, &dns_cache, timeouts).await;
-        }
+        },
         Route::Drop => {
             info!(target = %target, "TCP route: policy drop");
             return reject_tcp_connection(client, &target).await;
-        }
+        },
         Route::Group { name, manager } => {
             debug!(target = %target, group = %name, "TCP route: dispatching via group");
             manager
-        }
+        },
     };
 
     let session = metrics::track_session("tcp");
@@ -78,13 +78,13 @@ pub async fn serve_tcp_connect(
                     Ok(connected) => {
                         selected = Some((candidate, connected));
                         break;
-                    }
+                    },
                     Err(error) => {
                         uplinks
                             .report_runtime_failure(candidate.index, TransportKind::Tcp, &error)
                             .await;
                         last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
-                    }
+                    },
                 }
             }
             if selected.is_some() || !strict_transport || !progressed {

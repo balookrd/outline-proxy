@@ -65,13 +65,7 @@ pub fn record_upstream_transport(
 }
 pub fn add_upstream_transports_active(_source: &'static str, _protocol: &'static str, _delta: i64) {
 }
-pub fn add_uplink_open_connections(
-    _group: &str,
-    _transport: &str,
-    _uplink: &str,
-    _delta: i64,
-) {
-}
+pub fn add_uplink_open_connections(_group: &str, _transport: &str, _uplink: &str, _delta: i64) {}
 pub fn record_uplink_connection_close(
     _group: &str,
     _transport: &str,

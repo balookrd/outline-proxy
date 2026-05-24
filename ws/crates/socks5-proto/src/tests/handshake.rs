@@ -57,18 +57,7 @@ async fn negotiate_accepts_udp_in_tcp_request() {
     assert_eq!(method_reply, [SOCKS_VERSION, SOCKS_METHOD_NO_AUTH]);
 
     client
-        .write_all(&[
-            SOCKS_VERSION,
-            SOCKS_CMD_UDP_IN_TCP,
-            0x00,
-            SOCKS_ATYP_IPV4,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ])
+        .write_all(&[SOCKS_VERSION, SOCKS_CMD_UDP_IN_TCP, 0x00, SOCKS_ATYP_IPV4, 0, 0, 0, 0, 0, 0])
         .await
         .unwrap();
 
@@ -208,12 +197,7 @@ async fn negotiate_accepts_username_password_auth() {
     let server = tokio::spawn(async move { negotiate(&mut server_stream, Some(&auth)).await });
 
     client
-        .write_all(&[
-            SOCKS_VERSION,
-            2,
-            SOCKS_METHOD_NO_AUTH,
-            SOCKS_METHOD_USERNAME_PASSWORD,
-        ])
+        .write_all(&[SOCKS_VERSION, 2, SOCKS_METHOD_NO_AUTH, SOCKS_METHOD_USERNAME_PASSWORD])
         .await
         .unwrap();
     let mut method_reply = [0u8; 2];

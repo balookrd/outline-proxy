@@ -5,9 +5,7 @@
 //! is shared between the two repos via
 //! `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1).
 
-use super::super::ack_prefix::{
-    FRAME_LEN_V1, MAGIC, ParseResult, VERSION_V1, parse_v1,
-};
+use super::super::ack_prefix::{FRAME_LEN_V1, MAGIC, ParseResult, VERSION_V1, parse_v1};
 
 /// Mirror of the server-side `build_v1_payload`, copied here so the
 /// client-side tests can exercise round-trip without depending on the

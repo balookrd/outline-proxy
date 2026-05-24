@@ -16,9 +16,7 @@ use crate::{
     resumption::SessionId,
 };
 
-use super::header::{
-    MAX_VLESS_UDP_PAYLOAD, VLESS_CMD_UDP, VLESS_VERSION, build_request_header,
-};
+use super::header::{MAX_VLESS_UDP_PAYLOAD, VLESS_CMD_UDP, VLESS_VERSION, build_request_header};
 
 /// VLESS UDP datagram transport. Each outbound packet is sent as
 /// `len(2 BE) || payload`, with the VLESS request header bundled ahead of

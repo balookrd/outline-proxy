@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use url::Url;
 
-pub use outline_transport::{ServerAddr, VlessUdpMuxLimits, TransportMode};
+pub use outline_transport::{ServerAddr, TransportMode, VlessUdpMuxLimits};
 pub use shadowsocks_crypto::CipherKind;
 pub use socks5_proto::TargetAddr;
 
@@ -391,7 +391,10 @@ impl HttpProbeConfig {
         if urls.is_empty() {
             return Err(anyhow!("http probe requires at least one URL"));
         }
-        Ok(Self { urls, cursor: Arc::new(AtomicUsize::new(0)) })
+        Ok(Self {
+            urls,
+            cursor: Arc::new(AtomicUsize::new(0)),
+        })
     }
 
     /// Atomically advance the rotation cursor and return the next URL. Each
@@ -459,7 +462,10 @@ impl TlsProbeConfig {
         if targets.is_empty() {
             return Err(anyhow!("tls probe requires at least one target"));
         }
-        Ok(Self { targets, cursor: Arc::new(AtomicUsize::new(0)) })
+        Ok(Self {
+            targets,
+            cursor: Arc::new(AtomicUsize::new(0)),
+        })
     }
 
     /// Atomically advance the rotation cursor and return the next target.

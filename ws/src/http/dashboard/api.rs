@@ -1,6 +1,6 @@
 //! `/dashboard/api/*` HTTP handlers.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -10,9 +10,9 @@ use tracing::warn;
 
 use crate::config::DashboardInstanceConfig;
 
-use super::backend_client::{instance_url, send_instance_request};
-use super::response::{json_error, json_response, DashboardResponse};
 use super::DashboardState;
+use super::backend_client::{instance_url, send_instance_request};
+use super::response::{DashboardResponse, json_error, json_response};
 
 #[derive(Debug, Serialize)]
 struct DashboardInstancesResponse {
@@ -278,11 +278,7 @@ pub async fn handle_apply_proxy(
         Ok(pair) => pair,
         Err(response) => return response,
     };
-    let Some(instance) = state
-        .instances
-        .iter()
-        .find(|i| i.name == envelope.instance)
-    else {
+    let Some(instance) = state.instances.iter().find(|i| i.name == envelope.instance) else {
         return json_error(StatusCode::NOT_FOUND, "unknown instance");
     };
     let url = match instance_url(&instance.control_url, "/control/apply") {
@@ -373,14 +369,9 @@ async fn activate_instance(
         payload["transport"] = Value::String(transport.to_string());
     }
     let body = serde_json::to_vec(&payload)?;
-    let (status, response_body) = send_instance_request(
-        instance,
-        Method::POST,
-        url,
-        Some(body),
-        request_timeout_secs,
-    )
-    .await?;
+    let (status, response_body) =
+        send_instance_request(instance, Method::POST, url, Some(body), request_timeout_secs)
+            .await?;
     let parsed = serde_json::from_slice(&response_body)
         .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&response_body) }));
     Ok((status, parsed))

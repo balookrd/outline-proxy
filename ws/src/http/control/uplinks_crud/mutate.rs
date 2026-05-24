@@ -11,8 +11,8 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 use tracing::{info, warn};
 
 use crate::config::validate_uplink_section;
-use crate::http::control::{ControlResponse, json_error, json_response};
 use crate::http::control::server::ControlState;
+use crate::http::control::{ControlResponse, json_error, json_response};
 
 use super::io::{json_error_owned, read_json};
 use super::payload::{
@@ -213,8 +213,9 @@ pub(super) async fn handle_delete(
             return Err(format!("uplink_group \"{group_name}\" not found"));
         }
         let arr = get_or_init_outline_uplinks(doc);
-        let idx = find_outline_uplink_index(arr, &group_name, &uplink_name)
-            .ok_or_else(|| format!("uplink \"{uplink_name}\" not found in group \"{group_name}\""))?;
+        let idx = find_outline_uplink_index(arr, &group_name, &uplink_name).ok_or_else(|| {
+            format!("uplink \"{uplink_name}\" not found in group \"{group_name}\"")
+        })?;
         if count_uplinks_in_group(arr, &group_name) <= 1 {
             return Err(format!(
                 "cannot delete last uplink in group \"{group_name}\"; \
@@ -245,19 +246,16 @@ pub(super) async fn handle_delete(
 
 /// Read → mutate → validate-round-trip → atomic-write. `mutator` edits the
 /// in-memory document; return `Err(msg)` to abort with 400/404.
-async fn mutate_config_file<F>(
-    path: &Path,
-    mutator: F,
-) -> Result<(), (StatusCode, String)>
+async fn mutate_config_file<F>(path: &Path, mutator: F) -> Result<(), (StatusCode, String)>
 where
     F: FnOnce(&mut DocumentMut) -> Result<(), String>,
 {
     let raw = fs::read_to_string(path)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to read config: {e}")))?;
-    let mut doc = raw
-        .parse::<DocumentMut>()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("config is not valid TOML: {e}")))?;
+    let mut doc = raw.parse::<DocumentMut>().map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("config is not valid TOML: {e}"))
+    })?;
 
     mutator(&mut doc).map_err(|msg| {
         // Message-level errors map to 400 by default; callers needing a
@@ -327,7 +325,11 @@ pub(super) fn get_or_init_outline_uplinks(doc: &mut DocumentMut) -> &mut ArrayOf
 /// Locate an entry inside `[[outline.uplinks]]` matching both `group` and
 /// `name`. Uplink names are globally unique, but we also constrain on the
 /// group field to keep the API symmetric (delete/patch always supply both).
-pub(super) fn find_outline_uplink_index(arr: &ArrayOfTables, group: &str, name: &str) -> Option<usize> {
+pub(super) fn find_outline_uplink_index(
+    arr: &ArrayOfTables,
+    group: &str,
+    name: &str,
+) -> Option<usize> {
     arr.iter().position(|t| {
         t.get("group").and_then(|v| v.as_str()) == Some(group)
             && t.get("name").and_then(|v| v.as_str()) == Some(name)

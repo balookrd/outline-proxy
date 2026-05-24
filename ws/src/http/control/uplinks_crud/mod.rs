@@ -13,14 +13,13 @@ use bytes::Bytes;
 use http::{Method, Request, StatusCode};
 use hyper::body::Incoming;
 
-use super::{ControlResponse, plain_response};
 use super::server::ControlState;
+use super::{ControlResponse, plain_response};
 
 mod io;
 mod list;
 mod mutate;
 mod payload;
-
 
 pub(crate) async fn handle_uplinks(
     request: Request<Incoming>,

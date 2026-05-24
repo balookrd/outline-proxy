@@ -50,10 +50,7 @@ fn reschedule_flow(state: &mut TcpFlowState, tcp: &TunTcpConfig) {
             };
             state.next_scheduled_deadline = Some(new_deadline);
             if push {
-                state
-                    .signals
-                    .scheduler
-                    .schedule(state.key.clone(), new_deadline);
+                state.signals.scheduler.schedule(state.key.clone(), new_deadline);
             } else {
                 state.signals.scheduler.wake();
             }
@@ -83,11 +80,7 @@ pub(super) fn next_flow_deadline(
     let mut deadline = next_retransmission_deadline(state)
         .into_iter()
         .chain(next_zero_window_probe_deadline(state))
-        .chain(next_keepalive_deadline(
-            state,
-            tcp.keepalive_idle,
-            tcp.keepalive_interval,
-        ))
+        .chain(next_keepalive_deadline(state, tcp.keepalive_idle, tcp.keepalive_interval))
         .min();
 
     if state.status == TcpFlowStatus::SynReceived {
@@ -133,11 +126,17 @@ pub(super) fn plan_flow_maintenance(
         return Ok(FlowMaintenancePlan::Close("time_wait_expired"));
     }
 
-    if handshake_timed_out(state.status, state.timestamps.status_since, tcp.handshake_timeout, now) {
+    if handshake_timed_out(state.status, state.timestamps.status_since, tcp.handshake_timeout, now)
+    {
         return Ok(FlowMaintenancePlan::Abort("handshake_timeout"));
     }
 
-    if half_close_timed_out(state.status, state.timestamps.status_since, tcp.half_close_timeout, now) {
+    if half_close_timed_out(
+        state.status,
+        state.timestamps.status_since,
+        tcp.half_close_timeout,
+        now,
+    ) {
         return Ok(FlowMaintenancePlan::Abort("half_close_timeout"));
     }
 

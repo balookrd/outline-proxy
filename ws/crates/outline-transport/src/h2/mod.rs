@@ -7,8 +7,8 @@
 
 mod shared;
 
-pub(crate) use shared::{connect_websocket_h2, gc_shared_h2_connections};
 pub use shared::init_h2_window_sizes;
+pub(crate) use shared::{connect_websocket_h2, gc_shared_h2_connections};
 
 use std::sync::Arc;
 
@@ -49,10 +49,7 @@ impl H2WsStream {
     }
 
     pub(super) fn shared_connection_info(&self) -> (u64, &'static str) {
-        (
-            self._shared_connection.conn_id(),
-            self._shared_connection.mode(),
-        )
+        (self._shared_connection.conn_id(), self._shared_connection.mode())
     }
 }
 

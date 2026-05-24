@@ -16,12 +16,7 @@ pub fn record_tun_flow_created(group: &str, uplink: &str) {
     METRICS.tun_flows_active.with_label_values(&[group, uplink]).inc();
 }
 
-pub fn record_tun_flow_closed(
-    group: &str,
-    uplink: &str,
-    reason: &'static str,
-    duration: Duration,
-) {
+pub fn record_tun_flow_closed(group: &str, uplink: &str, reason: &'static str, duration: Duration) {
     METRICS
         .tun_flows_total
         .with_label_values(&[reason, group, uplink])

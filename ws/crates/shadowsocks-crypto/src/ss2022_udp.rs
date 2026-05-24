@@ -30,8 +30,7 @@ const ERR_SS2022_INVALID_SERVER_TYPE: &str = "invalid ss2022 UDP server packet t
 const ERR_SS2022_CLIENT_SESSION_MISMATCH: &str = "ss2022 UDP client session id mismatch";
 const ERR_SS2022_PADDING: &str = "ss2022 UDP padding exceeds payload length";
 const ERR_SS2022_CHACHA_PAYLOAD_SHORT: &str = "ss2022 chacha UDP payload is too short";
-const ERR_SS2022_CHACHA_INVALID_SERVER_TYPE: &str =
-    "invalid ss2022 chacha UDP server packet type";
+const ERR_SS2022_CHACHA_INVALID_SERVER_TYPE: &str = "invalid ss2022 chacha UDP server packet type";
 const ERR_SS2022_CHACHA_CLIENT_SESSION_MISMATCH: &str =
     "ss2022 chacha UDP client session id mismatch";
 const ERR_SS2022_CHACHA_PADDING: &str = "ss2022 chacha UDP padding exceeds payload length";

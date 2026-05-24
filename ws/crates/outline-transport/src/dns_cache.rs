@@ -81,7 +81,12 @@ impl DnsCache {
     /// [`DnsCache::with_capacity`] for production paths that resolve
     /// untrusted hosts.
     pub fn new(ttl: Duration) -> Self {
-        Self { inner: RwLock::new(HashMap::new()), ttl, capacity: None, tick: AtomicU64::new(0) }
+        Self {
+            inner: RwLock::new(HashMap::new()),
+            ttl,
+            capacity: None,
+            tick: AtomicU64::new(0),
+        }
     }
 
     /// Cache bounded to at most `capacity` entries (clamped to >=1). Once
@@ -115,12 +120,7 @@ impl DnsCache {
         }
     }
 
-    pub fn get_stale(
-        &self,
-        host: &str,
-        port: u16,
-        ipv6_first: bool,
-    ) -> Option<Arc<[SocketAddr]>> {
+    pub fn get_stale(&self, host: &str, port: u16, ipv6_first: bool) -> Option<Arc<[SocketAddr]>> {
         let map = self.inner.read();
         let hash = make_hash(map.hasher(), port, ipv6_first, host);
         let (_, entry) = map
@@ -142,16 +142,19 @@ impl DnsCache {
             expires_at: Instant::now() + self.ttl,
             last_access: AtomicU64::new(tick),
         };
-        match map.raw_entry_mut().from_hash(hash, |k| key_eq(k, port, ipv6_first, host)) {
+        match map
+            .raw_entry_mut()
+            .from_hash(hash, |k| key_eq(k, port, ipv6_first, host))
+        {
             RawEntryMut::Occupied(mut o) => {
                 *o.get_mut() = new_entry;
                 return;
-            }
+            },
             RawEntryMut::Vacant(v) => {
                 v.insert_with_hasher(hash, (port, ipv6_first, host.into()), new_entry, |k| {
                     make_hash(&bh, k.0, k.1, &k.2)
                 });
-            }
+            },
         }
 
         if let Some(cap) = self.capacity {
@@ -182,7 +185,11 @@ fn evict_one(map: &mut HashMap<CacheKey, Entry>) -> bool {
     }
     let now = Instant::now();
     let sample = EVICTION_SAMPLE.min(len);
-    let skip = if len > sample { rand::thread_rng().gen_range(0..len - sample + 1) } else { 0 };
+    let skip = if len > sample {
+        rand::thread_rng().gen_range(0..len - sample + 1)
+    } else {
+        0
+    };
 
     let mut victim_hash: Option<u64> = None;
     let mut victim_key: Option<CacheKey> = None;

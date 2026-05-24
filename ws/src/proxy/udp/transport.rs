@@ -5,16 +5,16 @@ use arc_swap::ArcSwap;
 use tracing::{debug, info, warn};
 
 use outline_metrics as metrics;
-use socks5_proto::TargetAddr;
+#[cfg(feature = "h3")]
+use outline_transport::{FallbackNotifier, VlessUdpHybridMux, VlessUdpQuicMux, WsFallbackFactory};
 use outline_transport::{
     TransportMode, UdpSessionTransport, UdpWsTransport, VlessUdpDowngradeNotifier,
     VlessUdpSessionMux, connect_shadowsocks_udp_with_source, global_resume_cache,
 };
-#[cfg(feature = "h3")]
-use outline_transport::{FallbackNotifier, VlessUdpHybridMux, VlessUdpQuicMux, WsFallbackFactory};
 use outline_uplink::{
     FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
 };
+use socks5_proto::TargetAddr;
 
 #[derive(Clone)]
 pub(super) struct ActiveUdpTransport {
@@ -46,8 +46,7 @@ async fn acquire_udp_with_fallbacks(
         return uplinks.acquire_udp_standby_or_connect(candidate, "socks_udp").await;
     }
 
-    let dial_order =
-        uplinks.wire_dial_order(candidate.index, TransportKind::Udp, total_wires);
+    let dial_order = uplinks.wire_dial_order(candidate.index, TransportKind::Udp, total_wires);
     let mut last_err: Option<anyhow::Error> = None;
 
     for &wire_index in &dial_order {
@@ -62,8 +61,7 @@ async fn acquire_udp_with_fallbacks(
         // record an outcome — this wire never even ran a dial. The primary
         // is always allowed to attempt (its UDP shape is governed by the
         // primary supports_udp filter at the candidate level).
-        if wire_index != 0
-            && !candidate.uplink.fallbacks[(wire_index - 1) as usize].supports_udp()
+        if wire_index != 0 && !candidate.uplink.fallbacks[(wire_index - 1) as usize].supports_udp()
         {
             debug!(
                 uplink = %candidate.uplink.name,
@@ -116,15 +114,16 @@ async fn acquire_udp_with_fallbacks(
                     error = %format!("{error:#}"),
                     "UDP wire dial failed",
                 );
-                last_err = Some(error.context(format!(
-                    "uplink {} {wire_label} failed",
-                    candidate.uplink.name,
-                )));
+                last_err = Some(
+                    error.context(format!("uplink {} {wire_label} failed", candidate.uplink.name,)),
+                );
             },
         }
     }
     Err(last_err
-        .unwrap_or_else(|| anyhow!("uplink {}: no UDP-capable wires available", candidate.uplink.name))
+        .unwrap_or_else(|| {
+            anyhow!("uplink {}: no UDP-capable wires available", candidate.uplink.name)
+        })
         .context(format!(
             "uplink {}: primary and all UDP-capable fallback(s) failed",
             candidate.uplink.name,
@@ -168,35 +167,22 @@ async fn dial_udp_fallback(
             )
             .await
             .with_context(|| format!("fallback udp dial to {addr} failed"))?;
-            let transport = UdpWsTransport::from_socket(
-                socket,
-                fallback.cipher,
-                &fallback.password,
-                source,
-            )
-            .map(|t| t.with_uplink_binding(binding()))
-            .map(UdpSessionTransport::Ss)?;
+            let transport =
+                UdpWsTransport::from_socket(socket, fallback.cipher, &fallback.password, source)
+                    .map(|t| t.with_uplink_binding(binding()))
+                    .map(UdpSessionTransport::Ss)?;
             uplinks
-                .report_connection_latency(
-                    parent.index,
-                    TransportKind::Udp,
-                    dial_started.elapsed(),
-                )
+                .report_connection_latency(parent.index, TransportKind::Udp, dial_started.elapsed())
                 .await;
             Ok(transport)
         },
         UplinkTransport::Ws => {
             let url = fallback.udp_ws_url.as_ref().ok_or_else(|| {
-                anyhow!(
-                    "uplink {} fallback (transport=ws) missing udp_ws_url",
-                    parent.uplink.name,
-                )
+                anyhow!("uplink {} fallback (transport=ws) missing udp_ws_url", parent.uplink.name,)
             })?;
             // Per-wire mode-downgrade window: cap from this fallback's
             // own slot, family-aware (same family/rank rules as primary).
-            let mode = uplinks
-                .effective_udp_mode_for_wire(parent.index, wire_index)
-                .await;
+            let mode = uplinks.effective_udp_mode_for_wire(parent.index, wire_index).await;
             let keepalive = uplinks.load_balancing().udp_ws_keepalive_interval;
             // Resume-cache participation (same key as primary's UDP dial)
             // so an X-Outline-Resume token issued by VLESS-UDP earlier in
@@ -229,11 +215,7 @@ async fn dial_udp_fallback(
             }
             global_resume_cache().store_if_issued(resume_key, issued);
             uplinks
-                .report_connection_latency(
-                    parent.index,
-                    TransportKind::Udp,
-                    dial_started.elapsed(),
-                )
+                .report_connection_latency(parent.index, TransportKind::Udp, dial_started.elapsed())
                 .await;
             Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())))
         },
@@ -253,15 +235,14 @@ async fn dial_udp_fallback(
             // Wire-aware mode: read this fallback's per-wire downgrade slot
             // first; falls back to the configured `vless_mode` when no
             // window is active.
-            let mode = uplinks
-                .effective_udp_mode_for_wire(parent.index, wire_index)
-                .await;
-            let uuid = fallback.vless_id.ok_or_else(|| {
-                anyhow!(
-                    "uplink {} fallback (transport=vless) missing vless_id",
-                    parent.uplink.name,
-                )
-            })?;
+            let mode = uplinks.effective_udp_mode_for_wire(parent.index, wire_index).await;
+            let uuid =
+                fallback.vless_id.ok_or_else(|| {
+                    anyhow!(
+                        "uplink {} fallback (transport=vless) missing vless_id",
+                        parent.uplink.name,
+                    )
+                })?;
             let limits = uplinks.load_balancing().vless_udp_mux_limits;
             let keepalive = uplinks.load_balancing().udp_ws_keepalive_interval;
 
@@ -332,17 +313,15 @@ async fn dial_udp_fallback(
                 // session starts at WS directly.
                 let pivot_manager = uplinks.clone();
                 let pivot_index = parent.index;
-                let on_fallback: FallbackNotifier =
-                    Arc::new(move |_error: &anyhow::Error| {
-                        pivot_manager.note_silent_transport_fallback_for_wire(
-                            pivot_index,
-                            TransportKind::Udp,
-                            wire_index,
-                            TransportMode::Quic,
-                        );
-                    });
-                let hybrid =
-                    VlessUdpHybridMux::from_quic(quic_mux, ws_factory, Some(on_fallback));
+                let on_fallback: FallbackNotifier = Arc::new(move |_error: &anyhow::Error| {
+                    pivot_manager.note_silent_transport_fallback_for_wire(
+                        pivot_index,
+                        TransportKind::Udp,
+                        wire_index,
+                        TransportMode::Quic,
+                    );
+                });
+                let hybrid = VlessUdpHybridMux::from_quic(quic_mux, ws_factory, Some(on_fallback));
                 uplinks
                     .report_connection_latency(
                         parent.index,
@@ -369,11 +348,7 @@ async fn dial_udp_fallback(
             .with_on_downgrade(Some(on_downgrade))
             .with_uplink_binding(binding());
             uplinks
-                .report_connection_latency(
-                    parent.index,
-                    TransportKind::Udp,
-                    dial_started.elapsed(),
-                )
+                .report_connection_latency(parent.index, TransportKind::Udp, dial_started.elapsed())
                 .await;
             Ok(UdpSessionTransport::Vless(mux))
         },
@@ -435,11 +410,9 @@ pub(super) async fn failover_udp_transport(
         .report_runtime_failure(failed_index, TransportKind::Udp, &error)
         .await;
     let replacement = select_udp_transport(uplinks, target).await?;
-    if let Some(previous_transport) = replace_active_udp_transport_if_current(
-        active_transport,
-        failed_index,
-        replacement.clone(),
-    ) {
+    if let Some(previous_transport) =
+        replace_active_udp_transport_if_current(active_transport, failed_index, replacement.clone())
+    {
         info!(
             failed_index,
             failed_uplink = %failed_uplink_name,
@@ -453,11 +426,7 @@ pub(super) async fn failover_udp_transport(
             &failed_uplink_name,
             &replacement.uplink_name,
         );
-        metrics::record_uplink_selected(
-            "udp",
-            uplinks.group_name(),
-            &replacement.uplink_name,
-        );
+        metrics::record_uplink_selected("udp", uplinks.group_name(), &replacement.uplink_name);
         close_udp_transport(previous_transport, "failover").await;
         return Ok(replacement);
     }
@@ -487,22 +456,16 @@ pub(super) async fn reconcile_global_udp_transport(
         active.uplink_name.clone()
     };
     let replacement = select_udp_transport(uplinks, target).await?;
-    if let Some(previous_transport) = replace_active_udp_transport_if_current(
-        active_transport,
-        selected,
-        replacement.clone(),
-    ) {
+    if let Some(previous_transport) =
+        replace_active_udp_transport_if_current(active_transport, selected, replacement.clone())
+    {
         metrics::record_failover(
             "udp",
             uplinks.group_name(),
             &replaced_uplink_name,
             &replacement.uplink_name,
         );
-        metrics::record_uplink_selected(
-            "udp",
-            uplinks.group_name(),
-            &replacement.uplink_name,
-        );
+        metrics::record_uplink_selected("udp", uplinks.group_name(), &replacement.uplink_name);
         close_udp_transport(previous_transport, "global_switch").await;
     }
     Ok(())

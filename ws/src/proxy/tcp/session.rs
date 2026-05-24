@@ -196,9 +196,9 @@ async fn finish_on_uplink_close(
                     );
                     downlink_abort.abort();
                     Ok(())
-                }
+                },
             }
-        }
+        },
         Ok(Ok(UplinkOutcome::CloseSession)) => {
             debug!(
                 target: "outline_ws_rust::session_death",
@@ -211,7 +211,7 @@ async fn finish_on_uplink_close(
             downlink_task.abort();
             let _ = downlink_task.await;
             Ok(())
-        }
+        },
         Ok(Err(error)) => {
             debug!(
                 target: "outline_ws_rust::session_death",
@@ -225,12 +225,12 @@ async fn finish_on_uplink_close(
             downlink_task.abort();
             let _ = downlink_task.await;
             Err(error)
-        }
+        },
         Err(error) => {
             downlink_task.abort();
             let _ = downlink_task.await;
             Err(anyhow!("SOCKS TCP uplink task failed: {error}"))
-        }
+        },
     }
 }
 

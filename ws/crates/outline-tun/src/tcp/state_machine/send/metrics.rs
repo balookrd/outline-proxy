@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use outline_metrics as metrics;
 
-use super::buffer::pending_server_bytes;
 use super::super::congestion::{bytes_in_pipe, count_segments_in_pipe};
 use super::super::types::TcpFlowState;
+use super::buffer::pending_server_bytes;
 
 pub(in crate::tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
     let inflight_segments = count_segments_in_pipe(state);
@@ -147,11 +147,7 @@ pub(in crate::tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
         state.reported.inflight_segments = 0;
     }
     if state.reported.inflight_bytes != 0 {
-        metrics::add_tun_tcp_inflight_bytes(
-            group,
-            uplink,
-            -(state.reported.inflight_bytes as i64),
-        );
+        metrics::add_tun_tcp_inflight_bytes(group, uplink, -(state.reported.inflight_bytes as i64));
         state.reported.inflight_bytes = 0;
     }
     if state.reported.pending_server_bytes != 0 {

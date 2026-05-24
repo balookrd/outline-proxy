@@ -4,8 +4,8 @@ use url::Url;
 
 use outline_transport::TransportMode;
 use outline_uplink::{
-    LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
-    UplinkManager, UplinkRegistry, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
+    LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig, UplinkManager,
+    UplinkRegistry, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
 };
 
 use super::*;
@@ -36,7 +36,7 @@ async fn classify_decision_unknown_group_falls_back_to_default() {
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
-        };
+    };
     let probe = ProbeConfig {
         interval: Duration::from_secs(120),
         timeout: Duration::from_secs(10),
@@ -73,7 +73,8 @@ async fn classify_decision_unknown_group_falls_back_to_default() {
         tcp_ws_keepalive_interval: None,
         tcp_ws_standby_keepalive_interval: None,
         tcp_active_keepalive_interval: None,
-        warm_probe_keepalive_interval: None,        auto_failback: false,
+        warm_probe_keepalive_interval: None,
+        auto_failback: false,
         vless_udp_mux_limits: VlessUdpMuxLimits::default(),
         tcp_mid_session_retry_buffer_bytes: 256 * 1024,
         tcp_mid_session_retry_budget: 1,
@@ -87,18 +88,13 @@ async fn classify_decision_unknown_group_falls_back_to_default() {
     let registry = UplinkRegistry::from_single_manager(manager);
 
     // The routing table resolved to group "nonexistent" which is not in the registry.
-    let route = classify_decision(
-        &registry,
-        RouteTarget::Group("nonexistent".into()),
-        None,
-    )
-    .await;
+    let route = classify_decision(&registry, RouteTarget::Group("nonexistent".into()), None).await;
 
     // Must fall back to the registry's default group name.
     match route {
         UdpPacketRoute::Tunnel(name) => {
             assert_eq!(&*name, registry.default_group_name(), "must fall back to default group")
-        }
+        },
         other => panic!("expected Tunnel(default), got {other:?}"),
     }
 }

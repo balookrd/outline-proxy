@@ -103,9 +103,15 @@ fn merge_override_sub_table_replaces_template_not_merges() {
 #[test]
 fn merge_override_tcp_replaces_template_tcp() {
     let mut t = probe(None, None);
-    t.tcp = Some(TcpProbeSection { host: "template.host".to_string(), port: Some(80) });
+    t.tcp = Some(TcpProbeSection {
+        host: "template.host".to_string(),
+        port: Some(80),
+    });
     let mut o = probe(None, None);
-    o.tcp = Some(TcpProbeSection { host: "override.host".to_string(), port: Some(443) });
+    o.tcp = Some(TcpProbeSection {
+        host: "override.host".to_string(),
+        port: Some(443),
+    });
     let r = merge_probe_section(Some(&t), Some(&o)).unwrap();
     assert_eq!(r.tcp.unwrap().host, "override.host");
 }
@@ -130,18 +136,16 @@ fn resolve_config_path_rejects_parent_components() {
 
 #[test]
 fn resolve_config_path_rejects_embedded_parent() {
-    let err =
-        resolve_config_path(Path::new("lists/../../etc/passwd"), Path::new("/etc/outline"))
-            .unwrap_err()
-            .to_string();
+    let err = resolve_config_path(Path::new("lists/../../etc/passwd"), Path::new("/etc/outline"))
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("must not contain `..`"), "got: {err}");
 }
 
 #[test]
 fn resolve_config_path_keeps_absolute() {
-    let p =
-        resolve_config_path(Path::new("/var/lib/outline/ru.lst"), Path::new("/etc/outline"))
-            .unwrap();
+    let p = resolve_config_path(Path::new("/var/lib/outline/ru.lst"), Path::new("/etc/outline"))
+        .unwrap();
     assert_eq!(p, PathBuf::from("/var/lib/outline/ru.lst"));
 }
 

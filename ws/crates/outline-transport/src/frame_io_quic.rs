@@ -46,10 +46,7 @@ pub struct QuicFrameSink {
 #[async_trait]
 impl FrameSink for QuicFrameSink {
     async fn send_frame(&mut self, data: Bytes) -> Result<()> {
-        let send = self
-            .send
-            .as_mut()
-            .context("quic frame sink already closed")?;
+        let send = self.send.as_mut().context("quic frame sink already closed")?;
         send.write_all(&data)
             .await
             .context("failed to write to quic send stream")
@@ -82,11 +79,11 @@ impl FrameSource for QuicFrameSource {
             Ok(None) => {
                 self.closed_cleanly = true;
                 Ok(None)
-            }
+            },
             Err(quinn::ReadError::ClosedStream) => {
                 self.closed_cleanly = true;
                 Ok(None)
-            }
+            },
             Err(e) => Err(e).context("failed to read from quic recv stream"),
         }
     }
@@ -103,10 +100,7 @@ pub async fn open_quic_frame_pair(
 ) -> Result<(QuicFrameSink, QuicFrameSource)> {
     let (send, recv) = conn.open_bidi_stream().await?;
     let sink = QuicFrameSink { send: Some(send) };
-    let source = QuicFrameSource {
-        recv,
-        closed_cleanly: false,
-    };
+    let source = QuicFrameSource { recv, closed_cleanly: false };
     Ok((sink, source))
 }
 
@@ -165,17 +159,17 @@ impl QuicDatagramChannel {
                         if inbound_tx_for_pump.send(Ok(b)).is_err() {
                             return;
                         }
-                    }
+                    },
                     Ok(None) => {
                         let _ = inbound_tx_for_pump.send(Ok(Bytes::new()));
                         // Connection closed — propagate by dropping
                         // the sender via task exit.
                         return;
-                    }
+                    },
                     Err(error) => {
                         let _ = inbound_tx_for_pump.send(Err(error));
                         return;
-                    }
+                    },
                 }
             }
         }));
@@ -206,8 +200,8 @@ impl QuicDatagramChannel {
                         Err(_) => return,
                     };
                     let mut head = [0u8; crate::quic::OVERSIZE_STREAM_MAGIC.len()];
-                    if let Err(error) = tokio::io::AsyncReadExt::read_exact(&mut recv, &mut head)
-                        .await
+                    if let Err(error) =
+                        tokio::io::AsyncReadExt::read_exact(&mut recv, &mut head).await
                     {
                         debug!(?error, "accept_bi peek failed for ss oversize stream");
                         continue;
@@ -231,12 +225,12 @@ impl QuicDatagramChannel {
                                         if inbound_tx_for_reader.send(Ok(record)).is_err() {
                                             return;
                                         }
-                                    }
+                                    },
                                     Ok(None) => return,
                                     Err(error) => {
                                         debug!(?error, "ss oversize reader (peer-opened) aborting");
                                         return;
-                                    }
+                                    },
                                 }
                             }
                         });
@@ -268,15 +262,15 @@ impl QuicDatagramChannel {
                             if inbound_tx.send(Ok(record)).is_err() {
                                 return;
                             }
-                        }
+                        },
                         Ok(None) => {
                             debug!("ss oversize stream EOF");
                             return;
-                        }
+                        },
                         Err(error) => {
                             debug!(?error, "ss oversize stream reader aborting");
                             return;
-                        }
+                        },
                     }
                 }
             }));
@@ -289,10 +283,7 @@ impl QuicDatagramChannel {
 #[async_trait]
 impl DatagramChannel for QuicDatagramChannel {
     async fn send_datagram(&self, data: Bytes) -> Result<()> {
-        let oversized = self
-            .conn
-            .max_datagram_size()
-            .is_some_and(|max| data.len() > max);
+        let oversized = self.conn.max_datagram_size().is_some_and(|max| data.len() > max);
         if oversized {
             if self.conn.supports_oversize_stream() {
                 let stream = self.ensure_oversize_pump().await?;

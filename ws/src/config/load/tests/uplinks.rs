@@ -254,13 +254,10 @@ fn rejects_ws_fallback_missing_tcp_ws_url() {
         // tcp_ws_url omitted — required
         ..empty_fallback()
     };
-    let err = resolve(vless_uplink_section(
-        "edge",
-        "https://cdn.example.com/SECRET/xhttp",
-        vec![bad],
-    ))
-    .unwrap_err()
-    .to_string();
+    let err =
+        resolve(vless_uplink_section("edge", "https://cdn.example.com/SECRET/xhttp", vec![bad]))
+            .unwrap_err()
+            .to_string();
     assert!(err.contains("requires `tcp_ws_url`"), "got: {err}");
 }
 
@@ -271,13 +268,10 @@ fn rejects_shadowsocks_fallback_missing_tcp_addr() {
         // tcp_addr omitted — required
         ..empty_fallback()
     };
-    let err = resolve(vless_uplink_section(
-        "edge",
-        "https://cdn.example.com/SECRET/xhttp",
-        vec![bad],
-    ))
-    .unwrap_err()
-    .to_string();
+    let err =
+        resolve(vless_uplink_section("edge", "https://cdn.example.com/SECRET/xhttp", vec![bad]))
+            .unwrap_err()
+            .to_string();
     assert!(err.contains("requires `tcp_addr`"), "got: {err}");
 }
 
@@ -308,13 +302,10 @@ fn rejects_ws_fallback_with_cross_family_fields() {
         tcp_addr: Some("1.2.3.4:8388".parse().unwrap()),
         ..empty_fallback()
     };
-    let err = resolve(vless_uplink_section(
-        "edge",
-        "https://cdn.example.com/SECRET/xhttp",
-        vec![bad],
-    ))
-    .unwrap_err()
-    .to_string();
+    let err =
+        resolve(vless_uplink_section("edge", "https://cdn.example.com/SECRET/xhttp", vec![bad]))
+            .unwrap_err()
+            .to_string();
     assert!(err.contains("must not set `tcp_addr`/`udp_addr`"), "got: {err}");
 }
 
@@ -327,13 +318,10 @@ fn rejects_shadowsocks_fallback_with_websocket_fields() {
         tcp_ws_url: Some(Url::parse("wss://other.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
-    let err = resolve(vless_uplink_section(
-        "edge",
-        "https://cdn.example.com/SECRET/xhttp",
-        vec![bad],
-    ))
-    .unwrap_err()
-    .to_string();
+    let err =
+        resolve(vless_uplink_section("edge", "https://cdn.example.com/SECRET/xhttp", vec![bad]))
+            .unwrap_err()
+            .to_string();
     assert!(err.contains("must not"), "got: {err}");
     assert!(err.contains("websocket fields"), "got: {err}");
 }

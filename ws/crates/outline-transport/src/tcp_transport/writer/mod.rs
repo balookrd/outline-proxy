@@ -1,21 +1,23 @@
 mod ss2022;
 mod transport;
 
+use crate::UpstreamTransportGuard;
 use anyhow::{Context, Result};
 use outline_ss2022::Ss2022Error;
 use rand::RngCore;
-use shadowsocks_crypto::{AeadCipher, SHADOWSOCKS_TAG_LEN, CipherKind, derive_subkey, increment_nonce};
+use shadowsocks_crypto::{
+    AeadCipher, CipherKind, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce,
+};
 use socks5_proto::TargetAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::debug;
-use crate::UpstreamTransportGuard;
 
 use ss2022::{Ss2022TcpWriterState, build_ss2022_request_header};
-use transport::{SocketWriteTransport, WriteTransport, WsSink, WsWriteTransport};
 #[cfg(feature = "quic")]
 use transport::QuicWriteTransport;
+use transport::{SocketWriteTransport, WriteTransport, WsSink, WsWriteTransport};
 
 pub struct TcpShadowsocksWriter<T: WriteTransport> {
     transport: T,
@@ -146,16 +148,20 @@ impl<T: WriteTransport> TcpShadowsocksWriter<T> {
             let salt_len = self.pending_salt.as_ref().map_or(0, |_| self.cipher.salt_len());
             let mut frame = Vec::with_capacity(
                 salt_len
-                    + fixed_header.len() + SHADOWSOCKS_TAG_LEN
-                    + variable_header.len() + SHADOWSOCKS_TAG_LEN,
+                    + fixed_header.len()
+                    + SHADOWSOCKS_TAG_LEN
+                    + variable_header.len()
+                    + SHADOWSOCKS_TAG_LEN,
             );
             if let Some(salt) = self.pending_salt.take() {
                 state.request_salt = salt;
                 frame.extend_from_slice(&salt[..self.cipher.salt_len()]);
             }
-            self.cipher_state.encrypt_into(&self.nonce, &fixed_header, &mut frame)?;
+            self.cipher_state
+                .encrypt_into(&self.nonce, &fixed_header, &mut frame)?;
             increment_nonce(&mut self.nonce)?;
-            self.cipher_state.encrypt_into(&self.nonce, &variable_header, &mut frame)?;
+            self.cipher_state
+                .encrypt_into(&self.nonce, &variable_header, &mut frame)?;
             increment_nonce(&mut self.nonce)?;
             state.header_sent = true;
 

@@ -106,19 +106,14 @@ impl VlessUdpDemuxer {
                     Err(error) => {
                         debug!(?error, "vless quic datagram pump aborting");
                         return;
-                    }
+                    },
                 };
                 drop(conn_arc);
                 if datagram.len() < SESSION_ID_BYTES {
                     debug!(len = datagram.len(), "vless quic datagram too short, dropping");
                     continue;
                 }
-                let id = u32::from_be_bytes([
-                    datagram[0],
-                    datagram[1],
-                    datagram[2],
-                    datagram[3],
-                ]);
+                let id = u32::from_be_bytes([datagram[0], datagram[1], datagram[2], datagram[3]]);
                 let payload = datagram.slice(SESSION_ID_BYTES..);
                 let tx_opt = {
                     let guard = sessions_for_task.lock();
@@ -225,15 +220,15 @@ impl VlessUdpDemuxer {
                                 return;
                             };
                             demuxer.route_record(record);
-                        }
+                        },
                         Ok(None) => {
                             debug!("vless oversize stream EOF");
                             return;
-                        }
+                        },
                         Err(error) => {
                             debug!(?error, "vless oversize stream reader aborting");
                             return;
-                        }
+                        },
                     }
                 }
             }));
@@ -356,7 +351,7 @@ impl VlessUdpQuicSession {
                 Err(error) => {
                     return Err(error)
                         .context("failed to read vless udp control bidi response header");
-                }
+                },
             }
         }
         if response[0] != VLESS_VERSION {
@@ -389,10 +384,7 @@ impl VlessUdpQuicSession {
             bail!("vless udp quic session closed");
         }
         let total_len = SESSION_ID_BYTES + payload.len();
-        let oversized = self
-            .conn
-            .max_datagram_size()
-            .is_some_and(|max| total_len > max);
+        let oversized = self.conn.max_datagram_size().is_some_and(|max| total_len > max);
         if oversized {
             // Fallback path: the negotiated ALPN may carry oversize
             // records on a dedicated stream. If yes, frame the packet

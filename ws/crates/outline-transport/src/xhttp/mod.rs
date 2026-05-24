@@ -308,10 +308,7 @@ pub(super) struct XhttpTarget {
 
 impl XhttpTarget {
     pub(super) fn full_uri(&self) -> String {
-        format!(
-            "{}://{}{}/{}",
-            self.scheme, self.authority, self.base_path, self.session_id,
-        )
+        format!("{}://{}{}/{}", self.scheme, self.authority, self.base_path, self.session_id,)
     }
 
     /// Packet-up uplink POST URL: appends the per-packet `seq` to
@@ -343,8 +340,7 @@ pub(super) fn generate_session_id() -> Result<String> {
     // URL-safe alphanumeric. Bias from `% 62` is negligible at
     // these lengths and gives a strict subset of `is_valid_session_id`
     // on the server side.
-    const ALPHABET: &[u8; 62] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const ALPHABET: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let id: String = raw
         .iter()
         .map(|byte| char::from(ALPHABET[(*byte as usize) % ALPHABET.len()]))

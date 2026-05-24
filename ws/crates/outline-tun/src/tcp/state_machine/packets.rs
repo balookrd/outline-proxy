@@ -251,7 +251,10 @@ pub(in crate::tcp) fn decode_client_window(packet: &ParsedTcpPacket, scale: u8) 
     }
 }
 
-pub(in crate::tcp) fn update_client_send_window(state: &mut TcpFlowState, packet: &ParsedTcpPacket) {
+pub(in crate::tcp) fn update_client_send_window(
+    state: &mut TcpFlowState,
+    packet: &ParsedTcpPacket,
+) {
     let decoded_window = decode_client_window(packet, state.client_window_scale);
     let should_update = seq_gt(packet.sequence_number, state.client_window_update_seq)
         || (packet.sequence_number == state.client_window_update_seq

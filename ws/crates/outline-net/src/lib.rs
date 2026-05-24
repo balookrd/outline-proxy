@@ -73,8 +73,7 @@ async fn connect_tcp_socket_with_fwmark(
             // Connection in progress; writable() below will signal completion.
         },
         Err(e) => {
-            return Err(e)
-                .with_context(|| format!("failed to connect TCP socket to {addr}"));
+            return Err(e).with_context(|| format!("failed to connect TCP socket to {addr}"));
         },
     }
     let stream =
@@ -101,10 +100,7 @@ async fn connect_tcp_socket_with_fwmark(
     bail!("fwmark is only supported on Linux")
 }
 
-pub fn bind_udp_socket(
-    bind_addr: SocketAddr,
-    fwmark: Option<u32>,
-) -> Result<std::net::UdpSocket> {
+pub fn bind_udp_socket(bind_addr: SocketAddr, fwmark: Option<u32>) -> Result<std::net::UdpSocket> {
     let socket =
         Socket::new(Domain::for_address(bind_addr), Type::DGRAM, Some(SocketProtocol::UDP))
             .context("failed to create UDP socket")?;

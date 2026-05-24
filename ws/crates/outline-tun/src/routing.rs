@@ -33,10 +33,7 @@ pub struct TunRouting {
 #[derive(Clone)]
 pub enum TunRoute {
     /// Forward this flow through the named group's uplink manager.
-    Group {
-        name: Arc<str>,
-        manager: UplinkManager,
-    },
+    Group { name: Arc<str>, manager: UplinkManager },
     /// Forward via a local socket (with optional SO_MARK to escape the TUN
     /// routing loop). The TUN engine opens a plain TCP/UDP connection to the
     /// destination, relays data bidirectionally, and synthesises IP response
@@ -54,7 +51,12 @@ impl TunRouting {
         direct_fwmark: Option<u32>,
     ) -> Self {
         let default_group = registry.default_group().clone();
-        Self { registry, routing, default_group, direct_fwmark }
+        Self {
+            registry,
+            routing,
+            default_group,
+            direct_fwmark,
+        }
     }
 
     /// Test-only helper: wrap a single [`UplinkManager`] as the sole group,
@@ -92,9 +94,7 @@ impl TunRouting {
         fallback: Option<RouteTarget>,
     ) -> TunRoute {
         match primary {
-            RouteTarget::Direct => {
-                TunRoute::Direct { fwmark: self.direct_fwmark }
-            },
+            RouteTarget::Direct => TunRoute::Direct { fwmark: self.direct_fwmark },
             RouteTarget::Drop => TunRoute::Drop { reason: "policy_drop" },
             RouteTarget::Group(name) => {
                 let Some(manager) = self.registry.group_by_name(&name) else {
@@ -112,16 +112,13 @@ impl TunRouting {
                 // healthy uplinks at resolve time; Direct/Drop primaries are
                 // terminal decisions.
                 if fallback.is_some()
-                    && !manager
-                        .has_any_healthy(outline_uplink::TransportKind::Udp)
-                        .await
-                    && !manager
-                        .has_any_healthy(outline_uplink::TransportKind::Tcp)
-                        .await
-                    && let Some(fb) = fallback {
-                        // Recurse once — fallback doesn't chain further.
-                        return Box::pin(self.materialize_target(fb, None)).await;
-                    }
+                    && !manager.has_any_healthy(outline_uplink::TransportKind::Udp).await
+                    && !manager.has_any_healthy(outline_uplink::TransportKind::Tcp).await
+                    && let Some(fb) = fallback
+                {
+                    // Recurse once — fallback doesn't chain further.
+                    return Box::pin(self.materialize_target(fb, None)).await;
+                }
                 TunRoute::Group { name, manager: manager.clone() }
             },
         }

@@ -187,10 +187,7 @@ fn is_none_strategy(s: &str) -> bool {
 /// `None` when the uplink is not XHTTP (the configured field is also
 /// `None` in that case, so the dashboard shows nothing on the submode
 /// pill).
-fn effective_submode(
-    configured: Option<&str>,
-    block_active: bool,
-) -> Option<String> {
+fn effective_submode(configured: Option<&str>, block_active: bool) -> Option<String> {
     let cfg = configured?;
     if block_active && cfg == "stream-one" {
         Some("packet-up".to_string())
@@ -285,14 +282,10 @@ fn build_uplink_topology(
         uplink.tcp_xhttp_submode_block_remaining_ms.is_some_and(|ms| ms > 0);
     let udp_xhttp_submode_downgrade_active =
         uplink.udp_xhttp_submode_block_remaining_ms.is_some_and(|ms| ms > 0);
-    let tcp_xhttp_submode_effective = effective_submode(
-        uplink.tcp_xhttp_submode.as_deref(),
-        tcp_xhttp_submode_downgrade_active,
-    );
-    let udp_xhttp_submode_effective = effective_submode(
-        uplink.udp_xhttp_submode.as_deref(),
-        udp_xhttp_submode_downgrade_active,
-    );
+    let tcp_xhttp_submode_effective =
+        effective_submode(uplink.tcp_xhttp_submode.as_deref(), tcp_xhttp_submode_downgrade_active);
+    let udp_xhttp_submode_effective =
+        effective_submode(uplink.udp_xhttp_submode.as_deref(), udp_xhttp_submode_downgrade_active);
     ControlUplinkTopology {
         index: uplink.index,
         name: uplink.name.clone(),
@@ -345,12 +338,8 @@ fn build_uplink_topology(
                 // stream-one collapses to packet-up. Reuses the existing
                 // helper so the per-wire view is consistent with the
                 // legacy top-level fields.
-                let tcp_sub_dg = wire
-                    .tcp_xhttp_submode_block_remaining_ms
-                    .is_some_and(|ms| ms > 0);
-                let udp_sub_dg = wire
-                    .udp_xhttp_submode_block_remaining_ms
-                    .is_some_and(|ms| ms > 0);
+                let tcp_sub_dg = wire.tcp_xhttp_submode_block_remaining_ms.is_some_and(|ms| ms > 0);
+                let udp_sub_dg = wire.udp_xhttp_submode_block_remaining_ms.is_some_and(|ms| ms > 0);
                 let tcp_sub_eff = effective_submode(wire.tcp_xhttp_submode.as_deref(), tcp_sub_dg);
                 let udp_sub_eff = effective_submode(wire.udp_xhttp_submode.as_deref(), udp_sub_dg);
                 WireChainEntry {

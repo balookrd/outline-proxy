@@ -78,8 +78,18 @@ async fn xhttp_h1_client_round_trip_through_mock_server() -> Result<()> {
     let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
 
-    let (mut stream, issued, _ack_prefix_echo, _symmetric_replay_echo) =
-        super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH1, None, false, None, false, false, 0).await?;
+    let (mut stream, issued, _ack_prefix_echo, _symmetric_replay_echo) = super::connect_xhttp(
+        &cache,
+        &base_url,
+        TransportMode::XhttpH1,
+        None,
+        false,
+        None,
+        false,
+        false,
+        0,
+    )
+    .await?;
     // The mock does not echo `X-Outline-Session`; the resume token
     // path is exercised in the cross-repo end-to-end test against
     // a real outline-ss-rust server.
@@ -128,8 +138,18 @@ async fn xhttp_h1_silently_coerces_stream_one_to_packet_up() -> Result<()> {
     let base_url: Url = format!("http://{listen_addr}/xh?mode=stream-one").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
 
-    let result =
-        super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH1, None, false, None, false, false, 0).await;
+    let result = super::connect_xhttp(
+        &cache,
+        &base_url,
+        TransportMode::XhttpH1,
+        None,
+        false,
+        None,
+        false,
+        false,
+        0,
+    )
+    .await;
     let err = match result {
         Ok(_) => panic!("expected dial failure (no server), got an open session"),
         Err(error) => error,
@@ -164,10 +184,7 @@ where
     }
 }
 
-async fn wait_for_posts(
-    captured: &Arc<Mutex<CapturedPosts>>,
-    expected: usize,
-) -> CapturedPosts {
+async fn wait_for_posts(captured: &Arc<Mutex<CapturedPosts>>, expected: usize) -> CapturedPosts {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         {
@@ -240,10 +257,7 @@ async fn handle(
             };
             captured.lock().seqs.push(seq);
             captured.lock().bodies.push(body_bytes);
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .body(empty_body())
-                .unwrap())
+            Ok(Response::builder().status(StatusCode::OK).body(empty_body()).unwrap())
         },
         _ => Ok(Response::builder()
             .status(StatusCode::METHOD_NOT_ALLOWED)

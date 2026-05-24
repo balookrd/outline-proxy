@@ -6,13 +6,12 @@ use tracing::{debug, info, warn};
 
 use outline_metrics as metrics;
 use outline_transport::{
-    TcpReader, TcpWriter,
-    TcpShadowsocksReader, TcpShadowsocksWriter, UplinkConnectionBinding, UpstreamTransportGuard,
-    connect_shadowsocks_tcp_with_source,
+    TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter, UplinkConnectionBinding,
+    UpstreamTransportGuard, connect_shadowsocks_tcp_with_source,
 };
-use socks5_proto::TargetAddr;
 use outline_uplink::UplinkTransport;
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
+use socks5_proto::TargetAddr;
 
 pub(super) async fn select_tcp_candidate_and_connect(
     uplinks: &UplinkManager,
@@ -109,7 +108,8 @@ async fn connect_tcp_uplink(
 ) -> Result<(TcpWriter, TcpReader)> {
     let cache = uplinks.dns_cache();
     if candidate.uplink.transport == UplinkTransport::Shadowsocks {
-        let stream = connect_shadowsocks_tcp_with_source(cache,
+        let stream = connect_shadowsocks_tcp_with_source(
+            cache,
             candidate
                 .uplink
                 .tcp_addr
@@ -151,7 +151,7 @@ async fn connect_tcp_uplink(
                     // Fall through to the WS path below; effective_tcp_mode
                     // will now return H2 for the rest of the downgrade window,
                     // and connect_transport handles H2 → H1.
-                }
+                },
             }
         }
     }

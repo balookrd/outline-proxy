@@ -8,20 +8,20 @@ use tokio::sync::{OnceCell, mpsc};
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
+use outline_uplink::UplinkRegistry;
 use socks5_proto::{
     SOCKS_REP_SUCCESS, TargetAddr, UdpFragmentReassembler, build_udp_packet, parse_udp_request,
     send_reply, socket_addr_to_target,
 };
-use outline_uplink::UplinkRegistry;
 
 use crate::client_io::ClientIo;
 use crate::proxy::ProxyConfig;
 
-use super::group::{AssocGroupMap, UdpResponse, resolve_group_context};
 use super::dispatch::{
     MAX_CLIENT_UDP_PACKET_SIZE, MAX_UDP_RELAY_PACKET_SIZE, send_tunneled_udp, send_udp_direct,
     udp_metric_payload_len,
 };
+use super::group::{AssocGroupMap, UdpResponse, resolve_group_context};
 use super::routing::{
     UdpPacketRoute, UdpRouteCache, new_udp_route_cache, resolve_udp_packet_route,
     routing_table_active,

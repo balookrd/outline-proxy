@@ -16,7 +16,7 @@ use outline_transport::{
     connect_shadowsocks_tcp_with_source, connect_shadowsocks_udp_with_source, connect_transport,
 };
 
-use crate::config::{UplinkConfig, UplinkTransport, TransportMode};
+use crate::config::{TransportMode, UplinkConfig, UplinkTransport};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_ws_probe(
@@ -36,10 +36,8 @@ pub(super) async fn run_ws_probe(
     // Shadowsocks data immediately), so we do not send a ping here.  The
     // data-path is checked by the http / dns sub-probes that follow.
     let mut ws_stream = connect_transport(
-        TransportDialOptions::new(cache, url, mode, "probe_ws").with_network(DialNetworkOptions {
-            fwmark,
-            ipv6_first: false,
-        }),
+        TransportDialOptions::new(cache, url, mode, "probe_ws")
+            .with_network(DialNetworkOptions { fwmark, ipv6_first: false }),
     )
     .await
     .with_context(|| TransportOperation::Connect {
@@ -91,7 +89,7 @@ pub(super) async fn run_quic_handshake_probe(
             return Err(anyhow!(
                 "raw-QUIC probe requested for shadowsocks uplink {uplink_name}; this transport does not use a URL"
             ));
-        }
+        },
     };
     let _conn = outline_transport::quic::connect_quic_uplink(
         cache,

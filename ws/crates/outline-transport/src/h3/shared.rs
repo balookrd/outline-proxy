@@ -26,14 +26,10 @@ use tokio::time::timeout;
 use tracing::info;
 use url::Url;
 
-use crate::{
-    AbortOnDrop, TransportStream,
-    bind_addr_for, bind_udp_socket,
-    DnsCache,
-};
 use crate::shared_cache::{
     ConnCloseLog, SharedConnectionRegistry, classify_by_substrings, log_conn_close,
 };
+use crate::{AbortOnDrop, DnsCache, TransportStream, bind_addr_for, bind_udp_socket};
 
 use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri, websocket_path};
 
@@ -167,8 +163,7 @@ impl SharedH3Connection {
             // Capability advertise for Ack-Prefix Protocol v1; mirrors the
             // h2 path. Server emits the 14-byte control frame (SS-WS path
             // only, in v1) when it sees this header AND the resume hits.
-            request_builder =
-                request_builder.header(crate::resumption::ACK_PREFIX_HEADER, "1");
+            request_builder = request_builder.header(crate::resumption::ACK_PREFIX_HEADER, "1");
         }
         if symmetric_replay_requested {
             // v2 Symmetric Downlink Replay capability advertise. Mirror
@@ -179,14 +174,11 @@ impl SharedH3Connection {
         }
         // v2 client-reported downstream-acked offset header.
         if symmetric_replay_requested && client_acked_offset > 0 {
-            request_builder = request_builder.header(
-                crate::resumption::DOWN_ACKED_HEADER,
-                client_acked_offset.to_string(),
-            );
+            request_builder = request_builder
+                .header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
         }
-        let mut request: Request<()> = request_builder
-            .body(())
-            .expect("request builder never fails");
+        let mut request: Request<()> =
+            request_builder.body(()).expect("request builder never fails");
         if let Some(profile) = profile {
             crate::fingerprint_profile::apply(
                 profile,
@@ -425,7 +417,12 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         true
     }
 
-    fn make_key(&self, server_name: &str, server_port: u16, fwmark: Option<u32>) -> H3ConnectionKey {
+    fn make_key(
+        &self,
+        server_name: &str,
+        server_port: u16,
+        fwmark: Option<u32>,
+    ) -> H3ConnectionKey {
         H3ConnectionKey::new(server_name, server_port, fwmark)
     }
 
@@ -446,7 +443,12 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         server_port: u16,
         path: &str,
     ) -> Result<TransportStream> {
-        let (ws, issued_session_id, ack_prefix_advertised_by_server, symmetric_replay_advertised_by_server) = conn
+        let (
+            ws,
+            issued_session_id,
+            ack_prefix_advertised_by_server,
+            symmetric_replay_advertised_by_server,
+        ) = conn
             .open_websocket(
                 server_name,
                 server_port,
@@ -502,10 +504,16 @@ pub(crate) async fn connect_websocket_h3(
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.
-        crate::shared_dial::connect_ws_reused(&dialer, cache, host, port, &path, fwmark, ipv6_first, source).await
+        crate::shared_dial::connect_ws_reused(
+            &dialer, cache, host, port, &path, fwmark, ipv6_first, source,
+        )
+        .await
     } else {
         // Probes never share connections; resolve DNS upfront and try each address.
-        crate::shared_dial::connect_ws_probe(&dialer, cache, host, port, &path, fwmark, ipv6_first, source).await
+        crate::shared_dial::connect_ws_probe(
+            &dialer, cache, host, port, &path, fwmark, ipv6_first, source,
+        )
+        .await
     }
 }
 

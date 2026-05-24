@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use bytes::Bytes;
 use http::header::{AUTHORIZATION, CONNECTION, CONTENT_TYPE, HOST};
 use http::{Method, Request, StatusCode};
@@ -70,22 +70,21 @@ async fn send_inner(
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("control_url has no host"))?
         .to_string();
-    let port = url
-        .port_or_known_default()
-        .unwrap_or(if url.scheme() == "https" { 443 } else { 80 });
+    let port =
+        url.port_or_known_default()
+            .unwrap_or(if url.scheme() == "https" { 443 } else { 80 });
     let path_and_query = match url.query() {
         Some(query) => format!("{}?{query}", url.path()),
         None => url.path().to_string(),
     };
 
     let body_bytes = Bytes::from(body.unwrap_or_default());
-    let host_header = if (url.scheme() == "https" && port == 443)
-        || (url.scheme() == "http" && port == 80)
-    {
-        host.clone()
-    } else {
-        format!("{host}:{port}")
-    };
+    let host_header =
+        if (url.scheme() == "https" && port == 443) || (url.scheme() == "http" && port == 80) {
+            host.clone()
+        } else {
+            format!("{host}:{port}")
+        };
     let request = Request::builder()
         .method(method)
         .uri(&path_and_query)
@@ -128,10 +127,7 @@ where
     let _driver = AbortOnDrop::new(tokio::spawn(async move {
         let _ = conn.await;
     }));
-    let response = sender
-        .send_request(request)
-        .await
-        .context("control request failed")?;
+    let response = sender.send_request(request).await.context("control request failed")?;
     let status = response.status();
     let body = response
         .into_body()

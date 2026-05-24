@@ -8,9 +8,7 @@
 
 use super::target_wire_for_fallback_probe;
 
-use crate::config::{
-    CipherKind, FallbackTransport, TransportMode, UplinkConfig, UplinkTransport,
-};
+use crate::config::{CipherKind, FallbackTransport, TransportMode, UplinkConfig, UplinkTransport};
 
 fn vless_xhttp_primary() -> UplinkConfig {
     UplinkConfig {
@@ -21,9 +19,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
         udp_ws_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
-        vless_xhttp_url: Some(
-            url::Url::parse("https://cdn.example.com/SECRET/xhttp").unwrap(),
-        ),
+        vless_xhttp_url: Some(url::Url::parse("https://cdn.example.com/SECRET/xhttp").unwrap()),
         vless_mode: TransportMode::XhttpH3,
         tcp_addr: None,
         udp_addr: None,
@@ -103,10 +99,7 @@ fn wire_view_first_fallback_is_synthetic_uplink_with_fallback_fields() {
     let view = cfg.wire_view(1).expect("first fallback view exists");
     assert_eq!(view.transport, UplinkTransport::Ws);
     assert_eq!(view.tcp_mode, TransportMode::WsH2);
-    assert_eq!(
-        view.tcp_ws_url.as_ref().unwrap().as_str(),
-        "wss://ws.example.com/tcp",
-    );
+    assert_eq!(view.tcp_ws_url.as_ref().unwrap().as_str(), "wss://ws.example.com/tcp",);
     assert!(view.fallbacks.is_empty());
     // Identity fields inherited from parent for log/metric attribution.
     assert_eq!(view.name, "edge");
