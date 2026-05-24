@@ -6,7 +6,7 @@ use super::super::args::Args;
 use super::super::schema::{ConfigFile, LoadBalancingSection, OutlineSection, ProbeSection, UplinkGroupSection};
 use super::balancing::load_balancing_config;
 use super::probe::load_probe_config;
-use super::uplinks::load_uplinks;
+use super::uplinks::{cli_uplink_override_requested, load_uplinks};
 
 pub(super) fn load_groups(
     outline: Option<&OutlineSection>,
@@ -71,20 +71,7 @@ pub(super) fn load_groups(
     // Uplinks in new-shape config must live under `outline.uplinks` and carry
     // a `group` field. CLI override still lands everything in the first group
     // (single-uplink CLI convenience).
-    let cli_override_requested = args.tcp_ws_url.is_some()
-        || args.transport.is_some()
-        || args.tcp_mode.is_some()
-        || args.udp_ws_url.is_some()
-        || args.udp_mode.is_some()
-        || args.vless_ws_url.is_some()
-        || args.vless_mode.is_some()
-        || args.tcp_addr.is_some()
-        || args.udp_addr.is_some()
-        || args.method.is_some()
-        || args.password.is_some()
-        || args.fwmark.is_some()
-        || args.ipv6_first.is_some();
-    if cli_override_requested {
+    if cli_uplink_override_requested(args) {
         bail!(
             "CLI uplink overrides (--tcp-ws-url / --password / …) are not supported together \
              with [[uplink_group]]: declare the uplink in `[[uplinks]]` instead"
