@@ -1,4 +1,5 @@
-use std::net::{Ipv4Addr, SocketAddr};
+use std::collections::VecDeque;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -633,6 +634,76 @@ async fn tun_tcp_invalid_rst_in_window_is_challenge_acked() {
 }
 
 #[tokio::test]
+async fn tun_tcp_flow_limit_uses_activity_eviction_index() {
+    let manager = build_test_manager("ws://127.0.0.1:1/".parse().unwrap()).await;
+    let (writer, _capture) = TunCapture::new().await;
+    let engine = super::TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager.clone()),
+        2,
+        Duration::from_secs(60),
+        test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
+    let now = Instant::now();
+    let first_key = test_flow_key(40010);
+    let second_key = test_flow_key(40011);
+    let third_key = test_flow_key(40012);
+
+    engine
+        .insert_flow(
+            first_key.clone(),
+            Arc::new(Mutex::new(eviction_test_flow_state(
+                &engine,
+                &manager,
+                first_key.clone(),
+                1,
+                now,
+            ))),
+        )
+        .await
+        .unwrap();
+    engine
+        .insert_flow(
+            second_key.clone(),
+            Arc::new(Mutex::new(eviction_test_flow_state(
+                &engine,
+                &manager,
+                second_key.clone(),
+                2,
+                now + Duration::from_millis(1),
+            ))),
+        )
+        .await
+        .unwrap();
+
+    let first_flow = engine.lookup_flow(&first_key).await.unwrap();
+    {
+        let mut state = first_flow.lock().await;
+        state.timestamps.last_seen = now + Duration::from_millis(2);
+        engine.record_flow_activity(&state);
+    }
+
+    engine
+        .insert_flow(
+            third_key.clone(),
+            Arc::new(Mutex::new(eviction_test_flow_state(
+                &engine,
+                &manager,
+                third_key.clone(),
+                3,
+                now + Duration::from_millis(3),
+            ))),
+        )
+        .await
+        .unwrap();
+
+    assert!(engine.inner.flows.contains_key(&first_key));
+    assert!(!engine.inner.flows.contains_key(&second_key));
+    assert!(engine.inner.flows.contains_key(&third_key));
+}
+
+#[tokio::test]
 async fn tun_tcp_unexpected_syn_in_established_flow_is_challenge_acked() {
     let upstream = TestTcpUpstream::start().await;
     let manager = build_test_manager(upstream.url()).await;
@@ -1127,6 +1198,89 @@ async fn new_flow_is_removed_when_synack_write_fails() {
 
     let _ = std::fs::remove_file(path);
 }
+
+fn test_flow_key(client_port: u16) -> TcpFlowKey {
+    TcpFlowKey {
+        version: IpVersion::V4,
+        client_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+        client_port,
+        remote_ip: IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+        remote_port: 443,
+    }
+}
+
+fn eviction_test_flow_state(
+    engine: &super::TunTcpEngine,
+    manager: &UplinkManager,
+    key: TcpFlowKey,
+    id: u64,
+    last_seen: Instant,
+) -> super::super::state_machine::TcpFlowState {
+    let (close_signal, _close_rx) = tokio::sync::watch::channel(false);
+    super::super::state_machine::TcpFlowState {
+        id,
+        key,
+        routing: super::super::state_machine::FlowRouting {
+            uplink_index: 0,
+            uplink_name: Arc::from("test"),
+            group_name: Arc::from(manager.group_name()),
+            manager: manager.clone(),
+            route: crate::TunRoute::Group {
+                name: Arc::from("test"),
+                manager: manager.clone(),
+            },
+            upstream_writer: None,
+        },
+        signals: super::super::state_machine::FlowControlSignals {
+            close_signal,
+            scheduler: Arc::clone(&engine.inner.scheduler),
+            idle_timeout: engine.inner.idle_timeout,
+        },
+        status: TcpFlowStatus::Established,
+        rcv_nxt: 100,
+        client_window_scale: 0,
+        client_sack_permitted: false,
+        client_max_segment_size: None,
+        timestamps_enabled: false,
+        recent_client_timestamp: None,
+        server_timestamp_offset: 0,
+        client_window: 4096,
+        client_window_end: 5096,
+        client_window_update_seq: 100,
+        client_window_update_ack: 1000,
+        server_seq: 1000,
+        last_client_ack: 1000,
+        duplicate_ack_count: 0,
+        fast_recovery_end: None,
+        receive_window_capacity: 262_144,
+        smoothed_rtt: None,
+        rttvar: super::super::TCP_INITIAL_RTO / 2,
+        retransmission_timeout: super::super::TCP_INITIAL_RTO,
+        congestion_window: super::super::MAX_SERVER_SEGMENT_PAYLOAD
+            * super::super::TCP_INITIAL_CWND_SEGMENTS,
+        slow_start_threshold: super::super::TCP_SERVER_RECV_WINDOW_CAPACITY,
+        pending_server_data: VecDeque::new(),
+        backlog_limit_exceeded_since: None,
+        last_ack_progress_at: last_seen,
+        pending_client_data: VecDeque::new(),
+        unacked_server_segments: VecDeque::new(),
+        sack_scoreboard: Vec::new(),
+        pending_client_segments: VecDeque::new(),
+        server_fin_pending: false,
+        zero_window_probe_backoff: super::super::TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL,
+        next_zero_window_probe_at: None,
+        keepalive_probes_sent: 0,
+        last_keepalive_probe_at: None,
+        reported: super::super::state_machine::ReportedFlowMetrics::default(),
+        timestamps: super::super::state_machine::FlowTimestamps {
+            created_at: last_seen,
+            status_since: last_seen,
+            last_seen,
+        },
+        next_scheduled_deadline: None,
+    }
+}
+
 pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager {
     UplinkManager::new_for_test(
         "test",

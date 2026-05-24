@@ -80,6 +80,7 @@ impl TunTcpEngine {
                                 return;
                             }
                             state.timestamps.last_seen = Instant::now();
+                            engine.record_flow_activity(&state);
                             state.pending_server_data.push_back(chunk);
                             let flush = flush_server_output(&mut state);
                             commit_flow_changes(&mut state, &engine.inner.tcp);

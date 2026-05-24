@@ -81,6 +81,7 @@ impl TunTcpEngine {
         }
 
         absorb_accepted_client_packet(&mut state, &packet);
+        self.record_flow_activity(&state);
         commit_flow_changes(&mut state, &self.inner.tcp);
 
         if state.status == TcpFlowStatus::SynReceived {
