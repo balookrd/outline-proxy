@@ -1052,6 +1052,8 @@ If `[control]` is configured the process serves mutating endpoints on a
 - `GET /control/topology` - instance/group/uplink topology for dashboards
 - `GET /control/summary` - compact group/uplink health counters
 - `POST /control/activate` - JSON activation API for UI click actions
+- `GET`/`POST`/`PATCH`/`DELETE /control/uplinks` - stage `[[outline.uplinks]]` edits in the config file
+- `POST /control/apply` - hot-apply staged uplink edits without a process restart
 - `POST /switch` - manual active-uplink override
 
 There is no anonymous access path. Requests without a matching
@@ -1128,6 +1130,11 @@ logic as `/switch`:
   "transport": "tcp"
 }
 ```
+
+`/control/uplinks` mutates the canonical `[[outline.uplinks]]` array in the
+on-disk TOML. Mutation responses include `apply_required: true` when
+`/control/apply` can activate the staged change; `restart_required` is reserved
+for control states that cannot hot-apply.
 
 Examples:
 

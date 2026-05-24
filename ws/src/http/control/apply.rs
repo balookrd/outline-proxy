@@ -1,4 +1,4 @@
-//! `/control/apply` — hot-apply pending `[[uplink_group.uplinks]]` changes.
+//! `/control/apply` — hot-apply pending `[[outline.uplinks]]` changes.
 //!
 //! Re-runs [`crate::config::load_config`] against the on-disk file (with
 //! the same CLI `Args` the process was launched with, so CLI overrides

@@ -98,7 +98,28 @@ pub(super) struct MutationResponse {
     pub(super) group: String,
     pub(super) name: String,
     pub(super) action: &'static str,
+    /// Whether clients should call `/control/apply` to activate this
+    /// staged config-file change without restarting the process.
+    pub(super) apply_required: bool,
+    /// Back-compat activation hint for control states that cannot hot-apply.
     pub(super) restart_required: bool,
+}
+
+impl MutationResponse {
+    pub(super) fn staged(
+        group: String,
+        name: String,
+        action: &'static str,
+        hot_apply_available: bool,
+    ) -> Self {
+        Self {
+            group,
+            name,
+            action,
+            apply_required: hot_apply_available,
+            restart_required: !hot_apply_available,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

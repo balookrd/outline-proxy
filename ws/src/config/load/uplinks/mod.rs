@@ -122,7 +122,7 @@ pub(super) fn load_uplinks(
         .collect()
 }
 
-/// Validate a single `[[uplink_group.uplinks]]` entry the same way the
+/// Validate a single `[[outline.uplinks]]` entry the same way the
 /// startup loader would. Used by `/control/uplinks` CRUD endpoints to
 /// reject invalid payloads before writing them to the config file.
 #[cfg(feature = "control")]

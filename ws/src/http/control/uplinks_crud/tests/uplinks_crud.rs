@@ -5,7 +5,7 @@ use crate::config::validate_uplink_section;
 use super::mutate::{
     count_uplinks_in_group, find_group_mut, find_outline_uplink_index, get_or_init_outline_uplinks,
 };
-use super::payload::{FallbackPayload, UplinkPayload};
+use super::payload::{FallbackPayload, MutationResponse, UplinkPayload};
 use super::payload::{merge_patch_into_table, payload_to_section, payload_to_table, table_to_json};
 
 fn sample_config() -> &'static str {
@@ -131,6 +131,25 @@ fn payload_round_trip_validates_as_section() {
     let section = payload_to_section(&payload, Some("core")).unwrap();
     assert_eq!(section.name.as_deref(), Some("u9"));
     validate_uplink_section(&section, 0).unwrap();
+}
+
+#[test]
+fn mutation_response_reports_apply_or_restart_activation_path() {
+    let with_apply =
+        serde_json::to_value(MutationResponse::staged("core".into(), "u1".into(), "updated", true))
+            .unwrap();
+    assert_eq!(with_apply["apply_required"], true);
+    assert_eq!(with_apply["restart_required"], false);
+
+    let without_apply = serde_json::to_value(MutationResponse::staged(
+        "core".into(),
+        "u1".into(),
+        "updated",
+        false,
+    ))
+    .unwrap();
+    assert_eq!(without_apply["apply_required"], false);
+    assert_eq!(without_apply["restart_required"], true);
 }
 
 #[test]
