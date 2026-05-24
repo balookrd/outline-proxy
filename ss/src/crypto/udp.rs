@@ -67,7 +67,8 @@ pub fn decrypt_udp_packet_with_hint(
     }
 
     if let Some(index) = preferred_user_index.filter(|&index| index < users.len())
-        && let Some(udp_packet) = try_decrypt_udp_packet_for_user(&users[index], index, packet, cache)?
+        && let Some(udp_packet) =
+            try_decrypt_udp_packet_for_user(&users[index], index, packet, cache)?
     {
         return Ok((udp_packet, index));
     }
@@ -192,7 +193,7 @@ fn try_decrypt_udp_packet_for_user(
                 let mut out = std::mem::take(&mut *buf);
                 out.truncate(len);
                 Some(out)
-            }
+            },
             Err(_) => None,
         }
     });

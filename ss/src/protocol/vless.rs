@@ -101,11 +101,7 @@ impl VlessUser {
     /// for SS, masked UUIDs for VLESS) that can't be cross-referenced.
     pub fn new(id: String, label: Arc<str>, fwmark: Option<u32>) -> Result<Self, VlessError> {
         let parsed = parse_uuid(&id)?;
-        Ok(Self {
-            id: parsed,
-            label,
-            fwmark,
-        })
+        Ok(Self { id: parsed, label, fwmark })
     }
 
     pub const fn id_bytes(&self) -> &[u8; 16] {
@@ -216,7 +212,13 @@ pub fn parse_request(input: &[u8]) -> Result<Option<VlessRequest>, VlessError> {
         other => return Err(VlessError::UnsupportedAddressType(other)),
     };
 
-    Ok(Some(VlessRequest { user_id, command, target, consumed, addons }))
+    Ok(Some(VlessRequest {
+        user_id,
+        command,
+        target,
+        consumed,
+        addons,
+    }))
 }
 
 /// Walks a VLESS request Addons TLV block and pulls out the

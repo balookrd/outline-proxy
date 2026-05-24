@@ -118,9 +118,7 @@ impl NatTable {
     /// SS-UDP-over-WS resume / park paths that only want to inspect
     /// already-live state.
     pub(crate) fn try_get(&self, key: &NatKey) -> Option<Arc<NatEntry>> {
-        self.entries
-            .get(key)
-            .and_then(|cell| cell.get().cloned())
+        self.entries.get(key).and_then(|cell| cell.get().cloned())
     }
 
     /// Returns the existing NAT entry for `key`, or creates a new one: binds a

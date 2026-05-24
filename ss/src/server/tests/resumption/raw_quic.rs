@@ -57,10 +57,7 @@ async fn bind_raw_quic_test_server(
         .datagram_send_buffer_size(1 << 20);
     server_config.transport_config(Arc::new(transport));
     let endpoint = quinn::Endpoint::server(server_config, addr)?;
-    Ok(H3WebSocketServer::<H3Transport>::from_endpoint(
-        endpoint,
-        H3WsConfig::default(),
-    ))
+    Ok(H3WebSocketServer::<H3Transport>::from_endpoint(endpoint, H3WsConfig::default()))
 }
 
 fn raw_quic_client_config(cert_der: CertificateDer<'static>) -> Result<quinn::ClientConfig> {
@@ -176,12 +173,8 @@ fn parse_vless_raw_quic_tcp_response(buf: &[u8]) -> Result<(ParsedVlessResponse,
 /// enabled. Returns the listen address, the lone `VlessUser`, the
 /// CA cert needed by the client, and a JoinHandle that aborts the
 /// background `serve_h3_server` task on drop.
-async fn spawn_raw_quic_vless_resumption_server() -> Result<(
-    SocketAddr,
-    VlessUser,
-    CertificateDer<'static>,
-    JoinHandle<Result<()>>,
-)> {
+async fn spawn_raw_quic_vless_resumption_server()
+-> Result<(SocketAddr, VlessUser, CertificateDer<'static>, JoinHandle<Result<()>>)> {
     use super::super::sample_config;
 
     let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
@@ -199,7 +192,11 @@ async fn spawn_raw_quic_vless_resumption_server() -> Result<(
         Arc::clone(&metrics),
     ));
 
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let raw_vless_users: Arc<[VlessUser]> = Arc::from(vec![vless_user.clone()].into_boxed_slice());
     let raw_vless_candidates: Arc<[Arc<str>]> =
         Arc::from(vec![vless_user.label_arc()].into_boxed_slice());
@@ -268,8 +265,7 @@ async fn vless_raw_quic_resume_hit_skips_fresh_upstream() -> Result<()> {
     let _ = vless_user; // silence unused: identity is encoded in the request UUID
 
     // ── Session #1: fresh raw-QUIC dial with `RESUME_CAPABLE` ─────────
-    let mut endpoint_1 =
-        quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    let mut endpoint_1 = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
     endpoint_1.set_default_client_config(raw_quic_client_config(cert_der.clone())?);
     let connection_1 = endpoint_1.connect(listen_addr, "localhost")?.await?;
     let (mut send_1, mut recv_1) = connection_1.open_bi().await?;
@@ -329,8 +325,7 @@ async fn vless_raw_quic_resume_hit_skips_fresh_upstream() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // ── Session #2: fresh raw-QUIC dial with `RESUME_ID` ──────────────
-    let mut endpoint_2 =
-        quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    let mut endpoint_2 = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
     endpoint_2.set_default_client_config(raw_quic_client_config(cert_der)?);
     let connection_2 = endpoint_2.connect(listen_addr, "localhost")?.await?;
     let (mut send_2, mut recv_2) = connection_2.open_bi().await?;
@@ -346,13 +341,11 @@ async fn vless_raw_quic_resume_hit_skips_fresh_upstream() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("VLESS resume response: stream closed early"))?;
     let (response, header_len) = parse_vless_raw_quic_tcp_response(&header_buf[..n])?;
     assert_eq!(
-        response.resume_result, Some(0x00),
+        response.resume_result,
+        Some(0x00),
         "expected RESUME_RESULT=Hit (0x00) in raw-QUIC resume response"
     );
-    assert!(
-        response.session_id.is_some(),
-        "resume hit must still echo a SESSION_ID"
-    );
+    assert!(response.session_id.is_some(), "resume hit must still echo a SESSION_ID");
 
     let mut echoed = Vec::new();
     if header_len < n {

@@ -55,11 +55,8 @@ fn test_config() -> Config {
 #[test]
 fn renders_prometheus_metrics() {
     let metrics = Metrics::new(&test_config());
-    let session = metrics.open_websocket_session(
-        Transport::Tcp,
-        Protocol::Http2,
-        AppProtocol::Shadowsocks,
-    );
+    let session =
+        metrics.open_websocket_session(Transport::Tcp, Protocol::Http2, AppProtocol::Shadowsocks);
     metrics.record_websocket_binary_frame(
         Transport::Tcp,
         Protocol::Http2,
@@ -69,11 +66,7 @@ fn renders_prometheus_metrics() {
     );
     metrics.record_pong_deadline_disconnect(Transport::Tcp, AppProtocol::Shadowsocks);
     metrics.observe_ws_data_channel_fill(Transport::Tcp, AppProtocol::Shadowsocks, 7);
-    metrics.record_tcp_authenticated_session(
-        "default",
-        Protocol::Http2,
-        AppProtocol::Shadowsocks,
-    );
+    metrics.record_tcp_authenticated_session("default", Protocol::Http2, AppProtocol::Shadowsocks);
     metrics.record_tcp_connect(
         "default",
         Protocol::Http2,
@@ -144,15 +137,13 @@ fn no_cert_chain_metric_records_sni_label() {
     metrics.record_tls_handshake_no_cert_chain(None);
 
     let rendered = metrics.render_prometheus();
-    assert!(rendered.contains(
-        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"foo.example\"} 2"
-    ));
-    assert!(rendered.contains(
-        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"bar.example\"} 1"
-    ));
-    assert!(rendered.contains(
-        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"<none>\"} 1"
-    ));
+    assert!(
+        rendered.contains("outline_ss_tls_handshake_no_cert_chain_total{sni=\"foo.example\"} 2")
+    );
+    assert!(
+        rendered.contains("outline_ss_tls_handshake_no_cert_chain_total{sni=\"bar.example\"} 1")
+    );
+    assert!(rendered.contains("outline_ss_tls_handshake_no_cert_chain_total{sni=\"<none>\"} 1"));
 }
 
 #[test]
@@ -162,12 +153,8 @@ fn no_cert_chain_metric_sanitizes_invalid_input() {
     metrics.record_tls_handshake_no_cert_chain(Some(&"a".repeat(300))); // too long
 
     let rendered = metrics.render_prometheus();
-    assert!(rendered.contains(
-        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"<invalid>\"} 1"
-    ));
-    assert!(rendered.contains(
-        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"<long>\"} 1"
-    ));
+    assert!(rendered.contains("outline_ss_tls_handshake_no_cert_chain_total{sni=\"<invalid>\"} 1"));
+    assert!(rendered.contains("outline_ss_tls_handshake_no_cert_chain_total{sni=\"<long>\"} 1"));
 }
 
 #[test]
@@ -181,9 +168,7 @@ fn no_cert_chain_metric_caps_cardinality() {
     let rendered = metrics.render_prometheus();
     // The overflow bucket must be present, and the number of distinct
     // SNI labels must not exceed the cap by more than the racy slack.
-    assert!(rendered.contains(
-        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"<overflow>\"}"
-    ));
+    assert!(rendered.contains("outline_ss_tls_handshake_no_cert_chain_total{sni=\"<overflow>\"}"));
     let distinct_snis = rendered
         .lines()
         .filter(|l| l.starts_with("outline_ss_tls_handshake_no_cert_chain_total{sni="))
@@ -208,7 +193,9 @@ fn user_counters_increments_visible_in_render() {
     let counters = metrics.user_counters(&user);
     counters.tcp_in(AppProtocol::Vless, Protocol::Http3).increment(100);
     counters.tcp_out(AppProtocol::Vless, Protocol::Http3).increment(250);
-    counters.udp_out(AppProtocol::Shadowsocks, Protocol::Http3).increment(64);
+    counters
+        .udp_out(AppProtocol::Shadowsocks, Protocol::Http3)
+        .increment(64);
 
     let rendered = metrics.render_prometheus();
     assert!(rendered.contains(
@@ -239,9 +226,7 @@ fn orphan_downlink_v2_metrics_render() {
         "replay bytes counter missing or wrong value:\n{rendered}",
     );
     assert!(
-        rendered.contains(
-            "outline_ss_orphan_downlink_replay_truncated_total{transport=\"tcp\"} 2"
-        ),
+        rendered.contains("outline_ss_orphan_downlink_replay_truncated_total{transport=\"tcp\"} 2"),
         "truncated counter missing or wrong value:\n{rendered}",
     );
     assert!(

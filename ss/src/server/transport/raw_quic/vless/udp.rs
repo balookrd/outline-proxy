@@ -34,11 +34,14 @@ pub(super) async fn handle_udp(
     let resolved =
         resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream)
             .await
-            .with_context(|| format!("vless raw-quic udp dns resolution failed: {target_display}"))?;
+            .with_context(|| {
+                format!("vless raw-quic udp dns resolution failed: {target_display}")
+            })?;
     let socket = bind_nat_udp_socket(resolved, server.outbound_ipv6.as_deref())
         .context("failed to bind vless raw-quic udp upstream socket")?;
-    apply_fwmark_if_needed(&socket, user.fwmark())
-        .with_context(|| format!("failed to apply fwmark {:?} to vless raw-quic udp", user.fwmark()))?;
+    apply_fwmark_if_needed(&socket, user.fwmark()).with_context(|| {
+        format!("failed to apply fwmark {:?} to vless raw-quic udp", user.fwmark())
+    })?;
     socket
         .connect(&resolved)
         .await
@@ -51,13 +54,8 @@ pub(super) async fn handle_udp(
         .user_counters(&user.label_arc())
         .udp_in(AppProtocol::Vless, Protocol::QuicRaw)
         .clone();
-    conn_state.register(
-        session_id,
-        Arc::new(VlessUdpSession {
-            socket: Arc::clone(&socket),
-            udp_in,
-        }),
-    );
+    conn_state
+        .register(session_id, Arc::new(VlessUdpSession { socket: Arc::clone(&socket), udp_in }));
 
     // Response: [VERSION, 0x00, session_id_4B_BE]. Client uses session_id as
     // the per-datagram routing prefix on QUIC datagrams from now on.
@@ -120,13 +118,12 @@ pub(super) async fn handle_udp(
                                     "failed to open vless oversize stream for outbound packet"
                                 );
                                 continue;
-                            }
+                            },
                         };
                         let (send, recv) = pair;
                         let stream =
                             Arc::new(super::super::OversizeStream::from_local_open(send, recv));
-                        let installed =
-                            conn_state_for_reader.oversize_slot.install(stream);
+                        let installed = conn_state_for_reader.oversize_slot.install(stream);
                         // Ensure inbound records on this server-opened
                         // stream are still demuxed: spawn the read pump.
                         let pump_stream = Arc::clone(&installed);
@@ -149,7 +146,7 @@ pub(super) async fn handle_udp(
                         // installed by the bootstrap handler picks
                         // them up.
                         installed
-                    }
+                    },
                 };
                 let mut record = Vec::with_capacity(total_len);
                 record.extend_from_slice(&session_id.to_be_bytes());
@@ -167,11 +164,7 @@ pub(super) async fn handle_udp(
             if oversized {
                 // Legacy ALPN client — silent drop, mirror of the
                 // outline-ws-rust client side.
-                debug!(
-                    session_id,
-                    n,
-                    "vless raw-quic oversized response on legacy ALPN, dropping"
-                );
+                debug!(session_id, n, "vless raw-quic oversized response on legacy ALPN, dropping");
                 continue;
             }
             let mut datagram = BytesMut::with_capacity(total_len);
@@ -224,7 +217,11 @@ async fn route_vless_udp_record(record: bytes::Bytes, conn_state: &VlessQuicConn
     };
     let payload = record.slice(4..);
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
-        warn!(session_id, len = payload.len(), "vless raw-quic oversize record exceeds max payload");
+        warn!(
+            session_id,
+            len = payload.len(),
+            "vless raw-quic oversize record exceeds max payload"
+        );
         return;
     }
     if let Err(error) = session.socket.send(&payload).await {
@@ -247,7 +244,7 @@ pub(in crate::server) async fn serve_raw_vless_oversize_records(
         match stream.recv_record().await {
             Ok(Some(record)) => {
                 route_vless_udp_record(record, &conn_state).await;
-            }
+            },
             Ok(None) => return Ok(()),
             Err(error) => return Err(error.context("vless raw-quic oversize-record read failed")),
         }

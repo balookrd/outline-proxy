@@ -39,8 +39,9 @@ fn rewrite_toml(original: &str, users: &[UserEntry]) -> Result<String> {
     }
     let rendered = toml_edit::ser::to_string(&Wrapper { users })
         .context("failed to serialize users as TOML")?;
-    let rendered_doc: toml_edit::DocumentMut =
-        rendered.parse().context("toml_edit failed to re-parse generated users TOML")?;
+    let rendered_doc: toml_edit::DocumentMut = rendered
+        .parse()
+        .context("toml_edit failed to re-parse generated users TOML")?;
     let users_item = rendered_doc
         .get("users")
         .cloned()

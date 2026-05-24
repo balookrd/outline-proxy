@@ -306,9 +306,7 @@ impl UserManager {
                 .as_deref()
                 .or(self.default_xhttp_path_vless.as_deref());
             if ws_path.is_none() && xhttp_path.is_none() {
-                bail!(
-                    "vless_id requires at least one of ws_path_vless or xhttp_path_vless"
-                );
+                bail!("vless_id requires at least one of ws_path_vless or xhttp_path_vless");
             }
             if let Some(path) = ws_path {
                 if !path.starts_with('/') {

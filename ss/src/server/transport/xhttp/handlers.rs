@@ -29,12 +29,12 @@ use super::super::tcp::{
 };
 use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
+use super::padding::post_response_headers;
 use super::{
     AttachOutcome, FIN_HEADER, SEQ_HEADER, UplinkIngestError, XhttpDuplex, XhttpRegistry,
     XhttpSession, XhttpSubmode, generate_anonymous_session_id, generate_padding_header,
     is_valid_session_id, masquerade_response_headers,
 };
-use super::padding::post_response_headers;
 
 /// Cap on the bytes a single POST may carry, to bound memory per
 /// request. 256 KiB matches `xray`'s default `scMaxEachPostBytes`
@@ -115,18 +115,8 @@ pub(in crate::server) async fn xhttp_handler_with_path_seq(
     ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     body: Body,
 ) -> Response {
-    dispatch_xhttp(
-        state,
-        session_id,
-        Some(seq),
-        uri,
-        method,
-        version,
-        headers,
-        peer_addr,
-        body,
-    )
-    .await
+    dispatch_xhttp(state, session_id, Some(seq), uri, method, version, headers, peer_addr, body)
+        .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -184,10 +174,8 @@ async fn dispatch_xhttp(
                 },
                 XhttpSubmode::PacketUp => match seq {
                     Some(_) => {
-                        xhttp_post(
-                            state, session_id, path_seq, version, peer_addr, headers, body,
-                        )
-                        .await
+                        xhttp_post(state, session_id, path_seq, version, peer_addr, headers, body)
+                            .await
                     },
                     // No seq, no `?mode=` — the xray default for
                     // stream-one / stream-up. Our stream-one handler
@@ -195,8 +183,7 @@ async fn dispatch_xhttp(
                     // body chunk-by-chunk), so `stream-up` mode
                     // clients land here too without extra wiring.
                     None => {
-                        xhttp_stream_one(state, session_id, version, peer_addr, headers, body)
-                            .await
+                        xhttp_stream_one(state, session_id, version, peer_addr, headers, body).await
                     },
                 },
             }
@@ -239,10 +226,9 @@ async fn xhttp_get(
     // (a) v1 also requested and (b) registry has v2 capacity, so a
     // true value here is safe to surface in the response.
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
-    let (session, created) = state.registry.get_or_create(
-        &session_id,
-        resume_for_create.issued_session_id,
-    );
+    let (session, created) = state
+        .registry
+        .get_or_create(&session_id, resume_for_create.issued_session_id);
 
     if created {
         spawn_relay(
@@ -342,7 +328,9 @@ async fn xhttp_post(
     // dead session — at that point the client is replaying old
     // packets to a registry slot that has been swept.
     let (session, created) = if seq == 0 {
-        state.registry.get_or_create(&session_id, resume_for_create.issued_session_id)
+        state
+            .registry
+            .get_or_create(&session_id, resume_for_create.issued_session_id)
     } else {
         match state.registry.get(&session_id) {
             Some(s) => (s, false),
@@ -463,10 +451,9 @@ async fn xhttp_stream_one(
     // (a) v1 also requested and (b) registry has v2 capacity, so a
     // true value here is safe to surface in the response.
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
-    let (session, created) = state.registry.get_or_create(
-        &session_id,
-        resume_for_create.issued_session_id,
-    );
+    let (session, created) = state
+        .registry
+        .get_or_create(&session_id, resume_for_create.issued_session_id);
     if session.is_closed() {
         return short_status(StatusCode::GONE);
     }
@@ -649,18 +636,10 @@ fn spawn_relay(
 }
 
 fn parse_seq(headers: &HeaderMap) -> Option<u64> {
-    headers
-        .get(SEQ_HEADER)?
-        .to_str()
-        .ok()?
-        .trim()
-        .parse::<u64>()
-        .ok()
+    headers.get(SEQ_HEADER)?.to_str().ok()?.trim().parse::<u64>().ok()
 }
 
-fn resolve_route(
-    state: &XhttpAxumState,
-) -> Option<Arc<crate::server::state::VlessTransportRoute>> {
+fn resolve_route(state: &XhttpAxumState) -> Option<Arc<crate::server::state::VlessTransportRoute>> {
     let routes_snap = state.parent.routes.load();
     let route = routes_snap.xhttp_vless.get(state.base_path.as_ref()).cloned();
     drop(routes_snap);
@@ -698,4 +677,3 @@ fn short_status(status: StatusCode) -> Response {
     }
     response
 }
-

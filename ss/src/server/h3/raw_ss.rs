@@ -3,12 +3,12 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use tracing::{debug, warn};
 
-use super::H3ConnectionCtx;
 use super::super::transport::{
     OversizeStream, SsQuicConn, StreamKind, classify_accept_bi,
     handle_raw_ss_quic_stream_with_prefix, is_handshake_rejected, is_normal_h3_shutdown,
     serve_raw_ss_oversize_records, serve_raw_ss_quic_datagrams,
 };
+use super::H3ConnectionCtx;
 
 pub(super) async fn handle_raw_ss_connection(
     connection: quinn::Connection,
@@ -57,7 +57,7 @@ pub(super) async fn handle_raw_ss_connection(
                     warn!(?error, "ss raw-quic accept_bi peek failed");
                     drop(stream_permit);
                     continue;
-                }
+                },
             }
         } else {
             StreamKind::Other { consumed: [0u8; 8] }
@@ -84,16 +84,14 @@ pub(super) async fn handle_raw_ss_connection(
                     }
                 });
                 continue;
-            }
+            },
             StreamKind::Other { consumed } => {
                 let prefix = if mtu_aware { consumed.to_vec() } else { Vec::new() };
                 let raw_ctx = Arc::clone(&ctx.raw_ss_ctx);
                 tokio::spawn(async move {
                     let _permit = stream_permit;
-                    if let Err(error) = handle_raw_ss_quic_stream_with_prefix(
-                        send, recv, prefix, raw_ctx,
-                    )
-                    .await
+                    if let Err(error) =
+                        handle_raw_ss_quic_stream_with_prefix(send, recv, prefix, raw_ctx).await
                         && !is_normal_h3_shutdown(&error)
                     {
                         if is_handshake_rejected(&error) {
@@ -103,7 +101,7 @@ pub(super) async fn handle_raw_ss_connection(
                         }
                     }
                 });
-            }
+            },
         }
     };
     dgram_task.abort();

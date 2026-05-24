@@ -23,11 +23,7 @@ fn wildcard(pattern: &str) -> SniMatcher {
     SniMatcher::Wildcard { suffix }
 }
 
-fn cfg(
-    local: Vec<SniMatcher>,
-    backends: Vec<SniBackend>,
-    allow_no_sni: bool,
-) -> SniFallbackConfig {
+fn cfg(local: Vec<SniMatcher>, backends: Vec<SniBackend>, allow_no_sni: bool) -> SniFallbackConfig {
     SniFallbackConfig {
         match_sni: local,
         allow_no_sni,
@@ -46,11 +42,8 @@ fn backend(authority: &str, matchers: Vec<SniMatcher>) -> SniBackend {
 
 #[test]
 fn exact_local_match_routes_to_local() {
-    let lookup = SniLookup::build(&cfg(
-        vec![exact("ours.example")],
-        vec![backend("up:443", vec![])],
-        false,
-    ));
+    let lookup =
+        SniLookup::build(&cfg(vec![exact("ours.example")], vec![backend("up:443", vec![])], false));
     assert_eq!(lookup.lookup(Some("ours.example")), Some(SniRoute::Local));
 }
 
@@ -58,16 +51,10 @@ fn exact_local_match_routes_to_local() {
 fn exact_backend_match_routes_to_backend() {
     let lookup = SniLookup::build(&cfg(
         vec![exact("ours.example")],
-        vec![
-            backend("first:443", vec![exact("foreign.example")]),
-            backend("catchall:443", vec![]),
-        ],
+        vec![backend("first:443", vec![exact("foreign.example")]), backend("catchall:443", vec![])],
         false,
     ));
-    assert_eq!(
-        lookup.lookup(Some("foreign.example")),
-        Some(SniRoute::Backend(0))
-    );
+    assert_eq!(lookup.lookup(Some("foreign.example")), Some(SniRoute::Backend(0)));
 }
 
 #[test]
@@ -93,10 +80,7 @@ fn wildcard_falls_back_after_exact_miss() {
     // Two-label-deep wildcard still wins as Local because `Wildcard`
     // semantics enforce single-label-left, so unrelated names fall
     // through to the catch-all backend.
-    assert_eq!(
-        lookup.lookup(Some("a.b.ours.example")),
-        Some(SniRoute::Backend(0))
-    );
+    assert_eq!(lookup.lookup(Some("a.b.ours.example")), Some(SniRoute::Backend(0)));
 }
 
 #[test]
@@ -109,10 +93,7 @@ fn local_exact_wins_over_backend_exact_collision() {
         vec![backend("up:443", vec![exact("shared.example")])],
         false,
     ));
-    assert_eq!(
-        lookup.lookup(Some("shared.example")),
-        Some(SniRoute::Local)
-    );
+    assert_eq!(lookup.lookup(Some("shared.example")), Some(SniRoute::Local));
 }
 
 #[test]
@@ -125,10 +106,7 @@ fn first_backend_wins_among_backends() {
         ],
         false,
     ));
-    assert_eq!(
-        lookup.lookup(Some("dup.example")),
-        Some(SniRoute::Backend(0))
-    );
+    assert_eq!(lookup.lookup(Some("dup.example")), Some(SniRoute::Backend(0)));
 }
 
 #[test]
@@ -152,16 +130,10 @@ fn no_sni_routes_per_allow_flag() {
 fn unmatched_sni_falls_through_to_catch_all() {
     let lookup = SniLookup::build(&cfg(
         vec![exact("ours.example")],
-        vec![
-            backend("named:443", vec![exact("known.example")]),
-            backend("catchall:443", vec![]),
-        ],
+        vec![backend("named:443", vec![exact("known.example")]), backend("catchall:443", vec![])],
         false,
     ));
-    assert_eq!(
-        lookup.lookup(Some("nobody-claims-this.example")),
-        Some(SniRoute::Backend(1))
-    );
+    assert_eq!(lookup.lookup(Some("nobody-claims-this.example")), Some(SniRoute::Backend(1)));
 }
 
 #[test]
@@ -180,18 +152,9 @@ fn backend_exact_overrides_local_wildcard() {
         ],
         false,
     ));
-    assert_eq!(
-        lookup.lookup(Some("px.beerloga.su")),
-        Some(SniRoute::Backend(0))
-    );
-    assert_eq!(
-        lookup.lookup(Some("cloud.beerloga.su")),
-        Some(SniRoute::Local)
-    );
-    assert_eq!(
-        lookup.lookup(Some("something.else.com")),
-        Some(SniRoute::Backend(1))
-    );
+    assert_eq!(lookup.lookup(Some("px.beerloga.su")), Some(SniRoute::Backend(0)));
+    assert_eq!(lookup.lookup(Some("cloud.beerloga.su")), Some(SniRoute::Local));
+    assert_eq!(lookup.lookup(Some("something.else.com")), Some(SniRoute::Backend(1)));
 }
 
 #[test]

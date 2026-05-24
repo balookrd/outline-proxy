@@ -43,8 +43,8 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 
 use outline_transport::{
-    DnsCache as ClientDnsCache, TargetAddr, TransportMode, TransportStream,
-    UpstreamTransportGuard, connect_vless_tcp_quic_with_resume, connect_websocket_with_resume,
+    DnsCache as ClientDnsCache, TargetAddr, TransportMode, TransportStream, UpstreamTransportGuard,
+    connect_vless_tcp_quic_with_resume, connect_websocket_with_resume,
     vless::vless_tcp_pair_from_ws,
 };
 
@@ -130,9 +130,8 @@ async fn setup_vless_ws_server(
         http_root_realm: Arc::from("Authorization required"),
     });
     let app = build_app(routes, services, auth, None);
-    let handle = tokio::spawn(async move {
-        serve_listener(listener, app, ShutdownSignal::never()).await
-    });
+    let handle =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
     Ok((listen_addr, handle))
 }
 
@@ -266,8 +265,7 @@ async fn cross_repo_vless_tcp_ws_h2_round_trip() -> Result<()> {
     assert_eq!(&received[..2], &[VERSION, 0x00], "vless response header");
     assert_eq!(&received[2..6], b"pong", "echoed payload");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(stream);
@@ -322,8 +320,7 @@ async fn cross_repo_vless_tcp_ws_h1_round_trip() -> Result<()> {
     assert_eq!(&received[..2], &[VERSION, 0x00]);
     assert_eq!(&received[2..6], b"pong");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(stream);
@@ -445,8 +442,7 @@ async fn cross_repo_vless_tcp_ws_h3_round_trip() -> Result<()> {
     assert_eq!(&received[..2], &[VERSION, 0x00]);
     assert_eq!(&received[2..6], b"pong");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(stream);
@@ -473,9 +469,7 @@ async fn cross_repo_vless_tcp_raw_quic_round_trip() -> Result<()> {
     // ignored. ALPN `vless` is what the dialer sends. The scheme
     // must be `https://` because raw QUIC is TLS-only.
     let url = Url::parse(&format!("https://localhost:{}/", listen_addr.port()))?;
-    let uuid_bytes: [u8; 16] = parse_uuid(TEST_UUID)?
-        .try_into()
-        .expect("UUID parses to 16 bytes");
+    let uuid_bytes: [u8; 16] = parse_uuid(TEST_UUID)?.try_into().expect("UUID parses to 16 bytes");
     let target = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
     let lifetime = UpstreamTransportGuard::new("cross-repo-vless-quic", "vless");
 
@@ -501,8 +495,7 @@ async fn cross_repo_vless_tcp_raw_quic_round_trip() -> Result<()> {
     let reply = reader.read_chunk().await?;
     assert_eq!(&reply, b"pong");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(reader);
@@ -588,9 +581,8 @@ async fn setup_vless_ws_server_with_resumption_inner(
         http_root_realm: Arc::from("Authorization required"),
     });
     let app = build_app(routes, services, auth, None);
-    let handle = tokio::spawn(async move {
-        serve_listener(listener, app, ShutdownSignal::never()).await
-    });
+    let handle =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
     Ok((listen_addr, handle))
 }
 
@@ -643,9 +635,7 @@ async fn cross_repo_vless_tcp_ws_h2_resume_reattaches_parked_upstream() -> Resul
     handshake_a.push(0x01);
     handshake_a.extend_from_slice(&[127, 0, 0, 1]);
     handshake_a.extend_from_slice(b"ping");
-    stream_a
-        .send(Message::Binary(Bytes::from(handshake_a)))
-        .await?;
+    stream_a.send(Message::Binary(Bytes::from(handshake_a))).await?;
     let received_a = read_binary_until_at_least(&mut stream_a, 6).await?;
     assert_eq!(&received_a[..2], &[VERSION, 0x00]);
     assert_eq!(&received_a[2..6], b"pong");
@@ -694,15 +684,12 @@ async fn cross_repo_vless_tcp_ws_h2_resume_reattaches_parked_upstream() -> Resul
     handshake_b.push(0x01);
     handshake_b.extend_from_slice(&[127, 0, 0, 1]);
     handshake_b.extend_from_slice(b"helo");
-    stream_b
-        .send(Message::Binary(Bytes::from(handshake_b)))
-        .await?;
+    stream_b.send(Message::Binary(Bytes::from(handshake_b))).await?;
     let received_b = read_binary_until_at_least(&mut stream_b, 6).await?;
     assert_eq!(&received_b[..2], &[VERSION, 0x00]);
     assert_eq!(&received_b[2..6], b"ackk", "echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -749,8 +736,7 @@ async fn cross_repo_vless_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Resu
         Result::<_, anyhow::Error>::Ok((first, second))
     });
 
-    let (listen_addr, server) =
-        setup_vless_ws_server_with_resumption("/vless").await?;
+    let (listen_addr, server) = setup_vless_ws_server_with_resumption("/vless").await?;
     let cache = ClientDnsCache::new(Duration::from_secs(30));
     let url = Url::parse(&format!("ws://{listen_addr}/vless"))?;
 
@@ -826,19 +812,12 @@ async fn cross_repo_vless_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Resu
     // Wrap the resumed stream in the higher-level VLESS pair so we
     // can drive the v1.1 fast path: `consume_ack_prefix_with_timeout`
     // surfaces the offset BEFORE any real payload is read.
-    let lifetime_b =
-        UpstreamTransportGuard::new("cross-repo-vless-ws-ack-prefix-b", "vless-ws-h2");
+    let lifetime_b = UpstreamTransportGuard::new("cross-repo-vless-ws-ack-prefix-b", "vless-ws-h2");
     let target_b = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
     let diag_b = outline_transport::WsReadDiag::default();
     let uuid_b = parse_uuid(TEST_UUID)?;
-    let (mut writer_b, mut reader_b) = vless_tcp_pair_from_ws(
-        stream_b,
-        &uuid_b,
-        &target_b,
-        Arc::clone(&lifetime_b),
-        diag_b,
-        None,
-    );
+    let (mut writer_b, mut reader_b) =
+        vless_tcp_pair_from_ws(stream_b, &uuid_b, &target_b, Arc::clone(&lifetime_b), diag_b, None);
     reader_b = reader_b.with_expect_ack_prefix(true);
 
     // Fire the second payload first so the server has something to
@@ -862,8 +841,7 @@ async fn cross_repo_vless_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Resu
     let reply_b = reader_b.read_chunk().await?;
     assert_eq!(reply_b, b"ackk", "vless ss tcp echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -907,8 +885,7 @@ async fn cross_repo_vless_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -
         Result::<_, anyhow::Error>::Ok((first, second))
     });
 
-    let (listen_addr, server) =
-        setup_vless_ws_server_with_resumption_v2("/vless", 65_536).await?;
+    let (listen_addr, server) = setup_vless_ws_server_with_resumption_v2("/vless", 65_536).await?;
     let cache = ClientDnsCache::new(Duration::from_secs(30));
     let url = Url::parse(&format!("ws://{listen_addr}/vless"))?;
 
@@ -982,19 +959,14 @@ async fn cross_repo_vless_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -
         2,
     )
     .await?;
-    assert!(
-        stream_b.ack_prefix_advertised_by_server(),
-        "server must echo v1 on resume hit"
-    );
+    assert!(stream_b.ack_prefix_advertised_by_server(), "server must echo v1 on resume hit");
     assert!(
         stream_b.symmetric_replay_advertised_by_server(),
         "server must echo v2 on resume hit"
     );
 
-    let lifetime_b = UpstreamTransportGuard::new(
-        "cross-repo-vless-ws-symmetric-replay-b",
-        "vless-ws-h2",
-    );
+    let lifetime_b =
+        UpstreamTransportGuard::new("cross-repo-vless-ws-symmetric-replay-b", "vless-ws-h2");
     let target_b = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
     let (mut writer_b, mut reader_b) = vless_tcp_pair_from_ws(
         stream_b,
@@ -1022,17 +994,13 @@ async fn cross_repo_vless_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -
     );
 
     let outcome = reader_b
-        .consume_downlink_replay_with_timeout(
-            Duration::from_secs(5),
-            1_048_576,
-        )
+        .consume_downlink_replay_with_timeout(Duration::from_secs(5), 1_048_576)
         .await?
         .expect("v2 negotiated → consume must surface an outcome");
     match outcome {
         outline_transport::downlink_replay::DownlinkReplayOutcome::Replay(payload) => {
             assert_eq!(
-                payload,
-                b"ng",
+                payload, b"ng",
                 "v2 must replay the suffix '[2..4)' of the parked ring (\"pong\")"
             );
         },
@@ -1044,8 +1012,7 @@ async fn cross_repo_vless_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -
     let reply_b = reader_b.read_chunk().await?;
     assert_eq!(reply_b, b"ackk");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -1159,9 +1126,7 @@ async fn cross_repo_vless_tcp_raw_quic_resume_reattaches_parked_upstream() -> Re
     let (listen_addr, server) = setup_vless_raw_quic_server_with_resumption().await?;
     let cache = ClientDnsCache::new(Duration::from_secs(30));
     let url = Url::parse(&format!("https://localhost:{}/", listen_addr.port()))?;
-    let uuid_bytes: [u8; 16] = parse_uuid(TEST_UUID)?
-        .try_into()
-        .expect("UUID parses to 16 bytes");
+    let uuid_bytes: [u8; 16] = parse_uuid(TEST_UUID)?.try_into().expect("UUID parses to 16 bytes");
     let target = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
     let lifetime_a = UpstreamTransportGuard::new("cross-repo-vless-quic-resume-a", "vless");
 
@@ -1220,8 +1185,7 @@ async fn cross_repo_vless_tcp_raw_quic_resume_reattaches_parked_upstream() -> Re
     let reply_b = reader_b.read_chunk().await?;
     assert_eq!(&reply_b, b"ackk", "echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -1356,9 +1320,7 @@ async fn cross_repo_vless_tcp_ws_h3_resume_reattaches_parked_upstream() -> Resul
     handshake_a.push(0x01);
     handshake_a.extend_from_slice(&[127, 0, 0, 1]);
     handshake_a.extend_from_slice(b"ping");
-    stream_a
-        .send(Message::Binary(Bytes::from(handshake_a)))
-        .await?;
+    stream_a.send(Message::Binary(Bytes::from(handshake_a))).await?;
     let received_a = read_binary_until_at_least(&mut stream_a, 6).await?;
     assert_eq!(&received_a[..2], &[VERSION, 0x00]);
     assert_eq!(&received_a[2..6], b"pong");
@@ -1399,15 +1361,12 @@ async fn cross_repo_vless_tcp_ws_h3_resume_reattaches_parked_upstream() -> Resul
     handshake_b.push(0x01);
     handshake_b.extend_from_slice(&[127, 0, 0, 1]);
     handshake_b.extend_from_slice(b"helo");
-    stream_b
-        .send(Message::Binary(Bytes::from(handshake_b)))
-        .await?;
+    stream_b.send(Message::Binary(Bytes::from(handshake_b))).await?;
     let received_b = read_binary_until_at_least(&mut stream_b, 6).await?;
     assert_eq!(&received_b[..2], &[VERSION, 0x00]);
     assert_eq!(&received_b[2..6], b"ackk", "echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -1496,8 +1455,7 @@ async fn cross_repo_vless_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result
         Result::<_, anyhow::Error>::Ok((first, second))
     });
 
-    let (listen_addr, server) =
-        setup_vless_ws_h2_tls_server_with_resumption("/vless").await?;
+    let (listen_addr, server) = setup_vless_ws_h2_tls_server_with_resumption("/vless").await?;
     let cache = ClientDnsCache::new(Duration::from_secs(30));
     let url = Url::parse(&format!("wss://localhost:{}/vless", listen_addr.port()))?;
 
@@ -1528,9 +1486,7 @@ async fn cross_repo_vless_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result
     handshake_a.push(0x01);
     handshake_a.extend_from_slice(&[127, 0, 0, 1]);
     handshake_a.extend_from_slice(b"ping");
-    stream_a
-        .send(Message::Binary(Bytes::from(handshake_a)))
-        .await?;
+    stream_a.send(Message::Binary(Bytes::from(handshake_a))).await?;
     let received_a = read_binary_until_at_least(&mut stream_a, 6).await?;
     assert_eq!(&received_a[..2], &[VERSION, 0x00]);
     assert_eq!(&received_a[2..6], b"pong");
@@ -1571,15 +1527,12 @@ async fn cross_repo_vless_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result
     handshake_b.push(0x01);
     handshake_b.extend_from_slice(&[127, 0, 0, 1]);
     handshake_b.extend_from_slice(b"helo");
-    stream_b
-        .send(Message::Binary(Bytes::from(handshake_b)))
-        .await?;
+    stream_b.send(Message::Binary(Bytes::from(handshake_b))).await?;
     let received_b = read_binary_until_at_least(&mut stream_b, 6).await?;
     assert_eq!(&received_b[..2], &[VERSION, 0x00]);
     assert_eq!(&received_b[2..6], b"ackk", "echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -1667,8 +1620,7 @@ async fn cross_repo_vless_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result
         Result::<_, anyhow::Error>::Ok((first, second))
     });
 
-    let (listen_addr, server) =
-        setup_vless_ws_h1_only_server_with_resumption("/vless").await?;
+    let (listen_addr, server) = setup_vless_ws_h1_only_server_with_resumption("/vless").await?;
     let cache = ClientDnsCache::new(Duration::from_secs(30));
     let url = Url::parse(&format!("ws://{listen_addr}/vless"))?;
 
@@ -1699,9 +1651,7 @@ async fn cross_repo_vless_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result
     handshake_a.push(0x01);
     handshake_a.extend_from_slice(&[127, 0, 0, 1]);
     handshake_a.extend_from_slice(b"ping");
-    stream_a
-        .send(Message::Binary(Bytes::from(handshake_a)))
-        .await?;
+    stream_a.send(Message::Binary(Bytes::from(handshake_a))).await?;
     let received_a = read_binary_until_at_least(&mut stream_a, 6).await?;
     assert_eq!(&received_a[..2], &[VERSION, 0x00]);
     assert_eq!(&received_a[2..6], b"pong");
@@ -1741,15 +1691,12 @@ async fn cross_repo_vless_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result
     handshake_b.push(0x01);
     handshake_b.extend_from_slice(&[127, 0, 0, 1]);
     handshake_b.extend_from_slice(b"helo");
-    stream_b
-        .send(Message::Binary(Bytes::from(handshake_b)))
-        .await?;
+    stream_b.send(Message::Binary(Bytes::from(handshake_b))).await?;
     let received_b = read_binary_until_at_least(&mut stream_b, 6).await?;
     assert_eq!(&received_b[..2], &[VERSION, 0x00]);
     assert_eq!(&received_b[2..6], b"ackk", "echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 

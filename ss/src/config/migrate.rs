@@ -14,10 +14,7 @@ use crate::fs_util::atomic_write;
 /// result to `path` (after placing a `<path>.bak` backup) and return the
 /// migrated text. Otherwise return `Ok(None)`. Used from the regular config
 /// loader so services keep running after an in-place upgrade.
-pub(super) fn auto_migrate_if_legacy(
-    path: &Path,
-    contents: &str,
-) -> Result<Option<String>> {
+pub(super) fn auto_migrate_if_legacy(path: &Path, contents: &str) -> Result<Option<String>> {
     let (migrated, changed) = migrate_str(contents)?;
     if !changed {
         return Ok(None);
@@ -63,8 +60,8 @@ fn backup_path(path: &Path) -> std::path::PathBuf {
 /// if anything was migrated, `false` if the file was already in the new
 /// layout (no-op — `.bak` is not written).
 pub fn migrate_config_in_place(path: &Path) -> Result<bool> {
-    let original = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let original =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let (migrated, changed) = migrate_str(&original)?;
     if !changed {
         return Ok(false);
@@ -107,16 +104,14 @@ const MAPPINGS: &[(&str, &[&str])] = &[
 ];
 
 fn migrate_str(input: &str) -> Result<(String, bool)> {
-    let mut doc: DocumentMut = input
-        .parse()
-        .context("failed to parse config as TOML")?;
+    let mut doc: DocumentMut = input.parse().context("failed to parse config as TOML")?;
     let mut changed = false;
 
     for (old_key, path) in MAPPINGS {
         if let Some(item) = doc.as_table_mut().remove(old_key) {
-            let value = item
-                .into_value()
-                .map_err(|item| anyhow::anyhow!("legacy key {old_key} must be a value, got {item:?}"))?;
+            let value = item.into_value().map_err(|item| {
+                anyhow::anyhow!("legacy key {old_key} must be a value, got {item:?}")
+            })?;
             insert_at_path(doc.as_table_mut(), path, value)?;
             changed = true;
         }
@@ -144,9 +139,7 @@ fn insert_at_path(root: &mut Table, path: &[&str], value: Value) -> Result<()> {
     let (leaf, parents) = path.split_last().expect("non-empty path");
     let mut table = root;
     for segment in parents {
-        let entry = table
-            .entry(segment)
-            .or_insert_with(|| Item::Table(Table::new()));
+        let entry = table.entry(segment).or_insert_with(|| Item::Table(Table::new()));
         table = entry
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("expected table at {segment}"))?;
@@ -159,11 +152,7 @@ fn insert_at_path(root: &mut Table, path: &[&str], value: Value) -> Result<()> {
     Ok(())
 }
 
-fn append_default_user(
-    root: &mut Table,
-    password: Value,
-    fwmark: Option<Value>,
-) -> Result<()> {
+fn append_default_user(root: &mut Table, password: Value, fwmark: Option<Value>) -> Result<()> {
     let entry = root
         .entry("users")
         .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()));

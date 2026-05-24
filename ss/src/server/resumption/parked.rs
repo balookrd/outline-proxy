@@ -12,12 +12,7 @@
 //! SS-UDP-over-WS variant requires NAT-table API changes and is left
 //! for a follow-up revision.
 
-use std::{
-    collections::HashMap,
-    net::SocketAddr,
-    sync::Arc,
-    sync::atomic::AtomicU64,
-};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, sync::atomic::AtomicU64};
 
 use bytes::BytesMut;
 use tokio::net::{

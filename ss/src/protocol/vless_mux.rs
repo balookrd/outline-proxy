@@ -203,7 +203,17 @@ fn parse_meta(meta: &[u8]) -> Result<(FrameMeta, usize), MuxError> {
         SessionStatus::End | SessionStatus::KeepAlive => {},
     }
 
-    Ok((FrameMeta { session_id, status, option, target, network, global_id }, cursor))
+    Ok((
+        FrameMeta {
+            session_id,
+            status,
+            option,
+            target,
+            network,
+            global_id,
+        },
+        cursor,
+    ))
 }
 
 fn parse_target(input: &[u8]) -> Result<(TargetAddr, Network, usize), MuxError> {
@@ -231,8 +241,8 @@ fn parse_target(input: &[u8]) -> Result<(TargetAddr, Network, usize), MuxError> 
             if rest.len() < 1 + len {
                 return Err(MuxError::MetaTooShort);
             }
-            let host = std::str::from_utf8(&rest[1..1 + len])
-                .map_err(|_| MuxError::InvalidDomain)?;
+            let host =
+                std::str::from_utf8(&rest[1..1 + len]).map_err(|_| MuxError::InvalidDomain)?;
             (TargetAddr::Domain(host.to_owned(), port), 1 + len)
         },
         ATYP_IPV6 => {

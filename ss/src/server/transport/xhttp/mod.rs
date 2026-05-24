@@ -45,11 +45,11 @@ pub(in crate::server) mod handlers;
 mod padding;
 
 pub(in crate::server) use duplex::XhttpDuplex;
+pub(in crate::server) use generate_anonymous_session_id as generate_anonymous_xhttp_session_id;
 pub(in crate::server) use h3::handle_xhttp_h3_request;
 pub(in crate::server) use handlers::{
     XhttpAxumState, xhttp_handler, xhttp_handler_no_session, xhttp_handler_with_path_seq,
 };
-pub(in crate::server) use generate_anonymous_session_id as generate_anonymous_xhttp_session_id;
 pub(in crate::server) use padding::{generate_padding_header, masquerade_response_headers};
 
 /// HTTP request header carrying the in-order seq number for an
@@ -336,10 +336,7 @@ impl XhttpSession {
         }
         let gap = seq - state.expected_seq;
         if gap > UPLINK_REORDER_MAX_GAP {
-            return Err(UplinkIngestError::GapTooLarge {
-                expected: state.expected_seq,
-                got: seq,
-            });
+            return Err(UplinkIngestError::GapTooLarge { expected: state.expected_seq, got: seq });
         }
         if state.reorder_bytes.saturating_add(data.len()) > UPLINK_REORDER_BUFFER_BYTES_CAP {
             return Err(UplinkIngestError::BufferFull);
@@ -522,7 +519,9 @@ pub(in crate::server) enum DownlinkPushError {
 pub(in crate::server) fn is_valid_session_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
-        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
 /// 16-byte URL-safe alphanumeric session id, generated server-side
@@ -535,8 +534,7 @@ pub(in crate::server) fn is_valid_session_id(id: &str) -> bool {
 /// keep working uniformly.
 pub(in crate::server) fn generate_anonymous_session_id() -> String {
     use ring::rand::{SecureRandom, SystemRandom};
-    const ALPHABET: &[u8; 62] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const ALPHABET: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut raw = [0_u8; 16];
     // Best-effort RNG: if the platform RNG fails (extremely unlikely
     // outside of test mocks) we still need a non-empty, unique-ish
@@ -551,6 +549,7 @@ pub(in crate::server) fn generate_anonymous_session_id() -> String {
             *byte = (now >> (i * 4)) as u8;
         }
     }
-    raw.iter().map(|b| char::from(ALPHABET[(*b as usize) % ALPHABET.len()])).collect()
+    raw.iter()
+        .map(|b| char::from(ALPHABET[(*b as usize) % ALPHABET.len()]))
+        .collect()
 }
-

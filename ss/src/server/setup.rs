@@ -180,9 +180,7 @@ pub(super) struct VlessXhttpUserRoute {
     pub xhttp_path: Arc<str>,
 }
 
-pub(super) fn build_vless_xhttp_user_routes(
-    config: &Config,
-) -> Result<Arc<[VlessXhttpUserRoute]>> {
+pub(super) fn build_vless_xhttp_user_routes(config: &Config) -> Result<Arc<[VlessXhttpUserRoute]>> {
     Ok(Arc::from(
         config
             .users

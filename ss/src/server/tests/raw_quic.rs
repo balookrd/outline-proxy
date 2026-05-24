@@ -22,16 +22,14 @@ use tokio::{
 
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
-use super::super::state::{
-    AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice,
-};
+use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
 use super::super::{DnsCache, serve_h3_server};
 use crate::config::H3Alpn;
 use crate::crypto::{AeadStreamDecryptor, AeadStreamEncryptor, UserKey};
+use crate::crypto::{decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::Metrics;
 use crate::protocol::TargetAddr;
 use crate::protocol::vless::{COMMAND_TCP, COMMAND_UDP, VERSION, VlessUser, parse_uuid};
-use crate::crypto::{decrypt_udp_packet, encrypt_udp_packet};
 
 const VLESS_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
@@ -63,10 +61,7 @@ async fn bind_raw_quic_server(
         .datagram_send_buffer_size(1 << 20);
     server_config.transport_config(Arc::new(transport));
     let endpoint = quinn::Endpoint::server(server_config, addr)?;
-    Ok(H3WebSocketServer::<H3Transport>::from_endpoint(
-        endpoint,
-        H3WsConfig::default(),
-    ))
+    Ok(H3WebSocketServer::<H3Transport>::from_endpoint(endpoint, H3WsConfig::default()))
 }
 
 fn raw_quic_client_config(
@@ -287,7 +282,10 @@ async fn ss_raw_quic_tcp_relay_smoke() -> Result<()> {
     decryptor.feed_ciphertext(&encrypted_reply[..total]);
     let mut plaintext = Vec::new();
     decryptor.drain_plaintext(&mut plaintext)?;
-    assert!(plaintext.windows(4).any(|w| w == b"pong"), "unexpected plaintext: {plaintext:?}");
+    assert!(
+        plaintext.windows(4).any(|w| w == b"pong"),
+        "unexpected plaintext: {plaintext:?}"
+    );
     assert_eq!(upstream_task.await??, *b"ping");
 
     let _ = send.finish();
@@ -354,7 +352,8 @@ async fn vless_raw_quic_udp_relay_smoke() -> Result<()> {
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
-    endpoint.set_default_client_config(raw_quic_client_config_with_datagrams(cert_der, &[b"vless"])?);
+    endpoint
+        .set_default_client_config(raw_quic_client_config_with_datagrams(cert_der, &[b"vless"])?);
     let connection = endpoint.connect(addr, "localhost")?.await?;
 
     // Open control bidi stream and send VLESS UDP request header.
@@ -637,10 +636,8 @@ async fn ss_raw_quic_udp_oversize_relay() -> Result<()> {
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
-    endpoint.set_default_client_config(raw_quic_client_config_with_datagrams(
-        cert_der,
-        &[b"ss-mtu"],
-    )?);
+    endpoint
+        .set_default_client_config(raw_quic_client_config_with_datagrams(cert_der, &[b"ss-mtu"])?);
     let connection = endpoint.connect(addr, "localhost")?.await?;
 
     // Build SS-AEAD UDP packet: target_addr || 2048-byte payload.

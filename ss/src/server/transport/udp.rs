@@ -160,8 +160,7 @@ async fn attempt_ss_udp_resume(
     for key in parked.nat_keys {
         match server.nat_table.try_get(&key) {
             Some(entry) => {
-                entry
-                    .register_session(sender.clone(), udp_session.clone(), session.stream_id);
+                entry.register_session(sender.clone(), udp_session.clone(), session.stream_id);
                 keys_for_self.push(key);
                 reattached += 1;
             },
@@ -202,37 +201,34 @@ where
         UDP_CACHED_USER_INDEX_EMPTY => None,
         index => Some(index),
     };
-    let (packet, user_index) =
-        match decrypt_udp_packet_with_hint(
-            route.users.as_ref(),
-            &data,
-            preferred_user_index,
-            Some(server.session_key_cache.as_ref()),
-        ) {
-            Ok(result) => result,
-            Err(CryptoError::UnknownUser) => {
-                debug!(
-                    path = %route.path,
-                    candidates = ?route.candidate_users,
-                    attempts = ?diagnose_udp_packet(route.users.as_ref(), &data),
-                    "udp authentication failed for all path candidates"
-                );
-                return Err(anyhow!(
-                    "no configured key matched the incoming udp data on path {} candidates={:?}",
-                    route.path,
-                    route.candidate_users,
-                ));
-            },
-            Err(error) => return Err(anyhow!(error)),
-        };
+    let (packet, user_index) = match decrypt_udp_packet_with_hint(
+        route.users.as_ref(),
+        &data,
+        preferred_user_index,
+        Some(server.session_key_cache.as_ref()),
+    ) {
+        Ok(result) => result,
+        Err(CryptoError::UnknownUser) => {
+            debug!(
+                path = %route.path,
+                candidates = ?route.candidate_users,
+                attempts = ?diagnose_udp_packet(route.users.as_ref(), &data),
+                "udp authentication failed for all path candidates"
+            );
+            return Err(anyhow!(
+                "no configured key matched the incoming udp data on path {} candidates={:?}",
+                route.path,
+                route.candidate_users,
+            ));
+        },
+        Err(error) => return Err(anyhow!(error)),
+    };
     session.cached_user_index.store(user_index, Ordering::Relaxed);
     let user_id = packet.user.id_arc();
     // Capture the authenticated user id once. Subsequent datagrams
     // hit the lock-free `OnceLock::get_or_init` fast path: a single
     // atomic acquire load with no Arc clone when already populated.
-    session
-        .authenticated_user_id
-        .get_or_init(|| Arc::clone(&user_id));
+    session.authenticated_user_id.get_or_init(|| Arc::clone(&user_id));
     if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id) {
         match server.replay_store.check_and_mark(csid, pid) {
             ReplayCheck::Fresh => {},
@@ -326,11 +322,7 @@ where
         .await;
     }
 
-    entry.register_session(
-        response_sender,
-        packet.session.clone(),
-        session.stream_id,
-    );
+    entry.register_session(response_sender, packet.session.clone(), session.stream_id);
     // Track the NAT key as one this stream owns, for park-on-drop.
     // `HashSet::insert` is a no-op on duplicates and avoids the linear
     // scan that the prior `Vec` form paid on every datagram.
@@ -586,10 +578,7 @@ async fn park_ss_udp_stream_on_drop(
     );
     server.orphan_registry.park(
         session_id,
-        Parked::SsUdpStream(ParkedSsUdpStream {
-            nat_keys: keys_to_park,
-            owner,
-        }),
+        Parked::SsUdpStream(ParkedSsUdpStream { nat_keys: keys_to_park, owner }),
     );
 }
 

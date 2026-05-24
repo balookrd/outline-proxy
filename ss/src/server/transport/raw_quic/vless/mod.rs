@@ -36,20 +36,14 @@ pub(in crate::server) async fn handle_raw_vless_quic_stream_with_prefix(
     connection: Arc<quinn::Connection>,
     conn_state: Arc<VlessQuicConn>,
 ) -> Result<()> {
-    let session = server
-        .metrics
-        .open_websocket_session(Transport::Tcp, Protocol::QuicRaw, AppProtocol::Vless);
+    let session = server.metrics.open_websocket_session(
+        Transport::Tcp,
+        Protocol::QuicRaw,
+        AppProtocol::Vless,
+    );
 
-    let outcome = stream::run_stream(
-        send,
-        recv,
-        prefix,
-        &server,
-        &route,
-        &connection,
-        &conn_state,
-    )
-    .await;
+    let outcome =
+        stream::run_stream(send, recv, prefix, &server, &route, &connection, &conn_state).await;
     let outcome_for_metrics = match &outcome {
         Ok(()) => crate::metrics::DisconnectReason::Normal,
         Err(error) if sink::is_handshake_rejected(error) => {

@@ -178,9 +178,10 @@ impl MuxState {
                 (SubConnKind::Tcp(writer), Ok(MuxReaderHarvest::TcpCancelled(reader))) => {
                     ParkedMuxSubKind::Tcp { writer, reader }
                 },
-                (SubConnKind::Udp { socket, default_target }, Ok(MuxReaderHarvest::UdpCancelled)) => {
-                    ParkedMuxSubKind::Udp { socket, default_target }
-                },
+                (
+                    SubConnKind::Udp { socket, default_target },
+                    Ok(MuxReaderHarvest::UdpCancelled),
+                ) => ParkedMuxSubKind::Udp { socket, default_target },
                 (_, Ok(MuxReaderHarvest::Closed)) => {
                     debug!(session_id = id, "mux sub-conn already closed; skipping for park");
                     continue;

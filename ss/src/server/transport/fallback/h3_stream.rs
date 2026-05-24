@@ -98,8 +98,7 @@ async fn proxy_h3_to_backend(
 
     let original_uri = request.uri().clone();
     let (parts_in, _empty_body) = request.into_parts();
-    let mut upstream_parts =
-        build_upstream_parts(&ctx, peer_addr, &original_uri, &parts_in, true)?;
+    let mut upstream_parts = build_upstream_parts(&ctx, peer_addr, &original_uri, &parts_in, true)?;
 
     // h3 lets the request carry trailers; relay them on the upstream
     // request via the `Trailer` HTTP header so an h2 backend that
@@ -179,9 +178,7 @@ async fn proxy_h3_to_backend(
 
     // Build the h3 response (headers only — body is streamed below).
     let mut response_only_headers = http::Response::builder().status(resp_parts.status);
-    let dest_headers = response_only_headers
-        .headers_mut()
-        .expect("response builder ok");
+    let dest_headers = response_only_headers.headers_mut().expect("response builder ok");
     let resp_skip = collect_connection_tokens(&resp_parts.headers);
     for (name, value) in resp_parts.headers.iter() {
         if is_hop_by_hop(name) || resp_skip.iter().any(|skip| skip == name.as_str()) {

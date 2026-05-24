@@ -49,12 +49,8 @@ fn build_test_state(
     let udp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
     let vless = Arc::new(build_vless_transport_route_map(&[]));
     let xhttp_vless = Arc::new(std::collections::BTreeMap::new());
-    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp,
-        udp,
-        vless,
-        xhttp_vless,
-    }));
+    let routes: RoutesSnapshot =
+        Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless, xhttp_vless }));
     let services = Arc::new(Services::new(
         metrics,
         dns_cache,
@@ -232,20 +228,18 @@ pub(super) fn cross_repo_shared_test_cert()
         super::ensure_rustls_provider_installed();
         // CA: self-signed, marked as a real CA so webpki accepts
         // it as a trust anchor.
-        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new())
-            .expect("rcgen CA params");
+        let mut ca_params =
+            rcgen::CertificateParams::new(Vec::<String>::new()).expect("rcgen CA params");
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         ca_params
             .distinguished_name
             .push(rcgen::DnType::CommonName, "outline-cross-repo-test-ca");
         let ca_key = rcgen::KeyPair::generate().expect("rcgen CA KeyPair");
-        let ca_cert = ca_params
-            .self_signed(&ca_key)
-            .expect("rcgen CA self-signed");
+        let ca_cert = ca_params.self_signed(&ca_key).expect("rcgen CA self-signed");
         let ca_der = ca_cert.der().to_vec();
         // Leaf: signed by the CA above, SAN = `localhost`.
-        let leaf_params = rcgen::CertificateParams::new(vec!["localhost".into()])
-            .expect("rcgen leaf params");
+        let leaf_params =
+            rcgen::CertificateParams::new(vec!["localhost".into()]).expect("rcgen leaf params");
         let leaf_key = rcgen::KeyPair::generate().expect("rcgen leaf KeyPair");
         let issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
         let leaf_cert = leaf_params
@@ -322,14 +316,10 @@ pub(super) async fn cross_repo_serve_axum_with_tls(
             // Inject `ConnectInfo<SocketAddr>` so the WS upgrade
             // handler keys the same per-route peer-user cache the
             // production listener uses.
-            let app_with_addr =
-                app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
+            let app_with_addr = app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
             let svc = TowerToHyperService::new(app_with_addr);
             let mut builder = auto::Builder::new(TokioExecutor::new());
-            builder
-                .http2()
-                .timer(TokioTimer::new())
-                .enable_connect_protocol();
+            builder.http2().timer(TokioTimer::new()).enable_connect_protocol();
             let _ = builder.serve_connection_with_upgrades(TokioIo::new(tls), svc).await;
         });
     }
@@ -359,8 +349,7 @@ pub(super) async fn cross_repo_serve_axum_h1_only(
         };
         let app = app.clone();
         tokio::spawn(async move {
-            let app_with_addr =
-                app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
+            let app_with_addr = app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
             let svc = TowerToHyperService::new(app_with_addr);
             let _ = hyper::server::conn::http1::Builder::new()
                 .serve_connection(TokioIo::new(tcp), svc)

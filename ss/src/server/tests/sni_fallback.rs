@@ -159,7 +159,9 @@ fn write_temp_pem(prefix: &str, contents: &str) -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-fn make_sample_config_with_tls(listen: SocketAddr) -> Result<(Config, std::path::PathBuf, std::path::PathBuf)> {
+fn make_sample_config_with_tls(
+    listen: SocketAddr,
+) -> Result<(Config, std::path::PathBuf, std::path::PathBuf)> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
     let cert_pem = cert.cert.pem();
     let key_pem = cert.signing_key.serialize_pem();
@@ -229,22 +231,16 @@ async fn matched_sni_terminates_locally() -> Result<()> {
     let tcp = TcpStream::connect(addr).await?;
     let server_name = ServerName::try_from("localhost")?;
     let mut tls = connector.connect(server_name, tcp).await?;
-    tls.write_all(
-        b"GET /not-a-real-path HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-    )
-    .await?;
+    tls.write_all(b"GET /not-a-real-path HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await?;
     let mut response = Vec::new();
     tokio::time::timeout(Duration::from_secs(2), tls.read_to_end(&mut response))
         .await
         .context("client read timed out")??;
     let head = std::str::from_utf8(&response).unwrap_or("");
-    assert!(
-        head.starts_with("HTTP/1.1 404"),
-        "expected our 404, got: {head:?}"
-    );
+    assert!(head.starts_with("HTTP/1.1 404"), "expected our 404, got: {head:?}");
     // Backend MUST NOT have seen anything.
-    let backend_seen =
-        tokio::time::timeout(Duration::from_millis(200), backend_rx).await;
+    let backend_seen = tokio::time::timeout(Duration::from_millis(200), backend_rx).await;
     assert!(backend_seen.is_err(), "backend was unexpectedly hit");
 
     server.abort();
@@ -292,11 +288,7 @@ async fn foreign_sni_splices_to_backend_with_clienthello() -> Result<()> {
     let connector = TlsConnector::from(Arc::new(permissive_client_config()));
     let tcp = TcpStream::connect(addr).await?;
     let server_name = ServerName::try_from("foreign.example")?;
-    let _ = tokio::time::timeout(
-        Duration::from_secs(1),
-        connector.connect(server_name, tcp),
-    )
-    .await;
+    let _ = tokio::time::timeout(Duration::from_secs(1), connector.connect(server_name, tcp)).await;
 
     let captured = tokio::time::timeout(Duration::from_secs(1), backend_rx)
         .await
@@ -339,12 +331,7 @@ async fn foreign_sni_with_proxy_protocol_v2_prefixes_header() -> Result<()> {
         config.http_root_realm.clone(),
     );
     let app = build_app(routes, services_state, auth, None);
-    let sni_fallback = Some(sni_ctx(
-        backend_addr,
-        addr,
-        Some(ProxyProtocolVersion::V2),
-        false,
-    ));
+    let sni_fallback = Some(sni_ctx(backend_addr, addr, Some(ProxyProtocolVersion::V2), false));
     let server_config = Arc::new(config);
     let shutdown = ShutdownSignal::never();
     let server = tokio::spawn(async move {
@@ -355,11 +342,7 @@ async fn foreign_sni_with_proxy_protocol_v2_prefixes_header() -> Result<()> {
     let connector = TlsConnector::from(Arc::new(permissive_client_config()));
     let tcp = TcpStream::connect(addr).await?;
     let server_name = ServerName::try_from("foreign.example")?;
-    let _ = tokio::time::timeout(
-        Duration::from_secs(1),
-        connector.connect(server_name, tcp),
-    )
-    .await;
+    let _ = tokio::time::timeout(Duration::from_secs(1), connector.connect(server_name, tcp)).await;
 
     let captured = tokio::time::timeout(Duration::from_secs(1), backend_rx)
         .await
@@ -387,4 +370,3 @@ async fn foreign_sni_with_proxy_protocol_v2_prefixes_header() -> Result<()> {
     let _ = server.await;
     Ok(())
 }
-

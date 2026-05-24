@@ -290,14 +290,8 @@ fn build_vless_ws_user_artifact(
         .map(|base| join_url(base, &config_filename))
         .transpose()?;
     let alpn = preferred_alpn_list(config, &ak.public_scheme, AlpnCarrier::Ws);
-    let vless_url = vless_uri(
-        vless_id,
-        public_host,
-        &ak.public_scheme,
-        vless_path,
-        &user.id,
-        alpn.as_deref(),
-    );
+    let vless_url =
+        vless_uri(vless_id, public_host, &ak.public_scheme, vless_path, &user.id, alpn.as_deref());
 
     Ok(AccessKeyArtifact {
         user_id: user.id.clone(),

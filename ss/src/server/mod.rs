@@ -26,12 +26,12 @@ mod auth;
 mod bootstrap;
 mod connect;
 mod constants;
-mod h3;
 #[cfg(feature = "control")]
 mod control;
 #[cfg(feature = "control")]
 mod dashboard;
 mod dns_cache;
+mod h3;
 mod listeners;
 mod nat;
 mod peer_user_cache;
@@ -103,11 +103,7 @@ pub async fn run(config: Config) -> Result<()> {
     let tcp_paths = built.tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = built.udp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let vless_paths = built.vless_routes.keys().cloned().collect::<BTreeSet<_>>();
-    let xhttp_paths = built
-        .xhttp_vless_routes
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
+    let xhttp_paths = built.xhttp_vless_routes.keys().cloned().collect::<BTreeSet<_>>();
 
     #[cfg(feature = "control")]
     if let Some(control_config) = config.control.clone() {
@@ -171,7 +167,8 @@ pub async fn run(config: Config) -> Result<()> {
         let routes = Arc::clone(&built.routes);
         let services = Arc::clone(&built.services);
         let auth = Arc::clone(&built.auth);
-        let alpn: Arc<[crate::config::H3Alpn]> = Arc::from(config.h3_alpn.clone().into_boxed_slice());
+        let alpn: Arc<[crate::config::H3Alpn]> =
+            Arc::from(config.h3_alpn.clone().into_boxed_slice());
         let raw_vless_users: Arc<[crate::protocol::vless::VlessUser]> = Arc::from(
             built
                 .vless_user_routes
@@ -208,8 +205,10 @@ pub async fn run(config: Config) -> Result<()> {
         });
     }
     if let Some(metrics_listener) = bound.metrics_listener {
-        let metrics_app =
-            build_metrics_app(built.services.tcp_server.metrics.clone(), config.metrics_path.clone());
+        let metrics_app = build_metrics_app(
+            built.services.tcp_server.metrics.clone(),
+            config.metrics_path.clone(),
+        );
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move {
             serve_metrics_listener(metrics_listener, metrics_app, shutdown).await

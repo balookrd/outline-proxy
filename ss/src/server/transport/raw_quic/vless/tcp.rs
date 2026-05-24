@@ -39,66 +39,61 @@ pub(super) async fn handle_tcp(
     // resume_result)` tuple. Resume hits skip `connect_tcp_target`
     // entirely; misses fall through to the legacy connect path.
     let user_label = user.label_arc();
-    let (up_reader, mut up_writer, upstream_guard, resume_result) = match try_attach_parked_tcp(
-        server,
-        &user_label,
-        resume.requested_resume,
-    )
-    .await
-    {
-        ResumeAttempt::Hit { reader, writer, guard } => {
-            (reader, writer, guard, Some(AddonResumeResult::Hit))
-        },
-        ResumeAttempt::Miss(result) => {
-            // Fresh connect.
-            let connect_started = std::time::Instant::now();
-            let upstream = match connect_tcp_target(
-                server.dns_cache.as_ref(),
-                &target,
-                user.fwmark(),
-                server.prefer_ipv4_upstream,
-                server.outbound_ipv6.as_deref(),
-            )
-            .await
-            {
-                Ok(stream) => {
-                    server.metrics.record_tcp_connect(
-                        Arc::clone(&user_label),
-                        Protocol::QuicRaw,
-                        AppProtocol::Vless,
-                        "success",
-                        connect_started.elapsed().as_secs_f64(),
-                    );
-                    stream
-                },
-                Err(error) => {
-                    server.metrics.record_tcp_connect(
-                        Arc::clone(&user_label),
-                        Protocol::QuicRaw,
-                        AppProtocol::Vless,
-                        "error",
-                        connect_started.elapsed().as_secs_f64(),
-                    );
-                    let _ = send.reset(quinn::VarInt::from_u32(1));
-                    return Err(error).with_context(|| {
-                        format!("vless raw-quic upstream connect failed: {target_display}")
-                    });
-                },
-            };
-            let (r, w) = upstream.into_split();
-            let guard = server.metrics.open_tcp_upstream_connection(
-                Arc::clone(&user_label),
-                Protocol::QuicRaw,
-                AppProtocol::Vless,
-            );
-            server.metrics.record_tcp_authenticated_session(
-                Arc::clone(&user_label),
-                Protocol::QuicRaw,
-                AppProtocol::Vless,
-            );
-            (r, w, guard, result)
-        },
-    };
+    let (up_reader, mut up_writer, upstream_guard, resume_result) =
+        match try_attach_parked_tcp(server, &user_label, resume.requested_resume).await {
+            ResumeAttempt::Hit { reader, writer, guard } => {
+                (reader, writer, guard, Some(AddonResumeResult::Hit))
+            },
+            ResumeAttempt::Miss(result) => {
+                // Fresh connect.
+                let connect_started = std::time::Instant::now();
+                let upstream = match connect_tcp_target(
+                    server.dns_cache.as_ref(),
+                    &target,
+                    user.fwmark(),
+                    server.prefer_ipv4_upstream,
+                    server.outbound_ipv6.as_deref(),
+                )
+                .await
+                {
+                    Ok(stream) => {
+                        server.metrics.record_tcp_connect(
+                            Arc::clone(&user_label),
+                            Protocol::QuicRaw,
+                            AppProtocol::Vless,
+                            "success",
+                            connect_started.elapsed().as_secs_f64(),
+                        );
+                        stream
+                    },
+                    Err(error) => {
+                        server.metrics.record_tcp_connect(
+                            Arc::clone(&user_label),
+                            Protocol::QuicRaw,
+                            AppProtocol::Vless,
+                            "error",
+                            connect_started.elapsed().as_secs_f64(),
+                        );
+                        let _ = send.reset(quinn::VarInt::from_u32(1));
+                        return Err(error).with_context(|| {
+                            format!("vless raw-quic upstream connect failed: {target_display}")
+                        });
+                    },
+                };
+                let (r, w) = upstream.into_split();
+                let guard = server.metrics.open_tcp_upstream_connection(
+                    Arc::clone(&user_label),
+                    Protocol::QuicRaw,
+                    AppProtocol::Vless,
+                );
+                server.metrics.record_tcp_authenticated_session(
+                    Arc::clone(&user_label),
+                    Protocol::QuicRaw,
+                    AppProtocol::Vless,
+                );
+                (r, w, guard, result)
+            },
+        };
 
     // Build the response header. When resumption is active the
     // `[VERSION, 0x00]` two-byte preamble is replaced with
@@ -107,12 +102,8 @@ pub(super) async fn handle_tcp(
     write_vless_tcp_response_header(&mut send, resume.issued_session_id, resume_result).await?;
 
     let user_counters = server.metrics.user_counters(&user_label);
-    let client_to_target = user_counters
-        .tcp_in(AppProtocol::Vless, Protocol::QuicRaw)
-        .clone();
-    let target_to_client = user_counters
-        .tcp_out(AppProtocol::Vless, Protocol::QuicRaw)
-        .clone();
+    let client_to_target = user_counters.tcp_in(AppProtocol::Vless, Protocol::QuicRaw).clone();
+    let target_to_client = user_counters.tcp_out(AppProtocol::Vless, Protocol::QuicRaw).clone();
 
     // Pipe the initial payload (bytes that arrived after the request
     // header in the same chunk) before the relay tasks spin up.
@@ -133,13 +124,17 @@ pub(super) async fn handle_tcp(
     // park-on-drop. Any error or upstream EOF skips the harvest.
     let cancel = Arc::new(Notify::new());
     let cancel_for_download = Arc::clone(&cancel);
-    let upload_task = tokio::spawn(run_upload(recv, up_writer, client_to_target, Arc::clone(&cancel)));
+    let upload_task =
+        tokio::spawn(run_upload(recv, up_writer, client_to_target, Arc::clone(&cancel)));
     let download_task =
         tokio::spawn(run_download(send, up_reader, target_to_client, cancel_for_download));
 
-    let upload_outcome = upload_task.await.context("vless raw-quic upload task join failed")??;
-    let download_outcome =
-        download_task.await.context("vless raw-quic download task join failed")??;
+    let upload_outcome = upload_task
+        .await
+        .context("vless raw-quic upload task join failed")??;
+    let download_outcome = download_task
+        .await
+        .context("vless raw-quic download task join failed")??;
 
     let parked = match (upload_outcome, download_outcome) {
         (UploadOutcome::ClientEofWriter(writer), DownloadOutcome::Cancelled(reader)) => {
@@ -288,10 +283,7 @@ async fn write_vless_tcp_response_header(
     if addons.len() > u8::MAX as usize {
         // Should not happen — Addons block is at most ~20 bytes for
         // the opcodes we emit. Defend the wire format anyway.
-        return Err(anyhow!(
-            "vless raw-quic response addons too large: {} bytes",
-            addons.len()
-        ));
+        return Err(anyhow!("vless raw-quic response addons too large: {} bytes", addons.len()));
     }
     let mut header = Vec::with_capacity(2 + addons.len());
     header.push(vless::VERSION);

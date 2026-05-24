@@ -47,8 +47,8 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 
 use outline_transport::{
-    DnsCache as ClientDnsCache, TargetAddr, TransportMode, TransportStream,
-    UpstreamTransportGuard, connect_websocket_with_resume, vless::vless_tcp_pair_from_ws,
+    DnsCache as ClientDnsCache, TargetAddr, TransportMode, TransportStream, UpstreamTransportGuard,
+    connect_websocket_with_resume, vless::vless_tcp_pair_from_ws,
 };
 
 use super::super::nat::NatTable;
@@ -60,8 +60,7 @@ use super::super::transport::XhttpRegistry;
 use super::super::{DnsCache, build_app, serve_h3_server};
 use super::sample_config;
 use super::xhttp::{
-    TEST_UUID, build_vless_tcp_handshake, setup_xhttp_server,
-    setup_xhttp_server_with_resumption,
+    TEST_UUID, build_vless_tcp_handshake, setup_xhttp_server, setup_xhttp_server_with_resumption,
 };
 use crate::config::H3Alpn;
 use crate::crypto::UserKey;
@@ -131,8 +130,7 @@ async fn cross_repo_xhttp_packet_up_h2_round_trip() -> Result<()> {
     assert_eq!(&received[..2], &[VERSION, 0x00], "vless response header");
     assert_eq!(&received[2..6], b"pong", "echoed payload");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(stream);
@@ -179,8 +177,7 @@ async fn cross_repo_xhttp_stream_one_h2_round_trip() -> Result<()> {
     assert_eq!(&received[..2], &[VERSION, 0x00]);
     assert_eq!(&received[2..6], b"pong");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(stream);
@@ -281,8 +278,7 @@ async fn cross_repo_xhttp_h2_resume_reattaches_parked_upstream() -> Result<()> {
     assert_eq!(&received_b[..2], &[VERSION, 0x00]);
     assert_eq!(&received_b[2..6], b"ackk", "echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -324,8 +320,7 @@ async fn cross_repo_xhttp_h2_ack_prefix_reports_up_acked_offset() -> Result<()> 
         Result::<_, anyhow::Error>::Ok((first, second))
     });
 
-    let (listen_addr, server, registry) =
-        setup_xhttp_server_with_resumption("/xh", true).await?;
+    let (listen_addr, server, registry) = setup_xhttp_server_with_resumption("/xh", true).await?;
     let cache = ClientDnsCache::new(Duration::from_secs(30));
     let url = Url::parse(&format!("http://{listen_addr}/xh"))?;
 
@@ -392,19 +387,12 @@ async fn cross_repo_xhttp_h2_ack_prefix_reports_up_acked_offset() -> Result<()> 
     // can drive `consume_ack_prefix_with_timeout` like the VLESS-WS
     // test does. `vless_tcp_pair_from_ws` works for `TransportStream
     // ::Xhttp` too — `from_ws_frames` is generic over the variant.
-    let lifetime_b =
-        UpstreamTransportGuard::new("cross-repo-xhttp-ack-prefix-b", "vless-xhttp-h2");
+    let lifetime_b = UpstreamTransportGuard::new("cross-repo-xhttp-ack-prefix-b", "vless-xhttp-h2");
     let target_b = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
     let diag_b = outline_transport::WsReadDiag::default();
     let uuid_b = parse_uuid(TEST_UUID)?;
-    let (mut writer_b, mut reader_b) = vless_tcp_pair_from_ws(
-        stream_b,
-        &uuid_b,
-        &target_b,
-        Arc::clone(&lifetime_b),
-        diag_b,
-        None,
-    );
+    let (mut writer_b, mut reader_b) =
+        vless_tcp_pair_from_ws(stream_b, &uuid_b, &target_b, Arc::clone(&lifetime_b), diag_b, None);
     reader_b = reader_b.with_expect_ack_prefix(true);
 
     writer_b.send_chunk(b"helo").await?;
@@ -422,8 +410,7 @@ async fn cross_repo_xhttp_h2_ack_prefix_reports_up_acked_offset() -> Result<()> 
     let reply_b = reader_b.read_chunk().await?;
     assert_eq!(reply_b, b"ackk", "vless-over-xhttp echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -531,21 +518,13 @@ async fn cross_repo_xhttp_h2_symmetric_replay_returns_downlink_suffix() -> Resul
         "server must echo v2 on the XHTTP resume hit"
     );
 
-    let lifetime_b = UpstreamTransportGuard::new(
-        "cross-repo-xhttp-symmetric-replay-b",
-        "vless-xhttp-h2",
-    );
+    let lifetime_b =
+        UpstreamTransportGuard::new("cross-repo-xhttp-symmetric-replay-b", "vless-xhttp-h2");
     let target_b = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
     let diag_b = outline_transport::WsReadDiag::default();
     let uuid_b = parse_uuid(TEST_UUID)?;
-    let (mut writer_b, mut reader_b) = vless_tcp_pair_from_ws(
-        stream_b,
-        &uuid_b,
-        &target_b,
-        Arc::clone(&lifetime_b),
-        diag_b,
-        None,
-    );
+    let (mut writer_b, mut reader_b) =
+        vless_tcp_pair_from_ws(stream_b, &uuid_b, &target_b, Arc::clone(&lifetime_b), diag_b, None);
     reader_b = reader_b
         .with_expect_ack_prefix(true)
         .with_expect_downlink_replay(true);
@@ -562,17 +541,13 @@ async fn cross_repo_xhttp_h2_symmetric_replay_returns_downlink_suffix() -> Resul
     );
 
     let outcome = reader_b
-        .consume_downlink_replay_with_timeout(
-            Duration::from_secs(5),
-            1_048_576,
-        )
+        .consume_downlink_replay_with_timeout(Duration::from_secs(5), 1_048_576)
         .await?
         .expect("v2 negotiated → consume must surface an outcome");
     match outcome {
         outline_transport::downlink_replay::DownlinkReplayOutcome::Replay(payload) => {
             assert_eq!(
-                payload,
-                b"ng",
+                payload, b"ng",
                 "v2 must replay the suffix '[2..4)' of the parked ring (\"pong\")"
             );
         },
@@ -584,8 +559,7 @@ async fn cross_repo_xhttp_h2_symmetric_replay_returns_downlink_suffix() -> Resul
     let reply_b = reader_b.read_chunk().await?;
     assert_eq!(reply_b, b"ackk");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -725,8 +699,7 @@ async fn cross_repo_xhttp_packet_up_h3_round_trip() -> Result<()> {
     assert_eq!(&received[..2], &[VERSION, 0x00], "vless response header");
     assert_eq!(&received[2..6], b"pong", "echoed payload");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(stream);
@@ -754,10 +727,7 @@ async fn cross_repo_xhttp_stream_one_h3_round_trip() -> Result<()> {
     // `handle_xhttp_h3_request` does the matching split. This test
     // is the only place that exercise reaches in-tree.
     let cache = ClientDnsCache::new(Duration::from_secs(30));
-    let url = Url::parse(&format!(
-        "https://localhost:{}/xh?mode=stream-one",
-        listen_addr.port()
-    ))?;
+    let url = Url::parse(&format!("https://localhost:{}/xh?mode=stream-one", listen_addr.port()))?;
     let mut stream = connect_websocket_with_resume(
         &cache,
         &url,
@@ -779,8 +749,7 @@ async fn cross_repo_xhttp_stream_one_h3_round_trip() -> Result<()> {
     assert_eq!(&received[..2], &[VERSION, 0x00]);
     assert_eq!(&received[2..6], b"pong");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(stream);
@@ -872,8 +841,7 @@ async fn cross_repo_xhttp_packet_up_h3_resume_reattaches_parked_upstream() -> Re
     assert_eq!(&received_b[..2], &[VERSION, 0x00]);
     assert_eq!(&received_b[2..6], b"ackk", "echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -964,8 +932,7 @@ async fn cross_repo_xhttp_h3_to_h2_fallback_with_resume_token() -> Result<()> {
     });
 
     // Server has no UDP listener — only axum-TLS over TCP.
-    let (listen_addr, server, registry) =
-        setup_xhttp_h2_tls_server_with_resumption("/xh").await?;
+    let (listen_addr, server, registry) = setup_xhttp_h2_tls_server_with_resumption("/xh").await?;
     let cache = ClientDnsCache::new(Duration::from_secs(30));
     let url = Url::parse(&format!("https://localhost:{}/xh", listen_addr.port()))?;
 
@@ -1032,8 +999,7 @@ async fn cross_repo_xhttp_h3_to_h2_fallback_with_resume_token() -> Result<()> {
     assert_eq!(&received_b[..2], &[VERSION, 0x00]);
     assert_eq!(&received_b[2..6], b"ackk", "echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 

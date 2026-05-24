@@ -59,23 +59,14 @@ async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()
     let router = Router::new()
         .route("/", get(|| async { Redirect::temporary("/dashboard") }))
         .route("/dashboard", get(handlers::dashboard_page))
-        .route(
-            "/dashboard/assets/outline-logo.png",
-            get(handlers::dashboard_logo),
-        )
+        .route("/dashboard/assets/outline-logo.png", get(handlers::dashboard_logo))
         .route("/dashboard/api/instances", get(handlers::list_instances))
-        .route(
-            "/dashboard/api/users",
-            get(handlers::list_users).post(handlers::create_user),
-        )
+        .route("/dashboard/api/users", get(handlers::list_users).post(handlers::create_user))
         .route(
             "/dashboard/api/users/{id}",
             patch(handlers::update_user).delete(handlers::delete_user),
         )
-        .route(
-            "/dashboard/api/users/{id}/access-urls",
-            get(handlers::get_user_access_urls),
-        )
+        .route("/dashboard/api/users/{id}/access-urls", get(handlers::get_user_access_urls))
         .route("/dashboard/api/users/{id}/block", post(handlers::block_user))
         .route("/dashboard/api/users/{id}/unblock", post(handlers::unblock_user))
         .fallback(handlers::not_found)

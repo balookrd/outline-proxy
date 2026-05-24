@@ -13,16 +13,16 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use http_body_util::{StreamBody, combinators::BoxBody};
-use std::convert::Infallible;
 use arc_swap::ArcSwap;
 use axum::http::{Method, Request, StatusCode};
 use bytes::{Bytes, BytesMut};
 use http_body_util::{BodyExt, Full};
+use http_body_util::{StreamBody, combinators::BoxBody};
 use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::TokioExecutor,
 };
+use std::convert::Infallible;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -83,14 +83,16 @@ pub(super) async fn setup_xhttp_server_with_resumption_v2(
     // silent no-op (no `X-Outline-Session` ever appears).
     let orphan_registry = if resumption {
         Some(Arc::new(super::super::resumption::OrphanRegistry::new(
-            super::super::resumption::ResumptionConfig::from(&crate::config::SessionResumptionConfig {
-                enabled: true,
-                orphan_ttl_tcp_secs: 30,
-                orphan_ttl_udp_secs: 30,
-                orphan_per_user_cap: 4,
-                orphan_global_cap: 16,
-                downlink_buffer_bytes,
-            }),
+            super::super::resumption::ResumptionConfig::from(
+                &crate::config::SessionResumptionConfig {
+                    enabled: true,
+                    orphan_ttl_tcp_secs: 30,
+                    orphan_ttl_udp_secs: 30,
+                    orphan_per_user_cap: 4,
+                    orphan_global_cap: 16,
+                    downlink_buffer_bytes,
+                },
+            ),
             Arc::clone(&metrics),
         )))
     } else {
@@ -118,9 +120,8 @@ pub(super) async fn setup_xhttp_server_with_resumption_v2(
         http_root_realm: Arc::from("Authorization required"),
     });
     let app = build_app(routes, services, auth, None);
-    let handle = tokio::spawn(async move {
-        serve_listener(listener, app, ShutdownSignal::never()).await
-    });
+    let handle =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
     Ok((listen_addr, handle, xhttp_registry))
 }
 
@@ -230,8 +231,7 @@ async fn xhttp_packet_up_tcp_echo_round_trip() -> Result<()> {
     assert_eq!(post_resp.status(), StatusCode::OK);
     assert!(post_resp.headers().contains_key("x-padding"));
 
-    let received_upstream = tokio::time::timeout(Duration::from_secs(5), upstream_task)
-        .await???;
+    let received_upstream = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&received_upstream, b"ping");
 
     let downlink = tokio::time::timeout(Duration::from_secs(5), get_handle).await???;
@@ -297,8 +297,7 @@ async fn xhttp_packet_up_path_based_seq_round_trip() -> Result<()> {
         "path-based seq POST must succeed without X-Xhttp-Seq"
     );
 
-    let received_upstream = tokio::time::timeout(Duration::from_secs(5), upstream_task)
-        .await???;
+    let received_upstream = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&received_upstream, b"ping");
 
     let downlink = tokio::time::timeout(Duration::from_secs(5), get_handle).await???;
@@ -533,11 +532,10 @@ async fn xhttp_stream_one_full_duplex_round_trip() -> Result<()> {
     let target_uri = format!("http://{listen_addr}/xh/{session_id}?mode=stream-one");
 
     let tcp = tokio::net::TcpStream::connect(listen_addr).await?;
-    let (mut send, conn) = hyper::client::conn::http2::Builder::new(
-        hyper_util::rt::TokioExecutor::new(),
-    )
-    .handshake::<_, BoxBody<Bytes, Infallible>>(hyper_util::rt::TokioIo::new(tcp))
-    .await?;
+    let (mut send, conn) =
+        hyper::client::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .handshake::<_, BoxBody<Bytes, Infallible>>(hyper_util::rt::TokioIo::new(tcp))
+            .await?;
     tokio::spawn(async move {
         let _ = conn.await;
     });
@@ -548,9 +546,8 @@ async fn xhttp_stream_one_full_duplex_round_trip() -> Result<()> {
     // `close_uplink()` race the relay's first VLESS frame and
     // tear the session down before the upstream reply makes it
     // back through the downlink.
-    let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<
-        Result<hyper::body::Frame<Bytes>, Infallible>,
-    >(8);
+    let (frame_tx, frame_rx) =
+        tokio::sync::mpsc::channel::<Result<hyper::body::Frame<Bytes>, Infallible>>(8);
     let handshake = build_vless_tcp_handshake(upstream_addr, b"ping")?;
     frame_tx
         .send(Ok(hyper::body::Frame::data(Bytes::from(handshake))))
@@ -587,8 +584,7 @@ async fn xhttp_stream_one_full_duplex_round_trip() -> Result<()> {
     assert_eq!(&received[..2], &[VERSION, 0x00]);
     assert_eq!(&received[2..6], b"pong");
 
-    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task)
-        .await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     // Now close the uplink half so the relay sees EOF and the
@@ -624,18 +620,16 @@ async fn xhttp_stream_one_xray_style_no_mode_query_round_trip() -> Result<()> {
     let target_uri = format!("http://{listen_addr}/xh/{session_id}");
 
     let tcp = tokio::net::TcpStream::connect(listen_addr).await?;
-    let (mut send, conn) = hyper::client::conn::http2::Builder::new(
-        hyper_util::rt::TokioExecutor::new(),
-    )
-    .handshake::<_, BoxBody<Bytes, Infallible>>(hyper_util::rt::TokioIo::new(tcp))
-    .await?;
+    let (mut send, conn) =
+        hyper::client::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+            .handshake::<_, BoxBody<Bytes, Infallible>>(hyper_util::rt::TokioIo::new(tcp))
+            .await?;
     tokio::spawn(async move {
         let _ = conn.await;
     });
 
-    let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<
-        Result<hyper::body::Frame<Bytes>, Infallible>,
-    >(8);
+    let (frame_tx, frame_rx) =
+        tokio::sync::mpsc::channel::<Result<hyper::body::Frame<Bytes>, Infallible>>(8);
     let handshake = build_vless_tcp_handshake(upstream_addr, b"ping")?;
     frame_tx
         .send(Ok(hyper::body::Frame::data(Bytes::from(handshake))))
@@ -679,8 +673,7 @@ async fn xhttp_stream_one_xray_style_no_mode_query_round_trip() -> Result<()> {
     assert_eq!(&received[..2], &[VERSION, 0x00]);
     assert_eq!(&received[2..6], b"pong");
 
-    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task)
-        .await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(frame_tx);
@@ -722,18 +715,16 @@ async fn xhttp_stream_one_xray_sessionless_round_trip() -> Result<()> {
         };
 
         let tcp = tokio::net::TcpStream::connect(listen_addr).await?;
-        let (mut send, conn) = hyper::client::conn::http2::Builder::new(
-            hyper_util::rt::TokioExecutor::new(),
-        )
-        .handshake::<_, BoxBody<Bytes, Infallible>>(hyper_util::rt::TokioIo::new(tcp))
-        .await?;
+        let (mut send, conn) =
+            hyper::client::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                .handshake::<_, BoxBody<Bytes, Infallible>>(hyper_util::rt::TokioIo::new(tcp))
+                .await?;
         tokio::spawn(async move {
             let _ = conn.await;
         });
 
-        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<
-            Result<hyper::body::Frame<Bytes>, Infallible>,
-        >(8);
+        let (frame_tx, frame_rx) =
+            tokio::sync::mpsc::channel::<Result<hyper::body::Frame<Bytes>, Infallible>>(8);
         let handshake = build_vless_tcp_handshake(upstream_addr, b"ping")?;
         frame_tx
             .send(Ok(hyper::body::Frame::data(Bytes::from(handshake))))
@@ -771,8 +762,8 @@ async fn xhttp_stream_one_xray_sessionless_round_trip() -> Result<()> {
         assert_eq!(&received[..2], &[VERSION, 0x00]);
         assert_eq!(&received[2..6], b"pong");
 
-        let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task)
-            .await???;
+        let upstream_bytes =
+            tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
         assert_eq!(&upstream_bytes, b"ping");
 
         drop(frame_tx);
@@ -874,12 +865,10 @@ async fn xhttp_resume_reattaches_to_parked_upstream_across_sessions() -> Result<
     let post_a_resp = client.request(post_a).await?;
     assert_eq!(post_a_resp.status(), StatusCode::OK);
 
-    let (issued_a, downlink_a) =
-        tokio::time::timeout(Duration::from_secs(5), get_a).await???;
+    let (issued_a, downlink_a) = tokio::time::timeout(Duration::from_secs(5), get_a).await???;
     assert_eq!(&downlink_a[..2], &[VERSION, 0x00], "vless response header on A");
     assert_eq!(&downlink_a[2..6], b"pong", "echo reply on A");
-    let token = issued_a
-        .ok_or_else(|| anyhow!("session A did not surface X-Outline-Session"))?;
+    let token = issued_a.ok_or_else(|| anyhow!("session A did not surface X-Outline-Session"))?;
     assert_eq!(token.len(), 32);
 
     // Now that `pong` has reached the client, send a separate
@@ -952,8 +941,7 @@ async fn xhttp_resume_reattaches_to_parked_upstream_across_sessions() -> Result<
     let post_b_resp = client.request(post_b).await?;
     assert_eq!(post_b_resp.status(), StatusCode::OK);
 
-    let (issued_b, downlink_b) =
-        tokio::time::timeout(Duration::from_secs(5), get_b).await???;
+    let (issued_b, downlink_b) = tokio::time::timeout(Duration::from_secs(5), get_b).await???;
     // Session B mints its own resume token (the server cannot
     // know the request is a resume until it sees the VLESS
     // handshake), but its presence on the response is incidental
@@ -968,8 +956,7 @@ async fn xhttp_resume_reattaches_to_parked_upstream_across_sessions() -> Result<
     // and this `accept` would still be waiting (the first
     // upstream socket would already be closed from session A's
     // teardown), causing `read_exact(&mut second)` to never fire.
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -1038,8 +1025,7 @@ async fn xhttp_uplink_reorder_buffers_out_of_order_posts() -> Result<()> {
     // Upstream should observe exactly "abcdef" — 3 bytes from
     // seq=1 plus 3 bytes from seq=2, in that order, after the
     // server unblocks the reorder buffer with seq=0's handshake.
-    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task)
-        .await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"abcdef");
 
     let downlink = tokio::time::timeout(Duration::from_secs(5), get_handle).await???;

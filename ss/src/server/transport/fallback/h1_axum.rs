@@ -102,13 +102,7 @@ async fn proxy_to_backend(
             .tcp_inbound_listen
             .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
         let mut header = Vec::with_capacity(64);
-        encode_proxy_protocol(
-            &mut header,
-            version,
-            peer_addr,
-            dst,
-            PpTransport::Stream,
-        );
+        encode_proxy_protocol(&mut header, version, peer_addr, dst, PpTransport::Stream);
         let mut stream = stream;
         stream
             .write_all(&header)
@@ -171,8 +165,6 @@ async fn proxy_to_backend(
         }
         resp_headers.append(name.clone(), value.clone());
     }
-    let body = Body::new(resp_body.map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::Other, e)
-    }));
+    let body = Body::new(resp_body.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
     builder.body(body).context("failed to assemble fallback response")
 }

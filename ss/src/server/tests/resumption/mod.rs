@@ -34,9 +34,7 @@ use tokio::{
 };
 use tokio_tungstenite::{
     WebSocketStream, connect_async,
-    tungstenite::{
-        Message as WsMessage, client::IntoClientRequest, http::HeaderValue, protocol,
-    },
+    tungstenite::{Message as WsMessage, client::IntoClientRequest, http::HeaderValue, protocol},
 };
 
 use super::super::bootstrap::serve_listener;
@@ -46,8 +44,8 @@ use super::super::setup::{VlessUserRoute, build_vless_transport_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::UserKeySlice;
 use super::super::{
-    AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_transport_route_map,
-    build_user_routes, build_app, user_keys,
+    AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_app,
+    build_transport_route_map, build_user_routes, user_keys,
 };
 use crate::metrics::{Metrics, Transport};
 
@@ -66,7 +64,8 @@ mod vless;
 /// counter: the number of unique sources is `1` while the server
 /// reuses one parked `UdpSocket`, and `2` after a fresh
 /// `bind_and_connect_udp` allocates a new ephemeral port.
-async fn spawn_echo_udp_target() -> Result<(SocketAddr, Arc<Mutex<std::collections::HashSet<SocketAddr>>>)> {
+async fn spawn_echo_udp_target()
+-> Result<(SocketAddr, Arc<Mutex<std::collections::HashSet<SocketAddr>>>)> {
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = socket.local_addr()?;
     let sources = Arc::new(Mutex::new(std::collections::HashSet::new()));
@@ -245,10 +244,7 @@ async fn connect_ws_h2(
     path: &str,
     resume: Option<SessionId>,
     capable: bool,
-) -> Result<(
-    WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>,
-    H2HandshakeOutcome,
-)> {
+) -> Result<(WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>, H2HandshakeOutcome)> {
     let tcp = tokio::net::TcpStream::connect(listen_addr).await?;
     let (mut send_request, conn) = http2::Builder::new(TokioExecutor::new())
         .handshake::<_, Empty<Bytes>>(TokioIo::new(tcp))
@@ -300,9 +296,8 @@ async fn connect_ws_h2(
 /// already proof that the relay completed (with or without resume).
 async fn expect_binary_reply<S>(socket: &mut S) -> Result<Bytes>
 where
-    S: futures_util::Stream<
-            Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>,
-        > + Unpin,
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
 {
     let next = tokio::time::timeout(Duration::from_secs(2), socket.next()).await?;
     match next {

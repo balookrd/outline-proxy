@@ -145,7 +145,6 @@ impl OversizeStream {
             .map_err(|error| anyhow!("oversize stream record read failed (len={len}): {error}"))?;
         Ok(Some(Bytes::from(buf)))
     }
-
 }
 
 /// Connection-level slot that lazy-holds the oversize-record stream

@@ -29,8 +29,11 @@ pub(in crate::server) fn load_h3_tls_config(config: &Config) -> Result<rustls::S
     // (vless-mtu / vless, ss-mtu / ss) — newer clients pick the
     // sibling and use the oversize-record stream fallback; older
     // clients pick the base and behave exactly as before.
-    let alpn: Vec<&[u8]> =
-        config.h3_alpn.iter().flat_map(|p| p.advertised_alpns().iter().copied()).collect();
+    let alpn: Vec<&[u8]> = config
+        .h3_alpn
+        .iter()
+        .flat_map(|p| p.advertised_alpns().iter().copied())
+        .collect();
     build_listener_tls_config(
         config.h3_cert_path.as_deref(),
         config.h3_key_path.as_deref(),
@@ -203,7 +206,11 @@ impl MultiCertResolver {
         for (idx, (ck, sni_override)) in entries.into_iter().enumerate() {
             let ck = Arc::new(ck);
             let derived = sni_override.is_empty();
-            let names = if derived { extract_sni_names(&ck.cert) } else { sni_override };
+            let names = if derived {
+                extract_sni_names(&ck.cert)
+            } else {
+                sni_override
+            };
 
             // Resolver matches SNIs exactly. Wildcard DNS names from
             // SAN can't be registered as keys, so we skip them with a

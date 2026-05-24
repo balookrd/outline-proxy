@@ -39,8 +39,7 @@ impl From<anyhow::Error> for FrameError {
 
 use crate::{
     crypto::{
-        AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, UserKey,
-        diagnose_stream_handshake,
+        AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, UserKey, diagnose_stream_handshake,
     },
     metrics::{AppProtocol, Metrics, PerUserCounters, Protocol, TcpUpstreamGuard, Transport},
     outbound::OutboundIpv6,
@@ -48,14 +47,14 @@ use crate::{
 };
 
 use super::super::connect::connect_tcp_target;
-use super::super::relay::UpstreamRelayOutcome;
-use super::super::resumption::{
-    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext, ack_prefix,
-};
 use super::super::constants::{
     WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
 };
 use super::super::dns_cache::DnsCache;
+use super::super::relay::UpstreamRelayOutcome;
+use super::super::resumption::{
+    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext, ack_prefix,
+};
 use super::super::scratch::ScratchBuf;
 use super::sink;
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
@@ -179,13 +178,12 @@ impl ResumeContext {
             .get(RESUME_CAPABLE_HEADER)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.trim() == "1");
-        let issued_session_id = if registry.enabled()
-            && (resume_capable || requested_resume.is_some())
-        {
-            registry.mint_session_id()
-        } else {
-            None
-        };
+        let issued_session_id =
+            if registry.enabled() && (resume_capable || requested_resume.is_some()) {
+                registry.mint_session_id()
+            } else {
+                None
+            };
         // Ack-Prefix Protocol capability advertisement. Pre-auth header
         // read is safe: only the boolean capability bit is exposed, no
         // session-id existence is leaked. The actual control-frame emit
@@ -212,9 +210,7 @@ impl ResumeContext {
         // everything still in the server's ring) — we log at debug to
         // avoid a noisy WARN on a header an old proxy might forward
         // unfiltered, but the parse failure is observable.
-        let client_acked_offset = if symmetric_replay_requested
-            && requested_resume.is_some()
-        {
+        let client_acked_offset = if symmetric_replay_requested && requested_resume.is_some() {
             match headers
                 .get(DOWN_ACKED_HEADER)
                 .and_then(|v| v.to_str().ok())
@@ -255,7 +251,6 @@ impl ResumeContext {
             headers.insert(SESSION_RESPONSE_HEADER, value);
         }
     }
-
 }
 
 /// Relay-task return type used by the TCP-WS path. Carries either a
@@ -323,7 +318,8 @@ struct WsTcpRelayState {
     /// park the same `Arc` is moved into [`ParkedTcp::downlink_ring`]
     /// and back on resume hit. `None` means v2 is not engaged on
     /// this session and the ring is never allocated.
-    downlink_ring: Option<Arc<parking_lot::Mutex<crate::server::resumption::downlink_ring::DownlinkRing>>>,
+    downlink_ring:
+        Option<Arc<parking_lot::Mutex<crate::server::resumption::downlink_ring::DownlinkRing>>>,
 }
 
 struct WsTcpFrameOutput<'a, Msg> {
@@ -376,11 +372,8 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
         // the receiver, and the sender side is the one that actually
         // back-pressures upstream reads.
         let used = self.tx.max_capacity().saturating_sub(self.tx.capacity());
-        self.metrics.observe_ws_data_channel_fill(
-            Transport::Tcp,
-            AppProtocol::Shadowsocks,
-            used,
-        );
+        self.metrics
+            .observe_ws_data_channel_fill(Transport::Tcp, AppProtocol::Shadowsocks, used);
         self.tx
             .send((self.make_binary)(ciphertext))
             .await
@@ -644,10 +637,7 @@ async fn try_park_on_drop(
         Some(g) => g,
         None => return false,
     };
-    let target_display = state
-        .upstream_target_display
-        .take()
-        .unwrap_or_else(|| Arc::from("?"));
+    let target_display = state.upstream_target_display.take().unwrap_or_else(|| Arc::from("?"));
     let owner = user.id_arc();
     let parked = ParkedTcp {
         upstream_writer: writer,
@@ -700,15 +690,13 @@ async fn handle_tcp_binary_frame<Msg>(
 where
     Msg: Send + 'static,
 {
-    server
-        .metrics
-        .record_websocket_binary_frame(
-            Transport::Tcp,
-            route.protocol,
-            AppProtocol::Shadowsocks,
-            "in",
-            data.len(),
-        );
+    server.metrics.record_websocket_binary_frame(
+        Transport::Tcp,
+        route.protocol,
+        AppProtocol::Shadowsocks,
+        "in",
+        data.len(),
+    );
     decryptor.feed_ciphertext(&data);
     match decryptor.drain_plaintext(plaintext_buffer) {
         Ok(()) => {},
@@ -816,15 +804,11 @@ where
                     .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
                 let ciphertext = out.split().freeze();
                 let make_binary = outbound.make_binary;
-                outbound
-                    .data_tx
-                    .send(make_binary(ciphertext))
-                    .await
-                    .map_err(|_| {
-                        FrameError::Fatal(anyhow!(
-                            "ack-prefix control frame send failed: WS data channel closed"
-                        ))
-                    })?;
+                outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
+                    FrameError::Fatal(anyhow!(
+                        "ack-prefix control frame send failed: WS data channel closed"
+                    ))
+                })?;
                 debug!(
                     user = user.id(),
                     path = %route.path,
@@ -855,8 +839,7 @@ where
                     Some(ring) => {
                         let guard = ring.lock();
                         let diag = (guard.oldest_offset(), guard.total_sent());
-                        let outcome =
-                            guard.replay_from(state.client_acked_offset_request);
+                        let outcome = guard.replay_from(state.client_acked_offset_request);
                         drop(guard);
                         match outcome {
                             ReplayOutcome::Available(bytes) => (0x00u8, bytes, Some(diag)),
@@ -876,9 +859,7 @@ where
                 };
                 let payload_len = payload.len() as u64;
                 let truncated = (flags & 0x01) != 0;
-                server
-                    .metrics
-                    .record_orphan_downlink_replay_bytes("tcp", payload_len);
+                server.metrics.record_orphan_downlink_replay_bytes("tcp", payload_len);
                 if truncated {
                     server.metrics.record_orphan_downlink_replay_truncated("tcp");
                 }
@@ -894,15 +875,11 @@ where
                     .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
                 let ciphertext = out.split().freeze();
                 let make_binary = outbound.make_binary;
-                outbound
-                    .data_tx
-                    .send(make_binary(ciphertext))
-                    .await
-                    .map_err(|_| {
-                        FrameError::Fatal(anyhow!(
-                            "v2 downlink replay frame send failed: WS data channel closed"
-                        ))
-                    })?;
+                outbound.data_tx.send(make_binary(ciphertext)).await.map_err(|_| {
+                    FrameError::Fatal(anyhow!(
+                        "v2 downlink replay frame send failed: WS data channel closed"
+                    ))
+                })?;
                 let (ring_oldest, ring_total) = ring_diag.unwrap_or((0, 0));
                 debug!(
                     user = user.id(),
@@ -1134,9 +1111,7 @@ async fn forward_plaintext_to_writer(
         // queue, even if the network later drops them. The Ack-Prefix
         // Protocol contract is "server forwarded N bytes to upstream",
         // and `write_all` succeeding is exactly that handoff.
-        state
-            .upstream_bytes_acked
-            .fetch_add(payload_len, Ordering::Relaxed);
+        state.upstream_bytes_acked.fetch_add(payload_len, Ordering::Relaxed);
         plaintext_buffer.clear();
     }
     Ok(())

@@ -241,9 +241,8 @@ impl AeadStreamDecryptor {
             // Stack buffer — avoids a heap allocation for every candidate
             // that fails AEAD verification.
             let mut encrypted_fixed = [0u8; SS2022_REQUEST_FIXED_CIPHERTEXT_LEN];
-            encrypted_fixed.copy_from_slice(
-                &buffer[salt_len..salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN],
-            );
+            encrypted_fixed
+                .copy_from_slice(&buffer[salt_len..salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN]);
             let less_safe =
                 build_session_key(user.cipher(), user.master_key(), &buffer[..salt_len])?;
             if let Ok(header) = try_open_fixed_header(

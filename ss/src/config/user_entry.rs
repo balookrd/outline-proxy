@@ -110,10 +110,7 @@ impl UserEntry {
         self.ws_path_vless.as_deref().or(default)
     }
 
-    pub fn effective_xhttp_path_vless<'a>(
-        &'a self,
-        default: Option<&'a str>,
-    ) -> Option<&'a str> {
+    pub fn effective_xhttp_path_vless<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
         self.xhttp_path_vless.as_deref().or(default)
     }
 }

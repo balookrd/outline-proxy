@@ -60,15 +60,11 @@ pub(in crate::server) async fn handle_raw_ss_quic_stream_with_prefix(
     prefix: Vec<u8>,
     ctx: Arc<RawQuicSsCtx>,
 ) -> Result<()> {
-    let session = ctx
-        .services
-        .tcp_server
-        .metrics
-        .open_websocket_session(
-            crate::metrics::Transport::Tcp,
-            Protocol::QuicRaw,
-            crate::metrics::AppProtocol::Shadowsocks,
-        );
+    let session = ctx.services.tcp_server.metrics.open_websocket_session(
+        crate::metrics::Transport::Tcp,
+        Protocol::QuicRaw,
+        crate::metrics::AppProtocol::Shadowsocks,
+    );
 
     let outcome = run_stream(&mut send, &mut recv, prefix, &ctx).await;
     let outcome_for_metrics = match &outcome {
@@ -112,8 +108,9 @@ async fn run_stream(
         // Err carrying [`HandshakeRejectedMarker`] so the session guard
         // attributes the close to `DisconnectReason::HandshakeRejected`.
         sink::sink_async_read(recv).await;
-        return Err(anyhow!("ss raw-quic handshake rejected")
-            .context(sink::HandshakeRejectedMarker));
+        return Err(
+            anyhow!("ss raw-quic handshake rejected").context(sink::HandshakeRejectedMarker)
+        );
     };
 
     let target_display = handshake.target.display_host_port();
@@ -154,8 +151,7 @@ async fn run_stream(
                 "ss raw-quic upstream connect failed"
             );
             let _ = send.reset(quinn::VarInt::from_u32(1));
-            return Err(error)
-                .with_context(|| format!("failed to connect to {target_display}"));
+            return Err(error).with_context(|| format!("failed to connect to {target_display}"));
         },
     };
 
@@ -331,7 +327,7 @@ pub(in crate::server) async fn serve_raw_ss_oversize_records(
         match stream.recv_record().await {
             Ok(Some(record)) => {
                 spawn_handle_ss_packet(record, &connection, &ctx, &conn_state, remote);
-            }
+            },
             Ok(None) => return Ok(()),
             Err(error) => return Err(error.context("ss raw-quic oversize-record read failed")),
         }
@@ -351,9 +347,7 @@ impl ResponseSender for QuicSsResponseSender {
             // Try the datagram path first: it's the cheap one and
             // covers the common case (SS-AEAD UDP packets are usually
             // small DNS queries / short replies).
-            let oversized = connection
-                .max_datagram_size()
-                .is_some_and(|max| data.len() > max);
+            let oversized = connection.max_datagram_size().is_some_and(|max| data.len() > max);
             if !oversized {
                 if let Err(error) = connection.send_datagram(data) {
                     debug!(?error, "ss raw-quic send_datagram failed");
@@ -388,12 +382,12 @@ impl ResponseSender for QuicSsResponseSender {
                         Err(error) => {
                             debug!(?error, "failed to open ss oversize stream for outbound packet");
                             return false;
-                        }
+                        },
                     };
                     let (send, recv) = pair;
                     let stream = Arc::new(super::OversizeStream::from_local_open(send, recv));
                     conn_state.oversize_slot.install(stream)
-                }
+                },
             };
             if let Err(error) = stream.send_record(&data).await {
                 debug!(?error, "ss raw-quic oversize-record send failed");

@@ -179,11 +179,7 @@ impl Metrics {
     /// throughput-degrading symptom (server cuts a slow but live client
     /// because keepalive pings can't traverse a saturated client-side
     /// TLS write half).
-    pub fn record_pong_deadline_disconnect(
-        &self,
-        transport: Transport,
-        app_protocol: AppProtocol,
-    ) {
+    pub fn record_pong_deadline_disconnect(&self, transport: Transport, app_protocol: AppProtocol) {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_websocket_pong_deadline_total",

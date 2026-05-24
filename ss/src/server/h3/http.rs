@@ -11,7 +11,6 @@ use sockudo_ws::{
 };
 use tracing::{debug, warn};
 
-use super::H3ConnectionCtx;
 use super::super::{
     auth::{
         ROOT_HTTP_AUTH_MAX_FAILURES, build_not_found_response,
@@ -27,6 +26,7 @@ use super::super::{
         is_normal_h3_shutdown,
     },
 };
+use super::H3ConnectionCtx;
 use crate::crypto::UserKey;
 use crate::metrics::{AppProtocol, Protocol, Transport};
 
@@ -224,10 +224,11 @@ async fn handle_h3_request(
             .unwrap_or_else(empty_transport_route);
         drop(routes_snap);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
-        let session = ctx
-            .tcp_server
-            .metrics
-            .open_websocket_session(Transport::Tcp, Protocol::Http3, AppProtocol::Shadowsocks);
+        let session = ctx.tcp_server.metrics.open_websocket_session(
+            Transport::Tcp,
+            Protocol::Http3,
+            AppProtocol::Shadowsocks,
+        );
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
             protocol: Protocol::Http3,
@@ -253,10 +254,11 @@ async fn handle_h3_request(
             .unwrap_or_else(empty_transport_route);
         drop(routes_snap);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
-        let session = ctx
-            .udp_server
-            .metrics
-            .open_websocket_session(Transport::Udp, Protocol::Http3, AppProtocol::Shadowsocks);
+        let session = ctx.udp_server.metrics.open_websocket_session(
+            Transport::Udp,
+            Protocol::Http3,
+            AppProtocol::Shadowsocks,
+        );
         let route_ctx = Arc::new(UdpRouteCtx {
             users: Arc::clone(&route.users),
             protocol: Protocol::Http3,
@@ -275,23 +277,20 @@ async fn handle_h3_request(
             .unwrap_or_else(empty_vless_transport_route);
         drop(routes_snap);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming vless websocket upgrade");
-        let session = ctx
-            .vless_server
-            .metrics
-            .open_websocket_session(Transport::Tcp, Protocol::Http3, AppProtocol::Vless);
+        let session = ctx.vless_server.metrics.open_websocket_session(
+            Transport::Tcp,
+            Protocol::Http3,
+            AppProtocol::Vless,
+        );
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),
             protocol: Protocol::Http3,
             path: Arc::from(ws_req.path.as_str()),
             candidate_users: Arc::clone(&route.candidate_users),
         };
-        let result = handle_vless_h3_connection(
-            socket,
-            Arc::clone(&ctx.vless_server),
-            route_ctx,
-            resume,
-        )
-        .await;
+        let result =
+            handle_vless_h3_connection(socket, Arc::clone(&ctx.vless_server), route_ctx, resume)
+                .await;
         finish_ws_session(session, result, "vless");
     }
 
@@ -330,11 +329,7 @@ fn match_xhttp_path(
         match rest.split_once('/') {
             None => {
                 // `<base>/<id>` — single segment after base.
-                return Some((
-                    std::sync::Arc::from(base.as_str()),
-                    Some(rest.to_owned()),
-                    None,
-                ));
+                return Some((std::sync::Arc::from(base.as_str()), Some(rest.to_owned()), None));
             },
             Some((id, tail)) => {
                 // `<base>/<id>/<seq>` — `seq` must be a non-empty
@@ -345,11 +340,7 @@ fn match_xhttp_path(
                     continue;
                 }
                 let Ok(seq) = tail.parse::<u64>() else { continue };
-                return Some((
-                    std::sync::Arc::from(base.as_str()),
-                    Some(id.to_owned()),
-                    Some(seq),
-                ));
+                return Some((std::sync::Arc::from(base.as_str()), Some(id.to_owned()), Some(seq)));
             },
         }
     }

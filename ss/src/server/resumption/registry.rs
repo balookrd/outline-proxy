@@ -15,11 +15,7 @@ use tracing::{debug, warn};
 
 use crate::metrics::Metrics;
 
-use super::{
-    config::ResumptionConfig,
-    parked::Parked,
-    session_id::SessionId,
-};
+use super::{config::ResumptionConfig, parked::Parked, session_id::SessionId};
 
 /// Reason a `take_for_resume` call did not return parked state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,8 +182,7 @@ impl OrphanRegistry {
             drop(victim_entry);
         }
 
-        self.by_id
-            .insert(id, ParkedEntry { owner, deadline, parked });
+        self.by_id.insert(id, ParkedEntry { owner, deadline, parked });
         self.metrics.record_orphan_parked(kind);
         self.refresh_kind_gauge(kind);
     }
@@ -195,11 +190,7 @@ impl OrphanRegistry {
     /// Attempts to resume the named session for an authenticated user.
     /// On a hit, the entry is removed from the registry and ownership
     /// of the upstream state transfers to the caller.
-    pub(crate) fn take_for_resume(
-        &self,
-        id: SessionId,
-        authenticated_user: &str,
-    ) -> ResumeOutcome {
+    pub(crate) fn take_for_resume(&self, id: SessionId, authenticated_user: &str) -> ResumeOutcome {
         if !self.enabled() {
             return ResumeOutcome::Miss(ResumeMiss::Disabled);
         }

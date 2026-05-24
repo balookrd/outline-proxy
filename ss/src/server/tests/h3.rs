@@ -26,13 +26,15 @@ use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
 use super::super::{DnsCache, build_user_routes, serve_h3_server};
 use super::{build_test_state, sample_config, test_h3_client_config, test_h3_server_tls};
-use bytes::BytesMut;
 use crate::metrics::Metrics;
 use crate::protocol::TargetAddr;
-use crate::protocol::vless::{COMMAND_MUX, COMMAND_TCP, COMMAND_UDP, VERSION, VlessUser, parse_uuid};
+use crate::protocol::vless::{
+    COMMAND_MUX, COMMAND_TCP, COMMAND_UDP, VERSION, VlessUser, parse_uuid,
+};
 use crate::protocol::vless_mux::{
     OPTION_DATA, ParsedFrame, SessionStatus, encode_frame, parse_frame,
 };
+use bytes::BytesMut;
 
 #[tokio::test]
 async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
@@ -63,7 +65,9 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
             services,
             auth,
             std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
             None,
@@ -127,7 +131,11 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
 
     let config = sample_config(addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -168,7 +176,9 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
             services,
             auth,
             std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
             None,
@@ -266,7 +276,9 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
             services,
             auth,
             std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
             None,
@@ -342,7 +354,9 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
             services,
             auth,
             std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
             None,
@@ -404,7 +418,11 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
 
     let config = sample_config(addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -445,7 +463,9 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
             services,
             auth,
             std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
             None,
@@ -538,7 +558,11 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
 
     let config = sample_config(addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -579,7 +603,9 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
             services,
             auth,
             std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
             None,
@@ -666,7 +692,11 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
 
     let config = sample_config(addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -707,7 +737,9 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
             services,
             auth,
             std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
             None,
@@ -751,8 +783,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
     payload.extend_from_slice(domain);
 
     let mut new_frame = BytesMut::new();
-    let target =
-        TargetAddr::Socket(SocketAddr::from((Ipv4Addr::LOCALHOST, upstream_addr.port())));
+    let target = TargetAddr::Socket(SocketAddr::from((Ipv4Addr::LOCALHOST, upstream_addr.port())));
     encode_frame(
         &mut new_frame,
         1,

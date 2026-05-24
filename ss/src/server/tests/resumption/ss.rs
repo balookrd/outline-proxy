@@ -180,8 +180,8 @@ async fn ss_resume_owner_mismatch_does_not_leak_session_to_other_user() -> Resul
     // Alice opens, gets a Session ID, closes — server parks under alice.
     let (mut alice_socket, alice_issued) =
         connect_ws_h1(server.listen_addr, "/tcp", None, true).await?;
-    let alice_id = alice_issued
-        .ok_or_else(|| anyhow::anyhow!("server didn't mint Session ID for Alice"))?;
+    let alice_id =
+        alice_issued.ok_or_else(|| anyhow::anyhow!("server didn't mint Session ID for Alice"))?;
     alice_socket
         .send(WsMessage::Binary(ss_handshake_frame(&alice, target_addr, b"a-ping")?))
         .await?;
@@ -233,8 +233,8 @@ async fn ss_resume_across_h1_to_h2_transport_switch() -> Result<()> {
 
     // Session #1 over HTTP/1.
     let (mut h1_socket, h1_issued) = connect_ws_h1(server.listen_addr, "/tcp", None, true).await?;
-    let session_id = h1_issued
-        .ok_or_else(|| anyhow::anyhow!("HTTP/1 server didn't mint Session ID"))?;
+    let session_id =
+        h1_issued.ok_or_else(|| anyhow::anyhow!("HTTP/1 server didn't mint Session ID"))?;
     h1_socket
         .send(WsMessage::Binary(ss_handshake_frame(&user, target_addr, b"h1-ping")?))
         .await?;
@@ -486,7 +486,11 @@ fn parse_metric_value(line: &str) -> u64 {
 }
 
 fn sum_metric(rendered: &str, predicate: impl Fn(&str) -> bool) -> u64 {
-    rendered.lines().filter(|l| predicate(l)).map(parse_metric_value).sum()
+    rendered
+        .lines()
+        .filter(|l| predicate(l))
+        .map(parse_metric_value)
+        .sum()
 }
 
 // ── SS-UDP tests ─────────────────────────────────────────────────────────────
@@ -508,8 +512,8 @@ async fn ss_udp_resume_across_h1_to_h2_transport_switch() -> Result<()> {
 
     // Session #1 over HTTP/1.
     let (mut h1_socket, h1_issued) = connect_ws_h1(server.listen_addr, "/udp", None, true).await?;
-    let session_id = h1_issued
-        .ok_or_else(|| anyhow::anyhow!("HTTP/1 SS-UDP server didn't mint Session ID"))?;
+    let session_id =
+        h1_issued.ok_or_else(|| anyhow::anyhow!("HTTP/1 SS-UDP server didn't mint Session ID"))?;
     let mut plaintext = TargetAddr::Socket(target_addr).encode()?;
     plaintext.extend_from_slice(b"udp-h1");
     let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
@@ -565,8 +569,8 @@ async fn ss_udp_resume_hit_reattaches_parked_nat_entry() -> Result<()> {
     // ── Session #1: dial /udp, push one encrypted datagram, expect
     //               an encrypted reply back. ──────────────────────
     let (mut socket, issued) = connect_ws_h1(server.listen_addr, "/udp", None, true).await?;
-    let session_id = issued
-        .ok_or_else(|| anyhow::anyhow!("ss-udp server didn't mint Session ID"))?;
+    let session_id =
+        issued.ok_or_else(|| anyhow::anyhow!("ss-udp server didn't mint Session ID"))?;
 
     let mut plaintext = TargetAddr::Socket(target_addr).encode()?;
     plaintext.extend_from_slice(b"udp1");
