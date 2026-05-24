@@ -78,8 +78,18 @@ async fn xhttp_client_round_trip_through_mock_server() -> Result<()> {
     let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
 
-    let (mut stream, issued, _ack_prefix_echo, _symmetric_replay_echo) =
-        super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH2, None, false, None, false, false, 0).await?;
+    let (mut stream, issued, _ack_prefix_echo, _symmetric_replay_echo) = super::connect_xhttp(
+        &cache,
+        &base_url,
+        TransportMode::XhttpH2,
+        None,
+        false,
+        None,
+        false,
+        false,
+        0,
+    )
+    .await?;
     // The mock server does not echo `X-Outline-Session`, so the
     // first dial should report no resume token. A follow-up test
     // exercises the populated path against an actual outline-ss-rust
@@ -108,12 +118,8 @@ async fn xhttp_client_round_trip_through_mock_server() -> Result<()> {
     // so the test does not flake on the same wire-correct behaviour
     // the server's reorder buffer already absorbs.
     let posts = wait_for_posts(&captured, 2).await;
-    let mut paired: Vec<(u64, Bytes)> = posts
-        .seqs
-        .iter()
-        .copied()
-        .zip(posts.bodies.iter().cloned())
-        .collect();
+    let mut paired: Vec<(u64, Bytes)> =
+        posts.seqs.iter().copied().zip(posts.bodies.iter().cloned()).collect();
     paired.sort_by_key(|(seq, _)| *seq);
     let seqs: Vec<u64> = paired.iter().map(|(seq, _)| *seq).collect();
     let bodies: Vec<Bytes> = paired.into_iter().map(|(_, body)| body).collect();
@@ -157,8 +163,18 @@ async fn xhttp_client_stream_one_round_trip_through_mock_server() -> Result<()> 
     // parameter to `connect_xhttp`.
     let base_url: Url = format!("http://{listen_addr}/xh?mode=stream-one").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
-    let (mut stream, issued, _ack_prefix_echo, _symmetric_replay_echo) =
-        super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH2, None, false, None, false, false, 0).await?;
+    let (mut stream, issued, _ack_prefix_echo, _symmetric_replay_echo) = super::connect_xhttp(
+        &cache,
+        &base_url,
+        TransportMode::XhttpH2,
+        None,
+        false,
+        None,
+        false,
+        false,
+        0,
+    )
+    .await?;
     assert!(issued.is_none());
 
     // Push two uplink chunks — they should arrive on the server
@@ -184,11 +200,7 @@ async fn xhttp_client_stream_one_round_trip_through_mock_server() -> Result<()> 
     // packet-up branch.
     assert!(posts.seqs.iter().all(|&s| s == u64::MAX));
     assert_eq!(posts.bodies.len(), 2);
-    let combined: Vec<u8> = posts
-        .bodies
-        .iter()
-        .flat_map(|b| b.iter().copied())
-        .collect();
+    let combined: Vec<u8> = posts.bodies.iter().flat_map(|b| b.iter().copied()).collect();
     assert_eq!(&combined, b"helloworld");
 
     Ok(())
@@ -212,21 +224,24 @@ where
     }
 }
 
-async fn wait_for_posts(
-    captured: &Arc<Mutex<CapturedPosts>>,
-    expected: usize,
-) -> CapturedPosts {
+async fn wait_for_posts(captured: &Arc<Mutex<CapturedPosts>>, expected: usize) -> CapturedPosts {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         {
             let guard = captured.lock();
             if guard.seqs.len() >= expected {
-                return CapturedPosts { seqs: guard.seqs.clone(), bodies: guard.bodies.clone() };
+                return CapturedPosts {
+                    seqs: guard.seqs.clone(),
+                    bodies: guard.bodies.clone(),
+                };
             }
         }
         if tokio::time::Instant::now() >= deadline {
             let guard = captured.lock();
-            return CapturedPosts { seqs: guard.seqs.clone(), bodies: guard.bodies.clone() };
+            return CapturedPosts {
+                seqs: guard.seqs.clone(),
+                bodies: guard.bodies.clone(),
+            };
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -240,10 +255,7 @@ async fn handle(
     let path = req.uri().path().to_owned();
     if !path.starts_with("/xh/") {
         let body = empty_body();
-        return Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(body)
-            .unwrap());
+        return Ok(Response::builder().status(StatusCode::NOT_FOUND).body(body).unwrap());
     }
     let is_stream_one = req
         .uri()
@@ -331,10 +343,7 @@ async fn handle(
             };
             captured.lock().seqs.push(seq);
             captured.lock().bodies.push(body_bytes);
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .body(empty_body())
-                .unwrap())
+            Ok(Response::builder().status(StatusCode::OK).body(empty_body()).unwrap())
         },
         _ => Ok(Response::builder()
             .status(StatusCode::METHOD_NOT_ALLOWED)

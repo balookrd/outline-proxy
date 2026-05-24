@@ -200,12 +200,7 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) -> RouteWatchersGuard {
             // a reload once it reappears with a readable mtime.
             let mut last_mtimes: Vec<Option<SystemTime>> = Vec::with_capacity(files.len());
             for f in files.iter() {
-                last_mtimes.push(
-                    tokio::fs::metadata(f)
-                        .await
-                        .ok()
-                        .and_then(|m| m.modified().ok()),
-                );
+                last_mtimes.push(tokio::fs::metadata(f).await.ok().and_then(|m| m.modified().ok()));
             }
             loop {
                 tokio::select! {
@@ -221,10 +216,7 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) -> RouteWatchersGuard {
                 }
                 let mut changed = false;
                 for (i, f) in files.iter().enumerate() {
-                    let mtime = tokio::fs::metadata(f)
-                        .await
-                        .ok()
-                        .and_then(|m| m.modified().ok());
+                    let mtime = tokio::fs::metadata(f).await.ok().and_then(|m| m.modified().ok());
                     if mtime != last_mtimes[i] {
                         last_mtimes[i] = mtime;
                         changed = true;

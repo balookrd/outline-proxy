@@ -94,10 +94,7 @@ impl OversizeStream {
     /// distinguish this stream from a VLESS-TCP / SS-TCP request).
     /// The local side still owes the peer a magic on first send so the
     /// peer's reader passes its own validation symmetrically.
-    pub fn from_accept_validated(
-        send: quinn::SendStream,
-        recv: quinn::RecvStream,
-    ) -> Arc<Self> {
+    pub fn from_accept_validated(send: quinn::SendStream, recv: quinn::RecvStream) -> Arc<Self> {
         Arc::new(Self {
             send: Mutex::new(send),
             recv: Mutex::new(recv),
@@ -125,14 +122,17 @@ impl OversizeStream {
         // peer never sees a torn frame that would fail a partial-magic
         // validation. quinn's SendStream::write_all is internally one
         // congestion-controlled write per call.
-        let frame_len = if *pending_magic { OVERSIZE_STREAM_MAGIC.len() } else { 0 } + 2 + record.len();
+        let frame_len =
+            if *pending_magic { OVERSIZE_STREAM_MAGIC.len() } else { 0 } + 2 + record.len();
         let mut frame = Vec::with_capacity(frame_len);
         if *pending_magic {
             frame.extend_from_slice(OVERSIZE_STREAM_MAGIC);
         }
         frame.extend_from_slice(&(record.len() as u16).to_be_bytes());
         frame.extend_from_slice(record);
-        send.write_all(&frame).await.context("oversize stream write_all failed")?;
+        send.write_all(&frame)
+            .await
+            .context("oversize stream write_all failed")?;
         *pending_magic = false;
         Ok(())
     }
@@ -170,9 +170,9 @@ impl OversizeStream {
         }
         let len = u16::from_be_bytes(len_buf) as usize;
         let mut buf = vec![0u8; len];
-        recv.read_exact(&mut buf).await.map_err(|error| {
-            anyhow!("oversize stream record read failed (len={len}): {error}")
-        })?;
+        recv.read_exact(&mut buf)
+            .await
+            .map_err(|error| anyhow!("oversize stream record read failed (len={len}): {error}"))?;
         Ok(Some(Bytes::from(buf)))
     }
 

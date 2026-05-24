@@ -46,7 +46,11 @@ pub(in crate::tcp) fn trim_packet_to_receive_window(
             flags &= !TCP_FLAG_FIN;
         }
     }
-    Some(TrimmedSegment { sequence_number: packet.sequence_number, flags, payload })
+    Some(TrimmedSegment {
+        sequence_number: packet.sequence_number,
+        flags,
+        payload,
+    })
 }
 
 #[cfg(test)]
@@ -54,14 +58,24 @@ pub(in crate::tcp) fn normalize_client_segment(
     packet: &ParsedTcpPacket,
     expected_seq: u32,
 ) -> ClientSegmentView {
-    normalize_client_segment_parts(packet.sequence_number, packet.flags, &packet.payload, expected_seq)
+    normalize_client_segment_parts(
+        packet.sequence_number,
+        packet.flags,
+        &packet.payload,
+        expected_seq,
+    )
 }
 
 pub(in crate::tcp) fn normalize_trimmed_segment(
     packet: &TrimmedSegment,
     expected_seq: u32,
 ) -> ClientSegmentView {
-    normalize_client_segment_parts(packet.sequence_number, packet.flags, &packet.payload, expected_seq)
+    normalize_client_segment_parts(
+        packet.sequence_number,
+        packet.flags,
+        &packet.payload,
+        expected_seq,
+    )
 }
 
 fn normalize_client_segment_parts(

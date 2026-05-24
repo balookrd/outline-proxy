@@ -17,12 +17,12 @@ use tracing::{info, warn};
 use outline_metrics::record_metrics_http_request;
 use outline_uplink::UplinkRegistry;
 
-use crate::config::ControlConfig;
-use crate::http::serve::{ServeConfig, serve_with_shutdown};
 use super::apply::{ApplyHandle, handle_apply};
 use super::handlers::{handle_activate, handle_summary, handle_switch, handle_topology};
 use super::uplinks_crud::handle_uplinks;
 use super::{ControlResponse, is_authorized, plain_response, unauthorized_response};
+use crate::config::ControlConfig;
+use crate::http::serve::{ServeConfig, serve_with_shutdown};
 
 pub(crate) struct ControlState {
     pub(crate) token: String,

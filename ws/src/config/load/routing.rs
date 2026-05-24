@@ -56,8 +56,8 @@ pub(super) fn load_routing_config(
 
         let is_default = section.default.unwrap_or(false);
         let has_prefixes = section.prefixes.as_ref().is_some_and(|v| !v.is_empty());
-        let has_files = section.file.is_some()
-            || section.files.as_ref().is_some_and(|v| !v.is_empty());
+        let has_files =
+            section.file.is_some() || section.files.as_ref().is_some_and(|v| !v.is_empty());
 
         if is_default {
             if has_prefixes || has_files {
@@ -80,15 +80,17 @@ pub(super) fn load_routing_config(
             }
             let mut resolved_files: Vec<PathBuf> = Vec::new();
             if let Some(p) = section.file.as_deref() {
-                resolved_files.push(resolve_config_path(p, config_dir).with_context(|| {
-                    format!("invalid file in [[route]] entry {}", index + 1)
-                })?);
+                resolved_files.push(
+                    resolve_config_path(p, config_dir).with_context(|| {
+                        format!("invalid file in [[route]] entry {}", index + 1)
+                    })?,
+                );
             }
             if let Some(list) = section.files.as_deref() {
                 for p in list {
-                    resolved_files.push(resolve_config_path(p, config_dir).with_context(
-                        || format!("invalid files entry in [[route]] entry {}", index + 1),
-                    )?);
+                    resolved_files.push(resolve_config_path(p, config_dir).with_context(|| {
+                        format!("invalid files entry in [[route]] entry {}", index + 1)
+                    })?);
                 }
             }
             rules.push(RouteRule {
@@ -108,11 +110,7 @@ pub(super) fn load_routing_config(
         )
     })?;
 
-    Ok(Some(RoutingTableConfig {
-        rules,
-        default_target,
-        default_fallback,
-    }))
+    Ok(Some(RoutingTableConfig { rules, default_target, default_fallback }))
 }
 
 /// Resolve a path from the config file:
@@ -124,10 +122,7 @@ pub(super) fn load_routing_config(
 pub(super) fn resolve_config_path(raw: &Path, config_dir: &Path) -> Result<PathBuf> {
     for comp in raw.components() {
         if matches!(comp, Component::ParentDir) {
-            bail!(
-                "path {} must not contain `..` components",
-                raw.display()
-            );
+            bail!("path {} must not contain `..` components", raw.display());
         }
     }
     if raw.is_absolute() {
@@ -172,11 +167,7 @@ fn parse_route_fallback(
     Ok(None)
 }
 
-fn route_target_from_name(
-    name: &str,
-    group_names: &[&str],
-    context: &str,
-) -> Result<RouteTarget> {
+fn route_target_from_name(name: &str, group_names: &[&str], context: &str) -> Result<RouteTarget> {
     if name.eq_ignore_ascii_case(super::DIRECT_TARGET) {
         return Ok(RouteTarget::Direct);
     }

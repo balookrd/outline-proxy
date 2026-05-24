@@ -78,11 +78,8 @@ fn half_closed_statuses_cover_close_wait_and_fin_waits() {
     ] {
         assert!(is_half_closed_status(status), "{status:?} should be half-closed");
     }
-    for status in [
-        TcpFlowStatus::SynReceived,
-        TcpFlowStatus::Established,
-        TcpFlowStatus::TimeWait,
-    ] {
+    for status in [TcpFlowStatus::SynReceived, TcpFlowStatus::Established, TcpFlowStatus::TimeWait]
+    {
         assert!(!is_half_closed_status(status), "{status:?} should not be half-closed");
     }
 }
@@ -90,21 +87,13 @@ fn half_closed_statuses_cover_close_wait_and_fin_waits() {
 #[test]
 fn time_wait_expired_requires_status_and_elapsed_timeout() {
     let now = Instant::now();
-    assert!(time_wait_expired(
-        TcpFlowStatus::TimeWait,
-        now - TCP_TIME_WAIT_TIMEOUT,
-        now,
-    ));
+    assert!(time_wait_expired(TcpFlowStatus::TimeWait, now - TCP_TIME_WAIT_TIMEOUT, now,));
     assert!(!time_wait_expired(
         TcpFlowStatus::TimeWait,
         now - TCP_TIME_WAIT_TIMEOUT + Duration::from_millis(1),
         now,
     ));
-    assert!(!time_wait_expired(
-        TcpFlowStatus::Established,
-        now - TCP_TIME_WAIT_TIMEOUT,
-        now,
-    ));
+    assert!(!time_wait_expired(TcpFlowStatus::Established, now - TCP_TIME_WAIT_TIMEOUT, now,));
 }
 
 #[test]
@@ -112,12 +101,7 @@ fn handshake_timed_out_only_fires_in_syn_received() {
     let now = Instant::now();
     let timeout = Duration::from_secs(5);
     assert!(handshake_timed_out(TcpFlowStatus::SynReceived, now - timeout, timeout, now));
-    assert!(!handshake_timed_out(
-        TcpFlowStatus::Established,
-        now - timeout,
-        timeout,
-        now,
-    ));
+    assert!(!handshake_timed_out(TcpFlowStatus::Established, now - timeout, timeout, now,));
     assert!(!handshake_timed_out(
         TcpFlowStatus::SynReceived,
         now - timeout + Duration::from_millis(1),
@@ -131,12 +115,7 @@ fn half_close_timed_out_respects_half_closed_statuses_only() {
     let now = Instant::now();
     let timeout = Duration::from_secs(30);
     assert!(half_close_timed_out(TcpFlowStatus::CloseWait, now - timeout, timeout, now));
-    assert!(!half_close_timed_out(
-        TcpFlowStatus::Established,
-        now - timeout,
-        timeout,
-        now,
-    ));
+    assert!(!half_close_timed_out(TcpFlowStatus::Established, now - timeout, timeout, now,));
 }
 
 #[test]

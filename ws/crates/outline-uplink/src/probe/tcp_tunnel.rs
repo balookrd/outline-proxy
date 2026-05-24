@@ -12,7 +12,7 @@ use tracing::debug;
 
 use outline_transport::{DnsCache, TcpReader, TcpWriter};
 
-use crate::config::{TargetAddr, TcpProbeConfig, UplinkConfig, UplinkTransport, TransportMode};
+use crate::config::{TargetAddr, TcpProbeConfig, TransportMode, UplinkConfig, UplinkTransport};
 
 use super::metrics::BytesRecorder;
 use super::transport::{close_probe_tcp_writer, connect_probe_tcp};
@@ -50,7 +50,12 @@ pub(super) async fn run_tcp_tunnel_probe(
     )
     .await?;
 
-    let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: "tcp" };
+    let bytes = BytesRecorder {
+        group,
+        uplink: &uplink.name,
+        transport: "tcp",
+        probe: "tcp",
+    };
     let result = exchange_tcp_tunnel_probe(
         &mut writer,
         &mut reader,

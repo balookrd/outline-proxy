@@ -8,13 +8,13 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::config::{AppConfig, Args};
-use crate::proxy::ProxyConfig;
 #[cfg(feature = "control")]
 use crate::http::control::{ApplyHandle, spawn_control_server};
 #[cfg(feature = "dashboard")]
 use crate::http::dashboard::spawn_dashboard_server;
 #[cfg(feature = "metrics")]
 use crate::http::metrics::spawn_metrics_server;
+use crate::proxy::ProxyConfig;
 use outline_uplink::{UplinkRegistry, log_registry_summary};
 
 mod listener;
@@ -28,8 +28,8 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{SignalKind, signal};
-            let mut sigterm = signal(SignalKind::terminate())
-                .expect("SIGTERM handler registration failed");
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("SIGTERM handler registration failed");
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {},
                 _ = sigterm.recv() => {},
@@ -148,11 +148,7 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     let mut http_servers: Vec<JoinHandle<()>> = Vec::new();
     #[cfg(feature = "metrics")]
     if let Some(metrics) = config.metrics.clone() {
-        http_servers.push(spawn_metrics_server(
-            metrics,
-            registry.clone(),
-            shutdown_rx.clone(),
-        ));
+        http_servers.push(spawn_metrics_server(metrics, registry.clone(), shutdown_rx.clone()));
     }
     #[cfg(feature = "control")]
     if let Some(control) = config.control.clone() {
@@ -186,9 +182,7 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     let proxy_config = Arc::new(ProxyConfig {
         socks5_auth: config.socks5_auth.clone(),
         dns_cache: dns_cache.clone(),
-        router: routing_table
-            .clone()
-            .map(|t| t as Arc<dyn crate::proxy::Router>),
+        router: routing_table.clone().map(|t| t as Arc<dyn crate::proxy::Router>),
         direct_fwmark: config.direct_fwmark,
         tcp_timeouts: config.tcp_timeouts,
     });

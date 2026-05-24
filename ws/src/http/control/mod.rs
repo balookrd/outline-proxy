@@ -16,7 +16,7 @@ pub use apply::ApplyHandle;
 pub use server::spawn_control_server;
 
 use bytes::Bytes;
-use http::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use http::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use http::{Method, Request, Response, StatusCode};
 use http_body_util::Full;
 use hyper::body::Incoming;

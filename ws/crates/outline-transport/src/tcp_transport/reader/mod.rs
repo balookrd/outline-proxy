@@ -6,23 +6,26 @@ mod tests;
 
 pub use transport::WsReadDiag;
 
+use crate::UpstreamTransportGuard;
+use crate::ack_prefix::{FRAME_LEN_V1, ParseResult, parse_v1};
+use crate::downlink_replay::{
+    self, DownlinkReplayOutcome, FLAG_REPLAY_TRUNCATED,
+    FRAME_HEADER_LEN_V1 as DOWNLINK_REPLAY_HEADER_LEN_V1,
+};
 use anyhow::{Result, anyhow, bail};
-use shadowsocks_crypto::{AeadCipher, CipherKind, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce};
+use shadowsocks_crypto::{
+    AeadCipher, CipherKind, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use crate::UpstreamTransportGuard;
-use crate::ack_prefix::{FRAME_LEN_V1, ParseResult, parse_v1};
-use crate::downlink_replay::{
-    self, DownlinkReplayOutcome, FLAG_REPLAY_TRUNCATED, FRAME_HEADER_LEN_V1 as DOWNLINK_REPLAY_HEADER_LEN_V1,
-};
 
 use ss2022::{Ss2022TcpReaderState, parse_ss2022_response_header};
-use transport::{ReadTransport, SocketReadTransport, WsReadTransport, WsStream};
 #[cfg(feature = "quic")]
 use transport::QuicReadTransport;
+use transport::{ReadTransport, SocketReadTransport, WsReadTransport, WsStream};
 
 pub struct TcpShadowsocksReader<T: ReadTransport> {
     transport: T,
@@ -355,9 +358,7 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
         }
         let truncated = (flags & FLAG_REPLAY_TRUNCATED) != 0;
         if truncated && replay_len_us != 0 {
-            bail!(
-                "v2 REPLAY_TRUNCATED flag set but replay_len = {replay_len_us}; spec violation"
-            );
+            bail!("v2 REPLAY_TRUNCATED flag set but replay_len = {replay_len_us}; spec violation");
         }
         let total_needed = DOWNLINK_REPLAY_HEADER_LEN_V1 + replay_len_us;
         while acc.len() < total_needed {
@@ -459,10 +460,8 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
                 .transport
                 .read_exact(self.cipher.salt_len(), &mut self.closed_cleanly)
                 .await?;
-            let key =
-                derive_subkey(self.cipher, &self.master_key[..self.cipher.key_len()], &salt)?;
-            self.cipher_state =
-                Some(AeadCipher::new(self.cipher, &key[..self.cipher.key_len()])?);
+            let key = derive_subkey(self.cipher, &self.master_key[..self.cipher.key_len()], &salt)?;
+            self.cipher_state = Some(AeadCipher::new(self.cipher, &key[..self.cipher.key_len()])?);
         }
 
         let need_ss2022_response_header =
@@ -548,9 +547,9 @@ fn ack_prefix_parse_error(err: ParseResult, observed_len: usize) -> anyhow::Erro
         ParseResult::BadMagic => {
             anyhow!("ack-prefix v1 control frame has unexpected magic; dropping session")
         },
-        ParseResult::UnsupportedVersion(v) => anyhow!(
-            "ack-prefix control frame announces unsupported version {v}; dropping session"
-        ),
+        ParseResult::UnsupportedVersion(v) => {
+            anyhow!("ack-prefix control frame announces unsupported version {v}; dropping session")
+        },
         ParseResult::ReservedFlagsSet(f) => anyhow!(
             "ack-prefix v1 control frame has reserved flags 0x{f:02x} set; dropping session"
         ),
@@ -574,12 +573,12 @@ fn downlink_replay_parse_error(
             DOWNLINK_REPLAY_HEADER_LEN_V1,
             observed_len,
         ),
-        downlink_replay::ParseResult::BadMagic => anyhow!(
-            "v2 downlink replay frame has unexpected magic; dropping session"
-        ),
-        downlink_replay::ParseResult::UnsupportedVersion(v) => anyhow!(
-            "v2 downlink replay frame announces unsupported version {v}; dropping session"
-        ),
+        downlink_replay::ParseResult::BadMagic => {
+            anyhow!("v2 downlink replay frame has unexpected magic; dropping session")
+        },
+        downlink_replay::ParseResult::UnsupportedVersion(v) => {
+            anyhow!("v2 downlink replay frame announces unsupported version {v}; dropping session")
+        },
         downlink_replay::ParseResult::ReservedFlagsSet(f) => anyhow!(
             "v2 downlink replay frame has reserved flag bits 0x{f:02x} set; dropping session"
         ),

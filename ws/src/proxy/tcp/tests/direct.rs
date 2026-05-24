@@ -51,10 +51,7 @@ async fn relay_tcp_direct_closes_session_after_idle_timeout() {
         tokio::task::yield_now().await;
     }
 
-    assert!(
-        direct_task.is_finished(),
-        "relay_tcp_direct should return after idle timeout"
-    );
+    assert!(direct_task.is_finished(), "relay_tcp_direct should return after idle timeout");
     let result = direct_task.await.unwrap();
     assert!(result.is_ok(), "relay_tcp_direct must return Ok(()) on idle timeout");
 

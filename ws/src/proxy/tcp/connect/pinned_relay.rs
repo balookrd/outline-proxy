@@ -14,9 +14,7 @@ use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 
 use outline_uplink::{OverflowPolicy, TransportKind, UplinkManager, UplinkTransport};
 
-use super::super::failover::{
-    ActiveTcpUplink, ConnectedTcpUplink, redial_for_mid_session_retry,
-};
+use super::super::failover::{ActiveTcpUplink, ConnectedTcpUplink, redial_for_mid_session_retry};
 use super::super::session::{IdleGuard, UplinkOutcome, drive_tcp_session_tasks};
 use super::ring_buffer::{ClientUpstreamRingBuffer, ReplayError};
 use crate::client_io::ClientIo;
@@ -120,14 +118,11 @@ pub(super) async fn run_relay(
     // budget while keeping the buffer warm.
     let retry_eligible = buffer_cap > 0
         && configured_budget > 0
-        && matches!(
-            candidate.uplink.transport,
-            UplinkTransport::Ws | UplinkTransport::Vless,
-        );
+        && matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless,);
     let mut budget: u8 = if retry_eligible { configured_budget } else { 0 };
 
-    let ring: Option<Arc<Mutex<ClientUpstreamRingBuffer>>> = retry_eligible
-        .then(|| Arc::new(Mutex::new(ClientUpstreamRingBuffer::new(buffer_cap))));
+    let ring: Option<Arc<Mutex<ClientUpstreamRingBuffer>>> =
+        retry_eligible.then(|| Arc::new(Mutex::new(ClientUpstreamRingBuffer::new(buffer_cap))));
 
     let client_read = Arc::new(Mutex::new(client_read));
     let client_write = Arc::new(Mutex::new(client_write));
@@ -300,10 +295,7 @@ pub(super) async fn run_relay(
                         fc.len(),
                     );
                     let mut cw_guard = cw_for_downlink.lock().await;
-                    cw_guard
-                        .write_all(&fc)
-                        .await
-                        .map_err(ClientIo::WriteFailed)?;
+                    cw_guard.write_all(&fc).await.map_err(ClientIo::WriteFailed)?;
                     drop(cw_guard);
                     // Increment AFTER the write succeeds — the v2
                     // counter is the offset of bytes that have actually
@@ -353,10 +345,7 @@ pub(super) async fn run_relay(
                     chunk.len(),
                 );
                 let mut cw_guard = cw_for_downlink.lock().await;
-                cw_guard
-                    .write_all(&chunk)
-                    .await
-                    .map_err(ClientIo::WriteFailed)?;
+                cw_guard.write_all(&chunk).await.map_err(ClientIo::WriteFailed)?;
                 drop(cw_guard);
                 // v2 downlink counter: bump after the write completes
                 // so the reported offset only ever reflects bytes the
@@ -416,7 +405,8 @@ pub(super) async fn run_relay(
                 // has observed across the whole session lifetime; the
                 // server uses it to compute `replay_from(offset)` on
                 // its parked downlink ring.
-                let client_acked_now = client_acked_offset.load(std::sync::atomic::Ordering::Relaxed);
+                let client_acked_now =
+                    client_acked_offset.load(std::sync::atomic::Ordering::Relaxed);
                 let (connected, downlink_replay) = match try_mid_session_retry(
                     &uplinks,
                     &active_name,
@@ -454,7 +444,9 @@ pub(super) async fn run_relay(
                     v2_replay_bytes = downlink_replay.as_ref().map(Vec::len),
                     "mid-session retry succeeded; resuming relay on fresh transport"
                 );
-                let ConnectedTcpUplink { writer: new_writer, reader: new_reader, .. } = connected;
+                let ConnectedTcpUplink {
+                    writer: new_writer, reader: new_reader, ..
+                } = connected;
                 writer = new_writer;
                 reader = new_reader;
                 // v2 replay payload (when the server emitted one)
@@ -595,9 +587,7 @@ async fn try_mid_session_retry(
         None => {
             // retry_eligible was false; should not be reached because the
             // outer caller gates on the same condition. Bail defensively.
-            return Err(anyhow!(
-                "mid-session retry attempted without an active ring buffer"
-            ));
+            return Err(anyhow!("mid-session retry attempted without an active ring buffer"));
         },
     };
 
@@ -620,26 +610,11 @@ async fn try_mid_session_retry(
     {
         Ok(None) => None,
         Ok(Some(outline_transport::downlink_replay::DownlinkReplayOutcome::Replay(payload))) => {
-            metrics::add_bytes(
-                "tcp",
-                "downlink_replay",
-                group_name,
-                active_name,
-                payload.len(),
-            );
-            if payload.is_empty() {
-                None
-            } else {
-                Some(payload)
-            }
+            metrics::add_bytes("tcp", "downlink_replay", group_name, active_name, payload.len());
+            if payload.is_empty() { None } else { Some(payload) }
         },
         Ok(Some(outline_transport::downlink_replay::DownlinkReplayOutcome::Truncated)) => {
-            metrics::record_mid_session_retry(
-                "tcp",
-                group_name,
-                active_name,
-                "downlink_truncated",
-            );
+            metrics::record_mid_session_retry("tcp", group_name, active_name, "downlink_truncated");
             match overflow_policy {
                 OverflowPolicy::Hard => {
                     return Err(anyhow!(

@@ -110,10 +110,7 @@ impl VlessShareLink {
                 bail!("vless link flow={flow} is not supported (xtls flows have no client impl)");
             }
         }
-        for (key, value) in [
-            ("sni", params.first("sni")),
-            ("host", params.first("host")),
-        ] {
+        for (key, value) in [("sni", params.first("sni")), ("host", params.first("host"))] {
             if let Some(v) = value {
                 if !v.is_empty() && !v.eq_ignore_ascii_case(&host) {
                     bail!(
@@ -140,16 +137,13 @@ impl VlessShareLink {
         // Build the URL we hand to the loader. Path comes from `?path=`
         // (URL-decoded by `Url`), with the link's own path (rare but legal)
         // appended after to keep arbitrary share-link conventions working.
-        let configured_path = params
-            .first("path")
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                if path.is_empty() || path == "/" {
-                    String::new()
-                } else {
-                    path.to_string()
-                }
-            });
+        let configured_path = params.first("path").map(|s| s.to_string()).unwrap_or_else(|| {
+            if path.is_empty() || path == "/" {
+                String::new()
+            } else {
+                path.to_string()
+            }
+        });
 
         let mut composed = Url::parse(&format!("{scheme}://{host}:{port}"))
             .context("failed to compose vless dial URL from share link")?;

@@ -89,11 +89,15 @@ pub(in crate::tcp) fn reset_zero_window_persist(state: &mut TcpFlowState) {
     state.next_zero_window_probe_at = None;
 }
 
-pub(in crate::tcp) fn note_recent_client_timestamp(state: &mut TcpFlowState, timestamp_value: Option<u32>) {
+pub(in crate::tcp) fn note_recent_client_timestamp(
+    state: &mut TcpFlowState,
+    timestamp_value: Option<u32>,
+) {
     if state.timestamps_enabled
-        && let Some(timestamp_value) = timestamp_value {
-            state.recent_client_timestamp = Some(timestamp_value);
-        }
+        && let Some(timestamp_value) = timestamp_value
+    {
+        state.recent_client_timestamp = Some(timestamp_value);
+    }
 }
 
 /// Apply the bookkeeping that every accepted inbound segment triggers:

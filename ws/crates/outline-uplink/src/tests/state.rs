@@ -62,7 +62,9 @@ async fn state_store_none_field_leaves_existing_value() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.toml");
     let store = StateStore::load_or_default(path).await;
-    store.update_active("g", Some(Some("a".into())), Some(Some("b".into())), None).await;
+    store
+        .update_active("g", Some(Some("a".into())), Some(Some("b".into())), None)
+        .await;
     // Pass None for global — must not touch the existing value.
     store.update_active("g", None, Some(Some("c".into())), None).await;
     let gs = store.group_state("g").await;
@@ -99,12 +101,7 @@ async fn state_store_persists_to_disk_and_reloads() {
     {
         let store = StateStore::load_or_default(path.clone()).await;
         store
-            .update_active(
-                "grp",
-                Some(Some("uplink1".into())),
-                None,
-                Some(Some("uplink2".into())),
-            )
+            .update_active("grp", Some(Some("uplink1".into())), None, Some(Some("uplink2".into())))
             .await;
         store.clone().spawn_writer();
         // Wait for the 200 ms debounce + slack.
@@ -120,7 +117,9 @@ async fn state_store_persists_to_disk_and_reloads() {
 async fn state_store_corrupt_file_starts_fresh() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.toml");
-    tokio::fs::write(&path, b"this is not valid toml!!!@@@").await.unwrap();
+    tokio::fs::write(&path, b"this is not valid toml!!!@@@")
+        .await
+        .unwrap();
     let store = StateStore::load_or_default(path).await;
     let gs = store.group_state("any").await;
     assert_eq!(gs.global_active, None);

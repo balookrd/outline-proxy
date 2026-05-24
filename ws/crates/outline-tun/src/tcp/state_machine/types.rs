@@ -9,10 +9,10 @@ use anyhow::{Context, Result};
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 
-use outline_transport::{SocketTcpWriter, VlessTcpWriter, WsTcpWriter};
+use crate::TunRoute;
 #[cfg(feature = "quic")]
 use outline_transport::QuicTcpWriter;
-use crate::TunRoute;
+use outline_transport::{SocketTcpWriter, VlessTcpWriter, WsTcpWriter};
 use outline_uplink::UplinkManager;
 
 use super::super::TcpFlowKey;

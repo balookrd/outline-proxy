@@ -3,8 +3,8 @@ use http::HeaderMap;
 use outline_metrics::{StickyRouteSnapshot, UplinkManagerSnapshot, UplinkSnapshot};
 use outline_uplink::{
     CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, ServerAddr,
-    UplinkConfig, UplinkManager, UplinkRegistry, UplinkTransport, VlessUdpMuxLimits,
-    WsProbeConfig, TransportMode,
+    TransportMode, UplinkConfig, UplinkManager, UplinkRegistry, UplinkTransport, VlessUdpMuxLimits,
+    WsProbeConfig,
 };
 use serde_json::Value;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -265,7 +265,7 @@ fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
-        }
+    }
 }
 
 fn lb() -> LoadBalancingConfig {
@@ -470,9 +470,11 @@ async fn endpoint_serializes_topology() {
     assert_eq!(status, 200);
     let json: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(json["instance"]["groups"][0]["name"], "core");
-    assert!(json["instance"]["groups"][0]["uplinks"][0]
-        .get("active_global")
-        .is_some());
+    assert!(
+        json["instance"]["groups"][0]["uplinks"][0]
+            .get("active_global")
+            .is_some()
+    );
 }
 
 fn test_registry() -> UplinkRegistry {
@@ -487,11 +489,7 @@ fn test_registry() -> UplinkRegistry {
     UplinkRegistry::from_single_manager(manager)
 }
 
-async fn send_raw_http(
-    raw_request: &str,
-    uplinks: UplinkRegistry,
-    token: &str,
-) -> (u16, String) {
+async fn send_raw_http(raw_request: &str, uplinks: UplinkRegistry, token: &str) -> (u16, String) {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
     let state = Arc::new(ControlState {

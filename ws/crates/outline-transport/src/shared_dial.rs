@@ -15,11 +15,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing::debug;
 
+use crate::shared_cache::{CachedEntry, SharedConnectionRegistry, with_reuse};
 use crate::{
     DnsCache, TransportConnectGuard, TransportOperation, TransportStream,
     resolve_host_with_preference,
 };
-use crate::shared_cache::{CachedEntry, SharedConnectionRegistry, with_reuse};
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
@@ -113,7 +113,15 @@ pub(crate) async fn connect_ws_probe<D: WsDialer>(
     source: &'static str,
 ) -> Result<TransportStream> {
     let (_shared, ws) = resolve_and_dial(
-        dialer, cache, server_name, server_port, path, fwmark, ipv6_first, source, None,
+        dialer,
+        cache,
+        server_name,
+        server_port,
+        path,
+        fwmark,
+        ipv6_first,
+        source,
+        None,
     )
     .await?;
     Ok(ws)
@@ -138,8 +146,7 @@ async fn resolve_and_dial<D: WsDialer>(
     let label = dialer.metric_label();
     let context = format!("failed to resolve {label} websocket host");
     let server_addrs =
-        resolve_host_with_preference(cache, server_name, server_port, &context, ipv6_first)
-            .await?;
+        resolve_host_with_preference(cache, server_name, server_port, &context, ipv6_first).await?;
     if server_addrs.is_empty() {
         return Err(anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
             host: format!("{server_name}:{server_port}"),
@@ -156,14 +163,12 @@ async fn resolve_and_dial<D: WsDialer>(
     for &addr in addrs {
         let mut guard = TransportConnectGuard::new(source, label);
         match dialer.establish(addr, server_name, fwmark, cache_key.clone()).await {
-            Ok(conn) => {
-                match dialer.open_on(&conn, server_name, server_port, path).await {
-                    Ok(ws) => {
-                        guard.finish("success");
-                        return Ok((conn, ws));
-                    },
-                    Err(e) => last_error = Some(format!("{addr}: {e}")),
-                }
+            Ok(conn) => match dialer.open_on(&conn, server_name, server_port, path).await {
+                Ok(ws) => {
+                    guard.finish("success");
+                    return Ok((conn, ws));
+                },
+                Err(e) => last_error = Some(format!("{addr}: {e}")),
             },
             Err(e) => last_error = Some(format!("{addr}: {e}")),
         }

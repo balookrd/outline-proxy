@@ -96,12 +96,7 @@ impl<'a> StandbyCtx<'a> {
 
     /// Emits `record_warm_standby_acquire` with the transport's label.
     pub(super) fn record_acquire(&self, outcome: &'static str) {
-        metrics::record_warm_standby_acquire(
-            self.label,
-            self.group(),
-            &self.uplink.name,
-            outcome,
-        );
+        metrics::record_warm_standby_acquire(self.label, self.group(), &self.uplink.name, outcome);
     }
 
     /// Pops one pooled WS stream and returns it if it passes the liveness
@@ -109,10 +104,7 @@ impl<'a> StandbyCtx<'a> {
     /// discarded with a `"stale"` metric; `None` means the pool was drained
     /// without finding a usable entry. Each successful pop schedules a
     /// background refill so the pool does not bleed below `desired`.
-    pub(super) async fn try_take_alive(
-        &self,
-        candidate_name: &str,
-    ) -> Option<TransportStream> {
+    pub(super) async fn try_take_alive(&self, candidate_name: &str) -> Option<TransportStream> {
         use tokio_tungstenite::tungstenite::protocol::Message;
 
         loop {

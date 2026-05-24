@@ -24,17 +24,17 @@ use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use tracing::{debug, warn};
 use url::Url;
 
+use crate::TransportOperation;
 use crate::dns::resolve_host_with_preference;
 use crate::dns_cache::DnsCache;
 use crate::guards::AbortOnDrop;
 use crate::resumption::SessionId;
-use crate::TransportOperation;
 
 use super::stream::io_ws_err;
 use super::{
     ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, XhttpStream, XhttpSubmode,
-    XhttpTarget, generate_session_id,
+    RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, XhttpStream, XhttpSubmode, XhttpTarget,
+    generate_session_id,
 };
 
 /// Same dial budget the h2 path uses — keeps fallback windows
@@ -122,7 +122,11 @@ pub(super) async fn connect_xhttp_h3(
         let send_request = h3_handshake(server_addr, &host, fwmark).await?;
         let session_id = generate_session_id()?;
 
-        let authority = if port == 443 { host.clone() } else { format!("{host}:{port}") };
+        let authority = if port == 443 {
+            host.clone()
+        } else {
+            format!("{host}:{port}")
+        };
         let target = Arc::new(XhttpTarget {
             scheme: "https".to_string(),
             authority,
@@ -133,98 +137,105 @@ pub(super) async fn connect_xhttp_h3(
         let (in_tx, in_rx) = mpsc::channel::<Result<Message, WsError>>(INBOUND_CHANNEL_CAPACITY);
         let (out_tx, out_rx) = mpsc::channel::<Message>(OUTBOUND_CHANNEL_CAPACITY);
 
-        let (issued_session_id, ack_prefix_echo, symmetric_replay_echo, driver, active_submode) = match submode {
-            XhttpSubmode::PacketUp => {
-                let (issued, echo, sym_echo, request_stream) = open_h3_get(
-                    send_request.clone(),
-                    &target,
-                    resume_request,
-                    ack_prefix_requested,
-                    symmetric_replay_requested,
-                    client_acked_offset,
-                    profile,
-                )
-                .await?;
-                let driver = tokio::spawn(driver_loop_h3(
-                    send_request,
-                    target.clone(),
-                    in_tx,
-                    out_rx,
-                    request_stream,
-                    profile,
-                ));
-                (issued, echo, sym_echo, driver, XhttpSubmode::PacketUp)
-            },
-            XhttpSubmode::StreamOne => {
-                // The h3 client closes the connection with `H3_NO_ERROR`
-                // when the last `SendRequest` drops, so we must keep one
-                // alive for the lifetime of the bidi stream — otherwise
-                // the request body's send_data calls race the close
-                // frame and the server sees `ApplicationClose` before
-                // any application bytes flow. `open_h3_stream_one`
-                // takes ownership of its own copy; the cloned guard
-                // moves into the driver task and is dropped only when
-                // the carrier shuts down for real.
-                //
-                // On dial-time failure we retry packet-up on the same
-                // QUIC connection (mirror of the h2 inline fallback).
-                // The handshake cost is sunk; if stream-one is broken
-                // on this network path, packet-up usually still works
-                // because it issues one short bidi stream per POST
-                // instead of one long-lived one.
-                match open_h3_stream_one(
-                    send_request.clone(),
-                    &target,
-                    resume_request,
-                    ack_prefix_requested,
-                    symmetric_replay_requested,
-                    client_acked_offset,
-                    profile,
-                )
-                .await
-                {
-                    Ok((issued, echo, sym_echo, request_stream)) => {
-                        let driver = tokio::spawn(driver_loop_h3_stream_one(
-                            send_request,
-                            in_tx,
-                            out_rx,
-                            request_stream,
-                        ));
-                        crate::xhttp_submode_cache::record_success(url, XhttpSubmode::StreamOne)
+        let (issued_session_id, ack_prefix_echo, symmetric_replay_echo, driver, active_submode) =
+            match submode {
+                XhttpSubmode::PacketUp => {
+                    let (issued, echo, sym_echo, request_stream) = open_h3_get(
+                        send_request.clone(),
+                        &target,
+                        resume_request,
+                        ack_prefix_requested,
+                        symmetric_replay_requested,
+                        client_acked_offset,
+                        profile,
+                    )
+                    .await?;
+                    let driver = tokio::spawn(driver_loop_h3(
+                        send_request,
+                        target.clone(),
+                        in_tx,
+                        out_rx,
+                        request_stream,
+                        profile,
+                    ));
+                    (issued, echo, sym_echo, driver, XhttpSubmode::PacketUp)
+                },
+                XhttpSubmode::StreamOne => {
+                    // The h3 client closes the connection with `H3_NO_ERROR`
+                    // when the last `SendRequest` drops, so we must keep one
+                    // alive for the lifetime of the bidi stream — otherwise
+                    // the request body's send_data calls race the close
+                    // frame and the server sees `ApplicationClose` before
+                    // any application bytes flow. `open_h3_stream_one`
+                    // takes ownership of its own copy; the cloned guard
+                    // moves into the driver task and is dropped only when
+                    // the carrier shuts down for real.
+                    //
+                    // On dial-time failure we retry packet-up on the same
+                    // QUIC connection (mirror of the h2 inline fallback).
+                    // The handshake cost is sunk; if stream-one is broken
+                    // on this network path, packet-up usually still works
+                    // because it issues one short bidi stream per POST
+                    // instead of one long-lived one.
+                    match open_h3_stream_one(
+                        send_request.clone(),
+                        &target,
+                        resume_request,
+                        ack_prefix_requested,
+                        symmetric_replay_requested,
+                        client_acked_offset,
+                        profile,
+                    )
+                    .await
+                    {
+                        Ok((issued, echo, sym_echo, request_stream)) => {
+                            let driver = tokio::spawn(driver_loop_h3_stream_one(
+                                send_request,
+                                in_tx,
+                                out_rx,
+                                request_stream,
+                            ));
+                            crate::xhttp_submode_cache::record_success(
+                                url,
+                                XhttpSubmode::StreamOne,
+                            )
                             .await;
-                        (issued, echo, sym_echo, driver, XhttpSubmode::StreamOne)
-                    },
-                    Err(stream_err) => {
-                        warn!(
-                            %url,
-                            error = %format!("{stream_err:#}"),
-                            "xhttp h3 stream-one failed, falling back to packet-up on same connection"
-                        );
-                        crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
+                            (issued, echo, sym_echo, driver, XhttpSubmode::StreamOne)
+                        },
+                        Err(stream_err) => {
+                            warn!(
+                                %url,
+                                error = %format!("{stream_err:#}"),
+                                "xhttp h3 stream-one failed, falling back to packet-up on same connection"
+                            );
+                            crate::xhttp_submode_cache::record_failure(
+                                url,
+                                XhttpSubmode::StreamOne,
+                            )
                             .await;
-                        let (issued, echo, sym_echo, request_stream) = open_h3_get(
-                            send_request.clone(),
-                            &target,
-                            resume_request,
-                            ack_prefix_requested,
-                            symmetric_replay_requested,
-                            client_acked_offset,
-                            profile,
-                        )
-                        .await?;
-                        let driver = tokio::spawn(driver_loop_h3(
-                            send_request,
-                            target.clone(),
-                            in_tx,
-                            out_rx,
-                            request_stream,
-                            profile,
-                        ));
-                        (issued, echo, sym_echo, driver, XhttpSubmode::PacketUp)
-                    },
-                }
-            },
-        };
+                            let (issued, echo, sym_echo, request_stream) = open_h3_get(
+                                send_request.clone(),
+                                &target,
+                                resume_request,
+                                ack_prefix_requested,
+                                symmetric_replay_requested,
+                                client_acked_offset,
+                                profile,
+                            )
+                            .await?;
+                            let driver = tokio::spawn(driver_loop_h3(
+                                send_request,
+                                target.clone(),
+                                in_tx,
+                                out_rx,
+                                request_stream,
+                                profile,
+                            ));
+                            (issued, echo, sym_echo, driver, XhttpSubmode::PacketUp)
+                        },
+                    }
+                },
+            };
 
         debug!(
             %url, %session_id, mode = "xhttp_h3", ?submode, ?active_submode,
@@ -337,14 +348,10 @@ async fn open_h3_get(
         builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
     }
     if symmetric_replay_requested && client_acked_offset > 0 {
-        builder = builder.header(
-            crate::resumption::DOWN_ACKED_HEADER,
-            client_acked_offset.to_string(),
-        );
+        builder =
+            builder.header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
     }
-    let mut req = builder
-        .body(())
-        .context("failed to build xhttp/h3 GET request")?;
+    let mut req = builder.body(()).context("failed to build xhttp/h3 GET request")?;
     if let Some(profile) = profile {
         crate::fingerprint_profile::apply(
             profile,
@@ -376,9 +383,8 @@ async fn open_h3_get(
         .and_then(|v| v.to_str().ok())
         .and_then(SessionId::parse_hex);
     let echo = ack_prefix_requested && super::parse_ack_prefix_echo(resp.headers());
-    let sym_echo = symmetric_replay_requested
-        && echo
-        && super::parse_symmetric_replay_echo(resp.headers());
+    let sym_echo =
+        symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
     Ok((issued, echo, sym_echo, stream))
 }
 
@@ -412,9 +418,7 @@ async fn driver_loop_h3(
             Message::Binary(b) => b,
             Message::Ping(_) | Message::Pong(_) => continue,
             Message::Text(_) => {
-                let _ = in_tx
-                    .send(Err(io_ws_err("xhttp/h3 does not carry text")))
-                    .await;
+                let _ = in_tx.send(Err(io_ws_err("xhttp/h3 does not carry text"))).await;
                 continue;
             },
             Message::Close(_) => break,
@@ -470,10 +474,8 @@ async fn open_h3_stream_one(
         builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
     }
     if symmetric_replay_requested && client_acked_offset > 0 {
-        builder = builder.header(
-            crate::resumption::DOWN_ACKED_HEADER,
-            client_acked_offset.to_string(),
-        );
+        builder =
+            builder.header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
     }
     let mut req = builder
         .body(())
@@ -506,9 +508,8 @@ async fn open_h3_stream_one(
         .and_then(|v| v.to_str().ok())
         .and_then(SessionId::parse_hex);
     let echo = ack_prefix_requested && super::parse_ack_prefix_echo(resp.headers());
-    let sym_echo = symmetric_replay_requested
-        && echo
-        && super::parse_symmetric_replay_echo(resp.headers());
+    let sym_echo =
+        symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
     Ok((issued, echo, sym_echo, stream))
 }
 
@@ -548,9 +549,7 @@ async fn driver_loop_h3_stream_one(
             },
             Message::Ping(_) | Message::Pong(_) => continue,
             Message::Text(_) => {
-                let _ = in_tx
-                    .send(Err(io_ws_err("xhttp does not carry text")))
-                    .await;
+                let _ = in_tx.send(Err(io_ws_err("xhttp does not carry text"))).await;
                 continue;
             },
             Message::Close(_) => break,
@@ -589,9 +588,7 @@ where
             let consumed = segment.len();
             chunk.advance(consumed);
         }
-        if !acc.is_empty()
-            && in_tx.send(Ok(Message::Binary(acc.freeze()))).await.is_err()
-        {
+        if !acc.is_empty() && in_tx.send(Ok(Message::Binary(acc.freeze()))).await.is_err() {
             return Ok(());
         }
     }

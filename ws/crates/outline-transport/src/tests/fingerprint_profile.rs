@@ -10,9 +10,7 @@ use std::str::FromStr;
 use http::{HeaderValue, header};
 use url::Url;
 
-use crate::fingerprint_profile::{
-    PROFILES, SecFetchPreset, Strategy, apply, select_with_strategy,
-};
+use crate::fingerprint_profile::{PROFILES, SecFetchPreset, Strategy, apply, select_with_strategy};
 
 #[test]
 fn pool_is_non_empty_and_contains_chrome_firefox_safari() {
@@ -85,18 +83,9 @@ fn apply_inserts_user_agent_and_accept_language() {
     let mut headers = http::HeaderMap::new();
     let profile = &PROFILES[0];
     apply(profile, &mut headers, SecFetchPreset::WebsocketUpgrade);
-    assert_eq!(
-        headers.get(header::USER_AGENT).unwrap(),
-        profile.user_agent
-    );
-    assert_eq!(
-        headers.get(header::ACCEPT_LANGUAGE).unwrap(),
-        profile.accept_language
-    );
-    assert_eq!(
-        headers.get(header::ACCEPT_ENCODING).unwrap(),
-        profile.accept_encoding
-    );
+    assert_eq!(headers.get(header::USER_AGENT).unwrap(), profile.user_agent);
+    assert_eq!(headers.get(header::ACCEPT_LANGUAGE).unwrap(), profile.accept_language);
+    assert_eq!(headers.get(header::ACCEPT_ENCODING).unwrap(), profile.accept_encoding);
 }
 
 #[test]
@@ -153,15 +142,9 @@ fn apply_preserves_caller_supplied_accept_value() {
     // emits on a specific submode; apply() must not clobber a value
     // the caller has already chosen.
     let mut headers = http::HeaderMap::new();
-    headers.insert(
-        header::ACCEPT,
-        HeaderValue::from_static("application/octet-stream"),
-    );
+    headers.insert(header::ACCEPT, HeaderValue::from_static("application/octet-stream"));
     apply(&PROFILES[0], &mut headers, SecFetchPreset::XhrCors);
-    assert_eq!(
-        headers.get(header::ACCEPT).unwrap(),
-        "application/octet-stream"
-    );
+    assert_eq!(headers.get(header::ACCEPT).unwrap(), "application/octet-stream");
 }
 
 #[test]
@@ -176,30 +159,12 @@ fn strategy_from_str_accepts_documented_aliases() {
     // who *specifically* want the per-host split must spell
     // `per_host_stable` in full.
     assert_eq!(Strategy::from_str("stable").unwrap(), Strategy::ProcessStable);
-    assert_eq!(
-        Strategy::from_str("process").unwrap(),
-        Strategy::ProcessStable,
-    );
-    assert_eq!(
-        Strategy::from_str("process_stable").unwrap(),
-        Strategy::ProcessStable,
-    );
-    assert_eq!(
-        Strategy::from_str("process-stable").unwrap(),
-        Strategy::ProcessStable,
-    );
-    assert_eq!(
-        Strategy::from_str("per_host_stable").unwrap(),
-        Strategy::PerHostStable,
-    );
-    assert_eq!(
-        Strategy::from_str("per-host-stable").unwrap(),
-        Strategy::PerHostStable,
-    );
-    assert_eq!(
-        Strategy::from_str("per-host").unwrap(),
-        Strategy::PerHostStable,
-    );
+    assert_eq!(Strategy::from_str("process").unwrap(), Strategy::ProcessStable,);
+    assert_eq!(Strategy::from_str("process_stable").unwrap(), Strategy::ProcessStable,);
+    assert_eq!(Strategy::from_str("process-stable").unwrap(), Strategy::ProcessStable,);
+    assert_eq!(Strategy::from_str("per_host_stable").unwrap(), Strategy::PerHostStable,);
+    assert_eq!(Strategy::from_str("per-host-stable").unwrap(), Strategy::PerHostStable,);
+    assert_eq!(Strategy::from_str("per-host").unwrap(), Strategy::PerHostStable,);
     assert_eq!(Strategy::from_str("random").unwrap(), Strategy::Random);
 }
 
@@ -374,11 +339,11 @@ async fn task_local_override_supersedes_default_global() {
     // to Some without touching the global.
     let url: Url = "wss://task-local-override.example/".parse().unwrap();
     let outer = crate::fingerprint_profile::select(&url);
-    let inner = crate::fingerprint_profile::with_strategy_override(
-        Strategy::PerHostStable,
-        async { crate::fingerprint_profile::select(&url) },
-    )
-    .await;
+    let inner =
+        crate::fingerprint_profile::with_strategy_override(Strategy::PerHostStable, async {
+            crate::fingerprint_profile::select(&url)
+        })
+        .await;
     let after = crate::fingerprint_profile::select(&url);
     assert!(outer.is_none(), "no scope, default global is None");
     assert!(inner.is_some(), "task-local override applies inside the scope");
@@ -394,10 +359,9 @@ async fn task_local_none_override_disables_inside_scope() {
     // select() returns None even if a higher-priority scope or future
     // global default would otherwise pick a profile.
     let url: Url = "wss://task-local-none-override.example/".parse().unwrap();
-    let inner = crate::fingerprint_profile::with_strategy_override(
-        Strategy::None,
-        async { crate::fingerprint_profile::select(&url) },
-    )
+    let inner = crate::fingerprint_profile::with_strategy_override(Strategy::None, async {
+        crate::fingerprint_profile::select(&url)
+    })
     .await;
     assert!(inner.is_none(), "explicit None override disables selection");
 }
@@ -409,16 +373,13 @@ async fn nested_task_local_override_uses_innermost_value() {
     // contract so a future refactor that swaps the storage primitive
     // does not silently change semantics.
     let url: Url = "wss://nested-override.example/".parse().unwrap();
-    let inner = crate::fingerprint_profile::with_strategy_override(
-        Strategy::PerHostStable,
-        async {
-            crate::fingerprint_profile::with_strategy_override(
-                Strategy::None,
-                async { crate::fingerprint_profile::select(&url) },
-            )
+    let inner =
+        crate::fingerprint_profile::with_strategy_override(Strategy::PerHostStable, async {
+            crate::fingerprint_profile::with_strategy_override(Strategy::None, async {
+                crate::fingerprint_profile::select(&url)
+            })
             .await
-        },
-    )
-    .await;
+        })
+        .await;
     assert!(inner.is_none(), "innermost override wins");
 }

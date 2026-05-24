@@ -12,8 +12,15 @@ async fn vless_http_probe_does_not_prefix_socks5_target() {
     let (mut writer, mut reader, server) =
         spawn_vless_loopback(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
 
-    let dummy_target = TargetAddr::Domain("example.com".to_string(), 80).to_wire_bytes().unwrap();
-    let bytes = BytesRecorder { group: "g", uplink: "u", transport: "tcp", probe: "http" };
+    let dummy_target = TargetAddr::Domain("example.com".to_string(), 80)
+        .to_wire_bytes()
+        .unwrap();
+    let bytes = BytesRecorder {
+        group: "g",
+        uplink: "u",
+        transport: "tcp",
+        probe: "http",
+    };
     let result = exchange_http_probe(
         &mut writer,
         &mut reader,
@@ -56,7 +63,12 @@ async fn ss_style_http_probe_prefixes_socks5_target() {
 
     let target = TargetAddr::Domain("example.com".to_string(), 80);
     let target_wire = target.to_wire_bytes().unwrap();
-    let bytes = BytesRecorder { group: "g", uplink: "u", transport: "tcp", probe: "http" };
+    let bytes = BytesRecorder {
+        group: "g",
+        uplink: "u",
+        transport: "tcp",
+        probe: "http",
+    };
     let _ = exchange_http_probe(
         &mut writer,
         &mut reader,
@@ -79,4 +91,3 @@ async fn ss_style_http_probe_prefixes_socks5_target() {
         "SS-style probe must prefix target_wire to the app stream"
     );
 }
-

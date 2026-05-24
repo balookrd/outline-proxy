@@ -98,7 +98,12 @@ pub(super) async fn run_http_probe(
         },
     };
 
-    let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: "http" };
+    let bytes = BytesRecorder {
+        group,
+        uplink: &uplink.name,
+        transport: "tcp",
+        probe: "http",
+    };
     // Skip the SOCKS5 target prefix on a reused VLESS pipe — the server
     // already locked the tunnel onto the probe target at dial time. Sending
     // it again would corrupt the upstream HTTP byte stream.

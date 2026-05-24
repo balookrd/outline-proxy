@@ -28,15 +28,15 @@ pub(super) use policy::{
     zero_window_probe_is_due,
 };
 #[allow(unused_imports)]
-pub(super) use recv::{
-    QueueFutureSegmentOutcome, TrimmedSegment, apply_client_segment,
-    drain_ready_buffered_segments, drain_ready_buffered_segments_from_state,
-    exceeds_client_reassembly_limits, is_duplicate_syn, normalize_trimmed_segment,
-    queue_future_segment, queue_future_segment_with_recv_window, trim_packet_to_receive_window,
-};
-#[allow(unused_imports)]
 #[cfg(test)]
 pub(super) use recv::normalize_client_segment;
+#[allow(unused_imports)]
+pub(super) use recv::{
+    QueueFutureSegmentOutcome, TrimmedSegment, apply_client_segment, drain_ready_buffered_segments,
+    drain_ready_buffered_segments_from_state, exceeds_client_reassembly_limits, is_duplicate_syn,
+    normalize_trimmed_segment, queue_future_segment, queue_future_segment_with_recv_window,
+    trim_packet_to_receive_window,
+};
 #[allow(unused_imports)]
 pub(super) use send::{
     assess_server_backlog_pressure, clear_flow_metrics, flush_server_output,
@@ -52,10 +52,10 @@ pub(super) use transitions::{
     reset_zero_window_persist, server_fin_awaiting_ack, server_fin_sent, set_flow_status,
     transition_on_client_fin, transition_on_server_fin_ack,
 };
+pub(crate) use types::UpstreamWriter;
 #[allow(unused_imports)]
 pub(super) use types::{
     AckEffect, BufferedClientSegment, ClientSegmentView, FlowControlSignals, FlowRouting,
     FlowTimestamps, ReportedFlowMetrics, SequenceRange, ServerBacklogPressure, ServerFlush,
     ServerSegment, TcpFlowState, TcpFlowStatus,
 };
-pub(crate) use types::UpstreamWriter;

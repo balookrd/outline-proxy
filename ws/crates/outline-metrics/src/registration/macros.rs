@@ -15,8 +15,7 @@ macro_rules! register_scalar {
     ($reg:expr, $ty:ty, $name:literal, $help:literal) => {{
         let m = <$ty>::with_opts(::prometheus::Opts::new($name, $help))
             .expect(concat!($name, " metric"));
-        $reg.register(Box::new(m.clone()))
-            .expect(concat!("register ", $name));
+        $reg.register(Box::new(m.clone())).expect(concat!("register ", $name));
         m
     }};
 }

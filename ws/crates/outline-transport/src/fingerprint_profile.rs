@@ -90,12 +90,8 @@ impl Strategy {
     /// renderers iterate this so an info-style gauge can publish a
     /// 0 row for inactive strategies before flipping the active one
     /// to 1.
-    pub const ALL: &'static [Strategy] = &[
-        Strategy::None,
-        Strategy::PerHostStable,
-        Strategy::ProcessStable,
-        Strategy::Random,
-    ];
+    pub const ALL: &'static [Strategy] =
+        &[Strategy::None, Strategy::PerHostStable, Strategy::ProcessStable, Strategy::Random];
 }
 
 impl std::fmt::Display for Strategy {
@@ -115,9 +111,7 @@ impl std::str::FromStr for Strategy {
             // get the safer behaviour automatically; those who specifically
             // want the per-host split must spell `per_host_stable` /
             // `per-host` in full.
-            "stable" | "process" | "process_stable" | "process-stable" => {
-                Ok(Self::ProcessStable)
-            },
+            "stable" | "process" | "process_stable" | "process-stable" => Ok(Self::ProcessStable),
             "per_host_stable" | "per-host-stable" | "per-host" | "per_host" => {
                 Ok(Self::PerHostStable)
             },
@@ -128,7 +122,9 @@ impl std::str::FromStr for Strategy {
 }
 
 impl<'de> serde::Deserialize<'de> for Strategy {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         let raw = String::deserialize(deserializer)?;
         raw.parse().map_err(serde::de::Error::custom)
     }
@@ -184,7 +180,9 @@ pub const PROFILES: &[Profile] = &[
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
-        sec_ch_ua: Some("\"Chromium\";v=\"142\", \"Google Chrome\";v=\"142\", \"Not?A_Brand\";v=\"99\""),
+        sec_ch_ua: Some(
+            "\"Chromium\";v=\"142\", \"Google Chrome\";v=\"142\", \"Not?A_Brand\";v=\"99\"",
+        ),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"Windows\""),
     },
@@ -200,7 +198,9 @@ pub const PROFILES: &[Profile] = &[
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
-        sec_ch_ua: Some("\"Chromium\";v=\"142\", \"Google Chrome\";v=\"142\", \"Not?A_Brand\";v=\"99\""),
+        sec_ch_ua: Some(
+            "\"Chromium\";v=\"142\", \"Google Chrome\";v=\"142\", \"Not?A_Brand\";v=\"99\"",
+        ),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"macOS\""),
     },
@@ -254,7 +254,9 @@ pub const PROFILES: &[Profile] = &[
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
-        sec_ch_ua: Some("\"Chromium\";v=\"142\", \"Microsoft Edge\";v=\"142\", \"Not?A_Brand\";v=\"99\""),
+        sec_ch_ua: Some(
+            "\"Chromium\";v=\"142\", \"Microsoft Edge\";v=\"142\", \"Not?A_Brand\";v=\"99\"",
+        ),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"Windows\""),
     },

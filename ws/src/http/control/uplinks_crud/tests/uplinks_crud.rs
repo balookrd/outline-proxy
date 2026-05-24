@@ -2,13 +2,11 @@ use toml_edit::{DocumentMut, Item, Value};
 
 use crate::config::validate_uplink_section;
 
-use super::payload::{FallbackPayload, UplinkPayload};
 use super::mutate::{
     count_uplinks_in_group, find_group_mut, find_outline_uplink_index, get_or_init_outline_uplinks,
 };
-use super::payload::{
-    merge_patch_into_table, payload_to_section, payload_to_table, table_to_json,
-};
+use super::payload::{FallbackPayload, UplinkPayload};
+use super::payload::{merge_patch_into_table, payload_to_section, payload_to_table, table_to_json};
 
 fn sample_config() -> &'static str {
     r#"# Test config
@@ -219,8 +217,7 @@ fn validation_rejects_link_alongside_explicit_vless_fields() {
         name: Some("conflict".into()),
         transport: Some("vless".into()),
         link: Some(
-            "vless://11111111-2222-3333-4444-555555555555@host:443?type=ws&security=tls"
-                .into(),
+            "vless://11111111-2222-3333-4444-555555555555@host:443?type=ws&security=tls".into(),
         ),
         vless_id: Some("11111111-2222-3333-4444-555555555555".into()),
         ..Default::default()

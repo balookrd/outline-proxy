@@ -8,9 +8,7 @@
 
 use url::Url;
 
-use crate::config::{
-    CipherKind, FallbackTransport, TransportMode, UplinkConfig, UplinkTransport,
-};
+use crate::config::{CipherKind, FallbackTransport, TransportMode, UplinkConfig, UplinkTransport};
 
 fn vless_xhttp_primary() -> UplinkConfig {
     UplinkConfig {
@@ -100,7 +98,11 @@ fn ss_fallback(udp: bool) -> FallbackTransport {
         vless_mode: TransportMode::WsH1,
         vless_id: None,
         tcp_addr: Some("1.2.3.4:8388".parse().unwrap()),
-        udp_addr: if udp { Some("1.2.3.4:8389".parse().unwrap()) } else { None },
+        udp_addr: if udp {
+            Some("1.2.3.4:8389".parse().unwrap())
+        } else {
+            None
+        },
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         fwmark: None,
@@ -207,10 +209,7 @@ fn supports_udp_any_false_when_neither_primary_nor_fallback_supports_udp() {
     let mut cfg = ss_tcp_only_primary();
     cfg.fallbacks = vec![ws_fallback(false)]; // TCP-only fallback
     assert!(!cfg.supports_udp());
-    assert!(
-        !cfg.supports_udp_any(),
-        "all wires are TCP-only, supports_udp_any is false"
-    );
+    assert!(!cfg.supports_udp_any(), "all wires are TCP-only, supports_udp_any is false");
 }
 
 #[test]
@@ -413,13 +412,9 @@ fn active_wire_stays_on_fallback_after_pin_expiry() {
     let mut cfg = vless_xhttp_primary();
     cfg.fallbacks = vec![ws_fallback(false)];
     let very_short_pin = std::time::Duration::from_millis(50);
-    let manager = UplinkManager::new_for_test(
-        "test",
-        vec![cfg],
-        make_probe(1),
-        make_lb(very_short_pin),
-    )
-    .unwrap();
+    let manager =
+        UplinkManager::new_for_test("test", vec![cfg], make_probe(1), make_lb(very_short_pin))
+            .unwrap();
 
     manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
     assert_eq!(manager.active_wire(0, TransportKind::Tcp), 1);
@@ -459,13 +454,8 @@ fn record_wire_outcome_stamps_last_any_wire_success() {
     let mut cfg = vless_xhttp_primary();
     cfg.fallbacks = vec![ws_fallback(false)];
     let lb = make_lb(std::time::Duration::from_secs(60));
-    let manager = UplinkManager::new_for_test(
-        "test",
-        vec![cfg.clone()],
-        make_probe(2),
-        lb.clone(),
-    )
-    .unwrap();
+    let manager =
+        UplinkManager::new_for_test("test", vec![cfg.clone()], make_probe(2), lb.clone()).unwrap();
 
     // Before any outcome: liveness override returns false.
     let snap_initial: UplinkStatus = manager.read_status_for_test(0);
@@ -552,13 +542,9 @@ fn probe_err_after_pin_expiry_does_not_re_advance_when_active_already_on_fallbac
     let mut cfg = vless_xhttp_primary();
     cfg.fallbacks = vec![ws_fallback(false)];
     let very_short_pin = std::time::Duration::from_millis(40);
-    let manager = UplinkManager::new_for_test(
-        "test",
-        vec![cfg],
-        make_probe(1),
-        make_lb(very_short_pin),
-    )
-    .unwrap();
+    let manager =
+        UplinkManager::new_for_test("test", vec![cfg], make_probe(1), make_lb(very_short_pin))
+            .unwrap();
 
     // First failure: active_wire flips to 1, pin set.
     manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("primary 404"));
@@ -734,11 +720,7 @@ fn xhttp_walk_up_after_consecutive_successes_on_capped_carrier() {
     // `consecutive_successes` once per successful probe).
     let manager = manager_with_uplink(cfg, 1);
 
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH1,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH1);
 
     let make_ok_outcome = || ProbeOutcome {
         tcp_ok: true,
@@ -803,11 +785,7 @@ fn xhttp_walk_up_holds_below_min_failures() {
     // min_failures=3 → a single success isn't enough to walk up.
     let manager = manager_with_uplink(cfg, 3);
 
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH1,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH1);
 
     let outcome = ProbeOutcome {
         tcp_ok: true,
@@ -855,11 +833,7 @@ fn xhttp_walk_up_holds_at_one_below_configured() {
     // stay sticky here regardless of how many successful probes land
     // at the H2 carrier — only `run_h3_recovery_probes` testing
     // configured H3 directly can clear it.
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
 
     let make_ok = || ProbeOutcome {
         tcp_ok: true,
@@ -902,11 +876,7 @@ fn xhttp_recovery_push_for_vless_when_walk_up_does_not_clear_cap() {
     // configured-carrier recovery push fire on its own.
     let manager = manager_with_uplink(cfg, 3);
 
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH1,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH1);
 
     let outcome = ProbeOutcome {
         tcp_ok: true,
@@ -946,8 +916,8 @@ fn xhttp_recovery_push_for_vless_when_walk_up_does_not_clear_cap() {
 #[test]
 fn xhttp_recovery_cooldown_blocks_recovery_push_until_expiry() {
     use crate::config::TransportMode;
-    use crate::manager::probe::outcome::ProbeOutcome;
     use crate::manager::mode_downgrade::ModeDowngradeTrigger;
+    use crate::manager::probe::outcome::ProbeOutcome;
 
     let mut cfg = vless_xhttp_primary(); // configured XhttpH3
     cfg.fallbacks = vec![ws_fallback(false)];
@@ -955,23 +925,19 @@ fn xhttp_recovery_cooldown_blocks_recovery_push_until_expiry() {
     // could clear the cap in this scenario is the recovery probe.
     let manager = manager_with_uplink(cfg, 3);
 
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
 
     // Simulate a failed recovery probe: the configured-carrier
     // re-probe didn't recover H3, so `extend_mode_downgrade` is
     // called with `RecoveryReprobeFail`. This should arm the
     // recovery cooldown.
-    manager.extend_mode_downgrade(
-        0,
-        TransportKind::Tcp,
-        ModeDowngradeTrigger::RecoveryReprobeFail,
-    );
+    manager.extend_mode_downgrade(0, TransportKind::Tcp, ModeDowngradeTrigger::RecoveryReprobeFail);
     assert!(
-        manager.read_status_for_test(0).tcp.recovery_probe_cooldown_until.is_some(),
+        manager
+            .read_status_for_test(0)
+            .tcp
+            .recovery_probe_cooldown_until
+            .is_some(),
         "RecoveryReprobeFail must arm the recovery-probe cooldown so the next probe cycle does not re-run recovery",
     );
 
@@ -1023,11 +989,7 @@ fn xhttp_post_recovery_grace_absorbs_consecutive_probe_fails_until_min_failures(
     // Seed a cap, then simulate a successful recovery by calling
     // `clear_mode_downgrade` directly — it stamps `last_recovery_success_at`
     // so the grace window opens.
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
     let s = manager.read_status_for_test(0);
     assert!(s.tcp.mode_downgrade_capped_to.is_none());
@@ -1090,11 +1052,7 @@ fn xhttp_post_recovery_grace_counter_reset_by_probe_success_between_fails() {
     cfg.fallbacks = vec![ws_fallback(false)];
     let manager = manager_with_uplink(cfg, 2);
 
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
 
     let make_failed = || ProbeOutcome {
@@ -1148,7 +1106,10 @@ fn xhttp_post_recovery_grace_counter_reset_by_probe_success_between_fails() {
             &mut udp_recovery,
         );
         assert_eq!(
-            manager.read_status_for_test(0).tcp.post_recovery_grace_descent_attempts,
+            manager
+                .read_status_for_test(0)
+                .tcp
+                .post_recovery_grace_descent_attempts,
             0,
             "probe success in grace must reset the absorbed-attempts counter",
         );
@@ -1170,22 +1131,14 @@ fn xhttp_post_recovery_grace_absorbs_silent_fallback_from_dispatcher() {
     // min_failures=2 — grace absorbs 2 silent fallbacks, releases on 3rd.
     let manager = manager_with_uplink(cfg, 2);
 
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
 
     // First two silent fallbacks (typical dispatcher pattern: each
     // user-driven dial that observes an inline H3 → H2 fall) are
     // absorbed by the grace gate.
     for i in 0..2 {
-        manager.note_silent_transport_fallback(
-            0,
-            TransportKind::Tcp,
-            TransportMode::XhttpH3,
-        );
+        manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
         assert!(
             manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
             "silent fallback #{} inside post-recovery grace must be absorbed",
@@ -1194,11 +1147,7 @@ fn xhttp_post_recovery_grace_absorbs_silent_fallback_from_dispatcher() {
     }
 
     // Third silent fallback releases the gate (counter == min_failures).
-    manager.note_silent_transport_fallback(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH3,
-    );
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
     assert_eq!(
         manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
         Some(TransportMode::XhttpH2),
@@ -1214,11 +1163,7 @@ fn xhttp_post_recovery_grace_absorbs_runtime_failure_after_recovery() {
     cfg.fallbacks = vec![ws_fallback(false)];
     let manager = manager_with_uplink(cfg, 2);
 
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
 
     // First two runtime failures inside grace are absorbed.
@@ -1250,34 +1195,25 @@ fn xhttp_post_recovery_grace_attempts_reset_on_cap_install() {
     cfg.fallbacks = vec![ws_fallback(false)];
     let manager = manager_with_uplink(cfg, 3);
 
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
 
     // Three absorbed attempts; counter reaches 3 (= min_failures).
     for _ in 0..3 {
-        manager.note_silent_transport_fallback(
-            0,
-            TransportKind::Tcp,
-            TransportMode::XhttpH3,
-        );
+        manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
     }
     assert_eq!(
-        manager.read_status_for_test(0).tcp.post_recovery_grace_descent_attempts,
+        manager
+            .read_status_for_test(0)
+            .tcp
+            .post_recovery_grace_descent_attempts,
         3,
         "three absorbed silent fallbacks counted toward the grace budget",
     );
 
     // Fourth silent fallback releases the gate and installs cap
     // (counter == min_failures, condition `< min_failures` false).
-    manager.note_silent_transport_fallback(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH3,
-    );
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
     let s = manager.read_status_for_test(0);
     assert_eq!(
         s.tcp.mode_downgrade_capped_to,
@@ -1298,11 +1234,7 @@ fn xhttp_recovery_streak_requires_two_successes_to_clear_cap() {
     cfg.fallbacks = vec![ws_fallback(false)];
     let manager = manager_with_uplink(cfg, 2);
 
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
 
     // First successful recovery: tentative — cap stays installed,
     // streak counter advances to 1.
@@ -1340,25 +1272,14 @@ fn xhttp_recovery_streak_reset_on_descent() {
     cfg.fallbacks = vec![ws_fallback(false)];
     let manager = manager_with_uplink(cfg, 2);
 
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
     // One tentative recovery success.
     manager.note_recovery_probe_success(0, TransportKind::Tcp);
-    assert_eq!(
-        manager.read_status_for_test(0).tcp.recovery_probe_success_streak,
-        1,
-    );
+    assert_eq!(manager.read_status_for_test(0).tcp.recovery_probe_success_streak, 1,);
 
     // A failed recovery probe in the same cap window must reset
     // the streak — the previous tentative success was unlucky.
-    manager.extend_mode_downgrade(
-        0,
-        TransportKind::Tcp,
-        ModeDowngradeTrigger::RecoveryReprobeFail,
-    );
+    manager.extend_mode_downgrade(0, TransportKind::Tcp, ModeDowngradeTrigger::RecoveryReprobeFail);
     assert_eq!(
         manager.read_status_for_test(0).tcp.recovery_probe_success_streak,
         0,
@@ -1380,16 +1301,9 @@ fn xhttp_recovery_streak_reset_when_cap_changes_via_descent() {
     // recovery success (cap stays H2 because threshold = 2). No
     // call to `clear_mode_downgrade`, so the post-recovery grace
     // is NOT armed and the descent path runs straight through.
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
     manager.note_recovery_probe_success(0, TransportKind::Tcp);
-    assert_eq!(
-        manager.read_status_for_test(0).tcp.recovery_probe_success_streak,
-        1,
-    );
+    assert_eq!(manager.read_status_for_test(0).tcp.recovery_probe_success_streak, 1,);
 
     // Drive a probe failure at the capped carrier (H2). With
     // min_failures=1 the in-window descent gate is satisfied
@@ -1465,11 +1379,7 @@ fn ws_walk_up_holds_at_one_below_configured() {
     // below configured, let recovery probe own the last hop"
     // contract is transport-agnostic.
     let manager = manager_with_uplink(ws_h3_primary(), 1);
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::WsH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::WsH2);
 
     let make_ok = || ProbeOutcome {
         tcp_ok: true,
@@ -1507,11 +1417,7 @@ fn ws_recovery_streak_requires_two_successes_to_clear_cap() {
 
     // Mirrors `xhttp_recovery_streak_requires_two_successes_to_clear_cap`.
     let manager = manager_with_uplink(ws_h3_primary(), 2);
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::WsH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::WsH2);
 
     // First recovery success — tentative, cap stays.
     manager.note_recovery_probe_success(0, TransportKind::Tcp);
@@ -1539,11 +1445,7 @@ fn ws_post_recovery_grace_absorbs_runtime_failure_after_recovery() {
 
     // Mirrors `xhttp_post_recovery_grace_absorbs_runtime_failure_after_recovery`.
     let manager = manager_with_uplink(ws_h3_primary(), 2);
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::WsH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::WsH2);
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
 
     // First two runtime failures inside grace are absorbed.
@@ -1674,11 +1576,7 @@ fn xhttp_post_recovery_grace_renewed_by_probe_success_across_wide_gap() {
     let manager = manager_with_uplink(cfg, 2);
 
     // Open the grace window via a recovery clear.
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
 
     let make_ok = || ProbeOutcome {
@@ -1748,18 +1646,14 @@ fn xhttp_recovery_cooldown_cleared_by_clear_mode_downgrade() {
     cfg.fallbacks = vec![ws_fallback(false)];
     let manager = manager_with_uplink(cfg, 3);
 
-    manager.test_seed_mode_downgrade_for_test(
-        0,
-        TransportKind::Tcp,
-        TransportMode::XhttpH2,
-    );
-    manager.extend_mode_downgrade(
-        0,
-        TransportKind::Tcp,
-        ModeDowngradeTrigger::RecoveryReprobeFail,
-    );
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
+    manager.extend_mode_downgrade(0, TransportKind::Tcp, ModeDowngradeTrigger::RecoveryReprobeFail);
     assert!(
-        manager.read_status_for_test(0).tcp.recovery_probe_cooldown_until.is_some(),
+        manager
+            .read_status_for_test(0)
+            .tcp
+            .recovery_probe_cooldown_until
+            .is_some(),
         "cooldown armed by RecoveryReprobeFail",
     );
 
@@ -1861,12 +1755,10 @@ fn scoring_base_latency_uses_active_wire_ewma_when_advanced() {
     let mut tcp = PerTransportStatus::default();
     tcp.rtt_ewma = Some(std::time::Duration::from_millis(40));
     tcp.latency = Some(std::time::Duration::from_millis(50));
-    tcp.fallback_rtt_ewma.push(Some(std::time::Duration::from_millis(120)));
+    tcp.fallback_rtt_ewma
+        .push(Some(std::time::Duration::from_millis(120)));
     tcp.active_wire = 1;
-    let status = crate::manager::status::UplinkStatus {
-        tcp,
-        ..Default::default()
-    };
+    let status = crate::manager::status::UplinkStatus { tcp, ..Default::default() };
     assert_eq!(
         scoring_base_latency(&status, TransportKind::Tcp),
         Some(std::time::Duration::from_millis(120)),
@@ -1883,10 +1775,7 @@ fn scoring_base_latency_falls_back_to_primary_when_fallback_ewma_unset() {
     tcp.latency = Some(std::time::Duration::from_millis(50));
     tcp.active_wire = 1;
     // No fallback slot pushed — cold start right after a wire flip.
-    let status = crate::manager::status::UplinkStatus {
-        tcp,
-        ..Default::default()
-    };
+    let status = crate::manager::status::UplinkStatus { tcp, ..Default::default() };
     assert_eq!(
         scoring_base_latency(&status, TransportKind::Tcp),
         Some(std::time::Duration::from_millis(40)),
@@ -2023,7 +1912,15 @@ fn probe_recovery_snaps_active_wire_back_to_primary() {
     // First probe success on primary: not enough yet (min_failures=2).
     manager.test_apply_probe_outcome_for_test(
         0,
-        ProbeOutcome { tcp_ok: true, udp_ok: false, udp_applicable: false, tcp_latency: None, udp_latency: None, tcp_downgraded_from: None, udp_downgraded_from: None },
+        ProbeOutcome {
+            tcp_ok: true,
+            udp_ok: false,
+            udp_applicable: false,
+            tcp_latency: None,
+            udp_latency: None,
+            tcp_downgraded_from: None,
+            udp_downgraded_from: None,
+        },
     );
     assert_eq!(
         manager.active_wire(0, TransportKind::Tcp),
@@ -2034,7 +1931,15 @@ fn probe_recovery_snaps_active_wire_back_to_primary() {
     // Second consecutive probe success: threshold reached → snap back.
     manager.test_apply_probe_outcome_for_test(
         0,
-        ProbeOutcome { tcp_ok: true, udp_ok: false, udp_applicable: false, tcp_latency: None, udp_latency: None, tcp_downgraded_from: None, udp_downgraded_from: None },
+        ProbeOutcome {
+            tcp_ok: true,
+            udp_ok: false,
+            udp_applicable: false,
+            tcp_latency: None,
+            udp_latency: None,
+            tcp_downgraded_from: None,
+            udp_downgraded_from: None,
+        },
     );
     assert_eq!(
         manager.active_wire(0, TransportKind::Tcp),
@@ -2044,10 +1949,7 @@ fn probe_recovery_snaps_active_wire_back_to_primary() {
 
     // Pin must be cleared so a future failure starts a fresh streak.
     let snap = manager.read_status_for_test(0);
-    assert!(
-        snap.tcp.active_wire_pinned_until.is_none(),
-        "early failback must clear the pin",
-    );
+    assert!(snap.tcp.active_wire_pinned_until.is_none(), "early failback must clear the pin",);
     assert_eq!(snap.tcp.active_wire_streak, 0);
 }
 
@@ -2153,12 +2055,7 @@ async fn fallback_wire_downgrade_caps_only_its_own_wire() {
 
     // Open a downgrade on wire 1 (the fallback) by observing a WsH3 → WsH2
     // silent fallback during a successful dial.
-    manager.note_silent_transport_fallback_for_wire(
-        0,
-        TransportKind::Tcp,
-        1,
-        TransportMode::WsH3,
-    );
+    manager.note_silent_transport_fallback_for_wire(0, TransportKind::Tcp, 1, TransportMode::WsH3);
 
     // Wire 1's effective mode is now capped to WsH2 (one step down).
     let wire1_mode = manager.effective_tcp_mode_for_wire(0, 1).await;
@@ -2176,10 +2073,7 @@ async fn fallback_wire_downgrade_caps_only_its_own_wire() {
         snap.tcp.mode_downgrade_until.is_none(),
         "primary's downgrade slot must remain unset",
     );
-    assert!(
-        snap.tcp.mode_downgrade_capped_to.is_none(),
-        "primary's cap must remain unset",
-    );
+    assert!(snap.tcp.mode_downgrade_capped_to.is_none(), "primary's cap must remain unset",);
 }
 
 #[tokio::test]
@@ -2192,10 +2086,7 @@ async fn primary_wire_downgrade_does_not_leak_into_fallback() {
     manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
 
     // Primary effective mode is now capped to XhttpH2.
-    assert_eq!(
-        manager.effective_tcp_mode_for_wire(0, 0).await,
-        TransportMode::XhttpH2,
-    );
+    assert_eq!(manager.effective_tcp_mode_for_wire(0, 0).await, TransportMode::XhttpH2,);
 
     // Fallback wire stays at its configured mode — primary's downgrade
     // doesn't reach it.
@@ -2329,10 +2220,7 @@ async fn fallback_wire_downgrade_is_monotonic_within_window() {
         1,
         TransportMode::XhttpH3,
     );
-    assert_eq!(
-        manager.effective_tcp_mode_for_wire(0, 1).await,
-        TransportMode::XhttpH2,
-    );
+    assert_eq!(manager.effective_tcp_mode_for_wire(0, 1).await, TransportMode::XhttpH2,);
 
     // Second trigger inside the window: XhttpH2 → XhttpH1.
     manager.note_silent_transport_fallback_for_wire(
@@ -2405,10 +2293,7 @@ fn primary_probe_err_skipped_when_active_fallback_recently_alive() {
         status.tcp.consecutive_failures, 0,
         "primary probe failure must not tick consecutive_failures while sticky on a verified fallback",
     );
-    assert_eq!(
-        status.udp.consecutive_failures, 0,
-        "udp side is gated identically",
-    );
+    assert_eq!(status.udp.consecutive_failures, 0, "udp side is gated identically",);
     assert!(
         status.tcp.mode_downgrade_until.is_none(),
         "primary probe failure must not re-arm the TCP mode-downgrade window in this state",
@@ -2417,10 +2302,7 @@ fn primary_probe_err_skipped_when_active_fallback_recently_alive() {
         status.udp.mode_downgrade_until.is_none(),
         "primary probe failure must not re-arm the UDP mode-downgrade window in this state",
     );
-    assert_eq!(
-        status.tcp.active_wire, 1,
-        "active_wire must stay on the verified fallback",
-    );
+    assert_eq!(status.tcp.active_wire, 1, "active_wire must stay on the verified fallback",);
 }
 
 #[test]
@@ -2436,12 +2318,7 @@ fn primary_probe_err_still_escalates_with_no_recent_success_on_active_fallback()
     // Move sticky to fallback with a deliberately stale success stamp:
     // 10 minutes ago is well past the default runtime_failure_window.
     let stale = tokio::time::Instant::now() - std::time::Duration::from_secs(600);
-    manager.test_seed_active_fallback_with_recent_success(
-        0,
-        TransportKind::Tcp,
-        1,
-        stale,
-    );
+    manager.test_seed_active_fallback_with_recent_success(0, TransportKind::Tcp, 1, stale);
 
     manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("primary 404"));
 

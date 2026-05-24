@@ -35,7 +35,7 @@ const WS_DATA_CHANNEL_CAPACITY: usize = 256;
 const WS_CTRL_CHANNEL_CAPACITY: usize = 8;
 
 use crate::frame_io::{DatagramChannel, FrameSink, FrameSource};
-use crate::{AbortOnDrop, TransportOperation, WsClosed, TransportStream};
+use crate::{AbortOnDrop, TransportOperation, TransportStream, WsClosed};
 
 /// Default idle watchdog for WS transports. If no inbound frame arrives
 /// within this window the reader tears the session down — the only way
@@ -52,7 +52,12 @@ pub(crate) const WS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// task handle and the data/ctrl senders.
 fn spawn_ws_writer(
     ws_stream: TransportStream,
-) -> (AbortOnDrop, mpsc::Sender<Message>, mpsc::Sender<Message>, SplitStream<TransportStream>) {
+) -> (
+    AbortOnDrop,
+    mpsc::Sender<Message>,
+    mpsc::Sender<Message>,
+    SplitStream<TransportStream>,
+) {
     let (sink, stream) = ws_stream.split();
     let (data_tx, mut data_rx) = mpsc::channel::<Message>(WS_DATA_CHANNEL_CAPACITY);
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(WS_CTRL_CHANNEL_CAPACITY);
@@ -91,14 +96,17 @@ fn spawn_ws_writer(
                     Some(Message::Close(_)) => {
                         let _ = ws_sink.close().await;
                         return;
-                    }
+                    },
                     Some(m) => {
                         if let Err(error) = ws_sink.send(m).await {
                             warn!(%error, "ws frame writer data send failed, terminating writer task");
                             return;
                         }
-                    }
-                    None => { let _ = ws_sink.close().await; return; }
+                    },
+                    None => {
+                        let _ = ws_sink.close().await;
+                        return;
+                    },
                 }
             }
         }
@@ -106,10 +114,7 @@ fn spawn_ws_writer(
     (AbortOnDrop::new(task), data_tx, ctrl_tx, stream)
 }
 
-fn spawn_keepalive(
-    ctrl_tx: mpsc::Sender<Message>,
-    interval: Duration,
-) -> AbortOnDrop {
+fn spawn_keepalive(ctrl_tx: mpsc::Sender<Message>, interval: Duration) -> AbortOnDrop {
     AbortOnDrop::new(tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.tick().await; // skip the immediate tick
@@ -191,17 +196,15 @@ impl FrameSource for WsFrameSource {
                 None => {
                     self.closed_cleanly = true;
                     return Ok(None);
-                }
+                },
                 Some(Ok(m)) => m,
                 Some(Err(e)) => return Err(e).context(TransportOperation::WebSocketRead),
             };
             match msg {
                 Message::Binary(bytes) => return Ok(Some(bytes)),
                 Message::Close(frame) => {
-                    let try_again = frame
-                        .as_ref()
-                        .map(|f| f.code == CloseCode::Again)
-                        .unwrap_or(false);
+                    let try_again =
+                        frame.as_ref().map(|f| f.code == CloseCode::Again).unwrap_or(false);
                     if !try_again {
                         self.closed_cleanly = true;
                     }
@@ -212,11 +215,11 @@ impl FrameSource for WsFrameSource {
                         "ws frame source: received Close from upstream",
                     );
                     return Err(anyhow::Error::from(WsClosed));
-                }
+                },
                 Message::Ping(payload) => {
                     let _ = self.ctrl_tx.try_send(Message::Pong(payload));
-                }
-                Message::Pong(_) | Message::Frame(_) => {}
+                },
+                Message::Pong(_) | Message::Frame(_) => {},
                 Message::Text(_) => bail!("unexpected text websocket frame"),
             }
         }
@@ -321,7 +324,7 @@ pub fn from_ws_datagrams(
                             )))
                             .await;
                         return;
-                    }
+                    },
                     Ok(item) => item,
                 },
                 None => stream.next().await,
@@ -330,32 +333,31 @@ pub fn from_ws_datagrams(
                 None => return,
                 Some(Ok(m)) => m,
                 Some(Err(e)) => {
-                    let err: anyhow::Result<()> =
-                        Err(e).context(TransportOperation::WebSocketRead);
+                    let err: anyhow::Result<()> = Err(e).context(TransportOperation::WebSocketRead);
                     let _ = downlink_tx.send(Err(err.unwrap_err())).await;
                     return;
-                }
+                },
             };
             match msg {
                 Message::Binary(bytes) => {
                     if downlink_tx.send(Ok(bytes)).await.is_err() {
                         return;
                     }
-                }
+                },
                 Message::Close(_) => {
                     let _ = downlink_tx.send(Err(anyhow::Error::from(WsClosed))).await;
                     return;
-                }
+                },
                 Message::Ping(payload) => {
                     let _ = reader_ctrl_tx.try_send(Message::Pong(payload));
-                }
-                Message::Pong(_) | Message::Frame(_) => {}
+                },
+                Message::Pong(_) | Message::Frame(_) => {},
                 Message::Text(_) => {
                     let _ = downlink_tx
                         .send(Err(anyhow!("unexpected text websocket frame")))
                         .await;
                     return;
-                }
+                },
             }
         }
     });

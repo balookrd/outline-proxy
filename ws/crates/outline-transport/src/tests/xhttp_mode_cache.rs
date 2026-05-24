@@ -14,18 +14,9 @@ use crate::xhttp_mode_cache::{effective_mode, gc, record_failure, record_success
 #[tokio::test]
 async fn no_entry_passes_requested_mode_through_unchanged() {
     let url: Url = "https://no-entry.test:443/xhttp".parse().unwrap();
-    assert_eq!(
-        effective_mode(&url, TransportMode::XhttpH3).await,
-        TransportMode::XhttpH3,
-    );
-    assert_eq!(
-        effective_mode(&url, TransportMode::XhttpH2).await,
-        TransportMode::XhttpH2,
-    );
-    assert_eq!(
-        effective_mode(&url, TransportMode::XhttpH1).await,
-        TransportMode::XhttpH1,
-    );
+    assert_eq!(effective_mode(&url, TransportMode::XhttpH3).await, TransportMode::XhttpH3,);
+    assert_eq!(effective_mode(&url, TransportMode::XhttpH2).await, TransportMode::XhttpH2,);
+    assert_eq!(effective_mode(&url, TransportMode::XhttpH1).await, TransportMode::XhttpH1,);
 }
 
 #[tokio::test]
@@ -38,10 +29,7 @@ async fn record_failure_xhttp_h3_caps_subsequent_dials_to_xhttp_h2() {
         "h3 failure must clamp the next h3 dial to h2",
     );
     // Lower-rank requests pass through — the cap is a ceiling, not a floor.
-    assert_eq!(
-        effective_mode(&url, TransportMode::XhttpH1).await,
-        TransportMode::XhttpH1,
-    );
+    assert_eq!(effective_mode(&url, TransportMode::XhttpH1).await, TransportMode::XhttpH1,);
 }
 
 #[tokio::test]
@@ -53,10 +41,7 @@ async fn record_failure_xhttp_h2_caps_subsequent_dials_to_xhttp_h1() {
         TransportMode::XhttpH1,
         "h2 failure caps the chain at h1, so even an h3 request lands at h1",
     );
-    assert_eq!(
-        effective_mode(&url, TransportMode::XhttpH2).await,
-        TransportMode::XhttpH1,
-    );
+    assert_eq!(effective_mode(&url, TransportMode::XhttpH2).await, TransportMode::XhttpH1,);
 }
 
 #[tokio::test]
@@ -68,15 +53,9 @@ async fn multi_step_failure_converges_downward_and_never_raises() {
     // raise the cap back to h2.
     let url: Url = "https://multi-step.test:443/xhttp".parse().unwrap();
     record_failure(&url, TransportMode::XhttpH3).await;
-    assert_eq!(
-        effective_mode(&url, TransportMode::XhttpH3).await,
-        TransportMode::XhttpH2,
-    );
+    assert_eq!(effective_mode(&url, TransportMode::XhttpH3).await, TransportMode::XhttpH2,);
     record_failure(&url, TransportMode::XhttpH2).await;
-    assert_eq!(
-        effective_mode(&url, TransportMode::XhttpH3).await,
-        TransportMode::XhttpH1,
-    );
+    assert_eq!(effective_mode(&url, TransportMode::XhttpH3).await, TransportMode::XhttpH1,);
     record_failure(&url, TransportMode::XhttpH3).await;
     assert_eq!(
         effective_mode(&url, TransportMode::XhttpH3).await,
@@ -104,24 +83,15 @@ async fn effective_mode_passes_through_non_xhttp_requests() {
     // must pass through unchanged — the cache is single-family.
     let url: Url = "https://passthrough.test:443/xhttp".parse().unwrap();
     record_failure(&url, TransportMode::XhttpH3).await;
-    assert_eq!(
-        effective_mode(&url, TransportMode::WsH3).await,
-        TransportMode::WsH3,
-    );
-    assert_eq!(
-        effective_mode(&url, TransportMode::Quic).await,
-        TransportMode::Quic,
-    );
+    assert_eq!(effective_mode(&url, TransportMode::WsH3).await, TransportMode::WsH3,);
+    assert_eq!(effective_mode(&url, TransportMode::Quic).await, TransportMode::Quic,);
 }
 
 #[tokio::test]
 async fn record_success_clears_cap_when_succeeded_meets_or_exceeds_cap() {
     let url: Url = "https://success-clears.test:443/xhttp".parse().unwrap();
     record_failure(&url, TransportMode::XhttpH3).await;
-    assert_eq!(
-        effective_mode(&url, TransportMode::XhttpH3).await,
-        TransportMode::XhttpH2,
-    );
+    assert_eq!(effective_mode(&url, TransportMode::XhttpH3).await, TransportMode::XhttpH2,);
     record_success(&url, TransportMode::XhttpH3).await;
     assert_eq!(
         effective_mode(&url, TransportMode::XhttpH3).await,

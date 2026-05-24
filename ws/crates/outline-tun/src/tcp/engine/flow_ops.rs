@@ -11,8 +11,9 @@ use outline_metrics as metrics;
 
 use super::super::maintenance::commit_flow_changes;
 use super::super::state_machine::{
-    FlowControlSignals, FlowRouting, FlowTimestamps, TcpFlowState, TcpFlowStatus, build_flow_packet,
-    build_flow_syn_ack_packet, clear_flow_metrics, decode_client_window, set_flow_status,
+    FlowControlSignals, FlowRouting, FlowTimestamps, TcpFlowState, TcpFlowStatus,
+    build_flow_packet, build_flow_syn_ack_packet, clear_flow_metrics, decode_client_window,
+    set_flow_status,
 };
 use super::super::wire::{ParsedTcpPacket, build_reset_response};
 use super::super::{
@@ -84,11 +85,7 @@ impl TunTcpEngine {
                 route: route.clone(),
                 upstream_writer: None,
             },
-            signals: FlowControlSignals {
-                close_signal,
-                scheduler,
-                idle_timeout,
-            },
+            signals: FlowControlSignals { close_signal, scheduler, idle_timeout },
             status: TcpFlowStatus::SynReceived,
             rcv_nxt: packet.sequence_number.wrapping_add(1),
             client_window_scale: packet.window_scale.unwrap_or(0),
@@ -199,7 +196,15 @@ impl TunTcpEngine {
             return;
         };
 
-        let (flow_id, group_name, uplink_name, _duration, upstream_writer, close_signal, rst_packet) = {
+        let (
+            flow_id,
+            group_name,
+            uplink_name,
+            _duration,
+            upstream_writer,
+            close_signal,
+            rst_packet,
+        ) = {
             let mut state = flow.lock().await;
             let rst_packet = if matches!(state.status, TcpFlowStatus::Closed) {
                 None

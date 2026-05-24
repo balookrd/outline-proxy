@@ -107,7 +107,10 @@ impl UplinkManager {
         let wire_index_u8 = u8::try_from(wire_index).unwrap_or(u8::MAX);
 
         let result = match timeout(
-            probe.timeout.saturating_mul(2).saturating_add(std::time::Duration::from_secs(1)),
+            probe
+                .timeout
+                .saturating_mul(2)
+                .saturating_add(std::time::Duration::from_secs(1)),
             probe_uplink(
                 &dns_cache,
                 &self.inner.group_name,
@@ -141,9 +144,21 @@ impl UplinkManager {
                 // `min_failures` consecutive fallback-wire probes fail,
                 // the active wire advances to the next wire in the chain,
                 // mirroring how a real client dial would push it forward.
-                self.record_wire_outcome(index, TransportKind::Tcp, wire_index_u8, false, total_wires);
+                self.record_wire_outcome(
+                    index,
+                    TransportKind::Tcp,
+                    wire_index_u8,
+                    false,
+                    total_wires,
+                );
                 if uplink.supports_udp() {
-                    self.record_wire_outcome(index, TransportKind::Udp, wire_index_u8, false, total_wires);
+                    self.record_wire_outcome(
+                        index,
+                        TransportKind::Udp,
+                        wire_index_u8,
+                        false,
+                        total_wires,
+                    );
                 }
                 return;
             },
@@ -153,9 +168,21 @@ impl UplinkManager {
                     wire_index,
                     "fallback-wire probe timed out",
                 );
-                self.record_wire_outcome(index, TransportKind::Tcp, wire_index_u8, false, total_wires);
+                self.record_wire_outcome(
+                    index,
+                    TransportKind::Tcp,
+                    wire_index_u8,
+                    false,
+                    total_wires,
+                );
                 if uplink.supports_udp() {
-                    self.record_wire_outcome(index, TransportKind::Udp, wire_index_u8, false, total_wires);
+                    self.record_wire_outcome(
+                        index,
+                        TransportKind::Udp,
+                        wire_index_u8,
+                        false,
+                        total_wires,
+                    );
                 }
                 return;
             },
@@ -188,9 +215,21 @@ impl UplinkManager {
         // to the next wire in the chain. This is the only path that moves
         // sticky off a fallback wire on a passive uplink (no client traffic
         // to drive `record_wire_outcome` from the dial path).
-        self.record_wire_outcome(index, TransportKind::Tcp, wire_index_u8, result.tcp_ok, total_wires);
+        self.record_wire_outcome(
+            index,
+            TransportKind::Tcp,
+            wire_index_u8,
+            result.tcp_ok,
+            total_wires,
+        );
         if result.udp_applicable {
-            self.record_wire_outcome(index, TransportKind::Udp, wire_index_u8, result.udp_ok, total_wires);
+            self.record_wire_outcome(
+                index,
+                TransportKind::Udp,
+                wire_index_u8,
+                result.udp_ok,
+                total_wires,
+            );
         }
         debug!(
             uplink = %uplink.name,

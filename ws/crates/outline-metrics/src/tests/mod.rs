@@ -421,15 +421,19 @@ fn render_prometheus_exports_routing_selection_info() {
     }])
     .expect("render metrics");
 
-    assert!(rendered.contains(
-        "outline_ws_rust_selection_mode_info{group=\"main\",mode=\"active_passive\"} 1"
-    ));
-    assert!(rendered.contains(
-        "outline_ws_rust_routing_scope_info{group=\"main\",scope=\"global\"} 1"
-    ));
-    assert!(rendered.contains(
-        "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"senko\"} 1"
-    ));
+    assert!(
+        rendered.contains(
+            "outline_ws_rust_selection_mode_info{group=\"main\",mode=\"active_passive\"} 1"
+        )
+    );
+    assert!(
+        rendered.contains("outline_ws_rust_routing_scope_info{group=\"main\",scope=\"global\"} 1")
+    );
+    assert!(
+        rendered.contains(
+            "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"senko\"} 1"
+        )
+    );
 }
 
 // Pull DIRECT_GROUP_LABEL into scope via existing glob import.
@@ -473,12 +477,16 @@ fn render_prometheus_clears_previous_global_active_uplink() {
     }])
     .expect("render second metrics");
 
-    assert!(rendered.contains(
-        "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"senko\"} 0"
-    ));
-    assert!(rendered.contains(
-        "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"nuxt\"} 1"
-    ));
+    assert!(
+        rendered.contains(
+            "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"senko\"} 0"
+        )
+    );
+    assert!(
+        rendered.contains(
+            "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"nuxt\"} 1"
+        )
+    );
 }
 
 #[test]

@@ -67,7 +67,11 @@ fn routing_scope_name(scope: RoutingScope) -> &'static str {
 /// [`UplinkConfig::tcp_dial_mode`] but operates on a synthetic
 /// transport+mode tuple drawn from primary or a fallback. Returns
 /// `None` for Shadowsocks (no TransportMode enum applies).
-fn wire_tcp_mode(transport: crate::config::UplinkTransport, ws_mode: crate::config::TransportMode, vless_mode: crate::config::TransportMode) -> Option<String> {
+fn wire_tcp_mode(
+    transport: crate::config::UplinkTransport,
+    ws_mode: crate::config::TransportMode,
+    vless_mode: crate::config::TransportMode,
+) -> Option<String> {
     use crate::config::UplinkTransport;
     match transport {
         UplinkTransport::Vless => Some(vless_mode.to_string()),
@@ -145,8 +149,10 @@ impl UplinkManager {
         // `UplinkConfig`. Effective mode comes from the existing
         // `effective_*_mode_for_wire(0)` path which folds in primary's
         // top-level mode-downgrade slot.
-        let primary_tcp_configured = wire_tcp_mode(uplink.transport, uplink.tcp_mode, uplink.vless_mode);
-        let primary_udp_configured = wire_tcp_mode(uplink.transport, uplink.udp_mode, uplink.vless_mode);
+        let primary_tcp_configured =
+            wire_tcp_mode(uplink.transport, uplink.tcp_mode, uplink.vless_mode);
+        let primary_udp_configured =
+            wire_tcp_mode(uplink.transport, uplink.udp_mode, uplink.vless_mode);
         let primary_tcp_eff = self.effective_tcp_mode_for_wire(index, 0).await.to_string();
         let primary_udp_eff = self.effective_udp_mode_for_wire(index, 0).await.to_string();
         let (primary_tcp_sm, primary_tcp_block) =
@@ -155,11 +161,17 @@ impl UplinkManager {
             wire_xhttp_submode(uplink.transport, uplink.udp_dial_url()).await;
         let (primary_tcp_eff_opt, primary_tcp_dg) = match uplink.transport {
             UplinkTransport::Shadowsocks => (None, false),
-            _ => (Some(primary_tcp_eff.clone()), primary_tcp_configured.as_deref() != Some(&primary_tcp_eff)),
+            _ => (
+                Some(primary_tcp_eff.clone()),
+                primary_tcp_configured.as_deref() != Some(&primary_tcp_eff),
+            ),
         };
         let (primary_udp_eff_opt, primary_udp_dg) = match uplink.transport {
             UplinkTransport::Shadowsocks => (None, false),
-            _ => (Some(primary_udp_eff.clone()), primary_udp_configured.as_deref() != Some(&primary_udp_eff)),
+            _ => (
+                Some(primary_udp_eff.clone()),
+                primary_udp_configured.as_deref() != Some(&primary_udp_eff),
+            ),
         };
         chain.push(WireSnapshot {
             transport: uplink.transport.to_string(),
@@ -265,18 +277,18 @@ impl UplinkManager {
                     UplinkTransport::Ws => {
                         uplink.tcp_ws_url.as_ref().map(|_| uplink.tcp_mode.to_string())
                     },
-                    UplinkTransport::Vless => uplink
-                        .tcp_dial_url()
-                        .map(|_| uplink.vless_mode.to_string()),
+                    UplinkTransport::Vless => {
+                        uplink.tcp_dial_url().map(|_| uplink.vless_mode.to_string())
+                    },
                     UplinkTransport::Shadowsocks => None,
                 },
                 udp_mode: match uplink.transport {
                     UplinkTransport::Ws => {
                         uplink.udp_ws_url.as_ref().map(|_| uplink.udp_mode.to_string())
                     },
-                    UplinkTransport::Vless => uplink
-                        .udp_dial_url()
-                        .map(|_| uplink.vless_mode.to_string()),
+                    UplinkTransport::Vless => {
+                        uplink.udp_dial_url().map(|_| uplink.vless_mode.to_string())
+                    },
                     UplinkTransport::Shadowsocks => None,
                 },
                 weight: uplink.weight,
@@ -342,14 +354,8 @@ impl UplinkManager {
                     .mode_downgrade_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
-                tcp_mode_capped_to: status
-                    .tcp
-                    .mode_downgrade_capped_to
-                    .map(|m| m.to_string()),
-                udp_mode_capped_to: status
-                    .udp
-                    .mode_downgrade_capped_to
-                    .map(|m| m.to_string()),
+                tcp_mode_capped_to: status.tcp.mode_downgrade_capped_to.map(|m| m.to_string()),
+                udp_mode_capped_to: status.udp.mode_downgrade_capped_to.map(|m| m.to_string()),
                 tcp_xhttp_submode,
                 udp_xhttp_submode,
                 tcp_xhttp_submode_block_remaining_ms,
@@ -367,9 +373,7 @@ impl UplinkManager {
                     .iter()
                     .map(|fb| fb.transport.to_string())
                     .collect(),
-                configured_wire_chain: self
-                    .build_wire_chain_async(index, uplink)
-                    .await,
+                configured_wire_chain: self.build_wire_chain_async(index, uplink).await,
                 tcp_active_wire: status.tcp.active_wire,
                 udp_active_wire: status.udp.active_wire,
                 tcp_active_wire_pin_remaining_ms: status

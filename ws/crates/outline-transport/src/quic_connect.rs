@@ -60,8 +60,7 @@ pub async fn connect_vless_tcp_quic(
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
     let (sink, source_io) = open_quic_frame_pair(&conn).await?;
-    let writer =
-        VlessTcpWriter::with_sink(Box::new(sink), uuid, target, Arc::clone(&lifetime));
+    let writer = VlessTcpWriter::with_sink(Box::new(sink), uuid, target, Arc::clone(&lifetime));
     let reader = VlessTcpReader::with_source(Box::new(source_io), lifetime);
     Ok((writer, reader))
 }
@@ -113,11 +112,7 @@ pub async fn connect_vless_tcp_quic_with_resume(
         resume_id,
     );
     let (id_tx, id_rx) = tokio::sync::oneshot::channel();
-    let reader = VlessTcpReader::with_source_and_resume_sink(
-        Box::new(source_io),
-        lifetime,
-        id_tx,
-    );
+    let reader = VlessTcpReader::with_source_and_resume_sink(Box::new(source_io), lifetime, id_tx);
     // Fire-and-forget flush of the request header. This is a local
     // socket write — it does NOT round-trip to the server. The server
     // will act on the header (resume lookup / minting a Session ID)
@@ -192,7 +187,6 @@ pub async fn connect_ss_udp_quic(
     let conn = connect_quic_uplink(cache, url, fwmark, ipv6_first, source, ALPN_SS)
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
-    let chan: Arc<dyn crate::frame_io::DatagramChannel> =
-        Arc::new(QuicDatagramChannel::new(conn));
+    let chan: Arc<dyn crate::frame_io::DatagramChannel> = Arc::new(QuicDatagramChannel::new(conn));
     UdpWsTransport::from_channel(chan, cipher, password, source)
 }

@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock};
 
-use outline_transport::{AbortOnDrop, UdpSessionTransport};
 use crate::utils::maybe_shrink_hash_map;
 use crate::wire::IpVersion;
+use outline_transport::{AbortOnDrop, UdpSessionTransport};
 use outline_uplink::UplinkManager;
 
 /// Minimal view of a flow for table-level helpers: the per-flow `id`
@@ -78,19 +78,30 @@ pub(super) struct DirectUdpFlowState {
     pub(super) last_seen: Instant,
 }
 
-pub(super) type DirectFlowTable =
-    Arc<RwLock<HashMap<UdpFlowKey, Arc<Mutex<DirectUdpFlowState>>>>>;
+pub(super) type DirectFlowTable = Arc<RwLock<HashMap<UdpFlowKey, Arc<Mutex<DirectUdpFlowState>>>>>;
 
 impl FlowStamp for UdpFlowState {
-    fn id(&self) -> u64 { self.id }
-    fn last_seen(&self) -> Instant { self.last_seen }
-    fn set_last_seen(&mut self, now: Instant) { self.last_seen = now; }
+    fn id(&self) -> u64 {
+        self.id
+    }
+    fn last_seen(&self) -> Instant {
+        self.last_seen
+    }
+    fn set_last_seen(&mut self, now: Instant) {
+        self.last_seen = now;
+    }
 }
 
 impl FlowStamp for DirectUdpFlowState {
-    fn id(&self) -> u64 { self.id }
-    fn last_seen(&self) -> Instant { self.last_seen }
-    fn set_last_seen(&mut self, now: Instant) { self.last_seen = now; }
+    fn id(&self) -> u64 {
+        self.id
+    }
+    fn last_seen(&self) -> Instant {
+        self.last_seen
+    }
+    fn set_last_seen(&mut self, now: Instant) {
+        self.last_seen = now;
+    }
 }
 
 /// Bump `last_seen` on the flow at `key` — but only if the flow currently
@@ -160,10 +171,7 @@ where
         }
     }
     let mut guard = flows.write().await;
-    let removed: Vec<_> = expired_keys
-        .into_iter()
-        .filter_map(|k| guard.remove(&k))
-        .collect();
+    let removed: Vec<_> = expired_keys.into_iter().filter_map(|k| guard.remove(&k)).collect();
     maybe_shrink_hash_map(&mut guard);
     removed
 }

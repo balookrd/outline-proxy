@@ -9,7 +9,11 @@ pub struct SessionTracker {
 
 pub fn track_session(protocol: &'static str) -> SessionTracker {
     METRICS.sessions_active.with_label_values(&[protocol]).inc();
-    SessionTracker { protocol, started_at: Instant::now(), finished: false }
+    SessionTracker {
+        protocol,
+        started_at: Instant::now(),
+        finished: false,
+    }
 }
 
 impl SessionTracker {

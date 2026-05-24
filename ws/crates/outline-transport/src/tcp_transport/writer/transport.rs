@@ -1,13 +1,13 @@
-use anyhow::{Context, Result, anyhow};
 use crate::TransportOperation;
-use futures_util::stream::SplitSink;
+use crate::{AbortOnDrop, TransportStream};
+use anyhow::{Context, Result, anyhow};
 use futures_util::SinkExt;
+use futures_util::stream::SplitSink;
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::warn;
-use crate::{AbortOnDrop, TransportStream};
 
 /// Buffer size for the WS writer's data channel. Sized to absorb
 /// bursts up to ~4 MB at the 16 KB SS2022 chunk boundary so a long
@@ -153,7 +153,10 @@ impl WriteTransport for SocketWriteTransport {
     }
 
     async fn close(&mut self) -> Result<()> {
-        self.writer.shutdown().await.context(TransportOperation::SocketShutdown)
+        self.writer
+            .shutdown()
+            .await
+            .context(TransportOperation::SocketShutdown)
     }
 
     fn supports_half_close(&self) -> bool {

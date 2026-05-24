@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 
 use outline_transport::TransportMode;
 use outline_uplink::{FallbackTransport, UplinkConfig, UplinkTransport};

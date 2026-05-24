@@ -11,16 +11,16 @@ use super::{
     drain_ready_buffered_segments, normalize_client_segment, queue_future_segment,
 };
 use crate::config::TunTcpConfig;
-use outline_transport::{TransportStream, TcpShadowsocksWriter};
 use crate::tcp::state_machine::SequenceRange;
 use crate::wire::test_utils::{
     IP_PROTOCOL_TCP, assert_ipv4_header_checksum_valid, assert_transport_checksum_valid,
     flip_packet_byte, random_payload, seeded_rng, transport_offset,
 };
-use shadowsocks_crypto::CipherKind;
 use futures_util::StreamExt;
+use outline_transport::{TcpShadowsocksWriter, TransportStream};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, seq::SliceRandom};
+use shadowsocks_crypto::CipherKind;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{accept_async, connect_async};

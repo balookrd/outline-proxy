@@ -26,9 +26,7 @@ use tracing::{info, warn};
 use crate::config::{DashboardConfig, DashboardInstanceConfig};
 use crate::http::serve::{ServeConfig, serve_with_shutdown};
 
-use self::response::{
-    html_response, plain_response, redirect_response, DashboardResponse,
-};
+use self::response::{DashboardResponse, html_response, plain_response, redirect_response};
 
 #[derive(Clone)]
 struct DashboardState {

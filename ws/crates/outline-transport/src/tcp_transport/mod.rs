@@ -1,12 +1,12 @@
 mod reader;
 mod writer;
 
-pub use reader::{SocketTcpReader, TcpShadowsocksReader, WsReadDiag, WsTcpReader};
-pub use writer::{SocketTcpWriter, TcpShadowsocksWriter, WsTcpWriter};
 #[cfg(feature = "quic")]
 pub use reader::QuicTcpReader;
+pub use reader::{SocketTcpReader, TcpShadowsocksReader, WsReadDiag, WsTcpReader};
 #[cfg(feature = "quic")]
 pub use writer::QuicTcpWriter;
+pub use writer::{SocketTcpWriter, TcpShadowsocksWriter, WsTcpWriter};
 
 use crate::vless::{VlessTcpReader, VlessTcpWriter};
 

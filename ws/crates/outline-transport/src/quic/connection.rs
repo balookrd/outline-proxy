@@ -65,9 +65,7 @@ impl SharedQuicConnection {
     /// (VLESS-TCP / SS-TCP). Failure flips the soft-close flag — the
     /// caller is expected to invalidate the cache entry and retry on a
     /// fresh connection.
-    pub async fn open_bidi_stream(
-        &self,
-    ) -> Result<(quinn::SendStream, quinn::RecvStream)> {
+    pub async fn open_bidi_stream(&self) -> Result<(quinn::SendStream, quinn::RecvStream)> {
         if !self.is_open() {
             bail!("shared quic connection is already closed");
         }
@@ -75,11 +73,11 @@ impl SharedQuicConnection {
             Ok(pair) => {
                 self.sessions_opened.fetch_add(1, Ordering::Relaxed);
                 Ok(pair)
-            }
+            },
             Err(error) => {
                 self.closed.store(true, Ordering::Relaxed);
                 Err(error).context("failed to open quic bidi stream")
-            }
+            },
         }
     }
 
@@ -170,7 +168,11 @@ impl SharedQuicConnection {
         // OnceCell::set returns Err with the original value when full.
         match self.oversize_stream.set(Arc::clone(&stream)) {
             Ok(()) => stream,
-            Err(_) => Arc::clone(self.oversize_stream.get().expect("set returned Err so a value is present")),
+            Err(_) => Arc::clone(
+                self.oversize_stream
+                    .get()
+                    .expect("set returned Err so a value is present"),
+            ),
         }
     }
 

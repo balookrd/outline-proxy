@@ -11,10 +11,10 @@ use super::super::state_machine::{
     absorb_accepted_client_packet, ack_covers_server_fin, ack_is_stale_server_fin_retry,
     apply_inbound_and_flush, build_flow_ack_packet, build_flow_packet, classify_inbound_segment,
     client_fin_seen, completes_syn_received_handshake, exceeds_client_reassembly_limits,
-    is_duplicate_syn, note_ack_progress, process_server_ack,
-    queue_future_segment_with_recv_window, retransmit_budget_exhausted,
-    retransmit_oldest_unacked_packet, segment_requires_ack, server_fin_awaiting_ack,
-    set_flow_status, transition_on_client_fin, transition_on_server_fin_ack,
+    is_duplicate_syn, note_ack_progress, process_server_ack, queue_future_segment_with_recv_window,
+    retransmit_budget_exhausted, retransmit_oldest_unacked_packet, segment_requires_ack,
+    server_fin_awaiting_ack, set_flow_status, transition_on_client_fin,
+    transition_on_server_fin_ack,
 };
 use super::super::validation::{PacketValidation, validate_existing_packet};
 use super::super::wire::ParsedTcpPacket;
@@ -39,9 +39,7 @@ impl TunTcpEngine {
         let ip_family = ip_family_from_version(packet.version);
         let mut state = flow.lock().await;
 
-        if state.status == TcpFlowStatus::SynReceived
-            && is_duplicate_syn(&packet, state.rcv_nxt)
-        {
+        if state.status == TcpFlowStatus::SynReceived && is_duplicate_syn(&packet, state.rcv_nxt) {
             metrics::record_tun_tcp_event(
                 &state.routing.group_name,
                 &state.routing.uplink_name,
@@ -66,12 +64,8 @@ impl TunTcpEngine {
                 let key = state.key.clone();
                 let group_name = state.routing.group_name.clone();
                 let uplink_name = state.routing.uplink_name.clone();
-                let ack = build_flow_ack_packet(
-                    &state,
-                    state.server_seq,
-                    state.rcv_nxt,
-                    TCP_FLAG_ACK,
-                )?;
+                let ack =
+                    build_flow_ack_packet(&state, state.server_seq, state.rcv_nxt, TCP_FLAG_ACK)?;
                 drop(state);
                 self.write_ack_packet_with_event(
                     &key,

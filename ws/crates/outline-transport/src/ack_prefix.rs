@@ -80,11 +80,8 @@ pub fn parse_v1(buf: &[u8]) -> ParseResult {
     if buf[5] != 0 {
         return ParseResult::ReservedFlagsSet(buf[5]);
     }
-    let up_acked = u64::from_be_bytes(
-        buf[6..14]
-            .try_into()
-            .expect("FRAME_LEN_V1 guarantees 8 bytes here"),
-    );
+    let up_acked =
+        u64::from_be_bytes(buf[6..14].try_into().expect("FRAME_LEN_V1 guarantees 8 bytes here"));
     ParseResult::Valid { up_acked }
 }
 

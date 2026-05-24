@@ -24,14 +24,16 @@ use tokio::time::{Instant, timeout};
 
 use outline_transport::DnsCache;
 
-use crate::config::{ProbeConfig, UplinkConfig, UplinkTransport, TransportMode};
+use crate::config::{ProbeConfig, TransportMode, UplinkConfig, UplinkTransport};
 
 use self::dns::run_dns_probe;
 use self::http::run_http_probe;
 use self::metrics::record_attempt;
 use self::tcp_tunnel::run_tcp_tunnel_probe;
 use self::tls::run_tls_probe;
-use self::ws::{run_quic_handshake_probe, run_tcp_socket_probe, run_udp_socket_probe, run_ws_probe};
+use self::ws::{
+    run_quic_handshake_probe, run_tcp_socket_probe, run_udp_socket_probe, run_ws_probe,
+};
 use super::manager::probe::outcome::ProbeOutcome;
 use super::manager::probe::warm_tcp::WarmTcpProbeSlot;
 use super::manager::probe::warm_udp::WarmUdpProbeSlot;
@@ -108,12 +110,10 @@ async fn run_tcp_probe(
     // the data path through the warm pipe.
     let ws_warm_elided = probe.ws.enabled
         && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ws)
-        && warm_tcp_slot
-            .as_ref()
-            .is_some_and(|slot| {
-                use crate::manager::probe::warm_tcp::peek_matches;
-                peek_matches(slot, effective_tcp_mode)
-            });
+        && warm_tcp_slot.as_ref().is_some_and(|slot| {
+            use crate::manager::probe::warm_tcp::peek_matches;
+            peek_matches(slot, effective_tcp_mode)
+        });
     if probe.ws.enabled && !ws_warm_elided {
         let ws_attempt = async {
             match uplink.transport {
@@ -253,12 +253,10 @@ async fn run_udp_probe(
     // sub-probe path is cheap (e.g. local dnsmasq cache on the server).
     let ws_warm_elided = probe.ws.enabled
         && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ws)
-        && warm_udp_slot
-            .as_ref()
-            .is_some_and(|slot| {
-                use crate::manager::probe::warm_udp::peek_matches;
-                peek_matches(slot, effective_udp_mode)
-            });
+        && warm_udp_slot.as_ref().is_some_and(|slot| {
+            use crate::manager::probe::warm_udp::peek_matches;
+            peek_matches(slot, effective_udp_mode)
+        });
     if probe.ws.enabled && !ws_warm_elided {
         let ws_attempt = async {
             match uplink.transport {

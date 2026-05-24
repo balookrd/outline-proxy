@@ -40,18 +40,18 @@ use tracing::{debug, warn};
 use url::Url;
 
 use crate::TransportOperation;
+use crate::connect_tcp_socket;
 use crate::dns::resolve_host_with_preference;
 use crate::dns_cache::DnsCache;
 use crate::guards::AbortOnDrop;
 use crate::resumption::SessionId;
-use crate::connect_tcp_socket;
 
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
 use super::{
-    ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY,
-    RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, RequestBody, XhttpStream, XhttpSubmode,
-    XhttpTarget, default_port_for, empty_request_body, full_request_body, generate_session_id,
-    parse_ack_prefix_echo, parse_session_response,
+    ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
+    RESUME_REQUEST_HEADER, RequestBody, XhttpStream, XhttpSubmode, XhttpTarget, default_port_for,
+    empty_request_body, full_request_body, generate_session_id, parse_ack_prefix_echo,
+    parse_session_response,
 };
 
 /// Same dial budget as the h2/h3 paths — keeps fallback windows
@@ -147,14 +147,8 @@ pub(super) async fn connect_xhttp_h1(
             profile,
         )
         .await?;
-        let driver = tokio::spawn(driver_loop_h1(
-            up_send,
-            target.clone(),
-            in_tx,
-            out_rx,
-            body,
-            profile,
-        ));
+        let driver =
+            tokio::spawn(driver_loop_h1(up_send, target.clone(), in_tx, out_rx, body, profile));
 
         debug!(
             %url, %session_id, mode = "xhttp_h1",
@@ -249,10 +243,8 @@ async fn open_h1_get(
         builder = builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
     }
     if symmetric_replay_requested && client_acked_offset > 0 {
-        builder = builder.header(
-            crate::resumption::DOWN_ACKED_HEADER,
-            client_acked_offset.to_string(),
-        );
+        builder =
+            builder.header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
     }
     let mut req = builder
         .body(empty_request_body())
@@ -274,9 +266,8 @@ async fn open_h1_get(
     }
     let issued = parse_session_response(resp.headers());
     let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
-    let sym_echo = symmetric_replay_requested
-        && echo
-        && super::parse_symmetric_replay_echo(resp.headers());
+    let sym_echo =
+        symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
     Ok((issued, echo, sym_echo, resp.into_body()))
 }
 
@@ -295,9 +286,7 @@ async fn driver_loop_h1(
     let _drain_task = AbortOnDrop::new(tokio::spawn(async move {
         if let Err(error) = drain_hyper_body(body, &drain_in_tx).await {
             debug!(?error, "xhttp/h1 GET reader exited");
-            let _ = drain_in_tx
-                .send(Err(io_ws_err("xhttp/h1 downlink ended")))
-                .await;
+            let _ = drain_in_tx.send(Err(io_ws_err("xhttp/h1 downlink ended"))).await;
         } else {
             let _ = drain_in_tx.send(Ok(Message::Close(None))).await;
         }
@@ -317,9 +306,7 @@ async fn driver_loop_h1(
             Message::Binary(b) => b,
             Message::Ping(_) | Message::Pong(_) => continue,
             Message::Text(_) => {
-                let _ = in_tx
-                    .send(Err(io_ws_err("xhttp/h1 does not carry text")))
-                    .await;
+                let _ = in_tx.send(Err(io_ws_err("xhttp/h1 does not carry text"))).await;
                 continue;
             },
             Message::Close(_) => break,
@@ -329,16 +316,12 @@ async fn driver_loop_h1(
         next_seq = next_seq.saturating_add(1);
         if let Err(error) = up_send.ready().await {
             warn!(?error, "xhttp h1 uplink connection lost while waiting for capacity");
-            let _ = in_tx
-                .send(Err(io_ws_err("xhttp/h1 uplink not ready")))
-                .await;
+            let _ = in_tx.send(Err(io_ws_err("xhttp/h1 uplink not ready"))).await;
             break;
         }
         if let Err(error) = post_one(&mut up_send, target.as_ref(), seq, bytes, profile).await {
             warn!(?error, seq, "xhttp/h1 POST failed");
-            let _ = in_tx
-                .send(Err(io_ws_err("xhttp/h1 uplink POST failed")))
-                .await;
+            let _ = in_tx.send(Err(io_ws_err("xhttp/h1 uplink POST failed"))).await;
             // A single POST failure tears the keep-alive socket down
             // (hyper's connection task will exit on the next read), so
             // breaking the driver loop here matches reality — we
@@ -387,4 +370,3 @@ async fn post_one(
     }
     Ok(())
 }
-

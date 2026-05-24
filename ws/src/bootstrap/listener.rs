@@ -114,11 +114,7 @@ pub(super) async fn run_accept_loop(
         }
         let config = Arc::clone(&proxy_config);
         let registry = registry.clone();
-        let permit = conn_sem
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore closed");
+        let permit = conn_sem.clone().acquire_owned().await.expect("semaphore closed");
         // Clone the shutdown receiver into the task so long-lived connections
         // can be cancelled on SIGTERM. Dropping the serve future closes the
         // sockets, which lets the drain complete in milliseconds instead of

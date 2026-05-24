@@ -727,10 +727,7 @@ async fn load_config_rejects_uplink_group_without_uplinks() {
     let args = super::Args::parse_from(["test"]);
     let err = load_config(&path, &args).await.unwrap_err();
     let msg = format!("{err:#}");
-    assert!(
-        msg.contains("no [[uplinks]]") || msg.contains("no uplinks"),
-        "got: {msg}"
-    );
+    assert!(msg.contains("no [[uplinks]]") || msg.contains("no uplinks"), "got: {msg}");
 }
 
 #[tokio::test]
@@ -766,10 +763,7 @@ async fn load_config_rejects_route_without_prefixes_or_file() {
     let args = super::Args::parse_from(["test"]);
     let err = load_config(&path, &args).await.unwrap_err();
     let msg = format!("{err:#}");
-    assert!(
-        msg.contains("prefixes") && msg.contains("file"),
-        "got: {msg}"
-    );
+    assert!(msg.contains("prefixes") && msg.contains("file"), "got: {msg}");
 }
 
 #[tokio::test]
@@ -800,10 +794,7 @@ password = "Secret0"
     let args = super::Args::parse_from(["test"]);
     let err = load_config(&path, &args).await.unwrap_err();
     let msg = format!("{err:#}");
-    assert!(
-        msg.contains("empty") && msg.contains("route"),
-        "got: {msg}"
-    );
+    assert!(msg.contains("empty") && msg.contains("route"), "got: {msg}");
 }
 
 #[tokio::test]
@@ -830,11 +821,8 @@ async fn load_config_rejects_cli_override_with_uplink_group() {
     .unwrap();
 
     // CLI override conflicts with new-shape config.
-    let args = super::Args::parse_from([
-        "test",
-        "--tcp-ws-url",
-        "wss://override.example.com/cli/tcp",
-    ]);
+    let args =
+        super::Args::parse_from(["test", "--tcp-ws-url", "wss://override.example.com/cli/tcp"]);
     let err = load_config(&path, &args).await.unwrap_err();
     let msg = format!("{err:#}");
     assert!(
@@ -927,10 +915,7 @@ async fn load_config_rejects_inverted_route_without_prefixes() {
     let args = super::Args::parse_from(["test"]);
     let err = load_config(&path, &args).await.unwrap_err();
     let msg = format!("{err:#}");
-    assert!(
-        msg.contains("prefixes") || msg.contains("invert"),
-        "got: {msg}"
-    );
+    assert!(msg.contains("prefixes") || msg.contains("invert"), "got: {msg}");
 }
 
 #[cfg(feature = "control")]

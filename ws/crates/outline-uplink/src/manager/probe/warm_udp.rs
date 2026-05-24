@@ -42,8 +42,14 @@ use crate::config::TransportMode;
 /// encodes the target on every datagram (per SS-UDP framing), so reuse
 /// is just "keep the WS open" — no per-session prefix to worry about.
 pub(crate) enum WarmUdpProbe {
-    Vless { transport: VlessUdpWsTransport, mode: TransportMode },
-    Ws { transport: UdpWsTransport, mode: TransportMode },
+    Vless {
+        transport: VlessUdpWsTransport,
+        mode: TransportMode,
+    },
+    Ws {
+        transport: UdpWsTransport,
+        mode: TransportMode,
+    },
 }
 
 impl WarmUdpProbe {

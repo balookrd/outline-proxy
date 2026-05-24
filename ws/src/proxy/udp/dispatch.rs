@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use tokio::net::UdpSocket;
 use tracing::warn;
 
-use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use outline_metrics as metrics;
+use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 
 use socks5_proto::TargetAddr;
 

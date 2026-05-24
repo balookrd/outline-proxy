@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 
 use outline_uplink::UplinkTransport;
 use shadowsocks_crypto::CipherKind;

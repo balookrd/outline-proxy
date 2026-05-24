@@ -275,7 +275,7 @@ fn spawn_session_reader(
                         .context("vless udp quic: failed to encode target")))
                     .await;
                 return;
-            }
+            },
         };
         loop {
             let payload = tokio::select! {

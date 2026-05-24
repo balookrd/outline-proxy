@@ -209,4 +209,3 @@ pub(crate) async fn activate_from_json(body: &[u8], uplinks: UplinkRegistry) -> 
         },
     }
 }
-

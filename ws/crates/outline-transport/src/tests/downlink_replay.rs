@@ -25,34 +25,19 @@ fn synth_v1_header(flags: u8, replay_len: u64) -> [u8; FRAME_HEADER_LEN_V1] {
 #[test]
 fn parses_valid_v1_header_with_no_flags() {
     let buf = synth_v1_header(0, 0x0102030405060708);
-    assert_eq!(
-        parse_v1(&buf),
-        ParseResult::Valid {
-            flags: 0,
-            replay_len: 0x0102030405060708,
-        }
-    );
+    assert_eq!(parse_v1(&buf), ParseResult::Valid { flags: 0, replay_len: 0x0102030405060708 });
 }
 
 #[test]
 fn parses_zero_replay_len() {
     let buf = synth_v1_header(0, 0);
-    assert_eq!(
-        parse_v1(&buf),
-        ParseResult::Valid { flags: 0, replay_len: 0 }
-    );
+    assert_eq!(parse_v1(&buf), ParseResult::Valid { flags: 0, replay_len: 0 });
 }
 
 #[test]
 fn parses_max_replay_len() {
     let buf = synth_v1_header(0, u64::MAX);
-    assert_eq!(
-        parse_v1(&buf),
-        ParseResult::Valid {
-            flags: 0,
-            replay_len: u64::MAX,
-        }
-    );
+    assert_eq!(parse_v1(&buf), ParseResult::Valid { flags: 0, replay_len: u64::MAX });
 }
 
 #[test]
@@ -127,10 +112,7 @@ fn extra_trailing_bytes_ignored_for_header_parse() {
     let header = synth_v1_header(0, 5);
     let mut buf = header.to_vec();
     buf.extend_from_slice(b"hello");
-    assert_eq!(
-        parse_v1(&buf),
-        ParseResult::Valid { flags: 0, replay_len: 5 }
-    );
+    assert_eq!(parse_v1(&buf), ParseResult::Valid { flags: 0, replay_len: 5 });
 }
 
 #[test]

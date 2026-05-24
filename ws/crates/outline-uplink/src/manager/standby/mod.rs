@@ -12,7 +12,7 @@ use tracing::debug;
 use outline_metrics as metrics;
 use outline_transport::{
     DialNetworkOptions, DialResumeOptions, TransportDialOptions, TransportOperation,
-    UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, TransportStream,
+    TransportStream, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux,
     connect_shadowsocks_udp_with_source, connect_transport, global_resume_cache,
 };
 
@@ -81,10 +81,7 @@ impl UplinkManager {
 
     /// Same as `effective_tcp_mode`, but for the UDP-over-WS /
     /// UDP-over-QUIC / UDP-over-XHTTP transport.
-    pub(crate) async fn effective_udp_mode(
-        &self,
-        index: usize,
-    ) -> crate::config::TransportMode {
+    pub(crate) async fn effective_udp_mode(&self, index: usize) -> crate::config::TransportMode {
         let uplink = &self.inner.uplinks[index];
         let configured = uplink.udp_dial_mode();
         if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
@@ -119,8 +116,7 @@ impl UplinkManager {
         // back empty. Skip it to avoid the per-call pool lock and the
         // bogus `miss` counter inflation against a pool that cannot
         // produce a stream by design.
-        if self.effective_tcp_mode(candidate.index).await
-            == outline_transport::TransportMode::Quic
+        if self.effective_tcp_mode(candidate.index).await == outline_transport::TransportMode::Quic
         {
             return None;
         }
@@ -138,7 +134,8 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<TransportStream> {
-        self.connect_tcp_ws_fresh_internal(candidate, source, false, false, 0).await
+        self.connect_tcp_ws_fresh_internal(candidate, source, false, false, 0)
+            .await
     }
 
     /// Same as [`Self::connect_tcp_ws_fresh`] but advertises
@@ -153,7 +150,8 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<TransportStream> {
-        self.connect_tcp_ws_fresh_internal(candidate, source, true, false, 0).await
+        self.connect_tcp_ws_fresh_internal(candidate, source, true, false, 0)
+            .await
     }
 
     /// Variant used by the v2 Symmetric Downlink Replay retry path:
@@ -601,9 +599,7 @@ impl UplinkManager {
                         started.elapsed(),
                     )
                     .await;
-                    return Ok(UdpSessionTransport::Ss(
-                        transport.with_uplink_binding(binding()),
-                    ));
+                    return Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())));
                 },
                 Err(e) => {
                     tracing::warn!(

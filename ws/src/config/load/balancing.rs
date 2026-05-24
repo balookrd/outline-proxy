@@ -8,7 +8,9 @@ use outline_uplink::{
 
 use super::super::schema::LoadBalancingSection;
 
-pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result<LoadBalancingConfig> {
+pub(super) fn load_balancing_config(
+    lb: Option<&LoadBalancingSection>,
+) -> Result<LoadBalancingConfig> {
     let rtt_ewma_alpha = lb.and_then(|l| l.rtt_ewma_alpha).unwrap_or(0.3);
     if !(rtt_ewma_alpha.is_finite() && 0.0 < rtt_ewma_alpha && rtt_ewma_alpha <= 1.0) {
         bail!("load_balancing.rtt_ewma_alpha must be in the range (0, 1]");
@@ -52,9 +54,7 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         chunk0_failure_window: Duration::from_secs(
             lb.and_then(|l| l.chunk0_failure_window_secs).unwrap_or(300),
         ),
-        global_udp_strict_health: lb
-            .and_then(|l| l.global_udp_strict_health)
-            .unwrap_or(false),
+        global_udp_strict_health: lb.and_then(|l| l.global_udp_strict_health).unwrap_or(false),
         udp_ws_keepalive_interval: lb
             .and_then(|l| l.udp_ws_keepalive_secs)
             .map(Duration::from_secs)
@@ -64,7 +64,11 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         // Pings break upstream SS framing); set to 0 to disable for VLESS too.
         tcp_ws_keepalive_interval: {
             let secs = lb.and_then(|l| l.tcp_ws_keepalive_secs).unwrap_or(60);
-            if secs == 0 { None } else { Some(Duration::from_secs(secs)) }
+            if secs == 0 {
+                None
+            } else {
+                Some(Duration::from_secs(secs))
+            }
         },
         // Default: 20 s — sends a WebSocket Ping on each idle warm-standby TCP
         // socket to keep connections alive through NAT/firewall idle-timeout
@@ -72,7 +76,11 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         // Set to 0 to disable.
         tcp_ws_standby_keepalive_interval: {
             let secs = lb.and_then(|l| l.tcp_ws_standby_keepalive_secs).unwrap_or(20);
-            if secs == 0 { None } else { Some(Duration::from_secs(secs)) }
+            if secs == 0 {
+                None
+            } else {
+                Some(Duration::from_secs(secs))
+            }
         },
         // Default: 20 s — keeps active SOCKS TCP sessions alive through common
         // 25-30 s upstream idle-timeout windows (HAProxy, nginx, NAT tables).
@@ -93,10 +101,12 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         // 0 to disable (cached probe pipes then rely solely on a fast
         // probe.interval to stay warm).
         warm_probe_keepalive_interval: {
-            let secs = lb
-                .and_then(|l| l.warm_probe_keepalive_secs)
-                .unwrap_or(20);
-            if secs == 0 { None } else { Some(Duration::from_secs(secs)) }
+            let secs = lb.and_then(|l| l.warm_probe_keepalive_secs).unwrap_or(20);
+            if secs == 0 {
+                None
+            } else {
+                Some(Duration::from_secs(secs))
+            }
         },
         auto_failback: lb.and_then(|l| l.auto_failback).unwrap_or(false),
         // Default: 256 KiB — large enough to absorb typical HTTP
@@ -113,9 +123,7 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         // attempt; bumping the budget pays off only against
         // genuinely-flaky transports, and burns 256 KiB per attempt
         // (one full buffer replay) even on persistent failure.
-        tcp_mid_session_retry_budget: lb
-            .and_then(|l| l.tcp_mid_session_retry_budget)
-            .unwrap_or(1),
+        tcp_mid_session_retry_budget: lb.and_then(|l| l.tcp_mid_session_retry_budget).unwrap_or(1),
         // Default: `Soft` — matches the v1.1 behaviour (oversized
         // chunk goes through, session stays alive, future retries
         // surface `failed_replay`). `Hard` drops the session

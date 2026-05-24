@@ -72,10 +72,7 @@ fn replay_from_offset_past_total_sent_errors() {
     let mut ring = ClientUpstreamRingBuffer::new(64);
     ring.push(b"hello").unwrap();
     let err = ring.replay_from(99).unwrap_err();
-    assert_eq!(
-        err,
-        ReplayError::OffsetAhead { requested: 99, total_sent: 5 },
-    );
+    assert_eq!(err, ReplayError::OffsetAhead { requested: 99, total_sent: 5 },);
 }
 
 #[test]
@@ -112,20 +109,14 @@ fn replay_from_offset_below_oldest_errors_with_evicted() {
     // unambiguously rather than silently returning the surviving
     // suffix.
     let err = ring.replay_from(0).unwrap_err();
-    assert_eq!(
-        err,
-        ReplayError::OffsetEvicted { requested: 0, oldest_available: 4 },
-    );
+    assert_eq!(err, ReplayError::OffsetEvicted { requested: 0, oldest_available: 4 },);
 }
 
 #[test]
 fn push_larger_than_capacity_is_rejected() {
     let mut ring = ClientUpstreamRingBuffer::new(4);
     let err = ring.push(b"too-big").unwrap_err();
-    assert_eq!(
-        err,
-        PushError::OversizedSingleChunk { chunk_len: 7, capacity_bytes: 4 },
-    );
+    assert_eq!(err, PushError::OversizedSingleChunk { chunk_len: 7, capacity_bytes: 4 },);
     // Failed push must not corrupt the bookkeeping.
     assert_eq!(ring.total_sent(), 0);
     assert_eq!(ring.buffered_bytes(), 0);
@@ -135,10 +126,7 @@ fn push_larger_than_capacity_is_rejected() {
 fn capacity_zero_rejects_every_non_empty_push() {
     let mut ring = ClientUpstreamRingBuffer::new(0);
     let err = ring.push(b"x").unwrap_err();
-    assert_eq!(
-        err,
-        PushError::OversizedSingleChunk { chunk_len: 1, capacity_bytes: 0 },
-    );
+    assert_eq!(err, PushError::OversizedSingleChunk { chunk_len: 1, capacity_bytes: 0 },);
     // Empty pushes still succeed — keeps unconditional caller wiring
     // safe even when retry is disabled.
     ring.push(b"").unwrap();
@@ -185,8 +173,5 @@ fn replay_from_after_eviction_below_oldest_still_errors() {
     }
     // oldest is 84; offset 50 was evicted.
     let err = ring.replay_from(50).unwrap_err();
-    assert_eq!(
-        err,
-        ReplayError::OffsetEvicted { requested: 50, oldest_available: 84 },
-    );
+    assert_eq!(err, ReplayError::OffsetEvicted { requested: 50, oldest_available: 84 },);
 }

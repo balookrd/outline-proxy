@@ -60,8 +60,8 @@ impl TargetAddr {
                 Ok((Self::IpV6(Ipv6Addr::from(raw), port), 19))
             },
             SOCKS_ATYP_DOMAIN => {
-                let len = *bytes.get(1).ok_or(Socks5Error::ShortAddress { kind: "domain" })?
-                    as usize;
+                let len =
+                    *bytes.get(1).ok_or(Socks5Error::ShortAddress { kind: "domain" })? as usize;
                 if bytes.len() < 2 + len + 2 {
                     return Err(Socks5Error::ShortAddress { kind: "domain" });
                 }

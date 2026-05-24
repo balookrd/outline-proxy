@@ -3,12 +3,12 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-use crate::config::{LoadBalancingConfig, UplinkTransport, TransportMode};
+use crate::config::{LoadBalancingConfig, TransportMode, UplinkTransport};
 
 use super::super::super::penalty::{add_penalty, update_rtt_ewma};
 use super::super::super::types::{TransportKind, Uplink, UplinkManager};
-use super::super::status::PerTransportStatus;
 use super::super::mode_downgrade::ModeDowngradeTrigger;
+use super::super::status::PerTransportStatus;
 
 #[derive(Debug)]
 pub(crate) struct ProbeOutcome {
@@ -261,15 +261,13 @@ fn needs_carrier_recovery(
         return false;
     }
     match (uplink_transport, uplink_configured_mode) {
-        (UplinkTransport::Ws, TransportMode::WsH3) => matches!(
-            effective_mode,
-            TransportMode::WsH2 | TransportMode::WsH1
-        ),
+        (UplinkTransport::Ws, TransportMode::WsH3) => {
+            matches!(effective_mode, TransportMode::WsH2 | TransportMode::WsH1)
+        },
         (UplinkTransport::Ws, TransportMode::WsH2) => effective_mode == TransportMode::WsH1,
-        (UplinkTransport::Vless, TransportMode::XhttpH3) => matches!(
-            effective_mode,
-            TransportMode::XhttpH2 | TransportMode::XhttpH1
-        ),
+        (UplinkTransport::Vless, TransportMode::XhttpH3) => {
+            matches!(effective_mode, TransportMode::XhttpH2 | TransportMode::XhttpH1)
+        },
         (UplinkTransport::Vless, TransportMode::XhttpH2) => {
             effective_mode == TransportMode::XhttpH1
         },
@@ -351,7 +349,12 @@ impl UplinkManager {
             if result.udp_applicable {
                 if !result.udp_ok {
                     if !udp_skip_escalation {
-                        record_transport_failure(&mut status.udp, now, min_failures, &load_balancing);
+                        record_transport_failure(
+                            &mut status.udp,
+                            now,
+                            min_failures,
+                            &load_balancing,
+                        );
                         udp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
                             &mut status.udp,
                             uplink_total_wires,

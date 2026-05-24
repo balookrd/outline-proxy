@@ -1,7 +1,9 @@
-use anyhow::{Context, Result, bail};
+use crate::TransportOperation;
+use crate::TransportStream;
 use crate::WsClosed;
-use futures_util::stream::SplitStream;
+use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
+use futures_util::stream::SplitStream;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::OwnedReadHalf;
@@ -9,8 +11,6 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::{Message, frame::coding::CloseCode};
 use tracing::debug;
-use crate::TransportStream;
-use crate::TransportOperation;
 
 pub(super) type WsStream = SplitStream<TransportStream>;
 
@@ -137,10 +137,8 @@ impl ReadTransport for WsReadTransport {
                     // closed_cleanly stays false so the proxy layer retries
                     // on the same or a different uplink.  All other close
                     // codes are normal terminations (closed_cleanly = true).
-                    let try_again = frame
-                        .as_ref()
-                        .map(|f| f.code == CloseCode::Again)
-                        .unwrap_or(false);
+                    let try_again =
+                        frame.as_ref().map(|f| f.code == CloseCode::Again).unwrap_or(false);
                     if !try_again {
                         *closed_cleanly = true;
                     }
@@ -200,7 +198,7 @@ impl ReadTransport for QuicReadTransport {
             Err(quinn::ReadExactError::FinishedEarly(_)) => {
                 *closed_cleanly = true;
                 bail!("quic stream closed");
-            }
+            },
             Err(e) => Err(e).context("quic stream read failed"),
         }
     }

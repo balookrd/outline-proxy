@@ -21,7 +21,12 @@ async fn tls_probe_silent_upstream_blocks_handshake() {
 
     let target = TargetAddr::Domain("example.com".to_string(), 443);
     let target_wire = target.to_wire_bytes().unwrap();
-    let bytes = BytesRecorder { group: "g", uplink: "u", transport: "tcp", probe: "tls" };
+    let bytes = BytesRecorder {
+        group: "g",
+        uplink: "u",
+        transport: "tcp",
+        probe: "tls",
+    };
 
     let result = tokio::time::timeout(
         Duration::from_millis(150),

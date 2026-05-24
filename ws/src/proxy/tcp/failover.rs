@@ -5,15 +5,14 @@ use futures_util::StreamExt;
 use tracing::{debug, warn};
 
 use outline_transport::{
-    DialNetworkOptions, DialResumeOptions, TcpReader, TcpWriter,
-    TcpShadowsocksReader, TcpShadowsocksWriter, UplinkConnectionBinding, UpstreamTransportGuard,
-    TransportDialOptions, connect_shadowsocks_tcp_with_source, connect_transport,
-    global_resume_cache,
+    DialNetworkOptions, DialResumeOptions, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter,
+    TcpWriter, TransportDialOptions, UplinkConnectionBinding, UpstreamTransportGuard,
+    connect_shadowsocks_tcp_with_source, connect_transport, global_resume_cache,
 };
-use socks5_proto::TargetAddr;
 use outline_uplink::{
     FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
 };
+use socks5_proto::TargetAddr;
 
 pub(super) const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 
@@ -127,8 +126,7 @@ pub(super) async fn connect_tcp_uplink(
     target: &TargetAddr,
 ) -> Result<ConnectedTcpUplink> {
     let total_wires = 1 + candidate.uplink.fallbacks.len();
-    let dial_order =
-        uplinks.wire_dial_order(candidate.index, TransportKind::Tcp, total_wires);
+    let dial_order = uplinks.wire_dial_order(candidate.index, TransportKind::Tcp, total_wires);
 
     // Fast path: no fallbacks — preserve the previous error-propagation
     // semantics (no extra context wrapping when only the primary exists).
@@ -189,10 +187,9 @@ pub(super) async fn connect_tcp_uplink(
                     error = %format!("{error:#}"),
                     "TCP wire dial failed",
                 );
-                last_err = Some(error.context(format!(
-                    "uplink {} {wire_label} failed",
-                    candidate.uplink.name,
-                )));
+                last_err = Some(
+                    error.context(format!("uplink {} {wire_label} failed", candidate.uplink.name,)),
+                );
             },
         }
     }
@@ -222,15 +219,9 @@ pub(super) async fn connect_tcp_specific_wire(
         connect_tcp_uplink_primary(uplinks, candidate, target).await
     } else {
         let idx = (wire_index - 1) as usize;
-        let fallback = candidate
-            .uplink
-            .fallbacks
-            .get(idx)
-            .ok_or_else(|| anyhow!(
-                "uplink {} has no fallback at index {}",
-                candidate.uplink.name,
-                idx,
-            ))?;
+        let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
+            anyhow!("uplink {} has no fallback at index {}", candidate.uplink.name, idx,)
+        })?;
         connect_tcp_fallback_fresh(uplinks, candidate, fallback, target, wire_index).await
     }
 }
@@ -282,14 +273,14 @@ async fn connect_tcp_uplink_primary(
                     source: TcpUplinkSource::Standby,
                     wire_index: 0,
                 });
-            }
+            },
             Err(e) => {
                 debug!(
                     uplink = %candidate.uplink.name,
                     error = %format!("{e:#}"),
                     "stale standby TCP pool connection, retrying with fresh dial"
                 );
-            }
+            },
         }
     }
 
@@ -305,10 +296,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
     {
         let mode = uplinks.effective_tcp_mode(candidate.index).await;
         if mode == outline_transport::TransportMode::Quic {
-            match uplinks
-                .connect_tcp_quic_fresh(candidate, target, "socks_tcp")
-                .await
-            {
+            match uplinks.connect_tcp_quic_fresh(candidate, target, "socks_tcp").await {
                 Ok((writer, reader)) => {
                     debug!(
                         uplink = %candidate.uplink.name,
@@ -322,7 +310,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
                         source: TcpUplinkSource::FreshDial,
                         wire_index: 0,
                     });
-                }
+                },
                 Err(e) => {
                     warn!(
                         uplink = %candidate.uplink.name,
@@ -339,7 +327,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
                     // Fall through to the WS path below; effective_tcp_mode
                     // will now return H2 for the rest of the downgrade window,
                     // and connect_transport handles H2 → H1.
-                }
+                },
             }
         }
     }
@@ -389,10 +377,7 @@ pub(super) async fn redial_for_mid_session_retry(
     symmetric_replay_enabled: bool,
     client_acked_offset: u64,
 ) -> Result<ConnectedTcpUplink> {
-    if !matches!(
-        candidate.uplink.transport,
-        UplinkTransport::Ws | UplinkTransport::Vless,
-    ) {
+    if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless,) {
         bail!(
             "mid-session retry redial only supports WS-family uplinks (SS-WS or \
              VLESS-WS); uplink {} uses transport {:?}",
@@ -453,13 +438,12 @@ pub(super) async fn connect_tcp_fallback_fresh(
     let dial_started = std::time::Instant::now();
 
     if fallback.transport == UplinkTransport::Shadowsocks {
-        let addr = fallback
-            .tcp_addr
-            .as_ref()
-            .ok_or_else(|| anyhow!(
+        let addr = fallback.tcp_addr.as_ref().ok_or_else(|| {
+            anyhow!(
                 "uplink {} fallback (transport=shadowsocks) missing tcp_addr",
                 parent.uplink.name,
-            ))?;
+            )
+        })?;
         let stream = connect_shadowsocks_tcp_with_source(
             cache,
             addr,
@@ -476,11 +460,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
         // when it is the sticky-active one. See doc comment above on the
         // shared-per-transport EWMA tradeoff.
         uplinks
-            .report_connection_latency(
-                parent.index,
-                TransportKind::Tcp,
-                dial_started.elapsed(),
-            )
+            .report_connection_latency(parent.index, TransportKind::Tcp, dial_started.elapsed())
             .await;
         debug!(
             uplink = %parent.uplink.name,
@@ -507,20 +487,18 @@ pub(super) async fn connect_tcp_fallback_fresh(
     // upstream session, enabling handover-via-resume across wire switches
     // without renegotiating the upstream conversation. SS fallback has no
     // WS layer and no resume mechanism; it always dials fresh.
-    let url = fallback
-        .tcp_dial_url()
-        .ok_or_else(|| anyhow!(
+    let url = fallback.tcp_dial_url().ok_or_else(|| {
+        anyhow!(
             "uplink {} fallback ({}) missing TCP dial URL",
             parent.uplink.name,
             fallback.transport,
-        ))?;
+        )
+    })?;
     // Honour any active per-wire mode-downgrade window for this fallback.
     // The cap is family-aware (`WsH3` → `WsH2`, `XhttpH3` → `XhttpH2`,
     // `XhttpH2` → `XhttpH1`) and lives in
     // `PerTransportStatus::fallback_mode_downgrades[wire_index - 1]`.
-    let mode = uplinks
-        .effective_tcp_mode_for_wire(parent.index, wire_index)
-        .await;
+    let mode = uplinks.effective_tcp_mode_for_wire(parent.index, wire_index).await;
     let resume_key = uplinks.resume_cache_key_for(&parent.uplink.name, "tcp");
     let resume_request = global_resume_cache().get(&resume_key);
     let ws = connect_transport(
@@ -543,12 +521,12 @@ pub(super) async fn connect_tcp_fallback_fresh(
             }),
     )
     .await
-    .with_context(|| format!(
-        "fallback dial to {} (uplink {}, transport={}) failed",
-        url,
-        parent.uplink.name,
-        fallback.transport,
-    ))?;
+    .with_context(|| {
+        format!(
+            "fallback dial to {} (uplink {}, transport={}) failed",
+            url, parent.uplink.name, fallback.transport,
+        )
+    })?;
     // Mirror a transport-level downgrade observed by `connect_transport`
     // (host-clamp via `ws_mode_cache` or inline H3→H2/H1 fallback) into
     // *this fallback wire's* per-wire downgrade slot — never primary's.
@@ -568,11 +546,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
     // Feed the dial latency into the uplink's RTT EWMA — see SS branch
     // above for the rationale.
     uplinks
-        .report_connection_latency(
-            parent.index,
-            TransportKind::Tcp,
-            dial_started.elapsed(),
-        )
+        .report_connection_latency(parent.index, TransportKind::Tcp, dial_started.elapsed())
         .await;
     debug!(
         uplink = %parent.uplink.name,

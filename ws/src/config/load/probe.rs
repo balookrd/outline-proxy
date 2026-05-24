@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use tracing::warn;
 
 use outline_uplink::{
-    DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, TlsProbeConfig,
-    TlsProbeTarget, WsProbeConfig,
+    DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, TlsProbeConfig, TlsProbeTarget,
+    WsProbeConfig,
 };
 
 use super::super::schema::ProbeSection;
@@ -17,9 +17,11 @@ pub(super) fn load_probe_config(probe: Option<&ProbeSection>) -> Result<ProbeCon
             let urls = match (&http.urls, &http.url) {
                 (Some(list), _) if !list.is_empty() => list.clone(),
                 (_, Some(single)) => vec![single.clone()],
-                _ => return Err(anyhow::anyhow!(
-                    "[probe.http] requires `url = \"...\"` or `urls = [...]`"
-                )),
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "[probe.http] requires `url = \"...\"` or `urls = [...]`"
+                    ));
+                },
             };
             // Up-front scheme validation. The runtime branch only handles
             // plain `http://` — letting an `https://` URL through here
@@ -61,10 +63,8 @@ pub(super) fn load_probe_config(probe: Option<&ProbeSection>) -> Result<ProbeCon
                     ));
                 },
             };
-            let targets: Result<Vec<TlsProbeTarget>> = raw
-                .iter()
-                .map(|spec| parse_tls_target(spec))
-                .collect();
+            let targets: Result<Vec<TlsProbeTarget>> =
+                raw.iter().map(|spec| parse_tls_target(spec)).collect();
             TlsProbeConfig::new(targets?).context("invalid [probe.tls]")
         })
         .transpose()?;
@@ -167,9 +167,9 @@ fn parse_tls_target(spec: &str) -> Result<TlsProbeTarget> {
         if after.is_empty() {
             (host, None)
         } else {
-            let port_str = after
-                .strip_prefix(':')
-                .ok_or_else(|| anyhow::anyhow!("tls probe target {spec:?}: expected `:port` after `]`"))?;
+            let port_str = after.strip_prefix(':').ok_or_else(|| {
+                anyhow::anyhow!("tls probe target {spec:?}: expected `:port` after `]`")
+            })?;
             (host, Some(port_str))
         }
     } else if let Some((host, port_str)) = spec.rsplit_once(':') {

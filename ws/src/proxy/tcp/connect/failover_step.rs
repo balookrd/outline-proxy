@@ -16,9 +16,7 @@ use outline_metrics as metrics;
 use outline_uplink::{TransportKind, UplinkManager};
 use socks5_proto::TargetAddr;
 
-use super::super::failover::{
-    ActiveTcpUplink, connect_tcp_specific_wire, connect_tcp_uplink,
-};
+use super::super::failover::{ActiveTcpUplink, connect_tcp_specific_wire, connect_tcp_uplink};
 
 pub(super) enum FailoverStep {
     /// `active` has been updated to a fresh uplink — the caller must now
@@ -54,9 +52,7 @@ pub(super) async fn failover_to_next_candidate(
     // change. Cross-uplink failover (Phase B below) only kicks in when
     // every wire on this uplink has been exhausted.
     let total_wires = 1 + active.candidate.uplink.fallbacks.len();
-    let tried_on_current = tried_wires_per_uplink
-        .entry(active.index)
-        .or_default();
+    let tried_on_current = tried_wires_per_uplink.entry(active.index).or_default();
     tried_on_current.insert(active.wire_index);
 
     if total_wires > 1 {
@@ -122,13 +118,9 @@ pub(super) async fn failover_to_next_candidate(
     }
 
     // ── Phase B: cross-uplink failover ─────────────────────────────────────
-    let candidates = uplinks
-        .tcp_failover_candidates(target, active.index)
-        .await;
+    let candidates = uplinks.tcp_failover_candidates(target, active.index).await;
     let candidates_total = candidates.len();
-    let Some(next_candidate) = candidates
-        .into_iter()
-        .find(|c| !tried_indexes.contains(&c.index))
+    let Some(next_candidate) = candidates.into_iter().find(|c| !tried_indexes.contains(&c.index))
     else {
         warn!(
             from_uplink = %active.name,
@@ -152,14 +144,10 @@ pub(super) async fn failover_to_next_candidate(
                 "TCP chunk-0 cross-uplink failover dial failed; surfacing error to caller"
             );
             uplinks
-                .report_runtime_failure(
-                    next_candidate.index,
-                    TransportKind::Tcp,
-                    &connect_err,
-                )
+                .report_runtime_failure(next_candidate.index, TransportKind::Tcp, &connect_err)
                 .await;
             return Err(connect_err.context("chunk-0 failover connect failed"));
-        }
+        },
     };
 
     // Seed tried-wires for the new candidate with the wire that just
@@ -171,11 +159,7 @@ pub(super) async fn failover_to_next_candidate(
         .insert(reconnected.wire_index);
 
     uplinks
-        .confirm_runtime_failover_uplink(
-            TransportKind::Tcp,
-            Some(target),
-            next_candidate.index,
-        )
+        .confirm_runtime_failover_uplink(TransportKind::Tcp, Some(target), next_candidate.index)
         .await;
     metrics::record_failover(
         "tcp",
@@ -183,11 +167,7 @@ pub(super) async fn failover_to_next_candidate(
         &active.name,
         &next_candidate.uplink.name,
     );
-    metrics::record_uplink_selected(
-        "tcp",
-        uplinks.group_name(),
-        &next_candidate.uplink.name,
-    );
+    metrics::record_uplink_selected("tcp", uplinks.group_name(), &next_candidate.uplink.name);
     info!(
         from = %active.name,
         to = %next_candidate.uplink.name,

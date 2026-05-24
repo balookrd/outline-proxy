@@ -92,10 +92,7 @@ pub fn install_test_tls_root(cert_der: CertificateDer<'static>) {
 }
 
 fn test_override_roots() -> Option<Arc<RootCertStore>> {
-    TEST_TLS_OVERRIDE_ROOTS
-        .read()
-        .ok()
-        .and_then(|guard| guard.clone())
+    TEST_TLS_OVERRIDE_ROOTS.read().ok().and_then(|guard| guard.clone())
 }
 
 /// Test-mode probe used by transports that maintain process-wide

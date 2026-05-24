@@ -33,8 +33,16 @@ use crate::config::TransportMode;
 /// prefix being sent only on the first request of the cached pipe's
 /// lifetime (already gated by the `dialed_fresh` flag in the probe path).
 pub(crate) enum WarmTcpProbe {
-    Vless { writer: TcpWriter, reader: TcpReader, mode: TransportMode },
-    Ws { writer: TcpWriter, reader: TcpReader, mode: TransportMode },
+    Vless {
+        writer: TcpWriter,
+        reader: TcpReader,
+        mode: TransportMode,
+    },
+    Ws {
+        writer: TcpWriter,
+        reader: TcpReader,
+        mode: TransportMode,
+    },
 }
 
 impl WarmTcpProbe {

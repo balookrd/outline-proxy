@@ -52,8 +52,14 @@ pub struct VlessUdpHybridMux {
 }
 
 enum MuxState {
-    Quic { mux: Arc<VlessUdpQuicMux>, _proxy: AbortOnDrop },
-    Ws { mux: Arc<VlessUdpSessionMux>, _proxy: AbortOnDrop },
+    Quic {
+        mux: Arc<VlessUdpQuicMux>,
+        _proxy: AbortOnDrop,
+    },
+    Ws {
+        mux: Arc<VlessUdpSessionMux>,
+        _proxy: AbortOnDrop,
+    },
 }
 
 #[derive(Clone)]
@@ -92,7 +98,7 @@ impl VlessUdpHybridMux {
                 Ok(()) => {
                     self.quic_succeeded_once.store(true, Ordering::Relaxed);
                     Ok(())
-                }
+                },
                 Err(e) => {
                     if self.quic_succeeded_once.load(Ordering::Relaxed) {
                         return Err(e);
@@ -102,7 +108,7 @@ impl VlessUdpHybridMux {
                     } else {
                         Err(e)
                     }
-                }
+                },
             },
             Active::Ws(ws) => ws.send_packet(socks5_payload).await,
         }
@@ -158,10 +164,7 @@ impl VlessUdpHybridMux {
     }
 }
 
-fn spawn_quic_proxy(
-    mux: Arc<VlessUdpQuicMux>,
-    out_tx: mpsc::Sender<Result<Bytes>>,
-) -> AbortOnDrop {
+fn spawn_quic_proxy(mux: Arc<VlessUdpQuicMux>, out_tx: mpsc::Sender<Result<Bytes>>) -> AbortOnDrop {
     AbortOnDrop::new(tokio::spawn(async move {
         loop {
             match mux.read_packet().await {
@@ -169,11 +172,11 @@ fn spawn_quic_proxy(
                     if out_tx.send(Ok(b)).await.is_err() {
                         return;
                     }
-                }
+                },
                 Err(e) => {
                     let _ = out_tx.send(Err(e)).await;
                     return;
-                }
+                },
             }
         }
     }))
@@ -190,11 +193,11 @@ fn spawn_ws_proxy(
                     if out_tx.send(Ok(b)).await.is_err() {
                         return;
                     }
-                }
+                },
                 Err(e) => {
                     let _ = out_tx.send(Err(e)).await;
                     return;
-                }
+                },
             }
         }
     }))

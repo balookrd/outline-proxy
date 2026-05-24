@@ -87,10 +87,9 @@ pub(super) async fn run_probe_attempt_with_timeout(
     // close to the per-attempt deadline can be aborted by the outer
     // wrapper before `record_attempt` finalises — leaving `probe="tls"`
     // metrics flat at zero while DNS still passes.
-    let tcp_budget = (probe.ws.enabled
-        || probe.http.is_some()
-        || probe.tcp.is_some()
-        || probe.tls.is_some()) as u32;
+    let tcp_budget =
+        (probe.ws.enabled || probe.http.is_some() || probe.tcp.is_some() || probe.tls.is_some())
+            as u32;
     let udp_budget = (uplink.supports_udp() && (probe.ws.enabled || probe.dns.is_some())) as u32;
     let transport_budgets = (tcp_budget + udp_budget).max(1);
     let timeout_duration = probe
@@ -368,8 +367,10 @@ impl UplinkManager {
         // ready; a failure extends the window with `RecoveryReprobeFail`
         // to suppress oscillation while configured is still unstable.
         // Symmetric across WS+H3 and VLESS+XHTTP (H3/H2) configured uplinks.
-        self.run_h3_recovery_probes(h3_tcp_recovery_needed, TransportKind::Tcp).await;
-        self.run_h3_recovery_probes(h3_udp_recovery_needed, TransportKind::Udp).await;
+        self.run_h3_recovery_probes(h3_tcp_recovery_needed, TransportKind::Tcp)
+            .await;
+        self.run_h3_recovery_probes(h3_udp_recovery_needed, TransportKind::Udp)
+            .await;
     }
 }
 

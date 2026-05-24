@@ -129,11 +129,7 @@ async fn resolve_empty_rules_uses_default() {
 async fn inverted_rule_matches_addresses_not_in_set() {
     // "tunnel only 1.0.0.0/8, everything else goes direct"
     let cfg = RoutingTableConfig {
-        rules: vec![inverted_rule(
-            &["1.0.0.0/8"],
-            RouteTarget::Direct,
-            None,
-        )],
+        rules: vec![inverted_rule(&["1.0.0.0/8"], RouteTarget::Direct, None)],
         default_target: RouteTarget::Group("main".into()),
         default_fallback: None,
     };
@@ -143,20 +139,13 @@ async fn inverted_rule_matches_addresses_not_in_set() {
     assert_eq!(table.resolve(&v4(8, 8, 8, 8)).await.primary, RouteTarget::Direct);
 
     // 1.2.3.4 IS in 1.0.0.0/8 → inverted rule does NOT match → falls to default
-    assert_eq!(
-        table.resolve(&v4(1, 2, 3, 4)).await.primary,
-        RouteTarget::Group("main".into())
-    );
+    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).await.primary, RouteTarget::Group("main".into()));
 }
 
 #[tokio::test]
 async fn inverted_rule_does_not_match_domains() {
     let cfg = RoutingTableConfig {
-        rules: vec![inverted_rule(
-            &["10.0.0.0/8"],
-            RouteTarget::Direct,
-            None,
-        )],
+        rules: vec![inverted_rule(&["10.0.0.0/8"], RouteTarget::Direct, None)],
         default_target: RouteTarget::Group("main".into()),
         default_fallback: None,
     };
@@ -164,10 +153,7 @@ async fn inverted_rule_does_not_match_domains() {
 
     // Domain targets skip all CIDR rules (even inverted ones).
     let dom = TargetAddr::Domain("example.com".into(), 80);
-    assert_eq!(
-        table.resolve(&dom).await.primary,
-        RouteTarget::Group("main".into())
-    );
+    assert_eq!(table.resolve(&dom).await.primary, RouteTarget::Group("main".into()));
 }
 
 /// Test that `spawn_route_watchers` reloads a file-backed CIDR set when
@@ -207,10 +193,7 @@ async fn watcher_reloads_cidr_file_and_bumps_version() {
 
     // Initial routing: 1.x.x.x → Direct, anything else → main
     assert_eq!(table.resolve(&v4(1, 2, 3, 4)).await.primary, RouteTarget::Direct);
-    assert_eq!(
-        table.resolve(&v4(2, 2, 2, 2)).await.primary,
-        RouteTarget::Group("main".into())
-    );
+    assert_eq!(table.resolve(&v4(2, 2, 2, 2)).await.primary, RouteTarget::Group("main".into()));
 
     let watchers = spawn_route_watchers(std::sync::Arc::clone(&table));
 
@@ -236,10 +219,7 @@ async fn watcher_reloads_cidr_file_and_bumps_version() {
 
     // After reload: 2.x.x.x → Direct, 1.x.x.x falls through to default (main)
     assert_eq!(table.resolve(&v4(2, 2, 2, 2)).await.primary, RouteTarget::Direct);
-    assert_eq!(
-        table.resolve(&v4(1, 2, 3, 4)).await.primary,
-        RouteTarget::Group("main".into())
-    );
+    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).await.primary, RouteTarget::Group("main".into()));
 
     // Drop the guard explicitly to cancel the watcher task before the test
     // exits, exercising the shutdown path.
@@ -255,11 +235,7 @@ async fn inverted_and_normal_rules_coexist() {
             // First: RFC1918 → direct (normal)
             rule(&["10.0.0.0/8", "192.168.0.0/16"], RouteTarget::Direct, None),
             // Second: everything NOT in RU list → tunnel via main (inverted)
-            inverted_rule(
-                &["5.0.0.0/8"],
-                RouteTarget::Group("main".into()),
-                None,
-            ),
+            inverted_rule(&["5.0.0.0/8"], RouteTarget::Group("main".into()), None),
         ],
         default_target: RouteTarget::Group("backup".into()),
         default_fallback: None,
@@ -270,10 +246,7 @@ async fn inverted_and_normal_rules_coexist() {
     assert_eq!(table.resolve(&v4(10, 1, 1, 1)).await.primary, RouteTarget::Direct);
 
     // 8.8.8.8 → not RFC1918 (skip rule 1), not in 5.0.0.0/8 → inverted matches → main
-    assert_eq!(
-        table.resolve(&v4(8, 8, 8, 8)).await.primary,
-        RouteTarget::Group("main".into())
-    );
+    assert_eq!(table.resolve(&v4(8, 8, 8, 8)).await.primary, RouteTarget::Group("main".into()));
 
     // 5.1.2.3 → not RFC1918 (skip rule 1), IS in 5.0.0.0/8 → inverted doesn't match → default
     assert_eq!(

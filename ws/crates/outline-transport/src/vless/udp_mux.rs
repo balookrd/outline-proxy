@@ -184,7 +184,10 @@ pub(super) struct VlessUdpSessionSlot {
 
 impl VlessUdpSessionSlot {
     pub(super) fn new() -> Self {
-        Self { cell: OnceCell::new(), created: Instant::now() }
+        Self {
+            cell: OnceCell::new(),
+            created: Instant::now(),
+        }
     }
 
     pub(super) fn entry(&self) -> Option<&Arc<VlessUdpSessionEntry>> {
@@ -452,13 +455,13 @@ impl VlessUdpSessionMux {
                         {
                             hook(requested);
                         }
-                    }
+                    },
                     None => {
                         // Cheap relaxed-style store; racing with a Some-branch
                         // CAS just means the next downgraded dial flips it
                         // back to true via the same CAS.
                         self.downgrade_reported.store(false, Ordering::Release);
-                    }
+                    },
                 }
                 let transport = Arc::new(raw_transport);
                 let reader_task = spawn_vless_udp_session_reader(
@@ -467,17 +470,14 @@ impl VlessUdpSessionMux {
                     self.downlink_tx.clone(),
                     self.close_signal.subscribe(),
                 );
-                Ok::<_, anyhow::Error>(Arc::new(VlessUdpSessionEntry::new(
-                    transport,
-                    reader_task,
-                )))
+                Ok::<_, anyhow::Error>(Arc::new(VlessUdpSessionEntry::new(transport, reader_task)))
             })
             .await;
         match dial_outcome {
             Ok(entry) => {
                 entry.touch();
                 Ok(Arc::clone(entry))
-            }
+            },
             Err(error) => {
                 // Best-effort cleanup: drop the failed slot from the map
                 // so a fresh `session_for` allocates a new one rather
@@ -491,7 +491,7 @@ impl VlessUdpSessionMux {
                     guard.remove(target);
                 }
                 Err(error)
-            }
+            },
         }
     }
 }
@@ -569,8 +569,7 @@ fn spawn_vless_udp_janitor(
                             // Skip if it has, so an active session never
                             // gets accidentally evicted by the janitor.
                             guard.get(&k).filter(|slot| {
-                                now.saturating_duration_since(slot.last_use())
-                                    >= idle_timeout
+                                now.saturating_duration_since(slot.last_use()) >= idle_timeout
                             })?;
                             // `entry()` returns `None` for in-flight slots —
                             // we still want them evicted (the dial future
@@ -609,9 +608,8 @@ fn spawn_vless_udp_session_reader(
             Ok(bytes) => bytes,
             Err(error) => {
                 let _ = downlink_tx
-                    .send(Err(anyhow::Error::from(error).context(
-                        "vless udp: failed to encode session target to SOCKS5 wire form",
-                    )))
+                    .send(Err(anyhow::Error::from(error)
+                        .context("vless udp: failed to encode session target to SOCKS5 wire form")))
                     .await;
                 return;
             },
@@ -644,4 +642,3 @@ fn spawn_vless_udp_session_reader(
         }
     }))
 }
-

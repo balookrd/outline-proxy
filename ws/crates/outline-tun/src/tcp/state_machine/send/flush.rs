@@ -122,7 +122,9 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
     Ok(Some(packet))
 }
 
-pub(in crate::tcp) fn maybe_emit_zero_window_probe(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
+pub(in crate::tcp) fn maybe_emit_zero_window_probe(
+    state: &mut TcpFlowState,
+) -> Result<Option<Vec<u8>>> {
     if send_window_remaining(state) != 0
         || state.pending_server_data.is_empty()
         || !state.unacked_server_segments.is_empty()

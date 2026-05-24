@@ -54,7 +54,11 @@ impl StateStore {
     /// return a reference-counted handle ready for use.
     pub async fn load_or_default(path: PathBuf) -> Arc<Self> {
         let state = Self::try_load(&path).await.unwrap_or_default();
-        Arc::new(Self { path, state: Mutex::new(state), dirty: Notify::new() })
+        Arc::new(Self {
+            path,
+            state: Mutex::new(state),
+            dirty: Notify::new(),
+        })
     }
 
     async fn try_load(path: &PathBuf) -> Option<PersistedState> {
@@ -146,12 +150,12 @@ impl StateStore {
 async fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     use anyhow::Context;
 
-    let parent = path.parent().ok_or_else(|| {
-        anyhow::anyhow!("state path {} has no parent directory", path.display())
-    })?;
-    let file_name = path.file_name().ok_or_else(|| {
-        anyhow::anyhow!("state path {} has no file name", path.display())
-    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("state path {} has no parent directory", path.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("state path {} has no file name", path.display()))?;
 
     let mut tmp_name = OsString::from(".");
     tmp_name.push(file_name);
@@ -176,9 +180,9 @@ async fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         .with_context(|| format!("fsync tmp {}", tmp_path.display()))?;
     drop(file);
 
-    tokio::fs::rename(&tmp_path, path).await.with_context(|| {
-        format!("rename {} -> {}", tmp_path.display(), path.display())
-    })?;
+    tokio::fs::rename(&tmp_path, path)
+        .await
+        .with_context(|| format!("rename {} -> {}", tmp_path.display(), path.display()))?;
     Ok(())
 }
 

@@ -142,10 +142,7 @@ async fn read_chunk_drops_session_on_bad_magic() {
 
     let err = reader.read_chunk().await.expect_err("bad magic must surface");
     let msg = format!("{err:#}");
-    assert!(
-        msg.contains("unexpected magic"),
-        "expected magic error, got: {msg}",
-    );
+    assert!(msg.contains("unexpected magic"), "expected magic error, got: {msg}",);
     assert!(
         reader.upstream_acked_offset().is_none(),
         "no offset should be parked on a failed parse",
@@ -171,10 +168,7 @@ async fn read_chunk_drops_session_on_unsupported_version() {
         .await
         .expect_err("unsupported version must surface");
     let msg = format!("{err:#}");
-    assert!(
-        msg.contains("unsupported version"),
-        "expected version error, got: {msg}",
-    );
+    assert!(msg.contains("unsupported version"), "expected version error, got: {msg}",);
 
     writer_task.await.unwrap();
 }
@@ -191,15 +185,9 @@ async fn read_chunk_drops_session_on_reserved_flags() {
         writer.send_chunk(&bad).await.unwrap();
     });
 
-    let err = reader
-        .read_chunk()
-        .await
-        .expect_err("reserved-flag bit must surface");
+    let err = reader.read_chunk().await.expect_err("reserved-flag bit must surface");
     let msg = format!("{err:#}");
-    assert!(
-        msg.contains("reserved flags"),
-        "expected reserved-flags error, got: {msg}",
-    );
+    assert!(msg.contains("reserved flags"), "expected reserved-flags error, got: {msg}",);
 
     writer_task.await.unwrap();
 }
@@ -222,10 +210,7 @@ async fn read_chunk_drops_session_when_first_chunk_is_too_short() {
         .await
         .expect_err("too-short prefix chunk must surface");
     let msg = format!("{err:#}");
-    assert!(
-        msg.contains("shorter than"),
-        "expected too-short error, got: {msg}",
-    );
+    assert!(msg.contains("shorter than"), "expected too-short error, got: {msg}",);
 
     writer_task.await.unwrap();
 }
@@ -333,10 +318,7 @@ async fn consume_ack_prefix_with_timeout_surfaces_timeout_when_server_silent() {
         .await
         .expect_err("silent server must surface as a timeout");
     let msg = format!("{err:#}");
-    assert!(
-        msg.contains("did not arrive within"),
-        "expected timeout error, got: {msg}",
-    );
+    assert!(msg.contains("did not arrive within"), "expected timeout error, got: {msg}",);
 }
 
 #[tokio::test]

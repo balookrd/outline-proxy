@@ -47,7 +47,10 @@ pub(in crate::tcp) fn assess_server_backlog_pressure(
     }
 }
 
-pub(in crate::tcp) fn retransmit_budget_exhausted(state: &TcpFlowState, config: &TunTcpConfig) -> bool {
+pub(in crate::tcp) fn retransmit_budget_exhausted(
+    state: &TcpFlowState,
+    config: &TunTcpConfig,
+) -> bool {
     state
         .unacked_server_segments
         .iter()

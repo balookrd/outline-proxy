@@ -6,11 +6,13 @@ use anyhow::Result;
 use dashmap::DashMap;
 use tokio::sync::Mutex;
 
+use super::state_machine::{
+    ServerFlush, UpstreamWriter, build_flow_ack_packet, build_flow_syn_ack_packet,
+};
 use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
-use outline_metrics as metrics;
-use super::state_machine::{ServerFlush, UpstreamWriter, build_flow_ack_packet, build_flow_syn_ack_packet};
 use crate::{SharedTunWriter, TunRouting};
+use outline_metrics as metrics;
 use outline_uplink::{TransportKind, UplinkManager};
 
 use super::state_machine::TcpFlowState;
@@ -77,7 +79,6 @@ impl TunTcpEngine {
     pub fn dns_cache(&self) -> &outline_transport::DnsCache {
         &self.inner.dns_cache
     }
-
 
     pub async fn handle_packet(&self, packet: &[u8]) -> Result<()> {
         let parsed = parse_tcp_packet(packet)?;
@@ -191,12 +192,7 @@ impl TunTcpEngine {
         state: tokio::sync::MutexGuard<'_, TcpFlowState>,
         ip_family: &'static str,
     ) -> Result<()> {
-        let ack = build_flow_ack_packet(
-            &state,
-            state.server_seq,
-            state.rcv_nxt,
-            TCP_FLAG_ACK,
-        )?;
+        let ack = build_flow_ack_packet(&state, state.server_seq, state.rcv_nxt, TCP_FLAG_ACK)?;
         let key = state.key.clone();
         drop(state);
         self.write_tun_packet_or_close_flow(&key, &ack).await?;
@@ -212,11 +208,8 @@ impl TunTcpEngine {
         state: tokio::sync::MutexGuard<'_, TcpFlowState>,
         ip_family: &'static str,
     ) -> Result<()> {
-        let syn_ack = build_flow_syn_ack_packet(
-            &state,
-            state.server_seq.wrapping_sub(1),
-            state.rcv_nxt,
-        )?;
+        let syn_ack =
+            build_flow_syn_ack_packet(&state, state.server_seq.wrapping_sub(1), state.rcv_nxt)?;
         let key = state.key.clone();
         drop(state);
         self.write_tun_packet_or_close_flow(&key, &syn_ack).await?;
@@ -266,9 +259,7 @@ impl TunTcpEngine {
     }
 }
 
-pub(super) async fn close_upstream_writer(
-    upstream_writer: Option<Arc<Mutex<UpstreamWriter>>>,
-) {
+pub(super) async fn close_upstream_writer(upstream_writer: Option<Arc<Mutex<UpstreamWriter>>>) {
     let Some(upstream_writer) = upstream_writer else {
         return;
     };
@@ -304,7 +295,5 @@ pub(super) async fn should_migrate_tcp_flow(
     manager
         .active_uplink_index_for_transport(TransportKind::Tcp)
         .await
-        .is_some_and(|active| {
-            flow_uplink_index != usize::MAX && flow_uplink_index != active
-        })
+        .is_some_and(|active| flow_uplink_index != usize::MAX && flow_uplink_index != active)
 }

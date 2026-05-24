@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -20,8 +20,8 @@ use tracing::{debug, info};
 use url::Url;
 
 use crate::shared_cache::{
-    CachedEntry, ConnCloseLog, ConnectionKey, SharedConnectionRegistry,
-    classify_by_substrings, log_conn_close, should_reuse_connection, with_reuse,
+    CachedEntry, ConnCloseLog, ConnectionKey, SharedConnectionRegistry, classify_by_substrings,
+    log_conn_close, should_reuse_connection, with_reuse,
 };
 use crate::{
     AbortOnDrop, DnsCache, TransportConnectGuard, TransportOperation, bind_addr_for,
@@ -41,10 +41,17 @@ type QuicConnectionKey = ConnectionKey;
 /// only — callers must always pass the same `'static` constant
 /// (`super::ALPN_VLESS` etc).
 static ALPN_REGISTRIES: OnceLock<
-    Mutex<HashMap<&'static [u8], &'static SharedConnectionRegistry<QuicConnectionKey, SharedQuicConnection>>>,
+    Mutex<
+        HashMap<
+            &'static [u8],
+            &'static SharedConnectionRegistry<QuicConnectionKey, SharedQuicConnection>,
+        >,
+    >,
 > = OnceLock::new();
 
-fn registry_for(alpn: &'static [u8]) -> &'static SharedConnectionRegistry<QuicConnectionKey, SharedQuicConnection> {
+fn registry_for(
+    alpn: &'static [u8],
+) -> &'static SharedConnectionRegistry<QuicConnectionKey, SharedQuicConnection> {
     let map = ALPN_REGISTRIES.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = map.lock();
     if let Some(existing) = guard.get(alpn) {
@@ -106,7 +113,15 @@ pub async fn connect_quic_uplink(
             },
             || async move {
                 let conn = resolve_and_dial(
-                    cache, host, port, fwmark, ipv6_first, source, alpn, Some(key), registry,
+                    cache,
+                    host,
+                    port,
+                    fwmark,
+                    ipv6_first,
+                    source,
+                    alpn,
+                    Some(key),
+                    registry,
                 )
                 .await?;
                 Ok((Arc::clone(&conn), conn))
@@ -114,10 +129,7 @@ pub async fn connect_quic_uplink(
         )
         .await
     } else {
-        resolve_and_dial(
-            cache, host, port, fwmark, ipv6_first, source, alpn, None, registry,
-        )
-        .await
+        resolve_and_dial(cache, host, port, fwmark, ipv6_first, source, alpn, None, registry).await
     }
 }
 
@@ -157,15 +169,13 @@ async fn resolve_and_dial(
     let mut last_error: Option<String> = None;
     for addr in server_addrs.iter() {
         let mut guard = TransportConnectGuard::new(source, metric_label);
-        match connect_quic_connection(
-            *addr, server_name, fwmark, alpn, cache_key.clone(), registry,
-        )
-        .await
+        match connect_quic_connection(*addr, server_name, fwmark, alpn, cache_key.clone(), registry)
+            .await
         {
             Ok(conn) => {
                 guard.finish("success");
                 return Ok(Arc::new(conn));
-            }
+            },
             Err(e) => {
                 debug!(
                     server_name,
@@ -176,7 +186,7 @@ async fn resolve_and_dial(
                     "quic dial failed; trying next address"
                 );
                 last_error = Some(format!("{addr}: {e}"));
-            }
+            },
         }
     }
     Err(anyhow::Error::new(TransportOperation::Connect {
@@ -296,7 +306,10 @@ fn classify_quic_close(err: &str) -> &'static str {
         &[
             (&["ApplicationClose"], "app_close"),
             (&["Timeout", "timed out"], "timeout"),
-            (&["closed by client", "Connection closed by client", "LocallyClosed"], "local_close"),
+            (
+                &["closed by client", "Connection closed by client", "LocallyClosed"],
+                "local_close",
+            ),
             (&["reset", "Reset"], "rst"),
             (&["tls", "TLS", "certificate"], "tls"),
         ],

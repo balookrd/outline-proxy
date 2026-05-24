@@ -1,7 +1,7 @@
+use crate::TransportOperation;
 use anyhow::{Context, Result, bail};
-use crate::{TransportOperation};
-use outline_ss2022::Ss2022Error;
 use bytes::Bytes;
+use outline_ss2022::Ss2022Error;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
@@ -9,14 +9,14 @@ use tokio::sync::{Mutex, watch};
 use tracing::warn;
 use url::Url;
 
+use crate::config::TransportMode;
+use crate::frame_io::DatagramChannel;
+use crate::frame_io_ws::{WS_READ_IDLE_TIMEOUT, from_ws_datagrams};
+use shadowsocks_crypto::CipherKind;
 use shadowsocks_crypto::{
     SHADOWSOCKS_MAX_PAYLOAD, decrypt_udp_packet, decrypt_udp_packet_2022, encrypt_udp_packet,
     encrypt_udp_packet_2022,
 };
-use shadowsocks_crypto::CipherKind;
-use crate::config::TransportMode;
-use crate::frame_io::DatagramChannel;
-use crate::frame_io_ws::{WS_READ_IDLE_TIMEOUT, from_ws_datagrams};
 
 use super::{
     DialNetworkOptions, DialResumeOptions, DnsCache, TransportDialOptions, TransportStream,
@@ -80,11 +80,8 @@ impl UdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
-        let channel: Arc<dyn DatagramChannel> = Arc::new(from_ws_datagrams(
-            ws_stream,
-            Some(WS_READ_IDLE_TIMEOUT),
-            keepalive_interval,
-        ));
+        let channel: Arc<dyn DatagramChannel> =
+            Arc::new(from_ws_datagrams(ws_stream, Some(WS_READ_IDLE_TIMEOUT), keepalive_interval));
         Self::from_channel(channel, cipher, password, source)
     }
 
@@ -321,10 +318,11 @@ impl UdpWsTransport {
             )?;
             let mut state = state.lock().await;
             if let Some(last_server_packet_id) = state.last_server_packet_id
-                && state.server_session_id == Some(session_id) && packet_id <= last_server_packet_id
-                {
-                    bail!(Ss2022Error::DuplicateOrOutOfOrderUdpPacket);
-                }
+                && state.server_session_id == Some(session_id)
+                && packet_id <= last_server_packet_id
+            {
+                bail!(Ss2022Error::DuplicateOrOutOfOrderUdpPacket);
+            }
             state.server_session_id = Some(session_id);
             state.last_server_packet_id = Some(packet_id);
             return Ok(payload);

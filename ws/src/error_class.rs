@@ -2,7 +2,9 @@ use anyhow::Error;
 use socks5_proto::Socks5Error;
 
 use crate::client_io::ClientIo;
-use outline_transport::{WsClosed, contains_any, find_typed, is_transport_level_disconnect, lower_error};
+use outline_transport::{
+    WsClosed, contains_any, find_typed, is_transport_level_disconnect, lower_error,
+};
 
 /// Return true if the error originated from a client-side read operation.
 ///
@@ -50,11 +52,8 @@ pub(crate) fn is_ws_closed(error: &Error) -> bool {
 }
 
 pub(crate) fn is_upstream_runtime_failure(error: &Error) -> bool {
-    !is_client_read_failure(error)
-        && !is_client_write_failure(error)
-        && !is_ws_closed(error)
+    !is_client_read_failure(error) && !is_client_write_failure(error) && !is_ws_closed(error)
 }
-
 
 #[cfg(test)]
 #[path = "tests/error_class.rs"]

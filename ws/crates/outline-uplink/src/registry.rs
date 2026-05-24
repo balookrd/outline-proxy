@@ -62,7 +62,9 @@ impl UplinkRegistry {
         dns_cache: Arc<outline_transport::DnsCache>,
     ) -> Result<Self> {
         let state = build_state(groups, None, dns_cache, None)?;
-        Ok(Self { state: Arc::new(ArcSwap::from_pointee(state)) })
+        Ok(Self {
+            state: Arc::new(ArcSwap::from_pointee(state)),
+        })
     }
 
     /// Like [`Self::new`] but restores active-uplink selection from `state_store`
@@ -85,7 +87,9 @@ impl UplinkRegistry {
             restored.resize(groups.len(), (None, None, None));
         }
         let state = build_state(groups, Some(restored), dns_cache, state_store)?;
-        Ok(Self { state: Arc::new(ArcSwap::from_pointee(state)) })
+        Ok(Self {
+            state: Arc::new(ArcSwap::from_pointee(state)),
+        })
     }
 
     /// The first-declared group. Callers that have not yet been taught to
@@ -115,7 +119,12 @@ impl UplinkRegistry {
     }
 
     pub fn total_uplinks(&self) -> usize {
-        self.state.load().groups.iter().map(|g| g.manager.uplinks().len()).sum()
+        self.state
+            .load()
+            .groups
+            .iter()
+            .map(|g| g.manager.uplinks().len())
+            .sum()
     }
 
     /// Prime strict active-uplink selection for every group (noop for
@@ -350,7 +359,9 @@ impl UplinkRegistry {
             groups: vec![UplinkGroupHandle { name, manager }],
             by_name,
         };
-        Self { state: Arc::new(ArcSwap::from_pointee(state)) }
+        Self {
+            state: Arc::new(ArcSwap::from_pointee(state)),
+        }
     }
 }
 

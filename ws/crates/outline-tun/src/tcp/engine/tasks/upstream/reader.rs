@@ -30,13 +30,13 @@ impl TunTcpEngine {
             loop {
                 let manager = { flow.lock().await.routing.manager.clone() };
                 if manager.strict_active_uplink_for(TransportKind::Tcp) {
-                    let active_uplink = manager
-                        .active_uplink_index_for_transport(TransportKind::Tcp)
-                        .await;
+                    let active_uplink =
+                        manager.active_uplink_index_for_transport(TransportKind::Tcp).await;
                     let should_abort = {
                         let state = flow.lock().await;
                         active_uplink.is_some_and(|active| {
-                            state.routing.uplink_index != usize::MAX && state.routing.uplink_index != active
+                            state.routing.uplink_index != usize::MAX
+                                && state.routing.uplink_index != active
                         })
                     };
                     if should_abort {
@@ -119,8 +119,7 @@ impl TunTcpEngine {
 
                         match flush {
                             Ok(flush) => {
-                                let (group_name, uplink_name) =
-                                    key_group_and_uplink(&flow).await;
+                                let (group_name, uplink_name) = key_group_and_uplink(&flow).await;
                                 if let Err(error) = engine
                                     .write_server_flush(&key, flush, &group_name, &uplink_name)
                                     .await
@@ -162,11 +161,7 @@ impl TunTcpEngine {
                                     .await;
                             } else {
                                 engine
-                                    .report_tcp_runtime_failure(
-                                        &flow_manager,
-                                        uplink_index,
-                                        &error,
-                                    )
+                                    .report_tcp_runtime_failure(&flow_manager, uplink_index, &error)
                                     .await;
                             }
                         }
@@ -187,8 +182,7 @@ impl TunTcpEngine {
 
                         match flush {
                             Ok(flush) => {
-                                let (group_name, uplink_name) =
-                                    key_group_and_uplink(&flow).await;
+                                let (group_name, uplink_name) = key_group_and_uplink(&flow).await;
                                 if let Err(write_error) = engine
                                     .write_server_flush(&key, flush, &group_name, &uplink_name)
                                     .await

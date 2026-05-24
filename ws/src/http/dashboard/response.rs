@@ -1,7 +1,7 @@
 //! Shared response builders used by the dashboard server.
 
 use bytes::Bytes;
-use http::header::{HeaderValue, CONTENT_TYPE, LOCATION};
+use http::header::{CONTENT_TYPE, HeaderValue, LOCATION};
 use http::{Response, StatusCode};
 use http_body_util::Full;
 use serde::Serialize;

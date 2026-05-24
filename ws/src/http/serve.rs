@@ -55,11 +55,7 @@ where
             },
         };
 
-        let permit = conn_sem
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore closed");
+        let permit = conn_sem.clone().acquire_owned().await.expect("semaphore closed");
         let handle = handle.clone();
         let mut task_shutdown = shutdown.clone();
         tokio::spawn(async move {
@@ -77,9 +73,7 @@ where
         });
     }
 
-    let in_flight = config
-        .max_concurrent
-        .saturating_sub(conn_sem.available_permits());
+    let in_flight = config.max_concurrent.saturating_sub(conn_sem.available_permits());
     info!(server, in_flight, "draining HTTP connections before exit");
     if in_flight > 0 {
         tokio::select! {

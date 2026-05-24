@@ -44,11 +44,11 @@ fn udp_fragment_reassembly_rejects_oversized_sequence() {
         packet.extend_from_slice(&chunk);
         let parsed = parse_udp_request(&packet).unwrap();
         match reassembler.push_fragment(parsed) {
-            Ok(_) => {}
+            Ok(_) => {},
             Err(_) => {
                 rejected = true;
                 break;
-            }
+            },
         }
     }
     assert!(rejected, "expected reassembler to bail once byte cap was crossed");

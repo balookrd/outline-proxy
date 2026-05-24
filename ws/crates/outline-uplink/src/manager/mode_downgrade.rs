@@ -25,7 +25,7 @@
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-use crate::config::{UplinkTransport, TransportMode};
+use crate::config::{TransportMode, UplinkTransport};
 
 use super::super::types::{TransportKind, UplinkManager};
 
@@ -136,13 +136,7 @@ impl UplinkManager {
         let duration = self.inner.load_balancing.mode_downgrade_duration;
         let new_until = now + duration;
 
-        let (
-            prev_until,
-            prev_cap,
-            consecutive_failures,
-            last_recovery_success_at,
-            grace_attempts,
-        ) = {
+        let (prev_until, prev_cap, consecutive_failures, last_recovery_success_at, grace_attempts) = {
             let per = self.inner.read_status(index);
             let snapshot = per.of(transport);
             (
@@ -183,9 +177,8 @@ impl UplinkManager {
             },
             None => false,
         };
-        let descent_gated_at_cap = probe_trigger
-            && consecutive_failures < probe_min_failures
-            && probe_at_or_below_cap;
+        let descent_gated_at_cap =
+            probe_trigger && consecutive_failures < probe_min_failures && probe_at_or_below_cap;
 
         // Post-recovery grace gate (cap currently None): a recovery
         // probe just successfully cleared the cap. The grace window
@@ -226,11 +219,10 @@ impl UplinkManager {
         // increments on probe outcomes) so silent / runtime triggers
         // are also counted toward the gate budget.
         let grace_window = duration.saturating_mul(2);
-        let in_post_recovery_grace = last_recovery_success_at
-            .is_some_and(|t| now.duration_since(t) < grace_window);
-        let grace_gate_active = prev_cap.is_none()
-            && in_post_recovery_grace
-            && grace_attempts < probe_min_failures;
+        let in_post_recovery_grace =
+            last_recovery_success_at.is_some_and(|t| now.duration_since(t) < grace_window);
+        let grace_gate_active =
+            prev_cap.is_none() && in_post_recovery_grace && grace_attempts < probe_min_failures;
         if grace_gate_active {
             self.inner.with_status_mut(index, |status| {
                 let per = match transport {
@@ -264,8 +256,10 @@ impl UplinkManager {
         // on the capped carrier haven't yet stacked to `min_failures`.
         let updated_cap = match prev_cap {
             Some(prev) if descent_gated => prev,
-            Some(prev) if window_active && family(prev) == family(new_cap)
-                && rank(prev) < rank(new_cap) =>
+            Some(prev)
+                if window_active
+                    && family(prev) == family(new_cap)
+                    && rank(prev) < rank(new_cap) =>
             {
                 prev
             },
@@ -387,7 +381,8 @@ impl UplinkManager {
                     "{kind_label} dial silently fell back from {requested}, syncing per-uplink downgrade window to {updated_cap}"
                 ),
             }
-        } else if matches!(trigger, ModeDowngradeTrigger::RecoveryReprobeFail) && advances_deadline {
+        } else if matches!(trigger, ModeDowngradeTrigger::RecoveryReprobeFail) && advances_deadline
+        {
             debug!(
                 uplink = %uplink.name,
                 kind = ?transport,
@@ -767,11 +762,7 @@ impl UplinkManager {
     /// On a flaky configured carrier this filters out the
     /// "handshake works once, data plane breaks" cycle that drives
     /// visible flapping.
-    pub(crate) fn note_recovery_probe_success(
-        &self,
-        index: usize,
-        transport: TransportKind,
-    ) {
+    pub(crate) fn note_recovery_probe_success(&self, index: usize, transport: TransportKind) {
         let mut should_clear = false;
         let mut new_streak = 0u32;
         self.inner.with_status_mut(index, |status| {
@@ -783,14 +774,11 @@ impl UplinkManager {
             // recovery success in this cycle already met the
             // threshold) there is nothing to do — a stray duplicate
             // success notification must not double-stamp grace.
-            if per.mode_downgrade_capped_to.is_none()
-                && per.mode_downgrade_until.is_none()
-            {
+            if per.mode_downgrade_capped_to.is_none() && per.mode_downgrade_until.is_none() {
                 per.recovery_probe_success_streak = 0;
                 return;
             }
-            per.recovery_probe_success_streak =
-                per.recovery_probe_success_streak.saturating_add(1);
+            per.recovery_probe_success_streak = per.recovery_probe_success_streak.saturating_add(1);
             new_streak = per.recovery_probe_success_streak;
             if new_streak >= Self::RECOVERY_SUCCESS_STREAK_THRESHOLD {
                 should_clear = true;
@@ -855,13 +843,10 @@ enum Family {
 
 fn family(mode: TransportMode) -> Family {
     match mode {
-        TransportMode::WsH1
-        | TransportMode::WsH2
-        | TransportMode::WsH3
-        | TransportMode::Quic => Family::Ws,
-        TransportMode::XhttpH1
-        | TransportMode::XhttpH2
-        | TransportMode::XhttpH3 => Family::Xhttp,
+        TransportMode::WsH1 | TransportMode::WsH2 | TransportMode::WsH3 | TransportMode::Quic => {
+            Family::Ws
+        },
+        TransportMode::XhttpH1 | TransportMode::XhttpH2 | TransportMode::XhttpH3 => Family::Xhttp,
     }
 }
 

@@ -39,9 +39,7 @@ fn ws_alpn_h2_picks_ws_h2_mode() {
 
 #[test]
 fn ws_alpn_first_token_wins_for_comma_lists() {
-    let link = parse(&format!(
-        "vless://{UUID}@host:443?type=ws&security=tls&alpn=h3%2Ch2"
-    ));
+    let link = parse(&format!("vless://{UUID}@host:443?type=ws&security=tls&alpn=h3%2Ch2"));
     assert_eq!(link.mode, TransportMode::WsH3);
 }
 
@@ -56,9 +54,7 @@ fn xhttp_default_mode_is_h2() {
 
 #[test]
 fn xhttp_alpn_h3_picks_xhttp_h3_mode() {
-    let link = parse(&format!(
-        "vless://{UUID}@host:443?type=xhttp&security=tls&alpn=h3"
-    ));
+    let link = parse(&format!("vless://{UUID}@host:443?type=xhttp&security=tls&alpn=h3"));
     assert_eq!(link.mode, TransportMode::XhttpH3);
     assert!(link.vless_xhttp_url.is_some());
 }
@@ -71,15 +67,11 @@ fn xhttp_alpn_h1_picks_xhttp_h1_mode() {
     // first-class shape so an operator who knows their server only
     // serves XHTTP over h1 (e.g. CDN that strips ALPN h2) can pin
     // the mode without dialing through the inline fallback.
-    let link = parse(&format!(
-        "vless://{UUID}@host:443?type=xhttp&security=tls&alpn=h1"
-    ));
+    let link = parse(&format!("vless://{UUID}@host:443?type=xhttp&security=tls&alpn=h1"));
     assert_eq!(link.mode, TransportMode::XhttpH1);
     assert!(link.vless_xhttp_url.is_some());
 
-    let link = parse(&format!(
-        "vless://{UUID}@host:443?type=xhttp&security=tls&alpn=http%2F1.1"
-    ));
+    let link = parse(&format!("vless://{UUID}@host:443?type=xhttp&security=tls&alpn=http%2F1.1"));
     assert_eq!(link.mode, TransportMode::XhttpH1);
 }
 
@@ -92,9 +84,7 @@ fn xhttp_alpn_first_token_wins_for_comma_lists() {
     // taking care of UDP-blocked clients). Both single-token shapes
     // are already covered above; this test specifically guards the
     // multi-token case.
-    let link = parse(&format!(
-        "vless://{UUID}@host:443?type=xhttp&security=tls&alpn=h3%2Ch2"
-    ));
+    let link = parse(&format!("vless://{UUID}@host:443?type=xhttp&security=tls&alpn=h3%2Ch2"));
     assert_eq!(link.mode, TransportMode::XhttpH3);
 }
 
@@ -118,9 +108,7 @@ fn quic_security_tls_yields_https_scheme_and_quic_mode() {
 
 #[test]
 fn fragment_is_percent_decoded_into_name() {
-    let link = parse(&format!(
-        "vless://{UUID}@host:443?type=ws&security=tls#edge%20one"
-    ));
+    let link = parse(&format!("vless://{UUID}@host:443?type=ws&security=tls#edge%20one"));
     assert_eq!(link.name.as_deref(), Some("edge one"));
 }
 
@@ -152,10 +140,9 @@ fn non_none_encryption_is_rejected() {
 
 #[test]
 fn xtls_flow_is_rejected() {
-    let err = VlessShareLink::parse(&format!(
-        "vless://{UUID}@host:443?type=ws&flow=xtls-rprx-vision"
-    ))
-    .unwrap_err();
+    let err =
+        VlessShareLink::parse(&format!("vless://{UUID}@host:443?type=ws&flow=xtls-rprx-vision"))
+            .unwrap_err();
     assert!(format!("{err:#}").contains("flow"));
 }
 
@@ -184,9 +171,7 @@ fn divergent_host_header_is_rejected() {
 
 #[test]
 fn matching_sni_is_accepted() {
-    parse(&format!(
-        "vless://{UUID}@host:443?type=ws&security=tls&sni=host&host=host"
-    ));
+    parse(&format!("vless://{UUID}@host:443?type=ws&security=tls&sni=host&host=host"));
 }
 
 #[test]
@@ -197,8 +182,7 @@ fn type_tcp_is_rejected_with_clear_message() {
 
 #[test]
 fn unknown_type_is_rejected() {
-    let err =
-        VlessShareLink::parse(&format!("vless://{UUID}@host:443?type=splice")).unwrap_err();
+    let err = VlessShareLink::parse(&format!("vless://{UUID}@host:443?type=splice")).unwrap_err();
     assert!(format!("{err:#}").contains("splice"));
 }
 
@@ -217,17 +201,13 @@ fn link_without_scheme_is_rejected() {
 
 #[test]
 fn percent_encoded_path_is_decoded_into_url_path() {
-    let link = parse(&format!(
-        "vless://{UUID}@host:443?type=ws&security=tls&path=%2Fa%2Fb%2Fc"
-    ));
+    let link = parse(&format!("vless://{UUID}@host:443?type=ws&security=tls&path=%2Fa%2Fb%2Fc"));
     assert_eq!(link.vless_ws_url.unwrap().path(), "/a/b/c");
 }
 
 #[test]
 fn path_without_leading_slash_is_normalised() {
-    let link = parse(&format!(
-        "vless://{UUID}@host:443?type=ws&security=tls&path=secret%2Fvless"
-    ));
+    let link = parse(&format!("vless://{UUID}@host:443?type=ws&security=tls&path=secret%2Fvless"));
     assert_eq!(link.vless_ws_url.unwrap().path(), "/secret/vless");
 }
 

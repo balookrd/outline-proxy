@@ -6,18 +6,18 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use outline_uplink::{LoadBalancingConfig, ProbeConfig, UplinkConfig, WsProbeConfig};
-use outline_transport::{
-    TransportStream, TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
-};
 use crate::SharedTunWriter;
 use crate::wire::IpVersion;
+use futures_util::StreamExt;
+use outline_transport::TransportMode;
+use outline_transport::{
+    TcpShadowsocksReader, TcpShadowsocksWriter, TransportStream, UpstreamTransportGuard,
+};
+use outline_uplink::UplinkManager;
+use outline_uplink::UplinkTransport;
+use outline_uplink::{LoadBalancingConfig, ProbeConfig, UplinkConfig, WsProbeConfig};
 use shadowsocks_crypto::CipherKind;
 use socks5_proto::TargetAddr;
-use outline_uplink::UplinkTransport;
-use outline_transport::TransportMode;
-use outline_uplink::UplinkManager;
-use futures_util::StreamExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{MaybeTlsStream, accept_async};
@@ -1068,7 +1068,8 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
     {
         let mut state = flow.lock().await;
         assert_eq!(state.status, TcpFlowStatus::TimeWait);
-        state.timestamps.status_since = Instant::now() - TCP_TIME_WAIT_TIMEOUT - Duration::from_millis(1);
+        state.timestamps.status_since =
+            Instant::now() - TCP_TIME_WAIT_TIMEOUT - Duration::from_millis(1);
         // Force an immediate wake even though the newly-computed deadline
         // is in the past — scheduler's "earlier-only" push gate would
         // otherwise no-op on a later deadline.
@@ -1088,9 +1089,7 @@ async fn new_flow_is_removed_when_synack_write_fails() {
         .write(true)
         .open(&path)
         .unwrap();
-    let writer = SharedTunWriter::new(
-        std::fs::OpenOptions::new().read(true).open(&path).unwrap(),
-    );
+    let writer = SharedTunWriter::new(std::fs::OpenOptions::new().read(true).open(&path).unwrap());
     let engine = super::TunTcpEngine::new(
         writer,
         crate::TunRouting::from_single_manager(
@@ -1165,7 +1164,7 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             http: None,
             dns: None,
             tcp: None,
-        tls: None,
+            tls: None,
         },
         LoadBalancingConfig {
             mode: outline_uplink::LoadBalancingMode::ActiveActive,
@@ -1188,7 +1187,8 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             tcp_ws_keepalive_interval: None,
             tcp_ws_standby_keepalive_interval: None,
             tcp_active_keepalive_interval: None,
-            warm_probe_keepalive_interval: None,            auto_failback: false,
+            warm_probe_keepalive_interval: None,
+            auto_failback: false,
             vless_udp_mux_limits: outline_uplink::VlessUdpMuxLimits::default(),
             tcp_mid_session_retry_buffer_bytes: 256 * 1024,
             tcp_mid_session_retry_budget: 1,

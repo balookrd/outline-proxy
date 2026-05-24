@@ -68,11 +68,7 @@ pub(super) async fn redial_current_uplink_and_replay(
     active.replace_transport(reconnected);
     replay.replay_to(&mut active.writer, replay_error_ctx).await?;
     if client_half_closed {
-        active
-            .writer
-            .close()
-            .await
-            .context(half_close_error_ctx)?;
+        active.writer.close().await.context(half_close_error_ctx)?;
     }
     Ok(())
 }

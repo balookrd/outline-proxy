@@ -8,11 +8,11 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
+use crate::config::TransportMode;
 #[cfg(feature = "h3")]
 use crate::h3::{
     H3WsStream, sockudo_to_tungstenite_message, sockudo_to_ws_error, tungstenite_to_sockudo_message,
 };
-use crate::config::TransportMode;
 use crate::resumption::SessionId;
 use crate::xhttp::XhttpStream;
 
@@ -224,10 +224,7 @@ impl TransportStream {
     /// header is observed in the upgrade response immediately above
     /// `client_async_tls`; that is the only place where we can read it
     /// before the connection becomes a generic `WebSocketStream`.
-    pub fn new_http1_with_session(
-        inner: H1WsStream,
-        issued_session_id: Option<SessionId>,
-    ) -> Self {
+    pub fn new_http1_with_session(inner: H1WsStream, issued_session_id: Option<SessionId>) -> Self {
         let activity = H1Activity::new();
         // Mark the moment of birth as activity so a freshly-dialed stream is
         // not immediately reported stale before the first frame arrives.
@@ -299,12 +296,18 @@ impl TransportStream {
     /// the v2 `"ORDR"` frame as the next bytes on the wire.
     pub fn symmetric_replay_advertised_by_server(&self) -> bool {
         match self {
-            TransportStream::Http1 { symmetric_replay_advertised_by_server, .. }
-            | TransportStream::H2 { symmetric_replay_advertised_by_server, .. }
-            | TransportStream::H3 { symmetric_replay_advertised_by_server, .. }
-            | TransportStream::Xhttp { symmetric_replay_advertised_by_server, .. } => {
-                *symmetric_replay_advertised_by_server
-            },
+            TransportStream::Http1 {
+                symmetric_replay_advertised_by_server, ..
+            }
+            | TransportStream::H2 {
+                symmetric_replay_advertised_by_server, ..
+            }
+            | TransportStream::H3 {
+                symmetric_replay_advertised_by_server, ..
+            }
+            | TransportStream::Xhttp {
+                symmetric_replay_advertised_by_server, ..
+            } => *symmetric_replay_advertised_by_server,
         }
     }
 
@@ -313,10 +316,18 @@ impl TransportStream {
     /// chainable.
     pub fn with_symmetric_replay_advertised(mut self, advertised: bool) -> Self {
         match &mut self {
-            TransportStream::Http1 { symmetric_replay_advertised_by_server, .. }
-            | TransportStream::H2 { symmetric_replay_advertised_by_server, .. }
-            | TransportStream::H3 { symmetric_replay_advertised_by_server, .. }
-            | TransportStream::Xhttp { symmetric_replay_advertised_by_server, .. } => {
+            TransportStream::Http1 {
+                symmetric_replay_advertised_by_server, ..
+            }
+            | TransportStream::H2 {
+                symmetric_replay_advertised_by_server, ..
+            }
+            | TransportStream::H3 {
+                symmetric_replay_advertised_by_server, ..
+            }
+            | TransportStream::Xhttp {
+                symmetric_replay_advertised_by_server, ..
+            } => {
                 *symmetric_replay_advertised_by_server = advertised;
             },
         }
@@ -462,7 +473,9 @@ impl Sink<Message> for TransportStream {
             TransportStreamProj::Http1 { inner, .. } => inner.poll_ready(cx),
             TransportStreamProj::H2 { inner, .. } => inner.poll_ready(cx),
             #[cfg(feature = "h3")]
-            TransportStreamProj::H3 { inner, .. } => inner.poll_ready(cx).map_err(sockudo_to_ws_error),
+            TransportStreamProj::H3 { inner, .. } => {
+                inner.poll_ready(cx).map_err(sockudo_to_ws_error)
+            },
             #[cfg(not(feature = "h3"))]
             TransportStreamProj::H3 { inner, .. } => inner.poll_ready(cx),
             TransportStreamProj::Xhttp { inner, .. } => inner.poll_ready(cx),
@@ -497,7 +510,9 @@ impl Sink<Message> for TransportStream {
             TransportStreamProj::Http1 { inner, .. } => inner.poll_flush(cx),
             TransportStreamProj::H2 { inner, .. } => inner.poll_flush(cx),
             #[cfg(feature = "h3")]
-            TransportStreamProj::H3 { inner, .. } => inner.poll_flush(cx).map_err(sockudo_to_ws_error),
+            TransportStreamProj::H3 { inner, .. } => {
+                inner.poll_flush(cx).map_err(sockudo_to_ws_error)
+            },
             #[cfg(not(feature = "h3"))]
             TransportStreamProj::H3 { inner, .. } => inner.poll_flush(cx),
             TransportStreamProj::Xhttp { inner, .. } => inner.poll_flush(cx),
@@ -512,7 +527,9 @@ impl Sink<Message> for TransportStream {
             TransportStreamProj::Http1 { inner, .. } => inner.poll_close(cx),
             TransportStreamProj::H2 { inner, .. } => inner.poll_close(cx),
             #[cfg(feature = "h3")]
-            TransportStreamProj::H3 { inner, .. } => inner.poll_close(cx).map_err(sockudo_to_ws_error),
+            TransportStreamProj::H3 { inner, .. } => {
+                inner.poll_close(cx).map_err(sockudo_to_ws_error)
+            },
             #[cfg(not(feature = "h3"))]
             TransportStreamProj::H3 { inner, .. } => inner.poll_close(cx),
             TransportStreamProj::Xhttp { inner, .. } => inner.poll_close(cx),

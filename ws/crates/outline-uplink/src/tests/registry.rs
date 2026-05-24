@@ -3,11 +3,11 @@ use std::time::Duration;
 use url::Url;
 
 use super::*;
+use crate::config::{CipherKind, TransportMode, UplinkTransport};
 use crate::config::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
     VlessUdpMuxLimits, WsProbeConfig,
 };
-use crate::config::{CipherKind, UplinkTransport, TransportMode};
 
 fn make_uplink(name: &str) -> UplinkConfig {
     UplinkConfig {
@@ -50,7 +50,7 @@ fn make_group(name: &str, uplink_names: &[&str]) -> UplinkGroupConfig {
             http: None,
             dns: None,
             tcp: None,
-        tls: None,
+            tls: None,
         },
         load_balancing: LoadBalancingConfig {
             mode: LoadBalancingMode::ActiveActive,
@@ -73,7 +73,8 @@ fn make_group(name: &str, uplink_names: &[&str]) -> UplinkGroupConfig {
             tcp_ws_keepalive_interval: None,
             tcp_ws_standby_keepalive_interval: None,
             tcp_active_keepalive_interval: None,
-            warm_probe_keepalive_interval: None,            auto_failback: false,
+            warm_probe_keepalive_interval: None,
+            auto_failback: false,
             vless_udp_mux_limits: VlessUdpMuxLimits::default(),
             tcp_mid_session_retry_buffer_bytes: 256 * 1024,
             tcp_mid_session_retry_budget: 1,
@@ -94,10 +95,7 @@ fn validate_rejects_duplicate_uplink_name_across_groups() {
         make_group("g2", &["uplink-b", "uplink-c"]), // "uplink-b" is a duplicate
     ];
     let err = validate_uplink_names(&groups).unwrap_err();
-    assert!(
-        err.to_string().contains("uplink-b"),
-        "error should name the duplicate uplink"
-    );
+    assert!(err.to_string().contains("uplink-b"), "error should name the duplicate uplink");
     assert!(
         err.to_string().contains("g1") && err.to_string().contains("g2"),
         "error should mention both groups"

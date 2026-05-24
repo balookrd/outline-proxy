@@ -96,7 +96,10 @@ fn range_fully_covered(scoreboard: &[SequenceRange], start: u32, end: u32) -> bo
     false
 }
 
-pub(in crate::tcp) fn server_segment_is_sacked(state: &TcpFlowState, segment: &ServerSegment) -> bool {
+pub(in crate::tcp) fn server_segment_is_sacked(
+    state: &TcpFlowState,
+    segment: &ServerSegment,
+) -> bool {
     let end = segment
         .sequence_number
         .wrapping_add(server_segment_len(segment) as u32);
@@ -253,9 +256,10 @@ pub(in crate::tcp) fn preferred_retransmit_index(state: &TcpFlowState) -> Option
         && let Some(index) = state.unacked_server_segments.iter().position(|segment| {
             !server_segment_is_sacked(state, segment)
                 && seq_lt(segment.sequence_number, highest_sacked_end)
-        }) {
-            return Some(index);
-        }
+        })
+    {
+        return Some(index);
+    }
 
     state
         .unacked_server_segments

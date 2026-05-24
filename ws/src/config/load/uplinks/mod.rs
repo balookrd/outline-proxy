@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 
 use outline_uplink::UplinkConfig;
 
@@ -12,8 +12,8 @@ mod wire_shape;
 
 use credentials::resolve_primary_credentials;
 use fallback_resolution::resolve_fallbacks;
-pub(super) use source_precedence::{cli_uplink_override_requested, ResolvedUplinkInput};
-use wire_shape::{resolve_primary_wire_shape, PrimaryWireInput};
+pub(super) use source_precedence::{ResolvedUplinkInput, cli_uplink_override_requested};
+use wire_shape::{PrimaryWireInput, resolve_primary_wire_shape};
 
 impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
     type Error = anyhow::Error;

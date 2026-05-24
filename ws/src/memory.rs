@@ -106,9 +106,8 @@ fn sample_process_heap_state() -> (Option<u64>, Option<u64>, Option<u64>, &'stat
 
 #[cfg(target_os = "linux")]
 fn sample_process_virtual_bytes() -> Option<u64> {
-    read_proc_statm_virtual_bytes().or_else(|| {
-        read_proc_status_kib("VmSize").map(|value_kib| value_kib.saturating_mul(1024))
-    })
+    read_proc_statm_virtual_bytes()
+        .or_else(|| read_proc_status_kib("VmSize").map(|value_kib| value_kib.saturating_mul(1024)))
 }
 
 #[cfg(not(target_os = "linux"))]
