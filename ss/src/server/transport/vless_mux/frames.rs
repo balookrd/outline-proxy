@@ -33,10 +33,7 @@ where
             },
             Ok(None) => {
                 if state.buffer.len() > MAX_MUX_FRAME_BUFFER {
-                    return Err(anyhow!(
-                        "mux frame buffer overflow: {} bytes",
-                        state.buffer.len()
-                    ));
+                    return Err(anyhow!("mux frame buffer overflow: {} bytes", state.buffer.len()));
                 }
                 break;
             },
@@ -64,12 +61,8 @@ where
     Msg: Send + 'static,
 {
     match meta.status {
-        SessionStatus::New => {
-            handle_new(state, meta, data, server, route, tx, make_binary).await
-        },
-        SessionStatus::Keep => {
-            handle_keep(state, meta, data, server, route).await
-        },
+        SessionStatus::New => handle_new(state, meta, data, server, route, tx, make_binary).await,
+        SessionStatus::Keep => handle_keep(state, meta, data, server, route).await,
         SessionStatus::End => {
             handle_end(state, meta.session_id).await;
             Ok(())
@@ -92,7 +85,10 @@ where
 {
     let session_id = meta.session_id;
     let network = meta.network.ok_or_else(|| anyhow!("mux New frame missing network"))?;
-    let target = meta.target.clone().ok_or_else(|| anyhow!("mux New frame missing target"))?;
+    let target = meta
+        .target
+        .clone()
+        .ok_or_else(|| anyhow!("mux New frame missing target"))?;
 
     if state.sub_conns.contains_key(&session_id) {
         warn!(path = %route.path, session_id, "mux duplicate New for session");
@@ -154,7 +150,11 @@ async fn handle_keep(
         },
         SubConnKind::Udp { socket, default_target } => {
             let dst = match meta.target.as_ref() {
-                Some(addr) => match resolve_packet_addr(server.dns_cache.as_ref(), addr, server.prefer_ipv4_upstream) {
+                Some(addr) => match resolve_packet_addr(
+                    server.dns_cache.as_ref(),
+                    addr,
+                    server.prefer_ipv4_upstream,
+                ) {
                     Some(r) => r,
                     None => {
                         warn!(path = %route.path, addr = %addr.display_host_port(), "mux xudp addr unresolved; dropping");

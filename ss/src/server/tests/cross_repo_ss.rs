@@ -38,7 +38,6 @@ use anyhow::Result;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::tungstenite::protocol::Message;
 use sockudo_ws::{
     Config as H3WsConfig, Http3 as H3Transport, WebSocketServer as H3WebSocketServer,
 };
@@ -47,6 +46,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     task::JoinHandle,
 };
+use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
 
 use outline_transport::{
@@ -55,6 +55,7 @@ use outline_transport::{
 };
 
 use super::super::bootstrap::serve_listener;
+use super::super::nat::NatTable;
 use super::super::resumption::{OrphanRegistry, ResumptionConfig};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, UserKeySlice};
@@ -62,7 +63,6 @@ use super::super::{
     DnsCache, Services, SsTcpCtx, UdpServices, build_app, build_user_routes, build_users,
     serve_h3_server, serve_ss_tcp_listener,
 };
-use super::super::nat::NatTable;
 use super::sample_config;
 use crate::config::H3Alpn;
 use crate::crypto::UserKey;
@@ -98,9 +98,10 @@ async fn setup_ss_plain_tcp_server() -> Result<(SocketAddr, JoinHandle<Result<()
         16,
     ));
     let ctx = SsTcpCtx { users, services };
-    let handle = tokio::spawn(async move {
-        serve_ss_tcp_listener(listener, ctx, ShutdownSignal::never()).await
-    });
+    let handle =
+        tokio::spawn(
+            async move { serve_ss_tcp_listener(listener, ctx, ShutdownSignal::never()).await },
+        );
     Ok((listen_addr, handle))
 }
 
@@ -123,9 +124,8 @@ async fn setup_ss_ws_server() -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
         config.http_root_realm.clone(),
     );
     let app = build_app(routes, services, auth, None);
-    let handle = tokio::spawn(async move {
-        serve_listener(listener, app, ShutdownSignal::never()).await
-    });
+    let handle =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
     Ok((listen_addr, handle))
 }
 
@@ -161,12 +161,8 @@ async fn cross_repo_ss_tcp_plain_round_trip() -> Result<()> {
         &master_key,
         Arc::clone(&lifetime),
     )?;
-    let mut reader = TcpShadowsocksReader::new_socket(
-        read_half,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime),
-    );
+    let mut reader =
+        TcpShadowsocksReader::new_socket(read_half, cipher, &master_key, Arc::clone(&lifetime));
 
     // Legacy AEAD has no separate header frame: the first chunk
     // carries the SOCKS5-style target address followed by the
@@ -178,8 +174,7 @@ async fn cross_repo_ss_tcp_plain_round_trip() -> Result<()> {
     let reply = reader.read_chunk().await?;
     assert_eq!(&reply, b"pong", "ss tcp echo over plain TCP");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(reader);
@@ -229,20 +224,10 @@ async fn cross_repo_ss_tcp_ws_h1_round_trip() -> Result<()> {
         .expect("derive_master_key succeeds for chacha20");
     let lifetime = UpstreamTransportGuard::new("cross-repo-ss-ws-h1", "ss-ws-h1");
 
-    let (mut writer, ctrl_tx) = TcpShadowsocksWriter::connect(
-        sink,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime),
-    )
-    .await?;
-    let mut reader = TcpShadowsocksReader::new(
-        stream,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime),
-        ctrl_tx,
-    );
+    let (mut writer, ctrl_tx) =
+        TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime)).await?;
+    let mut reader =
+        TcpShadowsocksReader::new(stream, cipher, &master_key, Arc::clone(&lifetime), ctrl_tx);
 
     let mut first = TargetAddr::Socket(upstream_addr).encode()?;
     first.extend_from_slice(b"ping");
@@ -251,8 +236,7 @@ async fn cross_repo_ss_tcp_ws_h1_round_trip() -> Result<()> {
     let reply = reader.read_chunk().await?;
     assert_eq!(&reply, b"pong", "ss tcp echo over ws-h1");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(reader);
@@ -345,20 +329,10 @@ async fn cross_repo_ss_tcp_ws_h3_round_trip() -> Result<()> {
         .expect("derive_master_key succeeds for chacha20");
     let lifetime = UpstreamTransportGuard::new("cross-repo-ss-ws-h3", "ss-ws-h3");
 
-    let (mut writer, ctrl_tx) = TcpShadowsocksWriter::connect(
-        sink,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime),
-    )
-    .await?;
-    let mut reader = TcpShadowsocksReader::new(
-        stream,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime),
-        ctrl_tx,
-    );
+    let (mut writer, ctrl_tx) =
+        TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime)).await?;
+    let mut reader =
+        TcpShadowsocksReader::new(stream, cipher, &master_key, Arc::clone(&lifetime), ctrl_tx);
 
     let mut first = TargetAddr::Socket(upstream_addr).encode()?;
     first.extend_from_slice(b"ping");
@@ -367,8 +341,7 @@ async fn cross_repo_ss_tcp_ws_h3_round_trip() -> Result<()> {
     let reply = reader.read_chunk().await?;
     assert_eq!(&reply, b"pong", "ss tcp echo over ws-h3");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(reader);
@@ -417,20 +390,10 @@ async fn cross_repo_ss_tcp_ws_h2_round_trip() -> Result<()> {
         .expect("derive_master_key succeeds for chacha20");
     let lifetime = UpstreamTransportGuard::new("cross-repo-ss-ws", "ss-ws-h2");
 
-    let (mut writer, ctrl_tx) = TcpShadowsocksWriter::connect(
-        sink,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime),
-    )
-    .await?;
-    let mut reader = TcpShadowsocksReader::new(
-        stream,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime),
-        ctrl_tx,
-    );
+    let (mut writer, ctrl_tx) =
+        TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime)).await?;
+    let mut reader =
+        TcpShadowsocksReader::new(stream, cipher, &master_key, Arc::clone(&lifetime), ctrl_tx);
 
     let mut first = TargetAddr::Socket(upstream_addr).encode()?;
     first.extend_from_slice(b"ping");
@@ -439,8 +402,7 @@ async fn cross_repo_ss_tcp_ws_h2_round_trip() -> Result<()> {
     let reply = reader.read_chunk().await?;
     assert_eq!(&reply, b"pong", "ss tcp echo over ws-h2");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(reader);
@@ -495,12 +457,7 @@ async fn setup_ss_ws_server_with_resumption_inner(
     ));
     let vless = Arc::new(super::super::setup::build_vless_transport_route_map(&[]));
     let xhttp_vless = Arc::new(BTreeMap::new());
-    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp,
-        udp,
-        vless,
-        xhttp_vless,
-    }));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless, xhttp_vless }));
     let orphan_registry = Some(Arc::new(OrphanRegistry::new(
         ResumptionConfig::from(&crate::config::SessionResumptionConfig {
             enabled: true,
@@ -531,9 +488,8 @@ async fn setup_ss_ws_server_with_resumption_inner(
         http_root_realm: Arc::from(config.http_root_realm.as_str()),
     });
     let app = build_app(routes, services, auth, None);
-    let handle = tokio::spawn(async move {
-        serve_listener(listener, app, ShutdownSignal::never()).await
-    });
+    let handle =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
     Ok((listen_addr, handle))
 }
 
@@ -583,13 +539,8 @@ async fn cross_repo_ss_tcp_ws_h2_resume_reattaches_parked_upstream() -> Result<(
         .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
     let (sink_a, stream_a_inner) = stream_a.split();
     let lifetime_a = UpstreamTransportGuard::new("cross-repo-ss-ws-h2-resume-a", "ss-ws-h2");
-    let (mut writer_a, ctrl_tx_a) = TcpShadowsocksWriter::connect(
-        sink_a,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_a),
-    )
-    .await?;
+    let (mut writer_a, ctrl_tx_a) =
+        TcpShadowsocksWriter::connect(sink_a, cipher, &master_key, Arc::clone(&lifetime_a)).await?;
     let mut reader_a = TcpShadowsocksReader::new(
         stream_a_inner,
         cipher,
@@ -637,13 +588,8 @@ async fn cross_repo_ss_tcp_ws_h2_resume_reattaches_parked_upstream() -> Result<(
     let _issued_b = stream_b.issued_session_id();
     let (sink_b, stream_b_inner) = stream_b.split();
     let lifetime_b = UpstreamTransportGuard::new("cross-repo-ss-ws-h2-resume-b", "ss-ws-h2");
-    let (mut writer_b, ctrl_tx_b) = TcpShadowsocksWriter::connect(
-        sink_b,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_b),
-    )
-    .await?;
+    let (mut writer_b, ctrl_tx_b) =
+        TcpShadowsocksWriter::connect(sink_b, cipher, &master_key, Arc::clone(&lifetime_b)).await?;
     let mut reader_b = TcpShadowsocksReader::new(
         stream_b_inner,
         cipher,
@@ -661,8 +607,7 @@ async fn cross_repo_ss_tcp_ws_h2_resume_reattaches_parked_upstream() -> Result<(
     let reply_b = reader_b.read_chunk().await?;
     assert_eq!(&reply_b, b"ackk", "ss tcp echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -750,15 +695,9 @@ async fn cross_repo_ss_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Result<
         .issued_session_id()
         .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
     let (sink_a, stream_a_inner) = stream_a.split();
-    let lifetime_a =
-        UpstreamTransportGuard::new("cross-repo-ss-ws-ack-prefix-a", "ss-ws-h2");
-    let (mut writer_a, ctrl_tx_a) = TcpShadowsocksWriter::connect(
-        sink_a,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_a),
-    )
-    .await?;
+    let lifetime_a = UpstreamTransportGuard::new("cross-repo-ss-ws-ack-prefix-a", "ss-ws-h2");
+    let (mut writer_a, ctrl_tx_a) =
+        TcpShadowsocksWriter::connect(sink_a, cipher, &master_key, Arc::clone(&lifetime_a)).await?;
     let mut reader_a = TcpShadowsocksReader::new(
         stream_a_inner,
         cipher,
@@ -806,15 +745,9 @@ async fn cross_repo_ss_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Result<
          when the client advertised the capability",
     );
     let (sink_b, stream_b_inner) = stream_b.split();
-    let lifetime_b =
-        UpstreamTransportGuard::new("cross-repo-ss-ws-ack-prefix-b", "ss-ws-h2");
-    let (mut writer_b, ctrl_tx_b) = TcpShadowsocksWriter::connect(
-        sink_b,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_b),
-    )
-    .await?;
+    let lifetime_b = UpstreamTransportGuard::new("cross-repo-ss-ws-ack-prefix-b", "ss-ws-h2");
+    let (mut writer_b, ctrl_tx_b) =
+        TcpShadowsocksWriter::connect(sink_b, cipher, &master_key, Arc::clone(&lifetime_b)).await?;
     let mut reader_b = TcpShadowsocksReader::new(
         stream_b_inner,
         cipher,
@@ -847,8 +780,7 @@ async fn cross_repo_ss_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Result<
          across client A's lifetime (4 bytes from \"ping\"); got {observed:?}",
     );
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -947,17 +879,9 @@ async fn cross_repo_ss_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -> R
         .issued_session_id()
         .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
     let (sink_a, stream_a_inner) = stream_a.split();
-    let lifetime_a = UpstreamTransportGuard::new(
-        "cross-repo-ss-ws-symmetric-replay-a",
-        "ss-ws-h2",
-    );
-    let (mut writer_a, ctrl_tx_a) = TcpShadowsocksWriter::connect(
-        sink_a,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_a),
-    )
-    .await?;
+    let lifetime_a = UpstreamTransportGuard::new("cross-repo-ss-ws-symmetric-replay-a", "ss-ws-h2");
+    let (mut writer_a, ctrl_tx_a) =
+        TcpShadowsocksWriter::connect(sink_a, cipher, &master_key, Arc::clone(&lifetime_a)).await?;
     // Client A is the FIRST connect of the session — no v2 frame is
     // emitted on a fresh dial (only on resume hits). Reader runs
     // without `with_expect_ack_prefix` / `with_expect_downlink_replay`.
@@ -1010,17 +934,9 @@ async fn cross_repo_ss_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -> R
         "server must echo v2 on the resume hit"
     );
     let (sink_b, stream_b_inner) = stream_b.split();
-    let lifetime_b = UpstreamTransportGuard::new(
-        "cross-repo-ss-ws-symmetric-replay-b",
-        "ss-ws-h2",
-    );
-    let (mut writer_b, ctrl_tx_b) = TcpShadowsocksWriter::connect(
-        sink_b,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_b),
-    )
-    .await?;
+    let lifetime_b = UpstreamTransportGuard::new("cross-repo-ss-ws-symmetric-replay-b", "ss-ws-h2");
+    let (mut writer_b, ctrl_tx_b) =
+        TcpShadowsocksWriter::connect(sink_b, cipher, &master_key, Arc::clone(&lifetime_b)).await?;
     let mut reader_b = TcpShadowsocksReader::new(
         stream_b_inner,
         cipher,
@@ -1065,8 +981,7 @@ async fn cross_repo_ss_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -> R
     match outcome {
         outline_transport::downlink_replay::DownlinkReplayOutcome::Replay(payload) => {
             assert_eq!(
-                payload,
-                b"ng",
+                payload, b"ng",
                 "v2 must replay the suffix '[2..4)' of the parked ring (\"pong\")"
             );
         },
@@ -1081,8 +996,7 @@ async fn cross_repo_ss_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -> R
     let reply_b = reader_b.read_chunk().await?;
     assert_eq!(&reply_b, b"ackk");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -1098,8 +1012,7 @@ async fn cross_repo_ss_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -> R
 /// enabled. Mirrors `setup_ss_ws_server_with_resumption` but binds
 /// an `H3WebSocketServer` so the WS upgrade rides QUIC (RFC 9220)
 /// instead of plain TCP h2.
-async fn setup_ss_ws_h3_server_with_resumption()
--> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+async fn setup_ss_ws_h3_server_with_resumption() -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
     super::cross_repo_install_test_tls_root_on_client();
     let bind_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
     let tls_config = super::cross_repo_test_server_tls_config(&[b"h3"]);
@@ -1123,12 +1036,7 @@ async fn setup_ss_ws_h3_server_with_resumption()
     ));
     let vless = Arc::new(super::super::setup::build_vless_transport_route_map(&[]));
     let xhttp_vless = Arc::new(BTreeMap::new());
-    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp,
-        udp,
-        vless,
-        xhttp_vless,
-    }));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless, xhttp_vless }));
     let orphan_registry = Some(Arc::new(OrphanRegistry::new(
         ResumptionConfig::from(&crate::config::SessionResumptionConfig {
             enabled: true,
@@ -1220,13 +1128,8 @@ async fn cross_repo_ss_tcp_ws_h3_resume_reattaches_parked_upstream() -> Result<(
         .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
     let (sink_a, stream_a_inner) = stream_a.split();
     let lifetime_a = UpstreamTransportGuard::new("cross-repo-ss-ws-h3-resume-a", "ss-ws-h3");
-    let (mut writer_a, ctrl_tx_a) = TcpShadowsocksWriter::connect(
-        sink_a,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_a),
-    )
-    .await?;
+    let (mut writer_a, ctrl_tx_a) =
+        TcpShadowsocksWriter::connect(sink_a, cipher, &master_key, Arc::clone(&lifetime_a)).await?;
     let mut reader_a = TcpShadowsocksReader::new(
         stream_a_inner,
         cipher,
@@ -1269,13 +1172,8 @@ async fn cross_repo_ss_tcp_ws_h3_resume_reattaches_parked_upstream() -> Result<(
     let _issued_b = stream_b.issued_session_id();
     let (sink_b, stream_b_inner) = stream_b.split();
     let lifetime_b = UpstreamTransportGuard::new("cross-repo-ss-ws-h3-resume-b", "ss-ws-h3");
-    let (mut writer_b, ctrl_tx_b) = TcpShadowsocksWriter::connect(
-        sink_b,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_b),
-    )
-    .await?;
+    let (mut writer_b, ctrl_tx_b) =
+        TcpShadowsocksWriter::connect(sink_b, cipher, &master_key, Arc::clone(&lifetime_b)).await?;
     let mut reader_b = TcpShadowsocksReader::new(
         stream_b_inner,
         cipher,
@@ -1290,8 +1188,7 @@ async fn cross_repo_ss_tcp_ws_h3_resume_reattaches_parked_upstream() -> Result<(
     let reply_b = reader_b.read_chunk().await?;
     assert_eq!(&reply_b, b"ackk", "ss tcp echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -1307,8 +1204,8 @@ async fn cross_repo_ss_tcp_ws_h3_resume_reattaches_parked_upstream() -> Result<(
 /// `OrphanRegistry` enabled. Pointing client B at the same `wss://`
 /// URL while no UDP listener exists drives the dispatcher's WS-h3 →
 /// WS-h2 fallback path with the resume token preserved end-to-end.
-async fn setup_ss_ws_h2_tls_server_with_resumption()
--> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+async fn setup_ss_ws_h2_tls_server_with_resumption() -> Result<(SocketAddr, JoinHandle<Result<()>>)>
+{
     super::cross_repo_install_test_tls_root_on_client();
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
@@ -1327,12 +1224,7 @@ async fn setup_ss_ws_h2_tls_server_with_resumption()
     ));
     let vless = Arc::new(super::super::setup::build_vless_transport_route_map(&[]));
     let xhttp_vless = Arc::new(BTreeMap::new());
-    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp,
-        udp,
-        vless,
-        xhttp_vless,
-    }));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless, xhttp_vless }));
     let orphan_registry = Some(Arc::new(OrphanRegistry::new(
         ResumptionConfig::from(&crate::config::SessionResumptionConfig {
             enabled: true,
@@ -1414,13 +1306,8 @@ async fn cross_repo_ss_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result<()
         .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
     let (sink_a, stream_a_inner) = stream_a.split();
     let lifetime_a = UpstreamTransportGuard::new("cross-repo-ss-fallback-a", "ss-ws-h2");
-    let (mut writer_a, ctrl_tx_a) = TcpShadowsocksWriter::connect(
-        sink_a,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_a),
-    )
-    .await?;
+    let (mut writer_a, ctrl_tx_a) =
+        TcpShadowsocksWriter::connect(sink_a, cipher, &master_key, Arc::clone(&lifetime_a)).await?;
     let mut reader_a = TcpShadowsocksReader::new(
         stream_a_inner,
         cipher,
@@ -1465,13 +1352,8 @@ async fn cross_repo_ss_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result<()
     let _issued_b = stream_b.issued_session_id();
     let (sink_b, stream_b_inner) = stream_b.split();
     let lifetime_b = UpstreamTransportGuard::new("cross-repo-ss-fallback-b", "ss-ws-h2");
-    let (mut writer_b, ctrl_tx_b) = TcpShadowsocksWriter::connect(
-        sink_b,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_b),
-    )
-    .await?;
+    let (mut writer_b, ctrl_tx_b) =
+        TcpShadowsocksWriter::connect(sink_b, cipher, &master_key, Arc::clone(&lifetime_b)).await?;
     let mut reader_b = TcpShadowsocksReader::new(
         stream_b_inner,
         cipher,
@@ -1486,8 +1368,7 @@ async fn cross_repo_ss_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result<()
     let reply_b = reader_b.read_chunk().await?;
     assert_eq!(&reply_b, b"ackk", "ss tcp echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -1507,8 +1388,8 @@ async fn cross_repo_ss_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result<()
 /// same `X-Outline-Resume` header. Plain TCP avoids the
 /// tungstenite-vs-override-slot mismatch the h1 path would have
 /// over TLS.
-async fn setup_ss_ws_h1_only_server_with_resumption()
--> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+async fn setup_ss_ws_h1_only_server_with_resumption() -> Result<(SocketAddr, JoinHandle<Result<()>>)>
+{
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
@@ -1526,12 +1407,7 @@ async fn setup_ss_ws_h1_only_server_with_resumption()
     ));
     let vless = Arc::new(super::super::setup::build_vless_transport_route_map(&[]));
     let xhttp_vless = Arc::new(BTreeMap::new());
-    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp,
-        udp,
-        vless,
-        xhttp_vless,
-    }));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless, xhttp_vless }));
     let orphan_registry = Some(Arc::new(OrphanRegistry::new(
         ResumptionConfig::from(&crate::config::SessionResumptionConfig {
             enabled: true,
@@ -1610,13 +1486,8 @@ async fn cross_repo_ss_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result<()
         .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
     let (sink_a, stream_a_inner) = stream_a.split();
     let lifetime_a = UpstreamTransportGuard::new("cross-repo-ss-h2-h1-fallback-a", "ss-ws-h1");
-    let (mut writer_a, ctrl_tx_a) = TcpShadowsocksWriter::connect(
-        sink_a,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_a),
-    )
-    .await?;
+    let (mut writer_a, ctrl_tx_a) =
+        TcpShadowsocksWriter::connect(sink_a, cipher, &master_key, Arc::clone(&lifetime_a)).await?;
     let mut reader_a = TcpShadowsocksReader::new(
         stream_a_inner,
         cipher,
@@ -1666,13 +1537,8 @@ async fn cross_repo_ss_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result<()
     let _issued_b = stream_b.issued_session_id();
     let (sink_b, stream_b_inner) = stream_b.split();
     let lifetime_b = UpstreamTransportGuard::new("cross-repo-ss-h2-h1-fallback-b", "ss-ws-h1");
-    let (mut writer_b, ctrl_tx_b) = TcpShadowsocksWriter::connect(
-        sink_b,
-        cipher,
-        &master_key,
-        Arc::clone(&lifetime_b),
-    )
-    .await?;
+    let (mut writer_b, ctrl_tx_b) =
+        TcpShadowsocksWriter::connect(sink_b, cipher, &master_key, Arc::clone(&lifetime_b)).await?;
     let mut reader_b = TcpShadowsocksReader::new(
         stream_b_inner,
         cipher,
@@ -1687,8 +1553,7 @@ async fn cross_repo_ss_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result<()
     let reply_b = reader_b.read_chunk().await?;
     assert_eq!(&reply_b, b"ackk", "ss tcp echo via resumed upstream");
 
-    let (first, second) =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
     assert_eq!(&second, b"helo");
 
@@ -1824,8 +1689,7 @@ async fn cross_repo_ss_tcp_raw_quic_round_trip() -> Result<()> {
     let reply = reader.read_chunk().await?;
     assert_eq!(&reply, b"pong");
 
-    let upstream_bytes =
-        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(reader);

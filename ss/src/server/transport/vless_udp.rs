@@ -65,10 +65,7 @@ where
                 );
                 outbound
                     .data_tx
-                    .send((outbound.make_binary)(Bytes::from_static(&[
-                        vless::VERSION,
-                        0x00,
-                    ])))
+                    .send((outbound.make_binary)(Bytes::from_static(&[vless::VERSION, 0x00])))
                     .await
                     .map_err(|error| {
                         anyhow!("failed to queue vless udp response header on resume: {error}")
@@ -142,30 +139,31 @@ where
 
     info!(user = user.label(), path = %route.path, target = %target_display, "vless udp target");
 
-    let resolved = match resolve_udp_target(
-        server.dns_cache.as_ref(),
-        &target,
-        server.prefer_ipv4_upstream,
+    let resolved =
+        match resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream)
+            .await
+        {
+            Ok(addr) => addr,
+            Err(error) => {
+                warn!(
+                    user = user.label(),
+                    path = %route.path,
+                    target = %target_display,
+                    error = %error,
+                    "vless udp dns resolution failed; sending try-again close"
+                );
+                return Err(VlessFrameError::UpstreamConnectFailed(
+                    error.context("vless udp dns resolution failed"),
+                ));
+            },
+        };
+
+    let socket = match bind_and_connect_udp(
+        resolved,
+        user.fwmark(),
+        server.outbound_ipv6.as_deref(),
     )
     .await
-    {
-        Ok(addr) => addr,
-        Err(error) => {
-            warn!(
-                user = user.label(),
-                path = %route.path,
-                target = %target_display,
-                error = %error,
-                "vless udp dns resolution failed; sending try-again close"
-            );
-            return Err(VlessFrameError::UpstreamConnectFailed(
-                error.context("vless udp dns resolution failed"),
-            ));
-        },
-    };
-
-    let socket = match bind_and_connect_udp(resolved, user.fwmark(), server.outbound_ipv6.as_deref())
-        .await
     {
         Ok(socket) => socket,
         Err(error) => {

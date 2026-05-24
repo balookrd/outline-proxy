@@ -77,7 +77,9 @@ pub(super) fn spawn_maintenance(
     }
 
     // Outbound IPv6 interface re-enumeration (interface mode only).
-    if let Some(OutboundIpv6::Interface(source)) = built.services.tcp_server.outbound_ipv6.as_deref() {
+    if let Some(OutboundIpv6::Interface(source)) =
+        built.services.tcp_server.outbound_ipv6.as_deref()
+    {
         let source = Arc::clone(source);
         let period = Duration::from_secs(config.outbound_ipv6_refresh_secs);
         let mut sd = shutdown.clone();

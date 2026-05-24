@@ -26,7 +26,14 @@
 //!   logs the real client IP, write the captured ClientHello, then
 //!   bidirectionally copy until either side closes.
 
-use std::{collections::HashMap, io, net::SocketAddr, pin::Pin, sync::Arc, task::{Context, Poll}};
+use std::{
+    collections::HashMap,
+    io,
+    net::SocketAddr,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
 use anyhow::{Context as _, Result, anyhow};
 use tokio::{
@@ -116,7 +123,12 @@ impl SniLookup {
             }
         }
 
-        Self { exact, wildcards, catch_all, allow_no_sni: config.allow_no_sni }
+        Self {
+            exact,
+            wildcards,
+            catch_all,
+            allow_no_sni: config.allow_no_sni,
+        }
     }
 
     /// Resolve a peeked SNI. `sni` must already be lowercased (peek
@@ -200,9 +212,7 @@ pub(in crate::server) async fn peek_sni(
         }
         buffered.extend_from_slice(&chunk[..n]);
         if buffered.len() > max_bytes {
-            anyhow::bail!(
-                "TLS ClientHello exceeded max_client_hello_bytes ({max_bytes})"
-            );
+            anyhow::bail!("TLS ClientHello exceeded max_client_hello_bytes ({max_bytes})");
         }
 
         // `Acceptor::read_tls` consumes from the cursor, advancing
@@ -245,13 +255,7 @@ pub(in crate::server) async fn splice_to_backend(
 
     if let Some(version) = backend.proxy_protocol {
         let mut header = Vec::with_capacity(64);
-        encode_proxy_protocol(
-            &mut header,
-            version,
-            peer_addr,
-            inbound_listen,
-            PpTransport::Stream,
-        );
+        encode_proxy_protocol(&mut header, version, peer_addr, inbound_listen, PpTransport::Stream);
         upstream
             .write_all(&header)
             .await
@@ -269,12 +273,7 @@ pub(in crate::server) async fn splice_to_backend(
     // (e.g. probe scanners) and that is not noteworthy.
     match tokio::io::copy_bidirectional(&mut inbound, &mut upstream).await {
         Ok((bytes_in, bytes_out)) => {
-            debug!(
-                ?peer_addr,
-                bytes_in,
-                bytes_out,
-                "sni_fallback splice closed cleanly",
-            );
+            debug!(?peer_addr, bytes_in, bytes_out, "sni_fallback splice closed cleanly",);
         },
         Err(error) => {
             debug!(?peer_addr, ?error, "sni_fallback splice ended with error");
@@ -341,10 +340,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrependStream<S> {
         Pin::new(&mut self.inner).poll_flush(cx)
     }
 
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<()>> {
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 

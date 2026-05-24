@@ -153,17 +153,17 @@ pub(super) fn sort_addrs_for_happy_eyeballs(
             (Some(a), Some(b)) => {
                 ordered.push(a);
                 ordered.push(b);
-            }
+            },
             (Some(a), None) => {
                 ordered.push(a);
                 ordered.extend(p);
                 break;
-            }
+            },
             (None, Some(b)) => {
                 ordered.push(b);
                 ordered.extend(s);
                 break;
-            }
+            },
             (None, None) => break,
         }
     }

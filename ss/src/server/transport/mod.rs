@@ -39,14 +39,13 @@ mod xhttp;
 pub(in crate::server) use fallback::{
     HttpFallbackContext, h3_fallback_handle, http_fallback_handler,
 };
-pub(in crate::server) use sink::is_handshake_rejected;
 pub(in crate::server) use raw_quic::{
     OversizeStream, RawQuicSsCtx, RawQuicVlessRouteCtx, SsQuicConn, StreamKind, VlessQuicConn,
     classify_accept_bi, handle_raw_ss_quic_stream_with_prefix,
-    handle_raw_vless_quic_stream_with_prefix,
-    serve_raw_ss_oversize_records, serve_raw_ss_quic_datagrams,
-    serve_raw_vless_oversize_records, serve_raw_vless_quic_datagrams,
+    handle_raw_vless_quic_stream_with_prefix, serve_raw_ss_oversize_records,
+    serve_raw_ss_quic_datagrams, serve_raw_vless_oversize_records, serve_raw_vless_quic_datagrams,
 };
+pub(in crate::server) use sink::is_handshake_rejected;
 pub(in crate::server) use tcp::{
     ResumeContext, WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection,
 };
@@ -81,9 +80,10 @@ pub(super) async fn tcp_websocket_upgrade(
     drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
     let server = Arc::clone(&state.services.tcp_server);
-    let session = server
-        .metrics
-        .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Shadowsocks);
+    let session =
+        server
+            .metrics
+            .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Shadowsocks);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
     let ConnectInfo(peer_addr) = connect_info;
     // The `Option<SessionId>` is `Copy`, so save the issued ID by value
@@ -121,9 +121,7 @@ pub(super) async fn tcp_websocket_upgrade(
     if let Some(id) = issued_for_response
         && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
     {
-        response
-            .headers_mut()
-            .insert(tcp::SESSION_RESPONSE_HEADER, value);
+        response.headers_mut().insert(tcp::SESSION_RESPONSE_HEADER, value);
     }
     if ack_prefix_for_response {
         response
@@ -131,10 +129,9 @@ pub(super) async fn tcp_websocket_upgrade(
             .insert(tcp::ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
     }
     if symmetric_replay_for_response {
-        response.headers_mut().insert(
-            tcp::SYMMETRIC_REPLAY_HEADER,
-            axum::http::HeaderValue::from_static("1"),
-        );
+        response
+            .headers_mut()
+            .insert(tcp::SYMMETRIC_REPLAY_HEADER, axum::http::HeaderValue::from_static("1"));
     }
     response
 }
@@ -162,9 +159,10 @@ pub(super) async fn vless_websocket_upgrade(
     drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming vless websocket upgrade");
     let server = Arc::clone(&state.services.vless_server);
-    let session = server
-        .metrics
-        .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Vless);
+    let session =
+        server
+            .metrics
+            .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Vless);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
     // Save the minted ID by value (`Copy`) so we can attach the
     // `X-Outline-Session` response header without re-parsing headers
@@ -197,9 +195,7 @@ pub(super) async fn vless_websocket_upgrade(
     if let Some(id) = issued_for_response
         && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
     {
-        response
-            .headers_mut()
-            .insert(tcp::SESSION_RESPONSE_HEADER, value);
+        response.headers_mut().insert(tcp::SESSION_RESPONSE_HEADER, value);
     }
     if ack_prefix_for_response {
         response
@@ -207,10 +203,9 @@ pub(super) async fn vless_websocket_upgrade(
             .insert(tcp::ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
     }
     if symmetric_replay_for_response {
-        response.headers_mut().insert(
-            tcp::SYMMETRIC_REPLAY_HEADER,
-            axum::http::HeaderValue::from_static("1"),
-        );
+        response
+            .headers_mut()
+            .insert(tcp::SYMMETRIC_REPLAY_HEADER, axum::http::HeaderValue::from_static("1"));
     }
     response
 }
@@ -290,9 +285,10 @@ pub(super) async fn udp_websocket_upgrade(
     drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
     let server = Arc::clone(&state.services.udp_server);
-    let session = server
-        .metrics
-        .open_websocket_session(Transport::Udp, protocol, AppProtocol::Shadowsocks);
+    let session =
+        server
+            .metrics
+            .open_websocket_session(Transport::Udp, protocol, AppProtocol::Shadowsocks);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
     let issued_for_response = resume.issued_session_id;
     let mut response = ws.on_upgrade(move |socket| async move {
@@ -308,9 +304,7 @@ pub(super) async fn udp_websocket_upgrade(
     if let Some(id) = issued_for_response
         && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
     {
-        response
-            .headers_mut()
-            .insert(tcp::SESSION_RESPONSE_HEADER, value);
+        response.headers_mut().insert(tcp::SESSION_RESPONSE_HEADER, value);
     }
     response
 }

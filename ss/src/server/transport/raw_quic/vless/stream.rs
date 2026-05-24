@@ -30,7 +30,11 @@ pub(super) async fn run_stream(
     // `prefix` carries any bytes the caller pre-read off the recv stream
     // (e.g. the 8-byte peek used to disambiguate the oversize-record
     // magic from a VLESS request header) so they re-enter the parser.
-    let mut header_buf = if prefix.is_empty() { Vec::with_capacity(128) } else { prefix };
+    let mut header_buf = if prefix.is_empty() {
+        Vec::with_capacity(128)
+    } else {
+        prefix
+    };
     // Probe-resistance helper: when the parser rejects the header bytes
     // (wrong version, unsupported command, oversized buffer), sink the
     // remaining stream until the handshake-equivalent timeout (or byte
@@ -120,8 +124,8 @@ pub(super) async fn run_stream(
         VlessCommand::Udp => {
             handle_udp(send, recv, header_buf, request, user, server, connection, conn_state).await
         },
-        VlessCommand::Mux => Err(anyhow!(
-            "VLESS MUX is not supported on raw QUIC; open separate streams"
-        )),
+        VlessCommand::Mux => {
+            Err(anyhow!("VLESS MUX is not supported on raw QUIC; open separate streams"))
+        },
     }
 }

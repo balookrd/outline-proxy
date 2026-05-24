@@ -204,9 +204,7 @@ struct H3ConnectionCtx {
 
 fn negotiated_alpn(connection: &quinn::Connection) -> Option<H3Alpn> {
     let data = connection.handshake_data()?;
-    let handshake = data
-        .downcast::<quinn::crypto::rustls::HandshakeData>()
-        .ok()?;
+    let handshake = data.downcast::<quinn::crypto::rustls::HandshakeData>().ok()?;
     let bytes = handshake.protocol?;
     H3Alpn::parse(std::str::from_utf8(&bytes).ok()?)
 }
@@ -322,9 +320,7 @@ async fn handle_quic_connection(
     incoming: quinn::Incoming,
     ctx: Arc<H3ConnectionCtx>,
 ) -> Result<()> {
-    let connection = incoming
-        .await
-        .context("failed to accept incoming QUIC connection")?;
+    let connection = incoming.await.context("failed to accept incoming QUIC connection")?;
     let alpn = negotiated_alpn(&connection);
     match alpn {
         Some(H3Alpn::H3) if ctx.alpn.contains(&H3Alpn::H3) => {

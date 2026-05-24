@@ -8,13 +8,13 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
-use super::frames::send_end;
-use super::state::{
-    MuxReaderHarvest, MuxRouteCtx, MuxServerCtx, MuxState, MuxSubConn, SubConnKind,
-};
 use super::super::super::{
     connect::resolve_udp_target, constants::MAX_UDP_PAYLOAD_SIZE, dns_cache::DnsCache,
     nat::bind_nat_udp_socket, scratch::UdpRecvBuf,
+};
+use super::frames::send_end;
+use super::state::{
+    MuxReaderHarvest, MuxRouteCtx, MuxServerCtx, MuxState, MuxSubConn, SubConnKind,
 };
 use crate::{
     fwmark::apply_fwmark_if_needed,
@@ -40,27 +40,28 @@ pub(super) async fn open_udp_sub<Msg>(
 where
     Msg: Send + 'static,
 {
-    let default_target = match resolve_udp_target(
-        server.dns_cache.as_ref(),
-        &target,
-        server.prefer_ipv4_upstream,
-    )
-    .await
-    {
-        Ok(addr) => addr,
-        Err(error) => {
-            warn!(
-                path = %route.path,
-                session_id,
-                error = %error,
-                "mux udp dns resolution failed"
-            );
-            send_end(tx, make_binary, session_id, true).await?;
-            return Ok(());
-        },
-    };
+    let default_target =
+        match resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream)
+            .await
+        {
+            Ok(addr) => addr,
+            Err(error) => {
+                warn!(
+                    path = %route.path,
+                    session_id,
+                    error = %error,
+                    "mux udp dns resolution failed"
+                );
+                send_end(tx, make_binary, session_id, true).await?;
+                return Ok(());
+            },
+        };
 
-    let socket = match bind_unconnected_udp(default_target, state.user.fwmark(), server.outbound_ipv6.as_deref()) {
+    let socket = match bind_unconnected_udp(
+        default_target,
+        state.user.fwmark(),
+        server.outbound_ipv6.as_deref(),
+    ) {
         Ok(s) => Arc::new(s),
         Err(error) => {
             warn!(
@@ -95,7 +96,10 @@ where
     state.sub_conns.insert(
         session_id,
         MuxSubConn {
-            kind: SubConnKind::Udp { socket: Arc::clone(&socket), default_target },
+            kind: SubConnKind::Udp {
+                socket: Arc::clone(&socket),
+                default_target,
+            },
             cancel,
             reader_task: Some(reader_task),
         },
@@ -104,7 +108,8 @@ where
     if let Some(payload) = initial
         && !payload.is_empty()
     {
-        send_udp_payload(&socket, &payload, default_target, &state.user_counters, route.protocol).await;
+        send_udp_payload(&socket, &payload, default_target, &state.user_counters, route.protocol)
+            .await;
     }
     Ok(())
 }
@@ -207,9 +212,7 @@ pub(super) fn resolve_packet_addr(
             }
             Some(*sa)
         },
-        TargetAddr::Domain(host, port) => {
-            dns_cache.lookup_one(host, *port, prefer_ipv4_upstream)
-        },
+        TargetAddr::Domain(host, port) => dns_cache.lookup_one(host, *port, prefer_ipv4_upstream),
     }
 }
 

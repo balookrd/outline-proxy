@@ -248,7 +248,11 @@ impl TlsCertEntry {
                 out
             },
         };
-        Ok(Self { cert_path: raw.cert_path, key_path: raw.key_path, sni })
+        Ok(Self {
+            cert_path: raw.cert_path,
+            key_path: raw.key_path,
+            sni,
+        })
     }
 }
 
@@ -325,16 +329,12 @@ impl SniMatcher {
                 anyhow::bail!("match_sni wildcard {raw:?} is malformed");
             }
             if rest.contains('*') {
-                anyhow::bail!(
-                    "match_sni wildcard {raw:?} may only contain one leading `*.`"
-                );
+                anyhow::bail!("match_sni wildcard {raw:?} may only contain one leading `*.`");
             }
             Ok(Self::Wildcard { suffix: format!(".{rest}") })
         } else {
             if lower.contains('*') {
-                anyhow::bail!(
-                    "match_sni {raw:?} contains `*` outside the leading `*.` form"
-                );
+                anyhow::bail!("match_sni {raw:?} contains `*` outside the leading `*.` form");
             }
             Ok(Self::Exact(lower))
         }
@@ -483,10 +483,8 @@ fn parse_sni_backends(raw: Vec<SniBackendSection>) -> Result<Vec<SniBackend>> {
 
 impl HttpFallbackConfig {
     fn from_section(section: HttpFallbackSection) -> Result<Option<Self>> {
-        let Some(backend_raw) = section
-            .backend
-            .map(|b| b.trim().to_owned())
-            .filter(|b| !b.is_empty())
+        let Some(backend_raw) =
+            section.backend.map(|b| b.trim().to_owned()).filter(|b| !b.is_empty())
         else {
             // Section present but no `backend` set is treated as opt-out
             // so operators can keep the block in templates without
@@ -506,10 +504,7 @@ impl HttpFallbackConfig {
             );
         }
         if url.path() != "" && url.path() != "/" {
-            anyhow::bail!(
-                "http_fallback.backend must not include a path; got {:?}",
-                url.path()
-            );
+            anyhow::bail!("http_fallback.backend must not include a path; got {:?}", url.path());
         }
         if url.query().is_some() {
             anyhow::bail!("http_fallback.backend must not include a query string");
@@ -535,9 +530,9 @@ impl HttpFallbackConfig {
         let backend_proto = match section.backend_proto.as_deref().map(str::trim) {
             None | Some("") | Some("h1") => BackendProto::H1,
             Some("h2") => BackendProto::H2,
-            Some(other) => anyhow::bail!(
-                "http_fallback.backend_proto must be \"h1\" or \"h2\"; got {other:?}"
-            ),
+            Some(other) => {
+                anyhow::bail!("http_fallback.backend_proto must be \"h1\" or \"h2\"; got {other:?}")
+            },
         };
         let apply_to_h1 = section.apply_to_h1.unwrap_or(true);
         let apply_to_h3 = section.apply_to_h3.unwrap_or(false);
@@ -621,9 +616,7 @@ impl SessionResumptionConfig {
             orphan_per_user_cap: section
                 .orphan_per_user_cap
                 .unwrap_or(defaults.orphan_per_user_cap),
-            orphan_global_cap: section
-                .orphan_global_cap
-                .unwrap_or(defaults.orphan_global_cap),
+            orphan_global_cap: section.orphan_global_cap.unwrap_or(defaults.orphan_global_cap),
             downlink_buffer_bytes: section
                 .downlink_buffer_bytes
                 .unwrap_or(defaults.downlink_buffer_bytes),
@@ -718,8 +711,7 @@ impl AppMode {
         // Multi-cert arrays. The h3 array only inherits from the TCP
         // listener's array when the h3 table omits `certs` entirely —
         // an explicitly empty `certs = []` opts out of inheritance.
-        let tls_certs =
-            parse_tls_cert_array(server.certs, "server.certs")?.unwrap_or_default();
+        let tls_certs = parse_tls_cert_array(server.certs, "server.certs")?.unwrap_or_default();
         let h3_certs = match parse_tls_cert_array(server_h3.certs, "server.h3.certs")? {
             Some(list) => list,
             None => tls_certs.clone(),
@@ -813,9 +805,7 @@ impl AppMode {
             http_fallback: HttpFallbackConfig::from_section(
                 file.http_fallback.unwrap_or_default(),
             )?,
-            sni_fallback: SniFallbackConfig::from_section(
-                file.sni_fallback.unwrap_or_default(),
-            )?,
+            sni_fallback: SniFallbackConfig::from_section(file.sni_fallback.unwrap_or_default())?,
         };
         config.validate()?;
 

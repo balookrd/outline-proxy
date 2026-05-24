@@ -8,10 +8,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
-use axum::http::{
-    self, HeaderMap, HeaderName, HeaderValue, Uri, Version, header,
-    request::Parts,
-};
+use axum::http::{self, HeaderMap, HeaderName, HeaderValue, Uri, Version, header, request::Parts};
 
 use crate::config::HttpFallbackConfig;
 
@@ -52,10 +49,7 @@ pub(super) fn build_upstream_parts(
     parts: &Parts,
     is_secure_inbound: bool,
 ) -> Result<Parts> {
-    let path_and_query = original_uri
-        .path_and_query()
-        .map(|p| p.as_str())
-        .unwrap_or("/");
+    let path_and_query = original_uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
     // Origin-form (just `/path?query`) — backends like nginx/haproxy
     // typically reject the absolute-form `http://host/path` that
     // proxies use to address each other, so we mimic what curl /
@@ -96,10 +90,8 @@ pub(super) fn build_upstream_parts(
     }
     if ctx.config.add_x_forwarded_proto {
         let proto = if is_secure_inbound { "https" } else { "http" };
-        dest_headers.insert(
-            HeaderName::from_static("x-forwarded-proto"),
-            HeaderValue::from_static(proto),
-        );
+        dest_headers
+            .insert(HeaderName::from_static("x-forwarded-proto"), HeaderValue::from_static(proto));
     }
     if ctx.config.add_x_forwarded_host {
         if let Some(host) = original_host.as_deref()
@@ -109,9 +101,7 @@ pub(super) fn build_upstream_parts(
         }
     }
 
-    let request = req
-        .body(())
-        .context("failed to assemble upstream request parts")?;
+    let request = req.body(()).context("failed to assemble upstream request parts")?;
     Ok(request.into_parts().0)
 }
 

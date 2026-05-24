@@ -251,7 +251,9 @@ async fn websocket_rfc9220_http3_udp_reuses_nat_entry_after_client_reconnect() -
             services,
             auth,
             std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
             None,

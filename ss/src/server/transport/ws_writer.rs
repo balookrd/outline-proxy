@@ -44,7 +44,11 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
                 };
                 if let Some(len) = T::binary_len(&m) {
                     metrics.record_websocket_binary_frame(
-                        transport_kind, protocol, app_protocol, "out", len,
+                        transport_kind,
+                        protocol,
+                        app_protocol,
+                        "out",
+                        len,
                     );
                 }
                 T::send(&mut writer, m).await?;

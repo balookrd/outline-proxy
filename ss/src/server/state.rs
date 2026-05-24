@@ -93,9 +93,8 @@ impl Services {
         orphan_registry: Option<Arc<OrphanRegistry>>,
         ws_data_channel_capacity: usize,
     ) -> Self {
-        let orphan_registry = orphan_registry.unwrap_or_else(|| {
-            Arc::new(OrphanRegistry::new_disabled(Arc::clone(&metrics)))
-        });
+        let orphan_registry = orphan_registry
+            .unwrap_or_else(|| Arc::new(OrphanRegistry::new_disabled(Arc::clone(&metrics))));
         let tcp_server = Arc::new(WsTcpServerCtx {
             metrics: Arc::clone(&metrics),
             dns_cache: Arc::clone(&dns_cache),

@@ -14,8 +14,7 @@ use crate::{
 
 use super::super::{
     constants::{
-        WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER,
-        WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
+        WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
     },
     resumption::{Parked, ResumeOutcome, SessionId},
 };
@@ -30,11 +29,11 @@ mod ctx;
 mod tcp;
 mod udp;
 
-pub(in crate::server) use ctx::{VlessWsRouteCtx, VlessWsServerCtx};
 pub(in crate::server::transport) use ctx::{
     UdpUpstream, UpstreamSession, VlessFrameError, VlessRelayOutcome, VlessRelayState,
     VlessWsOutbound,
 };
+pub(in crate::server) use ctx::{VlessWsRouteCtx, VlessWsServerCtx};
 
 use ctx::MAX_VLESS_HEADER_BUFFER;
 use tcp::{establish_vless_tcp_upstream, shutdown_unparked_tcp, try_park_vless_tcp};
@@ -229,7 +228,9 @@ async fn try_park_vless_on_drop(
     };
     match state.upstream {
         UpstreamSession::Tcp(_) => try_park_vless_tcp(state, server, route, session_id).await,
-        UpstreamSession::Udp(_) => try_park_vless_udp_single(state, server, route, session_id).await,
+        UpstreamSession::Udp(_) => {
+            try_park_vless_udp_single(state, server, route, session_id).await
+        },
         UpstreamSession::Mux(_) => try_park_vless_mux(state, server, route, session_id).await,
         UpstreamSession::None => false,
     }
@@ -279,9 +280,7 @@ async fn try_park_vless_mux(
         sub_conns = parked.sub_conns.len(),
         "parking vless mux upstream into orphan registry",
     );
-    server
-        .orphan_registry
-        .park(session_id, Parked::VlessMux(parked));
+    server.orphan_registry.park(session_id, Parked::VlessMux(parked));
     // Mirror the TCP path's restoration so the caller sees a still-
     // populated `authenticated_user` for any post-park bookkeeping
     // (e.g. session-finish guards). The cloned `Arc<str>` is cheap.
@@ -384,9 +383,7 @@ where
         },
         Err(vless::VlessError::UnsupportedCommand(command)) => {
             warn!(path = %route.path, command, "unsupported vless command");
-            return Err(VlessFrameError::Fatal(anyhow!(
-                "unsupported vless command {command:#x}"
-            )));
+            return Err(VlessFrameError::Fatal(anyhow!("unsupported vless command {command:#x}")));
         },
         Err(error) => {
             warn!(path = %route.path, error = %error, "vless parse error");
@@ -412,9 +409,7 @@ where
                 candidates = ?route.candidate_users,
                 "rejected vless user"
             );
-            return Err(VlessFrameError::Fatal(anyhow!(
-                "unknown vless user {masked}"
-            )));
+            return Err(VlessFrameError::Fatal(anyhow!("unknown vless user {masked}")));
         },
     };
 
@@ -465,10 +460,7 @@ where
                 );
                 outbound
                     .data_tx
-                    .send((outbound.make_binary)(Bytes::from_static(&[
-                        vless::VERSION,
-                        0x00,
-                    ])))
+                    .send((outbound.make_binary)(Bytes::from_static(&[vless::VERSION, 0x00])))
                     .await
                     .map_err(|error| {
                         anyhow!("failed to queue vless mux response header on resume: {error}")

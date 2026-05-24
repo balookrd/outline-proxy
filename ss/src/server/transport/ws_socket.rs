@@ -140,11 +140,7 @@ impl WsSocket for AxumWs {
         protocol: Protocol,
         app_protocol: crate::metrics::AppProtocol,
     ) -> UdpResponseSender {
-        UdpResponseSender::new(Arc::new(WebSocketResponseSender {
-            tx,
-            protocol,
-            app_protocol,
-        }))
+        UdpResponseSender::new(Arc::new(WebSocketResponseSender { tx, protocol, app_protocol }))
     }
 }
 

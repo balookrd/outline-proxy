@@ -14,14 +14,16 @@ use super::super::setup::{VlessUserRoute, build_vless_transport_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
 use super::super::{DnsCache, build_app};
-use arc_swap::ArcSwap;
 use super::sample_config;
 use crate::metrics::Metrics;
-use crate::protocol::vless::{COMMAND_MUX, COMMAND_TCP, COMMAND_UDP, VERSION, VlessUser, parse_uuid};
+use crate::protocol::TargetAddr;
+use crate::protocol::vless::{
+    COMMAND_MUX, COMMAND_TCP, COMMAND_UDP, VERSION, VlessUser, parse_uuid,
+};
 use crate::protocol::vless_mux::{
     OPTION_DATA, ParsedFrame, SessionStatus, encode_frame, parse_frame,
 };
-use crate::protocol::TargetAddr;
+use arc_swap::ArcSwap;
 use bytes::BytesMut;
 
 #[tokio::test]
@@ -40,7 +42,11 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -68,7 +74,9 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
         16,
     ));
     let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+        )))),
         http_root_auth: false,
         http_root_realm: Arc::from("Authorization required"),
     });
@@ -120,7 +128,11 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -148,7 +160,9 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
         16,
     ));
     let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+        )))),
         http_root_auth: false,
         http_root_realm: Arc::from("Authorization required"),
     });
@@ -207,7 +221,11 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -235,7 +253,9 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
         16,
     ));
     let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+        )))),
         http_root_auth: false,
         http_root_realm: Arc::from("Authorization required"),
     });
@@ -288,7 +308,11 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -396,7 +420,11 @@ async fn vless_websocket_invalid_version_sinks_then_closes() -> Result<()> {
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -453,9 +481,9 @@ async fn vless_websocket_invalid_version_sinks_then_closes() -> Result<()> {
     let close_after = send_at.elapsed();
     match next {
         Some(Ok(WsMessage::Close(_))) => {},
-        other => anyhow::bail!(
-            "expected graceful Close frame on invalid vless version, got: {other:?}"
-        ),
+        other => {
+            anyhow::bail!("expected graceful Close frame on invalid vless version, got: {other:?}")
+        },
     }
     // Sink timeout was set to 250 ms; allow plenty of slack but require
     // the close arrived strictly *after* the sink held us — a regression
@@ -478,14 +506,17 @@ async fn vless_websocket_probe_sink_byte_cap_short_circuits() -> Result<()> {
     // Long timeout so the only way the close can come back quickly is via
     // the byte cap; if the cap is broken the test would either hang for
     // 30 s (production timeout) or fail the elapsed-time assertion.
-    let _guard = super::super::transport::sink::TestTimeoutOverride::set(
-        std::time::Duration::from_secs(30),
-    );
+    let _guard =
+        super::super::transport::sink::TestTimeoutOverride::set(std::time::Duration::from_secs(30));
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -560,4 +591,3 @@ async fn vless_websocket_probe_sink_byte_cap_short_circuits() -> Result<()> {
     server.abort();
     Ok(())
 }
-

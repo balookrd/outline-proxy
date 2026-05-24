@@ -173,10 +173,7 @@ impl DownlinkRing {
             self.current_bytes = self.current_bytes.saturating_sub(evicted.payload.len());
         }
         let offset = self.total_sent;
-        self.entries.push_back(Entry {
-            offset,
-            payload: chunk.to_vec(),
-        });
+        self.entries.push_back(Entry { offset, payload: chunk.to_vec() });
         self.current_bytes += chunk.len();
         self.total_sent = self.total_sent.saturating_add(chunk.len() as u64);
     }

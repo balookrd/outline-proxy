@@ -97,8 +97,7 @@ impl Config {
             }
             if user.vless_id.is_some() {
                 let ws_path = user.effective_ws_path_vless(self.ws_path_vless.as_deref());
-                let xhttp_path =
-                    user.effective_xhttp_path_vless(self.xhttp_path_vless.as_deref());
+                let xhttp_path = user.effective_xhttp_path_vless(self.xhttp_path_vless.as_deref());
                 let has_raw_quic = self.h3_alpn.contains(&H3Alpn::Vless);
                 if let Some(path) = ws_path {
                     vless_paths.insert(path.to_owned());
@@ -137,8 +136,7 @@ impl Config {
         {
             bail!("xhttp_path_vless must start with '/'");
         }
-        if self.xhttp_path_vless.is_some()
-            && self.users.iter().all(|user| user.vless_id.is_none())
+        if self.xhttp_path_vless.is_some() && self.users.iter().all(|user| user.vless_id.is_none())
         {
             bail!("xhttp_path_vless requires at least one [[users]] entry with vless_id");
         }
@@ -238,9 +236,7 @@ impl Config {
         for (idx, entry) in entries.iter().enumerate() {
             for sni in &entry.sni {
                 if !seen.insert(sni.clone()) {
-                    bail!(
-                        "{label}[{idx}].sni {sni:?} is already claimed by an earlier entry"
-                    );
+                    bail!("{label}[{idx}].sni {sni:?} is already claimed by an earlier entry");
                 }
             }
         }

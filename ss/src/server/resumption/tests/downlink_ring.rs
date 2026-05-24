@@ -26,30 +26,21 @@ fn single_push_under_cap_retains_all_bytes() {
     assert_eq!(ring.total_sent(), 5);
     assert_eq!(ring.oldest_offset(), 0);
     assert_eq!(ring.buffered_bytes(), 5);
-    assert_eq!(
-        ring.replay_from(0),
-        ReplayOutcome::Available(b"hello".to_vec())
-    );
+    assert_eq!(ring.replay_from(0), ReplayOutcome::Available(b"hello".to_vec()));
 }
 
 #[test]
 fn replay_from_exact_total_returns_empty() {
     let mut ring = DownlinkRing::new(64);
     ring.push(b"abcd");
-    assert_eq!(
-        ring.replay_from(4),
-        ReplayOutcome::Available(Vec::new())
-    );
+    assert_eq!(ring.replay_from(4), ReplayOutcome::Available(Vec::new()));
 }
 
 #[test]
 fn replay_from_offset_in_middle_of_chunk_returns_tail() {
     let mut ring = DownlinkRing::new(64);
     ring.push(b"abcdefghij");
-    assert_eq!(
-        ring.replay_from(3),
-        ReplayOutcome::Available(b"defghij".to_vec())
-    );
+    assert_eq!(ring.replay_from(3), ReplayOutcome::Available(b"defghij".to_vec()));
 }
 
 #[test]
@@ -57,10 +48,7 @@ fn replay_from_spanning_two_chunks_concatenates() {
     let mut ring = DownlinkRing::new(64);
     ring.push(b"first");
     ring.push(b"second");
-    assert_eq!(
-        ring.replay_from(2),
-        ReplayOutcome::Available(b"rstsecond".to_vec())
-    );
+    assert_eq!(ring.replay_from(2), ReplayOutcome::Available(b"rstsecond".to_vec()));
 }
 
 #[test]
@@ -79,10 +67,7 @@ fn fifo_eviction_when_new_chunk_pushes_oldest_out() {
     assert_eq!(ring.total_sent(), 7);
     assert_eq!(ring.oldest_offset(), 3);
     assert_eq!(ring.buffered_bytes(), 4);
-    assert_eq!(
-        ring.replay_from(3),
-        ReplayOutcome::Available(b"BBBB".to_vec())
-    );
+    assert_eq!(ring.replay_from(3), ReplayOutcome::Available(b"BBBB".to_vec()));
 }
 
 #[test]
@@ -104,16 +89,10 @@ fn oversized_chunk_retains_only_trailing_capacity() {
     assert_eq!(ring.total_sent(), 10);
     assert_eq!(ring.oldest_offset(), 6);
     assert_eq!(ring.buffered_bytes(), 4);
-    assert_eq!(
-        ring.replay_from(6),
-        ReplayOutcome::Available(b"6789".to_vec())
-    );
+    assert_eq!(ring.replay_from(6), ReplayOutcome::Available(b"6789".to_vec()));
     assert_eq!(ring.replay_from(0), ReplayOutcome::Truncated);
     assert_eq!(ring.replay_from(5), ReplayOutcome::Truncated);
-    assert_eq!(
-        ring.replay_from(10),
-        ReplayOutcome::Available(Vec::new())
-    );
+    assert_eq!(ring.replay_from(10), ReplayOutcome::Available(Vec::new()));
 }
 
 #[test]
@@ -124,10 +103,7 @@ fn oversized_chunk_evicts_pre_existing_entries() {
     ring.push(b"01234567"); // bigger than cap → drops "AB" + drops "0123"
     assert_eq!(ring.total_sent(), 10);
     assert_eq!(ring.oldest_offset(), 6);
-    assert_eq!(
-        ring.replay_from(6),
-        ReplayOutcome::Available(b"4567".to_vec())
-    );
+    assert_eq!(ring.replay_from(6), ReplayOutcome::Available(b"4567".to_vec()));
     assert_eq!(ring.replay_from(0), ReplayOutcome::Truncated);
 }
 
@@ -139,10 +115,7 @@ fn zero_capacity_ring_advances_total_but_retains_nothing() {
     assert_eq!(ring.oldest_offset(), 5);
     assert_eq!(ring.buffered_bytes(), 0);
     assert_eq!(ring.replay_from(0), ReplayOutcome::Truncated);
-    assert_eq!(
-        ring.replay_from(5),
-        ReplayOutcome::Available(Vec::new())
-    );
+    assert_eq!(ring.replay_from(5), ReplayOutcome::Available(Vec::new()));
 }
 
 #[test]
@@ -170,9 +143,6 @@ fn replay_partial_when_offset_falls_mid_chunk_after_eviction() {
     ring.push(b"BBB");
     ring.push(b"CCC");
     assert_eq!(ring.oldest_offset(), 3);
-    assert_eq!(
-        ring.replay_from(4),
-        ReplayOutcome::Available(b"BBCCC".to_vec())
-    );
+    assert_eq!(ring.replay_from(4), ReplayOutcome::Available(b"BBCCC".to_vec()));
     assert_eq!(ring.replay_from(2), ReplayOutcome::Truncated);
 }

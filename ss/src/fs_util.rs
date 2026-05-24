@@ -22,8 +22,7 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     };
     fs::write(&tmp, bytes)
         .with_context(|| format!("failed to write temp file {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| {
-        format!("failed to rename {} -> {}", tmp.display(), path.display())
-    })?;
+    fs::rename(&tmp, path)
+        .with_context(|| format!("failed to rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }

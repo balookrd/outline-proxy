@@ -39,7 +39,11 @@ async fn spawn_vless_resumption_server() -> Result<(ResumptionTestServer, VlessU
     let dummy_listen: SocketAddr = (Ipv4Addr::LOCALHOST, 0).into();
     let mut config = sample_config(dummy_listen);
     config.session_resumption.enabled = true;
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
     let vless_route = VlessUserRoute {
         user: vless_user.clone(),
         ws_path: Arc::from("/vless"),
@@ -53,11 +57,7 @@ async fn spawn_vless_resumption_server() -> Result<(ResumptionTestServer, VlessU
 /// Builds a VLESS TCP request: VERSION + UUID + opt_len(0) + cmd(TCP)
 /// + port(BE16) + atype(0x01 IPv4) + IPv4 + payload. Mirrors
 /// `vless_websocket_tcp_relay_smoke` in `tests/vless.rs`.
-fn vless_tcp_request(
-    uuid: &str,
-    target: SocketAddr,
-    payload: &[u8],
-) -> Result<Bytes> {
+fn vless_tcp_request(uuid: &str, target: SocketAddr, payload: &[u8]) -> Result<Bytes> {
     let mut request = Vec::with_capacity(32 + payload.len());
     request.push(VLESS_VERSION);
     request.extend_from_slice(&parse_uuid(uuid)?);
@@ -167,12 +167,10 @@ async fn collect_mux_keep_payloads<S>(
     expected: &[u16],
 ) -> Result<std::collections::HashMap<u16, Vec<u8>>>
 where
-    S: futures_util::Stream<
-            Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>,
-        > + Unpin,
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
 {
-    let mut payloads: std::collections::HashMap<u16, Vec<u8>> =
-        std::collections::HashMap::new();
+    let mut payloads: std::collections::HashMap<u16, Vec<u8>> = std::collections::HashMap::new();
     while !expected.iter().all(|id| payloads.contains_key(id)) {
         let bytes = expect_binary_reply(socket).await?;
         let ParsedFrame { meta, data, consumed } = parse_frame(&bytes)?
@@ -252,9 +250,7 @@ async fn vless_udp_single_resume_hit_reuses_parked_socket() -> Result<()> {
     // For good measure send a third datagram via Keep-style
     // length-prefixed framing (no VLESS handshake on already-open
     // session) — and verify the source still doesn't multiply.
-    socket2
-        .send(WsMessage::Binary(vless_udp_datagram(b"udp3")))
-        .await?;
+    socket2.send(WsMessage::Binary(vless_udp_datagram(b"udp3"))).await?;
     let echoed3 = expect_binary_reply(&mut socket2).await?;
     assert_eq!(&echoed3[2..], b"udp3");
     assert_eq!(sources.lock().await.len(), 1);
@@ -276,8 +272,8 @@ async fn vless_mux_resume_hit_preserves_all_sub_conns() -> Result<()> {
 
     // ── Session #1: open mux with sub-conns 1 and 2 ────────────────
     let (mut socket, issued) = connect_ws_h1(server.listen_addr, "/vless", None, true).await?;
-    let session_id = issued
-        .ok_or_else(|| anyhow::anyhow!("VLESS mux server didn't mint Session ID"))?;
+    let session_id =
+        issued.ok_or_else(|| anyhow::anyhow!("VLESS mux server didn't mint Session ID"))?;
 
     // Combine the VLESS mux handshake with two mux New frames in a
     // single WS binary message, matching the smoke test's pattern.
@@ -306,9 +302,7 @@ async fn vless_mux_resume_hit_preserves_all_sub_conns() -> Result<()> {
     //               still be routed to their original targets. ────
     let (mut socket2, _) =
         connect_ws_h1(server.listen_addr, "/vless", Some(session_id), true).await?;
-    socket2
-        .send(WsMessage::Binary(vless_mux_request(uuid)?))
-        .await?;
+    socket2.send(WsMessage::Binary(vless_mux_request(uuid)?)).await?;
     let response_header = expect_binary_reply(&mut socket2).await?;
     assert_eq!(response_header.as_ref(), &[VLESS_VERSION, 0x00]);
 
@@ -357,9 +351,7 @@ async fn vless_resume_hit_skips_fresh_upstream() -> Result<()> {
     let session_id =
         issued.ok_or_else(|| anyhow::anyhow!("VLESS server didn't mint Session ID"))?;
     socket
-        .send(WsMessage::Binary(vless_tcp_request(
-            uuid, target_addr, b"ping",
-        )?))
+        .send(WsMessage::Binary(vless_tcp_request(uuid, target_addr, b"ping")?))
         .await?;
     let response_header = expect_binary_reply(&mut socket).await?;
     assert_eq!(response_header.as_ref(), &[VLESS_VERSION, 0x00]);
@@ -376,9 +368,7 @@ async fn vless_resume_hit_skips_fresh_upstream() -> Result<()> {
     let (mut socket2, _) =
         connect_ws_h1(server.listen_addr, "/vless", Some(session_id), true).await?;
     socket2
-        .send(WsMessage::Binary(vless_tcp_request(
-            uuid, target_addr, b"pong",
-        )?))
+        .send(WsMessage::Binary(vless_tcp_request(uuid, target_addr, b"pong")?))
         .await?;
     let response_header2 = expect_binary_reply(&mut socket2).await?;
     assert_eq!(response_header2.as_ref(), &[VLESS_VERSION, 0x00]);

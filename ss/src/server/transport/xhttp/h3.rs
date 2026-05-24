@@ -23,12 +23,12 @@ use crate::{
 use super::super::tcp::{ResumeContext, SESSION_RESPONSE_HEADER};
 use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
+use super::padding::post_response_headers;
 use super::{
     AttachOutcome, FIN_HEADER, SEQ_HEADER, UplinkIngestError, XhttpDuplex, XhttpRegistry,
     XhttpSession, XhttpSubmode, generate_padding_header, is_valid_session_id,
     masquerade_response_headers,
 };
-use super::padding::post_response_headers;
 
 const MAX_POST_BYTES: usize = 256 * 1024;
 
@@ -205,8 +205,7 @@ async fn xhttp_h3_get(
         return Err(anyhow!(error)).context("failed to send xhttp/h3 GET response head");
     }
 
-    let result =
-        drive_downlink_h3(&mut stream, Arc::clone(&session)).await;
+    let result = drive_downlink_h3(&mut stream, Arc::clone(&session)).await;
     session.detach_get();
     let _ = stream.finish().await;
     result
@@ -617,4 +616,3 @@ async fn finish_with_status(
     let _ = stream.finish().await;
     Ok(())
 }
-

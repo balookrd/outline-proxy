@@ -47,8 +47,7 @@ pub(in crate::server) fn generate_padding_header() -> Option<(HeaderName, Header
     // CTLs and most non-ASCII). Mapping 0..255 → 0..62 by modulo
     // is fine here — the bias is negligible and the alphabet is
     // visible-only ASCII anyway.
-    const ALPHABET: &[u8; 62] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const ALPHABET: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     for byte in raw.iter_mut() {
         *byte = ALPHABET[(*byte as usize) % ALPHABET.len()];
     }
@@ -75,10 +74,7 @@ pub(in crate::server) fn masquerade_response_headers() -> [(HeaderName, HeaderVa
         // Disables nginx buffering for upstreams behind a reverse
         // proxy — also disables Cloudflare's "Smart Edge" buffering
         // for chunked responses, which is why XHTTP needs it.
-        (
-            HeaderName::from_static("x-accel-buffering"),
-            HeaderValue::from_static("no"),
-        ),
+        (HeaderName::from_static("x-accel-buffering"), HeaderValue::from_static("no")),
     ]
 }
 
@@ -92,9 +88,6 @@ pub(in crate::server) fn post_response_headers() -> [(HeaderName, HeaderValue); 
             HeaderName::from_static("content-type"),
             HeaderValue::from_static("application/octet-stream"),
         ),
-        (
-            HeaderName::from_static("cache-control"),
-            HeaderValue::from_static("no-store"),
-        ),
+        (HeaderName::from_static("cache-control"), HeaderValue::from_static("no-store")),
     ]
 }

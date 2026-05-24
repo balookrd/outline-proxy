@@ -170,16 +170,16 @@ pub(crate) struct ReplayStore {
 impl ReplayStore {
     /// `max_sessions = 0` disables the cap.
     pub(crate) fn new(idle_timeout: Duration, max_sessions: usize) -> Arc<Self> {
-        Arc::new(Self { entries: DashMap::new(), idle_timeout, max_sessions })
+        Arc::new(Self {
+            entries: DashMap::new(),
+            idle_timeout,
+            max_sessions,
+        })
     }
 
     /// Records a `(client_session_id, packet_id)` pair and reports whether it
     /// is `Fresh`, a `Replay`, or dropped because the store is at capacity.
-    pub(crate) fn check_and_mark(
-        &self,
-        client_session_id: [u8; 8],
-        packet_id: u64,
-    ) -> ReplayCheck {
+    pub(crate) fn check_and_mark(&self, client_session_id: [u8; 8], packet_id: u64) -> ReplayCheck {
         let entry = if let Some(e) = self.entries.get(&client_session_id) {
             Arc::clone(e.value())
         } else {
@@ -228,7 +228,6 @@ impl ReplayStore {
         });
         evicted
     }
-
 }
 
 #[cfg(test)]

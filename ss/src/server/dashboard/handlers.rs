@@ -34,18 +34,12 @@ struct InstanceView {
 }
 
 pub(super) async fn dashboard_page() -> impl IntoResponse {
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(DASHBOARD_HTML),
-    )
+    ([(header::CACHE_CONTROL, "no-store")], Html(DASHBOARD_HTML))
 }
 
 pub(super) async fn dashboard_logo() -> impl IntoResponse {
     (
-        [
-            (header::CACHE_CONTROL, "public, max-age=604800"),
-            (header::CONTENT_TYPE, "image/png"),
-        ],
+        [(header::CACHE_CONTROL, "public, max-age=604800"), (header::CONTENT_TYPE, "image/png")],
         OUTLINE_LOGO_PNG,
     )
 }

@@ -1,8 +1,6 @@
 //! Wire-format tests for the Ack-Prefix Protocol v1 control frame.
 
-use super::super::ack_prefix::{
-    FLAGS_NONE, FRAME_LEN_V1, MAGIC, VERSION_V1, build_v1_payload,
-};
+use super::super::ack_prefix::{FLAGS_NONE, FRAME_LEN_V1, MAGIC, VERSION_V1, build_v1_payload};
 
 #[test]
 fn payload_layout_matches_spec() {
@@ -11,10 +9,7 @@ fn payload_layout_matches_spec() {
     assert_eq!(&payload[0..4], &MAGIC);
     assert_eq!(payload[4], VERSION_V1);
     assert_eq!(payload[5], FLAGS_NONE);
-    assert_eq!(
-        &payload[6..14],
-        &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-    );
+    assert_eq!(&payload[6..14], &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
 }
 
 #[test]

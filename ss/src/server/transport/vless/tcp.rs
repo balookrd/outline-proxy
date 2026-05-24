@@ -218,9 +218,7 @@ where
         // payload.
         if state.ack_prefix_requested {
             let payload = crate::server::resumption::ack_prefix::build_v1_payload(
-                state
-                    .upstream_bytes_acked
-                    .load(std::sync::atomic::Ordering::Relaxed),
+                state.upstream_bytes_acked.load(std::sync::atomic::Ordering::Relaxed),
             );
             let make_binary = outbound.make_binary;
             outbound
@@ -274,9 +272,7 @@ where
             };
             let payload_len = payload.len() as u64;
             let truncated = (flags & 0x01) != 0;
-            server
-                .metrics
-                .record_orphan_downlink_replay_bytes("tcp", payload_len);
+            server.metrics.record_orphan_downlink_replay_bytes("tcp", payload_len);
             if truncated {
                 server.metrics.record_orphan_downlink_replay_truncated("tcp");
             }
@@ -292,9 +288,7 @@ where
                 .send(make_binary(Bytes::copy_from_slice(&frame)))
                 .await
                 .map_err(|error| {
-                    anyhow!(
-                        "failed to queue vless v2 downlink replay frame on resume: {error}"
-                    )
+                    anyhow!("failed to queue vless v2 downlink replay frame on resume: {error}")
                 })?;
             let (ring_oldest, ring_total) = ring_diag.unwrap_or((0, 0));
             debug!(

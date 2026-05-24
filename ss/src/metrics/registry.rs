@@ -14,9 +14,8 @@ const WS_SESSION_BUCKETS: &[f64] = &[1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0,
 // throughput issues is the 1–16 KiB band: a healthy bulk-relay session
 // concentrates near the upper end (LEGACY_MAX_CHUNK_SIZE = 16383), while a
 // non-batched relay smears down toward TCP-segment size (~1.4 KiB).
-const WS_FRAME_SIZE_BUCKETS: &[f64] = &[
-    256.0, 512.0, 1024.0, 2048.0, 4096.0, 8192.0, 16384.0, 32768.0, 65536.0,
-];
+const WS_FRAME_SIZE_BUCKETS: &[f64] =
+    &[256.0, 512.0, 1024.0, 2048.0, 4096.0, 8192.0, 16384.0, 32768.0, 65536.0];
 // `tuning.ws_data_channel_capacity` defaults to 128 (LARGE) and may be
 // raised to 256/512 in pathological deployments. Buckets cover the
 // full 0..max range with finer granularity near the saturation tail —

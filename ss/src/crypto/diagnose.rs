@@ -191,12 +191,14 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                         );
                     },
                 };
-                let less_safe =
-                    match build_session_key(user.cipher(), user.master_key(), &separate_header[..8])
-                    {
-                        Ok(key) => key,
-                        Err(error) => return format_build_key_error(user, error),
-                    };
+                let less_safe = match build_session_key(
+                    user.cipher(),
+                    user.master_key(),
+                    &separate_header[..8],
+                ) {
+                    Ok(key) => key,
+                    Err(error) => return format_build_key_error(user, error),
+                };
                 let mut candidate = ciphertext.to_vec();
                 match less_safe.open_in_place(
                     ss2022_udp_nonce(&separate_header).unwrap_or_else(|_| nonce_zero()),

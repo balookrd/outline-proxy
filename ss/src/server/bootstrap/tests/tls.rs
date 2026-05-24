@@ -85,12 +85,9 @@ fn extract_sni_names_lowercases() {
 fn resolver_picks_cert_by_sni() {
     let api = gen_cert(&["api.example.com"]);
     let www = gen_cert(&["www.example.com"]);
-    let resolver = MultiCertResolver::from_entries(
-        vec![(api, vec![]), (www, vec![])],
-        None,
-        "server",
-    )
-    .unwrap();
+    let resolver =
+        MultiCertResolver::from_entries(vec![(api, vec![]), (www, vec![])], None, "server")
+            .unwrap();
 
     let api_pick = resolver.pick(Some("api.example.com")).expect("api hit");
     let www_pick = resolver.pick(Some("www.example.com")).expect("www hit");
@@ -103,12 +100,8 @@ fn resolver_picks_cert_by_sni() {
 fn resolver_falls_back_to_default_when_sni_missing_or_unmatched() {
     let api = gen_cert(&["api.example.com"]);
     let default = gen_cert(&["default.example.com"]);
-    let resolver = MultiCertResolver::from_entries(
-        vec![(api, vec![])],
-        Some(default),
-        "server",
-    )
-    .unwrap();
+    let resolver =
+        MultiCertResolver::from_entries(vec![(api, vec![])], Some(default), "server").unwrap();
 
     let unknown = resolver.pick(Some("nope.example.com")).expect("falls back");
     let no_sni = resolver.pick(None).expect("falls back without SNI");
@@ -138,26 +131,18 @@ fn resolver_explicit_sni_overrides_san() {
 fn resolver_rejects_duplicate_sni_across_entries() {
     let a = gen_cert(&["dup.example.com"]);
     let b = gen_cert(&["dup.example.com"]);
-    let err = MultiCertResolver::from_entries(
-        vec![(a, vec![]), (b, vec![])],
-        None,
-        "server",
-    )
-    .unwrap_err()
-    .to_string();
+    let err = MultiCertResolver::from_entries(vec![(a, vec![]), (b, vec![])], None, "server")
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("dup.example.com"), "unexpected error: {err}");
 }
 
 #[test]
 fn resolver_skips_wildcard_san() {
     let wild = gen_cert(&["*.example.com"]);
-    let err = MultiCertResolver::from_entries(
-        vec![(wild, vec![])],
-        None,
-        "server",
-    )
-    .unwrap_err()
-    .to_string();
+    let err = MultiCertResolver::from_entries(vec![(wild, vec![])], None, "server")
+        .unwrap_err()
+        .to_string();
     // The cert has only a wildcard SAN, none of which the resolver can
     // register as an exact key — so we surface a "no SNI to derive"
     // error rather than silently building an empty resolver.
@@ -223,8 +208,16 @@ async fn end_to_end_handshake_selects_cert_per_sni() {
     let (www_cert, www_key) = cert_files("e2e-www", &["www.example.com"]);
 
     let entries = vec![
-        TlsCertEntry { cert_path: api_cert.clone(), key_path: api_key, sni: vec![] },
-        TlsCertEntry { cert_path: www_cert.clone(), key_path: www_key, sni: vec![] },
+        TlsCertEntry {
+            cert_path: api_cert.clone(),
+            key_path: api_key,
+            sni: vec![],
+        },
+        TlsCertEntry {
+            cert_path: www_cert.clone(),
+            key_path: www_key,
+            sni: vec![],
+        },
     ];
     let server_cfg = build_listener_tls_config(
         Some(&default_cert),
@@ -331,11 +324,7 @@ async fn end_to_end_handshake_selects_cert_per_sni() {
     let got_www = dial(addr, "www.example.com").await;
     assert_eq!(got_www.as_ref(), www_der.as_ref(), "SNI www → www cert");
     let got_unknown = dial(addr, "unmatched.example.com").await;
-    assert_eq!(
-        got_unknown.as_ref(),
-        default_der.as_ref(),
-        "unmatched SNI → default cert"
-    );
+    assert_eq!(got_unknown.as_ref(), default_der.as_ref(), "unmatched SNI → default cert");
 
     server.abort();
 }
@@ -349,13 +338,7 @@ fn build_listener_tls_config_array_only() {
         key_path: api_key,
         sni: vec![],
     }];
-    let cfg = build_listener_tls_config(
-        None,
-        None,
-        &entries,
-        &[b"h2".as_slice()],
-        "server",
-    )
-    .expect("multi-cert only builds");
+    let cfg = build_listener_tls_config(None, None, &entries, &[b"h2".as_slice()], "server")
+        .expect("multi-cert only builds");
     assert_eq!(cfg.alpn_protocols, vec![b"h2".to_vec()]);
 }

@@ -174,39 +174,19 @@ async fn http_fallback_proxies_unmatched_requests_to_upstream() -> Result<()> {
 
     let captured = rx.await?;
     assert_eq!(captured.method, Method::GET);
-    assert!(
-        captured.uri.contains("/anything"),
-        "unexpected upstream uri: {}",
-        captured.uri
-    );
-    assert!(
-        captured.uri.contains("x=1"),
-        "query string lost: {}",
-        captured.uri
-    );
+    assert!(captured.uri.contains("/anything"), "unexpected upstream uri: {}", captured.uri);
+    assert!(captured.uri.contains("x=1"), "query string lost: {}", captured.uri);
     assert_eq!(captured.headers.get("x-marker").unwrap(), "passthrough");
-    assert_eq!(
-        captured.headers.get(header::HOST).unwrap().to_str()?,
-        upstream_addr.to_string()
-    );
+    assert_eq!(captured.headers.get(header::HOST).unwrap().to_str()?, upstream_addr.to_string());
     let xff = captured
         .headers
         .get("x-forwarded-for")
         .context("missing X-Forwarded-For")?
         .to_str()?;
     assert!(xff.contains("127.0.0.1"), "unexpected xff: {xff}");
-    assert_eq!(
-        captured.headers.get("x-forwarded-proto").unwrap().to_str()?,
-        "http"
-    );
-    assert!(
-        captured.headers.get("x-forwarded-host").is_some(),
-        "missing x-forwarded-host"
-    );
-    assert!(
-        captured.headers.get("connection").is_none(),
-        "hop-by-hop Connection leaked"
-    );
+    assert_eq!(captured.headers.get("x-forwarded-proto").unwrap().to_str()?, "http");
+    assert!(captured.headers.get("x-forwarded-host").is_some(), "missing x-forwarded-host");
+    assert!(captured.headers.get("connection").is_none(), "hop-by-hop Connection leaked");
     assert!(
         captured.headers.get("x-custom-hop").is_none(),
         "Connection-listed token x-custom-hop leaked"
@@ -308,8 +288,7 @@ async fn http_fallback_disabled_returns_404_for_unknown_path() -> Result<()> {
 /// so the test can assert on the PROXY-protocol header. Replies with
 /// a minimal HTTP/1.1 response so hyper's client doesn't choke on a
 /// half-open dialog and surface the failure as `BAD_GATEWAY`.
-async fn spawn_proxy_protocol_capture()
--> Result<(SocketAddr, oneshot::Receiver<Vec<u8>>)> {
+async fn spawn_proxy_protocol_capture() -> Result<(SocketAddr, oneshot::Receiver<Vec<u8>>)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let (tx, rx) = oneshot::channel::<Vec<u8>>();
@@ -371,8 +350,7 @@ async fn http_fallback_emits_proxy_protocol_v1_header() -> Result<()> {
         false,
         config.http_root_realm.clone(),
     );
-    let fallback =
-        fallback_ctx_for(upstream_addr, addr, Some(ProxyProtocolVersion::V1));
+    let fallback = fallback_ctx_for(upstream_addr, addr, Some(ProxyProtocolVersion::V1));
     let app = build_app(routes, services, auth, Some(fallback));
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
@@ -430,8 +408,7 @@ async fn http_fallback_emits_proxy_protocol_v2_header() -> Result<()> {
         false,
         config.http_root_realm.clone(),
     );
-    let fallback =
-        fallback_ctx_for(upstream_addr, addr, Some(ProxyProtocolVersion::V2));
+    let fallback = fallback_ctx_for(upstream_addr, addr, Some(ProxyProtocolVersion::V2));
     let app = build_app(routes, services, auth, Some(fallback));
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
@@ -506,33 +483,31 @@ async fn spawn_h2c_echo_upstream(
             let tx = Arc::clone(&tx);
             let response_headers = response_headers.clone();
             tokio::spawn(async move {
-                let svc = service_fn(
-                    move |req: axum::http::Request<hyper::body::Incoming>| {
-                        let tx = Arc::clone(&tx);
-                        let response_headers = response_headers.clone();
-                        async move {
-                            let (parts, body) = req.into_parts();
-                            let body_bytes = body.collect().await.unwrap().to_bytes();
-                            if let Some(tx) = tx.lock().await.take() {
-                                let _ = tx.send(CapturedRequest {
-                                    method: parts.method.clone(),
-                                    uri: parts.uri.to_string(),
-                                    headers: parts.headers.clone(),
-                                    body: body_bytes,
-                                });
-                            }
-                            let mut builder = axum::http::Response::builder().status(response_status);
-                            for (k, v) in &response_headers {
-                                builder = builder.header(*k, *v);
-                            }
-                            Ok::<_, std::convert::Infallible>(
-                                builder
-                                    .body(Full::new(Bytes::from_static(response_body.as_bytes())))
-                                    .unwrap(),
-                            )
+                let svc = service_fn(move |req: axum::http::Request<hyper::body::Incoming>| {
+                    let tx = Arc::clone(&tx);
+                    let response_headers = response_headers.clone();
+                    async move {
+                        let (parts, body) = req.into_parts();
+                        let body_bytes = body.collect().await.unwrap().to_bytes();
+                        if let Some(tx) = tx.lock().await.take() {
+                            let _ = tx.send(CapturedRequest {
+                                method: parts.method.clone(),
+                                uri: parts.uri.to_string(),
+                                headers: parts.headers.clone(),
+                                body: body_bytes,
+                            });
                         }
-                    },
-                );
+                        let mut builder = axum::http::Response::builder().status(response_status);
+                        for (k, v) in &response_headers {
+                            builder = builder.header(*k, *v);
+                        }
+                        Ok::<_, std::convert::Infallible>(
+                            builder
+                                .body(Full::new(Bytes::from_static(response_body.as_bytes())))
+                                .unwrap(),
+                        )
+                    }
+                });
                 let _ = h2_server::Builder::new(TokioExecutor::new())
                     .serve_connection(TokioIo::new(stream), svc)
                     .await;
@@ -589,10 +564,7 @@ async fn http_fallback_relays_to_h2_upstream() -> Result<()> {
 
     let captured = rx.await?;
     assert_eq!(captured.method, Method::GET);
-    assert!(
-        captured.uri.contains("/h2-target"),
-        "upstream should see the original path"
-    );
+    assert!(captured.uri.contains("/h2-target"), "upstream should see the original path");
     assert_eq!(
         captured.headers.get("x-marker").map(|v| v.to_str().unwrap()),
         Some("passthrough"),
@@ -671,7 +643,9 @@ async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
             services,
             auth,
             std::sync::Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
             Some(h3_fallback),
@@ -701,10 +675,7 @@ async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
 
     let response = stream.recv_response().await?;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("x-upstream-marker").unwrap(),
-        "h3-via-h2",
-    );
+    assert_eq!(response.headers().get("x-upstream-marker").unwrap(), "h3-via-h2",);
 
     let mut body = Vec::new();
     while let Some(mut chunk) = stream.recv_data().await? {
@@ -730,10 +701,7 @@ async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
         "passthrough header should reach the h2 upstream",
     );
     assert_eq!(
-        captured
-            .headers
-            .get("x-forwarded-proto")
-            .map(|v| v.to_str().unwrap()),
+        captured.headers.get("x-forwarded-proto").map(|v| v.to_str().unwrap()),
         Some("https"),
         "h3 listener should report https for X-Forwarded-Proto regardless of TCP TLS",
     );

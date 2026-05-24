@@ -19,20 +19,20 @@ use crate::{
 use super::super::{
     connect::configure_tcp_stream,
     constants::{
-        H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS,
-        HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS, TLS_MAX_CONCURRENT_CONNECTIONS,
+        H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS, HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
+        TLS_MAX_CONCURRENT_CONNECTIONS,
     },
     shutdown::ShutdownSignal,
     state::{AppState, AuthPolicy, RoutesSnapshot, Services},
     transport::{
         HttpFallbackContext, XhttpAxumState, http_fallback_handler, metrics_handler,
         not_found_handler, root_http_auth_handler, sni_fallback, tcp_websocket_upgrade,
-        udp_websocket_upgrade, vless_websocket_upgrade, xhttp_handler,
-        xhttp_handler_no_session, xhttp_handler_with_path_seq,
+        udp_websocket_upgrade, vless_websocket_upgrade, xhttp_handler, xhttp_handler_no_session,
+        xhttp_handler_with_path_seq,
     },
 };
-use sni_fallback::SniFallbackContext;
 use super::tls::build_tcp_tls_acceptor;
+use sni_fallback::SniFallbackContext;
 
 pub(in crate::server) fn build_app(
     routes: RoutesSnapshot,
@@ -139,16 +139,8 @@ pub(in crate::server) async fn serve_tcp_listener(
 ) -> Result<()> {
     if config.tcp_tls_enabled() {
         let acceptor = build_tcp_tls_acceptor(config.as_ref())?;
-        serve_tls_listener(
-            listener,
-            app,
-            acceptor,
-            config.tuning,
-            sni_fallback,
-            metrics,
-            shutdown,
-        )
-        .await
+        serve_tls_listener(listener, app, acceptor, config.tuning, sni_fallback, metrics, shutdown)
+            .await
     } else {
         // SNI fallback only makes sense for the TLS path. Validation
         // already rejects `[sni_fallback]` without TLS so the
@@ -368,8 +360,7 @@ async fn serve_tls_listener(
             // Inject `ConnectInfo<SocketAddr>` so the TCP-WS upgrade
             // handler can key the per-route peer-user hint cache the
             // same way the plain (non-TLS) path does.
-            let app_with_addr =
-                app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
+            let app_with_addr = app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
             let service = TowerToHyperService::new(app_with_addr);
             let builder = build_http_server_builder(&profile);
             let conn = builder.serve_connection_with_upgrades(io, service);
@@ -432,10 +423,8 @@ fn is_benign_http_serve_error(error: &(dyn std::error::Error + 'static)) -> bool
         }
         if let Some(io) = cause.downcast_ref::<std::io::Error>() {
             use std::io::ErrorKind::*;
-            if matches!(
-                io.kind(),
-                ConnectionReset | BrokenPipe | UnexpectedEof | ConnectionAborted,
-            ) {
+            if matches!(io.kind(), ConnectionReset | BrokenPipe | UnexpectedEof | ConnectionAborted,)
+            {
                 return true;
             }
         }
@@ -491,9 +480,7 @@ pub(super) fn classify_tls_handshake_error(error: &std::io::Error) -> TlsHandsha
             // string changes the bucket falls back to
             // `protocol_error` and we keep the metric without the
             // misclassification.
-            if let Some(inner) = error
-                .get_ref()
-                .and_then(|e| e.downcast_ref::<rustls::Error>())
+            if let Some(inner) = error.get_ref().and_then(|e| e.downcast_ref::<rustls::Error>())
                 && let rustls::Error::General(msg) = inner
                 && msg == "no server certificate chain resolved"
             {
