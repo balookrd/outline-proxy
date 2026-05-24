@@ -173,19 +173,25 @@ impl TunTcpEngine {
         key: TcpFlowKey,
         flow: Arc<Mutex<TcpFlowState>>,
     ) -> Result<()> {
-        if self.inner.flows.len() >= self.inner.max_flows {
-            if let Some(evicted_key) = self.oldest_flow_key().await {
-                self.abort_flow_with_rst(&evicted_key, "evicted").await;
-            } else {
+        while self.inner.flows.len() >= self.inner.max_flows {
+            let Some(candidate) = self.inner.eviction_index.pop_oldest() else {
                 bail!("TUN TCP flow table limit reached and no flow could be evicted");
-            }
+            };
+            self.abort_flow_with_rst_if_id(&candidate.key, candidate.flow_id, "evicted")
+                .await;
         }
 
-        let (group_name, uplink_name) = {
+        let (flow_id, group_name, uplink_name, last_seen) = {
             let state = flow.lock().await;
-            (state.routing.group_name.clone(), state.routing.uplink_name.clone())
+            (
+                state.id,
+                state.routing.group_name.clone(),
+                state.routing.uplink_name.clone(),
+                state.timestamps.last_seen,
+            )
         };
-        self.inner.flows.insert(key, flow);
+        self.inner.flows.insert(key.clone(), flow);
+        self.inner.eviction_index.upsert(key, flow_id, last_seen);
         metrics::record_tun_tcp_event(&group_name, &uplink_name, "flow_created");
 
         Ok(())
@@ -196,6 +202,41 @@ impl TunTcpEngine {
             return;
         };
 
+        self.abort_removed_flow_with_rst(key, flow, reason).await;
+    }
+
+    async fn abort_flow_with_rst_if_id(
+        &self,
+        key: &TcpFlowKey,
+        expected_flow_id: u64,
+        reason: &'static str,
+    ) {
+        let Some(flow) = self.lookup_flow(key).await else {
+            self.inner.eviction_index.remove(key, expected_flow_id);
+            return;
+        };
+        if flow.lock().await.id != expected_flow_id {
+            self.inner.eviction_index.remove(key, expected_flow_id);
+            return;
+        }
+        let Some((_, flow)) = self
+            .inner
+            .flows
+            .remove_if(key, |_, current| Arc::ptr_eq(current, &flow))
+        else {
+            self.inner.eviction_index.remove(key, expected_flow_id);
+            return;
+        };
+
+        self.abort_removed_flow_with_rst(key, flow, reason).await;
+    }
+
+    async fn abort_removed_flow_with_rst(
+        &self,
+        key: &TcpFlowKey,
+        flow: Arc<Mutex<TcpFlowState>>,
+        reason: &'static str,
+    ) {
         let (
             flow_id,
             group_name,
@@ -220,6 +261,7 @@ impl TunTcpEngine {
             };
             state.status = TcpFlowStatus::Closed;
             clear_flow_metrics(&mut state);
+            self.inner.eviction_index.remove(key, state.id);
             (
                 state.id,
                 state.routing.group_name.clone(),
@@ -251,6 +293,7 @@ impl TunTcpEngine {
                 let mut state = flow.lock().await;
                 set_flow_status(&mut state, TcpFlowStatus::Closed);
                 clear_flow_metrics(&mut state);
+                self.inner.eviction_index.remove(key, state.id);
                 (
                     state.id,
                     state.routing.group_name.clone(),
@@ -267,24 +310,12 @@ impl TunTcpEngine {
         }
     }
 
-    async fn oldest_flow_key(&self) -> Option<TcpFlowKey> {
-        let handles: Vec<(TcpFlowKey, Arc<Mutex<TcpFlowState>>)> = self
-            .inner
-            .flows
-            .iter()
-            .map(|entry| (entry.key().clone(), Arc::clone(entry.value())))
-            .collect();
-        let mut oldest = None;
-        for (key, flow) in handles {
-            let last_seen = flow.lock().await.timestamps.last_seen;
-            if oldest
-                .as_ref()
-                .map(|(_, best_last_seen)| last_seen < *best_last_seen)
-                .unwrap_or(true)
-            {
-                oldest = Some((key, last_seen));
-            }
+    pub(super) fn record_flow_activity(&self, state: &TcpFlowState) {
+        if matches!(state.status, TcpFlowStatus::Closed) {
+            return;
         }
-        oldest.map(|(key, _)| key)
+        self.inner
+            .eviction_index
+            .upsert(state.key.clone(), state.id, state.timestamps.last_seen);
     }
 }

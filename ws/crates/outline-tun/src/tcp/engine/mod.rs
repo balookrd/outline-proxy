@@ -15,11 +15,13 @@ use crate::{SharedTunWriter, TunRouting};
 use outline_metrics as metrics;
 use outline_uplink::{TransportKind, UplinkManager};
 
+use self::eviction::FlowEvictionIndex;
 use super::state_machine::TcpFlowState;
 use super::wire::parse_tcp_packet;
 use super::{TCP_FLAG_ACK, TCP_FLAG_RST, TcpFlowKey};
 
 mod connect;
+mod eviction;
 mod flow_ops;
 mod packet;
 pub(in crate::tcp) mod scheduler;
@@ -36,6 +38,7 @@ pub(super) struct TunTcpEngineInner {
     pub(super) writer: SharedTunWriter,
     pub(super) dispatch: TunRouting,
     pub(super) flows: DashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>,
+    pub(in crate::tcp::engine) eviction_index: FlowEvictionIndex,
     pub(super) pending_connects: Mutex<HashSet<TcpFlowKey>>,
     pub(super) next_flow_id: CounterU64,
     pub(super) max_flows: usize,
@@ -62,6 +65,7 @@ impl TunTcpEngine {
                 writer,
                 dispatch,
                 flows: DashMap::new(),
+                eviction_index: FlowEvictionIndex::new(),
                 pending_connects: Mutex::new(HashSet::new()),
                 next_flow_id: CounterU64::new(1),
                 max_flows,
