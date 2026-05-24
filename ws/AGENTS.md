@@ -213,3 +213,6 @@ crate edition — Rust 2024. Перед завершением Rust-измене
 `docs/UPLINK-CONFIGURATIONS.md` и `docs/UPLINK-CONFIGURATIONS.ru.md`, если они
 влияют на uplink setup или runtime operations. Держите примеры
 синхронизированными с TOML schema и tests.
+- Обновляйте `AGENTS.md`, когда меняются рабочие соглашения, структура проекта,
+  рекомендуемые команды, feature gates, архитектурные зоны ответственности или
+  другие инструкции, которые должны сохраняться между задачами.
