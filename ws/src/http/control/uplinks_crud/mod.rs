@@ -1,11 +1,10 @@
-//! CRUD for `[[uplink_group.uplinks]]` entries in the running config file.
+//! CRUD for canonical `[[outline.uplinks]]` entries in the running config file.
 //!
 //! These endpoints edit the on-disk TOML document in place (via `toml_edit`
-//! to preserve comments and formatting) and return `restart_required: true`
-//! — the running `UplinkRegistry` is not mutated, so changes take effect
-//! only after the process is restarted. This is Stage 1 of the control-
-//! plane CRUD; Stage 2 will swap the registry under an `ArcSwap` for live
-//! application.
+//! to preserve comments and formatting). Changes are staged on disk: call
+//! `/control/apply` to reload the file and hot-swap the live `UplinkRegistry`.
+//! If a control state was built without an apply handle, a process restart is
+//! the fallback activation path.
 
 use std::sync::Arc;
 

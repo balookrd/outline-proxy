@@ -30,6 +30,7 @@ pub(super) async fn handle_create(
             "config file path unknown; CRUD endpoints need on-disk config",
         );
     };
+    let hot_apply_available = state.apply.is_some();
     let body: CreateBody = match read_json(request).await {
         Ok(v) => v,
         Err(err) => return err,
@@ -88,12 +89,7 @@ pub(super) async fn handle_create(
             info!(group = %body.group, uplink = %name, "uplink created via /control/uplinks");
             json_response(
                 StatusCode::ACCEPTED,
-                &MutationResponse {
-                    group: body.group,
-                    name,
-                    action: "created",
-                    restart_required: true,
-                },
+                &MutationResponse::staged(body.group, name, "created", hot_apply_available),
             )
         },
         Err((status, msg)) => json_error_owned(status, msg),
@@ -110,6 +106,7 @@ pub(super) async fn handle_update(
             "config file path unknown; CRUD endpoints need on-disk config",
         );
     };
+    let hot_apply_available = state.apply.is_some();
     let body: UpdateBody = match read_json(request).await {
         Ok(v) => v,
         Err(err) => return err,
@@ -181,12 +178,7 @@ pub(super) async fn handle_update(
     info!(group = %body.group, uplink = %body.name, "uplink updated via /control/uplinks");
     json_response(
         StatusCode::ACCEPTED,
-        &MutationResponse {
-            group: body.group,
-            name: body.name,
-            action: "updated",
-            restart_required: true,
-        },
+        &MutationResponse::staged(body.group, body.name, "updated", hot_apply_available),
     )
 }
 
@@ -200,6 +192,7 @@ pub(super) async fn handle_delete(
             "config file path unknown; CRUD endpoints need on-disk config",
         );
     };
+    let hot_apply_available = state.apply.is_some();
     let body: DeleteBody = match read_json(request).await {
         Ok(v) => v,
         Err(err) => return err,
@@ -232,12 +225,7 @@ pub(super) async fn handle_delete(
             info!(group = %body.group, uplink = %body.name, "uplink deleted via /control/uplinks");
             json_response(
                 StatusCode::ACCEPTED,
-                &MutationResponse {
-                    group: body.group,
-                    name: body.name,
-                    action: "deleted",
-                    restart_required: true,
-                },
+                &MutationResponse::staged(body.group, body.name, "deleted", hot_apply_available),
             )
         },
         Err((status, msg)) => json_error_owned(status, msg),

@@ -1047,6 +1047,8 @@ curl http://[::1]:9090/metrics
 - `GET /control/topology` — топология instance/group/uplink для дашборда
 - `GET /control/summary` — компактные счётчики для stat-карточек
 - `POST /control/activate` — JSON API активации для click action
+- `GET`/`POST`/`PATCH`/`DELETE /control/uplinks` — staged-правки `[[outline.uplinks]]` в файле конфигурации
+- `POST /control/apply` — hot-apply staged-правок аплинков без рестарта процесса
 - `POST /switch` — ручное переключение активного аплинка
 
 Анонимного доступа нет: запросы без корректного заголовка
@@ -1125,6 +1127,11 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
   "transport": "tcp"
 }
 ```
+
+`/control/uplinks` меняет canonical-массив `[[outline.uplinks]]` в TOML на
+диске. Ответы на мутации включают `apply_required: true`, когда
+`/control/apply` может активировать staged-правку; `restart_required`
+зарезервирован для control-состояний без hot-apply.
 
 Примеры:
 
