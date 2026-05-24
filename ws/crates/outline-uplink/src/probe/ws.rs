@@ -12,8 +12,8 @@ use tokio::sync::Semaphore;
 use tracing::debug;
 
 use outline_transport::{
-    DnsCache, TransportOperation, connect_shadowsocks_tcp_with_source,
-    connect_shadowsocks_udp_with_source, connect_websocket_with_source,
+    DialNetworkOptions, DnsCache, TransportDialOptions, TransportOperation,
+    connect_shadowsocks_tcp_with_source, connect_shadowsocks_udp_with_source, connect_transport,
 };
 
 use crate::config::{UplinkConfig, UplinkTransport, TransportMode};
@@ -35,11 +35,16 @@ pub(super) async fn run_ws_probe(
     // Many servers do not respond to WebSocket ping control frames (they expect
     // Shadowsocks data immediately), so we do not send a ping here.  The
     // data-path is checked by the http / dns sub-probes that follow.
-    let mut ws_stream = connect_websocket_with_source(cache, url, mode, fwmark, false, "probe_ws")
-        .await
-        .with_context(|| TransportOperation::Connect {
-            target: format!("WebSocket probe to {url}"),
-        })?;
+    let mut ws_stream = connect_transport(
+        TransportDialOptions::new(cache, url, mode, "probe_ws").with_network(DialNetworkOptions {
+            fwmark,
+            ipv6_first: false,
+        }),
+    )
+    .await
+    .with_context(|| TransportOperation::Connect {
+        target: format!("WebSocket probe to {url}"),
+    })?;
     let downgraded_from = ws_stream.downgraded_from();
 
     debug!(

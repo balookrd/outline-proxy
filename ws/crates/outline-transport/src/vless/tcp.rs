@@ -45,7 +45,7 @@ impl VlessTcpWriter {
     /// Same as [`Self::with_sink`] but emits a populated Addons block
     /// carrying `RESUME_CAPABLE` and (optionally) `RESUME_ID`. Used by
     /// raw-QUIC callers — WS callers reach the same negotiation via
-    /// HTTP headers in `connect_websocket_with_resume`.
+    /// HTTP headers in `connect_transport`.
     pub fn with_sink_and_resume(
         sink: Box<dyn crate::frame_io::FrameSink>,
         uuid: &[u8; 16],

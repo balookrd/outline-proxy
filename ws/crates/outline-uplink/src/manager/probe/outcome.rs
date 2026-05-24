@@ -22,7 +22,7 @@ pub(crate) struct ProbeOutcome {
     pub(crate) udp_latency: Option<Duration>,
     /// `Some(requested)` when any TCP probe sub-attempt produced a stream
     /// at a lower mode than asked for (host-level `ws_mode_cache` clamp or
-    /// inline H3→H2/H1 fallback inside `connect_websocket_with_resume`).
+    /// inline H3→H2/H1 fallback inside `connect_transport`).
     /// `None` when the dial path matched the requested mode. Surfaced from
     /// the probe layer so the manager mirrors the downgrade into the
     /// per-uplink `mode_downgrade_until` window even when the probe itself
@@ -454,7 +454,7 @@ impl UplinkManager {
         // The probe layer reports a "silent" downgrade when it succeeded but
         // the underlying dial was clamped/fallen-back below the requested
         // mode (host-level `ws_mode_cache` or inline H3→H2/H1 retry inside
-        // `connect_websocket_with_resume`). Without this, `tcp_ok=true`
+        // `connect_transport`). Without this, `tcp_ok=true`
         // would mask the fact that H3 is unreachable, leaving
         // `effective_*_ws_mode` stuck on H3 forever while every actual probe
         // and user dial silently rides H2.

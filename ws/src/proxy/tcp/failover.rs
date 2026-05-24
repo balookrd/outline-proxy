@@ -5,9 +5,9 @@ use futures_util::StreamExt;
 use tracing::{debug, warn};
 
 use outline_transport::{
-    TcpReader, TcpWriter,
+    DialNetworkOptions, DialResumeOptions, TcpReader, TcpWriter,
     TcpShadowsocksReader, TcpShadowsocksWriter, UplinkConnectionBinding, UpstreamTransportGuard,
-    connect_shadowsocks_tcp_with_source, connect_websocket_with_resume,
+    TransportDialOptions, connect_shadowsocks_tcp_with_source, connect_transport,
     global_resume_cache,
 };
 use socks5_proto::TargetAddr;
@@ -338,7 +338,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
                     );
                     // Fall through to the WS path below; effective_tcp_mode
                     // will now return H2 for the rest of the downgrade window,
-                    // and connect_websocket_with_source handles H2 → H1.
+                    // and connect_transport handles H2 → H1.
                 }
             }
         }
@@ -523,23 +523,24 @@ pub(super) async fn connect_tcp_fallback_fresh(
         .await;
     let resume_key = uplinks.resume_cache_key_for(&parent.uplink.name, "tcp");
     let resume_request = global_resume_cache().get(&resume_key);
-    let ws = connect_websocket_with_resume(
-        cache,
-        url,
-        mode,
-        fallback.fwmark,
-        fallback.ipv6_first,
-        source,
-        resume_request,
-        // Failover dial path does not yet opt into Ack-Prefix; mid-session
-        // retry orchestration that consumes the negotiated bit ships in
-        // Phase 2.4. Until then, the failover dial keeps the legacy
-        // resume-only semantics.
-        false,
-        // v2 Symmetric Downlink Replay is gated on v1; off here too.
-        false,
-        // No prior downstream offset on a fresh failover dial.
-        0,
+    let ws = connect_transport(
+        TransportDialOptions::new(cache, url, mode, source)
+            .with_network(DialNetworkOptions {
+                fwmark: fallback.fwmark,
+                ipv6_first: fallback.ipv6_first,
+            })
+            .with_resume(DialResumeOptions {
+                resume_request,
+                // Failover dial path does not yet opt into Ack-Prefix; mid-session
+                // retry orchestration that consumes the negotiated bit ships in
+                // Phase 2.4. Until then, the failover dial keeps the legacy
+                // resume-only semantics.
+                ack_prefix_requested: false,
+                // v2 Symmetric Downlink Replay is gated on v1; off here too.
+                symmetric_replay_requested: false,
+                // No prior downstream offset on a fresh failover dial.
+                client_acked_offset: 0,
+            }),
     )
     .await
     .with_context(|| format!(
@@ -548,7 +549,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
         parent.uplink.name,
         fallback.transport,
     ))?;
-    // Mirror a transport-level downgrade observed by `connect_websocket_*`
+    // Mirror a transport-level downgrade observed by `connect_transport`
     // (host-clamp via `ws_mode_cache` or inline H3→H2/H1 fallback) into
     // *this fallback wire's* per-wire downgrade slot — never primary's.
     if let Some(requested) = ws.downgraded_from() {

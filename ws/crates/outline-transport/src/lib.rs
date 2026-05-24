@@ -6,7 +6,6 @@
 //! to the configured uplink server.
 
 use std::fmt;
-use std::time::Duration;
 
 /// Typed marker placed in an `anyhow` error chain whenever a WebSocket
 /// connection closes cleanly (Close frame or EOF from the peer). Classifiers
@@ -73,39 +72,27 @@ pub fn find_typed<T: std::error::Error + Send + Sync + 'static>(
         .or_else(|| error.chain().find_map(|e| e.downcast_ref::<T>()))
 }
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::time::timeout;
-use tokio_tungstenite::client_async_tls;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tracing::{debug, warn};
-use url::Url;
 
 // Re-export resumption surface so callers in outline-uplink (and any
 // future user) can reach `SessionId`, `global_resume_cache`, and friends
 // without taking a direct dependency on the inner module path.
 pub use resumption::{ResumeCache, SessionId, global_resume_cache};
 
-// Upper bound for the HTTP/1.1 WebSocket handshake (TCP connect + TLS +
-// HTTP upgrade).  Unlike h2/h3 there is no shared pool to get stuck in, but
-// `TcpStream::connect` is bounded only by the OS SYN-retransmit budget
-// (Linux ~127s, macOS ~75s), and `client_async_tls` has no timeout of its
-// own.  Without a bound here the fallback chain h3 → h2 → h1 could stall
-// for minutes when the server is in a network black hole, before
-// `report_runtime_failure` gets a chance to mark the uplink down.
-const HTTP1_WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-#[cfg(feature = "h3")]
-use crate::h3::connect_websocket_h3;
-
 pub mod ack_prefix;
 pub mod collections;
-pub mod downlink_replay;
 mod config;
+mod dial_plan;
 mod dns;
 mod dns_cache;
+pub mod downlink_replay;
 mod error_classify;
 pub mod fingerprint_profile;
+pub mod frame_io;
+#[cfg(feature = "quic")]
+mod frame_io_quic;
+mod frame_io_ws;
 mod guards;
 mod h2;
 #[cfg(feature = "h3")]
@@ -114,21 +101,17 @@ pub(crate) mod h3;
 pub mod quic;
 #[cfg(feature = "quic")]
 mod quic_connect;
+pub mod resumption;
+mod shared_cache;
+mod shared_dial;
+mod tcp_transport;
+mod tls;
+mod udp_transport;
+pub mod vless;
 #[cfg(feature = "quic")]
 mod vless_quic_mux;
 #[cfg(feature = "quic")]
 mod vless_udp_hybrid;
-pub mod frame_io;
-#[cfg(feature = "quic")]
-mod frame_io_quic;
-mod frame_io_ws;
-pub mod resumption;
-mod tcp_transport;
-mod udp_transport;
-mod shared_cache;
-mod shared_dial;
-mod tls;
-pub mod vless;
 // Note: protocol-agnostic socket helpers now live in the `outline-net` crate.
 mod url_utils;
 mod ws_mode_cache;
@@ -138,10 +121,8 @@ mod xhttp_mode_cache;
 mod xhttp_submode_cache;
 
 use dns::resolve_server_addr;
-use h2::connect_websocket_h2;
 pub(crate) use outline_net::{bind_addr_for, bind_udp_socket};
 use std::net::SocketAddr;
-use ws_stream::H1WsStream;
 
 pub use guards::AbortOnDrop;
 pub(crate) use guards::TransportConnectGuard;
@@ -153,10 +134,7 @@ pub(crate) use ws_stream::SharedConnectionHealth;
 /// failures via `find_typed::<TransportOperation>`. Kept as a thin wrapper
 /// because `outline-net` is intentionally protocol-agnostic and does not
 /// depend on the `TransportOperation` enum.
-pub(crate) async fn connect_tcp_socket(
-    addr: SocketAddr,
-    fwmark: Option<u32>,
-) -> Result<TcpStream> {
+pub(crate) async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
     outline_net::connect_tcp_socket(addr, fwmark)
         .await
         .with_context(|| TransportOperation::Connect { target: format!("TCP socket to {addr}") })
@@ -191,23 +169,26 @@ pub use tls::build_https_probe_client_config;
 pub use dns::resolve_host_with_preference;
 pub use dns_cache::{DEFAULT_DNS_CACHE_CAPACITY, DEFAULT_DNS_CACHE_TTL, DnsCache};
 
-// Entry points — connection constructors for TCP/UDP/WebSocket transports.
-pub use udp_transport::{
-    OversizedUdpDatagram, UdpSessionTransport, UdpWsTransport, is_dropped_oversized_udp_error,
+// Entry points — connection constructors for TCP/UDP/HTTP-family transports.
+pub use dial_plan::{
+    DialNetworkOptions, DialResumeOptions, TransportDialOptions, connect_transport,
 };
 #[cfg(feature = "quic")]
 pub use quic_connect::{
     connect_ss_tcp_quic, connect_ss_udp_quic, connect_vless_tcp_quic,
     connect_vless_tcp_quic_with_resume, connect_vless_udp_session_quic,
 };
-#[cfg(feature = "quic")]
-pub use vless_quic_mux::VlessUdpQuicMux;
-#[cfg(feature = "quic")]
-pub use vless_udp_hybrid::{FallbackNotifier, VlessUdpHybridMux, WsFallbackFactory};
+pub use udp_transport::{
+    OversizedUdpDatagram, UdpSessionTransport, UdpWsTransport, is_dropped_oversized_udp_error,
+};
 pub use vless::{
     VlessTcpReader, VlessTcpWriter, VlessUdpDowngradeNotifier, VlessUdpMuxLimits,
     VlessUdpSessionMux, VlessUdpWsTransport,
 };
+#[cfg(feature = "quic")]
+pub use vless_quic_mux::VlessUdpQuicMux;
+#[cfg(feature = "quic")]
+pub use vless_udp_hybrid::{FallbackNotifier, VlessUdpHybridMux, WsFallbackFactory};
 // `TargetAddr` is the input type for `connect_vless_tcp_quic*` and
 // the SS QUIC dialers — re-exporting it spares callers from depending
 // on the `socks5-proto` workspace crate directly.
@@ -223,15 +204,17 @@ pub use ws_stream::TransportStream;
 // TUN and the proxy plumb through; the `TcpShadowsocks*` helpers construct
 // them. The half-specific variants (`WsTcpWriter`, `SocketTcpWriter`) are
 // re-exported for TUN's state-machine pattern matching.
-pub use tcp_transport::{
-    TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
-    WsReadDiag, WsTcpWriter, SocketTcpWriter,
-};
 #[cfg(feature = "quic")]
 pub use tcp_transport::{QuicTcpReader, QuicTcpWriter};
+pub use tcp_transport::{
+    SocketTcpWriter, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter, WsReadDiag,
+    WsTcpWriter,
+};
 
 // Error-chain inspection helpers shared across crates.
-pub use error_classify::{contains_any, find_io_error_kind, is_transport_level_disconnect, lower_error};
+pub use error_classify::{
+    contains_any, find_io_error_kind, is_transport_level_disconnect, lower_error,
+};
 
 // HTTP/2 window-size tuning: called once during startup from the main binary.
 pub use h2::init_h2_window_sizes;
@@ -287,365 +270,6 @@ pub async fn gc_shared_connections() {
     xhttp_submode_cache::gc().await;
 }
 
-pub async fn connect_websocket_with_source(
-    cache: &DnsCache,
-    url: &Url,
-    mode: TransportMode,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-    source: &'static str,
-) -> Result<TransportStream> {
-    // Source-only callers do not participate in v1/v2 capability
-    // negotiation — both flags stay `false` and the dial is a vanilla
-    // session. `client_acked_offset = 0` is the no-op for v2.
-    connect_websocket_with_resume(cache, url, mode, fwmark, ipv6_first, source, None, false, false, 0).await
-}
-
-/// Variant of [`connect_websocket_with_source`] that participates in
-/// cross-transport session resumption. When `resume_request` is `Some`,
-/// the chosen WebSocket transport sends `X-Outline-Resume: <hex>` on the
-/// upgrade so the server can re-attach to a parked upstream. Either way
-/// the server may issue a fresh Session ID via `X-Outline-Session`,
-/// readable on the returned stream via [`TransportStream::issued_session_id`].
-///
-/// When `ack_prefix_requested` is `true` the WS dial additionally
-/// advertises `X-Outline-Resume-Ack-Prefix: 1`. The XHTTP carrier does
-/// not echo this capability in v1 (server emits the control frame on
-/// SS-WS only), so the parameter is consumed by the WS branches and
-/// ignored by the XHTTP branches. The actual server-side echo —
-/// observed in the upgrade response — is exposed on the resulting
-/// stream via [`TransportStream::ack_prefix_advertised_by_server`].
-pub async fn connect_websocket_with_resume(
-    cache: &DnsCache,
-    url: &Url,
-    mode: TransportMode,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-    source: &'static str,
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
-) -> Result<TransportStream> {
-    let requested = mode;
-    // Two independent per-host caches are queried here: the WS one
-    // governs `WsH3 → WsH2 → WsH1`, the XHTTP one governs
-    // `XhttpH3 → XhttpH2 → XhttpH1`. Each is a no-op for modes
-    // outside its family, so the order does not matter and the
-    // common case (one of them clamps, the other passes through)
-    // costs one extra `RwLock::read` per dial.
-    let mode = ws_mode_cache::effective_mode(url, mode).await;
-    let mode = xhttp_mode_cache::effective_mode(url, mode).await;
-    if mode != requested {
-        debug!(
-            url = %url,
-            requested_mode = %requested,
-            selected_mode = %mode,
-            "transport mode clamped by per-host downgrade cache"
-        );
-    }
-    // Stamp the originally-requested mode when the dial path ended up at a
-    // lower mode than asked for (either via the host-level `ws_mode_cache`
-    // clamp or via an inline H3→H2/H1 fallback below). Uplink-manager
-    // callers inspect `TransportStream::downgraded_from()` and mirror the
-    // downgrade into their per-uplink `mode_downgrade_until` window so
-    // routing/metrics see a consistent state.
-    let downgrade_marker = |actual: TransportMode| -> Option<TransportMode> {
-        if actual != requested { Some(requested) } else { None }
-    };
-    match mode {
-        TransportMode::WsH1 => {
-            let (ws_stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-                connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested, client_acked_offset)
-                    .await?;
-            debug!(url = %url, selected_mode = "http1", "websocket transport connected");
-            ws_mode_cache::record_success(url, TransportMode::WsH1).await;
-            Ok(TransportStream::new_http1_with_session(ws_stream, issued)
-                .with_downgraded_from(downgrade_marker(TransportMode::WsH1))
-                .with_ack_prefix_advertised(ack_prefix_advertised)
-                .with_symmetric_replay_advertised(symmetric_replay_advertised))
-        },
-        TransportMode::WsH2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested, client_acked_offset).await {
-            Ok(stream) => {
-                debug!(url = %url, selected_mode = "h2", "websocket transport connected");
-                ws_mode_cache::record_success(url, TransportMode::WsH2).await;
-                Ok(stream.with_downgraded_from(downgrade_marker(TransportMode::WsH2)))
-            },
-            Err(h2_error) => {
-                warn!(
-                    url = %url,
-                    error = %format!("{h2_error:#}"),
-                    fallback = "http1",
-                    "h2 websocket connect failed, falling back"
-                );
-                ws_mode_cache::record_failure(url, TransportMode::WsH2).await;
-                let (ws_stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-                    connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested, client_acked_offset)
-                        .await?;
-                debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
-                Ok(TransportStream::new_http1_with_session(ws_stream, issued)
-                    .with_downgraded_from(downgrade_marker(TransportMode::WsH1))
-                    .with_ack_prefix_advertised(ack_prefix_advertised)
-                    .with_symmetric_replay_advertised(symmetric_replay_advertised))
-            },
-        },
-        #[cfg(feature = "h3")]
-        TransportMode::WsH3 => match connect_websocket_h3(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested, client_acked_offset).await {
-            Ok(stream) => {
-                debug!(url = %url, selected_mode = "h3", "websocket transport connected");
-                ws_mode_cache::record_success(url, TransportMode::WsH3).await;
-                Ok(stream.with_downgraded_from(downgrade_marker(TransportMode::WsH3)))
-            },
-            Err(h3_error) => {
-                warn!(
-                    url = %url,
-                    error = %format!("{h3_error:#}"),
-                    fallback = "h2",
-                    "h3 websocket connect failed, falling back"
-                );
-                ws_mode_cache::record_failure(url, TransportMode::WsH3).await;
-                match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested, client_acked_offset).await {
-                    Ok(stream) => {
-                        debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
-                        // Note: we deliberately do NOT call `record_success(H2)` here.
-                        // Reaching this branch means h3 just failed; the record_failure
-                        // above set cap=H2, and an H2 success would not "exceed" that cap
-                        // — but more importantly, clearing the entry would invite the
-                        // next dial to retry h3 immediately and we'd burn the doomed
-                        // handshake again. The TTL is the correct natural recovery here.
-                        Ok(stream.with_downgraded_from(downgrade_marker(TransportMode::WsH2)))
-                    },
-                    Err(h2_error) => {
-                        warn!(
-                            url = %url,
-                            error = %format!("{h2_error:#}"),
-                            fallback = "http1",
-                            "h2 websocket connect failed after h3 fallback, falling back"
-                        );
-                        ws_mode_cache::record_failure(url, TransportMode::WsH2).await;
-                        let (ws_stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-                            connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested, client_acked_offset)
-                                .await?;
-                        debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                        Ok(TransportStream::new_http1_with_session(ws_stream, issued)
-                            .with_downgraded_from(downgrade_marker(TransportMode::WsH1))
-                            .with_ack_prefix_advertised(ack_prefix_advertised)
-                            .with_symmetric_replay_advertised(symmetric_replay_advertised))
-                    },
-                }
-            },
-        },
-        #[cfg(not(feature = "h3"))]
-        TransportMode::WsH3 => {
-            warn!(url = %url, "H3 requested but compiled without h3 feature, falling back to h2");
-            ws_mode_cache::record_failure(url, TransportMode::WsH3).await;
-            match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested, client_acked_offset).await {
-                Ok(stream) => {
-                    debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
-                    // See sibling H3 success branch: do not clear the cap here.
-                    Ok(stream.with_downgraded_from(downgrade_marker(TransportMode::WsH2)))
-                },
-                Err(h2_error) => {
-                    warn!(url = %url, error = %format!("{h2_error:#}"), fallback = "http1", "h2 websocket connect failed, falling back");
-                    ws_mode_cache::record_failure(url, TransportMode::WsH2).await;
-                    let (ws_stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-                        connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request, ack_prefix_requested, symmetric_replay_requested, client_acked_offset)
-                            .await?;
-                    debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                    Ok(TransportStream::new_http1_with_session(ws_stream, issued)
-                        .with_downgraded_from(downgrade_marker(TransportMode::WsH1))
-                        .with_ack_prefix_advertised(ack_prefix_advertised)
-                        .with_symmetric_replay_advertised(symmetric_replay_advertised))
-                },
-            }
-        },
-        TransportMode::Quic => {
-            // Raw QUIC bypasses the WebSocket layer entirely; callers must
-            // dispatch to `crate::quic::connect_quic_uplink` before reaching
-            // this function. Reaching here means a config-routing bug.
-            anyhow::bail!(
-                "TransportMode::Quic does not produce a WebSocket stream; \
-                 caller must dispatch to the raw-QUIC dial path"
-            );
-        },
-        TransportMode::XhttpH3 => {
-            // h3 carrier first; on dial / handshake failure fall
-            // back to h2 (and then h1) carrying the same
-            // `resume_request` so the server reattaches the parked
-            // upstream instead of creating a fresh session. Mirror
-            // the WS h3→h2→h1 fallback shape but with the XHTTP dial.
-            match crate::xhttp::connect_xhttp(
-                cache,
-                url,
-                mode,
-                fwmark,
-                ipv6_first,
-                resume_request,
-                ack_prefix_requested,
-                symmetric_replay_requested,
-                client_acked_offset,
-            )
-            .await
-            {
-                Ok((stream, issued, ack_prefix_advertised, symmetric_replay_advertised)) => {
-                    debug!(url = %url, selected_mode = "xhttp_h3", ?issued, "xhttp h3 connected");
-                    xhttp_mode_cache::record_success(url, mode).await;
-                    Ok(TransportStream::new_xhttp(stream, issued)
-                        .with_downgraded_from(downgrade_marker(mode))
-                        .with_ack_prefix_advertised(ack_prefix_advertised)
-                        .with_symmetric_replay_advertised(symmetric_replay_advertised))
-                },
-                Err(h3_error) => {
-                    warn!(
-                        url = %url,
-                        error = %format!("{h3_error:#}"),
-                        fallback = "xhttp_h2",
-                        "xhttp h3 dial failed, falling back"
-                    );
-                    xhttp_mode_cache::record_failure(url, TransportMode::XhttpH3).await;
-                    connect_xhttp_h2_with_h1_fallback(
-                        cache,
-                        url,
-                        fwmark,
-                        ipv6_first,
-                        resume_request,
-                        ack_prefix_requested,
-                        symmetric_replay_requested,
-                        client_acked_offset,
-                        TransportMode::XhttpH3,
-                    )
-                    .await
-                },
-            }
-        },
-        TransportMode::XhttpH2 => {
-            connect_xhttp_h2_with_h1_fallback(
-                cache,
-                url,
-                fwmark,
-                ipv6_first,
-                resume_request,
-                ack_prefix_requested,
-                symmetric_replay_requested,
-                client_acked_offset,
-                TransportMode::XhttpH2,
-            )
-            .await
-        },
-        TransportMode::XhttpH1 => {
-            let (stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-                crate::xhttp::connect_xhttp(
-                    cache,
-                    url,
-                    mode,
-                    fwmark,
-                    ipv6_first,
-                    resume_request,
-                    ack_prefix_requested,
-                    symmetric_replay_requested,
-                    client_acked_offset,
-                )
-                .await?;
-            debug!(url = %url, selected_mode = "xhttp_h1", ?issued, "xhttp h1 connected");
-            xhttp_mode_cache::record_success(url, mode).await;
-            Ok(TransportStream::new_xhttp(stream, issued)
-                .with_downgraded_from(downgrade_marker(mode))
-                .with_ack_prefix_advertised(ack_prefix_advertised)
-                .with_symmetric_replay_advertised(symmetric_replay_advertised))
-        },
-    }
-}
-
-/// Shared XHTTP h2-then-h1 fallback. Reached from two places:
-/// the `XhttpH2` arm calls it directly with `requested = XhttpH2`,
-/// and the `XhttpH3` arm calls it after the h3 dial failed with
-/// `requested = XhttpH3` so the `downgraded_from` marker reflects
-/// the originally-requested mode (not the intermediate h2 hop).
-async fn connect_xhttp_h2_with_h1_fallback(
-    cache: &DnsCache,
-    url: &Url,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
-    requested: TransportMode,
-) -> Result<TransportStream> {
-    let downgraded_from = |actual: TransportMode| -> Option<TransportMode> {
-        if actual == requested { None } else { Some(requested) }
-    };
-    match crate::xhttp::connect_xhttp(
-        cache,
-        url,
-        TransportMode::XhttpH2,
-        fwmark,
-        ipv6_first,
-        resume_request,
-        ack_prefix_requested,
-        symmetric_replay_requested,
-        client_acked_offset,
-    )
-    .await
-    {
-        Ok((stream, issued, ack_prefix_advertised, symmetric_replay_advertised)) => {
-            debug!(
-                url = %url,
-                selected_mode = "xhttp_h2",
-                requested_mode = %requested,
-                ?issued,
-                "xhttp h2 connected"
-            );
-            // Only record h2 success when h2 was the request — reaching
-            // here from an h3 fallback means h3 just failed, and clearing
-            // the cap would invite the next dial to retry h3 immediately
-            // and burn the doomed handshake again. Same rationale as
-            // the WS h3→h2 success branch.
-            if requested == TransportMode::XhttpH2 {
-                xhttp_mode_cache::record_success(url, TransportMode::XhttpH2).await;
-            }
-            Ok(TransportStream::new_xhttp(stream, issued)
-                .with_downgraded_from(downgraded_from(TransportMode::XhttpH2))
-                .with_ack_prefix_advertised(ack_prefix_advertised)
-                .with_symmetric_replay_advertised(symmetric_replay_advertised))
-        },
-        Err(h2_error) => {
-            warn!(
-                url = %url,
-                error = %format!("{h2_error:#}"),
-                fallback = "xhttp_h1",
-                requested_mode = %requested,
-                "xhttp h2 dial failed, falling back"
-            );
-            xhttp_mode_cache::record_failure(url, TransportMode::XhttpH2).await;
-            let (stream, issued, ack_prefix_advertised, symmetric_replay_advertised) =
-                crate::xhttp::connect_xhttp(
-                    cache,
-                    url,
-                    TransportMode::XhttpH1,
-                    fwmark,
-                    ipv6_first,
-                    resume_request,
-                    ack_prefix_requested,
-                    symmetric_replay_requested,
-                    client_acked_offset,
-                )
-                .await?;
-            debug!(
-                url = %url,
-                selected_mode = "xhttp_h1",
-                requested_mode = %requested,
-                ?issued,
-                "xhttp packet-up transport connected via h1 fallback"
-            );
-            Ok(TransportStream::new_xhttp(stream, issued)
-                .with_downgraded_from(downgraded_from(TransportMode::XhttpH1))
-                .with_ack_prefix_advertised(ack_prefix_advertised)
-                .with_symmetric_replay_advertised(symmetric_replay_advertised))
-        },
-    }
-}
-
 pub async fn connect_shadowsocks_tcp_with_source(
     cache: &DnsCache,
     addr: &ServerAddr,
@@ -686,134 +310,6 @@ pub async fn connect_shadowsocks_udp_with_source(
         })?;
     connect_guard.finish("success");
     Ok(socket)
-}
-
-async fn connect_websocket_http1(
-    cache: &DnsCache,
-    url: &Url,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-    source: &'static str,
-    resume_request: Option<SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
-) -> Result<(H1WsStream, Option<SessionId>, bool, bool)> {
-    let mut connect_guard = TransportConnectGuard::new(source, "http1");
-    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| anyhow!("URL is missing port"))?;
-    let server_addr =
-        resolve_host_with_preference(cache, host, port, "failed to resolve websocket host", ipv6_first)
-            .await?
-            .first()
-            .copied()
-            .ok_or_else(|| {
-                anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
-                    host: format!("{host}:{port}"),
-                })
-            })?;
-    let (ws_stream, issued_session_id, ack_prefix_advertised_by_server, symmetric_replay_advertised_by_server) = timeout(HTTP1_WS_CONNECT_TIMEOUT, async {
-        let tcp = connect_tcp_socket(server_addr, fwmark).await?;
-        // Build a `Request` so we can attach `X-Outline-*` headers; the
-        // default form (`url.as_str().into_client_request()`) hides the
-        // builder behind tungstenite's `IntoClientRequest` glue. Errors
-        // from `into_client_request` are bubbled up unchanged so they
-        // keep the original `tungstenite::Error` causality chain.
-        let mut request = url
-            .as_str()
-            .into_client_request()
-            .context("HTTP/1 websocket request builder failed")?;
-        let headers = request.headers_mut();
-        if let Some(profile) = crate::fingerprint_profile::select(url) {
-            // Insert the browser-style identification headers BEFORE the
-            // X-Outline-Resume-* pair so a passive observer reads the
-            // request as "browser headers, then a couple of custom
-            // app-specific ones" — the same shape an XHR-flavoured WS
-            // upgrade from a real page produces.
-            crate::fingerprint_profile::apply(
-                profile,
-                headers,
-                crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
-            );
-        }
-        headers.insert(
-            crate::resumption::RESUME_CAPABLE_HEADER,
-            "1".parse().expect("static header value"),
-        );
-        if let Some(id) = resume_request {
-            headers.insert(
-                crate::resumption::RESUME_REQUEST_HEADER,
-                id.to_hex().parse().expect("hex Session ID is a valid header value"),
-            );
-        }
-        if ack_prefix_requested {
-            headers.insert(
-                crate::resumption::ACK_PREFIX_HEADER,
-                "1".parse().expect("static header value"),
-            );
-        }
-        if symmetric_replay_requested {
-            headers.insert(
-                crate::resumption::SYMMETRIC_REPLAY_HEADER,
-                "1".parse().expect("static header value"),
-            );
-        }
-        // v2 client-reported downstream-acked offset header. Only sent
-        // on retry redials that also advertise v2 AND when the offset
-        // is non-zero (a fresh session has no prior bytes to claim).
-        if symmetric_replay_requested && client_acked_offset > 0 {
-            let offset_str = client_acked_offset.to_string();
-            headers.insert(
-                crate::resumption::DOWN_ACKED_HEADER,
-                offset_str.parse().expect("decimal u64 is a valid header value"),
-            );
-        }
-        let (ws_stream, response) = client_async_tls(request, tcp)
-            .await
-            .context("HTTP/1 websocket handshake failed")?;
-        let issued = response
-            .headers()
-            .get(crate::resumption::SESSION_RESPONSE_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(SessionId::parse_hex);
-        // Echo gating mirrors the h2/h3 paths: only report a positive
-        // negotiation when the request advertised the capability AND the
-        // server echoed `1`. A spurious echo without a matching request
-        // is treated as `false` and the receiver will not look for the
-        // Ack-Prefix control frame in the byte stream.
-        let ack_prefix_echoed = ack_prefix_requested
-            && response
-                .headers()
-                .get(crate::resumption::ACK_PREFIX_HEADER)
-                .and_then(|v| v.to_str().ok())
-                == Some("1");
-        // v2 echo gate: server must echo v2 AND v1 must already be on
-        // (per spec, v2 without v1 is undefined wire shape).
-        let symmetric_replay_echoed = symmetric_replay_requested
-            && ack_prefix_echoed
-            && response
-                .headers()
-                .get(crate::resumption::SYMMETRIC_REPLAY_HEADER)
-                .and_then(|v| v.to_str().ok())
-                == Some("1");
-        Ok::<_, anyhow::Error>((ws_stream, issued, ack_prefix_echoed, symmetric_replay_echoed))
-    })
-    .await
-    .map_err(|_| {
-        anyhow!(
-            "HTTP/1 websocket handshake timed out after {}s connecting to {server_addr}",
-            HTTP1_WS_CONNECT_TIMEOUT.as_secs()
-        )
-    })??;
-    connect_guard.finish("success");
-    Ok((
-        ws_stream,
-        issued_session_id,
-        ack_prefix_advertised_by_server,
-        symmetric_replay_advertised_by_server,
-    ))
 }
 
 #[cfg(test)]

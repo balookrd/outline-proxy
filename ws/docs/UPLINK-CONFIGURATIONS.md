@@ -61,7 +61,7 @@ weight = 1.0
     per-uplink downgrade window; the dispatcher falls into the WS path
     where `effective_tcp_mode` now returns `WsH2`.
   - The h2 handshake fails on the same dial →
-    `connect_websocket_with_resume` falls through to `ws_h1` inline.
+    `connect_transport` falls through to `ws_h1` inline.
   - During the downgrade window every new TCP dial skips QUIC entirely
     and starts at H2.
 - **UDP fallback chain:** `quic → ws_h2 → ws_h1`. Same shape as TCP.
@@ -92,7 +92,7 @@ weight = 1.0
 ```
 
 - **TCP fallback chain:** `ws_h3 → ws_h2 → ws_h1`. Inline fallback
-  inside `connect_websocket_with_resume`. Each step is a fresh
+  inside `connect_transport`. Each step is a fresh
   handshake on the same `tcp_ws_url`. Failure of `ws_h3` also records a
   host-level cap in `ws_mode_cache`, so subsequent dials within the
   cache TTL skip H3 even before the per-uplink downgrade window kicks
@@ -101,7 +101,7 @@ weight = 1.0
   UDP-WS path.
 - **Resume:** TCP and UDP each get their own slot in
   `global_resume_cache` (`<uplink>#tcp` / `<uplink>#udp`). Inline
-  H3→H2→H1 fallback inside `connect_websocket_with_resume` carries the
+  H3→H2→H1 fallback inside `connect_transport` carries the
   same `resume_request` token across all three carriers.
 
 ## 4. VLESS over raw QUIC
@@ -157,7 +157,7 @@ weight = 1.0
 ```
 
 - **TCP fallback chain:** `ws_h3 → ws_h2 → ws_h1`. Inline
-  `connect_websocket_with_resume` fallback, same as SS-over-WS.
+  `connect_transport` fallback, same as SS-over-WS.
 - **UDP fallback chain:** `ws_h3 → ws_h2 → ws_h1`. UDP is multiplexed
   in the same WS session as TCP, so the carrier is shared and the
   downgrade marker propagates across both directions.
@@ -817,7 +817,7 @@ Recorded in two layers:
 
 When both layers report the same constraint, `effective_*_mode` is
 authoritative for routing and the host cache governs the inline
-`connect_websocket_with_resume` clamp.
+`connect_transport` clamp.
 
 ## Session resumption mechanics
 

@@ -11,8 +11,9 @@ use tracing::debug;
 
 use outline_metrics as metrics;
 use outline_transport::{
-    TransportOperation, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, TransportStream,
-    connect_shadowsocks_udp_with_source, connect_websocket_with_resume, global_resume_cache,
+    DialNetworkOptions, DialResumeOptions, TransportDialOptions, TransportOperation,
+    UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, TransportStream,
+    connect_shadowsocks_udp_with_source, connect_transport, global_resume_cache,
 };
 
 use crate::config::UplinkTransport;
@@ -213,17 +214,18 @@ impl UplinkManager {
         let resume_request = global_resume_cache().get(&resume_key);
         let ws = crate::dial::dial_in_uplink_scope(
             &candidate.uplink,
-            connect_websocket_with_resume(
-                cache,
-                url,
-                mode,
-                candidate.uplink.fwmark,
-                candidate.uplink.ipv6_first,
-                source,
-                resume_request,
-                ack_prefix_requested,
-                symmetric_replay_requested,
-                client_acked_offset,
+            connect_transport(
+                TransportDialOptions::new(cache, url, mode, source)
+                    .with_network(DialNetworkOptions {
+                        fwmark: candidate.uplink.fwmark,
+                        ipv6_first: candidate.uplink.ipv6_first,
+                    })
+                    .with_resume(DialResumeOptions {
+                        resume_request,
+                        ack_prefix_requested,
+                        symmetric_replay_requested,
+                        client_acked_offset,
+                    }),
             ),
         )
         .await
@@ -235,7 +237,7 @@ impl UplinkManager {
         self.report_connection_latency(candidate.index, TransportKind::Tcp, started.elapsed())
             .await;
         // Mirror a transport-level downgrade (host clamp via `ws_mode_cache`
-        // or inline H3→H2/H1 fallback inside `connect_websocket_with_resume`)
+        // or inline H3→H2/H1 fallback inside `connect_transport`)
         // into the per-uplink `mode_downgrade_until` window. Without this,
         // `effective_tcp_mode` keeps reporting H3 while every actual dial
         // is silently clamped to H2 — the "ss/ws/h3 stays put" symptom.
