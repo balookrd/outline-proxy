@@ -44,8 +44,7 @@ use url::Url;
 
 use outline_transport::{
     DnsCache as ClientDnsCache, TargetAddr, TransportMode, TransportStream, UpstreamTransportGuard,
-    connect_vless_tcp_quic_with_resume, connect_websocket_with_resume,
-    vless::vless_tcp_pair_from_ws,
+    connect_vless_tcp_quic_with_resume, vless::vless_tcp_pair_from_ws,
 };
 
 use super::super::bootstrap::serve_listener;
@@ -55,7 +54,7 @@ use super::super::setup::{VlessUserRoute, build_vless_transport_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
 use super::super::{DnsCache, build_app, serve_h3_server};
-// no extra import needed — the helpers live in tests/mod.rs as `super::*`.
+use super::connect_websocket_with_resume;
 use super::sample_config;
 use crate::config::H3Alpn;
 use crate::crypto::UserKey;

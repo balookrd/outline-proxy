@@ -281,6 +281,31 @@ pub(super) fn cross_repo_install_test_tls_root_on_client() {
     });
 }
 
+async fn connect_websocket_with_resume(
+    cache: &outline_transport::DnsCache,
+    url: &url::Url,
+    mode: outline_transport::TransportMode,
+    fwmark: Option<u32>,
+    ipv6_first: bool,
+    source: &'static str,
+    resume_request: Option<outline_transport::SessionId>,
+    ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
+) -> Result<outline_transport::TransportStream> {
+    let network = outline_transport::DialNetworkOptions { fwmark, ipv6_first };
+    let resume = outline_transport::DialResumeOptions {
+        resume_request,
+        ack_prefix_requested,
+        symmetric_replay_requested,
+        client_acked_offset,
+    };
+    let options = outline_transport::TransportDialOptions::new(cache, url, mode, source)
+        .with_network(network)
+        .with_resume(resume);
+    outline_transport::connect_transport(options).await
+}
+
 /// Minimal axum-over-TLS serve loop for cross-repo fallback tests.
 /// Mirrors `crate::server::bootstrap::axum::serve_tls_listener` in
 /// shape but skips the production hardening (semaphores, JoinSet
