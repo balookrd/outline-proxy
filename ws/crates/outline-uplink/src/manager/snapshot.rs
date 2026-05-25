@@ -394,6 +394,7 @@ impl UplinkManager {
                 shuffle_wires: uplink.shuffle_wires,
                 tcp_wires_failed_in_round: status.tcp.wires_failed_in_round,
                 udp_wires_failed_in_round: status.udp.wires_failed_in_round,
+                carrier_downgrade: uplink.carrier_downgrade,
                 // Effective strategy: per-uplink override wins, otherwise
                 // the process-wide default wired by `init_strategy`. The
                 // task-local `with_strategy_override` scope is irrelevant

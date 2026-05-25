@@ -148,6 +148,9 @@ fn synthesize_default_uplink(mut outline: OutlineSection) -> OutlineSection {
         // shuffle_wires is meaningless on a single-wire uplink and only
         // surfaces via the explicit `[[outline.uplinks]]` form anyway.
         shuffle_wires: None,
+        // Same: carrier_downgrade is per-uplink fine-grained policy,
+        // omitted from the inline shorthand.
+        carrier_downgrade: None,
     }]);
     outline
 }

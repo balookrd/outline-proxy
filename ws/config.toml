@@ -425,6 +425,37 @@ password = "Secret0"
 # vless_id = "22222222-2222-2222-2222-222222222222"
 # vless_mode = "xhttp_h3"
 
+# Per-uplink carrier-downgrade switch. Defaults to `true` (legacy
+# `h3 → h2 → h1` and `xhttp_h3 → xhttp_h2 → xhttp_h1` descent on each
+# WS / VLESS-XHTTP wire, controlled by `mode_downgrade_secs`).
+#
+# Set `carrier_downgrade = false` to disable the vertical cascade
+# entirely on this uplink. With the flag off:
+#   * `extend_mode_downgrade` is a no-op — no `mode_downgrade_*` state
+#     is ever installed, no `↘` arrows on the dashboard, no
+#     `mode_downgrade_secs` window per rank;
+#   * `wire_is_at_carrier_floor` reports every wire as "at floor", so
+#     under `shuffle_wires = true` the very next failure rolls
+#     straight over to the next wire (without spending one downgrade
+#     window per intermediate carrier);
+#   * recovery probes don't have a cap to clear, so there's nothing
+#     to fight with.
+#
+# Useful when intermediate carriers (h2, h1) are known-useless on this
+# uplink — e.g. DPI drops the whole upstream regardless of HTTP
+# version, so spending `mode_downgrade_secs` per rank before rotating
+# is pure latency and wasted dial attempts.
+#
+# [[outline.uplinks]]
+# name = "edge-no-cascade"
+# group = "main"
+# transport = "vless"
+# vless_xhttp_url = "https://cdn.example.com/SECRET/xhttp"
+# vless_id = "00000000-0000-0000-0000-000000000000"
+# vless_mode = "xhttp_h3"
+# shuffle_wires = true
+# carrier_downgrade = false
+
 # Raw QUIC examples (no WebSocket / no HTTP/3 framing). Pairs with the
 # outline-ss-rust server's `transport::raw_quic` listener — ALPN selects
 # the protocol on the same QUIC endpoint, then VLESS / SS framing rides

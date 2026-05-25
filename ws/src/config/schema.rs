@@ -254,6 +254,26 @@ pub(crate) struct UplinkSection {
     /// Default `false` preserves the legacy operator-ordered chain and
     /// the existing sticky / wrap-forever wire state machine.
     pub(crate) shuffle_wires: Option<bool>,
+    /// Per-wire carrier-downgrade switch. When omitted or `true`, the
+    /// proxy keeps the legacy `h3 → h2 → h1` (and `xhttp_h3 →
+    /// xhttp_h2 → xhttp_h1`) descent inside each WS / VLESS-XHTTP wire:
+    /// after a carrier failure the wire is capped one rank lower for
+    /// `mode_downgrade_secs`, and only when it has reached the family's
+    /// floor (`ws_h1` / `xhttp_h1`) does the next failure roll over to
+    /// the next wire (under `shuffle_wires`) or the next uplink.
+    ///
+    /// Set to `false` to skip the vertical cascade entirely on this
+    /// uplink: `extend_mode_downgrade` is a no-op, no `mode_downgrade_*`
+    /// state ever installs, and `wire_is_at_carrier_floor` reports
+    /// every wire as "at floor" — failures move straight to the next
+    /// wire (with `shuffle_wires = true`) or trigger the same legacy
+    /// `record_wire_outcome` advance (without `shuffle_wires`). Useful
+    /// when an operator knows the intermediate carriers (h2, h1) are
+    /// also useless on the same wire — e.g. DPI drops the whole
+    /// upstream regardless of HTTP version — so spending one
+    /// `mode_downgrade_secs` window per rank before rotating is pure
+    /// latency and wasted dial attempts.
+    pub(crate) carrier_downgrade: Option<bool>,
 }
 
 /// One `[[outline.uplinks.fallbacks]]` entry. Mirrors the wire-shape

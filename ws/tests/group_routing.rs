@@ -95,6 +95,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         fingerprint_profile: None,
         fallbacks: Vec::new(),
         shuffle_wires: false,
+        carrier_downgrade: true,
     }
 }
 

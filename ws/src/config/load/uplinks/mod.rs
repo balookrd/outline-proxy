@@ -43,6 +43,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             fingerprint_profile,
             fallbacks: _,
             shuffle_wires,
+            carrier_downgrade,
         } = input;
 
         let weight = weight.unwrap_or(1.0);
@@ -50,6 +51,13 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             bail!("uplink weight must be a finite positive number");
         }
         let shuffle_wires = shuffle_wires.unwrap_or(false);
+        // Default is `true` (legacy `h3 → h2 → h1` cascade preserved). The
+        // operator opts out by setting `carrier_downgrade = false` in
+        // `[[outline.uplinks]]` when intermediate ranks are useless on
+        // this uplink and the operator wants failures to jump straight
+        // to the next wire (or the next uplink) without spending the
+        // `mode_downgrade_secs` window per rank.
+        let carrier_downgrade = carrier_downgrade.unwrap_or(true);
 
         let wire = resolve_primary_wire_shape(PrimaryWireInput {
             name: &name,
@@ -90,6 +98,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             fingerprint_profile,
             fallbacks: Vec::new(),
             shuffle_wires,
+            carrier_downgrade,
         };
 
         let fallbacks = resolve_fallbacks(&parent, &input_fallbacks)?;

@@ -83,6 +83,19 @@ impl UplinkManager {
         if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
             return;
         }
+        // Operator-opt-out of the per-wire `h3 → h2 → h1` carrier
+        // cascade. When this uplink has `carrier_downgrade = false`,
+        // no descent window is installed: failures keep firing
+        // `extend_mode_downgrade` from upstream callers (dial /
+        // runtime / probe paths), but the cap state never changes and
+        // `wire_is_at_carrier_floor` reports the wire as "at floor"
+        // for the wire-rotation gate, so the next wire (or the next
+        // uplink) is tried immediately. Useful when intermediate
+        // ranks are known-useless on this uplink (DPI drops the
+        // whole upstream regardless of HTTP version, for example).
+        if !uplink.carrier_downgrade {
+            return;
+        }
         let configured_mode = match transport {
             TransportKind::Tcp => uplink.tcp_dial_mode(),
             TransportKind::Udp => uplink.udp_dial_mode(),
@@ -965,6 +978,15 @@ pub(crate) fn wire_is_at_carrier_floor(
     transport: TransportKind,
     wire_index: u8,
 ) -> bool {
+    // Operator-opt-out of the vertical cascade: when this uplink has
+    // `carrier_downgrade = false`, every wire counts as "at the floor"
+    // for the rotation gate. The matching `extend_mode_downgrade` guard
+    // also no-ops, so no descent window is installed and the wire's
+    // effective mode is always the configured one — there is nothing
+    // to walk down, the gate must release.
+    if !uplink.carrier_downgrade {
+        return true;
+    }
     if wire_index == 0 {
         let (family_transport, configured) = match transport {
             TransportKind::Tcp => (uplink.transport, uplink.tcp_dial_mode()),

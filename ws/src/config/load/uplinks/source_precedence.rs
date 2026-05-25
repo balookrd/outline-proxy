@@ -43,6 +43,11 @@ pub(in crate::config::load) struct ResolvedUplinkInput {
     /// a single successful wire dial. See `UplinkSection::shuffle_wires`
     /// for the full semantics.
     pub(super) shuffle_wires: Option<bool>,
+    /// When `Some(false)`, the carrier-downgrade cascade
+    /// (`h3 → h2 → h1`) is disabled on this uplink. `None` and
+    /// `Some(true)` both keep the legacy descent. See
+    /// `UplinkSection::carrier_downgrade` for the full semantics.
+    pub(super) carrier_downgrade: Option<bool>,
 }
 
 impl ResolvedUplinkInput {
@@ -107,6 +112,8 @@ impl ResolvedUplinkInput {
             // No CLI toggle for shuffle_wires; it is per-uplink and only
             // meaningful with multiple wires, both of which are TOML-only.
             shuffle_wires: None,
+            // Same TOML-only stance for the carrier_downgrade switch.
+            carrier_downgrade: None,
         }
     }
 
@@ -133,6 +140,7 @@ impl ResolvedUplinkInput {
             fingerprint_profile: uplink.fingerprint_profile,
             fallbacks: uplink.fallbacks.clone().unwrap_or_default(),
             shuffle_wires: uplink.shuffle_wires,
+            carrier_downgrade: uplink.carrier_downgrade,
         }
     }
 }
