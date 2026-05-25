@@ -109,7 +109,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
                         limit = MAX_CLIENT_UDP_PACKET_SIZE,
                         "dropping oversized incoming UDP-in-TCP packet"
                     );
-                    metrics::record_dropped_oversized_udp_packet("incoming");
+                    metrics::record_dropped_oversized_udp_packet("incoming", "socks_in_tcp");
                     continue;
                 }
 
@@ -215,7 +215,7 @@ async fn write_udp_tcp_response(
             context,
             "dropping oversized outgoing UDP-in-TCP response"
         );
-        metrics::record_dropped_oversized_udp_packet("outgoing");
+        metrics::record_dropped_oversized_udp_packet("outgoing", "socks_in_tcp");
         return Ok(());
     }
 

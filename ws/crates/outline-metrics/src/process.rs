@@ -66,7 +66,20 @@ pub fn init() {
         let _ = METRICS.socks_requests_total.with_label_values(&[command]);
     }
     for direction in ["incoming", "outgoing"] {
-        let _ = METRICS.udp_oversized_dropped_total.with_label_values(&[direction]);
+        for cause in [
+            "quic_dgram",
+            "vless_quic_dgram",
+            "vless_udp",
+            "ss_socket",
+            "socks_client",
+            "socks_relay",
+            "socks_direct",
+            "socks_in_tcp",
+        ] {
+            let _ = METRICS
+                .udp_oversized_dropped_total
+                .with_label_values(&[direction, cause]);
+        }
     }
     for protocol in ["tcp", "udp"] {
         for direction in ["client_to_upstream", "upstream_to_client"] {

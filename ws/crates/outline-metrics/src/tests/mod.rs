@@ -204,7 +204,7 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     add_udp_datagram("client_to_upstream", "main", "nuxt");
     add_udp_datagram("upstream_to_client", "main", "senko");
     add_udp_datagram("upstream_to_client", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL);
-    record_dropped_oversized_udp_packet("incoming");
+    record_dropped_oversized_udp_packet("incoming", "socks_client");
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(rendered.contains(
@@ -246,9 +246,9 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     assert!(rendered.contains(
         "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"direct\",uplink=\"direct\"} 1"
     ));
-    assert!(
-        rendered.contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 1")
-    );
+    assert!(rendered.contains(
+        "outline_ws_rust_udp_oversized_dropped_total{cause=\"socks_client\",direction=\"incoming\"} 1"
+    ));
 }
 
 #[test]
@@ -683,12 +683,15 @@ fn init_exports_zero_value_request_and_session_series() {
     assert!(rendered.contains("outline_ws_rust_requests_total{command=\"udp_in_tcp\"} 0"));
     assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"tcp\"} 0"));
     assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"udp\"} 0"));
-    assert!(
-        rendered.contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 0")
-    );
-    assert!(
-        rendered.contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"outgoing\"} 0")
-    );
+    assert!(rendered.contains(
+        "outline_ws_rust_udp_oversized_dropped_total{cause=\"quic_dgram\",direction=\"incoming\"} 0"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_udp_oversized_dropped_total{cause=\"vless_quic_dgram\",direction=\"outgoing\"} 0"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_udp_oversized_dropped_total{cause=\"socks_in_tcp\",direction=\"outgoing\"} 0"
+    ));
     assert!(rendered.contains(
         "outline_ws_rust_bytes_total{direction=\"client_to_upstream\",group=\"direct\",protocol=\"tcp\",uplink=\"direct\"} 0"
     ));

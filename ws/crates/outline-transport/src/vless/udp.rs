@@ -172,7 +172,7 @@ impl VlessUdpTransport {
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
         if payload.len() > MAX_VLESS_UDP_PAYLOAD {
-            outline_metrics::record_dropped_oversized_udp_packet("outgoing");
+            outline_metrics::record_dropped_oversized_udp_packet("outgoing", "vless_udp");
             bail!(crate::OversizedUdpDatagram {
                 transport: "vless-udp",
                 payload_len: payload.len(),

@@ -240,7 +240,7 @@ impl UdpWsTransport {
                         cipher = %self.cipher,
                         "dropping oversized UDP packet before shadowsocks uplink send"
                     );
-                    outline_metrics::record_dropped_oversized_udp_packet("outgoing");
+                    outline_metrics::record_dropped_oversized_udp_packet("outgoing", "ss_socket");
                     bail!(Ss2022Error::OversizedUdpUplink);
                 }
                 socket
