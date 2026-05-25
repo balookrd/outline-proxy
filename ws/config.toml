@@ -377,6 +377,46 @@ password = "Secret0"
 # tcp_addr = "1.2.3.4:8388"
 # udp_addr = "1.2.3.4:8389"
 
+# Random forward-only wire rotation. When set to `true`:
+#   * the wire chain `[primary, fallbacks[0], fallbacks[1], …]` is reshuffled
+#     once at config load (each process restart picks a different ordering —
+#     the operator-configured primary may end up at any position);
+#   * the active-wire state machine still walks the chain forward on
+#     consecutive dial failures (wrapping at the end);
+#   * once the active wire has been advanced through every wire of the
+#     chain without a single successful dial in between, the uplink is
+#     reported as runtime-failed on that transport so the load balancer
+#     fails over to another uplink instead of looping over a dead chain;
+#   * any successful wire dial (primary or fallback) clears the "round"
+#     counter — traffic stabilising on any wire restarts the round, and
+#     the next failure resumes forward rotation from the wire that just
+#     worked.
+# Useful when you have several near-equivalent fallback endpoints and
+# want different process restarts (or different replicas) to spread
+# load across them deterministically. Leave unset / `false` to keep the
+# legacy operator-ordered chain and the wrap-forever wire state machine.
+#
+# [[outline.uplinks]]
+# name = "edge-shuffled"
+# group = "main"
+# transport = "vless"
+# vless_xhttp_url = "https://cdn-a.example.com/SECRET/xhttp"
+# vless_id = "00000000-0000-0000-0000-000000000000"
+# vless_mode = "xhttp_h3"
+# shuffle_wires = true
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "vless"
+# vless_xhttp_url = "https://cdn-b.example.com/SECRET/xhttp"
+# vless_id = "11111111-1111-1111-1111-111111111111"
+# vless_mode = "xhttp_h3"
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "vless"
+# vless_xhttp_url = "https://cdn-c.example.com/SECRET/xhttp"
+# vless_id = "22222222-2222-2222-2222-222222222222"
+# vless_mode = "xhttp_h3"
+
 # Raw QUIC examples (no WebSocket / no HTTP/3 framing). Pairs with the
 # outline-ss-rust server's `transport::raw_quic` listener — ALPN selects
 # the protocol on the same QUIC endpoint, then VLESS / SS framing rides

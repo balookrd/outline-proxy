@@ -232,6 +232,23 @@ pub(crate) struct UplinkSection {
     /// [`FallbackSection`] for the accepted fields and
     /// `docs/UPLINK-CONFIGURATIONS.md` for the rationale.
     pub(crate) fallbacks: Option<Vec<FallbackSection>>,
+    /// Random forward-only wire rotation. When `true`:
+    ///   * the wire chain `[primary, fallbacks[0], fallbacks[1], …]` is
+    ///     reshuffled once at config load (every process restart picks a
+    ///     different ordering — primary may end up at any position),
+    ///   * the active-wire state machine still advances forward through
+    ///     the chain on consecutive dial failures (wrapping at the end),
+    ///   * once the active wire has advanced through **every** wire of
+    ///     the chain without a single successful dial in between, the
+    ///     uplink is reported as runtime-failed on that transport so the
+    ///     load balancer fails over to another uplink,
+    ///   * any successful wire dial clears the "round" counter — traffic
+    ///     stabilising on any wire restarts the round, and rotation
+    ///     continues forward from the wire that just worked on the next
+    ///     failure.
+    /// Default `false` preserves the legacy operator-ordered chain and
+    /// the existing sticky / wrap-forever wire state machine.
+    pub(crate) shuffle_wires: Option<bool>,
 }
 
 /// One `[[outline.uplinks.fallbacks]]` entry. Mirrors the wire-shape

@@ -1304,6 +1304,7 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             vless_id: None,
             fingerprint_profile: None,
             fallbacks: Vec::new(),
+            shuffle_wires: false,
         }],
         ProbeConfig {
             interval: Duration::from_secs(30),

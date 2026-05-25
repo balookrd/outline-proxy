@@ -1455,6 +1455,7 @@ dependencies = [
  "outline-transport",
  "outline-tun",
  "outline-uplink",
+ "rand 0.8.5",
  "rustls",
  "serde",
  "serde_json",

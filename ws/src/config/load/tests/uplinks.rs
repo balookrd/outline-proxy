@@ -38,6 +38,7 @@ fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> 
         group: None,
         fingerprint_profile: None,
         fallbacks: if fallbacks.is_empty() { None } else { Some(fallbacks) },
+        shuffle_wires: None,
     }
 }
 
@@ -68,6 +69,7 @@ fn vless_uplink_section(
         group: None,
         fingerprint_profile: None,
         fallbacks: if fallbacks.is_empty() { None } else { Some(fallbacks) },
+        shuffle_wires: None,
     }
 }
 
@@ -330,4 +332,154 @@ fn rejects_shadowsocks_fallback_with_websocket_fields() {
 fn no_fallbacks_yields_empty_list() {
     let cfg = resolve(ws_uplink_section("edge", "wss://primary.example.com/tcp", vec![])).unwrap();
     assert!(cfg.fallbacks.is_empty());
+}
+
+// ── shuffle_wires ──────────────────────────────────────────────────────────
+
+#[test]
+fn shuffle_wires_defaults_to_false_when_unset() {
+    let cfg = resolve(ws_uplink_section("edge", "wss://primary.example.com/tcp", vec![])).unwrap();
+    assert!(!cfg.shuffle_wires);
+}
+
+#[test]
+fn shuffle_wires_off_preserves_operator_ordering() {
+    // Three distinct WS fallback URLs let us assert ordering after resolve.
+    let fb_a = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+    let fb_b = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+    let fb_c = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-c.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+    let mut section =
+        ws_uplink_section("edge", "wss://primary.example.com/tcp", vec![fb_a, fb_b, fb_c]);
+    section.shuffle_wires = Some(false);
+    let cfg = resolve(section).unwrap();
+    assert!(!cfg.shuffle_wires);
+    assert_eq!(cfg.tcp_ws_url.as_ref().unwrap().as_str(), "wss://primary.example.com/tcp");
+    let fb_urls: Vec<_> = cfg
+        .fallbacks
+        .iter()
+        .map(|f| f.tcp_ws_url.as_ref().unwrap().as_str().to_string())
+        .collect();
+    assert_eq!(
+        fb_urls,
+        vec![
+            "wss://fb-a.example.com/tcp",
+            "wss://fb-b.example.com/tcp",
+            "wss://fb-c.example.com/tcp",
+        ]
+    );
+}
+
+#[test]
+fn shuffle_wires_on_keeps_full_wire_set_intact() {
+    // The shuffle must not drop, duplicate, or corrupt wires — we resolve
+    // many times and assert the multi-set of dial URLs is always the same
+    // four URLs (primary + 3 fallbacks). This guards the conversion path
+    // (primary ↔ FallbackTransport) without being flaky on the specific
+    // ordering, which is intentionally random.
+    let fb_a = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+    let fb_b = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+    let fb_c = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-c.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+    let expected: std::collections::BTreeSet<String> = [
+        "wss://primary.example.com/tcp",
+        "wss://fb-a.example.com/tcp",
+        "wss://fb-b.example.com/tcp",
+        "wss://fb-c.example.com/tcp",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    for _ in 0..32 {
+        let mut section = ws_uplink_section(
+            "edge",
+            "wss://primary.example.com/tcp",
+            vec![fb_a.clone(), fb_b.clone(), fb_c.clone()],
+        );
+        section.shuffle_wires = Some(true);
+        let cfg = resolve(section).unwrap();
+        assert!(cfg.shuffle_wires);
+        // All four wires must still be Ws (transport unchanged for this
+        // single-family setup) so the shuffle did not corrupt fields.
+        assert_eq!(cfg.transport, UplinkTransport::Ws);
+        for fb in &cfg.fallbacks {
+            assert_eq!(fb.transport, UplinkTransport::Ws);
+        }
+        let mut wires: std::collections::BTreeSet<String> = cfg
+            .fallbacks
+            .iter()
+            .map(|f| f.tcp_ws_url.as_ref().unwrap().as_str().to_string())
+            .collect();
+        wires.insert(cfg.tcp_ws_url.as_ref().unwrap().as_str().to_string());
+        assert_eq!(wires, expected, "shuffle must preserve the wire set exactly");
+    }
+}
+
+#[test]
+fn shuffle_wires_on_eventually_promotes_a_fallback_to_primary() {
+    // Probabilistic guard against a "shuffle that always lands primary at 0"
+    // bug: with 3 wires and 64 attempts, the probability of NEVER seeing
+    // primary moved off slot 0 is (1/3)^64 ≈ 3.4e-31 — negligible.
+    let fb_a = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+    let fb_b = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+
+    let mut saw_primary_displaced = false;
+    for _ in 0..64 {
+        let mut section = ws_uplink_section(
+            "edge",
+            "wss://primary.example.com/tcp",
+            vec![fb_a.clone(), fb_b.clone()],
+        );
+        section.shuffle_wires = Some(true);
+        let cfg = resolve(section).unwrap();
+        if cfg.tcp_ws_url.as_ref().unwrap().as_str() != "wss://primary.example.com/tcp" {
+            saw_primary_displaced = true;
+            break;
+        }
+    }
+    assert!(
+        saw_primary_displaced,
+        "shuffle_wires=true never moved primary off slot 0 in 64 attempts"
+    );
+}
+
+#[test]
+fn shuffle_wires_on_with_no_fallbacks_is_a_no_op() {
+    let mut section = ws_uplink_section("edge", "wss://primary.example.com/tcp", vec![]);
+    section.shuffle_wires = Some(true);
+    let cfg = resolve(section).unwrap();
+    assert!(cfg.shuffle_wires);
+    assert!(cfg.fallbacks.is_empty());
+    assert_eq!(cfg.tcp_ws_url.as_ref().unwrap().as_str(), "wss://primary.example.com/tcp");
 }

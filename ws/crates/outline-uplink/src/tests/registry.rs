@@ -30,6 +30,7 @@ fn make_uplink(name: &str) -> UplinkConfig {
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 

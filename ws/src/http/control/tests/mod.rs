@@ -265,6 +265,7 @@ fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 

@@ -222,6 +222,18 @@ pub(crate) struct PerTransportStatus {
     /// fallback configured — for single-wire uplinks the existing health
     /// gating is unchanged.
     pub(crate) last_any_wire_success: Option<Instant>,
+    /// Number of `active_wire` advancements observed since the last
+    /// successful wire dial on this transport, used **only** when the
+    /// parent uplink has `shuffle_wires = true`. Once the counter
+    /// reaches `total_wires`, the active wire has been moved through
+    /// every wire of the chain without a single successful dial in
+    /// between — the round is exhausted and the caller treats the next
+    /// failure as a uplink-level runtime failure so the load balancer
+    /// fails over to another uplink. Any successful wire dial (primary
+    /// or fallback) resets the counter to `0` so the next failure
+    /// starts a fresh round forward from the wire that is currently
+    /// working. Stays at `0` for uplinks without `shuffle_wires`.
+    pub(crate) wires_failed_in_round: u32,
 }
 
 #[derive(Clone, Debug, Default)]

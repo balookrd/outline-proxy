@@ -1181,6 +1181,85 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
   `outline_ws_rust_uplink_active_wire_index{transport}` exposes the
   current wire to dashboards.
 
+#### Random forward-only rotation (`shuffle_wires = true`)
+
+Opt-in per-uplink toggle that replaces the operator-ordered, wrap-
+forever chain with a randomised, forward-only round:
+
+```toml
+[[outline.uplinks]]
+name        = "edge-shuffled"
+group       = "main"
+transport   = "vless"
+vless_xhttp_url = "https://cdn-a.example.com/SECRET/xhttp"
+vless_id        = "00000000-0000-0000-0000-000000000000"
+vless_mode      = "xhttp_h3"
+shuffle_wires   = true
+
+  [[outline.uplinks.fallbacks]]
+  transport       = "vless"
+  vless_xhttp_url = "https://cdn-b.example.com/SECRET/xhttp"
+  vless_id        = "11111111-1111-1111-1111-111111111111"
+  vless_mode      = "xhttp_h3"
+
+  [[outline.uplinks.fallbacks]]
+  transport       = "vless"
+  vless_xhttp_url = "https://cdn-c.example.com/SECRET/xhttp"
+  vless_id        = "22222222-2222-2222-2222-222222222222"
+  vless_mode      = "xhttp_h3"
+```
+
+Semantics:
+
+- **At config load**: the wire chain `[primary, fallbacks[0], …]` is
+  reshuffled once with `rand::thread_rng()`. Each process restart
+  picks a different ordering — the operator-configured primary may
+  land at any position. The shuffle preserves the wire-set exactly
+  (no wires dropped, duplicated, or corrupted) and parent-level
+  identity (`name`, `weight`, `group`, `fingerprint_profile`) stays
+  with the uplink regardless of which wire ended up at slot 0.
+- **At runtime**: the active-wire state machine still advances
+  forward through the chain on `probe.min_failures` consecutive dial
+  failures of the active wire, wrapping at the end. The legacy
+  "back to primary" pin-expiry snap is unaffected — the snap is
+  driven by the operator's `auto_failback` setting and the probe
+  recovery path, not by `shuffle_wires`.
+- **Round counter**: a per-transport `wires_failed_in_round`
+  increments each time the active wire advances. The moment it
+  reaches `total_wires` (every wire has been the active wire of a
+  failed round since the last success), the uplink is reported as
+  runtime-failed on that transport via the same
+  `report_runtime_failure` path the data-plane uses — the load
+  balancer then picks another uplink for new sessions.
+- **Reset on any-wire success**: a successful dial of *any* wire
+  (primary or fallback) zeroes the round counter and stamps
+  `last_any_wire_success`. Traffic that stabilises on one wire
+  restarts the round; the next dial failure resumes forward
+  rotation from the wire that just worked, not from a fixed slot
+  zero.
+
+When to use it:
+
+- You have several near-equivalent fallback endpoints (multiple
+  CDNs, multiple SNIs to the same upstream, mirror Shadowsocks
+  servers) and want different process restarts / replicas to
+  spread load across them without the leftmost entry always taking
+  the first hit.
+- You want a definite "give up on this uplink" signal after one full
+  pass through the chain rather than the legacy wrap-forever
+  behaviour, so the load balancer reaches for the next uplink
+  promptly when every wire of this uplink is degraded.
+
+When **not** to use it:
+
+- You have a clearly-preferred primary (fast, cheap) with fallbacks
+  that exist only as last-resort overflow. Leave `shuffle_wires`
+  off so the operator-ordered chain is respected and `auto_failback`
+  drives recovery back to the configured primary.
+
+The flag defaults to `false` — existing configs keep the legacy
+operator-ordered chain and wrap-forever state machine bit-for-bit.
+
 #### Mid-session handover (chunk-0 wire-aware failover)
 
 - If a session's chunk-0 stalls (no first byte from upstream within

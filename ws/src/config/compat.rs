@@ -145,6 +145,9 @@ fn synthesize_default_uplink(mut outline: OutlineSection) -> OutlineSection {
         // configuration; explicit `[[outline.uplinks]]` is required to
         // declare fallbacks. See docs/UPLINK-CONFIGURATIONS.md.
         fallbacks: None,
+        // shuffle_wires is meaningless on a single-wire uplink and only
+        // surfaces via the explicit `[[outline.uplinks]]` form anyway.
+        shuffle_wires: None,
     }]);
     outline
 }
