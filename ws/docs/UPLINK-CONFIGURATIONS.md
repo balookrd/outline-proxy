@@ -561,10 +561,21 @@ Mid-session retry (Ack-Prefix Protocol v1):
   SSH-style downlink-heavy sessions on its own — v1 does not
   replay the downlink direction. The v2 Symmetric Downlink Replay
   protocol (see below) closes that gap.
-- Gated to SS-WS uplinks (`transport = "ws"`). VLESS-WS / raw QUIC
-  / direct-socket Shadowsocks are no-ops for retry in v1; the
-  relay falls back to the legacy "single shot, propagate error"
-  behaviour with no observable change.
+- Gated to WS-family carriers — SS-WS (`transport = "ws"`) and
+  VLESS-WS (`transport = "vless"`). Raw QUIC and direct-socket
+  Shadowsocks are no-ops for retry in v1; the relay falls back to
+  the legacy "single shot, propagate error" behaviour with no
+  observable change.
+- The redial dials the **wire the manager currently considers
+  active** for this transport (`active_wire`), not unconditionally
+  the primary. When an earlier primary failure has advanced
+  `active_wire` to a fallback, the retry dials that fallback with
+  the same Ack-Prefix / Symmetric Downlink Replay capability the
+  primary path uses, instead of slamming the dead primary URL and
+  inflating the parent uplink's runtime-failure streak. The
+  fallback wire must itself be SS-WS or VLESS-WS for the retry to
+  apply; an SS-direct or raw-QUIC fallback collapses the retry to a
+  no-op and the session ends on the original mid-stream error.
 - Outcomes are exposed on
   `outline_ws_rust_uplink_mid_session_retries_total{outcome}` with
   `outcome ∈ {success, failed_redial, failed_replay,
@@ -1129,6 +1140,17 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
   this uplink (primary + all fallbacks) has failed in the same
   session — so transient single-wire outages no longer demote the
   whole uplink as long as another wire works.
+- Runtime failures attributed to a **specific wire** (chunk-0 failures
+  carrying the failed wire's index, mid-session resets carrying the
+  current relay wire's index) are gated on the same active-wire match
+  the dial loop uses: a failure pinned to a wire that the manager has
+  already moved away from is treated as session-local fallback churn,
+  recorded only as a suppressed metric
+  (`outline_ws_rust_uplink_runtime_failures_suppressed_total`), and
+  does **not** stack onto the parent uplink's penalty / cooldown /
+  consecutive-runtime-failures streak. Single-wire uplinks (no
+  fallbacks declared) behave exactly as before — no "non-active wire"
+  to suppress against.
 
 #### Sticky fallback + auto-failback (active-wire state machine)
 

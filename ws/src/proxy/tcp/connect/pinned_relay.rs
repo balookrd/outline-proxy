@@ -156,6 +156,14 @@ pub(super) async fn run_relay(
     // own them by move.
     let mut writer = active.writer;
     let mut reader = active.reader;
+    // Tracks which wire of the parent uplink the current transport rides.
+    // Carried across mid-session retries so the post-loop
+    // `report_runtime_failure_for_wire` attributes the final mid-session
+    // error to the wire that was actually live when it died — without this,
+    // a mid-session reset on a fallback wire would always be charged
+    // against the parent uplink as if every wire had been tried, undoing
+    // the per-wire suppression added in `report_runtime_failure_for_wire`.
+    let mut current_wire_index: u8 = active.wire_index;
     // The first chunk is what chunk-0 failover already received from the
     // upstream — it must be flushed downstream before we start reading
     // from the new SS reader. Iteration 0 owns it; subsequent iterations
@@ -487,10 +495,14 @@ pub(super) async fn run_relay(
                     "mid-session retry succeeded; resuming relay on fresh transport"
                 );
                 let ConnectedTcpUplink {
-                    writer: new_writer, reader: new_reader, ..
+                    writer: new_writer,
+                    reader: new_reader,
+                    wire_index: new_wire_index,
+                    ..
                 } = connected;
                 writer = new_writer;
                 reader = new_reader;
+                current_wire_index = new_wire_index;
                 // v2 replay payload (when the server emitted one)
                 // becomes the next iteration's `first_chunk_for_iter`
                 // so the downlink task flushes it to the SOCKS5
@@ -526,7 +538,12 @@ pub(super) async fn run_relay(
     if let Err(ref err) = final_result {
         if crate::error_class::is_upstream_runtime_failure(err) {
             uplinks
-                .report_runtime_failure(active_index, TransportKind::Tcp, err)
+                .report_runtime_failure_for_wire(
+                    active_index,
+                    TransportKind::Tcp,
+                    current_wire_index,
+                    err,
+                )
                 .await;
         } else if crate::error_class::is_ws_closed(err) {
             // Server-initiated WS close mid-stream. We do not set a
@@ -649,10 +666,18 @@ async fn try_mid_session_retry(
         }
     }
 
+    // Dial whichever wire the manager currently considers active. When a
+    // session originally established on a fallback wire (because primary
+    // was unhealthy at the time), retrying against the primary URL would
+    // almost always fail and the resulting redial error would surface as
+    // a runtime failure on the parent uplink — exactly the false flap the
+    // active-wire state machine exists to prevent.
+    let wire_index = uplinks.active_wire(candidate.index, TransportKind::Tcp);
     let mut connected = match redial_for_mid_session_retry(
         uplinks,
         candidate,
         target,
+        wire_index,
         symmetric_replay_enabled,
         client_acked_offset,
     )

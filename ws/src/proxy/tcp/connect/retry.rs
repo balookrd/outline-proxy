@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use outline_uplink::UplinkManager;
+use outline_uplink::{TransportKind, UplinkManager};
 use socks5_proto::TargetAddr;
 
-use super::super::failover::{ActiveTcpUplink, TcpUplinkSource, connect_tcp_uplink_fresh};
+use super::super::failover::{ActiveTcpUplink, TcpUplinkSource, connect_tcp_specific_wire_fresh};
 use super::replay::ReplayBufState;
 
 /// Maximum number of transparent retries on the *same* uplink when chunk 0
@@ -55,6 +55,11 @@ pub(super) fn should_retry_rst_on_current_uplink(
 /// Reconnects the currently-active uplink candidate with a fresh dial and
 /// rewinds the buffered client state onto the new transport so the
 /// chunk-0-failover loop can continue as if the flap had never happened.
+///
+/// Dials whichever wire the manager currently considers active — when the
+/// session opened on a fallback wire (primary unhealthy), the same-uplink
+/// recovery path must keep using that fallback instead of slamming the
+/// (often dead) primary URL on every standby-stale / chunk-0-RST retry.
 pub(super) async fn redial_current_uplink_and_replay(
     uplinks: &UplinkManager,
     active: &mut ActiveTcpUplink,
@@ -64,7 +69,9 @@ pub(super) async fn redial_current_uplink_and_replay(
     replay_error_ctx: &'static str,
     half_close_error_ctx: &'static str,
 ) -> Result<()> {
-    let reconnected = connect_tcp_uplink_fresh(uplinks, &active.candidate, target).await?;
+    let wire_index = uplinks.active_wire(active.index, TransportKind::Tcp);
+    let reconnected =
+        connect_tcp_specific_wire_fresh(uplinks, &active.candidate, target, wire_index).await?;
     active.replace_transport(reconnected);
     replay.replay_to(&mut active.writer, replay_error_ctx).await?;
     if client_half_closed {

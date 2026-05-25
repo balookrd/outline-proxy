@@ -2329,3 +2329,131 @@ fn primary_probe_err_still_escalates_with_no_recent_success_on_active_fallback()
          ticks as before",
     );
 }
+
+// ── report_runtime_failure_for_wire ─────────────────────────────────────────
+//
+// Mirrors `record_wire_outcome`'s "failure on a non-active wire is session-
+// local churn" rule onto the runtime-failure path: when the caller pins a
+// failure to a specific wire and that wire is not the manager's current
+// active wire for this transport, the failure must not stack onto the
+// parent uplink's penalty / cooldown / streak / health bits. Without this
+// rule a mid-session reset that lands on a stale fallback wire (which the
+// manager has already moved away from) would still flap the whole uplink
+// off the candidate set, undoing the per-wire dial-loop guarantees.
+
+#[tokio::test(start_paused = true)]
+async fn report_runtime_failure_for_wire_active_wire_charges_uplink() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Active stays at primary (wire 0). A failure attributed to wire 0
+    // must penalise the parent uplink exactly as the no-wire path does.
+    manager
+        .report_runtime_failure_for_wire(
+            0,
+            TransportKind::Tcp,
+            0,
+            &anyhow::anyhow!("primary reset"),
+        )
+        .await;
+
+    let status = manager.read_status_for_test(0);
+    assert!(
+        status.tcp.cooldown_until.is_some(),
+        "active-wire failure must set the uplink cooldown"
+    );
+    assert_eq!(status.tcp.consecutive_runtime_failures, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn report_runtime_failure_for_wire_non_active_wire_is_suppressed() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 2);
+
+    // Active stays at primary (wire 0) — we have not advanced. A failure
+    // attributed to wire 1 (the fallback) is session-local churn and must
+    // NOT touch the parent uplink's runtime-failure accounting.
+    manager
+        .report_runtime_failure_for_wire(
+            0,
+            TransportKind::Tcp,
+            1,
+            &anyhow::anyhow!("fallback transient"),
+        )
+        .await;
+
+    let status = manager.read_status_for_test(0);
+    assert!(
+        status.tcp.cooldown_until.is_none(),
+        "non-active wire failure must NOT engage uplink cooldown",
+    );
+    assert_eq!(
+        status.tcp.consecutive_runtime_failures, 0,
+        "non-active wire failure must NOT increment the runtime-failure streak",
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn report_runtime_failure_for_wire_single_wire_uplink_always_charges() {
+    // Backwards-compat guard: when no fallbacks are configured, the
+    // wire-aware entry point must behave bit-for-bit like the legacy
+    // `report_runtime_failure` so existing single-wire deployments keep
+    // their penalty / cooldown / streak behaviour.
+    let cfg = vless_xhttp_primary();
+    let manager = manager_with_uplink(cfg, 1);
+
+    manager
+        .report_runtime_failure_for_wire(0, TransportKind::Tcp, 0, &anyhow::anyhow!("ws closed"))
+        .await;
+
+    let status = manager.read_status_for_test(0);
+    assert!(status.tcp.cooldown_until.is_some());
+    assert_eq!(status.tcp.consecutive_runtime_failures, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn report_runtime_failure_for_wire_follows_active_wire_after_advance() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Advance the active wire to fallback (1) the same way the dial loop
+    // would after a primary failure crosses `min_failures`.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 2);
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 1);
+
+    // After the advance, a failure attributed to wire 0 is now the
+    // non-active wire and must be suppressed; a failure attributed to
+    // wire 1 — the new active — must charge the uplink.
+    manager
+        .report_runtime_failure_for_wire(
+            0,
+            TransportKind::Tcp,
+            0,
+            &anyhow::anyhow!("stale primary"),
+        )
+        .await;
+    let status_after_stale = manager.read_status_for_test(0);
+    assert!(
+        status_after_stale.tcp.cooldown_until.is_none(),
+        "primary failure after active moved off must be suppressed",
+    );
+    assert_eq!(status_after_stale.tcp.consecutive_runtime_failures, 0);
+
+    manager
+        .report_runtime_failure_for_wire(
+            0,
+            TransportKind::Tcp,
+            1,
+            &anyhow::anyhow!("active fallback reset"),
+        )
+        .await;
+    let status_after_active = manager.read_status_for_test(0);
+    assert!(
+        status_after_active.tcp.cooldown_until.is_some(),
+        "failure on the now-active fallback wire must engage cooldown",
+    );
+    assert_eq!(status_after_active.tcp.consecutive_runtime_failures, 1);
+}
