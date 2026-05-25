@@ -546,6 +546,8 @@ listen = "[::1]:9090"
 # mtu = 1500
 # max_flows = 4096
 # idle_timeout_secs = 300
+# Встроенный bypass IKE / IPsec NAT-T — см. раздел «TUN-режим» ниже.
+# ipsec_bypass = false
 
 # [tun.tcp]
 # connect_timeout_secs = 10
@@ -1007,6 +1009,14 @@ Runtime failover:
 - репортинг ошибок транспорта в систему штрафов аплинков: внезапные закрытия upstream (например, QUIC `APPLICATION_CLOSE` / `H3_INTERNAL_ERROR`) передаются в `report_runtime_failure`, так что H3→H2 даунгрейд и штраф за сбой применяются к TUN TCP-потокам так же, как к SOCKS5-потокам; чистые WebSocket-закрытия (FIN или Close frame) не считаются сбоями
 
 Предназначен для реальной эксплуатации, но всё ещё не является эквивалентом ядерного TCP-стека.
+
+### Bypass IKE / IPsec NAT-T
+
+`tun.ipsec_bypass = true` включает hard-coded fast-path: UDP-потоки с destination-портом **500** или **4500** обходят policy routing и резолвятся в direct-путь (тот же, что у `via = "direct"`). VoWiFi и другие IKEv2/IPsec-клиенты после этого могут поднимать ESP-in-UDP-датаграммы, которые иначе теряются — TUN-классификатор пропускает только TCP/UDP/ICMP, поэтому сырой ESP (IP protocol 50) дропается независимо от routing-решения.
+
+Bypass использует локальный сокет direct-пути, который идёт к destination через системный routing. На хостах, где TUN ловит default route, такой сокет уйдёт обратно в TUN — на Linux задайте `direct_fwmark` и добавьте соответствующее правило `ip rule fwmark X lookup Y`, чтобы bypass-поток вышел из петли. Без `direct_fwmark` и policy routing-правила процесс пишет startup-warning.
+
+По умолчанию: `false`. Оба порта матчатся вместе — IKEv2-стеки в середине сессии уводят IKE_AUTH с порта 500 через NAT_DETECTION, поэтому bypass только 4500 всё равно ломает handshake.
 
 ## Linux fwmark
 

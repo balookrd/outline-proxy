@@ -87,6 +87,14 @@ listen = "[::1]:9090"
 # mtu = 1500
 # max_flows = 4096
 # idle_timeout_secs = 300
+# Built-in bypass for IKE / IPsec NAT-T traffic. When true, UDP flows to
+# destination port 500 or 4500 skip policy routing and use the direct path
+# (same as `via = "direct"`), so VoWiFi / IKEv2 clients can establish ESP
+# datagrams that cannot otherwise be tunnelled. Pairs with `direct_fwmark`
+# below: on Linux setups where TUN catches the default route, you must set
+# `direct_fwmark` and configure a matching `ip rule fwmark X lookup Y` so the
+# bypassed sockets escape the TUN routing loop. Default false.
+# ipsec_bypass = false
 
 # [tun.tcp]
 # connect_timeout_secs = 10

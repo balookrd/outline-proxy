@@ -162,6 +162,11 @@ pub(super) struct TunSection {
     pub(super) defrag_max_fragments_per_set: Option<usize>,
     pub(super) defrag_max_total_bytes: Option<usize>,
     pub(super) defrag_max_bytes_per_set: Option<usize>,
+    /// Built-in bypass for IKE / IPsec NAT-T traffic (UDP/500, UDP/4500).
+    /// When `true`, those flows skip policy routing and use the direct path
+    /// (same as `via = "direct"`), which lets VoWiFi / IKEv2 clients work
+    /// without ESP transit through the proxy. Default `false`.
+    pub(super) ipsec_bypass: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
