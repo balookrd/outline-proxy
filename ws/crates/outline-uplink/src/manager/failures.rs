@@ -210,6 +210,17 @@ impl UplinkManager {
         let now = Instant::now();
         let uplink_name = self.inner.uplinks[index].name.clone();
         let group_name = self.inner.group_name.clone();
+        // shuffle_wires accounting. When the round is still in progress
+        // (active wire has not yet completed a full forward pass without
+        // success), we suppress the probe-style uplink-level `healthy =
+        // Some(false)` flip so the LB does not drop this uplink before
+        // wire rotation has had a chance to play out. The flip is
+        // forced inside `record_wire_outcome` the moment the chain is
+        // exhausted, so this gate only delays — never silences — the
+        // hand-off to another uplink.
+        let uplink_total_wires = 1 + self.inner.uplinks[index].fallbacks.len();
+        let shuffle_wires = self.inner.uplinks[index].shuffle_wires;
+        let shuffle_wires_round_mode = shuffle_wires && uplink_total_wires > 1;
         // Read pre-mutation state to determine already_in_cooldown.
         let already_in_cooldown = {
             let s = self.inner.read_status(index);
@@ -305,8 +316,11 @@ impl UplinkManager {
                             status.tcp.consecutive_runtime_failures.saturating_add(1);
                     }
                     status.tcp.last_runtime_failure_at = Some(now);
+                    let tcp_round_active = shuffle_wires_round_mode
+                        && (status.tcp.wires_failed_in_round as usize) < uplink_total_wires;
                     if runtime_health_escalation
                         && status.tcp.consecutive_runtime_failures >= runtime_failure_threshold
+                        && !tcp_round_active
                     {
                         status.tcp.healthy = Some(false);
                     }
@@ -329,6 +343,7 @@ impl UplinkManager {
                         status.tcp.last_chunk0_failure_at = Some(now);
                         if runtime_health_escalation
                             && status.tcp.chunk0_consecutive_failures >= runtime_failure_threshold
+                            && !tcp_round_active
                         {
                             status.tcp.healthy = Some(false);
                         }
@@ -365,8 +380,11 @@ impl UplinkManager {
                             status.udp.consecutive_runtime_failures.saturating_add(1);
                     }
                     status.udp.last_runtime_failure_at = Some(now);
+                    let udp_round_active = shuffle_wires_round_mode
+                        && (status.udp.wires_failed_in_round as usize) < uplink_total_wires;
                     if runtime_health_escalation
                         && status.udp.consecutive_runtime_failures >= runtime_failure_threshold
+                        && !udp_round_active
                     {
                         status.udp.healthy = Some(false);
                     }
@@ -465,6 +483,25 @@ impl UplinkManager {
         self.extend_mode_downgrade(index, transport, ModeDowngradeTrigger::RuntimeFailure(error));
 
         self.clear_standby(index, transport).await;
+
+        // shuffle_wires: feed runtime failures into the per-wire
+        // streak so wire rotation advances on data-plane errors the
+        // same way it advances on dial/probe errors. Without this,
+        // patterns like "ws upstream read idle for 300s on datagram
+        // channel" (an idle session on the active wire, not a dial
+        // failure) would never tick the round counter — the wire
+        // would stay pinned to wire 0 forever and the dashboard
+        // would show no rotation. Attribution: if the caller passed
+        // an `attempted_wire`, honour it; otherwise attribute to the
+        // current active wire (the failure happened on a session
+        // that started on the wire `new sessions` lands on).
+        // record_wire_outcome filters non-active-wire attributions
+        // internally, so misattribution is a no-op.
+        if shuffle_wires_round_mode {
+            let active = self.active_wire(index, transport);
+            let attribution = attempted_wire.unwrap_or(active);
+            self.record_wire_outcome(index, transport, attribution, false, uplink_total_wires);
+        }
     }
 
     pub async fn runtime_failure_probe_wakeup_debug_state(

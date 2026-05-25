@@ -2558,38 +2558,211 @@ fn shuffle_wires_on_resets_counter_after_full_cycle() {
     assert_eq!(manager.active_wire(0, TransportKind::Tcp), 0);
 }
 
-#[tokio::test]
-async fn shuffle_wires_full_cycle_escalates_to_runtime_failure() {
-    // Same scenario as above but inside a tokio runtime so the escalation
-    // task gets a chance to run. After the spawn completes the parent
-    // uplink's consecutive_runtime_failures must have ticked at least once,
-    // proving the load-balancer is now seeing a runtime-failure signal it
-    // can use to switch to another uplink.
+#[test]
+fn shuffle_wires_full_cycle_flips_health_and_engages_cooldown() {
+    // Chain exhaustion now sets `healthy = Some(false)` + `cooldown_until`
+    // directly inside the with_status_mut lock (no async spawn / no
+    // recursive `report_runtime_failure` hop). This pins the contract
+    // the load balancer relies on: after one full forward pass through
+    // the chain without a single success, the uplink must be visibly
+    // unhealthy + on cooldown so the LB drops it from candidates.
     let mut cfg = vless_xhttp_primary();
     cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
     cfg.shuffle_wires = true;
-    let manager = UplinkManager::new_for_test(
-        "test",
-        vec![cfg],
-        make_probe(1),
-        make_lb(std::time::Duration::from_secs(60)),
-    )
-    .unwrap();
+    let manager = manager_with_uplink(cfg, 1);
 
     manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 3);
     manager.record_wire_outcome(0, TransportKind::Tcp, 1, false, 3);
     manager.record_wire_outcome(0, TransportKind::Tcp, 2, false, 3);
 
-    // Spawned `report_runtime_failure` lands on the scheduler asynchronously
-    // — yield twice to give it a chance to run before sampling the state.
-    tokio::task::yield_now().await;
-    tokio::task::yield_now().await;
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(snap.tcp.healthy, Some(false), "chain-exhausted must flip healthy = Some(false)",);
+    assert!(
+        snap.tcp.cooldown_until.is_some(),
+        "chain-exhausted must engage failure cooldown so the LB drops the uplink",
+    );
+    // Round counter is zeroed so a probe / data-plane success can start a
+    // fresh round without immediately re-triggering exhaustion.
+    assert_eq!(snap.tcp.wires_failed_in_round, 0);
+}
+
+// ── Runtime-failure-driven wire rotation ────────────────────────────────────
+//
+// The original implementation only ticked the round counter on dial / probe
+// failures, so the dominant production failure mode — established-session
+// data-plane errors via `report_runtime_failure` (e.g. "ws upstream read
+// idle for 300s on datagram channel") — never moved `active_wire` at all
+// and the dashboard showed no rotation. These tests pin the contract that
+// runtime failures feed the same wire-rotation machinery.
+
+fn make_probe_with_strict_global(min_failures: usize) -> ProbeConfig {
+    // The runtime-failure → healthy-flip path is gated on `probe_enabled`
+    // AND `strict_global_active_uplink`, so we need a probe transport
+    // configured to enable the gate.
+    let mut probe = make_probe(min_failures);
+    probe.ws = WsProbeConfig { enabled: true };
+    probe
+}
+
+fn make_lb_strict_global(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig {
+    // `strict_global_active_uplink` requires both ActivePassive + Global —
+    // mirrors the user's production config in `logs/config.toml`.
+    let mut lb = make_lb(mode_downgrade_duration);
+    lb.routing_scope = RoutingScope::Global;
+    lb.mode = LoadBalancingMode::ActivePassive;
+    lb
+}
+
+fn manager_with_strict_global_uplink(uplink: UplinkConfig, min_failures: usize) -> UplinkManager {
+    UplinkManager::new_for_test(
+        "test",
+        vec![uplink],
+        make_probe_with_strict_global(min_failures),
+        make_lb_strict_global(std::time::Duration::from_secs(60)),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn shuffle_wires_runtime_failure_advances_active_wire() {
+    // Two consecutive UDP runtime failures on the active wire must
+    // advance `active_wire` from 0 to 1 — this is the missing path that
+    // production logs surfaced (wire stayed pinned to wire 0 forever
+    // because `report_runtime_failure` only bumped
+    // `consecutive_runtime_failures` and never touched the wire state
+    // machine).
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(true), ss_fallback(true)];
+    cfg.shuffle_wires = true;
+    let manager = manager_with_strict_global_uplink(cfg, 2);
+
+    let err = || anyhow::anyhow!("ws upstream read idle for 300s on datagram channel");
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Udp),
+        1,
+        "two runtime failures on active wire 0 with min_failures=2 must advance to wire 1",
+    );
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(snap.udp.wires_failed_in_round, 1);
+}
+
+#[tokio::test]
+async fn shuffle_wires_gates_uplink_healthy_flip_until_round_exhausted() {
+    // Without the gate, `consecutive_runtime_failures >= min_failures`
+    // would flip the uplink unhealthy on the first wire's failures,
+    // before wire rotation has a chance to play out. The gate must
+    // keep `healthy != Some(false)` until the round counter has
+    // reached `total_wires`. After exhaustion the gate releases and
+    // `healthy = Some(false)` lands so the LB switches uplinks.
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(true), ss_fallback(true)];
+    cfg.shuffle_wires = true;
+    let manager = manager_with_strict_global_uplink(cfg, 2);
+
+    let err = || anyhow::anyhow!("ws upstream read idle for 300s on datagram channel");
+    // Two failures on wire 0 → advance to wire 1; round=1; not exhausted.
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(manager.active_wire(0, TransportKind::Udp), 1);
+    assert_eq!(snap.udp.wires_failed_in_round, 1);
+    assert_ne!(
+        snap.udp.healthy,
+        Some(false),
+        "wire rotation in progress: gate must hold uplink-level healthy flip",
+    );
+
+    // Two failures on wire 1 → advance to wire 2; round=2; not exhausted.
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(manager.active_wire(0, TransportKind::Udp), 2);
+    assert_eq!(snap.udp.wires_failed_in_round, 2);
+    assert_ne!(snap.udp.healthy, Some(false), "still rotating, gate still holds");
+
+    // Two failures on wire 2 → advance to wire 0 (wrap); round=3; EXHAUSTED.
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(snap.udp.healthy, Some(false), "round exhausted: healthy must flip");
+    assert!(snap.udp.cooldown_until.is_some(), "exhaustion must engage cooldown");
+    assert_eq!(snap.udp.wires_failed_in_round, 0, "round counter resets after exhaustion");
+}
+
+#[tokio::test]
+async fn shuffle_wires_off_keeps_legacy_runtime_health_flip() {
+    // With shuffle_wires = false, the runtime-failure path must keep
+    // the legacy "flip healthy after min_failures runtime failures"
+    // behaviour intact — no wire rotation, no gate.
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(true), ss_fallback(true)];
+    cfg.shuffle_wires = false;
+    let manager = manager_with_strict_global_uplink(cfg, 2);
+
+    let err = || anyhow::anyhow!("ws upstream read idle for 300s on datagram channel");
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
 
     let snap = manager.read_status_for_test(0);
-    assert!(
-        snap.tcp.consecutive_runtime_failures >= 1,
-        "chain-exhausted escalation must bump consecutive_runtime_failures \
-         so the LB picks another uplink; got {}",
-        snap.tcp.consecutive_runtime_failures,
+    assert_eq!(
+        snap.udp.healthy,
+        Some(false),
+        "legacy path: 2 runtime failures must flip healthy without wire rotation",
+    );
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Udp),
+        0,
+        "legacy path: active_wire stays at primary",
+    );
+    assert_eq!(
+        snap.udp.wires_failed_in_round, 0,
+        "round counter must stay zero when flag is off",
+    );
+}
+
+#[test]
+fn shuffle_wires_probe_advance_bumps_round_counter() {
+    // The probe-driven 0→1 transition in
+    // `advance_active_wire_on_probe_failure` previously bypassed the
+    // round counter (only dial/runtime paths through
+    // `record_wire_outcome` ticked it). This test pins the new
+    // accounting: when shuffle_wires is on, the probe-driven advance
+    // also bumps `wires_failed_in_round` so chain exhaustion fires
+    // after the right number of advancements regardless of which
+    // path drives them.
+    //
+    // Drive process_probe_err with a synthetic anyhow error — that path
+    // calls record_transport_failure + advance_active_wire_on_probe_failure
+    // exactly the way real probe errors do.
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    cfg.shuffle_wires = true;
+    let manager = manager_with_strict_global_uplink(cfg.clone(), 1);
+
+    let uplink = manager.uplinks()[0].clone();
+    manager.process_probe_err(
+        0,
+        &uplink,
+        anyhow::anyhow!("primary probe failed"),
+        TransportMode::XhttpH3,
+        TransportMode::XhttpH3,
+    );
+
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        1,
+        "probe error must advance active wire from 0 to 1",
+    );
+    // 3-wire chain → first advance gives round=1, not yet exhausted, so
+    // healthy stays gated and counter visibly ticks.
+    assert_eq!(snap.tcp.wires_failed_in_round, 1);
+    assert_ne!(
+        snap.tcp.healthy,
+        Some(false),
+        "round not yet exhausted: gate must hold uplink-level healthy flip",
     );
 }

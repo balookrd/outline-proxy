@@ -23,7 +23,6 @@
 //! For uplinks **without** any fallbacks, every method here is a no-op or
 //! returns the trivial answer (`active_wire = 0`, dial order = `[0]`).
 
-use anyhow::anyhow;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -176,6 +175,7 @@ impl UplinkManager {
         }
         let min_failures = self.inner.probe.min_failures.max(1) as u32;
         let pin_window = self.inner.load_balancing.mode_downgrade_duration;
+        let failure_cooldown = self.inner.load_balancing.failure_cooldown;
         let now = Instant::now();
         let group_name = self.inner.group_name.clone();
         let uplink_name = self.inner.uplinks[uplink_index].name.clone();
@@ -261,19 +261,27 @@ impl UplinkManager {
                 "active_wire_streak reset; pin = {:?}",
                 st.active_wire_pinned_until,
             );
-            // shuffle_wires escalation: count one more advancement in the
-            // current round; the moment we have advanced through every
-            // wire of the chain without an intervening success, surrender
-            // to uplink-failover.
+            // shuffle_wires accounting: fresh wire = fresh failure budget
+            // for downstream gates (probe-driven healthy flip in
+            // `record_transport_failure`, runtime-driven flip in
+            // `report_runtime_failure_inner`). Resetting these here keeps
+            // the per-wire semantics consistent with the probe-driven
+            // advance in `advance_active_wire_on_probe_failure`.
             if shuffle_wires {
+                st.consecutive_failures = 0;
+                st.consecutive_runtime_failures = 0;
                 st.wires_failed_in_round = st.wires_failed_in_round.saturating_add(1);
                 if st.wires_failed_in_round >= total_u32 {
+                    // Chain exhausted: every wire has been the active wire
+                    // of a failed round since the last success. Force the
+                    // uplink-level health flip and cooldown right here so
+                    // the load balancer drops us from candidates on its
+                    // next pass — no recursive `report_runtime_failure`
+                    // hop required.
                     chain_exhausted = true;
-                    // Reset the counter so a probe / data-plane success
-                    // on this uplink later starts a fresh round; without
-                    // the reset the very first failure after recovery
-                    // would re-trigger escalation immediately.
                     st.wires_failed_in_round = 0;
+                    st.healthy = Some(false);
+                    st.cooldown_until = Some(now + failure_cooldown);
                 }
             }
         });
@@ -299,31 +307,26 @@ impl UplinkManager {
 
         // Round exhausted: every wire of the chain has been advanced
         // through without an intervening success on this transport.
-        // Escalate via `report_runtime_failure` so the uplink-level
-        // health-flip / cooldown machinery picks another uplink for
-        // subsequent sessions. A later wire success will reset the
-        // round counter and let this uplink rejoin the candidate set
-        // through the existing health-recovery paths (probe-driven or
-        // any-wire liveness).
-        if chain_exhausted && tokio::runtime::Handle::try_current().is_ok() {
+        // The healthy flip + cooldown are applied inside the lock above,
+        // so out here we only emit the operator-facing log + metric. A
+        // later wire success or probe success resets the round counter
+        // via `record_wire_outcome(success=true)` /
+        // `record_transport_success`; probe recovery clears the cooldown
+        // and re-flips `healthy = Some(true)` through the existing
+        // health-recovery paths.
+        if chain_exhausted {
             warn!(
                 group = %group_name,
                 uplink = %uplink_name,
                 transport = ?transport,
                 total_wires,
-                "shuffle_wires round exhausted: every wire failed since last success, escalating to uplink-failover",
+                "shuffle_wires round exhausted: every wire failed since last success, surrendering to uplink-failover",
             );
-            let manager = self.clone();
-            let uplink_display = uplink_name.clone();
-            tokio::spawn(async move {
-                let synthetic = anyhow!(
-                    "shuffle_wires round exhausted for uplink {uplink_display}: \
-                     {total_wires} wire(s) failed consecutively without a single success"
-                );
-                manager
-                    .report_runtime_failure(uplink_index, transport, &synthetic)
-                    .await;
-            });
+            let kind = match transport {
+                TransportKind::Tcp => "tcp_shuffle_round_exhausted",
+                TransportKind::Udp => "udp_shuffle_round_exhausted",
+            };
+            outline_metrics::record_failover(kind, &group_name, &uplink_name, &uplink_name);
         }
     }
 }

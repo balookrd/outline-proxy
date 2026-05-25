@@ -37,10 +37,22 @@ fn record_transport_failure(
     now: Instant,
     min_failures: u32,
     load_balancing: &LoadBalancingConfig,
+    shuffle_wires: bool,
+    total_wires: usize,
 ) {
     status.consecutive_successes = 0;
     status.consecutive_failures = status.consecutive_failures.saturating_add(1);
-    if status.consecutive_failures >= min_failures {
+    // shuffle_wires gate: keep `healthy` non-false until the wire chain
+    // has been fully traversed without success, so wire rotation has time
+    // to play out (and show on dashboards) before the load balancer
+    // drops this uplink. The round counter is bumped in
+    // `advance_active_wire_on_probe_failure` and in `record_wire_outcome`
+    // — once it reaches `total_wires` (full pass), the chain-exhaustion
+    // branch in those helpers flips healthy itself, so the gate here
+    // only ever holds the flip back, never blocks it forever.
+    let round_active =
+        shuffle_wires && total_wires > 1 && (status.wires_failed_in_round as usize) < total_wires;
+    if status.consecutive_failures >= min_failures && !round_active {
         status.healthy = Some(false);
         add_penalty(&mut status.penalty, now, load_balancing);
     }
@@ -128,6 +140,8 @@ fn advance_active_wire_on_probe_failure(
     min_failures: u32,
     now: Instant,
     pin_duration: std::time::Duration,
+    shuffle_wires: bool,
+    failure_cooldown: Duration,
 ) -> bool {
     if total_wires <= 1 {
         return false;
@@ -158,6 +172,28 @@ fn advance_active_wire_on_probe_failure(
     status.active_wire = 1;
     status.active_wire_pinned_until = Some(now + pin_duration);
     status.active_wire_streak = 0;
+    // shuffle_wires accounting: the probe-driven 0 → 1 transition is a
+    // wire advancement just like the dial-path one in
+    // `record_wire_outcome`, so bump the round counter here too — without
+    // this, the very first advancement would be invisible to the
+    // chain-exhaustion check and the LB-handoff would fire one round
+    // late.  Reset the consecutive-failure counters so the new wire
+    // gets its own min_failures budget, mirroring the same per-wire
+    // reset on the dial path.
+    if shuffle_wires {
+        status.consecutive_failures = 0;
+        status.consecutive_runtime_failures = 0;
+        status.wires_failed_in_round = status.wires_failed_in_round.saturating_add(1);
+        if (status.wires_failed_in_round as usize) >= total_wires {
+            // Probe walked the whole shuffled chain without success.
+            // Surrender to uplink-failover: flip healthy directly and
+            // engage cooldown so the candidate filter drops us until
+            // a recovery probe confirms a wire is alive again.
+            status.wires_failed_in_round = 0;
+            status.healthy = Some(false);
+            status.cooldown_until = Some(now + failure_cooldown);
+        }
+    }
     true
 }
 
@@ -173,6 +209,11 @@ fn record_transport_success(
     // Probe confirms the data path works again: drop any data-plane failure
     // streak so a fresh burst is required before another health flip.
     status.consecutive_runtime_failures = 0;
+    // Probe success on this transport is a "traffic stabilised" signal for
+    // the shuffle_wires round counter — the next failure resumes a fresh
+    // forward sweep instead of completing an interrupted previous round.
+    // No-op for uplinks without shuffle_wires (counter stays at 0 anyway).
+    status.wires_failed_in_round = 0;
     // Only clear runtime-failure cooldown when the probe confirms the transport is
     // healthy. Clearing unconditionally would make a recently-failed uplink
     // immediately eligible again, causing oscillation under load.
@@ -292,6 +333,7 @@ impl UplinkManager {
         let rtt_ewma_alpha = self.inner.load_balancing.rtt_ewma_alpha;
         let load_balancing = self.inner.load_balancing.clone();
         let pin_duration = self.inner.load_balancing.mode_downgrade_duration;
+        let failure_cooldown = self.inner.load_balancing.failure_cooldown;
         // Mirror of the grace window length computed inside
         // `extend_mode_downgrade` — kept in sync there. Used by
         // `record_transport_success` to renew the grace deadline on
@@ -301,6 +343,7 @@ impl UplinkManager {
         // Used to gate probe-driven active-wire advance: only move active
         // off primary when there's at least one fallback to move to.
         let uplink_total_wires = 1 + uplink.fallbacks.len();
+        let shuffle_wires = uplink.shuffle_wires;
         // Capture transitions so we can fire the warm-standby drain after
         // the sync status critical section ends (drain is async).
         let mut tcp_transitioned_to_fallback = false;
@@ -324,7 +367,14 @@ impl UplinkManager {
             update_rtt_ewma(&mut status.udp.rtt_ewma, result.udp_latency, rtt_ewma_alpha);
             if !result.tcp_ok {
                 if !tcp_skip_escalation {
-                    record_transport_failure(&mut status.tcp, now, min_failures, &load_balancing);
+                    record_transport_failure(
+                        &mut status.tcp,
+                        now,
+                        min_failures,
+                        &load_balancing,
+                        shuffle_wires,
+                        uplink_total_wires,
+                    );
                     // Probe-driven failover: when the primary wire has failed
                     // `min_failures` consecutive probes and a fallback exists,
                     // advance `active_wire` so the next session that lands on
@@ -341,6 +391,8 @@ impl UplinkManager {
                         min_failures,
                         now,
                         pin_duration,
+                        shuffle_wires,
+                        failure_cooldown,
                     );
                 }
             } else {
@@ -354,6 +406,8 @@ impl UplinkManager {
                             now,
                             min_failures,
                             &load_balancing,
+                            shuffle_wires,
+                            uplink_total_wires,
                         );
                         udp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
                             &mut status.udp,
@@ -361,6 +415,8 @@ impl UplinkManager {
                             min_failures,
                             now,
                             pin_duration,
+                            shuffle_wires,
+                            failure_cooldown,
                         );
                     }
                 } else {
@@ -518,7 +574,9 @@ impl UplinkManager {
         let load_balancing = self.inner.load_balancing.clone();
         let error_text = format!("{error:#}");
         let pin_duration = self.inner.load_balancing.mode_downgrade_duration;
+        let failure_cooldown = self.inner.load_balancing.failure_cooldown;
         let uplink_total_wires = 1 + uplink.fallbacks.len();
+        let shuffle_wires = uplink.shuffle_wires;
         let runtime_failure_window = load_balancing.runtime_failure_window;
         let (tcp_skip_escalation, udp_skip_escalation) = {
             let s = self.inner.read_status(index);
@@ -534,7 +592,14 @@ impl UplinkManager {
         self.inner.with_status_mut(index, |status| {
             status.last_checked = Some(now);
             if !tcp_skip_escalation {
-                record_transport_failure(&mut status.tcp, now, min_failures, &load_balancing);
+                record_transport_failure(
+                    &mut status.tcp,
+                    now,
+                    min_failures,
+                    &load_balancing,
+                    shuffle_wires,
+                    uplink_total_wires,
+                );
                 // Mirror `process_probe_ok`'s probe-driven active-wire advance.
                 // Without this, a probe that errors out (WS handshake timeout,
                 // 404 on the XHTTP URL, TLS failure — anything that aborts the
@@ -551,6 +616,8 @@ impl UplinkManager {
                     min_failures,
                     now,
                     pin_duration,
+                    shuffle_wires,
+                    failure_cooldown,
                 );
             }
             // Only penalise UDP when it is actually configured.  The probe Err
@@ -558,13 +625,22 @@ impl UplinkManager {
             // there is no udp_ws_url would permanently mark UDP unhealthy for
             // TCP-only uplinks.
             if uplink.supports_udp() && !udp_skip_escalation {
-                record_transport_failure(&mut status.udp, now, min_failures, &load_balancing);
+                record_transport_failure(
+                    &mut status.udp,
+                    now,
+                    min_failures,
+                    &load_balancing,
+                    shuffle_wires,
+                    uplink_total_wires,
+                );
                 udp_transitioned_to_fallback = advance_active_wire_on_probe_failure(
                     &mut status.udp,
                     uplink_total_wires,
                     min_failures,
                     now,
                     pin_duration,
+                    shuffle_wires,
+                    failure_cooldown,
                 );
             }
             status.last_error = Some(error_text.clone());
