@@ -1218,25 +1218,50 @@ Semantics:
   (no wires dropped, duplicated, or corrupted) and parent-level
   identity (`name`, `weight`, `group`, `fingerprint_profile`) stays
   with the uplink regardless of which wire ended up at slot 0.
-- **At runtime**: the active-wire state machine still advances
-  forward through the chain on `probe.min_failures` consecutive dial
-  failures of the active wire, wrapping at the end. The legacy
-  "back to primary" pin-expiry snap is unaffected — the snap is
-  driven by the operator's `auto_failback` setting and the probe
-  recovery path, not by `shuffle_wires`.
+- **At runtime, all three failure sources drive forward-only wire
+  rotation** through the same `record_wire_outcome` state machine:
+  - **dial failures** (a fresh session can't connect on the active
+    wire) — handled by the same dial-loop path as the legacy chain;
+  - **probe failures** (`process_probe_err` /
+    `run_fallback_wire_probe`) — advance `active_wire` on the
+    probe-driven path and bump the round counter;
+  - **runtime failures** (`report_runtime_failure*` — e.g.
+    `ws upstream read idle for 300s on datagram channel`, mid-session
+    transport resets, chunk-0 timeouts) — feed the per-wire streak
+    so an established session repeatedly failing on the active wire
+    advances rotation, not only flips uplink-level health.
+
+  Without the runtime-failure feed, the dominant production failure
+  mode (idle WS read on an established session) would never tick
+  `active_wire` and dashboards would show no rotation despite the
+  wire being demonstrably broken.
 - **Round counter**: a per-transport `wires_failed_in_round`
-  increments each time the active wire advances. The moment it
-  reaches `total_wires` (every wire has been the active wire of a
-  failed round since the last success), the uplink is reported as
-  runtime-failed on that transport via the same
-  `report_runtime_failure` path the data-plane uses — the load
-  balancer then picks another uplink for new sessions.
+  increments each time the active wire advances, regardless of which
+  failure source drove the advance. The moment it reaches
+  `total_wires` (every wire has been the active wire of a failed
+  round since the last success), the uplink is forcibly marked
+  `healthy = Some(false)` and pushed onto `failure_cooldown` — the
+  load balancer picks another uplink for new sessions.
+- **Round-gated healthy flip**: until the round counter reaches
+  `total_wires`, the *uplink-level* `healthy = Some(false)` flip is
+  **gated off** on the same uplink — both on the probe-driven path
+  (`record_transport_failure`) and the runtime-driven path
+  (`report_runtime_failure_inner`). Per-wire failure counters
+  (`consecutive_failures`, `consecutive_runtime_failures`) still
+  accumulate, but the LB does not drop the uplink from candidates
+  prematurely — wire rotation gets a chance to traverse the chain
+  before uplink-failover. Once the chain is exhausted, the gate
+  releases and the flip lands.
 - **Reset on any-wire success**: a successful dial of *any* wire
   (primary or fallback) zeroes the round counter and stamps
-  `last_any_wire_success`. Traffic that stabilises on one wire
-  restarts the round; the next dial failure resumes forward
-  rotation from the wire that just worked, not from a fixed slot
-  zero.
+  `last_any_wire_success`; a successful probe also zeroes it
+  (`record_transport_success`). Traffic stabilising on one wire
+  restarts the round; the next failure resumes forward rotation
+  from the wire that just worked, not from a fixed slot zero.
+- **Per-wire failure budgets**: when active wire advances (via any
+  path — dial, probe, runtime), `consecutive_failures` and
+  `consecutive_runtime_failures` are reset to `0` so the new wire
+  gets its own `min_failures` budget before being judged broken.
 
 When to use it:
 

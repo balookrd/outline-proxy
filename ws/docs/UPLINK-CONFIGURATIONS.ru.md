@@ -1224,24 +1224,54 @@ shuffle_wires   = true
   идентичность (`name`, `weight`, `group`, `fingerprint_profile`)
   остаётся на аплинке независимо от того, какой wire оказался в
   слоте 0.
-- **В runtime**: state machine `active_wire` продолжает идти
-  вперёд по цепочке после `probe.min_failures` подряд провалов
-  dial'а активного wire, оборачиваясь в конце. Прежняя «snap back
-  to primary» по истечении пина не затрагивается — она управляется
-  `auto_failback` оператора и probe-recovery, а не `shuffle_wires`.
+- **В runtime forward-ротация продвигается тремя источниками
+  ошибок** через одну и ту же state machine `record_wire_outcome`:
+  - **dial-провалы** (новая сессия не открылась на активном wire) —
+    как у legacy-цепочки, через цикл dial'а;
+  - **probe-провалы** (`process_probe_err` /
+    `run_fallback_wire_probe`) — двигают `active_wire` на
+    probe-пути и инкрементируют счётчик круга;
+  - **runtime-провалы** (`report_runtime_failure*` — например,
+    `ws upstream read idle for 300s on datagram channel`, mid-session
+    transport resets, chunk-0 timeouts) — кормят per-wire streak,
+    так что повторяющиеся ошибки уже установленной сессии на
+    активном wire продвигают ротацию, а не только флипают
+    uplink-level health.
+
+  Без подачи runtime-провалов доминирующий production-кейс (idle
+  WS read на установленной сессии) никогда бы не тикал
+  `active_wire` и в дашборде не было бы видно ротации, хотя wire
+  явно сломан.
 - **Счётчик круга**: per-transport `wires_failed_in_round`
-  инкрементируется каждый раз, когда active wire продвигается. Как
-  только он достигает `total_wires` (каждый wire оказался активным
-  в провальном круге со времени последнего успеха), аплинк
-  репортится как runtime-failed на этом транспорте через тот же
-  `report_runtime_failure`, что и data-plane — балансировщик после
-  этого берёт другой uplink для новых сессий.
+  инкрементируется при каждом продвижении active wire,
+  независимо от того, какой источник его сдвинул. Когда счётчик
+  достигает `total_wires` (каждый wire оказался активным в
+  провальном круге со времени последнего успеха), аплинку
+  принудительно ставится `healthy = Some(false)` и cooldown
+  (`failure_cooldown`) — балансировщик берёт другой uplink для
+  новых сессий.
+- **Гейт на uplink-level healthy flip**: пока счётчик круга не
+  достиг `total_wires`, *uplink-level* флип в `healthy = Some(false)`
+  **подавляется** на этом аплинке — и на probe-пути
+  (`record_transport_failure`), и на runtime-пути
+  (`report_runtime_failure_inner`). Per-wire счётчики
+  (`consecutive_failures`, `consecutive_runtime_failures`)
+  продолжают накапливаться, но LB не убирает аплинк из кандидатов
+  раньше времени — ротация по wires успевает пройти круг перед
+  uplink-failover. После исчерпания круга гейт отпускается и флип
+  срабатывает.
 - **Сброс на любом успехе wire**: успешный dial *любого* wire
   (primary или fallback) обнуляет счётчик круга и ставит штамп
-  `last_any_wire_success`. Трафик, стабилизировавшийся на одном
-  wire, перезапускает круг; следующий провал продолжит forward-
-  ротацию с того wire, который только что работал, а не с
+  `last_any_wire_success`; успешный probe также обнуляет его
+  (`record_transport_success`). Трафик, стабилизировавшийся на
+  одном wire, перезапускает круг; следующий провал продолжит
+  forward-ротацию с того wire, который только что работал, а не с
   фиксированного нуля.
+- **Per-wire бюджеты**: при продвижении active wire (любым путём —
+  dial / probe / runtime) `consecutive_failures` и
+  `consecutive_runtime_failures` сбрасываются в `0`, так что
+  новый wire получает свой `min_failures`-бюджет, прежде чем
+  быть признанным сломанным.
 
 Когда использовать:
 
