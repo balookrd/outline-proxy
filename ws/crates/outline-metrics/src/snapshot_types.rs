@@ -169,6 +169,32 @@ pub struct UplinkSnapshot {
     /// UDP counterpart to [`Self::tcp_active_wire_pin_remaining_ms`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub udp_active_wire_pin_remaining_ms: Option<u128>,
+    /// Whether this uplink runs in shuffle_wires mode: the wire chain
+    /// was randomly reshuffled at process start, and the active-wire
+    /// state machine surrenders to uplink-failover after one full
+    /// forward pass through the chain without a single success. The
+    /// dashboard uses this flag to decide whether to paint preceding
+    /// wires in the current round (see
+    /// [`Self::tcp_wires_failed_in_round`] /
+    /// [`Self::udp_wires_failed_in_round`]) as already-tried-and-
+    /// failed in the chain pill.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shuffle_wires: bool,
+    /// Number of `active_wire` advancements observed on the TCP
+    /// transport since the last successful wire dial / probe. Only
+    /// meaningful when [`Self::shuffle_wires`] is `true` — for the
+    /// legacy wrap-forever mode the counter stays at `0`. The
+    /// dashboard pairs this with [`Self::tcp_active_wire`] to
+    /// highlight the wires that have been the active wire of a
+    /// failed round so far: indices
+    /// `[active - count, …, active - 1] mod total_wires` were
+    /// tried and dropped this round. Reset to `0` on any wire
+    /// success (dial / probe) or on chain exhaustion.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub tcp_wires_failed_in_round: u32,
+    /// UDP counterpart to [`Self::tcp_wires_failed_in_round`].
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub udp_wires_failed_in_round: u32,
     /// Effective browser-fingerprint diversification strategy on this
     /// uplink: the per-uplink override when set, otherwise the
     /// process-wide default from `init_fingerprint_profile_strategy`
@@ -202,6 +228,11 @@ pub struct UplinkSnapshot {
 
 #[doc(hidden)]
 fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
+}
+
+#[doc(hidden)]
+fn is_zero_u32(v: &u32) -> bool {
     *v == 0
 }
 

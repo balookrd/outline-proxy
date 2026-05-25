@@ -645,6 +645,28 @@ function fallbackChainPill(uplink) {
   const udpActive = uplink.udp_active_wire || 0;
   const tcpPinMs = uplink.tcp_active_wire_pin_remaining_ms;
   const udpPinMs = uplink.udp_active_wire_pin_remaining_ms;
+  // shuffle_wires round visualization: the snapshot exposes
+  // `*_wires_failed_in_round` — how many wires have been the active wire
+  // of a failed sub-round since the last success. In forward-only
+  // rotation those are the `count` wires immediately preceding the
+  // current active in the chain (wrapping at 0). Building the set here
+  // and passing it to `renderOne` lets the chain pill paint every
+  // already-tried-and-failed wire red, so the operator sees the rotation
+  // play out instead of only the active wire's chip changing.
+  const shuffleWires = !!uplink.shuffle_wires;
+  const totalWires = (wireChain.length || (1 + fallbacks.length)) | 0;
+  const buildFailedSet = (active, count) => {
+    const s = new Set();
+    if (!shuffleWires || !count || totalWires < 2) return s;
+    const capped = Math.min(count, totalWires);
+    for (let k = 1; k <= capped; k += 1) {
+      const idx = ((active - k) % totalWires + totalWires) % totalWires;
+      s.add(idx);
+    }
+    return s;
+  };
+  const tcpFailedSet = buildFailedSet(tcpActive, uplink.tcp_wires_failed_in_round || 0);
+  const udpFailedSet = buildFailedSet(udpActive, uplink.udp_wires_failed_in_round || 0);
   // Effective health on either leg false == nothing is up, including the
   // active wire — paint the active chip with a DOWN marker so the chain
   // alone communicates "everything has failed", since the top pill that
@@ -686,12 +708,20 @@ function fallbackChainPill(uplink) {
   // `legKey` selects which leg's mode + submode/downgrade fields drive
   // the chain. For the combined (sameLine) line we prefer TCP — that
   // matches the rest of the dashboard's collapsed-leg conventions.
-  const renderOne = (legLabel, legKey, activeIdx, pinMs, primaryFailed, allDown) => {
+  const renderOne = (legLabel, legKey, activeIdx, pinMs, primaryFailed, allDown, failedRoundSet) => {
     const wires = buildWires(`${legKey}_mode`);
     const links = wires.map((w, i) => {
       const isActive = i === activeIdx;
+      // shuffle_wires round visual: any wire that has already been the
+      // active wire of a failed sub-round (preceding `activeIdx` in
+      // forward order since the last success) is painted red the same
+      // way primary's `primaryFailed` mark colours wire 0 in the legacy
+      // chain. The two paths are disjoint by construction —
+      // shuffle_wires keeps `wires_failed_in_round = 0` for the legacy
+      // chain — so a single `fb-failed` class covers both shapes.
+      const failedInRound = failedRoundSet && failedRoundSet.has(i);
       let cls = "fb-link";
-      if (i === 0 && primaryFailed && !isActive) {
+      if ((i === 0 && primaryFailed && !isActive) || (failedInRound && !isActive)) {
         cls += " fb-failed";
       } else if (isActive) {
         cls += " fb-active";
@@ -782,10 +812,17 @@ function fallbackChainPill(uplink) {
   const tcpFailed = uplink.tcp_healthy === false;
   const udpFailed = uplink.udp_healthy === false;
   if (sameLine) {
-    return renderOne("", "tcp", tcpActive, tcpPinMs ?? udpPinMs, tcpFailed || udpFailed, tcpAllDown && udpAllDown);
+    // Same-line collapse uses TCP as the chain; the failed-round set
+    // is also TCP's. When both legs sit at the same active wire and
+    // their round counters agree (the usual case in `shuffle_wires`
+    // — the counters tick together via the runtime-failure path that
+    // produced the collapse), this is exact. If they diverge later
+    // the `decoDiverge` / `activeModeDiverge` checks above already
+    // split the chain into two lines, each with its own per-leg set.
+    return renderOne("", "tcp", tcpActive, tcpPinMs ?? udpPinMs, tcpFailed || udpFailed, tcpAllDown && udpAllDown, tcpFailedSet);
   }
-  return renderOne("TCP", "tcp", tcpActive, tcpPinMs, tcpFailed, tcpAllDown)
-       + renderOne("UDP", "udp", udpActive, udpPinMs, udpFailed, udpAllDown);
+  return renderOne("TCP", "tcp", tcpActive, tcpPinMs, tcpFailed, tcpAllDown, tcpFailedSet)
+       + renderOne("UDP", "udp", udpActive, udpPinMs, udpFailed, udpAllDown, udpFailedSet);
 }
 function activeProtocolChip(group) {
   const byName = new Map((group.uplinks || []).map(u => [u.name, u]));
