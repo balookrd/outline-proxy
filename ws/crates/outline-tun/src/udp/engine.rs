@@ -145,7 +145,7 @@ impl TunUdpEngine {
         let (flow_id, transport, uplink_index, uplink_name, manager) = match existing_tuple {
             Some(existing) => existing,
             None => {
-                let route = self.inner.dispatch.resolve(&remote_target).await;
+                let route = self.inner.dispatch.resolve_udp(&remote_target).await;
                 match route {
                     TunRoute::Direct { fwmark } => {
                         return self

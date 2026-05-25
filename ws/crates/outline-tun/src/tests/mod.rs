@@ -1,3 +1,5 @@
+mod ipsec_bypass;
+
 use super::{
     EBUSY_OS_ERROR, IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_MIN_PATH_MTU, IPV6_NEXT_HEADER_FRAGMENT,
     PacketDisposition, build_icmp_echo_reply, build_icmp_echo_reply_packets, checksum16,

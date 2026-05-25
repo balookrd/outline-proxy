@@ -550,6 +550,8 @@ listen = "[::1]:9090"
 # mtu = 1500
 # max_flows = 4096
 # idle_timeout_secs = 300
+# Built-in IKE / IPsec NAT-T bypass — see "TUN Mode" section below.
+# ipsec_bypass = false
 
 # [tun.tcp]
 # connect_timeout_secs = 10
@@ -1012,6 +1014,14 @@ Capabilities:
 - transport-error reporting to the uplink penalty system: abrupt upstream closes (e.g. QUIC `APPLICATION_CLOSE` / `H3_INTERNAL_ERROR`) are forwarded to `report_runtime_failure`, so the H3→H2 downgrade and failure penalty apply to TUN TCP flows the same way they apply to SOCKS5 flows; clean WebSocket closes (FIN or Close frame) are not counted as failures
 
 This is intended for real operations, but it is still not equivalent to a kernel TCP stack.
+
+### IKE / IPsec NAT-T bypass
+
+`tun.ipsec_bypass = true` adds a hard-coded fast-path: UDP flows whose destination port is **500** or **4500** skip policy routing and resolve to the direct path (same as `via = "direct"`). VoWiFi and other IKEv2/IPsec clients can then establish ESP-in-UDP datagrams that would otherwise be lost — the TUN classifier only forwards TCP/UDP/ICMP, so raw ESP (IP protocol 50) is always dropped regardless of the routing decision.
+
+The bypass relies on the direct path's local socket to reach the destination. On hosts where TUN catches the default route, that socket would loop straight back into TUN; on Linux set `direct_fwmark` and add a matching `ip rule fwmark X lookup Y` so the bypassed flow escapes the loop. Without `direct_fwmark` and a corresponding policy-routing rule, the process logs a startup warning.
+
+Default: `false`. Both ports must be matched together — IKEv2 stacks move IKE_AUTH off port 500 mid-session via NAT_DETECTION, so bypassing only 4500 still breaks the handshake.
 
 ## Linux fwmark
 

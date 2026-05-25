@@ -27,6 +27,7 @@ pub struct TunRouting {
     routing: Option<Arc<RoutingTable>>,
     default_group: UplinkManager,
     direct_fwmark: Option<u32>,
+    ipsec_bypass: bool,
 }
 
 /// Resolved routing decision for a new TUN flow.
@@ -49,6 +50,7 @@ impl TunRouting {
         registry: UplinkRegistry,
         routing: Option<Arc<RoutingTable>>,
         direct_fwmark: Option<u32>,
+        ipsec_bypass: bool,
     ) -> Self {
         let default_group = registry.default_group().clone();
         Self {
@@ -56,6 +58,7 @@ impl TunRouting {
             routing,
             default_group,
             direct_fwmark,
+            ipsec_bypass,
         }
     }
 
@@ -69,6 +72,7 @@ impl TunRouting {
             routing: None,
             default_group: manager,
             direct_fwmark: None,
+            ipsec_bypass: false,
         }
     }
 
@@ -86,6 +90,22 @@ impl TunRouting {
         };
         let decision = table.resolve(target).await;
         self.materialize_target(decision.primary, decision.fallback).await
+    }
+
+    /// UDP-specific resolution that honours the IPsec bypass fast-path.
+    ///
+    /// When [`TunConfig::ipsec_bypass`](crate::TunConfig::ipsec_bypass) is
+    /// enabled, UDP flows whose destination port is 500 or 4500 (IKE /
+    /// IPsec NAT-T) short-circuit to [`TunRoute::Direct`] and skip policy
+    /// routing entirely. Both ports are checked together because real-world
+    /// IKEv2 stacks switch between them mid-session via NAT_DETECTION; if
+    /// only 4500 were bypassed, the initial IKE_SA_INIT on 500 would still
+    /// be dropped via ESP elsewhere.
+    pub async fn resolve_udp(&self, target: &TargetAddr) -> TunRoute {
+        if self.ipsec_bypass && is_ipsec_port(target_port(target)) {
+            return TunRoute::Direct { fwmark: self.direct_fwmark };
+        }
+        self.resolve(target).await
     }
 
     async fn materialize_target(
@@ -123,4 +143,19 @@ impl TunRouting {
             },
         }
     }
+}
+
+pub(crate) fn target_port(target: &TargetAddr) -> u16 {
+    match target {
+        TargetAddr::IpV4(_, port) | TargetAddr::IpV6(_, port) | TargetAddr::Domain(_, port) => {
+            *port
+        },
+    }
+}
+
+/// Match IKE / IPsec NAT-T well-known UDP ports. Both 500 and 4500 are
+/// recognised because NAT_DETECTION mid-session moves IKE_AUTH off port 500;
+/// dropping either half breaks the handshake or the post-handshake ESP flow.
+pub(crate) fn is_ipsec_port(port: u16) -> bool {
+    matches!(port, 500 | 4500)
 }

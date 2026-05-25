@@ -17,6 +17,18 @@ pub struct TunConfig {
     pub defrag_max_total_bytes: usize,
     /// Max bytes buffered per individual fragment set.
     pub defrag_max_bytes_per_set: usize,
+    /// Hard-coded fast-path for IKE/IPsec NAT-T: when `true`, UDP flows whose
+    /// destination port is 500 or 4500 bypass policy routing and resolve to
+    /// `TunRoute::Direct` (same path as `via = "direct"`). VoWiFi and other
+    /// IKEv2/IPsec clients rely on ESP datagrams that cannot be tunnelled
+    /// through Outline transports — ESP-in-UDP packets are forwarded
+    /// transparently by the direct socket; raw ESP (proto 50) is still
+    /// dropped by the TUN classifier regardless. The direct path uses
+    /// `direct_fwmark` to escape the TUN routing loop, so this option only
+    /// works out-of-the-box in split-tunnel setups; with TUN catching the
+    /// default route, set `direct_fwmark` and configure a corresponding
+    /// `ip rule fwmark X lookup Y` table (Linux only).
+    pub ipsec_bypass: bool,
 }
 
 #[derive(Debug, Clone)]

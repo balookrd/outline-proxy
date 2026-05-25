@@ -106,10 +106,26 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     // default group when no [[route]] is configured.
     #[cfg(feature = "tun")]
     {
+        let ipsec_bypass = config.tun.as_ref().map(|t| t.ipsec_bypass).unwrap_or(false);
+        // Bypass relies on the direct path's SO_MARK escape from the TUN
+        // routing loop. Without `direct_fwmark` on Linux, the local UDP
+        // socket opened for IKE/4500 will fall back into the TUN device
+        // (assuming TUN catches the default route) and loop forever.
+        // Warn loudly rather than silently misbehave.
+        #[cfg(target_os = "linux")]
+        if ipsec_bypass && config.direct_fwmark.is_none() {
+            tracing::warn!(
+                "tun.ipsec_bypass = true with no direct_fwmark: direct UDP for IKE/IPsec \
+                 (UDP/500, UDP/4500) will reuse the default route. If TUN is the default \
+                 route, packets will loop back into TUN. Set direct_fwmark and add a matching \
+                 `ip rule fwmark X lookup Y` to escape the loop."
+            );
+        }
         let tun_routing = outline_tun::TunRouting::new(
             registry.clone(),
             routing_table.clone(),
             config.direct_fwmark,
+            ipsec_bypass,
         );
         if let Some(tun) = config.tun.clone() {
             outline_tun::spawn_tun_loop(tun, tun_routing, dns_cache.clone())
