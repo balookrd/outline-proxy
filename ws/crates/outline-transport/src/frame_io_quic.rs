@@ -292,7 +292,7 @@ impl DatagramChannel for QuicDatagramChannel {
                     .await
                     .context("ss oversize record send failed");
             }
-            outline_metrics::record_dropped_oversized_udp_packet("outgoing");
+            outline_metrics::record_dropped_oversized_udp_packet("outgoing", "quic_dgram");
             let max = self.conn.max_datagram_size().unwrap_or(0);
             anyhow::bail!(crate::OversizedUdpDatagram {
                 transport: "ss-udp-quic",

@@ -413,7 +413,7 @@ impl VlessUdpQuicSession {
                     .await
                     .context("vless oversize record send failed");
             }
-            outline_metrics::record_dropped_oversized_udp_packet("outgoing");
+            outline_metrics::record_dropped_oversized_udp_packet("outgoing", "vless_quic_dgram");
             let max = self.conn.max_datagram_size().unwrap_or(0);
             bail!(crate::OversizedUdpDatagram {
                 transport: "vless-udp-quic",

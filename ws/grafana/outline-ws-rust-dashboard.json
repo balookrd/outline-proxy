@@ -4696,8 +4696,8 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace((sum by (instance, direction) (rate(outline_ws_rust_udp_oversized_dropped_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-              "legendFormat": "{{instance_short}} {{direction}}",
+              "expr": "label_replace((sum by (instance, direction, cause) (rate(outline_ws_rust_udp_oversized_dropped_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "legendFormat": "{{instance_short}} {{direction}} {{cause}}",
               "refId": "A"
             }
           ],

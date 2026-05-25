@@ -98,10 +98,10 @@ pub fn add_udp_datagram(direction: &'static str, group: &str, uplink: &str) {
         .inc();
 }
 
-pub fn record_dropped_oversized_udp_packet(direction: &'static str) {
+pub fn record_dropped_oversized_udp_packet(direction: &'static str, cause: &'static str) {
     METRICS
         .udp_oversized_dropped_total
-        .with_label_values(&[direction])
+        .with_label_values(&[direction, cause])
         .inc();
 }
 

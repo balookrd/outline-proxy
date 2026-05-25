@@ -134,7 +134,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                         limit = MAX_CLIENT_UDP_PACKET_SIZE,
                         "dropping oversized incoming UDP packet"
                     );
-                    metrics::record_dropped_oversized_udp_packet("incoming");
+                    metrics::record_dropped_oversized_udp_packet("incoming", "socks_client");
                     continue;
                 }
 
@@ -165,7 +165,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                         limit = MAX_UDP_RELAY_PACKET_SIZE,
                         "dropping oversized outgoing UDP response"
                     );
-                    metrics::record_dropped_oversized_udp_packet("outgoing");
+                    metrics::record_dropped_oversized_udp_packet("outgoing", "socks_relay");
                     continue;
                 }
                 metrics::add_udp_datagram(
@@ -227,7 +227,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                         limit = MAX_UDP_RELAY_PACKET_SIZE,
                         "dropping oversized direct UDP response"
                     );
-                    metrics::record_dropped_oversized_udp_packet("outgoing");
+                    metrics::record_dropped_oversized_udp_packet("outgoing", "socks_direct");
                     continue;
                 }
                 socket_direct
