@@ -204,10 +204,19 @@ pub(super) async fn resolve_group_context(
 
 /// Per-group downlink: reads upstream datagrams from one group's active
 /// transport and pushes parsed responses into the shared channel.
+///
+/// Races `read_packet` against the manager's `active_uplinks` watch so a
+/// strict `active_passive` switch wakes the loop immediately — without
+/// the wakeup the loop would stay blocked in `read_packet` until the next
+/// packet arrived, leaving a one-RTT window where downlink traffic could
+/// still surface through the deactivated uplink.
 pub(super) async fn run_group_downlink(
     ctx: GroupUdpContext,
     responses: mpsc::Sender<UdpResponse>,
 ) -> Result<()> {
+    let mut active_uplinks_rx = ctx.manager.subscribe_active_uplinks();
+    // Skip the initial snapshot — only future changes should wake the loop.
+    let _ = active_uplinks_rx.borrow_and_update();
     loop {
         reconcile_global_udp_transport(&ctx.manager, &ctx.active, None).await?;
         let snapshot = ctx.active.load_full();
@@ -215,26 +224,47 @@ pub(super) async fn run_group_downlink(
         let name = snapshot.uplink_name.clone();
         let transport = Arc::clone(&snapshot.transport);
         drop(snapshot);
-        let payload = match transport.read_packet().await {
-            Ok(payload) => payload,
-            Err(error) => {
-                let replacement =
-                    failover_udp_transport(&ctx.manager, &ctx.active, None, index, error).await?;
-                let payload = replacement.transport.read_packet().await?;
-                let (target, consumed) = TargetAddr::from_wire_bytes(&payload)?;
-                if responses
-                    .send(UdpResponse {
-                        target,
-                        payload: payload.slice(consumed..),
-                        group_name: Arc::clone(&ctx.group_name),
-                        uplink_name: replacement.uplink_name,
-                    })
-                    .await
-                    .is_err()
-                {
+        let payload = tokio::select! {
+            biased;
+            // A new active-uplink snapshot is published — restart the loop
+            // iteration so `reconcile_global_udp_transport` can pick up the
+            // new selection without waiting for a packet to arrive on the
+            // (about to be replaced) transport.
+            changed = active_uplinks_rx.changed() => {
+                if changed.is_err() {
+                    // Manager dropped; let read errors propagate the
+                    // shutdown by way of the next loop iteration.
                     return Ok(());
                 }
                 continue;
+            }
+            result = transport.read_packet() => match result {
+                Ok(payload) => payload,
+                Err(error) => {
+                    let replacement = failover_udp_transport(
+                        &ctx.manager,
+                        &ctx.active,
+                        None,
+                        index,
+                        error,
+                    )
+                    .await?;
+                    let payload = replacement.transport.read_packet().await?;
+                    let (target, consumed) = TargetAddr::from_wire_bytes(&payload)?;
+                    if responses
+                        .send(UdpResponse {
+                            target,
+                            payload: payload.slice(consumed..),
+                            group_name: Arc::clone(&ctx.group_name),
+                            uplink_name: replacement.uplink_name,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return Ok(());
+                    }
+                    continue;
+                },
             },
         };
         let (target, consumed) = TargetAddr::from_wire_bytes(&payload)?;

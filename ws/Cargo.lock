@@ -1459,6 +1459,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shadowsocks-crypto",
+ "socket2 0.5.10",
  "socks5-proto",
  "tempfile",
  "tokio",

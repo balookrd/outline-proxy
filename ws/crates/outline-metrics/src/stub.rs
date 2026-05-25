@@ -118,6 +118,7 @@ pub fn record_failover(
     _to_uplink: &str,
 ) {
 }
+pub fn record_socks_tcp_strict_abort(_group: &str, _uplink: &str, _reason: &'static str) {}
 pub fn record_mid_session_retry(
     _transport: &'static str,
     _group: &str,

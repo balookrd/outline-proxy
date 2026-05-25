@@ -65,6 +65,7 @@ impl Metrics {
             uplink_fingerprint_profile_strategy_info: u.uplink_fingerprint_profile_strategy_info,
             uplink_open_connections: u.uplink_open_connections,
             uplink_connection_close_total: u.uplink_connection_close_total,
+            socks_tcp_strict_aborts_total: u.socks_tcp_strict_aborts_total,
             probe_runs_total: p.probe_runs_total,
             probe_duration_seconds: p.probe_duration_seconds,
             probe_bytes_total: p.probe_bytes_total,

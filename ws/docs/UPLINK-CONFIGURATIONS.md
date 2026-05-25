@@ -483,6 +483,36 @@ Mode-vs-scope interaction:
 - `active_passive` + `per_flow` is legal but has reduced meaning:
   passive uplinks act only as failover targets, not weighted siblings.
 
+Strict reselection in `active_passive`:
+
+Whenever the active uplink changes (probe-driven failover, manual
+control-plane switch, `auto_failback` decision) the proxy enforces
+egress consistency by tearing down sessions that are still pinned to
+the now-passive uplink — different uplinks usually have different
+egress IPs and leaving an inflight session on the stale uplink would
+break source-IP-bound state on the destination side.
+
+- **SOCKS5 TCP**: the pinned-relay watcher observes the active-uplink
+  switch and forcibly closes the SOCKS5 client socket with TCP RST
+  (`SO_LINGER {l_onoff=1, l_linger=0}` + drop). The client
+  application sees a hard reset on its TCP and reconnects through the
+  new active uplink. Counted on
+  `outline_ws_rust_socks_tcp_strict_aborts_total{reason="global_switch"}`.
+- **SOCKS5 UDP**: the per-group downlink loop subscribes to the same
+  signal and atomically replaces the transport on switch
+  (`reconcile_global_udp_transport`); the client never sees an L4
+  close (UDP has no analogue) but the next datagram already uses the
+  new uplink.
+- **TUN TCP**: mirrors the SOCKS5 behaviour but at L3 — the TUN
+  engine emits a `RST+ACK` segment to the in-kernel TCP of the client
+  app. See `outline_ws_rust_tun_tcp_events_total{event="global_switch"}`.
+
+The behaviour is opt-in by virtue of running in `active_passive` (any
+scope); `active_active` is unaffected — the strict-abort watcher
+never fires there because there is no single "active" uplink to
+diverge from. Operators who want session-by-session migration without
+the abort should stay on `active_active` + `per_flow`.
+
 Mid-session retry (Ack-Prefix Protocol v1):
 
 - When a pinned SOCKS TCP session loses its upstream transport

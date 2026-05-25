@@ -35,6 +35,21 @@ pub(super) enum UplinkOutcome {
     CloseSession,
 }
 
+/// Outcome of [`drive_tcp_session_tasks`]. Two normal-exit shapes plus the
+/// strict-mode abort path that the caller turns into a TCP RST against the
+/// SOCKS5 client.
+pub(super) enum DriveExit {
+    /// Both data tasks finished without external interruption (graceful EOF
+    /// from either direction, idle watcher fired, etc.).
+    Normal,
+    /// The `cancel` future resolved while data tasks were still running
+    /// because the manager's active uplink changed away from the one the
+    /// session was pinned to. Both tasks have been aborted and awaited.
+    /// The caller is responsible for force-closing the client socket (RST)
+    /// and emitting the strict-abort metric.
+    AbortedOnSwitch(&'static str),
+}
+
 /// Optional idle watcher wired into `drive_tcp_session_tasks`.
 ///
 /// The caller creates an `mpsc::unbounded_channel::<()>` before spawning the
@@ -72,16 +87,18 @@ impl IdleGuard {
     }
 }
 
-pub(super) async fn drive_tcp_session_tasks<U, D>(
+pub(super) async fn drive_tcp_session_tasks<U, D, C>(
     uplink: U,
     downlink: D,
     idle: Option<IdleGuard>,
+    cancel: C,
     target: Arc<str>,
     post_client_eof_downstream: Duration,
-) -> Result<()>
+) -> Result<DriveExit>
 where
     U: Future<Output = Result<UplinkOutcome>> + Send + 'static,
     D: Future<Output = Result<()>> + Send + 'static,
+    C: Future<Output = &'static str> + Send,
 {
     let started = tokio::time::Instant::now();
     let uplink_task = tokio::spawn(uplink);
@@ -92,6 +109,7 @@ where
                 uplink_task,
                 downlink_task,
                 watcher,
+                cancel,
                 started,
                 target,
                 post_client_eof_downstream,
@@ -102,6 +120,7 @@ where
             drive_without_idle(
                 uplink_task,
                 downlink_task,
+                cancel,
                 started,
                 target,
                 post_client_eof_downstream,
@@ -118,7 +137,7 @@ async fn finish_on_downlink_close(
     uplink_task: tokio::task::JoinHandle<Result<UplinkOutcome>>,
     started: tokio::time::Instant,
     target: &str,
-) -> Result<()> {
+) -> Result<DriveExit> {
     let downlink_result = match joined {
         Ok(result) => result,
         Err(error) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
@@ -143,7 +162,7 @@ async fn finish_on_downlink_close(
     }
     uplink_task.abort();
     let _ = uplink_task.await;
-    downlink_result
+    downlink_result.map(|()| DriveExit::Normal)
 }
 
 /// Uplink finished first.  Behaviour depends on the uplink task's outcome:
@@ -160,7 +179,7 @@ async fn finish_on_uplink_close(
     started: tokio::time::Instant,
     target: &str,
     post_client_eof_downstream: Duration,
-) -> Result<()> {
+) -> Result<DriveExit> {
     let elapsed_ms = started.elapsed().as_millis();
     match joined {
         Ok(Ok(UplinkOutcome::Finished)) => {
@@ -185,7 +204,7 @@ async fn finish_on_uplink_close(
             // Arc<UpstreamTransportGuard> and inflating the active counter.
             let downlink_abort = downlink_task.abort_handle();
             match timeout(post_client_eof_downstream, downlink_task).await {
-                Ok(Ok(result)) => result,
+                Ok(Ok(result)) => result.map(|()| DriveExit::Normal),
                 Ok(Err(error)) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
                 Err(_elapsed) => {
                     debug!(
@@ -195,7 +214,7 @@ async fn finish_on_uplink_close(
                         "downstream timed out after client EOF — forcibly closing session"
                     );
                     downlink_abort.abort();
-                    Ok(())
+                    Ok(DriveExit::Normal)
                 },
             }
         },
@@ -210,7 +229,7 @@ async fn finish_on_uplink_close(
             );
             downlink_task.abort();
             let _ = downlink_task.await;
-            Ok(())
+            Ok(DriveExit::Normal)
         },
         Ok(Err(error)) => {
             debug!(
@@ -234,43 +253,59 @@ async fn finish_on_uplink_close(
     }
 }
 
-/// Classic two-arm driver used when no idle watcher is configured (tests,
-/// callers that manage idleness externally).
-async fn drive_without_idle(
+/// Classic three-arm driver used when no idle watcher is configured (tests,
+/// callers that manage idleness externally). `cancel` is racd alongside the
+/// data tasks; resolving it tears the session down and returns
+/// [`DriveExit::AbortedOnSwitch`].
+async fn drive_without_idle<C>(
     mut uplink_task: tokio::task::JoinHandle<Result<UplinkOutcome>>,
     mut downlink_task: tokio::task::JoinHandle<Result<()>>,
+    cancel: C,
     started: tokio::time::Instant,
     target: Arc<str>,
     post_client_eof_downstream: Duration,
-) -> Result<()> {
+) -> Result<DriveExit>
+where
+    C: Future<Output = &'static str> + Send,
+{
+    tokio::pin!(cancel);
     tokio::select! {
+        biased;
         joined = &mut downlink_task => finish_on_downlink_close(joined, uplink_task, started, &target).await,
         joined = &mut uplink_task => finish_on_uplink_close(joined, downlink_task, started, &target, post_client_eof_downstream).await,
+        reason = &mut cancel => abort_session_for_switch(uplink_task, downlink_task, started, &target, reason).await,
     }
 }
 
-/// Three-arm driver that races the data tasks against an idle watcher.
+/// Four-arm driver that races the data tasks against an idle watcher and
+/// the external `cancel` future.
 ///
 /// `biased` ordering gives priority to the data-task arms: if a data task
-/// completes at the same poll tick as the watcher, the data task wins and
-/// we log the usual `session_death` reason.  The watcher arm only wins when
-/// neither task is ready — i.e. the session is genuinely idle.
-async fn drive_with_idle(
+/// completes at the same poll tick as the watcher or cancel, the data task
+/// wins and we log the usual `session_death` reason.  The watcher and
+/// cancel arms only win when neither task is ready.
+async fn drive_with_idle<C>(
     mut uplink_task: tokio::task::JoinHandle<Result<UplinkOutcome>>,
     mut downlink_task: tokio::task::JoinHandle<Result<()>>,
     watcher: IdleGuard,
+    cancel: C,
     started: tokio::time::Instant,
     target: Arc<str>,
     post_client_eof_downstream: Duration,
-) -> Result<()> {
+) -> Result<DriveExit>
+where
+    C: Future<Output = &'static str> + Send,
+{
     let idle_timeout_secs = watcher.idle_timeout.as_secs();
     let watcher_fut = watcher.run();
     tokio::pin!(watcher_fut);
+    tokio::pin!(cancel);
 
     tokio::select! {
         biased;
         joined = &mut downlink_task => finish_on_downlink_close(joined, uplink_task, started, &target).await,
         joined = &mut uplink_task => finish_on_uplink_close(joined, downlink_task, started, &target, post_client_eof_downstream).await,
+        reason = &mut cancel => abort_session_for_switch(uplink_task, downlink_task, started, &target, reason).await,
         fired = &mut watcher_fut => {
             if fired {
                 debug!(
@@ -302,9 +337,36 @@ async fn drive_with_idle(
             downlink_task.abort();
             let _ = uplink_task.await;
             let _ = downlink_task.await;
-            Ok(())
+            Ok(DriveExit::Normal)
         }
     }
+}
+
+/// External cancel signal fired (currently: strict active-uplink switch).
+/// Aborts both data tasks, awaits them so their captured locals (and the
+/// `Arc<Mutex<…>>` clones of the client TCP halves) are dropped, then
+/// returns [`DriveExit::AbortedOnSwitch`] so the caller can force-close the
+/// client socket with TCP RST.
+async fn abort_session_for_switch(
+    uplink_task: tokio::task::JoinHandle<Result<UplinkOutcome>>,
+    downlink_task: tokio::task::JoinHandle<Result<()>>,
+    started: tokio::time::Instant,
+    target: &str,
+    reason: &'static str,
+) -> Result<DriveExit> {
+    debug!(
+        target: "outline_ws_rust::session_death",
+        elapsed_ms = started.elapsed().as_millis(),
+        winner = "active_uplink_switch",
+        reason,
+        target_addr = target,
+        "aborting SOCKS TCP session because active uplink changed"
+    );
+    uplink_task.abort();
+    downlink_task.abort();
+    let _ = uplink_task.await;
+    let _ = downlink_task.await;
+    Ok(DriveExit::AbortedOnSwitch(reason))
 }
 
 #[cfg(test)]

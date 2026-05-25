@@ -122,6 +122,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_fingerprint_profile_strategy_info: IntGaugeVec,
     pub(super) uplink_open_connections: IntGaugeVec,
     pub(super) uplink_connection_close_total: IntCounterVec,
+    pub(super) socks_tcp_strict_aborts_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> UplinkFields {
@@ -374,12 +375,16 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         "outline_ws_rust_uplink_open_connections",
         "Currently open upstream transports attributed to this uplink, by transport \
          (`tcp`/`udp`). Incremented when a connection is dialled through the uplink, \
-         decremented on close. In `Global` / `PerUplink` `active_passive` modes a \
-         non-zero reading on a non-active uplink means stranded sessions still alive \
-         after a switchover (the established TCP/UDP path cannot migrate when the \
-         active pointer flips). Cross-reference with `outline_ws_rust_global_active_uplink_info` \
-         / `outline_ws_rust_per_uplink_active_uplink_info` to flag the leak — see the \
-         dashboard panel `Inactive uplink open connections (leak)`.",
+         decremented on close. In `Global` / `PerUplink` `active_passive` modes the \
+         ingress layer aborts established sessions on switch (SOCKS5 sends TCP RST \
+         and TUN sends RST+ACK), so a sustained non-zero reading on a non-active \
+         uplink usually points at a stuck transport (drop is still in flight, \
+         half-closed downlink waiting on `post_client_eof_downstream`, etc.) rather \
+         than the by-design migration gap. Cross-reference with \
+         `outline_ws_rust_global_active_uplink_info` / \
+         `outline_ws_rust_per_uplink_active_uplink_info` and \
+         `outline_ws_rust_socks_tcp_strict_aborts_total` — see the dashboard panel \
+         `Inactive uplink open connections (leak)`.",
         ["group", "transport", "uplink"]
     );
     let uplink_connection_close_total = register_labeled!(
@@ -395,6 +400,17 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
          `rate(... {classification=\"inactive\"}[5m])` measures the speed at which \
          leaked sessions drain after a switchover.",
         ["group", "transport", "uplink", "classification"]
+    );
+    let socks_tcp_strict_aborts_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_rust_socks_tcp_strict_aborts_total",
+        "SOCKS5 TCP sessions forcibly terminated because the group is in \
+         `active_passive` mode and the active uplink changed away from the one the \
+         session was pinned to. The session is closed with TCP RST so the client \
+         reconnects through the new active uplink (egress consistency). `reason` mirrors \
+         the TUN-side event labels: `global_switch` for an active-uplink flip.",
+        ["group", "uplink", "reason"]
     );
 
     UplinkFields {
@@ -431,5 +447,6 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_fingerprint_profile_strategy_info,
         uplink_open_connections,
         uplink_connection_close_total,
+        socks_tcp_strict_aborts_total,
     }
 }

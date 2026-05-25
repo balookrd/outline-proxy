@@ -484,6 +484,34 @@ password = "Secret0"
   аплинки работают только как failover-цели, не как взвешенные
   «соседи».
 
+Принудительная реселекция в `active_passive`:
+
+При смене активного аплинка (probe-failover, ручной control-plane
+switch, решение `auto_failback`) прокси гарантирует egress-
+консистентность, разрывая сессии, привязанные к ставшему пассивным
+аплинку — у разных аплинков обычно разные egress IP, и оставление
+in-flight сессии на старом аплинке ломало бы любую source-IP-
+зависимую логику на destination.
+
+- **SOCKS5 TCP**: watcher pinned-relay видит switch и принудительно
+  закрывает клиентский сокет с TCP RST (`SO_LINGER {l_onoff=1,
+  l_linger=0}` + drop). Приложение видит hard reset и переподключается
+  через новый активный аплинк. Счётчик:
+  `outline_ws_rust_socks_tcp_strict_aborts_total{reason="global_switch"}`.
+- **SOCKS5 UDP**: per-group downlink-loop подписан на тот же сигнал и
+  атомарно подменяет transport на switch
+  (`reconcile_global_udp_transport`); клиент не видит L4-close (у UDP
+  его нет), но следующий датаграмма уже идёт через новый аплинк.
+- **TUN TCP**: симметрично SOCKS5, но на L3 — TUN engine отправляет
+  `RST+ACK` сегмент в kernel-TCP приложения. Метрика:
+  `outline_ws_rust_tun_tcp_events_total{event="global_switch"}`.
+
+Поведение включается фактом запуска в `active_passive` (любой scope);
+`active_active` не затрагивается — там нет понятия «единственного
+активного аплинка», от которого можно «отклониться», поэтому strict-
+abort watcher не срабатывает. Кому нужна посессионная миграция без
+abort — оставайтесь на `active_active` + `per_flow`.
+
 Mid-session retry (Ack-Prefix Protocol v1):
 
 - Когда у запинённой SOCKS TCP-сессии mid-stream обрывается upstream

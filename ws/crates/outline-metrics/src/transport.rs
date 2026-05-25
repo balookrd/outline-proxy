@@ -169,6 +169,18 @@ pub fn record_failover(transport: &'static str, group: &str, from_uplink: &str, 
         .inc();
 }
 
+/// Counts SOCKS5 TCP sessions that were forcibly aborted because the active
+/// uplink changed away from the one the session was pinned to (strict
+/// `active_passive` mode). The session is closed with TCP RST so the client
+/// reconnects through the new active uplink — see
+/// `outline_ws_rust_socks_tcp_strict_aborts_total`.
+pub fn record_socks_tcp_strict_abort(group: &str, uplink: &str, reason: &'static str) {
+    METRICS
+        .socks_tcp_strict_aborts_total
+        .with_label_values(&[group, uplink, reason])
+        .inc();
+}
+
 /// Records the outcome of one mid-session retry attempt on the
 /// pinned-relay path. `outcome` should be one of the canonical values
 /// described on the `outline_ws_rust_uplink_mid_session_retries_total`

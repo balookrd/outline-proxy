@@ -57,6 +57,35 @@ pub enum TransportKind {
     Udp,
 }
 
+/// Snapshot of the manager's `active_uplinks` selection, published on the
+/// `subscribe_active_uplinks()` watch channel after every
+/// `set_active_uplink_index_for_transport(...)` mutation. Cheap to clone.
+///
+/// Consumers (SOCKS5 strict-abort watcher, UDP proactive wakeup) compare
+/// the relevant field against the index their session is pinned to and react
+/// to mismatches without having to poll the manager's async lock.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ActiveUplinksSnapshot {
+    pub global: Option<usize>,
+    pub tcp: Option<usize>,
+    pub udp: Option<usize>,
+}
+
+impl ActiveUplinksSnapshot {
+    /// Index that a TCP session in this group should treat as authoritative:
+    /// `global` when the group is in strict-global, otherwise per-transport
+    /// TCP. Returns `None` for non-strict groups (the consumer should never
+    /// have subscribed in that case).
+    pub fn tcp_for(&self, strict_global: bool) -> Option<usize> {
+        if strict_global { self.global } else { self.tcp }
+    }
+
+    /// Same as [`Self::tcp_for`] for the UDP transport.
+    pub fn udp_for(&self, strict_global: bool) -> Option<usize> {
+        if strict_global { self.global } else { self.udp }
+    }
+}
+
 // Snapshot data types live in the `outline-metrics` crate (they cross the
 // producer/consumer boundary between the uplink manager here and the
 // prometheus renderer); re-exported so existing `crate::uplink::*Snapshot`
