@@ -42,6 +42,14 @@ pub(super) struct UdpFlowState {
     pub(super) manager: UplinkManager,
     pub(super) created_at: Instant,
     pub(super) last_seen: Instant,
+    /// Wall-clock stamp of the last ICMP "Frag Needed" / "Packet Too Big"
+    /// we synthesised for this flow after a transport oversize drop. Used
+    /// to throttle PTB emission per-flow: RFC 4443 §2.4(f) makes ICMPv6
+    /// rate-limiting mandatory, and RFC 1812 §4.3.2.8 strongly recommends
+    /// it for IPv4 — without throttling a burst of oversize datagrams
+    /// (very common during IKE_AUTH retransmits with large certificates)
+    /// would generate a matching ICMP storm.
+    pub(super) last_ptb_sent: Option<Instant>,
     /// Reader pump for this flow's upstream-to-client direction.
     /// `AbortOnDrop` ensures that when the flow is removed from the
     /// table (idle eviction, global switch, error close, send failure)

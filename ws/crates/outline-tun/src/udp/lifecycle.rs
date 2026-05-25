@@ -132,6 +132,7 @@ impl TunUdpEngine {
             manager: manager.clone(),
             created_at: now,
             last_seen: now,
+            last_ptb_sent: None,
             _reader_task: Some(reader_task),
         };
 
