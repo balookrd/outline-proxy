@@ -29,7 +29,7 @@ use self::standby_pool::StandbyPool;
 use self::state::{ActiveUplinks, UplinkManagerInner};
 use self::status::UplinkStatus;
 use super::state::StateStore;
-use super::types::{TransportKind, Uplink, UplinkManager};
+use super::types::{ActiveUplinksSnapshot, TransportKind, Uplink, UplinkManager};
 
 impl UplinkManager {
     pub async fn initialize_strict_active_selection(&self) {
@@ -136,7 +136,6 @@ impl UplinkManager {
         let probe_max_dials = probe.max_dials;
         let uplinks: Vec<Uplink> = uplinks.into_iter().map(Uplink::new).collect();
         let (shutdown_tx, _) = watch::channel(false);
-
         // Resolve persisted names to indices.  Unknown names are ignored so
         // that removing an uplink from config doesn't block startup.
         let find = |name: Option<String>| -> Option<usize> {
@@ -145,6 +144,11 @@ impl UplinkManager {
         let initial_global = find(initial_global_active);
         let initial_tcp = find(initial_tcp_active);
         let initial_udp = find(initial_udp_active);
+        let (active_uplinks_tx, _) = watch::channel(ActiveUplinksSnapshot {
+            global: initial_global,
+            tcp: initial_tcp,
+            udp: initial_udp,
+        });
         let active_uplinks = RwLock::new(ActiveUplinks {
             global: initial_global,
             global_reason: initial_global.map(|_| "restored from state".to_string()),
@@ -208,6 +212,7 @@ impl UplinkManager {
                 state_store,
                 dns_cache,
                 shutdown_tx,
+                active_uplinks_tx,
             }),
         })
     }
@@ -226,6 +231,20 @@ impl UplinkManager {
 
     pub(crate) fn shutdown_rx(&self) -> watch::Receiver<bool> {
         self.inner.shutdown_tx.subscribe()
+    }
+
+    /// Subscribe to active-uplink selection changes. The initial value of the
+    /// returned receiver is the current snapshot. Used by SOCKS5 strict-abort
+    /// watcher and UDP downlink reconciler to react immediately to switches
+    /// instead of polling an async lock on every hot-path operation.
+    pub fn subscribe_active_uplinks(&self) -> watch::Receiver<ActiveUplinksSnapshot> {
+        self.inner.active_uplinks_tx.subscribe()
+    }
+
+    /// Current snapshot of the active-uplink selection without subscribing.
+    /// Cheap (one `borrow()` on the `watch::Sender`'s shared value).
+    pub fn active_uplinks_snapshot(&self) -> ActiveUplinksSnapshot {
+        *self.inner.active_uplinks_tx.borrow()
     }
 
     /// Shared DNS cache used by every transport resolve path belonging to

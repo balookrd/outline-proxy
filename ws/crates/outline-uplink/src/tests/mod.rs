@@ -15,7 +15,7 @@ use crate::config::{
 use crate::manager::status::{PenaltyState, PerTransportStatus, UplinkStatus};
 use crate::probe::build_http_probe_request;
 use crate::selection::{effective_latency, score_latency};
-use crate::types::{TransportKind, UplinkManager};
+use crate::types::{ActiveUplinksSnapshot, TransportKind, UplinkManager};
 use outline_transport::{DialNetworkOptions, TransportDialOptions, connect_transport};
 use tokio::time::Instant;
 
@@ -2189,4 +2189,65 @@ async fn udp_candidates_are_grouped_by_transport_kind() {
     let candidates = manager.udp_candidates(Some(&target)).await;
     let names: Vec<_> = candidates.iter().map(|c| c.uplink.name.as_str()).collect();
     assert_eq!(names, vec!["ws1", "ws2", "ss1", "vless1"]);
+}
+
+#[tokio::test]
+async fn active_uplinks_watch_publishes_snapshot_on_set() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new_for_test(
+        "watch-test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    let mut rx = manager.subscribe_active_uplinks();
+    // The initial snapshot has no active set yet.
+    let initial = *rx.borrow_and_update();
+    assert_eq!(initial.global, None);
+
+    manager
+        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed")
+        .await;
+    rx.changed().await.expect("watch must fire after setting active");
+    let after_seed = *rx.borrow_and_update();
+    assert_eq!(after_seed.global, Some(0));
+
+    // Setting the same active again is a no-op for subscribers
+    // (`send_if_modified` only wakes when the snapshot actually changed).
+    manager
+        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "duplicate set")
+        .await;
+    let no_change = tokio::time::timeout(std::time::Duration::from_millis(50), rx.changed()).await;
+    assert!(
+        no_change.is_err(),
+        "watch must not fire when active index does not actually change",
+    );
+
+    // A real switch wakes subscribers.
+    manager
+        .set_active_uplink_index_for_transport(TransportKind::Tcp, 1, "switch")
+        .await;
+    rx.changed().await.expect("watch must fire on switch");
+    let after_switch = *rx.borrow_and_update();
+    assert_eq!(after_switch.global, Some(1));
+}
+
+#[tokio::test]
+async fn active_uplinks_snapshot_helpers_pick_correct_field() {
+    let snapshot = ActiveUplinksSnapshot {
+        global: Some(7),
+        tcp: Some(3),
+        udp: Some(9),
+    };
+    assert_eq!(snapshot.tcp_for(true), Some(7), "strict global must consult `global`");
+    assert_eq!(snapshot.tcp_for(false), Some(3), "per-uplink mode must consult `tcp`");
+    assert_eq!(snapshot.udp_for(true), Some(7), "strict global must also serve UDP");
+    assert_eq!(snapshot.udp_for(false), Some(9), "per-uplink mode must consult `udp`");
 }

@@ -59,9 +59,9 @@ pub use self::transport::{
     record_metrics_http_request, record_mid_session_retry, record_probe, record_probe_wakeup,
     record_request, record_runtime_failure, record_runtime_failure_cause,
     record_runtime_failure_other_detail, record_runtime_failure_signature,
-    record_runtime_failure_suppressed, record_transport_connect, record_uplink_connection_close,
-    record_uplink_selected, record_upstream_transport, record_warm_standby_acquire,
-    record_warm_standby_refill,
+    record_runtime_failure_suppressed, record_socks_tcp_strict_abort, record_transport_connect,
+    record_uplink_connection_close, record_uplink_selected, record_upstream_transport,
+    record_warm_standby_acquire, record_warm_standby_refill,
 };
 #[cfg(all(feature = "prometheus", feature = "tun"))]
 pub use self::tun::{
@@ -201,6 +201,7 @@ struct Metrics {
     uplink_fingerprint_profile_strategy_info: IntGaugeVec,
     uplink_open_connections: IntGaugeVec,
     uplink_connection_close_total: IntCounterVec,
+    socks_tcp_strict_aborts_total: IntCounterVec,
 }
 
 // ── Stub (prometheus feature disabled) ────────────────────────────────────

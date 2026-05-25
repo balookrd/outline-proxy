@@ -28,7 +28,14 @@ async fn drive_tcp_session_tasks_aborts_uplink_when_downlink_finishes_first() {
 
     tokio::time::timeout(
         Duration::from_secs(1),
-        drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)),
+        drive_tcp_session_tasks(
+            uplink,
+            downlink,
+            None,
+            std::future::pending::<&'static str>(),
+            Arc::from("test"),
+            Duration::from_secs(30),
+        ),
     )
     .await
     .expect("driver should return once downlink finishes")
@@ -51,7 +58,14 @@ async fn drive_tcp_session_tasks_waits_for_downlink_after_socket_half_close() {
 
     tokio::time::timeout(
         Duration::from_secs(1),
-        drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)),
+        drive_tcp_session_tasks(
+            uplink,
+            downlink,
+            None,
+            std::future::pending::<&'static str>(),
+            Arc::from("test"),
+            Duration::from_secs(30),
+        ),
     )
     .await
     .expect("driver should wait for downlink after client EOF")
@@ -91,6 +105,7 @@ async fn drive_tcp_session_tasks_idle_watcher_fires_and_aborts_both_tasks() {
             uplink,
             downlink,
             Some(IdleGuard::new(activity_rx, Duration::from_millis(30))),
+            std::future::pending::<&'static str>(),
             Arc::from("test"),
             Duration::from_secs(30),
         ),
@@ -134,6 +149,7 @@ async fn drive_tcp_session_tasks_activity_resets_idle_deadline() {
             uplink,
             downlink,
             Some(IdleGuard::new(activity_rx, Duration::from_millis(50))),
+            std::future::pending::<&'static str>(),
             Arc::from("test"),
             Duration::from_secs(30),
         ),
@@ -155,7 +171,14 @@ async fn drive_tcp_session_tasks_aborts_downlink_after_websocket_client_eof() {
 
     tokio::time::timeout(
         Duration::from_secs(1),
-        drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)),
+        drive_tcp_session_tasks(
+            uplink,
+            downlink,
+            None,
+            std::future::pending::<&'static str>(),
+            Arc::from("test"),
+            Duration::from_secs(30),
+        ),
     )
     .await
     .expect("driver should return once websocket-backed client EOF is observed")

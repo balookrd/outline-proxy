@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,7 +17,7 @@ use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use outline_uplink::{OverflowPolicy, TransportKind, UplinkManager, UplinkTransport};
 
 use super::super::failover::{ActiveTcpUplink, ConnectedTcpUplink, redial_for_mid_session_retry};
-use super::super::session::{IdleGuard, UplinkOutcome, drive_tcp_session_tasks};
+use super::super::session::{DriveExit, IdleGuard, UplinkOutcome, drive_tcp_session_tasks};
 use super::ring_buffer::{ClientUpstreamRingBuffer, ReplayError};
 use crate::client_io::ClientIo;
 use crate::proxy::TcpTimeouts;
@@ -88,15 +90,26 @@ pub(super) async fn run_relay(
     client_write: OwnedWriteHalf,
     timeouts: &TcpTimeouts,
 ) -> Result<()> {
-    // Once chunk-0 failover completed and we received the first upstream bytes,
-    // this SOCKS TCP session is pinned to the uplink that completed setup.
-    // Strict active-uplink reselection only affects new sessions and chunk-0
-    // failover; established TCP tunnels are not migrated transparently and
-    // should only end on a real transport error (or — Phase 2.4 — be
-    // re-dialled within the same uplink via the Ack-Prefix retry path).
+    // Once chunk-0 failover completed and we received the first upstream
+    // bytes, this SOCKS TCP session is pinned to the uplink that completed
+    // setup. The pinned uplink cannot be migrated transparently — different
+    // uplinks usually have different egress IPs, and the upstream server
+    // does not know how to resume a session that started elsewhere.
+    //
+    // In `active_passive` mode (`strict_active_uplink_for(TCP)` is true)
+    // the session is also forcibly torn down with TCP RST whenever the
+    // manager's active pointer flips away from this session's uplink —
+    // mirroring the TUN engine's `should_migrate_tcp_flow` policy so the
+    // SOCKS5 ingress reaches the same egress-consistency guarantee.
+    //
+    // In all other cases the session ends only on a real transport error
+    // (optionally re-dialled within the same uplink via the Ack-Prefix
+    // Protocol mid-session retry path).
     let active_index = active.index;
     let active_name = Arc::clone(&active.name);
     let candidate = active.candidate.clone();
+    let strict_global = uplinks.strict_global_active_uplink();
+    let strict_active = strict_global || uplinks.strict_per_uplink_active_uplink();
 
     let lb_snapshot = uplinks.load_balancing();
     let buffer_cap = lb_snapshot.tcp_mid_session_retry_buffer_bytes;
@@ -152,6 +165,10 @@ pub(super) async fn run_relay(
 
     // Final outcome, set once the loop exits.
     let final_result;
+    // Set by the strict-active-uplink abort path so the post-loop tail
+    // skips runtime-failure reporting (the close is policy-driven, not a
+    // transport failure) and force-closes the client socket with RST.
+    let mut force_rst_reason: Option<&'static str> = None;
 
     loop {
         // Idle-watcher activity channel: each data task signals a token
@@ -362,10 +379,23 @@ pub(super) async fn run_relay(
             Ok::<(), anyhow::Error>(())
         };
 
+        let cancel: Pin<Box<dyn Future<Output = &'static str> + Send>> = if strict_active {
+            // In strict `active_passive` mode, watch the manager's active
+            // pointer and tear the session down as soon as it points at a
+            // different uplink. The session cannot migrate to a different
+            // egress in-place, and leaving it on a deactivated uplink
+            // breaks egress consistency (different source IP / ASN from
+            // the new active uplink).
+            Box::pin(watch_active_uplink_switch(uplinks.clone(), active_index, strict_global))
+        } else {
+            Box::pin(std::future::pending::<&'static str>())
+        };
+
         let result = drive_tcp_session_tasks(
             uplink,
             downlink,
             Some(IdleGuard::new(activity_rx, timeouts.socks_upstream_idle)),
+            cancel,
             Arc::clone(&target_label),
             timeouts.post_client_eof_downstream,
         )
@@ -376,8 +406,20 @@ pub(super) async fn run_relay(
         // (writer, reader) are dropped. To restart the relay we need
         // a fresh transport from `redial_for_mid_session_retry`.
         match result {
-            Ok(()) => {
+            Ok(DriveExit::Normal) => {
                 final_result = Ok(());
+                break;
+            },
+            Ok(DriveExit::AbortedOnSwitch(reason)) => {
+                // Strict mode forcibly tore us down because the active
+                // uplink moved off this session. Skip mid-session retry
+                // (the whole point is to free the client to reconnect
+                // through the new active uplink) and signal the post-
+                // loop tail to force-close the client socket with RST.
+                force_rst_reason = Some(reason);
+                final_result = Err(anyhow!(
+                    "SOCKS TCP session aborted: active uplink switched away from {active_name} ({reason})"
+                ));
                 break;
             },
             Err(err) => {
@@ -460,6 +502,23 @@ pub(super) async fn run_relay(
         }
     }
 
+    // Strict `active_passive` torn the session down because the active
+    // uplink moved off this session — record the abort and force-close
+    // the client socket with TCP RST so the client application observes
+    // a hard reset and immediately reconnects through the new active
+    // uplink. The transport itself was healthy, so do NOT report a
+    // runtime failure that would penalise the uplink's probe state.
+    if let Some(reason) = force_rst_reason {
+        metrics::record_socks_tcp_strict_abort(uplinks.group_name(), &active_name, reason);
+        debug!(
+            uplink = %active_name,
+            reason,
+            "aborting SOCKS5 TCP session with RST due to active uplink switch"
+        );
+        force_client_rst(client_read, client_write);
+        return final_result;
+    }
+
     // Mirror the original tail behaviour: surface mid-stream upstream
     // transport failures so broken transports (e.g. H3 APPLICATION_CLOSE
     // received after session establishment) trigger the H3→H2 downgrade
@@ -479,6 +538,68 @@ pub(super) async fn run_relay(
         }
     }
     final_result
+}
+
+/// Watches the manager's active-uplink pointer and resolves with the abort
+/// reason once it moves off `pinned_index`. Used as the `cancel` arm of
+/// [`drive_tcp_session_tasks`] in strict `active_passive` mode.
+///
+/// The future never resolves while the active stays at `pinned_index`; if
+/// the manager is dropped the future also stops resolving so the data
+/// tasks remain the sole authoritative termination signal.
+async fn watch_active_uplink_switch(
+    uplinks: UplinkManager,
+    pinned_index: usize,
+    strict_global: bool,
+) -> &'static str {
+    let mut rx = uplinks.subscribe_active_uplinks();
+    loop {
+        let snapshot = *rx.borrow_and_update();
+        let active = if strict_global { snapshot.global } else { snapshot.tcp };
+        if let Some(idx) = active {
+            if idx != pinned_index {
+                return "global_switch";
+            }
+        }
+        if rx.changed().await.is_err() {
+            // Manager dropped (shutdown / config reload). The data tasks
+            // will observe their own errors shortly; don't pre-empt them
+            // with a strict-abort label that would skew the metric.
+            std::future::pending::<()>().await;
+            unreachable!();
+        }
+    }
+}
+
+/// Reunite the client TCP halves and close the socket with TCP RST by
+/// setting `SO_LINGER {l_onoff=1, l_linger=0}` and dropping the stream.
+/// Skips the RST silently if the halves can't be reclaimed (a data task
+/// is somehow still holding an `Arc` clone) — falling back to FIN on the
+/// implicit drop is acceptable, the strict-abort metric is still
+/// recorded by the caller.
+fn force_client_rst(
+    client_read: Arc<Mutex<OwnedReadHalf>>,
+    client_write: Arc<Mutex<OwnedWriteHalf>>,
+) {
+    let read_half = match Arc::try_unwrap(client_read) {
+        Ok(mutex) => mutex.into_inner(),
+        Err(_) => return,
+    };
+    let write_half = match Arc::try_unwrap(client_write) {
+        Ok(mutex) => mutex.into_inner(),
+        Err(_) => return,
+    };
+    let Ok(stream) = read_half.reunite(write_half) else {
+        return;
+    };
+    // Use `socket2::SockRef` to set `SO_LINGER` instead of
+    // `TcpStream::set_linger` — the tokio wrapper is deprecated because its
+    // contract warns of potential blocking on drop, but with `Duration::ZERO`
+    // the kernel emits a RST immediately and never waits for FIN ACK, so
+    // dropping is non-blocking. Going through `socket2` documents this
+    // intent and avoids the deprecation lint.
+    let _ = socket2::SockRef::from(&stream).set_linger(Some(Duration::ZERO));
+    drop(stream);
 }
 
 /// Performs one mid-session retry attempt. Re-dials the same uplink with
@@ -506,6 +627,27 @@ async fn try_mid_session_retry(
     overflow_policy: OverflowPolicy,
 ) -> Result<(ConnectedTcpUplink, Option<Vec<u8>>)> {
     let group_name = uplinks.group_name();
+
+    // In strict `active_passive` mode the active pointer may have moved off
+    // our pinned uplink between the original transport error and this retry.
+    // Re-dialling the now-deactivated uplink would succeed (the upstream is
+    // unaffected by our manager's decision) but the relay's next iteration
+    // would be aborted immediately by the strict-abort watcher. Skip the
+    // wasted dial and let the caller propagate the original transport
+    // error — the watcher path will then close the client socket with RST.
+    if uplinks.strict_global_active_uplink() || uplinks.strict_per_uplink_active_uplink() {
+        let strict_global = uplinks.strict_global_active_uplink();
+        let snapshot = uplinks.active_uplinks_snapshot();
+        let active = if strict_global { snapshot.global } else { snapshot.tcp };
+        if active != Some(candidate.index) {
+            metrics::record_mid_session_retry("tcp", group_name, active_name, "failed_redial");
+            return Err(anyhow!(
+                "mid-session retry skipped: active uplink moved off pinned uplink {active_name} \
+                 (active = {active:?}, pinned = {})",
+                candidate.index,
+            ));
+        }
+    }
 
     let mut connected = match redial_for_mid_session_retry(
         uplinks,

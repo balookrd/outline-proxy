@@ -32,10 +32,14 @@ fn probe_disabled() -> ProbeConfig {
     }
 }
 
-fn lb(keepalive_interval: Duration) -> LoadBalancingConfig {
+fn lb_with_mode(
+    mode: LoadBalancingMode,
+    routing_scope: RoutingScope,
+    keepalive_interval: Duration,
+) -> LoadBalancingConfig {
     LoadBalancingConfig {
-        mode: LoadBalancingMode::ActiveActive,
-        routing_scope: RoutingScope::PerFlow,
+        mode,
+        routing_scope,
         sticky_ttl: Duration::from_secs(300),
         hysteresis: Duration::from_millis(50),
         failure_cooldown: Duration::from_secs(10),
@@ -64,6 +68,10 @@ fn lb(keepalive_interval: Duration) -> LoadBalancingConfig {
         tcp_symmetric_replay_enabled: true,
         tcp_symmetric_replay_max_bytes: 1_048_576,
     }
+}
+
+fn lb(keepalive_interval: Duration) -> LoadBalancingConfig {
+    lb_with_mode(LoadBalancingMode::ActiveActive, RoutingScope::PerFlow, keepalive_interval)
 }
 
 fn make_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
@@ -367,4 +375,238 @@ async fn run_relay_attempts_redial_on_mid_session_runtime_failure() {
     redial_task.abort();
     let _ = upstream_task.await;
     let _ = redial_task.await;
+}
+
+/// Strict `active_passive` + `global`: a manual switch of the active uplink
+/// must tear the pinned SOCKS5 TCP session down and force-close the client
+/// socket with TCP RST so the client application sees a hard reset and
+/// reconnects through the new active uplink.
+#[tokio::test]
+async fn run_relay_aborts_with_rst_on_active_uplink_switch() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    let upstream_task = tokio::spawn(async move {
+        let (_stream, _) = upstream_listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+
+    let primary = make_uplink("primary", upstream_addr);
+    let backup = make_uplink("backup", upstream_addr); // backup target does not matter; we just need a second name
+    let manager = UplinkManager::new_for_test(
+        "strict-group",
+        vec![primary.clone(), backup],
+        probe_disabled(),
+        // Strict mode: any active-uplink switch tears down sessions
+        // pinned to the now-passive uplink.
+        lb_with_mode(
+            LoadBalancingMode::ActivePassive,
+            RoutingScope::Global,
+            Duration::from_secs(60),
+        ),
+    )
+    .unwrap();
+    // Pin the active to "primary" so the subsequent switch to "backup"
+    // is unambiguously a move-away event.
+    manager.set_active_uplink_by_name("primary", None).await.unwrap();
+
+    let stream = TcpStream::connect(upstream_addr).await.unwrap();
+    let (reader_half, writer_half) = stream.into_split();
+    let master_key = primary.cipher.derive_master_key(&primary.password).unwrap();
+    let lifetime = UpstreamTransportGuard::new("strict-group", "tcp");
+    let mut writer = TcpShadowsocksWriter::connect_socket(
+        writer_half,
+        primary.cipher,
+        &master_key,
+        Arc::clone(&lifetime),
+    )
+    .unwrap();
+    let reader =
+        TcpShadowsocksReader::new_socket(reader_half, primary.cipher, &master_key, lifetime)
+            .with_request_salt(writer.request_salt());
+    writer
+        .send_chunk(&TargetAddr::IpV4(Ipv4Addr::LOCALHOST, 443).to_wire_bytes().unwrap())
+        .await
+        .unwrap();
+    let active = ActiveTcpUplink {
+        index: 0,
+        name: Arc::from(primary.name.as_str()),
+        candidate: UplinkCandidate { index: 0, uplink: primary.clone().into() },
+        writer: TcpWriter::Socket(writer),
+        reader: TcpReader::Socket(reader),
+        source: TcpUplinkSource::DirectSocket,
+        wire_index: 0,
+    };
+
+    let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client_addr = client_listener.local_addr().unwrap();
+    let (connect_res, accept_res) =
+        tokio::join!(TcpStream::connect(client_addr), client_listener.accept());
+    let mut client_side = connect_res.unwrap();
+    let (server_side, _) = accept_res.unwrap();
+    let (client_read, client_write) = server_side.into_split();
+
+    let timeouts = TcpTimeouts {
+        post_client_eof_downstream: Duration::from_secs(30),
+        upstream_response: Duration::from_secs(15),
+        // Generous idle so the strict-abort path is the only realistic
+        // termination signal in this test.
+        socks_upstream_idle: Duration::from_secs(60),
+        direct_idle: Duration::from_secs(120),
+    };
+    let target = outline_transport::TargetAddr::IpV4(Ipv4Addr::LOCALHOST, 443);
+    let manager_for_relay = manager.clone();
+    let relay_task = tokio::spawn(async move {
+        run_relay(
+            manager_for_relay,
+            active,
+            target,
+            Arc::from("test"),
+            b"OK".to_vec(),
+            client_read,
+            client_write,
+            &timeouts,
+        )
+        .await
+    });
+
+    // Receive the first chunk so the relay is definitely in its main
+    // select! and the watcher is wired in.
+    let mut first_chunk = [0u8; 2];
+    client_side.read_exact(&mut first_chunk).await.unwrap();
+    assert_eq!(&first_chunk, b"OK");
+
+    // Trigger the switch — strict-abort watcher must fire.
+    manager.set_active_uplink_by_name("backup", None).await.unwrap();
+
+    let result = tokio::time::timeout(Duration::from_secs(2), relay_task)
+        .await
+        .expect("relay must exit promptly after active uplink switch")
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "relay must surface a strict-abort error after active uplink switch, got {result:?}",
+    );
+
+    // Client socket should observe a TCP RST. With FIN we would get
+    // Ok(0) and the test would fail on the assertion below.
+    let mut buf = [0u8; 16];
+    let read_result = tokio::time::timeout(Duration::from_secs(1), client_side.read(&mut buf))
+        .await
+        .expect("client read must complete after RST");
+    let err = read_result.expect_err("client must observe RST as a read error, not a clean EOF");
+    assert_eq!(
+        err.kind(),
+        std::io::ErrorKind::ConnectionReset,
+        "expected ConnectionReset, got {err:?}",
+    );
+
+    upstream_task.abort();
+    let _ = upstream_task.await;
+}
+
+/// `active_active` is the symmetric control: switching the manager's
+/// per-transport active pointer must NOT tear the pinned session down
+/// (there is no "single active" notion to diverge from). Verifies that
+/// the strict-abort watcher only arms in strict mode.
+#[tokio::test(start_paused = true)]
+async fn run_relay_does_not_abort_in_active_active_mode() {
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    let upstream_task = tokio::spawn(async move {
+        let (_stream, _) = upstream_listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+
+    let primary = make_uplink("primary", upstream_addr);
+    let backup = make_uplink("backup", upstream_addr);
+    let manager = UplinkManager::new_for_test(
+        "loose-group",
+        vec![primary.clone(), backup],
+        probe_disabled(),
+        // Default mode: no strict-abort behaviour.
+        lb(Duration::from_millis(20)),
+    )
+    .unwrap();
+
+    let stream = TcpStream::connect(upstream_addr).await.unwrap();
+    let (reader_half, writer_half) = stream.into_split();
+    let master_key = primary.cipher.derive_master_key(&primary.password).unwrap();
+    let lifetime = UpstreamTransportGuard::new("loose-group", "tcp");
+    let mut writer = TcpShadowsocksWriter::connect_socket(
+        writer_half,
+        primary.cipher,
+        &master_key,
+        Arc::clone(&lifetime),
+    )
+    .unwrap();
+    let reader =
+        TcpShadowsocksReader::new_socket(reader_half, primary.cipher, &master_key, lifetime)
+            .with_request_salt(writer.request_salt());
+    writer
+        .send_chunk(&TargetAddr::IpV4(Ipv4Addr::LOCALHOST, 443).to_wire_bytes().unwrap())
+        .await
+        .unwrap();
+    let active = ActiveTcpUplink {
+        index: 0,
+        name: Arc::from(primary.name.as_str()),
+        candidate: UplinkCandidate { index: 0, uplink: primary.clone().into() },
+        writer: TcpWriter::Socket(writer),
+        reader: TcpReader::Socket(reader),
+        source: TcpUplinkSource::DirectSocket,
+        wire_index: 0,
+    };
+
+    let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client_addr = client_listener.local_addr().unwrap();
+    let (connect_res, accept_res) =
+        tokio::join!(TcpStream::connect(client_addr), client_listener.accept());
+    let mut client_side = connect_res.unwrap();
+    let (server_side, _) = accept_res.unwrap();
+    let (client_read, client_write) = server_side.into_split();
+
+    let timeouts = TcpTimeouts {
+        post_client_eof_downstream: Duration::from_secs(30),
+        upstream_response: Duration::from_secs(15),
+        socks_upstream_idle: Duration::from_millis(50),
+        direct_idle: Duration::from_secs(120),
+    };
+    let target = outline_transport::TargetAddr::IpV4(Ipv4Addr::LOCALHOST, 443);
+    let relay_task = tokio::spawn(async move {
+        run_relay(
+            manager,
+            active,
+            target,
+            Arc::from("test"),
+            b"OK".to_vec(),
+            client_read,
+            client_write,
+            &timeouts,
+        )
+        .await
+    });
+
+    let mut first_chunk = [0u8; 2];
+    client_side.read_exact(&mut first_chunk).await.unwrap();
+    assert_eq!(&first_chunk, b"OK");
+
+    // The relay should still terminate eventually — drive it to the
+    // idle-timeout exit and check that the close is a graceful FIN, not
+    // an RST.
+    tokio::time::advance(timeouts.socks_upstream_idle + Duration::from_millis(10)).await;
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
+    let result = relay_task.await.unwrap();
+    assert!(result.is_ok(), "active_active idle exit should be Ok, got {result:?}");
+
+    // FIN: read returns Ok(0); no RST.
+    let mut buf = [0u8; 16];
+    let read_result = client_side.read(&mut buf).await;
+    assert!(
+        matches!(read_result, Ok(0)),
+        "active_active should close with FIN, got {read_result:?}",
+    );
+
+    upstream_task.abort();
+    let _ = upstream_task.await;
 }

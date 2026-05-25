@@ -8,9 +8,15 @@
 //! belonging either to the still-active uplink (`active`) or to a stranded
 //! one (`inactive`). The latter is the symptom of "leak into an inactive
 //! uplink after switchover" that this metric pair is built to detect — in
-//! `Global` and `PerUplink` modes a TCP session cannot migrate when the
-//! probe / operator flips the active pointer, so it lingers on the old
-//! uplink until it finishes naturally.
+//! `Global` and `PerUplink` modes a TCP/UDP session cannot migrate to a
+//! different egress when the probe / operator flips the active pointer,
+//! so in strict mode the ingress layer forcibly tears it down on switch
+//! (SOCKS5 sends TCP RST, TUN sends RST+ACK, UDP transports atomically
+//! swap to the new uplink). The `inactive` bucket therefore reflects the
+//! brief window between the switch and the abort/swap; a sustained
+//! non-zero rate indicates that strict mode is disabled
+//! (`active_active` / `per_flow`) and stranded sessions are draining
+//! naturally.
 //!
 //! Lives outside any feature gate so callers compile against the same API
 //! regardless of whether the `prometheus` feature is enabled. The state

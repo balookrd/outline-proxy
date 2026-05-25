@@ -11,7 +11,7 @@ use tokio::sync::{Notify, RwLock, Semaphore, watch};
 use crate::config::{LoadBalancingConfig, ProbeConfig};
 use crate::routing_key::RoutingKey;
 use crate::state::StateStore;
-use crate::types::Uplink;
+use crate::types::{ActiveUplinksSnapshot, Uplink};
 
 use super::probe::warm_tcp::WarmTcpProbeSlot;
 use super::probe::warm_udp::WarmUdpProbeSlot;
@@ -90,6 +90,11 @@ pub(crate) struct UplinkManagerInner {
     /// Signals background loops (probe, warm-standby, keepalive) to stop.
     /// Call `shutdown_tx.send(true)` or use `UplinkManager::shutdown()`.
     pub(crate) shutdown_tx: watch::Sender<bool>,
+    /// Publishes a fresh [`ActiveUplinksSnapshot`] every time
+    /// `set_active_uplink_index_for_transport` mutates `active_uplinks`.
+    /// SOCKS5 strict-abort watcher and UDP downlink reconciler subscribe
+    /// through `UplinkManager::subscribe_active_uplinks()`.
+    pub(crate) active_uplinks_tx: watch::Sender<ActiveUplinksSnapshot>,
 }
 
 impl UplinkManagerInner {

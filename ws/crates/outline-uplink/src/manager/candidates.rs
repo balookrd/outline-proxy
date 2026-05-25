@@ -837,5 +837,29 @@ impl UplinkManager {
                 }
             }
         }
+
+        // Publish a fresh snapshot AFTER every active-uplink mutation. The
+        // outer write-lock has been released by the per-branch blocks above,
+        // so the read here may briefly race with a subsequent mutation in
+        // another task — but each mutation pushes its own snapshot, so the
+        // last-writer-wins ordering still surfaces every change to
+        // subscribers. `send_replace` is a no-op for equal snapshots, so
+        // back-to-back idempotent writes do not wake watchers.
+        let snapshot = {
+            let active = self.inner.active_uplinks.read().await;
+            crate::types::ActiveUplinksSnapshot {
+                global: active.global,
+                tcp: active.tcp,
+                udp: active.udp,
+            }
+        };
+        let _ = self.inner.active_uplinks_tx.send_if_modified(|current| {
+            if *current == snapshot {
+                false
+            } else {
+                *current = snapshot;
+                true
+            }
+        });
     }
 }
