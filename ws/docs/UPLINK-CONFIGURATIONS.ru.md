@@ -559,10 +559,20 @@ Mid-session retry (Ack-Prefix Protocol v1):
   SSH-подобных downlink-heavy сессий *сама по себе*: v1 не
   replay'ит downlink-направление. Этот gap закрывает протокол v2
   Symmetric Downlink Replay (см. ниже).
-- Ограничено SS-WS аплинками (`transport = "ws"`). VLESS-WS / raw
-  QUIC / direct-socket Shadowsocks для retry в v1 — no-op; relay
-  падает в legacy-поведение «один shot, прокидываем ошибку
-  наружу» без видимых изменений.
+- Ограничено WS-family carrier'ами — SS-WS (`transport = "ws"`) и
+  VLESS-WS (`transport = "vless"`). Raw QUIC и direct-socket
+  Shadowsocks для retry в v1 — no-op; relay падает в legacy-
+  поведение «один shot, прокидываем ошибку наружу» без видимых
+  изменений.
+- Redial идёт на **wire, который менеджер сейчас считает активным**
+  для этого транспорта (`active_wire`), а не безусловно на primary.
+  Если ранее dial-loop уже сдвинул `active_wire` на fallback из-за
+  поломки primary, retry дёргает именно этот fallback (с тем же
+  Ack-Prefix / Symmetric Downlink Replay capability'и, что и primary),
+  вместо того чтобы вслепую долбить мёртвый primary URL и накапливать
+  runtime-failure стрик на родительский uplink. Сам fallback wire тоже
+  должен быть SS-WS или VLESS-WS, иначе retry схлопывается в no-op и
+  сессия завершается на исходной mid-stream-ошибке.
 - Outcome'ы экспортируются в метрику
   `outline_ws_rust_uplink_mid_session_retries_total{outcome}` со
   значениями `outcome ∈ {success, failed_redial, failed_replay,
@@ -1135,6 +1145,17 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
   инкрементируется только когда **все** wire'ы аплинка провалились в
   одной сессии — транзиентные сбои одного wire'а больше не демотят
   аплинк целиком, пока работает другой.
+- Runtime-сбои, приписанные к **конкретному wire'у** (chunk-0
+  failures, несущие индекс упавшего wire'а, и mid-session resets,
+  несущие индекс текущего relay-wire'а), гейтятся той же проверкой
+  active-wire, что и dial-loop: сбой, привязанный к wire'у, с
+  которого менеджер уже ушёл, считается session-local fallback churn,
+  пишется только как suppressed-метрика
+  (`outline_ws_rust_uplink_runtime_failures_suppressed_total`) и
+  **не** копится в penalty / cooldown /
+  consecutive_runtime_failures родительского аплинка. Аплинки без
+  fallback'ов (single-wire) ведут себя ровно как раньше — там нет
+  «non-active wire», чтобы что-то suppress'ить.
 
 #### Sticky fallback + auto-failback (active-wire state machine)
 

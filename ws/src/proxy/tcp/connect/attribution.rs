@@ -34,7 +34,12 @@ pub(super) async fn attribute_terminal_chunk0_failure(
     if deferred_failures.is_empty() {
         if crate::error_class::is_upstream_runtime_failure(chunk0_error) {
             uplinks
-                .report_runtime_failure(active.index, TransportKind::Tcp, chunk0_error)
+                .report_runtime_failure_for_wire(
+                    active.index,
+                    TransportKind::Tcp,
+                    active.wire_index,
+                    chunk0_error,
+                )
                 .await;
         } else if crate::error_class::is_ws_closed(chunk0_error) {
             uplinks.report_upstream_close(active.index, TransportKind::Tcp).await;

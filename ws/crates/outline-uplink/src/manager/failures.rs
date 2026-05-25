@@ -117,12 +117,91 @@ impl UplinkManager {
             .collect()
     }
 
+    /// Records a runtime failure on `index` with no per-wire attribution —
+    /// used by callers that already know the failure is uplink-level (every
+    /// wire on this uplink has been tried and exhausted, the failure happened
+    /// before a specific wire was chosen, etc.). When the uplink has
+    /// `[[outline.uplinks.fallbacks]]` configured and the caller knows which
+    /// wire the failure attaches to, prefer [`Self::report_runtime_failure_for_wire`]
+    /// so a failure on a non-active wire (session-local fallback churn) does
+    /// not stack onto the parent uplink's runtime-failure streak and flap the
+    /// whole uplink off the candidate set.
     pub async fn report_runtime_failure(
         &self,
         index: usize,
         transport: TransportKind,
         error: &anyhow::Error,
     ) {
+        self.report_runtime_failure_inner(index, transport, None, error).await
+    }
+
+    /// Records a runtime failure that the caller attributes to a specific
+    /// wire of `index`. When the uplink has multiple wires
+    /// (primary + at least one fallback) and `attempted_wire` does **not**
+    /// match the manager's current active wire for `transport`, the failure
+    /// is recorded only as a suppressed metric: no penalty, no cooldown, no
+    /// streak increment, no mode-downgrade hit, no standby-pool flush.  This
+    /// is the runtime-failure mirror of [`Self::record_wire_outcome`]'s
+    /// "failure on a non-active wire is session-local churn" rule — without
+    /// it, a stale mid-session reset on a fallback wire that the manager has
+    /// already moved away from would still pile uplink-level penalty onto a
+    /// parent uplink whose active wire is fine.
+    ///
+    /// For single-wire uplinks (no fallbacks declared), this method behaves
+    /// identically to [`Self::report_runtime_failure`]: there is no
+    /// "non-active wire" to suppress against.
+    pub async fn report_runtime_failure_for_wire(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        attempted_wire: u8,
+        error: &anyhow::Error,
+    ) {
+        self.report_runtime_failure_inner(index, transport, Some(attempted_wire), error)
+            .await
+    }
+
+    async fn report_runtime_failure_inner(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        attempted_wire: Option<u8>,
+        error: &anyhow::Error,
+    ) {
+        // Wire-attribution gate: a failure that the caller pins to a wire
+        // other than the manager's current active wire is treated as
+        // session-local churn and never penalises the parent uplink.
+        // Mirrors `record_wire_outcome`'s same-named rule on the dial path.
+        // Skipped for single-wire uplinks (no fallbacks declared) so the
+        // legacy behaviour stays bit-for-bit identical there.
+        if let Some(wire) = attempted_wire {
+            let total_wires = 1 + self.inner.uplinks[index].fallbacks.len();
+            if total_wires > 1 {
+                let active = self.active_wire(index, transport);
+                if wire != active {
+                    let kind = match transport {
+                        TransportKind::Tcp => "tcp",
+                        TransportKind::Udp => "udp",
+                    };
+                    metrics::record_runtime_failure_suppressed(
+                        kind,
+                        &self.inner.group_name,
+                        &self.inner.uplinks[index].name,
+                    );
+                    debug!(
+                        uplink = %self.inner.uplinks[index].name,
+                        uplink_index = index,
+                        transport = ?transport,
+                        attempted_wire = wire,
+                        active_wire = active,
+                        error = %format!("{error:#}"),
+                        "runtime uplink failure suppressed: attributed to a non-active wire",
+                    );
+                    return;
+                }
+            }
+        }
+
         let failure_cause = classify_runtime_failure_cause(error);
         let failure_signature = classify_runtime_failure_signature(error);
         let error_text = format!("{error:#}");

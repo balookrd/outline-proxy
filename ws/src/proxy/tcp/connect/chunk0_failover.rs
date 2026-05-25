@@ -39,6 +39,11 @@ pub(super) struct Chunk0FailoverParams<'a> {
 pub(super) struct DeferredFailure {
     pub index: usize,
     pub uplink: Arc<str>,
+    /// Which wire of `index` was live when the failure occurred. Passed to
+    /// `report_runtime_failure_for_wire` on the deferred flush so a stale
+    /// fallback-wire failure that the manager has since moved away from
+    /// stays session-local instead of stacking onto the parent uplink.
+    pub wire_index: u8,
     pub error: anyhow::Error,
 }
 
@@ -134,15 +139,23 @@ pub(super) async fn try_uplinks(
             Ok(chunk) => {
                 // Flush deferred failure records now that we have proof the
                 // session is alive via a different uplink.
-                for DeferredFailure { index, uplink, error } in deferred_failures.drain(..) {
+                for DeferredFailure { index, uplink, wire_index, error } in
+                    deferred_failures.drain(..)
+                {
                     debug!(
                         uplink = %uplink,
+                        wire_index,
                         error = %format!("{error:#}"),
                         recovered_via = %active.name,
                         "recorded deferred TCP chunk-0 runtime failure after successful failover"
                     );
                     uplinks
-                        .report_runtime_failure(index, TransportKind::Tcp, &error)
+                        .report_runtime_failure_for_wire(
+                            index,
+                            TransportKind::Tcp,
+                            wire_index,
+                            &error,
+                        )
                         .await;
                 }
                 return Ok(Some(chunk));
@@ -285,6 +298,7 @@ pub(super) async fn try_uplinks(
                 // ── Cross-uplink failover ─────────────────────────────────────
                 let failed_index = active.index;
                 let failed_uplink = Arc::clone(&active.name);
+                let failed_wire_index = active.wire_index;
 
                 match failover_to_next_candidate(
                     uplinks,
@@ -306,6 +320,7 @@ pub(super) async fn try_uplinks(
                         deferred_failures.push_back(DeferredFailure {
                             index: failed_index,
                             uplink: failed_uplink,
+                            wire_index: failed_wire_index,
                             error: chunk0_error,
                         });
                         rst_retries_on_current_uplink = 0;

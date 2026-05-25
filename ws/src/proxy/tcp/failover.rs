@@ -140,7 +140,15 @@ pub(super) async fn connect_tcp_uplink(
             connect_tcp_uplink_primary(uplinks, candidate, target).await
         } else {
             let fallback = &candidate.uplink.fallbacks[(wire_index - 1) as usize];
-            connect_tcp_fallback_fresh(uplinks, candidate, fallback, target, wire_index).await
+            connect_tcp_fallback_fresh(
+                uplinks,
+                candidate,
+                fallback,
+                target,
+                wire_index,
+                FallbackDialOptions::default(),
+            )
+            .await
         };
         match attempt {
             Ok(connected) => {
@@ -222,7 +230,47 @@ pub(super) async fn connect_tcp_specific_wire(
         let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
             anyhow!("uplink {} has no fallback at index {}", candidate.uplink.name, idx,)
         })?;
-        connect_tcp_fallback_fresh(uplinks, candidate, fallback, target, wire_index).await
+        connect_tcp_fallback_fresh(
+            uplinks,
+            candidate,
+            fallback,
+            target,
+            wire_index,
+            FallbackDialOptions::default(),
+        )
+        .await
+    }
+}
+
+/// Dial a specific wire on `candidate` *bypassing* the warm-standby pool —
+/// always a fresh on-demand dial of `wire_index`. Used by same-uplink
+/// recovery paths in `connect/retry.rs` where the prior socket has just
+/// failed (warm-standby stale, chunk-0 WS reset). Distinct from
+/// [`connect_tcp_specific_wire`] which goes through the standby pool on
+/// `wire_index == 0` — that would be wrong here because the wire that just
+/// failed may have a stale standby socket queued.
+pub(super) async fn connect_tcp_specific_wire_fresh(
+    uplinks: &UplinkManager,
+    candidate: &UplinkCandidate,
+    target: &TargetAddr,
+    wire_index: u8,
+) -> Result<ConnectedTcpUplink> {
+    if wire_index == 0 {
+        connect_tcp_uplink_fresh(uplinks, candidate, target).await
+    } else {
+        let idx = (wire_index - 1) as usize;
+        let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
+            anyhow!("uplink {} has no fallback at index {}", candidate.uplink.name, idx,)
+        })?;
+        connect_tcp_fallback_fresh(
+            uplinks,
+            candidate,
+            fallback,
+            target,
+            wire_index,
+            FallbackDialOptions::default(),
+        )
+        .await
     }
 }
 
@@ -360,6 +408,14 @@ pub(super) async fn connect_tcp_uplink_fresh(
 /// * Advertises `X-Outline-Resume-Ack-Prefix: 1` so the server emits
 ///   the v1 control frame and the reader can park `up_acked`.
 ///
+/// `wire_index` selects which wire of `candidate` to redial: `0` is the
+/// primary, `1..=N` map to `fallbacks[wire_index - 1]`. The caller
+/// (mid-session retry orchestrator) reads `uplinks.active_wire(...)`
+/// just before the redial so a session that established on a fallback
+/// (because primary is currently dead) retries on the same fallback
+/// instead of slamming a known-dead primary URL and ballooning the
+/// parent uplink's runtime-failure streak.
+///
 /// Returns the fresh `(TcpWriter, TcpReader)` ready for replay; the
 /// caller is responsible for inspecting `reader.upstream_acked_offset()`
 /// and pushing replay bytes through the writer before resuming the
@@ -368,6 +424,7 @@ pub(super) async fn redial_for_mid_session_retry(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
     target: &TargetAddr,
+    wire_index: u8,
     // v2 Symmetric Downlink Replay parameters. When
     // `symmetric_replay_enabled` is `true`, the redial advertises
     // `X-Outline-Resume-Symmetric-Replay: 1` and reports
@@ -377,38 +434,115 @@ pub(super) async fn redial_for_mid_session_retry(
     symmetric_replay_enabled: bool,
     client_acked_offset: u64,
 ) -> Result<ConnectedTcpUplink> {
-    if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless,) {
-        bail!(
-            "mid-session retry redial only supports WS-family uplinks (SS-WS or \
-             VLESS-WS); uplink {} uses transport {:?}",
+    if wire_index == 0 {
+        if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless,) {
+            bail!(
+                "mid-session retry redial only supports WS-family uplinks (SS-WS or \
+                 VLESS-WS); uplink {} primary uses transport {:?}",
+                candidate.uplink.name,
+                candidate.uplink.transport,
+            );
+        }
+        let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+        let ws = if symmetric_replay_enabled {
+            uplinks
+                .connect_tcp_ws_fresh_with_symmetric_replay(
+                    candidate,
+                    "socks_tcp_retry",
+                    client_acked_offset,
+                )
+                .await?
+        } else {
+            uplinks
+                .connect_tcp_ws_fresh_with_ack_prefix(candidate, "socks_tcp_retry")
+                .await?
+        };
+        let setup = WireSetup::from_uplink(&candidate.uplink);
+        let binding = tcp_binding(uplinks, setup.name);
+        let (writer, reader) =
+            do_tcp_ss_setup(ws, &setup, target, "socks_tcp_retry", keepalive_interval, binding)
+                .await?;
+        return Ok(ConnectedTcpUplink {
+            writer,
+            reader,
+            source: TcpUplinkSource::FreshDial,
+            wire_index: 0,
+        });
+    }
+
+    // Fallback-wire path: dial `fallbacks[wire_index - 1]` with the same
+    // Ack-Prefix / Symmetric Downlink Replay options the primary-wire
+    // path advertises.  Without this branch, mid-session retry on a
+    // session that lives on a fallback wire would always slam the
+    // (often dead) primary URL — `redial_for_mid_session_retry`'s
+    // previous behaviour — and the resulting redial failure would
+    // bubble up into `report_runtime_failure` on the parent uplink,
+    // flapping the whole uplink off the candidate set.
+    let idx = (wire_index - 1) as usize;
+    let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
+        anyhow!(
+            "mid-session retry: uplink {} has no fallback at index {} (wire_index={})",
             candidate.uplink.name,
-            candidate.uplink.transport,
+            idx,
+            wire_index,
+        )
+    })?;
+    if !matches!(fallback.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+        bail!(
+            "mid-session retry redial only supports WS-family wires; uplink {} fallback[{}] \
+             uses transport {:?}",
+            candidate.uplink.name,
+            idx,
+            fallback.transport,
         );
     }
-    let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
-    let ws = if symmetric_replay_enabled {
-        uplinks
-            .connect_tcp_ws_fresh_with_symmetric_replay(
-                candidate,
-                "socks_tcp_retry",
-                client_acked_offset,
-            )
-            .await?
-    } else {
-        uplinks
-            .connect_tcp_ws_fresh_with_ack_prefix(candidate, "socks_tcp_retry")
-            .await?
-    };
-    let setup = WireSetup::from_uplink(&candidate.uplink);
-    let binding = tcp_binding(uplinks, setup.name);
-    let (writer, reader) =
-        do_tcp_ss_setup(ws, &setup, target, "socks_tcp_retry", keepalive_interval, binding).await?;
-    Ok(ConnectedTcpUplink {
-        writer,
-        reader,
-        source: TcpUplinkSource::FreshDial,
-        wire_index: 0,
-    })
+    connect_tcp_fallback_fresh(
+        uplinks,
+        candidate,
+        fallback,
+        target,
+        wire_index,
+        FallbackDialOptions {
+            ack_prefix_requested: true,
+            symmetric_replay_requested: symmetric_replay_enabled,
+            client_acked_offset,
+            source: "socks_tcp_retry",
+        },
+    )
+    .await
+}
+
+/// Per-wire dial options for [`connect_tcp_fallback_fresh`].
+///
+/// The initial dial loop (`connect_tcp_uplink`) and the chunk-0 wire-handover
+/// step ([`connect_tcp_specific_wire`]) leave all fields at their defaults —
+/// fresh-failover behaviour as it shipped originally. The mid-session retry
+/// path ([`redial_for_mid_session_retry`]) flips `ack_prefix_requested` (and
+/// optionally `symmetric_replay_requested` + `client_acked_offset`) so the
+/// fallback wire is dialed with the same Ack-Prefix / Symmetric Replay
+/// capabilities the primary-wire retry already had.
+///
+/// `source` controls the metrics/log label the dial path emits — defaults to
+/// `"socks_tcp_fb"` (fresh fallback dial), `"socks_tcp_retry"` is what the
+/// mid-session retry uses so the dashboard can attribute the dial to the
+/// retry orchestrator.
+#[derive(Clone, Copy)]
+pub(super) struct FallbackDialOptions {
+    pub(super) ack_prefix_requested: bool,
+    pub(super) symmetric_replay_requested: bool,
+    pub(super) client_acked_offset: u64,
+    pub(super) source: &'static str,
+}
+
+impl Default for FallbackDialOptions {
+    fn default() -> Self {
+        Self {
+            ack_prefix_requested: false,
+            symmetric_replay_requested: false,
+            client_acked_offset: 0,
+            source: "socks_tcp_fb",
+        }
+    }
 }
 
 /// Dial one fallback transport on the parent uplink. Returns a fully-set-up
@@ -431,10 +565,11 @@ pub(super) async fn connect_tcp_fallback_fresh(
     fallback: &FallbackTransport,
     target: &TargetAddr,
     wire_index: u8,
+    options: FallbackDialOptions,
 ) -> Result<ConnectedTcpUplink> {
     let cache = uplinks.dns_cache();
     let setup = WireSetup::from_fallback(&parent.uplink.name, fallback);
-    let source = "socks_tcp_fb";
+    let source = options.source;
     let dial_started = std::time::Instant::now();
 
     if fallback.transport == UplinkTransport::Shadowsocks {
@@ -509,15 +644,15 @@ pub(super) async fn connect_tcp_fallback_fresh(
             })
             .with_resume(DialResumeOptions {
                 resume_request,
-                // Failover dial path does not yet opt into Ack-Prefix; mid-session
-                // retry orchestration that consumes the negotiated bit ships in
-                // Phase 2.4. Until then, the failover dial keeps the legacy
-                // resume-only semantics.
-                ack_prefix_requested: false,
-                // v2 Symmetric Downlink Replay is gated on v1; off here too.
-                symmetric_replay_requested: false,
-                // No prior downstream offset on a fresh failover dial.
-                client_acked_offset: 0,
+                // Initial-dial / chunk-0 wire-handover paths pass
+                // `FallbackDialOptions::default()` (all three off); the
+                // mid-session retry path flips these on so the fallback
+                // wire is dialed with the same Ack-Prefix / Symmetric
+                // Downlink Replay capability the primary-wire retry
+                // already had.
+                ack_prefix_requested: options.ack_prefix_requested,
+                symmetric_replay_requested: options.symmetric_replay_requested,
+                client_acked_offset: options.client_acked_offset,
             }),
     )
     .await
