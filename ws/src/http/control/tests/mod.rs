@@ -135,6 +135,9 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_active_wire: 0,
                 tcp_active_wire_pin_remaining_ms: None,
                 udp_active_wire_pin_remaining_ms: None,
+                shuffle_wires: false,
+                tcp_wires_failed_in_round: 0,
+                udp_wires_failed_in_round: 0,
                 fingerprint_profile_strategy: "none".to_string(),
                 fingerprint_profile_name: None,
             },
@@ -226,6 +229,9 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_active_wire: 0,
                 tcp_active_wire_pin_remaining_ms: Some(7_500),
                 udp_active_wire_pin_remaining_ms: None,
+                shuffle_wires: false,
+                tcp_wires_failed_in_round: 0,
+                udp_wires_failed_in_round: 0,
                 // Pin a non-default strategy on this uplink so the
                 // topology test can check both the "field omitted on
                 // none" and "field present on non-default" branches in

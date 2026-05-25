@@ -77,6 +77,9 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         udp_active_wire: 0,
         tcp_active_wire_pin_remaining_ms: None,
         udp_active_wire_pin_remaining_ms: None,
+        shuffle_wires: false,
+        tcp_wires_failed_in_round: 0,
+        udp_wires_failed_in_round: 0,
         fingerprint_profile_strategy: "none".to_string(),
         fingerprint_profile_name: None,
     }

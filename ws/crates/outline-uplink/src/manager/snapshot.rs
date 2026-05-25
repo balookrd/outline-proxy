@@ -386,6 +386,14 @@ impl UplinkManager {
                     .active_wire_pinned_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
+                // Per-uplink shuffle_wires settings + per-transport round
+                // counters. The dashboard pairs `shuffle_wires` with the
+                // counter and `*_active_wire` to highlight which wires of
+                // the chain are already tried-and-failed in the current
+                // round (preceding the active one in forward order).
+                shuffle_wires: uplink.shuffle_wires,
+                tcp_wires_failed_in_round: status.tcp.wires_failed_in_round,
+                udp_wires_failed_in_round: status.udp.wires_failed_in_round,
                 // Effective strategy: per-uplink override wins, otherwise
                 // the process-wide default wired by `init_strategy`. The
                 // task-local `with_strategy_override` scope is irrelevant
