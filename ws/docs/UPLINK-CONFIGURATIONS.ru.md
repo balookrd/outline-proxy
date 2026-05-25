@@ -1185,6 +1185,87 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
   Метрика `outline_ws_rust_uplink_active_wire_index{transport}`
   показывает текущий wire для дашбордов.
 
+#### Случайная forward-only ротация (`shuffle_wires = true`)
+
+Per-uplink опционально, заменяет операторскую упорядоченную цепочку
+с бесконечной обёрткой на рандомизированную forward-only ротацию с
+эскалацией uplink-failover после полного круга:
+
+```toml
+[[outline.uplinks]]
+name        = "edge-shuffled"
+group       = "main"
+transport   = "vless"
+vless_xhttp_url = "https://cdn-a.example.com/SECRET/xhttp"
+vless_id        = "00000000-0000-0000-0000-000000000000"
+vless_mode      = "xhttp_h3"
+shuffle_wires   = true
+
+  [[outline.uplinks.fallbacks]]
+  transport       = "vless"
+  vless_xhttp_url = "https://cdn-b.example.com/SECRET/xhttp"
+  vless_id        = "11111111-1111-1111-1111-111111111111"
+  vless_mode      = "xhttp_h3"
+
+  [[outline.uplinks.fallbacks]]
+  transport       = "vless"
+  vless_xhttp_url = "https://cdn-c.example.com/SECRET/xhttp"
+  vless_id        = "22222222-2222-2222-2222-222222222222"
+  vless_mode      = "xhttp_h3"
+```
+
+Семантика:
+
+- **На старте**: цепочка `[primary, fallbacks[0], …]` перемешивается
+  единожды через `rand::thread_rng()`. Каждый перезапуск процесса
+  даёт другой порядок — operator-primary может оказаться в любой
+  позиции. Шафл сохраняет множество wires точно (ни одного
+  потерянного, дублированного или испорченного) и parent-level
+  идентичность (`name`, `weight`, `group`, `fingerprint_profile`)
+  остаётся на аплинке независимо от того, какой wire оказался в
+  слоте 0.
+- **В runtime**: state machine `active_wire` продолжает идти
+  вперёд по цепочке после `probe.min_failures` подряд провалов
+  dial'а активного wire, оборачиваясь в конце. Прежняя «snap back
+  to primary» по истечении пина не затрагивается — она управляется
+  `auto_failback` оператора и probe-recovery, а не `shuffle_wires`.
+- **Счётчик круга**: per-transport `wires_failed_in_round`
+  инкрементируется каждый раз, когда active wire продвигается. Как
+  только он достигает `total_wires` (каждый wire оказался активным
+  в провальном круге со времени последнего успеха), аплинк
+  репортится как runtime-failed на этом транспорте через тот же
+  `report_runtime_failure`, что и data-plane — балансировщик после
+  этого берёт другой uplink для новых сессий.
+- **Сброс на любом успехе wire**: успешный dial *любого* wire
+  (primary или fallback) обнуляет счётчик круга и ставит штамп
+  `last_any_wire_success`. Трафик, стабилизировавшийся на одном
+  wire, перезапускает круг; следующий провал продолжит forward-
+  ротацию с того wire, который только что работал, а не с
+  фиксированного нуля.
+
+Когда использовать:
+
+- Есть несколько примерно эквивалентных fallback-эндпоинтов
+  (несколько CDN, несколько SNI к одному upstream, зеркальные
+  Shadowsocks-серверы) и хочется, чтобы разные перезапуски процесса
+  или разные реплики распределяли нагрузку между ними, а не били
+  всегда первой записью списка.
+- Нужен явный «сдаюсь на этом uplink» после одного полного прохода
+  по цепочке, а не legacy wrap-forever, чтобы балансировщик быстрее
+  переключился на следующий uplink, когда все wire'ы текущего
+  деградировали.
+
+Когда **не** стоит:
+
+- Есть чёткий предпочтительный primary (быстрый, дешёвый), а
+  fallbacks — только аварийный резерв. Оставьте `shuffle_wires`
+  выключенным, чтобы operator-ordered цепочка соблюдалась, а
+  `auto_failback` возвращал трафик обратно на сконфигурированный
+  primary.
+
+По умолчанию `false` — существующие конфиги сохраняют операторский
+порядок цепочки и wrap-forever state machine без изменений.
+
 #### Mid-session handover (chunk-0 wire-aware failover)
 
 - Если у сессии чанк-0 застрял (нет первого байта от upstream'а в

@@ -31,6 +31,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
         vless_id: Some([0u8; 16]),
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 

@@ -37,6 +37,12 @@ pub(in crate::config::load) struct ResolvedUplinkInput {
     /// Optional list of fallback transports parsed from
     /// `[[outline.uplinks.fallbacks]]`. Validated at TryFrom time.
     pub(super) fallbacks: Vec<FallbackSection>,
+    /// When `Some(true)`, the wire chain `[primary, fallbacks…]` is
+    /// reshuffled once at config load and the runtime state machine
+    /// surrenders to uplink-failover after one full round-trip without
+    /// a single successful wire dial. See `UplinkSection::shuffle_wires`
+    /// for the full semantics.
+    pub(super) shuffle_wires: Option<bool>,
 }
 
 impl ResolvedUplinkInput {
@@ -98,6 +104,9 @@ impl ResolvedUplinkInput {
             // CLI does not yet expose fallback transports either — declare
             // them via `[[outline.uplinks.fallbacks]]` in the TOML.
             fallbacks: Vec::new(),
+            // No CLI toggle for shuffle_wires; it is per-uplink and only
+            // meaningful with multiple wires, both of which are TOML-only.
+            shuffle_wires: None,
         }
     }
 
@@ -123,6 +132,7 @@ impl ResolvedUplinkInput {
             link: uplink.link.clone(),
             fingerprint_profile: uplink.fingerprint_profile,
             fallbacks: uplink.fallbacks.clone().unwrap_or_default(),
+            shuffle_wires: uplink.shuffle_wires,
         }
     }
 }

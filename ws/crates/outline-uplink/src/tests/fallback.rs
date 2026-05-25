@@ -31,6 +31,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
         vless_id: Some([0u8; 16]),
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 
@@ -58,6 +59,7 @@ fn ss_tcp_only_primary() -> UplinkConfig {
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 
@@ -1366,6 +1368,7 @@ fn ws_h3_primary() -> UplinkConfig {
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 
@@ -1495,6 +1498,7 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     };
     // min_failures=1 so each probe failure crosses both the
     // in-window descent gate (`consecutive_failures < min_failures`)
@@ -2456,4 +2460,136 @@ async fn report_runtime_failure_for_wire_follows_active_wire_after_advance() {
         "failure on the now-active fallback wire must engage cooldown",
     );
     assert_eq!(status_after_active.tcp.consecutive_runtime_failures, 1);
+}
+
+// ── shuffle_wires round-counter ─────────────────────────────────────────────
+//
+// These pin the per-transport "one pass, then uplink-failover" semantics that
+// `shuffle_wires = true` adds on top of the existing forward-only active-wire
+// state machine. The flag is gated per-uplink — uplinks with the default
+// `shuffle_wires = false` keep the legacy wrap-forever behaviour bit-for-bit.
+
+#[test]
+fn shuffle_wires_off_keeps_round_counter_at_zero() {
+    // Baseline: with the flag off, the round counter must never tick even as
+    // active_wire advances all the way around the chain.
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    cfg.shuffle_wires = false;
+    let manager = manager_with_uplink(cfg, 1);
+
+    for wire in [0, 1, 2] {
+        manager.record_wire_outcome(0, TransportKind::Tcp, wire, false, 3);
+    }
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(
+        snap.tcp.wires_failed_in_round, 0,
+        "round counter must stay at 0 when shuffle_wires is off",
+    );
+}
+
+#[test]
+fn shuffle_wires_on_increments_round_counter_per_advancement() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    cfg.shuffle_wires = true;
+    let manager = manager_with_uplink(cfg, 1);
+
+    // First active wire (0) fails → advance to 1, counter = 1.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 3);
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 1);
+    assert_eq!(snap.tcp.wires_failed_in_round, 1);
+
+    // Second active wire (1) fails → advance to 2, counter = 2.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 1, false, 3);
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 2);
+    assert_eq!(snap.tcp.wires_failed_in_round, 2);
+}
+
+#[test]
+fn shuffle_wires_on_resets_round_counter_on_success() {
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    cfg.shuffle_wires = true;
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Fail wire 0 → counter = 1, active = 1.
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 3);
+    assert_eq!(manager.read_status_for_test(0).tcp.wires_failed_in_round, 1);
+
+    // Traffic stabilises on whichever wire — the spec says any wire success
+    // resets the round, not just the active one. Here we report success on
+    // wire 2 (a non-active wire from the dial loop's perspective).
+    manager.record_wire_outcome(0, TransportKind::Tcp, 2, true, 3);
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.wires_failed_in_round,
+        0,
+        "any-wire success must reset the shuffle_wires round counter",
+    );
+    // active_wire must NOT snap back to 0 — the spec is "forward only,
+    // rotation continues from current position on next failure".
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 1);
+}
+
+#[test]
+fn shuffle_wires_on_resets_counter_after_full_cycle() {
+    // Three wires, min_failures = 1 → three advancements complete the
+    // cycle. When the third advancement fires, the chain-exhaustion branch
+    // takes the counter back to 0 (and would spawn the escalation task in
+    // an async context — verified separately to avoid runtime-spawn flake).
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    cfg.shuffle_wires = true;
+    let manager = manager_with_uplink(cfg, 1);
+
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 3);
+    manager.record_wire_outcome(0, TransportKind::Tcp, 1, false, 3);
+    manager.record_wire_outcome(0, TransportKind::Tcp, 2, false, 3);
+
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(
+        snap.tcp.wires_failed_in_round, 0,
+        "completing the cycle resets the counter so the next round starts fresh",
+    );
+    // The state machine itself still wraps `(prev + 1) % total`, so the
+    // active wire lands back at 0 after the third advancement.
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 0);
+}
+
+#[tokio::test]
+async fn shuffle_wires_full_cycle_escalates_to_runtime_failure() {
+    // Same scenario as above but inside a tokio runtime so the escalation
+    // task gets a chance to run. After the spawn completes the parent
+    // uplink's consecutive_runtime_failures must have ticked at least once,
+    // proving the load-balancer is now seeing a runtime-failure signal it
+    // can use to switch to another uplink.
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    cfg.shuffle_wires = true;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![cfg],
+        make_probe(1),
+        make_lb(std::time::Duration::from_secs(60)),
+    )
+    .unwrap();
+
+    manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 3);
+    manager.record_wire_outcome(0, TransportKind::Tcp, 1, false, 3);
+    manager.record_wire_outcome(0, TransportKind::Tcp, 2, false, 3);
+
+    // Spawned `report_runtime_failure` lands on the scheduler asynchronously
+    // — yield twice to give it a chance to run before sampling the state.
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+
+    let snap = manager.read_status_for_test(0);
+    assert!(
+        snap.tcp.consecutive_runtime_failures >= 1,
+        "chain-exhausted escalation must bump consecutive_runtime_failures \
+         so the LB picks another uplink; got {}",
+        snap.tcp.consecutive_runtime_failures,
+    );
 }

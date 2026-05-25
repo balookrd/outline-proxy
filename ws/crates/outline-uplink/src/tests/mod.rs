@@ -133,6 +133,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 
@@ -1840,6 +1841,7 @@ fn make_ws_uplink_with_modes(
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 
@@ -1864,6 +1866,7 @@ fn make_vless_h3_uplink(name: &str, url: &str) -> UplinkConfig {
         vless_id: Some([0u8; 16]),
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 
@@ -1888,6 +1891,7 @@ fn make_shadowsocks_uplink(name: &str) -> UplinkConfig {
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 
@@ -2030,6 +2034,7 @@ fn make_vless_xhttp_uplink_with_mode(
         vless_id: Some([0u8; 16]),
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 

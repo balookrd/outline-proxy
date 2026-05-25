@@ -89,6 +89,7 @@ async fn build_manager(
             vless_id: None,
             fingerprint_profile: None,
             fallbacks: Vec::new(),
+            shuffle_wires: false,
         }],
         ProbeConfig {
             interval: Duration::from_secs(30),

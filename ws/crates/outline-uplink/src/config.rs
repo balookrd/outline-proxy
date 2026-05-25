@@ -202,6 +202,15 @@ pub struct UplinkConfig {
     /// Empty by default; populated from `[[outline.uplinks.fallbacks]]` in
     /// the TOML config.
     pub fallbacks: Vec<FallbackTransport>,
+    /// Random forward-only wire rotation. When `true`, the wire chain
+    /// `[primary, fallbacks…]` is reshuffled once before this uplink is
+    /// handed to the manager (so each process restart picks a different
+    /// ordering) and the per-transport active-wire state machine
+    /// surrenders to uplink-failover after one full pass through the
+    /// chain without a single successful wire dial. See
+    /// `UplinkSection::shuffle_wires` in the TOML schema for the full
+    /// operator-facing description.
+    pub shuffle_wires: bool,
 }
 
 impl UplinkConfig {
@@ -316,6 +325,11 @@ impl UplinkConfig {
             vless_id: fb.vless_id,
             fingerprint_profile: fb.fingerprint_profile.clone(),
             fallbacks: Vec::new(),
+            // wire_view materialises a synthetic single-wire uplink for
+            // probe walks — round-rotation semantics are meaningless on a
+            // chain of one. Always false on the synthetic side regardless
+            // of the parent's setting.
+            shuffle_wires: false,
         })
     }
 }

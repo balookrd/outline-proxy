@@ -95,6 +95,7 @@ fn make_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 
@@ -221,6 +222,7 @@ fn make_ws_uplink_pointing_at(name: &str, redial_target: SocketAddr) -> UplinkCo
         vless_id: None,
         fingerprint_profile: None,
         fallbacks: Vec::new(),
+        shuffle_wires: false,
     }
 }
 
