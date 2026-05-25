@@ -144,6 +144,9 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
     }
 
     let ipsec_bypass = tun.and_then(|section| section.ipsec_bypass).unwrap_or(false);
+    let pmtud_emit_below_quic_initial = tun
+        .and_then(|section| section.pmtud_emit_below_quic_initial)
+        .unwrap_or(false);
     let defrag_max_fragment_sets = tun
         .and_then(|section| section.defrag_max_fragment_sets)
         .unwrap_or(1024);
@@ -184,5 +187,6 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         defrag_max_total_bytes,
         defrag_max_bytes_per_set,
         ipsec_bypass,
+        pmtud_emit_below_quic_initial,
     }))
 }

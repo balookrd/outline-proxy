@@ -40,6 +40,8 @@ pub(crate) use icmp::{
     build_icmpv4_frag_needed, build_icmpv6_packet_too_big, icmpv6_checksum,
 };
 #[cfg(test)]
-pub(crate) use udp::should_emit_ptb_now;
+pub(crate) use udp::{should_emit_ptb_for_limit, should_emit_ptb_now};
 #[cfg(test)]
-pub(crate) use wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, checksum16};
+pub(crate) use wire::{
+    IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, IpVersion, checksum16,
+};

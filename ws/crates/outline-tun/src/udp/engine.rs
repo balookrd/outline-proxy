@@ -46,6 +46,16 @@ pub(super) struct TunUdpEngineInner {
     /// Async cleanup pool: flows removed from the table are sent here so
     /// `transport.close()` runs off the hot path without holding any map lock.
     pub(super) close_tx: mpsc::UnboundedSender<CloseWork>,
+    /// When `false` (default), the PMTUD path refuses to advertise a path
+    /// MTU below the QUIC v1 Initial-datagram minimum (1200 v4 / 1280 v6,
+    /// RFC 9000 §14.1) — sending such a PTB would tell compliant QUIC
+    /// stacks the destination cannot carry QUIC and silently evict them
+    /// onto TCP. Operators running pure VoWiFi / IKEv2 concentrators
+    /// with no QUIC clients to protect can set
+    /// [`TunConfig::pmtud_emit_below_quic_initial`](crate::TunConfig)
+    /// to `true` to restore the unconditional PTB emission and surface
+    /// explicit PMTUD signals on every sub-1200/1280 drop.
+    pub(super) pmtud_emit_below_quic_initial: bool,
 }
 
 impl TunUdpEngine {
@@ -54,6 +64,7 @@ impl TunUdpEngine {
         dispatch: TunRouting,
         max_flows: usize,
         idle_timeout: Duration,
+        pmtud_emit_below_quic_initial: bool,
     ) -> Self {
         let (close_tx, close_rx) = mpsc::unbounded_channel();
         let engine = Self {
@@ -66,6 +77,7 @@ impl TunUdpEngine {
                 max_flows,
                 idle_timeout,
                 close_tx,
+                pmtud_emit_below_quic_initial,
             }),
         };
         engine.spawn_cleanup_loop();
@@ -231,6 +243,24 @@ impl TunUdpEngine {
     /// IKE retransmits) thus produce one PTB per second per flow, which is
     /// enough for the sender's PMTUD logic to react.
     ///
+    /// Suppressed entirely when the transport's reported limit sits below
+    /// QUIC v1's minimum Initial-datagram floor (1200 v4 / 1280 v6, RFC
+    /// 9000 §14.1). A PTB advertising a path MTU below that floor tells
+    /// well-behaved QUIC clients that the destination cannot carry QUIC at
+    /// all; they comply by disabling QUIC for the destination and falling
+    /// back to TCP — the opposite of what an operator carrying real QUIC
+    /// traffic (YouTube, Google services, …) wants. The PMTUD machinery
+    /// stays useful for legitimate path-MTU drops higher up (VoWiFi
+    /// IKE_AUTH with certificates, GRE / IPsec encapsulation overhead,
+    /// ~1300–1450 byte budgets); only the sub-QUIC-floor range is muted.
+    ///
+    /// The suppression is operator-overridable via
+    /// [`TunConfig::pmtud_emit_below_quic_initial`](crate::TunConfig);
+    /// setting it to `true` restores the unconditional PTB emission for
+    /// deployments that prefer explicit PMTUD signalling on every
+    /// sub-1200/1280 drop (e.g. pure VoWiFi / IKE concentrators with no
+    /// QUIC traffic to protect).
+    ///
     /// Best-effort: any failure (writer error, malformed parsed packet) is
     /// logged at `debug!` and swallowed — the drop is already classified
     /// by the caller, the metric is already incremented at the transport
@@ -241,12 +271,19 @@ impl TunUdpEngine {
         packet: &ParsedUdpPacket,
         error: &anyhow::Error,
     ) {
-        if !self.claim_ptb_emission_slot(key).await {
-            return;
-        }
         let limit = error
             .chain()
             .find_map(|e| e.downcast_ref::<OversizedUdpDatagram>().map(|o| o.limit));
+        if !should_emit_ptb_for_limit(
+            limit,
+            packet.version,
+            self.inner.pmtud_emit_below_quic_initial,
+        ) {
+            return;
+        }
+        if !self.claim_ptb_emission_slot(key).await {
+            return;
+        }
         if let Err(err) = self.write_pmtud_packet(packet, limit).await {
             debug!(
                 error = %format!("{err:#}"),
@@ -440,4 +477,51 @@ pub(crate) fn should_emit_ptb_now(
         None => true,
         Some(prev) => now.saturating_duration_since(prev) >= throttle,
     }
+}
+
+/// Smallest UDP-payload size a QUIC v1 endpoint is willing to use for an
+/// Initial datagram (RFC 9000 §14.1). A PTB that advertises a path MTU
+/// below this floor signals "the path cannot carry QUIC" to a compliant
+/// stack — yielding the QUIC-disabled TCP fallback we want to avoid.
+const QUIC_MIN_INITIAL_PAYLOAD_V4: usize = 1200;
+/// IPv6 endpoints follow the IPv6 minimum link MTU (RFC 9000 §14.1
+/// references RFC 8200): 1280 bytes for the IP packet as a whole.
+const QUIC_MIN_INITIAL_PAYLOAD_V6: usize = 1280;
+
+/// Decide whether a PTB may be synthesised for an oversize-dropped UDP flow
+/// given the transport's reported size `limit`, the flow's IP version, and
+/// the operator's `emit_below_quic_initial` preference.
+///
+/// With `emit_below_quic_initial = false` (the default, mirroring
+/// [`TunConfig::pmtud_emit_below_quic_initial`](crate::TunConfig)) the
+/// function returns `false` for limits below the QUIC v1
+/// Initial-datagram minimum for that family — a PTB advertising
+/// sub-minimum MTU would push compliant QUIC clients off UDP onto TCP,
+/// the opposite of what an operator carrying real QUIC traffic wants.
+///
+/// With `emit_below_quic_initial = true` the suppression is disabled
+/// and every drop with a known limit becomes eligible for a PTB — the
+/// pre-suppression behaviour, suitable for VoWiFi / IKE-only
+/// deployments that have no QUIC clients to protect.
+///
+/// `limit == None` is permissive regardless of the flag: without an
+/// explicit transport budget we cannot prove the minimum is violated,
+/// and suppressing all PTBs in that case would hide legitimate PMTUD
+/// signals on transports that do not surface a size.
+pub(crate) fn should_emit_ptb_for_limit(
+    limit: Option<usize>,
+    version: IpVersion,
+    emit_below_quic_initial: bool,
+) -> bool {
+    let Some(limit) = limit else {
+        return true;
+    };
+    if emit_below_quic_initial {
+        return true;
+    }
+    let minimum = match version {
+        IpVersion::V4 => QUIC_MIN_INITIAL_PAYLOAD_V4,
+        IpVersion::V6 => QUIC_MIN_INITIAL_PAYLOAD_V6,
+    };
+    limit >= minimum
 }

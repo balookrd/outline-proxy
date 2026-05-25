@@ -6,9 +6,9 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
 use crate::{
-    IPV4_HEADER_LEN, IPV4_MIN_PATH_MTU, IPV6_HEADER_LEN, IPV6_MIN_PATH_MTU,
+    IPV4_HEADER_LEN, IPV4_MIN_PATH_MTU, IPV6_HEADER_LEN, IPV6_MIN_PATH_MTU, IpVersion,
     build_icmpv4_frag_needed, build_icmpv6_packet_too_big, checksum16, icmpv6_checksum,
-    should_emit_ptb_now,
+    should_emit_ptb_for_limit, should_emit_ptb_now,
 };
 
 const ICMPV4_PROTOCOL: u8 = 1;
@@ -184,6 +184,76 @@ fn ptb_throttle_handles_non_monotonic_clock_safely() {
     let later = Instant::now() + Duration::from_secs(10);
     let now = Instant::now();
     assert!(!should_emit_ptb_now(Some(later), now, Duration::from_secs(1)));
+}
+
+#[test]
+fn ptb_suppression_blocks_below_v4_quic_initial_minimum() {
+    // QUIC v1 requires Initial datagrams to be at least 1200 bytes
+    // (RFC 9000 §14.1). A QUIC-over-WS transport whose datagram budget
+    // sits at ~1180 — typical for SS-UDP over a 1200-byte QUIC datagram
+    // channel — would otherwise produce a PTB advertising 1180 and push
+    // compliant QUIC clients off UDP onto a TCP fallback.
+    assert!(!should_emit_ptb_for_limit(Some(1180), IpVersion::V4, false));
+    assert!(!should_emit_ptb_for_limit(Some(800), IpVersion::V4, false));
+}
+
+#[test]
+fn ptb_suppression_allows_v4_real_pmtud_range() {
+    // Legitimate path-MTU drops sit in the ~1300-1450 range (VoWiFi
+    // IKE_AUTH with certificates, GRE, IPsec encapsulation). Those
+    // remain eligible for a PTB even with the default suppression on.
+    assert!(should_emit_ptb_for_limit(Some(1200), IpVersion::V4, false));
+    assert!(should_emit_ptb_for_limit(Some(1400), IpVersion::V4, false));
+    assert!(should_emit_ptb_for_limit(Some(4096), IpVersion::V4, false));
+}
+
+#[test]
+fn ptb_suppression_blocks_below_v6_minimum_link_mtu() {
+    // IPv6 endpoints follow the 1280-byte minimum link MTU; QUIC v6
+    // initials never go below that, so PTBs claiming a smaller path are
+    // suppressed for the same reason as v4.
+    assert!(!should_emit_ptb_for_limit(Some(1200), IpVersion::V6, false));
+    assert!(!should_emit_ptb_for_limit(Some(1279), IpVersion::V6, false));
+}
+
+#[test]
+fn ptb_suppression_allows_v6_at_minimum_link_mtu() {
+    assert!(should_emit_ptb_for_limit(Some(1280), IpVersion::V6, false));
+    assert!(should_emit_ptb_for_limit(Some(1400), IpVersion::V6, false));
+}
+
+#[test]
+fn ptb_unspecified_limit_is_always_permissive() {
+    // When the transport surfaces no explicit limit we cannot prove the
+    // QUIC initial minimum is violated; suppressing in that case would
+    // silence legitimate PMTUD signals on transports that simply don't
+    // report a size. The opt-out flag does not change this branch —
+    // None is always permissive.
+    assert!(should_emit_ptb_for_limit(None, IpVersion::V4, false));
+    assert!(should_emit_ptb_for_limit(None, IpVersion::V6, false));
+    assert!(should_emit_ptb_for_limit(None, IpVersion::V4, true));
+    assert!(should_emit_ptb_for_limit(None, IpVersion::V6, true));
+}
+
+#[test]
+fn ptb_opt_in_emits_below_quic_initial_minimum() {
+    // tun.pmtud_emit_below_quic_initial = true restores the
+    // unconditional PTB behaviour for operators that prefer explicit
+    // PMTUD over QUIC protection (VoWiFi / IKE-only deployments). All
+    // sub-minimum limits that the default would suppress become
+    // eligible for a PTB again.
+    assert!(should_emit_ptb_for_limit(Some(1180), IpVersion::V4, true));
+    assert!(should_emit_ptb_for_limit(Some(800), IpVersion::V4, true));
+    assert!(should_emit_ptb_for_limit(Some(1200), IpVersion::V6, true));
+    assert!(should_emit_ptb_for_limit(Some(1279), IpVersion::V6, true));
+}
+
+#[test]
+fn ptb_opt_in_preserves_above_minimum_behaviour() {
+    // Enabling sub-minimum emission must not regress the above-minimum
+    // branch: these limits are eligible under both settings.
+    assert!(should_emit_ptb_for_limit(Some(1400), IpVersion::V4, true));
+    assert!(should_emit_ptb_for_limit(Some(1400), IpVersion::V6, true));
 }
 
 #[test]

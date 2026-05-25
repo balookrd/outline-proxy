@@ -167,6 +167,12 @@ pub(super) struct TunSection {
     /// (same as `via = "direct"`), which lets VoWiFi / IKEv2 clients work
     /// without ESP transit through the proxy. Default `false`.
     pub(super) ipsec_bypass: Option<bool>,
+    /// Whether the TUN UDP path may emit ICMP PTBs advertising a path
+    /// MTU below QUIC v1's Initial-datagram minimum (1200 v4 / 1280 v6).
+    /// Default `false` — sub-minimum PTBs would push compliant QUIC
+    /// clients onto a TCP fallback. Set `true` to restore unconditional
+    /// emission for VoWiFi / IKE-only setups. See `docs/TUN-PMTUD.md`.
+    pub(super) pmtud_emit_below_quic_initial: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
