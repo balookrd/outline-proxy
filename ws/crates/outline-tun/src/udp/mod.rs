@@ -32,6 +32,8 @@ mod tests;
 
 pub use self::engine::TunUdpEngine;
 #[cfg(test)]
+pub(crate) use self::engine::should_emit_ptb_now;
+#[cfg(test)]
 pub(crate) use self::wire::build_ipv4_udp_packet;
 pub(crate) use self::wire::parse_udp_packet;
 

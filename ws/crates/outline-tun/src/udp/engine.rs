@@ -16,11 +16,14 @@ use super::lifecycle::CloseWork;
 use super::types::{
     DirectFlowTable, DirectUdpFlowState, FlowTable, UdpFlowKey, bump_last_seen_if_current,
 };
-use super::wire::ParsedUdpPacket;
+use super::wire::{IpVersion, ParsedUdpPacket, build_ipv4_udp_packet, build_ipv6_udp_packet};
 use crate::atomic_counter::CounterU64;
+use crate::icmp::{
+    IPV4_MIN_PATH_MTU, IPV6_MIN_PATH_MTU, build_icmpv4_frag_needed, build_icmpv6_packet_too_big,
+};
 use crate::{SharedTunWriter, TunRoute, TunRouting};
 use outline_metrics as metrics;
-use outline_transport::{AbortOnDrop, is_dropped_oversized_udp_error};
+use outline_transport::{AbortOnDrop, OversizedUdpDatagram, is_dropped_oversized_udp_error};
 use socks5_proto::TargetAddr;
 
 #[derive(Clone)]
@@ -171,6 +174,7 @@ impl TunUdpEngine {
         let payload = super::build_udp_payload(&remote_target, &packet.payload)?;
         if let Err(error) = transport.send_packet(&payload).await {
             if is_dropped_oversized_udp_error(&error) {
+                self.emit_pmtud_after_oversize_drop(&key, &packet, &error).await;
                 return Ok(());
             }
             let (replacement_flow_id, replacement_transport, replacement_index, replacement_name) =
@@ -185,6 +189,7 @@ impl TunUdpEngine {
                 .await?;
             if let Err(error) = replacement_transport.send_packet(&payload).await {
                 if is_dropped_oversized_udp_error(&error) {
+                    self.emit_pmtud_after_oversize_drop(&key, &packet, &error).await;
                     return Ok(());
                 }
                 return Err(error);
@@ -211,6 +216,111 @@ impl TunUdpEngine {
         }
 
         Ok(())
+    }
+
+    /// Send an ICMP "Fragmentation Needed" (IPv4) or ICMPv6 "Packet Too
+    /// Big" reply to the sender of a UDP datagram that was just dropped by
+    /// the transport for being too large. Without this the client has no
+    /// way to learn the effective tunnel MTU and keeps retransmitting the
+    /// same oversize payload (real-world breakage: VoWiFi IKE_AUTH with
+    /// certificates over a raw-QUIC uplink).
+    ///
+    /// Throttled per-flow to one PTB every [`Self::PTB_THROTTLE`] — RFC
+    /// 4443 §2.4(f) makes this mandatory for ICMPv6 and RFC 1812 §4.3.2.8
+    /// strongly recommends it for IPv4. Bursts of oversize sends (e.g.
+    /// IKE retransmits) thus produce one PTB per second per flow, which is
+    /// enough for the sender's PMTUD logic to react.
+    ///
+    /// Best-effort: any failure (writer error, malformed parsed packet) is
+    /// logged at `debug!` and swallowed — the drop is already classified
+    /// by the caller, the metric is already incremented at the transport
+    /// boundary, and we must not turn an oversize drop into a hard error.
+    async fn emit_pmtud_after_oversize_drop(
+        &self,
+        key: &UdpFlowKey,
+        packet: &ParsedUdpPacket,
+        error: &anyhow::Error,
+    ) {
+        if !self.claim_ptb_emission_slot(key).await {
+            return;
+        }
+        let limit = error
+            .chain()
+            .find_map(|e| e.downcast_ref::<OversizedUdpDatagram>().map(|o| o.limit));
+        if let Err(err) = self.write_pmtud_packet(packet, limit).await {
+            debug!(
+                error = %format!("{err:#}"),
+                "failed to emit ICMP PTB after TUN UDP oversize drop"
+            );
+        }
+    }
+
+    /// Minimum interval between PTBs synthesised for the same flow. Aligned
+    /// with the Linux `net.ipv4.icmp_ratelimit` default (1000 ms).
+    const PTB_THROTTLE: Duration = Duration::from_secs(1);
+
+    /// Returns `true` if the caller is allowed to synthesise a PTB for the
+    /// flow at `key` right now, and atomically records the new emission
+    /// timestamp on the flow. Returns `false` if the previous PTB was sent
+    /// within [`Self::PTB_THROTTLE`], or if the flow no longer exists.
+    ///
+    /// Returning `false` on a missing flow is deliberate: with no flow
+    /// state we have no place to keep the throttle, and a flow that just
+    /// disappeared from the table is racing against the cleanup path
+    /// anyway — letting the PTB go unthrottled there would defeat the
+    /// rate-limit during teardown bursts.
+    async fn claim_ptb_emission_slot(&self, key: &UdpFlowKey) -> bool {
+        let handle = self.inner.flows.read().await.get(key).map(Arc::clone);
+        let Some(handle) = handle else {
+            return false;
+        };
+        let mut flow = handle.lock().await;
+        let now = Instant::now();
+        if !should_emit_ptb_now(flow.last_ptb_sent, now, Self::PTB_THROTTLE) {
+            return false;
+        }
+        flow.last_ptb_sent = Some(now);
+        true
+    }
+
+    async fn write_pmtud_packet(
+        &self,
+        packet: &ParsedUdpPacket,
+        limit: Option<usize>,
+    ) -> Result<()> {
+        let icmp = match (packet.version, packet.source_ip, packet.destination_ip) {
+            (IpVersion::V4, std::net::IpAddr::V4(client_ip), std::net::IpAddr::V4(remote_ip)) => {
+                // Re-synthesise just the IP+UDP header of the offending
+                // packet (no payload bytes are needed for socket matching:
+                // RFC 1812 only requires the 8-byte UDP header).
+                let original = build_ipv4_udp_packet(
+                    client_ip,
+                    remote_ip,
+                    packet.source_port,
+                    packet.destination_port,
+                    &[],
+                )?;
+                let mtu = limit
+                    .map(|l| u16::try_from(l).unwrap_or(u16::MAX))
+                    .unwrap_or(IPV4_MIN_PATH_MTU);
+                build_icmpv4_frag_needed(mtu, &original)?
+            },
+            (IpVersion::V6, std::net::IpAddr::V6(client_ip), std::net::IpAddr::V6(remote_ip)) => {
+                let original = build_ipv6_udp_packet(
+                    client_ip,
+                    remote_ip,
+                    packet.source_port,
+                    packet.destination_port,
+                    &[],
+                )?;
+                let mtu = limit
+                    .map(|l| u32::try_from(l).unwrap_or(u32::MAX))
+                    .unwrap_or(IPV6_MIN_PATH_MTU as u32);
+                build_icmpv6_packet_too_big(mtu, &original)?
+            },
+            _ => return Ok(()),
+        };
+        self.inner.writer.write_packet(&icmp).await
     }
 
     /// Handle a packet that resolved to `via = "direct"`: open (or reuse) a
@@ -314,5 +424,20 @@ impl TunUdpEngine {
             "created direct TUN UDP flow"
         );
         Ok(())
+    }
+}
+
+/// Decide whether a PTB may be emitted at `now`, given the previous emission
+/// timestamp (`None` ⇒ this is the first PTB for the flow) and the configured
+/// throttle interval. Extracted so the rate-limit policy can be unit-tested
+/// independently of the async flow-table machinery.
+pub(crate) fn should_emit_ptb_now(
+    previous: Option<Instant>,
+    now: Instant,
+    throttle: Duration,
+) -> bool {
+    match previous {
+        None => true,
+        Some(prev) => now.saturating_duration_since(prev) >= throttle,
     }
 }

@@ -36,7 +36,10 @@ pub(crate) use classify::{PacketDisposition, classify_packet};
 pub(crate) use device::{EBUSY_OS_ERROR, is_tun_device_busy_error};
 #[cfg(test)]
 pub(crate) use icmp::{
-    IPV6_MIN_PATH_MTU, build_icmp_echo_reply, build_icmp_echo_reply_packets, icmpv6_checksum,
+    IPV4_MIN_PATH_MTU, IPV6_MIN_PATH_MTU, build_icmp_echo_reply, build_icmp_echo_reply_packets,
+    build_icmpv4_frag_needed, build_icmpv6_packet_too_big, icmpv6_checksum,
 };
+#[cfg(test)]
+pub(crate) use udp::should_emit_ptb_now;
 #[cfg(test)]
 pub(crate) use wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, checksum16};
