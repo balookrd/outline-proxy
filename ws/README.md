@@ -552,6 +552,11 @@ listen = "[::1]:9090"
 # idle_timeout_secs = 300
 # Built-in IKE / IPsec NAT-T bypass — see "TUN Mode" section below.
 # ipsec_bypass = false
+# Allow ICMP PTBs that advertise a path MTU below QUIC's Initial-datagram
+# minimum (1200 v4 / 1280 v6) on TUN UDP oversize drops. Default false
+# protects QUIC clients from being evicted to TCP; set true for VoWiFi /
+# IKE-only setups (`docs/TUN-PMTUD.md`).
+# pmtud_emit_below_quic_initial = false
 
 # [tun.tcp]
 # connect_timeout_secs = 10
@@ -1023,6 +1028,14 @@ The bypass relies on the direct path's local socket to reach the destination. On
 
 Default: `false`. Both ports must be matched together — IKEv2 stacks move IKE_AUTH off port 500 mid-session via NAT_DETECTION, so bypassing only 4500 still breaks the handshake.
 
+### TUN PMTUD safety gate
+
+When the upstream transport refuses an oversize UDP datagram on the TUN path (raw QUIC SS-UDP, VLESS-UDP, SS-2022, …), the engine synthesises an ICMP "Fragmentation Needed" (IPv4) or "Packet Too Big" (IPv6) toward the original sender so its PMTUD state machine can react. The boolean knob `tun.pmtud_emit_below_quic_initial` controls a single question: **may that PTB advertise a path MTU below QUIC v1's Initial-datagram minimum (1200 v4 / 1280 v6, RFC 9000 §14.1)?**
+
+Default `false` — sub-minimum PTBs are suppressed. Compliant QUIC stacks treat such a PTB as "destination cannot carry QUIC" and fall back to TCP, so leaving the gate in place keeps real QUIC traffic (YouTube, Google services) on UDP even when the TUN uplink's per-datagram budget sits just below 1200 bytes. Sub-minimum oversize drops are silently absorbed and the sender's own retransmit / timeout logic eventually adjusts.
+
+Set `tun.pmtud_emit_below_quic_initial = true` to restore unconditional PTB emission. Use it on deployments where QUIC eviction is a non-issue and the explicit PMTUD signal on every sub-minimum drop is worth more — for example a pure VoWiFi / IKEv2 concentrator carrying IKE_AUTH with certificates over a narrow raw-QUIC uplink, where the PTB is the only way for the IKE retransmit loop to learn the effective tunnel MTU. The full contract — when the PTB fires, what is throttled, where the minimum comes from, what changes on opt-in — lives in [docs/TUN-PMTUD.md](docs/TUN-PMTUD.md).
+
 ## Linux fwmark
 
 Per-uplink `fwmark` applies `SO_MARK` to outbound sockets:
@@ -1230,7 +1243,8 @@ in `grafana/outline-ws-rust-dashboard.json`. Probe / health-check
 connections are intentionally *not* attributed — the metrics cover only
 user-traffic dials.
 When TUN UDP forwarding fails before a packet can be delivered upstream, `outline_ws_rust_tun_udp_forward_errors_total{reason}` breaks that down into `all_uplinks_failed`, `transport_error`, `connect_failed`, and `other`.
-Oversized SOCKS5 UDP packets dropped before uplink forwarding, and oversized UDP responses dropped before client delivery, are exported as `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing"}`.
+Oversized SOCKS5 UDP packets dropped before uplink forwarding, and oversized UDP responses dropped before client delivery, are exported as `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing", cause}` (the `cause` label distinguishes `quic_dgram`, `vless_quic_dgram`, `vless_udp`, `ss_socket`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`).
+On the TUN UDP path, oversize drops also synthesise an ICMP "Fragmentation Needed" (IPv4) or "Packet Too Big" (IPv6) reply toward the sender so its own PMTUD state machine can react — throttled to one PTB per second per flow, and suppressed below QUIC v1's Initial-datagram floor (1200 v4 / 1280 v6) so well-behaved QUIC clients are not pushed off UDP into a TCP fallback. See [docs/TUN-PMTUD.md](docs/TUN-PMTUD.md) for the full contract.
 Local ICMP echo handling is exported separately via `outline_ws_rust_tun_icmp_local_replies_total{ip_family}`.
 
 For direct `transport = "shadowsocks"` UDP uplinks, the same oversized checks still apply on the local relay boundaries:

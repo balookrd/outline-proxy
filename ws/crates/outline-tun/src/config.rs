@@ -29,6 +29,23 @@ pub struct TunConfig {
     /// default route, set `direct_fwmark` and configure a corresponding
     /// `ip rule fwmark X lookup Y` table (Linux only).
     pub ipsec_bypass: bool,
+    /// Whether the TUN UDP path is allowed to emit ICMP "Fragmentation
+    /// Needed" / "Packet Too Big" replies that advertise a path MTU
+    /// below QUIC v1's Initial-datagram minimum (1200 bytes IPv4 /
+    /// 1280 bytes IPv6, RFC 9000 §14.1).
+    ///
+    /// Default `false`: such a PTB would tell compliant QUIC stacks
+    /// that the destination cannot carry QUIC, evicting real QUIC
+    /// traffic (YouTube, Google services, …) onto TCP. Sub-minimum
+    /// oversize drops are silently absorbed instead, and the sender's
+    /// own retransmit / timeout logic eventually adjusts.
+    ///
+    /// Set to `true` to restore unconditional PTB emission for
+    /// deployments that prefer explicit PMTUD signalling on every
+    /// sub-minimum drop — pure VoWiFi / IKEv2 concentrators with no
+    /// QUIC clients to protect are the canonical case. The full
+    /// trade-off is documented in `docs/TUN-PMTUD.md`.
+    pub pmtud_emit_below_quic_initial: bool,
 }
 
 #[derive(Debug, Clone)]

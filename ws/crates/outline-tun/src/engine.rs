@@ -50,7 +50,13 @@ pub async fn spawn_tun_loop(
     let defrag_max_fragments_per_set = config.defrag_max_fragments_per_set;
     let defrag_max_total_bytes = config.defrag_max_total_bytes;
     let defrag_max_bytes_per_set = config.defrag_max_bytes_per_set;
-    let udp_engine = TunUdpEngine::new(writer.clone(), routing.clone(), max_flows, idle_timeout);
+    let udp_engine = TunUdpEngine::new(
+        writer.clone(),
+        routing.clone(),
+        max_flows,
+        idle_timeout,
+        config.pmtud_emit_below_quic_initial,
+    );
     let tcp_engine = TunTcpEngine::new(
         writer.clone(),
         routing.clone(),

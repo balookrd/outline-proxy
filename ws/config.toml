@@ -95,6 +95,16 @@ listen = "[::1]:9090"
 # `direct_fwmark` and configure a matching `ip rule fwmark X lookup Y` so the
 # bypassed sockets escape the TUN routing loop. Default false.
 # ipsec_bypass = false
+#
+# Whether the TUN UDP path may emit ICMP Frag-Needed / Packet-Too-Big
+# replies that advertise a path MTU below QUIC v1's Initial-datagram
+# minimum (1200 v4 / 1280 v6, RFC 9000 §14.1). Default false — such a
+# PTB would tell compliant QUIC stacks the destination cannot carry QUIC
+# and evict real QUIC traffic (YouTube, Google services) onto TCP. Set
+# to true to restore unconditional PTB emission for VoWiFi / IKE-only
+# deployments that need explicit PMTUD signalling on every sub-minimum
+# drop. See `docs/TUN-PMTUD.md` for the full contract.
+# pmtud_emit_below_quic_initial = false
 
 # [tun.tcp]
 # connect_timeout_secs = 10
