@@ -1260,6 +1260,34 @@ shuffle_wires   = true
   раньше времени — ротация по wires успевает пройти круг перед
   uplink-failover. После исчерпания круга гейт отпускается и флип
   срабатывает.
+- **Вертикальный carrier-каскад до wire-rotation**: для WS-family
+  и VLESS-XHTTP wires шаг wire-advance тоже гейтится на
+  **effective mode активного wire** — пока активный wire не на дне
+  своей family. Пока активный wire на `ws_h3` / `ws_h2` /
+  `xhttp_h3` / `xhttp_h2`, runtime / probe / dial failures
+  направляются в существующую машинерию `extend_mode_downgrade`
+  (cap wire'а на ранг ниже: `ws_h3 → ws_h2 → ws_h1`,
+  `xhttp_h3 → xhttp_h2 → xhttp_h1`), а не в per-wire advance
+  counter. Только когда wire достигает `ws_h1` / `xhttp_h1`
+  (или family без descent stack: Shadowsocks direct sockets, raw
+  QUIC ALPN cases) — следующая ошибка на активном wire вызывает
+  собственно wire-rotation step. Это даёт оператору
+  `min_failures × carrier_ranks` бюджет на каждом wire перед
+  переходом на следующий, что соответствует обещанному в общей
+  доке каскаду `h3 → h2 → http1` на активном плече.
+- **Recovery probe удерживает cap**: при `shuffle_wires = true`
+  configured-carrier recovery probe в
+  [`UplinkManager::note_recovery_probe_success`] **не сбрасывает**
+  mode-downgrade cap даже после
+  `RECOVERY_SUCCESS_STREAK_THRESHOLD` (2 подряд успеха). Cap всё
+  ещё может истечь по своему `mode_downgrade_until` дедлайну
+  (default 60 s). Обоснование: handshake-only recovery probe на
+  `xhttp_h3` обычно успешен даже когда реальный data-plane трафик
+  ещё фейлит (production кейс из лога, из-за которого и делалась
+  эта итерация); сброс cap'а на этом сигнале возвращает трафик к
+  сломанному configured carrier и снова триггерит тот же descent
+  на следующей ошибке, оставляя цикл на верхнем ранге вместо
+  спуска до floor.
 - **Сброс на любом успехе wire**: успешный dial *любого* wire
   (primary или fallback) обнуляет счётчик круга и ставит штамп
   `last_any_wire_success`; успешный probe также обнуляет его

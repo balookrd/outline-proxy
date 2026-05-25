@@ -765,6 +765,22 @@ impl UplinkManager {
     pub(crate) fn note_recovery_probe_success(&self, index: usize, transport: TransportKind) {
         let mut should_clear = false;
         let mut new_streak = 0u32;
+        // shuffle_wires "stay on the capped carrier" gate. With the
+        // vertical cascade (xhttp_h3 → xhttp_h2 → xhttp_h1) the operator
+        // explicitly wants traffic to settle at the deepest working
+        // carrier on the current wire before any rotation away from
+        // it. A handshake-only recovery probe on the *configured*
+        // carrier (e.g. xhttp_h3) routinely succeeds even when real
+        // data-plane traffic still fails (the production case in the
+        // log this branch was built for); clearing the cap on that
+        // signal yanks user-flows back onto the broken configured
+        // carrier and re-triggers the same descent on the next
+        // failure, looping at the upper rank instead of walking
+        // down. With `shuffle_wires = true` we therefore refuse to
+        // clear the cap from this path entirely — the cap can still
+        // expire naturally via its `mode_downgrade_until` deadline
+        // (default 60 s, controlled by `mode_downgrade_secs`).
+        let shuffle_wires = self.inner.uplinks[index].shuffle_wires;
         self.inner.with_status_mut(index, |status| {
             let per = match transport {
                 TransportKind::Tcp => &mut status.tcp,
@@ -780,7 +796,7 @@ impl UplinkManager {
             }
             per.recovery_probe_success_streak = per.recovery_probe_success_streak.saturating_add(1);
             new_streak = per.recovery_probe_success_streak;
-            if new_streak >= Self::RECOVERY_SUCCESS_STREAK_THRESHOLD {
+            if new_streak >= Self::RECOVERY_SUCCESS_STREAK_THRESHOLD && !shuffle_wires {
                 should_clear = true;
             }
         });
@@ -789,6 +805,16 @@ impl UplinkManager {
             TransportKind::Tcp => "TCP",
             TransportKind::Udp => "UDP",
         };
+        if shuffle_wires && new_streak >= Self::RECOVERY_SUCCESS_STREAK_THRESHOLD {
+            debug!(
+                uplink = %uplink.name,
+                kind = ?transport,
+                streak = new_streak,
+                "{kind_label} recovery probe streak met but shuffle_wires = true: \
+                 leaving cap in place so the vertical carrier cascade keeps walking \
+                 the wire down to its floor before rotating to the next wire"
+            );
+        }
         if should_clear {
             debug!(
                 uplink = %uplink.name,
@@ -888,6 +914,94 @@ fn one_step_down(failed: TransportMode) -> Option<TransportMode> {
         TransportMode::XhttpH2 => Some(TransportMode::XhttpH1),
         TransportMode::WsH1 | TransportMode::XhttpH1 => None,
     }
+}
+
+/// `true` when this transport mode is the bottom of its carrier-downgrade
+/// stack — i.e. [`one_step_down`] would return `None`. Used by the
+/// shuffle_wires wire-advance gate: as long as the active wire's
+/// effective mode is **above** the floor, a runtime / probe / dial
+/// failure on this wire is funnelled into the carrier-cascade
+/// machinery (`extend_mode_downgrade` caps one rank lower) instead of
+/// the per-wire failure streak, so the wire never advances away from
+/// h3 / h2 before its own carrier stack has been walked down to
+/// h1. Once the wire is at h1 (or the carrier family doesn't have a
+/// downgrade stack at all, e.g. Shadowsocks direct sockets), failures
+/// resume their normal role of driving wire-rotation.
+///
+/// Modes outside the Ws / Xhttp families never enter the downgrade
+/// stack (see [`extend_mode_downgrade`] guard) — those wires count as
+/// "at the floor" from the very first failure, so wire rotation kicks
+/// in immediately like the legacy path.
+pub(crate) fn is_carrier_floor_mode(mode: TransportMode) -> bool {
+    one_step_down(mode).is_none()
+}
+
+/// Synchronous "is the wire at the floor of its carrier-downgrade
+/// stack?" helper, callable from inside an already-held
+/// `with_status_mut` closure — `record_wire_outcome` needs this gate
+/// without re-entering the per-uplink status lock that
+/// [`UplinkManager::effective_tcp_mode_for_wire`] /
+/// [`UplinkManager::effective_udp_mode_for_wire`] take.
+///
+/// Mirrors the dispatch logic of the async helpers: wire 0 reads the
+/// primary cap on `status.<transport>`; wire ≥ 1 reads
+/// `fallback_mode_downgrades[wire - 1]`. Returns:
+///
+/// * `true` when the wire's family is **not** Ws/XHTTP (Shadowsocks,
+///   raw VLESS) — those carriers have no descent stack, so the gate
+///   should never block wire-rotation on them;
+/// * `true` when the wire's effective mode is the floor of its family
+///   (`WsH1` or `XhttpH1`) — no further descent possible;
+/// * `false` otherwise.
+///
+/// The wire's *configured* mode comes from the parent uplink's
+/// primary fields (wire 0) or the matching
+/// `UplinkConfig::fallbacks[wire - 1]` entry. The *effective* mode is
+/// the cap when an in-window downgrade is installed, else the
+/// configured mode.
+pub(crate) fn wire_is_at_carrier_floor(
+    uplink: &crate::config::UplinkConfig,
+    status: &super::status::PerTransportStatus,
+    transport: TransportKind,
+    wire_index: u8,
+) -> bool {
+    if wire_index == 0 {
+        let (family_transport, configured) = match transport {
+            TransportKind::Tcp => (uplink.transport, uplink.tcp_dial_mode()),
+            TransportKind::Udp => (uplink.transport, uplink.udp_dial_mode()),
+        };
+        // Only WS / VLESS families participate in the carrier-downgrade
+        // stack (see `extend_mode_downgrade` guard). SS direct sockets
+        // and any other family count as "at floor" so wire-rotation is
+        // not held back.
+        if !matches!(
+            family_transport,
+            crate::config::UplinkTransport::Ws | crate::config::UplinkTransport::Vless
+        ) {
+            return true;
+        }
+        let effective = match (status.mode_downgrade_until, status.mode_downgrade_capped_to) {
+            (Some(until), Some(cap)) if until > Instant::now() => cap,
+            _ => configured,
+        };
+        return is_carrier_floor_mode(effective);
+    }
+    let slot_idx = (wire_index - 1) as usize;
+    let Some(fallback) = uplink.fallbacks.get(slot_idx) else {
+        return true;
+    };
+    if !matches!(
+        fallback.transport,
+        crate::config::UplinkTransport::Ws | crate::config::UplinkTransport::Vless
+    ) {
+        return true;
+    }
+    let configured = match transport {
+        TransportKind::Tcp => fallback.tcp_dial_mode(),
+        TransportKind::Udp => fallback.udp_dial_mode(),
+    };
+    let effective = wire_capped_or_configured(status, slot_idx, configured);
+    is_carrier_floor_mode(effective)
 }
 
 /// Inverse of [`one_step_down`]: map a capped carrier to the next

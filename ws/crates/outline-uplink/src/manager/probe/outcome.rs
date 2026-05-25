@@ -142,6 +142,8 @@ fn advance_active_wire_on_probe_failure(
     pin_duration: std::time::Duration,
     shuffle_wires: bool,
     failure_cooldown: Duration,
+    uplink: &crate::config::UplinkConfig,
+    transport: TransportKind,
 ) -> bool {
     if total_wires <= 1 {
         return false;
@@ -167,6 +169,24 @@ fn advance_active_wire_on_probe_failure(
         return false;
     }
     if status.consecutive_failures < min_failures.max(1) {
+        return false;
+    }
+    // shuffle_wires "vertical carrier cascade" gate (mirror of the
+    // same check in `record_wire_outcome`): hold off the probe-driven
+    // 0 → 1 advance while wire 0 still has carrier-downgrade ranks
+    // left. The probe failure will have already routed through
+    // `extend_mode_downgrade` upstream, capping one rank lower, so
+    // the next dial / probe lands on the capped carrier. Only when
+    // wire 0's effective mode reaches the floor of its family (or
+    // the family has no descent stack at all) does the wire-rotation
+    // step fire.
+    if shuffle_wires
+        && !super::super::mode_downgrade::wire_is_at_carrier_floor(uplink, status, transport, 0)
+    {
+        // Don't advance; let the carrier-cascade do its work.
+        // `consecutive_failures` was already incremented by
+        // `record_transport_failure` upstream, which is what
+        // `extend_mode_downgrade` consults to decide whether to cap.
         return false;
     }
     status.active_wire = 1;
@@ -393,6 +413,8 @@ impl UplinkManager {
                         pin_duration,
                         shuffle_wires,
                         failure_cooldown,
+                        uplink,
+                        TransportKind::Tcp,
                     );
                 }
             } else {
@@ -417,6 +439,8 @@ impl UplinkManager {
                             pin_duration,
                             shuffle_wires,
                             failure_cooldown,
+                            uplink,
+                            TransportKind::Udp,
                         );
                     }
                 } else {
@@ -618,6 +642,8 @@ impl UplinkManager {
                     pin_duration,
                     shuffle_wires,
                     failure_cooldown,
+                    uplink,
+                    TransportKind::Tcp,
                 );
             }
             // Only penalise UDP when it is actually configured.  The probe Err
@@ -641,6 +667,8 @@ impl UplinkManager {
                     pin_duration,
                     shuffle_wires,
                     failure_cooldown,
+                    uplink,
+                    TransportKind::Udp,
                 );
             }
             status.last_error = Some(error_text.clone());

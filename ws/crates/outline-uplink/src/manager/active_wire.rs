@@ -227,6 +227,33 @@ impl UplinkManager {
             if st.active_wire_streak < min_failures {
                 return;
             }
+            // shuffle_wires "vertical carrier cascade" gate: hold off
+            // the wire-rotation step while the active wire still has
+            // unused ranks in its carrier-downgrade stack (xhttp_h3 →
+            // xhttp_h2 → xhttp_h1, ws_h3 → ws_h2 → ws_h1). The
+            // failure that brought us here was already routed through
+            // `extend_mode_downgrade` upstream, which caps one rank
+            // lower; surfacing the wire-advance now would skip the
+            // intermediate ranks and jump straight to the next wire.
+            // Once the wire's effective mode reaches the floor of its
+            // family (h1) — or the family has no descent stack at
+            // all, e.g. Shadowsocks direct — the gate releases and
+            // the rotation step fires like the legacy chain.
+            //
+            // Streak is reset here too: the next batch of failures on
+            // the new (capped) carrier starts a fresh per-wire budget
+            // before being held up against the gate again.
+            if shuffle_wires
+                && !super::mode_downgrade::wire_is_at_carrier_floor(
+                    &self.inner.uplinks[uplink_index],
+                    st,
+                    transport,
+                    attempted_wire,
+                )
+            {
+                st.active_wire_streak = 0;
+                return;
+            }
             // Streak threshold reached — advance the active wire.
             let previous = st.active_wire;
             let next = (previous + 1) % total;
