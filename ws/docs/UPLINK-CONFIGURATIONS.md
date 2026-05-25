@@ -1252,6 +1252,34 @@ Semantics:
   prematurely — wire rotation gets a chance to traverse the chain
   before uplink-failover. Once the chain is exhausted, the gate
   releases and the flip lands.
+- **Vertical carrier cascade before wire-rotation**: for WS-family
+  and VLESS-XHTTP wires the wire-advance step itself is also gated
+  on the **active wire's effective mode** having reached the floor
+  of its family. While the active wire is at `ws_h3` / `ws_h2` /
+  `xhttp_h3` / `xhttp_h2`, runtime / probe / dial failures are
+  funnelled into the existing `extend_mode_downgrade` machinery
+  (caps the wire one rank lower: `ws_h3 → ws_h2 → ws_h1`,
+  `xhttp_h3 → xhttp_h2 → xhttp_h1`) rather than the per-wire
+  advance counter. Only when the wire reaches `ws_h1` / `xhttp_h1`
+  (or sits on a family with no descent stack: Shadowsocks direct
+  sockets, raw QUIC ALPN cases) does the next failure on the
+  active wire trigger the actual wire-rotation step. This gives
+  the operator's `min_failures × carrier_ranks` budget on each
+  wire before rotating to the next one — matching the legacy
+  `h3 → h2 → http1` descent contract on the active leg.
+- **Recovery probe holds the cap**: with `shuffle_wires = true`, the
+  configured-carrier recovery probe in
+  [`UplinkManager::note_recovery_probe_success`] does **not** clear
+  the mode-downgrade cap even after the
+  `RECOVERY_SUCCESS_STREAK_THRESHOLD` (2 consecutive successes) is
+  met. The cap can still expire naturally via its
+  `mode_downgrade_until` deadline (default 60 s). Rationale: a
+  handshake-only recovery probe on `xhttp_h3` routinely succeeds
+  even when real data-plane traffic still fails (the production case
+  in the original log this iteration was built for); clearing the
+  cap on that signal yanks traffic back to the broken configured
+  carrier and re-triggers the same descent on the next failure,
+  looping at the upper rank instead of walking down to the floor.
 - **Reset on any-wire success**: a successful dial of *any* wire
   (primary or fallback) zeroes the round counter and stamps
   `last_any_wire_success`; a successful probe also zeroes it

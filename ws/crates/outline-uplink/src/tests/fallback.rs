@@ -88,6 +88,73 @@ fn ws_fallback(udp: bool) -> FallbackTransport {
     }
 }
 
+/// Shadowsocks primary configured with both TCP + UDP addresses. Used
+/// by the shuffle_wires runtime / probe tests where we want
+/// `wire_is_at_carrier_floor` to always return `true` (SS direct sockets
+/// have no carrier-downgrade stack), so the per-wire advance gate
+/// never blocks rotation. WS / VLESS / XHTTP wires hit the gate on
+/// their non-floor modes (`ws_h2`, `xhttp_h3`, etc.) and require
+/// explicit cap manipulation in the test setup; SS keeps the legacy
+/// "N failures → advance" semantics out of the box.
+fn ss_primary(udp: bool) -> UplinkConfig {
+    UplinkConfig {
+        name: "edge".to_string(),
+        transport: UplinkTransport::Shadowsocks,
+        tcp_ws_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        tcp_addr: Some("1.2.3.4:8388".parse().unwrap()),
+        udp_addr: if udp {
+            Some("1.2.3.4:8389".parse().unwrap())
+        } else {
+            None
+        },
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+        fingerprint_profile: None,
+        fallbacks: Vec::new(),
+        shuffle_wires: false,
+    }
+}
+
+/// Second Shadowsocks endpoint, used as a fallback in shuffle_wires
+/// tests when a non-WS/VLESS wire is needed (i.e. one that
+/// `wire_is_at_carrier_floor` reports as "at floor" unconditionally).
+/// Distinct host from `ss_fallback` so individual wires can still be
+/// identified in any debug output.
+fn ss_alt_fallback(udp: bool) -> FallbackTransport {
+    FallbackTransport {
+        transport: UplinkTransport::Shadowsocks,
+        tcp_ws_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        vless_id: None,
+        tcp_addr: Some("9.9.9.9:8388".parse().unwrap()),
+        udp_addr: if udp {
+            Some("9.9.9.9:8389".parse().unwrap())
+        } else {
+            None
+        },
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        fwmark: None,
+        ipv6_first: false,
+        fingerprint_profile: None,
+    }
+}
+
 fn ss_fallback(udp: bool) -> FallbackTransport {
     FallbackTransport {
         transport: UplinkTransport::Shadowsocks,
@@ -2473,8 +2540,12 @@ async fn report_runtime_failure_for_wire_follows_active_wire_after_advance() {
 fn shuffle_wires_off_keeps_round_counter_at_zero() {
     // Baseline: with the flag off, the round counter must never tick even as
     // active_wire advances all the way around the chain.
-    let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    // SS wires throughout so the carrier-floor gate (new in iteration 3)
+    // doesn't get in the way — those wires have no descent stack and
+    // count as "at floor" from the first failure, restoring the legacy
+    // "N failures → advance" semantics this baseline test pins.
+    let mut cfg = ss_primary(false);
+    cfg.fallbacks = vec![ss_alt_fallback(false), ss_fallback(false)];
     cfg.shuffle_wires = false;
     let manager = manager_with_uplink(cfg, 1);
 
@@ -2490,8 +2561,10 @@ fn shuffle_wires_off_keeps_round_counter_at_zero() {
 
 #[test]
 fn shuffle_wires_on_increments_round_counter_per_advancement() {
-    let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    // SS wires throughout — bypasses the carrier-floor gate so the test
+    // pins the round-counter accounting only.
+    let mut cfg = ss_primary(false);
+    cfg.fallbacks = vec![ss_alt_fallback(false), ss_fallback(false)];
     cfg.shuffle_wires = true;
     let manager = manager_with_uplink(cfg, 1);
 
@@ -2510,8 +2583,9 @@ fn shuffle_wires_on_increments_round_counter_per_advancement() {
 
 #[test]
 fn shuffle_wires_on_resets_round_counter_on_success() {
-    let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    // SS wires throughout — bypasses the carrier-floor gate.
+    let mut cfg = ss_primary(false);
+    cfg.fallbacks = vec![ss_alt_fallback(false), ss_fallback(false)];
     cfg.shuffle_wires = true;
     let manager = manager_with_uplink(cfg, 1);
 
@@ -2539,8 +2613,9 @@ fn shuffle_wires_on_resets_counter_after_full_cycle() {
     // cycle. When the third advancement fires, the chain-exhaustion branch
     // takes the counter back to 0 (and would spawn the escalation task in
     // an async context — verified separately to avoid runtime-spawn flake).
-    let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    // SS wires throughout — bypasses the carrier-floor gate.
+    let mut cfg = ss_primary(false);
+    cfg.fallbacks = vec![ss_alt_fallback(false), ss_fallback(false)];
     cfg.shuffle_wires = true;
     let manager = manager_with_uplink(cfg, 1);
 
@@ -2566,8 +2641,9 @@ fn shuffle_wires_full_cycle_flips_health_and_engages_cooldown() {
     // the load balancer relies on: after one full forward pass through
     // the chain without a single success, the uplink must be visibly
     // unhealthy + on cooldown so the LB drops it from candidates.
-    let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    // SS wires throughout — bypasses the carrier-floor gate.
+    let mut cfg = ss_primary(false);
+    cfg.fallbacks = vec![ss_alt_fallback(false), ss_fallback(false)];
     cfg.shuffle_wires = true;
     let manager = manager_with_uplink(cfg, 1);
 
@@ -2630,9 +2706,11 @@ async fn shuffle_wires_runtime_failure_advances_active_wire() {
     // production logs surfaced (wire stayed pinned to wire 0 forever
     // because `report_runtime_failure` only bumped
     // `consecutive_runtime_failures` and never touched the wire state
-    // machine).
-    let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(true), ss_fallback(true)];
+    // machine). SS wires throughout — bypasses the new carrier-floor
+    // gate so the runtime-failure → advance path is tested in isolation
+    // from the vertical-cascade machinery.
+    let mut cfg = ss_primary(true);
+    cfg.fallbacks = vec![ss_alt_fallback(true), ss_fallback(true)];
     cfg.shuffle_wires = true;
     let manager = manager_with_strict_global_uplink(cfg, 2);
 
@@ -2657,8 +2735,9 @@ async fn shuffle_wires_gates_uplink_healthy_flip_until_round_exhausted() {
     // keep `healthy != Some(false)` until the round counter has
     // reached `total_wires`. After exhaustion the gate releases and
     // `healthy = Some(false)` lands so the LB switches uplinks.
-    let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(true), ss_fallback(true)];
+    // SS wires throughout — bypasses the carrier-floor gate.
+    let mut cfg = ss_primary(true);
+    cfg.fallbacks = vec![ss_alt_fallback(true), ss_fallback(true)];
     cfg.shuffle_wires = true;
     let manager = manager_with_strict_global_uplink(cfg, 2);
 
@@ -2697,8 +2776,8 @@ async fn shuffle_wires_off_keeps_legacy_runtime_health_flip() {
     // With shuffle_wires = false, the runtime-failure path must keep
     // the legacy "flip healthy after min_failures runtime failures"
     // behaviour intact — no wire rotation, no gate.
-    let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(true), ss_fallback(true)];
+    let mut cfg = ss_primary(true);
+    cfg.fallbacks = vec![ss_alt_fallback(true), ss_fallback(true)];
     cfg.shuffle_wires = false;
     let manager = manager_with_strict_global_uplink(cfg, 2);
 
@@ -2723,6 +2802,94 @@ async fn shuffle_wires_off_keeps_legacy_runtime_health_flip() {
     );
 }
 
+#[tokio::test]
+async fn shuffle_wires_holds_wire_advance_until_carrier_floor() {
+    // Vertical carrier cascade (production scenario):
+    // wire 0 is a VLESS+XHTTP/H3 endpoint with the WS-family chain
+    // `xhttp_h3 → xhttp_h2 → xhttp_h1` as its descent stack. Runtime
+    // failures must drive the active wire's effective mode down the
+    // family ladder before any wire-rotation step fires. Without the
+    // gate, the very first `min_failures` runtime failures on h3 would
+    // advance straight to wire 1 (bypassing h2 / h1 entirely) — the
+    // bug this iteration fixes.
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ss_alt_fallback(true)];
+    cfg.shuffle_wires = true;
+    // Manually install the wire-0 cap at xhttp_h2 to simulate the
+    // state immediately after the first `extend_mode_downgrade` step
+    // would have run. This isolates the gate behaviour from
+    // extend_mode_downgrade's own descent logic (covered in mode_downgrade
+    // tests) and asserts exactly what we care about here: when the
+    // primary wire is on xhttp_h2 (NOT at floor), the rotation step
+    // does NOT fire even after `min_failures` runtime failures.
+    let manager = manager_with_strict_global_uplink(cfg, 1);
+    {
+        manager.inner.with_status_mut(0, |status| {
+            status.udp.mode_downgrade_capped_to = Some(TransportMode::XhttpH2);
+            status.udp.mode_downgrade_until =
+                Some(tokio::time::Instant::now() + std::time::Duration::from_secs(60));
+        });
+    }
+    // Sanity: wire 0 should report "not at floor".
+    let snap = manager.read_status_for_test(0);
+    let uplink_handle = manager.uplinks()[0].clone();
+    assert!(
+        !crate::manager::mode_downgrade::wire_is_at_carrier_floor(
+            &uplink_handle,
+            &snap.udp,
+            TransportKind::Udp,
+            0,
+        ),
+        "wire 0 capped to xhttp_h2 must not be at the carrier floor of its xhttp family",
+    );
+
+    // Repeated UDP runtime failure on the active wire: each call goes
+    // through `record_wire_outcome(active_wire, false)` indirectly via
+    // `report_runtime_failure`. Without the gate this would advance
+    // active_wire on the very first call (min_failures = 1 in this
+    // test). With the gate, wire stays at 0.
+    let err = || anyhow::anyhow!("ws upstream read idle for 300s on datagram channel");
+    for _ in 0..5 {
+        manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+    }
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Udp),
+        0,
+        "carrier-floor gate must hold the wire-rotation step while wire 0's \
+         effective mode (xhttp_h2) still has a lower rank (xhttp_h1) to walk \
+         down to",
+    );
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(
+        snap.udp.wires_failed_in_round, 0,
+        "round counter does not advance while the active wire holds at the cap"
+    );
+
+    // Now simulate the cap walking all the way to xhttp_h1 (floor).
+    {
+        manager.inner.with_status_mut(0, |status| {
+            status.udp.mode_downgrade_capped_to = Some(TransportMode::XhttpH1);
+        });
+    }
+    let snap = manager.read_status_for_test(0);
+    assert!(
+        crate::manager::mode_downgrade::wire_is_at_carrier_floor(
+            &uplink_handle,
+            &snap.udp,
+            TransportKind::Udp,
+            0,
+        ),
+        "xhttp_h1 is the floor of its family — gate should release",
+    );
+    // One more failure at the floor must advance the wire.
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Udp),
+        1,
+        "wire at xhttp_h1 floor + active-wire failure must advance to wire 1",
+    );
+}
+
 #[test]
 fn shuffle_wires_probe_advance_bumps_round_counter() {
     // The probe-driven 0→1 transition in
@@ -2732,13 +2899,11 @@ fn shuffle_wires_probe_advance_bumps_round_counter() {
     // accounting: when shuffle_wires is on, the probe-driven advance
     // also bumps `wires_failed_in_round` so chain exhaustion fires
     // after the right number of advancements regardless of which
-    // path drives them.
-    //
-    // Drive process_probe_err with a synthetic anyhow error — that path
-    // calls record_transport_failure + advance_active_wire_on_probe_failure
-    // exactly the way real probe errors do.
-    let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(false), ss_fallback(false)];
+    // path drives them. SS wires throughout — bypasses the
+    // carrier-floor gate so this test isolates the round counter
+    // accounting on the probe path.
+    let mut cfg = ss_primary(false);
+    cfg.fallbacks = vec![ss_alt_fallback(false), ss_fallback(false)];
     cfg.shuffle_wires = true;
     let manager = manager_with_strict_global_uplink(cfg.clone(), 1);
 
@@ -2747,8 +2912,8 @@ fn shuffle_wires_probe_advance_bumps_round_counter() {
         0,
         &uplink,
         anyhow::anyhow!("primary probe failed"),
-        TransportMode::XhttpH3,
-        TransportMode::XhttpH3,
+        TransportMode::WsH1,
+        TransportMode::WsH1,
     );
 
     let snap = manager.read_status_for_test(0);
