@@ -1313,6 +1313,53 @@ When **not** to use it:
 The flag defaults to `false` — existing configs keep the legacy
 operator-ordered chain and wrap-forever state machine bit-for-bit.
 
+#### Disabling the per-wire carrier cascade (`carrier_downgrade = false`)
+
+Per-uplink opt-out of the vertical `h3 → h2 → h1` (and
+`xhttp_h3 → xhttp_h2 → xhttp_h1`) descent inside each WS /
+VLESS-XHTTP wire:
+
+```toml
+[[outline.uplinks]]
+name        = "edge-no-cascade"
+group       = "main"
+transport   = "vless"
+vless_xhttp_url = "https://cdn.example.com/SECRET/xhttp"
+vless_id        = "00000000-0000-0000-0000-000000000000"
+vless_mode      = "xhttp_h3"
+shuffle_wires   = true
+carrier_downgrade = false
+```
+
+With the flag off:
+
+- `extend_mode_downgrade` is a no-op for this uplink: no
+  `mode_downgrade_*` state ever installs, no `↘ ↘` carrier-downgrade
+  arrows on the dashboard, no `mode_downgrade_secs` window per
+  rank.
+- `wire_is_at_carrier_floor` reports every wire as "at floor". Under
+  `shuffle_wires = true` this collapses the per-wire cascade into a
+  direct wire-to-wire rotation — failures move straight to the next
+  wire on the very next `min_failures` threshold rather than spending
+  one downgrade window per intermediate carrier first.
+- Without `shuffle_wires`, the legacy "stay sticky on the active
+  wire" behaviour is preserved, the only difference is that the dial
+  loop never gets capped to a lower carrier.
+
+When to use it:
+
+- The operator knows the intermediate ranks are also dead — DPI
+  drops the whole upstream regardless of HTTP version, the server
+  doesn't advertise lower-rank carriers, the cap window adds pure
+  latency before the inevitable wire rotation.
+- Combined with `shuffle_wires = true` and a few near-equivalent
+  fallback endpoints, this gives the operator a "skip h2/h1, just
+  try the next wire" failover policy that is cheaper to walk than
+  the full vertical cascade.
+
+The flag defaults to `true` — existing configs keep the legacy
+descent contract bit-for-bit.
+
 #### Mid-session handover (chunk-0 wire-aware failover)
 
 - If a session's chunk-0 stalls (no first byte from upstream within

@@ -32,6 +32,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
         fingerprint_profile: None,
         fallbacks: Vec::new(),
         shuffle_wires: false,
+        carrier_downgrade: true,
     }
 }
 
@@ -60,6 +61,7 @@ fn ss_tcp_only_primary() -> UplinkConfig {
         fingerprint_profile: None,
         fallbacks: Vec::new(),
         shuffle_wires: false,
+        carrier_downgrade: true,
     }
 }
 
@@ -122,6 +124,7 @@ fn ss_primary(udp: bool) -> UplinkConfig {
         fingerprint_profile: None,
         fallbacks: Vec::new(),
         shuffle_wires: false,
+        carrier_downgrade: true,
     }
 }
 
@@ -1436,6 +1439,7 @@ fn ws_h3_primary() -> UplinkConfig {
         fingerprint_profile: None,
         fallbacks: Vec::new(),
         shuffle_wires: false,
+        carrier_downgrade: true,
     }
 }
 
@@ -1566,6 +1570,7 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
         fingerprint_profile: None,
         fallbacks: Vec::new(),
         shuffle_wires: false,
+        carrier_downgrade: true,
     };
     // min_failures=1 so each probe failure crosses both the
     // in-window descent gate (`consecutive_failures < min_failures`)
@@ -2888,6 +2893,46 @@ async fn shuffle_wires_holds_wire_advance_until_carrier_floor() {
         1,
         "wire at xhttp_h1 floor + active-wire failure must advance to wire 1",
     );
+}
+
+#[tokio::test]
+async fn carrier_downgrade_off_advances_wire_immediately() {
+    // Opt-out: with `carrier_downgrade = false` the per-wire vertical
+    // cascade machinery is disabled — `extend_mode_downgrade` is a
+    // no-op on this uplink and `wire_is_at_carrier_floor` reports
+    // "at floor" unconditionally. Combined with `shuffle_wires = true`
+    // this collapses the per-wire `h3 → h2 → h1` cascade into a
+    // direct wire-to-wire rotation: the very next runtime failure
+    // after `min_failures` advances active_wire even on an xhttp_h3
+    // primary, instead of spending the `mode_downgrade_secs` window
+    // walking down the carrier stack on this wire first.
+    //
+    // Important contrast with the gated cascade test above: the same
+    // VLESS-XHTTP primary that previously needed an explicit cap to
+    // `xhttp_h1` before advancing now advances on the first satisfied
+    // threshold because the gate sees "floor" from the very first
+    // failure.
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ss_alt_fallback(true)];
+    cfg.shuffle_wires = true;
+    cfg.carrier_downgrade = false;
+    let manager = manager_with_strict_global_uplink(cfg, 2);
+
+    let err = || anyhow::anyhow!("ws upstream read idle for 300s on datagram channel");
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+    manager.report_runtime_failure(0, TransportKind::Udp, &err()).await;
+
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Udp),
+        1,
+        "carrier_downgrade = false: two active-wire failures must advance straight to wire 1",
+    );
+    let snap = manager.read_status_for_test(0);
+    assert!(
+        snap.udp.mode_downgrade_capped_to.is_none(),
+        "extend_mode_downgrade is a no-op with carrier_downgrade = false",
+    );
+    assert_eq!(snap.udp.wires_failed_in_round, 1);
 }
 
 #[test]

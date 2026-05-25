@@ -1324,6 +1324,51 @@ shuffle_wires   = true
 По умолчанию `false` — существующие конфиги сохраняют операторский
 порядок цепочки и wrap-forever state machine без изменений.
 
+#### Отключение carrier-каскада на wire (`carrier_downgrade = false`)
+
+Per-uplink opt-out для вертикального `h3 → h2 → h1` (и
+`xhttp_h3 → xhttp_h2 → xhttp_h1`) каскада внутри WS / VLESS-XHTTP
+wire:
+
+```toml
+[[outline.uplinks]]
+name        = "edge-no-cascade"
+group       = "main"
+transport   = "vless"
+vless_xhttp_url = "https://cdn.example.com/SECRET/xhttp"
+vless_id        = "00000000-0000-0000-0000-000000000000"
+vless_mode      = "xhttp_h3"
+shuffle_wires   = true
+carrier_downgrade = false
+```
+
+С отключённым флагом:
+
+- `extend_mode_downgrade` no-op для этого аплинка: никакого
+  `mode_downgrade_*` состояния не устанавливается, никаких `↘ ↘`
+  стрелок на дашборде, никакого `mode_downgrade_secs` окна на ранг.
+- `wire_is_at_carrier_floor` всегда true. При `shuffle_wires = true`
+  это сворачивает per-wire каскад в прямой wire-to-wire переход —
+  сбои сразу переходят на следующий wire по достижении
+  `min_failures`, а не тратят окно downgrade на каждый промежуточный
+  carrier.
+- Без `shuffle_wires` старое sticky-поведение сохраняется, разница
+  только в том, что dial-loop никогда не capping на нижний ранг.
+
+Когда использовать:
+
+- Оператор знает, что промежуточные ранги тоже мертвы — DPI режет
+  весь upstream независимо от HTTP version, сервер не объявляет
+  нижне-ранговые carrier'ы, окно cap добавляет чистую latency перед
+  неизбежной ротацией wire.
+- Вместе с `shuffle_wires = true` и несколькими примерно
+  эквивалентными fallback'ами это даёт оператору политику «skip
+  h2/h1, сразу следующий wire» — дешевле в обходе чем полный
+  вертикальный каскад.
+
+По умолчанию `true` — существующие конфиги сохраняют descent-контракт
+без изменений.
+
 #### Mid-session handover (chunk-0 wire-aware failover)
 
 - Если у сессии чанк-0 застрял (нет первого байта от upstream'а в

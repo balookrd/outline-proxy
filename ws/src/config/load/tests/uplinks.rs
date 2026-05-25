@@ -39,6 +39,7 @@ fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> 
         fingerprint_profile: None,
         fallbacks: if fallbacks.is_empty() { None } else { Some(fallbacks) },
         shuffle_wires: None,
+        carrier_downgrade: None,
     }
 }
 
@@ -70,6 +71,7 @@ fn vless_uplink_section(
         fingerprint_profile: None,
         fallbacks: if fallbacks.is_empty() { None } else { Some(fallbacks) },
         shuffle_wires: None,
+        carrier_downgrade: None,
     }
 }
 

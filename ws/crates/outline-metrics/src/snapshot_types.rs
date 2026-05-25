@@ -180,6 +180,18 @@ pub struct UplinkSnapshot {
     /// failed in the chain pill.
     #[serde(default, skip_serializing_if = "is_false")]
     pub shuffle_wires: bool,
+    /// Per-uplink carrier-downgrade switch. `true` (default) keeps the
+    /// legacy `h3 → h2 → h1` (and `xhttp_h3 → xhttp_h2 → xhttp_h1`)
+    /// descent inside each WS / VLESS-XHTTP wire; `false` disables the
+    /// vertical cascade on this uplink — no `mode_downgrade_*` state
+    /// is ever installed and `wire_is_at_carrier_floor` reports every
+    /// wire as "at floor". Surfaced so the dashboard can hide the
+    /// `↘ ↘` carrier-downgrade arrows on uplinks that have opted out.
+    /// Serialised as `true` always (no `skip_serializing_if`) because
+    /// the field-not-present default would be ambiguous — older
+    /// clients reading the JSON would have to assume one of the two
+    /// settings; making the field explicit removes the guess.
+    pub carrier_downgrade: bool,
     /// Number of `active_wire` advancements observed on the TCP
     /// transport since the last successful wire dial / probe. Only
     /// meaningful when [`Self::shuffle_wires`] is `true` — for the

@@ -211,6 +211,16 @@ pub struct UplinkConfig {
     /// `UplinkSection::shuffle_wires` in the TOML schema for the full
     /// operator-facing description.
     pub shuffle_wires: bool,
+    /// Per-uplink carrier-downgrade switch. `true` (default) keeps the
+    /// legacy `h3 → h2 → h1` (and `xhttp_h3 → xhttp_h2 → xhttp_h1`)
+    /// descent inside each WS / VLESS-XHTTP wire; `false` makes the
+    /// proxy skip the vertical cascade entirely — failures roll over
+    /// to the next wire (under `shuffle_wires = true`) or trigger the
+    /// legacy wire-advance (without `shuffle_wires`) without spending
+    /// `mode_downgrade_secs` per rank. See
+    /// `UplinkSection::carrier_downgrade` in the TOML schema for the
+    /// operator-facing description.
+    pub carrier_downgrade: bool,
 }
 
 impl UplinkConfig {
@@ -330,6 +340,11 @@ impl UplinkConfig {
             // chain of one. Always false on the synthetic side regardless
             // of the parent's setting.
             shuffle_wires: false,
+            // Carrier-downgrade is a per-WIRE behaviour, so we honour the
+            // parent's setting on the synthetic wire view — a fallback
+            // wire being probed should observe the same descent /
+            // no-descent policy the parent uplink configured.
+            carrier_downgrade: self.carrier_downgrade,
         })
     }
 }
