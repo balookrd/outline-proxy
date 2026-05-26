@@ -509,6 +509,19 @@ function stackLabel(transport, mode) {
   if (!tr) return enc;
   return `${enc}/${tr}`;
 }
+// Compact form of `stackLabel` that drops the HTTP version, leaving only
+// the carrier family: `VLESS/WS`, `VLESS/XHTTP`, `VLESS/QUIC`, `SS/QUIC`.
+// Used on inactive (passive) wire chips in the fallback chain — bare
+// `VLESS`/`SS` markers hid which carrier each fallback uses, while the
+// full `WS/H2`/`XHTTP/H3` tail belongs on the active chip alone.
+function carrierFamilyLabel(transport, mode) {
+  const t = String(transport || "").toLowerCase();
+  if (t === "shadowsocks") return "SS/QUIC";
+  const enc = protocolLabel(transport);
+  const tr = transportLabel(mode);
+  if (!tr) return enc;
+  return `${enc}/${tr.split("/")[0]}`;
+}
 function downgradeTitle(configured, effective, leg) {
   return `${leg} auto-downgraded ${configured.toUpperCase()} → ${effective.toUpperCase()} (H3/QUIC unreachable)`;
 }
@@ -759,13 +772,15 @@ function fallbackChainPill(uplink) {
         : "";
       // Verbose label (`VLESS/WS/H3`) only on the active chip — that's
       // where the operator looks for "what's the actual carrier shape
-      // right now". Non-active chips collapse to the transport family
-      // alone (`VLESS`, `WS`) — they're chain markers, not full
-      // protocol descriptors. The full label still lives in the chip's
-      // `title` for hover so an operator can confirm without clicking
-      // through to the raw snapshot.
+      // right now". Non-active chips collapse to the carrier-family
+      // shape (`VLESS/WS`, `VLESS/XHTTP`, `SS/QUIC`) — enough to tell
+      // fallbacks apart at a glance without the HTTP-version tail
+      // crowding the chain. The full label still lives in the chip's
+      // `title` for hover so an operator can confirm the exact
+      // `WS/H2` vs `WS/H3` shape without clicking through to the raw
+      // snapshot.
       const fullLabel = stackLabel(w.transport, w.mode);
-      const visible = (i === activeIdx) ? fullLabel : protocolLabel(w.transport);
+      const visible = (i === activeIdx) ? fullLabel : carrierFamilyLabel(w.transport, w.mode);
       const titleParts = [`wire #${i}: ${fullLabel}`];
       if (i === activeIdx && deco.dg) titleParts.push("auto-downgraded from configured carrier");
       const title = titleParts.join(" · ");
