@@ -2971,6 +2971,115 @@ fn shuffle_timer_rotate_active_wire_resets_per_wire_state() {
 }
 
 #[test]
+fn shuffle_timer_suppresses_probe_driven_early_failback() {
+    // Production hazard: the periodic reroll set `active_wire = N != 0`,
+    // then the next primary probe success ran the early-failback block in
+    // `record_transport_success` and snapped active_wire straight back
+    // to 0. With probes typically every 30s and min_failures = 2, the
+    // operator-visible rotation lasted ~60s out of every 10m — i.e. it
+    // looked like nothing was changing on the dashboard.
+    //
+    // With `shuffle_timer = Some(_)` the early-failback must be
+    // suppressed: the reroll owns active_wire selection until the next
+    // tick.
+    use crate::config::TransportMode;
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ss_alt_fallback(true), ss_fallback(true)];
+    cfg.shuffle_timer = Some(std::time::Duration::from_secs(600));
+    let manager = manager_with_strict_global_uplink(cfg, 2);
+
+    // Pin active_wire to a non-primary wire (simulating a recent
+    // shuffle_timer reroll).
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.active_wire = 2;
+        status.tcp.active_wire_pinned_until =
+            Some(tokio::time::Instant::now() + std::time::Duration::from_secs(600));
+    });
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 2);
+
+    // Drive `min_failures` (= 2) consecutive primary probe successes.
+    let uplink_handle = manager.uplinks()[0].clone();
+    let ok_outcome = || crate::manager::probe::outcome::ProbeOutcome {
+        tcp_ok: true,
+        udp_ok: true,
+        udp_applicable: true,
+        tcp_latency: Some(std::time::Duration::from_millis(50)),
+        udp_latency: Some(std::time::Duration::from_millis(50)),
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let mut h3_tcp_recovery = Vec::new();
+    let mut h3_udp_recovery = Vec::new();
+    for _ in 0..3 {
+        manager.process_probe_ok(
+            0,
+            &uplink_handle,
+            ok_outcome(),
+            TransportMode::XhttpH3,
+            TransportMode::XhttpH3,
+            &mut h3_tcp_recovery,
+            &mut h3_udp_recovery,
+        );
+    }
+
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        2,
+        "shuffle_timer = Some(_) must suppress probe-driven snap-back so the reroll is operator-visible",
+    );
+}
+
+#[test]
+fn shuffle_timer_unset_keeps_legacy_early_failback() {
+    // Symmetric: without shuffle_timer the legacy snap-back must still
+    // work — auto-failback to primary on probe recovery is the
+    // documented behaviour for plain `[[outline.uplinks]] + fallbacks`
+    // chains.
+    use crate::config::TransportMode;
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ss_alt_fallback(true), ss_fallback(true)];
+    cfg.shuffle_timer = None;
+    let manager = manager_with_strict_global_uplink(cfg, 2);
+
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.active_wire = 2;
+        status.tcp.active_wire_pinned_until =
+            Some(tokio::time::Instant::now() + std::time::Duration::from_secs(600));
+    });
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 2);
+
+    let uplink_handle = manager.uplinks()[0].clone();
+    let ok_outcome = || crate::manager::probe::outcome::ProbeOutcome {
+        tcp_ok: true,
+        udp_ok: true,
+        udp_applicable: true,
+        tcp_latency: Some(std::time::Duration::from_millis(50)),
+        udp_latency: Some(std::time::Duration::from_millis(50)),
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let mut h3_tcp_recovery = Vec::new();
+    let mut h3_udp_recovery = Vec::new();
+    for _ in 0..3 {
+        manager.process_probe_ok(
+            0,
+            &uplink_handle,
+            ok_outcome(),
+            TransportMode::XhttpH3,
+            TransportMode::XhttpH3,
+            &mut h3_tcp_recovery,
+            &mut h3_udp_recovery,
+        );
+    }
+
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        0,
+        "no shuffle_timer: probe-driven early-failback must snap active_wire back to primary",
+    );
+}
+
+#[test]
 fn shuffle_timer_rotate_active_wire_noop_for_single_wire_uplink() {
     // No fallbacks → no rotation possible. Method must return None
     // and leave the state untouched.
