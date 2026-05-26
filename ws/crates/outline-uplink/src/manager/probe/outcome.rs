@@ -221,6 +221,7 @@ fn record_transport_success(
     status: &mut PerTransportStatus,
     min_failures: u32,
     grace_window: Duration,
+    shuffle_timer_active: bool,
 ) {
     let now = Instant::now();
     status.consecutive_failures = 0;
@@ -274,7 +275,17 @@ fn record_transport_success(
     // strict mode in candidates.rs): one operator-facing knob, one
     // mental model — N consecutive probe outcomes are needed in either
     // direction (failure to flip down, success to flip back).
-    if status.active_wire != 0 && status.consecutive_successes >= min_failures.max(1) {
+    //
+    // Suppressed when `shuffle_timer = Some(_)` on this uplink: the
+    // periodic reroll is the authoritative source of `active_wire`,
+    // and a probe-driven snap-back would silently undo the reroll
+    // within ~`min_failures × probe.interval` (often well under one
+    // minute) — making the operator-visible rotation effectively
+    // invisible. See `UplinkSection::shuffle_timer` docs.
+    if !shuffle_timer_active
+        && status.active_wire != 0
+        && status.consecutive_successes >= min_failures.max(1)
+    {
         status.active_wire = 0;
         status.active_wire_pinned_until = None;
         status.active_wire_streak = 0;
@@ -364,6 +375,13 @@ impl UplinkManager {
         // off primary when there's at least one fallback to move to.
         let uplink_total_wires = 1 + uplink.fallbacks.len();
         let shuffle_wires = uplink.shuffle_wires;
+        // `shuffle_timer` on this uplink owns active_wire selection
+        // outright — probe-driven early-failback ("snap back to
+        // primary after N consecutive primary probes succeed") is
+        // suppressed below in `record_transport_success` when this is
+        // set, otherwise it would silently undo the periodic reroll
+        // within a single probe cycle.
+        let shuffle_timer_active = uplink.shuffle_timer.is_some();
         // Capture transitions so we can fire the warm-standby drain after
         // the sync status critical section ends (drain is async).
         let mut tcp_transitioned_to_fallback = false;
@@ -418,7 +436,12 @@ impl UplinkManager {
                     );
                 }
             } else {
-                record_transport_success(&mut status.tcp, min_failures, grace_window);
+                record_transport_success(
+                    &mut status.tcp,
+                    min_failures,
+                    grace_window,
+                    shuffle_timer_active,
+                );
             }
             if result.udp_applicable {
                 if !result.udp_ok {
@@ -444,7 +467,12 @@ impl UplinkManager {
                         );
                     }
                 } else {
-                    record_transport_success(&mut status.udp, min_failures, grace_window);
+                    record_transport_success(
+                        &mut status.udp,
+                        min_failures,
+                        grace_window,
+                        shuffle_timer_active,
+                    );
                 }
             }
             if result.tcp_ok && (!result.udp_applicable || result.udp_ok) {

@@ -1430,6 +1430,20 @@ Option<u64>`, а событие реролла пишется в метрику
 `outline_ws_rust_uplink_failover_total{transport="tcp_shuffle_timer"}`
 (и UDP аналог).
 
+**Probe-driven early-failback подавляется** пока
+`shuffle_timer = Some(_)` активен. Дефолтное поведение
+`record_transport_success` — снапать `active_wire` обратно на
+primary как только primary probe успешно сработал
+`probe.min_failures` раз подряд ("primary восстановлен, верни
+трафик"); под `shuffle_timer` этот snap-back в следующем же
+probe-цикле (~30 секунд при `min_failures = 2`) молча отменял
+бы реролл, и ротация в UI выглядела как «ничего не меняется».
+Поэтому реролл становится authoritative источником
+`active_wire` до следующего тика, а probe-успех на primary
+остаётся информационным сигналом (счётчики тикают, healthy
+флипается обратно в true, recovery probe чистит cap), но
+`active_wire` больше не трогает.
+
 #### Mid-session handover (chunk-0 wire-aware failover)
 
 - Если у сессии чанк-0 застрял (нет первого байта от upstream'а в

@@ -1424,6 +1424,19 @@ The interval is surfaced on the JSON snapshot as
 metric `outline_ws_rust_uplink_failover_total{transport="tcp_shuffle_timer"}`
 (and the `udp_shuffle_timer` counterpart).
 
+**Probe-driven early-failback is suppressed** while
+`shuffle_timer = Some(_)` is in effect. The default behaviour of
+`record_transport_success` is to snap `active_wire` back to primary
+the moment a primary probe has succeeded `probe.min_failures` times
+in a row (the "primary recovered, return traffic" path); under
+`shuffle_timer` that snap-back would silently undo the reroll on
+the very next probe cycle (~30 s with `min_failures = 2`), making
+the rotation invisible. The reroll is therefore the authoritative
+source of `active_wire` until the next tick, and probe success on
+primary is treated as informational (counter still ticks, health
+still flips back to true, recovery probe still clears the
+mode-downgrade cap) but no longer changes `active_wire`.
+
 #### Mid-session handover (chunk-0 wire-aware failover)
 
 - If a session's chunk-0 stalls (no first byte from upstream within
