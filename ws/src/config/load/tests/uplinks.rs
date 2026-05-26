@@ -40,6 +40,7 @@ fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> 
         fallbacks: if fallbacks.is_empty() { None } else { Some(fallbacks) },
         shuffle_wires: None,
         carrier_downgrade: None,
+        shuffle_timer: None,
     }
 }
 
@@ -72,6 +73,7 @@ fn vless_uplink_section(
         fallbacks: if fallbacks.is_empty() { None } else { Some(fallbacks) },
         shuffle_wires: None,
         carrier_downgrade: None,
+        shuffle_timer: None,
     }
 }
 

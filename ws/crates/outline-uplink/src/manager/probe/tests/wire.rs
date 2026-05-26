@@ -33,6 +33,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        shuffle_timer: None,
     }
 }
 

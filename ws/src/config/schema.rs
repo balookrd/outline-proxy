@@ -280,6 +280,25 @@ pub(crate) struct UplinkSection {
     /// `mode_downgrade_secs` window per rank before rotating is pure
     /// latency and wasted dial attempts.
     pub(crate) carrier_downgrade: Option<bool>,
+    /// Periodic active-wire reroll interval. Accepts human-readable
+    /// duration strings: `"30s"`, `"5m"`, `"1h"`, `"1h30m"`, `"2d"`.
+    /// When set, a background tokio task rerolls `active_wire` on TCP
+    /// and UDP independently every interval to a random wire of the
+    /// chain — picked collision-free against the other rotated uplinks
+    /// in the same group on the same tick where possible. Per-wire
+    /// failure counters (`active_wire_streak`,
+    /// `wires_failed_in_round`, `consecutive_failures`,
+    /// `consecutive_runtime_failures`) and any active downgrade-window
+    /// pin are reset so the new wire starts with a clean budget.
+    ///
+    /// Useful as a defence against time-based DPI heuristics: even an
+    /// uplink that has been working steadily on one wire will pivot
+    /// to a fresh wire on every tick, refusing to look like a
+    /// long-lived stable flow on any specific carrier shape.
+    /// Independent of `shuffle_wires` (which only controls the
+    /// initial chain order at config load) — the two can be combined
+    /// or set independently.
+    pub(crate) shuffle_timer: Option<String>,
 }
 
 /// One `[[outline.uplinks.fallbacks]]` entry. Mirrors the wire-shape

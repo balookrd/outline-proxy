@@ -170,6 +170,16 @@ impl UplinkRegistry {
         }
     }
 
+    /// Spawn one shuffle-timer rotation task per uplink that has
+    /// `shuffle_timer = Some(_)` configured. No-op for uplinks
+    /// without the interval. See
+    /// [`UplinkManager::spawn_shuffle_timer_loops`].
+    pub fn spawn_shuffle_timer_loops(&self) {
+        for group in self.state.load().groups.iter() {
+            group.manager.spawn_shuffle_timer_loops();
+        }
+    }
+
     /// Spawn a single process-wide sweeper for the H2/H3 shared-connection
     /// caches. Independent of warm-standby so that groups with
     /// `warm_standby_tcp = warm_standby_udp = 0` still get stale entries

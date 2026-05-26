@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use rand::seq::SliceRandom;
@@ -46,6 +47,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             fallbacks: _,
             shuffle_wires,
             carrier_downgrade,
+            shuffle_timer,
         } = input;
 
         let weight = weight.unwrap_or(1.0);
@@ -60,6 +62,9 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
         // to the next wire (or the next uplink) without spending the
         // `mode_downgrade_secs` window per rank.
         let carrier_downgrade = carrier_downgrade.unwrap_or(true);
+        let shuffle_timer = shuffle_timer
+            .map(|s| parse_human_duration(&s).map_err(|e| anyhow!("uplink {name}: {e}")))
+            .transpose()?;
 
         let wire = resolve_primary_wire_shape(PrimaryWireInput {
             name: &name,
@@ -101,6 +106,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             fallbacks: Vec::new(),
             shuffle_wires,
             carrier_downgrade,
+            shuffle_timer,
         };
 
         let fallbacks = resolve_fallbacks(&parent, &input_fallbacks)?;
@@ -314,4 +320,141 @@ pub(crate) fn validate_uplink_section(
     index: usize,
 ) -> Result<UplinkConfig> {
     ResolvedUplinkInput::from_section(index, section).try_into()
+}
+
+/// Parse a human-readable duration string into a [`Duration`].
+///
+/// Accepted shapes:
+/// * Pure number (`"60"`) — interpreted as seconds.
+/// * Single component (`"45s"`, `"5m"`, `"1h"`, `"2d"`).
+/// * Multiple components concatenated (`"1h30m"`, `"2h15m30s"`,
+///   `"1d6h"`). Order is free but each unit may appear at most once.
+///
+/// Whitespace is ignored. The shortest non-zero duration accepted is
+/// `1s`; sub-second precision is intentionally absent because the
+/// operator-facing intent here is "every N minutes / hours rotate",
+/// not millisecond-precise scheduling.
+fn parse_human_duration(input: &str) -> Result<Duration> {
+    let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+    if cleaned.is_empty() {
+        bail!("shuffle_timer cannot be empty");
+    }
+    // Plain integer → seconds.
+    if cleaned.chars().all(|c| c.is_ascii_digit()) {
+        let secs: u64 = cleaned.parse().map_err(|e| {
+            anyhow!("shuffle_timer = \"{input}\" must be a non-negative integer: {e}")
+        })?;
+        if secs == 0 {
+            bail!("shuffle_timer = \"{input}\" must be a non-zero duration");
+        }
+        return Ok(Duration::from_secs(secs));
+    }
+    let mut total = Duration::ZERO;
+    let mut current_value: Option<u64> = None;
+    let mut seen_units: u8 = 0;
+    for ch in cleaned.chars() {
+        if let Some(digit) = ch.to_digit(10) {
+            current_value = Some(
+                current_value
+                    .unwrap_or(0)
+                    .saturating_mul(10)
+                    .saturating_add(digit as u64),
+            );
+            continue;
+        }
+        let value = current_value.take().ok_or_else(|| {
+            anyhow!("shuffle_timer = \"{input}\" unit `{ch}` is not preceded by a number")
+        })?;
+        let mask: u8 = match ch {
+            's' | 'S' => 1 << 0,
+            'm' | 'M' => 1 << 1,
+            'h' | 'H' => 1 << 2,
+            'd' | 'D' => 1 << 3,
+            _ => bail!("shuffle_timer = \"{input}\" unknown unit `{ch}` (expected s / m / h / d)"),
+        };
+        if seen_units & mask != 0 {
+            bail!("shuffle_timer = \"{input}\" unit `{ch}` repeated");
+        }
+        seen_units |= mask;
+        let unit_secs: u64 = match mask {
+            1 => 1,
+            2 => 60,
+            4 => 3600,
+            8 => 86_400,
+            _ => unreachable!(),
+        };
+        total = total.saturating_add(Duration::from_secs(value.saturating_mul(unit_secs)));
+    }
+    if current_value.is_some() {
+        bail!("shuffle_timer = \"{input}\" trailing number without a unit");
+    }
+    if total.is_zero() {
+        bail!("shuffle_timer = \"{input}\" must be a non-zero duration");
+    }
+    Ok(total)
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::parse_human_duration;
+    use std::time::Duration;
+
+    #[test]
+    fn plain_seconds() {
+        assert_eq!(parse_human_duration("60").unwrap(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn single_units() {
+        assert_eq!(parse_human_duration("45s").unwrap(), Duration::from_secs(45));
+        assert_eq!(parse_human_duration("5m").unwrap(), Duration::from_secs(300));
+        assert_eq!(parse_human_duration("1h").unwrap(), Duration::from_secs(3600));
+        assert_eq!(parse_human_duration("2d").unwrap(), Duration::from_secs(172_800));
+    }
+
+    #[test]
+    fn compound_units() {
+        assert_eq!(parse_human_duration("1h30m").unwrap(), Duration::from_secs(5400));
+        assert_eq!(parse_human_duration("2h15m30s").unwrap(), Duration::from_secs(8130));
+        assert_eq!(parse_human_duration("1d6h").unwrap(), Duration::from_secs(108_000));
+    }
+
+    #[test]
+    fn whitespace_ignored() {
+        assert_eq!(parse_human_duration(" 1h 30m ").unwrap(), Duration::from_secs(5400));
+    }
+
+    #[test]
+    fn rejects_empty() {
+        assert!(parse_human_duration("").is_err());
+        assert!(parse_human_duration("   ").is_err());
+    }
+
+    #[test]
+    fn rejects_zero() {
+        assert!(parse_human_duration("0").is_err());
+        assert!(parse_human_duration("0s").is_err());
+        assert!(parse_human_duration("0h0m").is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_unit() {
+        assert!(parse_human_duration("5y").is_err());
+        assert!(parse_human_duration("3 weeks").is_err());
+    }
+
+    #[test]
+    fn rejects_repeated_unit() {
+        assert!(parse_human_duration("1h2h").is_err());
+    }
+
+    #[test]
+    fn rejects_trailing_number() {
+        assert!(parse_human_duration("1h30").is_err());
+    }
+
+    #[test]
+    fn rejects_unit_without_number() {
+        assert!(parse_human_duration("hm").is_err());
+    }
 }

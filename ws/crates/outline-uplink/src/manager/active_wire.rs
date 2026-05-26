@@ -23,7 +23,8 @@
 //! For uplinks **without** any fallbacks, every method here is a no-op or
 //! returns the trivial answer (`active_wire = 0`, dial order = `[0]`).
 
-use tokio::time::Instant;
+use rand::Rng;
+use tokio::time::{Instant, sleep};
 use tracing::{debug, info, warn};
 
 use super::standby::resume_cache_key;
@@ -354,6 +355,140 @@ impl UplinkManager {
                 TransportKind::Udp => "udp_shuffle_round_exhausted",
             };
             outline_metrics::record_failover(kind, &group_name, &uplink_name, &uplink_name);
+        }
+    }
+
+    /// Reroll the active wire on both transports for `uplink_index` to a
+    /// fresh random index drawn from `0..total_wires`. Powers the
+    /// `shuffle_timer` scheduler: a periodic task fires this on each
+    /// tick so an uplink that has been serving traffic on the same
+    /// wire for hours pivots to a different carrier shape on schedule
+    /// (defence against time-based DPI heuristics).
+    ///
+    /// The reroll is per-transport — TCP and UDP land on independently
+    /// chosen wires — and resets the per-wire failure budgets
+    /// (`active_wire_streak`, `wires_failed_in_round`,
+    /// `consecutive_failures`, `consecutive_runtime_failures`) so the
+    /// new wire starts from a clean budget rather than inheriting any
+    /// accumulated failure history from the wire it just replaced.
+    /// The mode-downgrade cap (if any) is also cleared because the
+    /// new wire's carrier stack is independent of the old wire's; a
+    /// stale cap installed for a previous wire would otherwise persist
+    /// across the pivot and skew the dial-time mode for the freshly-
+    /// chosen wire.
+    ///
+    /// No-op for uplinks without any fallbacks (the chain is a
+    /// singleton; nothing to reroll to).
+    ///
+    /// Returns the `(tcp_wire, udp_wire)` pair the uplink landed on,
+    /// or `None` for the no-fallback case.
+    pub fn rotate_active_wire(&self, uplink_index: usize) -> Option<(u8, u8)> {
+        let uplink = &self.inner.uplinks[uplink_index];
+        let total_wires = 1 + uplink.fallbacks.len();
+        if total_wires <= 1 {
+            return None;
+        }
+        let total = total_wires as u8;
+        let (tcp_wire, udp_wire) = {
+            let mut rng = rand::thread_rng();
+            (rng.gen_range(0..total), rng.gen_range(0..total))
+        };
+        let group_name = self.inner.group_name.clone();
+        let uplink_name = uplink.name.clone();
+        let now = Instant::now();
+        let pin_window = self.inner.load_balancing.mode_downgrade_duration;
+        self.inner.with_status_mut(uplink_index, |status| {
+            let apply = |st: &mut super::status::PerTransportStatus, new_wire: u8| {
+                // Reset every per-wire counter so the freshly-rotated
+                // wire is judged on its own dial / probe / runtime
+                // failures from this point forward, not on whatever
+                // streak the previous wire had accumulated.
+                st.active_wire = new_wire;
+                st.active_wire_streak = 0;
+                st.wires_failed_in_round = 0;
+                st.consecutive_failures = 0;
+                st.consecutive_runtime_failures = 0;
+                st.chunk0_consecutive_failures = 0;
+                // Pin the freshly-rolled wire for the standard
+                // mode-downgrade duration window, except when we
+                // happen to roll back to primary — primary is never
+                // pinned (matches the dial-path / probe-path advance
+                // semantics).
+                st.active_wire_pinned_until =
+                    if new_wire == 0 { None } else { Some(now + pin_window) };
+                // Wipe any in-flight mode-downgrade cap left over from
+                // the previous wire — the new wire's carrier stack is
+                // independent and starts at the configured rank.
+                st.mode_downgrade_until = None;
+                st.mode_downgrade_capped_to = None;
+                st.recovery_probe_success_streak = 0;
+                st.recovery_probe_cooldown_until = None;
+            };
+            apply(&mut status.tcp, tcp_wire);
+            apply(&mut status.udp, udp_wire);
+        });
+        info!(
+            group = %group_name,
+            uplink = %uplink_name,
+            tcp_wire,
+            udp_wire,
+            total_wires,
+            "shuffle_timer reroll: active wire randomized for both transports",
+        );
+        outline_metrics::record_failover(
+            "tcp_shuffle_timer",
+            &group_name,
+            &uplink_name,
+            &uplink_name,
+        );
+        outline_metrics::record_failover(
+            "udp_shuffle_timer",
+            &group_name,
+            &uplink_name,
+            &uplink_name,
+        );
+        Some((tcp_wire, udp_wire))
+    }
+
+    /// Spawn one background tokio task per uplink that has
+    /// `shuffle_timer = Some(_)` configured. Each task wakes up every
+    /// `shuffle_timer` interval and calls [`Self::rotate_active_wire`].
+    /// Uplinks without a configured interval, or with no fallbacks
+    /// (where rotation is a no-op anyway), are skipped — no idle
+    /// task is created for them.
+    ///
+    /// The tasks honour the manager's shutdown channel and exit
+    /// promptly on graceful shutdown.
+    pub fn spawn_shuffle_timer_loops(&self) {
+        for (index, uplink) in self.inner.uplinks.iter().enumerate() {
+            let Some(interval) = uplink.shuffle_timer else { continue };
+            if uplink.fallbacks.is_empty() {
+                debug!(
+                    uplink = %uplink.name,
+                    "shuffle_timer set but uplink has no fallbacks — no rotation task spawned"
+                );
+                continue;
+            }
+            let manager = self.clone();
+            let mut shutdown = self.shutdown_rx();
+            let uplink_name = uplink.name.clone();
+            let group_name = self.inner.group_name.clone();
+            info!(
+                group = %group_name,
+                uplink = %uplink_name,
+                interval_secs = interval.as_secs(),
+                "shuffle_timer rotation loop spawned",
+            );
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.changed() => break,
+                        _ = sleep(interval) => {}
+                    }
+                    manager.rotate_active_wire(index);
+                }
+            });
         }
     }
 }

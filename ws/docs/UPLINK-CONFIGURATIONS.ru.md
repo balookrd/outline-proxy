@@ -1383,6 +1383,53 @@ carrier_downgrade = false
 По умолчанию `true` — существующие конфиги сохраняют descent-контракт
 без изменений.
 
+#### Периодический реролл active-wire (`shuffle_timer`)
+
+Per-uplink интервал, по которому фоновая задача рерольнет
+`active_wire` для обоих транспортов на случайный wire цепочки.
+Принимает human-readable длительности:
+
+```toml
+[[outline.uplinks]]
+shuffle_timer = "1h"      # каждый час
+# shuffle_timer = "30s"   # каждые 30 секунд
+# shuffle_timer = "1h30m" # составные длительности тоже работают
+# shuffle_timer = "3600"  # голое число = секунды
+```
+
+Каждый тик:
+
+* Выбирает случайный wire из `0..total_wires` независимо для TCP
+  и UDP.
+* Обнуляет `active_wire_streak`, `wires_failed_in_round`,
+  `consecutive_failures`, `consecutive_runtime_failures`,
+  `chunk0_consecutive_failures` — новый wire начинает со свежего
+  бюджета, а не наследует streak предыдущего.
+* Сбрасывает любой in-flight `mode_downgrade_*` cap (carrier-стек
+  нового wire независим от старого; устаревший cap иначе
+  исказил бы dial-time mode для нового wire).
+* Пинит новый wire на `mode_downgrade_duration`, если только
+  реролл не вернул на primary (совпадает с pin-политикой
+  dial/probe пути).
+
+Когда использовать:
+
+* Защита от time-based DPI эвристик: даже uplink, стабильно
+  работающий на одном wire часами, переключится на другой carrier
+  shape по каждому тику — не будет выглядеть как long-lived
+  stable flow на одном URL/mode.
+* Принудительная диверсификация wires по расписанию (например,
+  крутить три CDN edge каждые 30 минут в часы пик).
+
+Независим от `shuffle_wires` (он только задаёт начальный порядок
+цепочки при загрузке конфига) — можно комбинировать или ставить
+независимо. No-op для аплинков без fallbacks.
+
+Интервал виден в JSON snapshot как `shuffle_timer_secs:
+Option<u64>`, а событие реролла пишется в метрику
+`outline_ws_rust_uplink_failover_total{transport="tcp_shuffle_timer"}`
+(и UDP аналог).
+
 #### Mid-session handover (chunk-0 wire-aware failover)
 
 - Если у сессии чанк-0 застрял (нет первого байта от upstream'а в
