@@ -1218,6 +1218,21 @@ Semantics:
   (no wires dropped, duplicated, or corrupted) and parent-level
   identity (`name`, `weight`, `group`, `fingerprint_profile`) stays
   with the uplink regardless of which wire ended up at slot 0.
+- **Collision-free per group**: when several uplinks in the same
+  `group` opt into `shuffle_wires`, the loader assigns each of
+  them a wire permutation that does NOT match any other already
+  used in the group. With three 3-wire uplinks, naive independent
+  `rand::thread_rng()` shuffles would land two of them on the same
+  permutation ≈ 44% of the time at process start — purely
+  statistical noise, but it defeats the operator's intent of
+  spreading dials across distinct wire orders. The
+  `shuffle_wire_chains_per_group` pass in `load_uplinks` re-rolls
+  the permutation up to 32 times when a collision is detected,
+  honouring the natural ceiling `N ≤ total_wires!` (you can't have
+  more distinct permutations than there are physically). Groups
+  are isolated — two uplinks in different groups may still
+  coincidentally share a permutation, since the dedup is intended
+  to spread *within* a group, not across the whole config.
 - **At runtime, all three failure sources drive forward-only wire
   rotation** through the same `record_wire_outcome` state machine:
   - **dial failures** (a fresh session can't connect on the active
