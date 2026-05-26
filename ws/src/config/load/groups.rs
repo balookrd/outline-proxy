@@ -8,7 +8,7 @@ use super::super::schema::{
 };
 use super::balancing::load_balancing_config;
 use super::probe::load_probe_config;
-use super::uplinks::{cli_uplink_override_requested, load_uplinks};
+use super::uplinks::{cli_uplink_override_requested, load_uplinks, shuffle_wire_chains_per_group};
 
 pub(super) fn load_groups(
     outline: Option<&OutlineSection>,
@@ -106,6 +106,19 @@ pub(super) fn load_groups(
         if bucket.is_empty() {
             bail!("uplink group \"{name}\" has no uplinks assigned");
         }
+    }
+
+    // Per-group wire-chain shuffle. The single-group `load_uplinks` path
+    // calls `shuffle_wire_chains_per_group` after resolving its uplinks;
+    // this new-shape path builds `UplinkConfig`s directly via
+    // `ResolvedUplinkInput::try_into`, so without this loop every
+    // `shuffle_wires = true` would silently no-op. Each bucket already
+    // holds exactly one group, so we feed the bucket's group name as
+    // the per-uplink label — the dedup pass keys collisions on that
+    // label and groups stay isolated.
+    for (name, bucket) in names.iter().zip(buckets.iter_mut()) {
+        let labels: Vec<Option<String>> = vec![Some(name.clone()); bucket.len()];
+        shuffle_wire_chains_per_group(bucket, &labels);
     }
 
     // Build each UplinkGroupConfig with merged probe + LB.
