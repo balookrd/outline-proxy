@@ -466,6 +466,44 @@ password = "Secret0"
 # shuffle_wires = true
 # carrier_downgrade = false
 
+# Periodic active-wire reroll. Accepts human-readable durations:
+# `"30s"`, `"5m"`, `"1h"`, `"1h30m"`, `"2d"`, plus the bare-seconds
+# form (`"3600"`). A background task wakes up every interval, picks a
+# random wire of the chain for TCP and UDP independently, and resets
+# the per-wire failure counters + any in-flight mode-downgrade cap so
+# the freshly-rolled wire starts with a clean budget. Useful as a
+# defence against time-based DPI heuristics — even an uplink that has
+# been serving traffic on the same wire for hours will pivot to a
+# different carrier on every tick, refusing to look like a long-lived
+# stable flow on one specific carrier shape. Independent of
+# `shuffle_wires` (which controls the initial chain order at config
+# load): the two can be combined or set independently.
+#
+# [[outline.uplinks]]
+# name = "edge-hourly"
+# group = "main"
+# transport = "vless"
+# vless_xhttp_url = "https://cdn.example.com/SECRET/xhttp"
+# vless_id = "00000000-0000-0000-0000-000000000000"
+# vless_mode = "xhttp_h3"
+# shuffle_wires = true
+# shuffle_timer = "1h"
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "vless"
+# vless_ws_url = "wss://cdn.example.com/SECRET/ws"
+# vless_id = "00000000-0000-0000-0000-000000000000"
+# vless_mode = "ws_h3"
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "websocket"
+# tcp_ws_url = "wss://cdn.example.com/SECRET/tcp"
+# udp_ws_url = "wss://cdn.example.com/SECRET/udp"
+# tcp_mode = "ws_h3"
+# udp_mode = "ws_h3"
+# method = "2022-blake3-aes-256-gcm"
+# password = "BASE64=="
+
 # Raw QUIC examples (no WebSocket / no HTTP/3 framing). Pairs with the
 # outline-ss-rust server's `transport::raw_quic` listener — ALPN selects
 # the protocol on the same QUIC endpoint, then VLESS / SS framing rides

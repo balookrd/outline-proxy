@@ -137,6 +137,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_active_wire_pin_remaining_ms: None,
                 shuffle_wires: false,
                 carrier_downgrade: true,
+                shuffle_timer_secs: None,
                 tcp_wires_failed_in_round: 0,
                 udp_wires_failed_in_round: 0,
                 fingerprint_profile_strategy: "none".to_string(),
@@ -232,6 +233,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_active_wire_pin_remaining_ms: None,
                 shuffle_wires: false,
                 carrier_downgrade: true,
+                shuffle_timer_secs: None,
                 tcp_wires_failed_in_round: 0,
                 udp_wires_failed_in_round: 0,
                 // Pin a non-default strategy on this uplink so the
@@ -275,6 +277,7 @@ fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        shuffle_timer: None,
     }
 }
 

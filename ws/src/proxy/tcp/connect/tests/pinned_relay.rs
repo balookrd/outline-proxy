@@ -97,6 +97,7 @@ fn make_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        shuffle_timer: None,
     }
 }
 
@@ -225,6 +226,7 @@ fn make_ws_uplink_pointing_at(name: &str, redial_target: SocketAddr) -> UplinkCo
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        shuffle_timer: None,
     }
 }
 

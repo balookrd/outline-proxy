@@ -1375,6 +1375,55 @@ When to use it:
 The flag defaults to `true` — existing configs keep the legacy
 descent contract bit-for-bit.
 
+#### Periodic active-wire reroll (`shuffle_timer`)
+
+Per-uplink interval at which a background task rerolls
+`active_wire` for both transports to a random wire of the chain.
+Accepts human-readable durations:
+
+```toml
+[[outline.uplinks]]
+shuffle_timer = "1h"      # every hour
+# shuffle_timer = "30s"   # every 30 seconds
+# shuffle_timer = "1h30m" # compound durations also supported
+# shuffle_timer = "3600"  # bare integer = seconds
+```
+
+Each tick:
+
+* Picks a random wire from `0..total_wires` for TCP and UDP
+  independently.
+* Zeroes out `active_wire_streak`, `wires_failed_in_round`,
+  `consecutive_failures`, `consecutive_runtime_failures`, and
+  `chunk0_consecutive_failures` — the new wire starts with a
+  fresh failure budget rather than inheriting the old wire's
+  streak history.
+* Clears any in-flight `mode_downgrade_*` cap (the new wire's
+  carrier stack is independent of the wire it replaces; a stale
+  cap installed for the previous wire would otherwise skew the
+  dial-time mode for the new one).
+* Pins the new wire for `mode_downgrade_duration`, except when
+  the roll happens to land back on primary (matches the
+  dial- / probe-path pin policy).
+
+When to use it:
+
+* Defence against time-based DPI heuristics: even an uplink that
+  has been working steadily on one wire for hours will pivot to a
+  fresh carrier shape on every tick, refusing to look like a
+  long-lived stable flow on a specific URL / mode.
+* Forced wire diversification at a known cadence (e.g. switch
+  through three CDN edges every 30 minutes during peak hours).
+
+Independent of `shuffle_wires` (which only controls the initial
+chain ordering at config load) — the two can be combined or set
+independently. No-op for uplinks without any fallbacks.
+
+The interval is surfaced on the JSON snapshot as
+`shuffle_timer_secs: Option<u64>` and a rotation event records a
+metric `outline_ws_rust_uplink_failover_total{transport="tcp_shuffle_timer"}`
+(and the `udp_shuffle_timer` counterpart).
+
 #### Mid-session handover (chunk-0 wire-aware failover)
 
 - If a session's chunk-0 stalls (no first byte from upstream within

@@ -221,6 +221,12 @@ pub struct UplinkConfig {
     /// `UplinkSection::carrier_downgrade` in the TOML schema for the
     /// operator-facing description.
     pub carrier_downgrade: bool,
+    /// Periodic active-wire reroll interval. `Some(d)` enables the
+    /// background timer that rerolls `active_wire` for both TCP and
+    /// UDP transports every `d`; `None` keeps the active wire sticky
+    /// between failures. See `UplinkSection::shuffle_timer` in the
+    /// TOML schema for the operator-facing description.
+    pub shuffle_timer: Option<Duration>,
 }
 
 impl UplinkConfig {
@@ -345,6 +351,11 @@ impl UplinkConfig {
             // wire being probed should observe the same descent /
             // no-descent policy the parent uplink configured.
             carrier_downgrade: self.carrier_downgrade,
+            // Timer-driven wire rotation acts on the *parent's*
+            // active_wire state — the synthetic single-wire view
+            // probes use is never the target of a rotation, so the
+            // interval is dropped on the wire-view side.
+            shuffle_timer: None,
         })
     }
 }

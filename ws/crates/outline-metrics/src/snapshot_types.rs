@@ -192,6 +192,13 @@ pub struct UplinkSnapshot {
     /// clients reading the JSON would have to assume one of the two
     /// settings; making the field explicit removes the guess.
     pub carrier_downgrade: bool,
+    /// Configured `shuffle_timer` interval in seconds, or `None` when
+    /// the periodic active-wire reroll is disabled on this uplink.
+    /// Surfaced so the dashboard can show "rotates every 1h" next to
+    /// the wire-chain pill and so operators can confirm the runtime
+    /// interval matches what they configured in TOML.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shuffle_timer_secs: Option<u64>,
     /// Number of `active_wire` advancements observed on the TCP
     /// transport since the last successful wire dial / probe. Only
     /// meaningful when [`Self::shuffle_wires`] is `true` — for the

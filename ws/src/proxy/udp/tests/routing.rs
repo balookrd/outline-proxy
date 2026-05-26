@@ -38,6 +38,7 @@ async fn classify_decision_unknown_group_falls_back_to_default() {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        shuffle_timer: None,
     };
     let probe = ProbeConfig {
         interval: Duration::from_secs(120),

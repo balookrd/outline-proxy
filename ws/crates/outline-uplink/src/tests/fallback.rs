@@ -33,6 +33,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        shuffle_timer: None,
     }
 }
 
@@ -62,6 +63,7 @@ fn ss_tcp_only_primary() -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        shuffle_timer: None,
     }
 }
 
@@ -125,6 +127,7 @@ fn ss_primary(udp: bool) -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        shuffle_timer: None,
     }
 }
 
@@ -1440,6 +1443,7 @@ fn ws_h3_primary() -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        shuffle_timer: None,
     }
 }
 
@@ -1571,6 +1575,7 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        shuffle_timer: None,
     };
     // min_failures=1 so each probe failure crosses both the
     // in-window descent gate (`consecutive_failures < min_failures`)
@@ -2893,6 +2898,89 @@ async fn shuffle_wires_holds_wire_advance_until_carrier_floor() {
         1,
         "wire at xhttp_h1 floor + active-wire failure must advance to wire 1",
     );
+}
+
+#[test]
+fn shuffle_timer_rotate_active_wire_resets_per_wire_state() {
+    // shuffle_timer scheduler fires `rotate_active_wire` on each tick.
+    // The reroll must:
+    //   * pick a wire from `0..total_wires` for both transports;
+    //   * zero out `active_wire_streak`, `wires_failed_in_round`,
+    //     `consecutive_failures`, `consecutive_runtime_failures`,
+    //     `chunk0_consecutive_failures` (each new wire deserves its
+    //     own fresh failure budget — inheriting the old wire's
+    //     streak would defeat the purpose of the reroll);
+    //   * clear any in-flight mode-downgrade cap (the new wire's
+    //     carrier stack is independent of the wire it replaces);
+    //   * pin the new wire for `mode_downgrade_duration`, except
+    //     when the roll happens to land back on primary (matches
+    //     the dial- / probe-path pin policy).
+    let mut cfg = ss_primary(true);
+    cfg.fallbacks = vec![ss_alt_fallback(true), ss_fallback(true)];
+    cfg.shuffle_timer = Some(std::time::Duration::from_secs(60));
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Seed some realistic per-wire failure state so we can prove the
+    // reroll really clears it.
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.active_wire = 1;
+        status.tcp.active_wire_streak = 5;
+        status.tcp.wires_failed_in_round = 2;
+        status.tcp.consecutive_failures = 3;
+        status.tcp.consecutive_runtime_failures = 4;
+        status.tcp.chunk0_consecutive_failures = 1;
+        status.udp.active_wire = 2;
+        status.udp.consecutive_failures = 2;
+        status.udp.wires_failed_in_round = 1;
+    });
+
+    let (tcp_wire, udp_wire) = manager
+        .rotate_active_wire(0)
+        .expect("3-wire uplink must report the new wire pair");
+    assert!(
+        tcp_wire < 3 && udp_wire < 3,
+        "wires must be valid indices into the 3-wire chain"
+    );
+
+    let snap = manager.read_status_for_test(0);
+    assert_eq!(snap.tcp.active_wire, tcp_wire);
+    assert_eq!(snap.udp.active_wire, udp_wire);
+    assert_eq!(snap.tcp.active_wire_streak, 0);
+    assert_eq!(snap.tcp.wires_failed_in_round, 0);
+    assert_eq!(snap.tcp.consecutive_failures, 0);
+    assert_eq!(snap.tcp.consecutive_runtime_failures, 0);
+    assert_eq!(snap.tcp.chunk0_consecutive_failures, 0);
+    assert_eq!(snap.udp.active_wire_streak, 0);
+    assert_eq!(snap.udp.wires_failed_in_round, 0);
+    assert_eq!(snap.udp.consecutive_failures, 0);
+    assert!(snap.tcp.mode_downgrade_capped_to.is_none());
+    assert!(snap.tcp.mode_downgrade_until.is_none());
+    assert!(snap.udp.mode_downgrade_capped_to.is_none());
+    assert!(snap.udp.mode_downgrade_until.is_none());
+    // Pin only when we left primary.
+    if tcp_wire == 0 {
+        assert!(snap.tcp.active_wire_pinned_until.is_none());
+    } else {
+        assert!(snap.tcp.active_wire_pinned_until.is_some());
+    }
+    if udp_wire == 0 {
+        assert!(snap.udp.active_wire_pinned_until.is_none());
+    } else {
+        assert!(snap.udp.active_wire_pinned_until.is_some());
+    }
+}
+
+#[test]
+fn shuffle_timer_rotate_active_wire_noop_for_single_wire_uplink() {
+    // No fallbacks → no rotation possible. Method must return None
+    // and leave the state untouched.
+    let mut cfg = ss_primary(true);
+    cfg.shuffle_timer = Some(std::time::Duration::from_secs(60));
+    let manager = manager_with_uplink(cfg, 1);
+
+    assert_eq!(manager.rotate_active_wire(0), None);
+    assert_eq!(manager.active_wire(0, TransportKind::Tcp), 0);
+    assert_eq!(manager.active_wire(0, TransportKind::Udp), 0);
 }
 
 #[tokio::test]
