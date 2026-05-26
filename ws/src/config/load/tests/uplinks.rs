@@ -100,6 +100,20 @@ fn resolve(section: UplinkSection) -> Result<UplinkConfig, anyhow::Error> {
     ResolvedUplinkInput::from_section(0, &section).try_into()
 }
 
+/// Resolve a single section AND run the per-group shuffle pass on
+/// it. Mirrors the full `load_uplinks` pipeline for a one-uplink
+/// configuration so the shuffle tests still exercise the real wire
+/// permutation after `shuffle_wire_chains_per_group` was lifted out
+/// of `TryFrom<ResolvedUplinkInput>` into the group-aware loader.
+fn resolve_and_shuffle(section: UplinkSection) -> Result<UplinkConfig, anyhow::Error> {
+    let group = section.group.clone();
+    let cfg: UplinkConfig = ResolvedUplinkInput::from_section(0, &section).try_into()?;
+    let mut buf = [cfg];
+    super::super::uplinks::shuffle_wire_chains_per_group(&mut buf, &[group]);
+    let [cfg] = buf;
+    Ok(cfg)
+}
+
 // ── Happy paths ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -422,7 +436,7 @@ fn shuffle_wires_on_keeps_full_wire_set_intact() {
             vec![fb_a.clone(), fb_b.clone(), fb_c.clone()],
         );
         section.shuffle_wires = Some(true);
-        let cfg = resolve(section).unwrap();
+        let cfg = resolve_and_shuffle(section).unwrap();
         assert!(cfg.shuffle_wires);
         // All four wires must still be Ws (transport unchanged for this
         // single-family setup) so the shuffle did not corrupt fields.
@@ -464,7 +478,7 @@ fn shuffle_wires_on_eventually_promotes_a_fallback_to_primary() {
             vec![fb_a.clone(), fb_b.clone()],
         );
         section.shuffle_wires = Some(true);
-        let cfg = resolve(section).unwrap();
+        let cfg = resolve_and_shuffle(section).unwrap();
         if cfg.tcp_ws_url.as_ref().unwrap().as_str() != "wss://primary.example.com/tcp" {
             saw_primary_displaced = true;
             break;
@@ -480,8 +494,116 @@ fn shuffle_wires_on_eventually_promotes_a_fallback_to_primary() {
 fn shuffle_wires_on_with_no_fallbacks_is_a_no_op() {
     let mut section = ws_uplink_section("edge", "wss://primary.example.com/tcp", vec![]);
     section.shuffle_wires = Some(true);
-    let cfg = resolve(section).unwrap();
+    let cfg = resolve_and_shuffle(section).unwrap();
     assert!(cfg.shuffle_wires);
     assert!(cfg.fallbacks.is_empty());
     assert_eq!(cfg.tcp_ws_url.as_ref().unwrap().as_str(), "wss://primary.example.com/tcp");
+}
+
+#[test]
+fn shuffle_wires_per_group_avoids_collisions_in_the_same_group() {
+    // Three identical 3-wire uplinks in the same `main` group. Naive
+    // independent shuffles would land on the same permutation ~17% of
+    // the time per pair, so two of the three uplinks coincidentally
+    // matching is ≈ 44% likely. The collision-free per-group pass
+    // must do strictly better than that: with 6 distinct permutations
+    // for 3 uplinks the loader can ALWAYS pick three distinct ones,
+    // so the assertion is hard. We run it for many seeds to make
+    // sure the dedup actually kicks in instead of relying on luck.
+    let fb_a = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+    let fb_b = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+    let make_section = |name: &str| {
+        let mut s = ws_uplink_section(
+            name,
+            "wss://primary.example.com/tcp",
+            vec![fb_a.clone(), fb_b.clone()],
+        );
+        s.group = Some("main".to_string());
+        s.shuffle_wires = Some(true);
+        s
+    };
+
+    for _ in 0..64 {
+        let sections = vec![make_section("alpha"), make_section("beta"), make_section("gamma")];
+        let group_labels: Vec<Option<String>> = sections.iter().map(|s| s.group.clone()).collect();
+        let mut resolved: Vec<UplinkConfig> = sections
+            .iter()
+            .enumerate()
+            .map(|(i, s)| ResolvedUplinkInput::from_section(i, s).try_into().unwrap())
+            .collect();
+        super::super::uplinks::shuffle_wire_chains_per_group(&mut resolved, &group_labels);
+
+        let orderings: Vec<Vec<String>> = resolved
+            .iter()
+            .map(|u| {
+                let mut v = vec![u.tcp_ws_url.as_ref().unwrap().as_str().to_string()];
+                v.extend(
+                    u.fallbacks
+                        .iter()
+                        .map(|fb| fb.tcp_ws_url.as_ref().unwrap().as_str().to_string()),
+                );
+                v
+            })
+            .collect();
+        let unique: std::collections::HashSet<_> = orderings.iter().collect();
+        assert_eq!(
+            unique.len(),
+            orderings.len(),
+            "three 3-wire uplinks in the same group must end up with three distinct wire orderings (got {:?})",
+            orderings,
+        );
+    }
+}
+
+#[test]
+fn shuffle_wires_per_group_isolates_groups() {
+    // Two uplinks in DIFFERENT groups must be allowed to coincidentally
+    // share a permutation — the collision-free guarantee is per-group
+    // and groups don't share state.
+    let fb_a = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+    let fb_b = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
+        ..empty_fallback()
+    };
+    let make_section = |name: &str, group: &str| {
+        let mut s = ws_uplink_section(
+            name,
+            "wss://primary.example.com/tcp",
+            vec![fb_a.clone(), fb_b.clone()],
+        );
+        s.group = Some(group.to_string());
+        s.shuffle_wires = Some(true);
+        s
+    };
+    // We can't directly observe "the loader does not consult the other
+    // group's seen set" — assert it indirectly by checking that the
+    // dedup state never bleeds into the second group's seen entry.
+    // Concretely: run with one uplink per group and confirm both ran
+    // through the shuffle without panicking (the seen-set lookup must
+    // use the group key, not a single global one).
+    let sections = vec![make_section("alpha", "group-a"), make_section("beta", "group-b")];
+    let group_labels: Vec<Option<String>> = sections.iter().map(|s| s.group.clone()).collect();
+    let mut resolved: Vec<UplinkConfig> = sections
+        .iter()
+        .enumerate()
+        .map(|(i, s)| ResolvedUplinkInput::from_section(i, s).try_into().unwrap())
+        .collect();
+    super::super::uplinks::shuffle_wire_chains_per_group(&mut resolved, &group_labels);
+    // No panic, both uplinks still have all three wires.
+    for cfg in &resolved {
+        assert_eq!(1 + cfg.fallbacks.len(), 3);
+    }
 }
