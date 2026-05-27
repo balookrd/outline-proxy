@@ -42,6 +42,10 @@ fn is_false_ref(v: &bool) -> bool {
     !*v
 }
 
+fn is_zero_u32_ref(v: &u32) -> bool {
+    *v == 0
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ControlTopologyResponse {
     pub(crate) instance: ControlInstanceTopology,
@@ -155,6 +159,24 @@ struct ControlUplinkTopology {
     /// primary, in ms. `None` when the primary is active or no pin is in flight.
     tcp_active_wire_pin_remaining_ms: Option<u128>,
     udp_active_wire_pin_remaining_ms: Option<u128>,
+    /// `shuffle_wires` flag — exposed so the dashboard can decide whether to
+    /// paint preceding wires of the current round (see
+    /// [`Self::tcp_wires_failed_in_round`] / [`Self::udp_wires_failed_in_round`])
+    /// as already-tried-and-failed. Omitted from JSON when `false` so older
+    /// dashboard builds (and the common no-shuffle deployment) see the same
+    /// payload shape they did before this field was plumbed through.
+    #[serde(default, skip_serializing_if = "is_false_ref")]
+    shuffle_wires: bool,
+    /// Wires advanced through on the TCP transport since the last successful
+    /// wire dial / probe. Only meaningful under `shuffle_wires` — together with
+    /// [`Self::tcp_active_wire`] the dashboard highlights indices
+    /// `[active - count, …, active - 1] mod total_wires` as failed-in-round.
+    /// Reset to `0` on success or chain exhaustion. Omitted from JSON when `0`.
+    #[serde(default, skip_serializing_if = "is_zero_u32_ref")]
+    tcp_wires_failed_in_round: u32,
+    /// UDP counterpart to [`Self::tcp_wires_failed_in_round`].
+    #[serde(default, skip_serializing_if = "is_zero_u32_ref")]
+    udp_wires_failed_in_round: u32,
     /// Effective browser-fingerprint diversification strategy on this
     /// uplink (per-uplink override if set, otherwise process-wide default).
     /// Lowercase snake_case: `none` / `per_host_stable` / `random`. The
@@ -363,6 +385,9 @@ fn build_uplink_topology(
         udp_active_wire: uplink.udp_active_wire,
         tcp_active_wire_pin_remaining_ms: uplink.tcp_active_wire_pin_remaining_ms,
         udp_active_wire_pin_remaining_ms: uplink.udp_active_wire_pin_remaining_ms,
+        shuffle_wires: uplink.shuffle_wires,
+        tcp_wires_failed_in_round: uplink.tcp_wires_failed_in_round,
+        udp_wires_failed_in_round: uplink.udp_wires_failed_in_round,
         fingerprint_profile_strategy: uplink.fingerprint_profile_strategy.clone(),
         fingerprint_profile_name: uplink.fingerprint_profile_name.clone(),
     }
