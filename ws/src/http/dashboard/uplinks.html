@@ -488,14 +488,48 @@ function openForm(form) {
 async function loadInstances() {
   state.errors = [];
   try {
-    const res = await fetch("/dashboard/api/topology", { cache: "no-store" });
-    const data = await res.json();
-    state.instances = (data.instances || []).map(i => ({ name: i.name, ok: i.ok, groups: i.topology?.instance?.groups || [] }));
-    for (const inst of data.instances || []) {
-      if (!inst.ok) state.errors.push(`${inst.name}: ${inst.error}`);
+    // Two-step fetch: `/dashboard/api/instances` returns just the list
+    // of instance names; `/dashboard/api/topology?instance=X` returns
+    // one instance's full topology. `uplinks.html` previously called
+    // `/dashboard/api/topology` without a query and expected the
+    // combined shape, but the backend rejects that with 400 — leaving
+    // the instance picker empty. Mirror what `dashboard.html` does:
+    // populate the select from `/instances`, then load the current
+    // instance's groups separately.
+    const listRes = await fetch("/dashboard/api/instances", { cache: "no-store" });
+    if (!listRes.ok) throw new Error(`instances: HTTP ${listRes.status}`);
+    const list = await listRes.json();
+    const names = (list.instances || []).map(i => i.name);
+    // Keep the currently selected instance if it still exists; otherwise
+    // fall back to the first available name. Names that disappear get
+    // removed from the cached details map below.
+    if (!state.currentInstance || !names.includes(state.currentInstance)) {
+      state.currentInstance = names.length ? names[0] : null;
     }
-    if (!state.currentInstance && state.instances.length) {
-      state.currentInstance = state.instances[0].name;
+    state.instances = names.map(name => ({ name, ok: null, groups: [] }));
+    // Drop cached details for instances the backend no longer reports.
+    for (const cached of Object.keys(state.detailsByInstance)) {
+      if (!names.includes(cached)) delete state.detailsByInstance[cached];
+    }
+    if (state.currentInstance) {
+      const topoRes = await fetch(
+        `/dashboard/api/topology?instance=${encodeURIComponent(state.currentInstance)}`,
+        { cache: "no-store" },
+      );
+      const topo = await topoRes.json().catch(() => ({}));
+      if (!topoRes.ok) {
+        const msg = topo && topo.error ? topo.error : `HTTP ${topoRes.status}`;
+        state.errors.push(`${state.currentInstance}: ${msg}`);
+      } else {
+        const target = state.instances.find(i => i.name === state.currentInstance);
+        if (target) {
+          target.ok = topo.ok !== false;
+          target.groups = topo.topology?.instance?.groups || [];
+        }
+        if (topo.ok === false && topo.error) {
+          state.errors.push(`${state.currentInstance}: ${topo.error}`);
+        }
+      }
     }
     const cur = state.instances.find(i => i.name === state.currentInstance);
     state.groups = cur ? cur.groups : [];
