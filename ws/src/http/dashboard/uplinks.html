@@ -148,6 +148,48 @@ select:focus, input:focus { border-color: var(--blue); box-shadow: 0 0 0 4px rgb
 .toast.ok { border-color: var(--green); color: var(--green-strong); }
 .toast.err { border-color: var(--red); color: var(--red); }
 .empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
+/* Universal custom tooltip — any element with `data-tip="..."` shows
+ * an instant CSS pop-over on hover. Same shape as dashboard.html so
+ * both pages feel consistent. */
+[data-tip] { position: relative; }
+[data-tip]:not([data-tip=""])::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-tint);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .1s ease .04s;
+  z-index: 50;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+[data-tip]:not([data-tip=""])::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--line-strong);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .1s ease .04s;
+  z-index: 50;
+}
+[data-tip]:not([data-tip=""]):hover::after,
+[data-tip]:not([data-tip=""]):hover::before,
+[data-tip]:not([data-tip=""]):focus-visible::after,
+[data-tip]:not([data-tip=""]):focus-visible::before { opacity: 1; }
 @media (max-width: 1024px) {
   .shell { grid-template-columns: 1fr; }
   .nav { display: none; }
@@ -198,8 +240,8 @@ select:focus, input:focus { border-color: var(--blue); box-shadow: 0 0 0 4px rgb
         <select id="instanceSelect"></select>
         <span class="dirty-pill clean" id="dirtyPill">● no changes</span>
         <button class="btn primary" id="applyBtn" type="button" disabled>Apply</button>
-        <button class="btn" id="reloadBtn" type="button" title="Reload from server">↻</button>
-        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme" title="Toggle theme"><span id="themeIcon">☀</span></button>
+        <button class="btn" id="reloadBtn" type="button" aria-label="Reload from server" data-tip="Reload from server">↻</button>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme" data-tip="Toggle theme"><span id="themeIcon">☀</span></button>
       </div>
     </div>
     <div id="errors"></div>
