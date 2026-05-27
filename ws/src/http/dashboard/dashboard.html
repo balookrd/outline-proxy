@@ -146,7 +146,7 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .summary-icon.warn { background: var(--blue-soft); color: var(--blue); }
 .summary-icon.muted { background: var(--gray-soft); color: var(--muted); }
 .stack { display: grid; gap: 8px; }
-.instance-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; box-shadow: var(--shadow); }
+.instance-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
 .instance-panel-header:hover, .group-table-head:hover, .row:hover { background: var(--soft); }
 .instance-panel.collapsed .instance-panel-body { display: none; }
 .instance-panel-header { min-height: 46px; display: flex; align-items: center; gap: 10px; padding: 14px 18px; cursor: pointer; user-select: none; }
@@ -157,7 +157,14 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .instance-panel.collapsed .collapse-chev { transform: rotate(180deg); }
 .instance-panel-body { padding: 13px 18px; display: grid; gap: 12px; background: var(--panel); }
 .section-title { font-size: 13px; font-weight: 600; color: var(--muted); }
-.group-table { border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: var(--panel); }
+.group-table { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); }
+/* `overflow: hidden` would clip the wire-dot tooltips on the
+ * bottom row; instead we keep the table un-clipped and rely on
+ * `border-radius` alone. Inner row borders sit several pixels
+ * inside the rounded corner so the rounding remains visually clean. */
+.group-table > * { border-radius: inherit; }
+.group-table .group-table-head { border-top-left-radius: 18px; border-top-right-radius: 18px; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.group-table .rows { border-bottom-left-radius: 18px; border-bottom-right-radius: 18px; border-top-left-radius: 0; border-top-right-radius: 0; }
 .group-table-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; background: var(--panel-tint); border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; }
 .group-table.collapsed .rows { display: none; }
 .group-table.collapsed .group-table-head { border-bottom: 0; }
@@ -237,22 +244,93 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
  * carrier family. Hovering a dot reveals the wire's full label via
  * `title`. Failed-in-shuffle-round wires are painted red the same way
  * the legacy chain paints them. */
-.leg-chain { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-.leg-chain .wire-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255, 255, 255, 0.08); flex: 0 0 auto; }
-.leg-chain .wire-dot.failed { background: rgba(220, 38, 38, .55); border-color: rgba(185, 28, 28, .55); }
-.leg-chain .wire-dot.fam-vless-ws    { background: #6366f1; }
-.leg-chain .wire-dot.fam-vless-xhttp { background: #a855f7; }
-.leg-chain .wire-dot.fam-vless-quic  { background: #ec4899; }
-.leg-chain .wire-dot.fam-ss-ws       { background: #06b6d4; }
-.leg-chain .wire-dot.fam-ss-quic     { background: #94a3b8; }
-.leg-chain .wire-dot.fam-unknown     { background: var(--dot-idle); }
+.leg-chain { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; overflow: visible; }
+.leg-chain .wire-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255, 255, 255, 0.08); flex: 0 0 auto; cursor: help; position: relative; transition: transform .12s ease, box-shadow .12s ease; }
+.leg-chain .wire-dot:hover { transform: scale(1.35); box-shadow: 0 0 0 2px var(--panel-tint), 0 0 0 3px rgba(99, 102, 241, .55); z-index: 5; }
+/* Universal custom tooltip — any element with a non-empty
+ * `data-tip="..."` attribute gets an instant CSS pop-over on hover.
+ * Replaces the slow native `title=` tooltip site-wide. Centred above
+ * the element, fades in instantly, drops on the panel-tint background
+ * so it reads cleanly on both themes. Keep `aria-label="..."` on
+ * interactive elements (buttons / inputs) so screen readers still
+ * announce the same hint — the visible CSS tooltip is desktop-only. */
+[data-tip] { position: relative; }
+[data-tip]:not([data-tip=""])::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-tint);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .1s ease .04s;
+  z-index: 50;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+  letter-spacing: 0;
+  text-transform: none;
+  max-width: 320px;
+}
+[data-tip]:not([data-tip=""])::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--line-strong);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .1s ease .04s;
+  z-index: 50;
+}
+[data-tip]:not([data-tip=""]):hover::after,
+[data-tip]:not([data-tip=""]):hover::before,
+[data-tip]:not([data-tip=""]):focus-visible::after,
+[data-tip]:not([data-tip=""]):focus-visible::before { opacity: 1; }
+/* Long-form tooltips (multi-line, used on the wire-chain active pill
+ * and config chips) opt in by switching from a single line to wrapped
+ * text. Apply with `data-tip-wrap` next to `data-tip`. */
+[data-tip-wrap][data-tip]::after { white-space: normal; min-width: 180px; }
+.wire-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255, 255, 255, 0.08); flex: 0 0 auto; }
+.wire-dot.failed { background: rgba(220, 38, 38, .55); border-color: rgba(185, 28, 28, .55); }
+.wire-dot.fam-vless-ws    { background: #6366f1; }
+.wire-dot.fam-vless-xhttp { background: #a855f7; }
+.wire-dot.fam-vless-quic  { background: #ec4899; }
+.wire-dot.fam-ss-ws       { background: #06b6d4; }
+.wire-dot.fam-ss-quic     { background: #94a3b8; }
+.wire-dot.fam-unknown     { background: var(--dot-idle); }
 .leg-chain .leg-arrow { color: var(--muted); font-size: 9px; opacity: .6; }
-[data-theme="light"] .leg-chain .wire-dot { border-color: rgba(15, 23, 42, 0.10); }
-[data-theme="light"] .leg-chain .wire-dot.fam-vless-ws    { background: #818cf8; }
-[data-theme="light"] .leg-chain .wire-dot.fam-vless-xhttp { background: #c084fc; }
-[data-theme="light"] .leg-chain .wire-dot.fam-vless-quic  { background: #f472b6; }
-[data-theme="light"] .leg-chain .wire-dot.fam-ss-ws       { background: #22d3ee; }
-[data-theme="light"] .leg-chain .wire-dot.fam-ss-quic     { background: #94a3b8; }
+[data-theme="light"] .wire-dot { border-color: rgba(15, 23, 42, 0.10); }
+[data-theme="light"] .wire-dot.fam-vless-ws    { background: #818cf8; }
+[data-theme="light"] .wire-dot.fam-vless-xhttp { background: #c084fc; }
+[data-theme="light"] .wire-dot.fam-vless-quic  { background: #f472b6; }
+[data-theme="light"] .wire-dot.fam-ss-ws       { background: #22d3ee; }
+[data-theme="light"] .wire-dot.fam-ss-quic     { background: #94a3b8; }
+/* Wire-chain legend — collapsed by default so it doesn't crowd the
+ * summary cards. Click the summary chip to expand the colour key.
+ * Keeps the same look on light + dark themes. */
+.wire-legend { margin: 8px 0 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.wire-legend > summary { list-style: none; cursor: pointer; padding: 8px 14px; display: flex; align-items: center; gap: 10px; user-select: none; }
+.wire-legend > summary::-webkit-details-marker { display: none; }
+.wire-legend > summary::before { content: "▸"; color: var(--muted); font-size: 11px; transition: transform .15s ease; }
+.wire-legend[open] > summary::before { transform: rotate(90deg); }
+.wire-legend-title { font-size: 12px; font-weight: 700; color: var(--text); }
+.wire-legend-hint { color: var(--muted); font-size: 11px; }
+.wire-legend[open] .wire-legend-hint { display: none; }
+.wire-legend-body { display: flex; flex-wrap: wrap; gap: 14px 22px; padding: 4px 14px 12px; }
+.wire-legend-item { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); }
+.wire-legend-item .wire-dot { width: 12px; height: 12px; }
+.wire-legend-note { color: var(--muted); font-size: 11.5px; flex-basis: 100%; margin-top: 4px; }
+.wire-legend-note code { background: var(--soft); border: 1px solid var(--line); padding: 0 4px; border-radius: 4px; font-size: 11px; }
 /* The pin timer is the existing `.fb-pin`, reused outside the
  * `.fb-chain` scope. Keeping its full selector path lets us drop in
  * the chip next to the active wire pill in the new leg-chain cell
@@ -331,10 +409,22 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
       <div class="toolbar">
         <div class="updated-inline">↻ Last updated: <span id="updatedAtInline">-</span></div>
         <button class="refresh" id="refreshBtn" type="button"><span class="dot"></span><span id="refreshLabel">Auto</span></button>
-        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme" title="Toggle theme"><span id="themeIcon">☀</span></button>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme" data-tip="Toggle theme"><span id="themeIcon">☀</span></button>
       </div>
     </div>
     <section class="summary-grid" id="summaryGrid"></section>
+    <details class="wire-legend" id="wireLegend">
+      <summary><span class="wire-legend-title">Wire chain legend</span><span class="wire-legend-hint">click to expand</span></summary>
+      <div class="wire-legend-body">
+        <span class="wire-legend-item"><span class="wire-dot fam-vless-ws"></span>VLESS / WS · H1 / H2 / H3</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-vless-xhttp"></span>VLESS / XHTTP · H1 / H2 / H3</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-vless-quic"></span>VLESS / QUIC</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-ss-ws"></span>Shadowsocks / WS</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-ss-quic"></span>Shadowsocks direct (QUIC&nbsp;UDP)</span>
+        <span class="wire-legend-item"><span class="wire-dot failed"></span>failed in current shuffle round</span>
+        <span class="wire-legend-item wire-legend-note">Active wire of the leg is rendered as a full pill; hover any square for the exact `transport / mode` of that wire.</span>
+      </div>
+    </details>
     <div id="errors"></div>
     <section class="stack" id="groups"></section>
   </main>
@@ -436,9 +526,9 @@ function groupConfigChips(group) {
   const fbCls = failback ? "fb-on" : "fb-off";
   const fbLabel = failback ? "On" : "Off";
   return `
-    <span class="cfg-chip mode" title="load_balancing_mode"><span>⚖</span><span class="cfg-key">Mode:</span><span>${escapeHtml(mode)}</span></span>
-    <span class="cfg-chip scope" title="routing_scope"><span>⌘</span><span class="cfg-key">Scope:</span><span>${escapeHtml(scope)}</span></span>
-    <span class="cfg-chip ${fbCls}" title="auto_failback"><span>↺</span><span class="cfg-key">Auto-failback:</span><span>${fbLabel}</span></span>`;
+    <span class="cfg-chip mode" data-tip="load_balancing_mode"><span>⚖</span><span class="cfg-key">Mode:</span><span>${escapeHtml(mode)}</span></span>
+    <span class="cfg-chip scope" data-tip="routing_scope"><span>⌘</span><span class="cfg-key">Scope:</span><span>${escapeHtml(scope)}</span></span>
+    <span class="cfg-chip ${fbCls}" data-tip="auto_failback"><span>↺</span><span class="cfg-key">Auto-failback:</span><span>${fbLabel}</span></span>`;
 }
 // Render a small chip showing the active browser-fingerprint profile
 // for an uplink. The chip is visible only when there is *something*
@@ -478,7 +568,7 @@ function renderFingerprintChip(name, strategy) {
   const title = strategy
     ? `fingerprint_profile_name = ${name} · strategy = ${strategy}`
     : `fingerprint_profile_name = ${name}`;
-  return `<span class="cfg-chip ${cls}" title="${escapeHtml(title)}"><span>⊛</span><span>${escapeHtml(label)}</span></span>`;
+  return `<span class="cfg-chip ${cls}" data-tip="${escapeHtml(title)}"><span>⊛</span><span>${escapeHtml(label)}</span></span>`;
 }
 function fingerprintChip(uplink) {
   const name = uplink && uplink.fingerprint_profile_name;
@@ -602,10 +692,10 @@ function primaryProtocolCell(uplink) {
   const tcpMode = (wire0 && wire0.tcp_mode) || uplink.tcp_mode || null;
   const udpMode = (wire0 && wire0.udp_mode) || uplink.udp_mode || null;
   const countChip = fallbacks.length > 0
-    ? `<span class="wire-count-chip" title="${fallbacks.length} fallback wire${fallbacks.length === 1 ? "" : "s"} configured">+${fallbacks.length}</span>`
+    ? `<span class="wire-count-chip" data-tip="${fallbacks.length} fallback wire${fallbacks.length === 1 ? "" : "s"} configured">+${fallbacks.length}</span>`
     : "";
   if (t === "shadowsocks") {
-    return `<div class="primary-cell"><span class="proto-pill ${cls}" title="primary wire: ${escapeHtml(stackLabel(t))}">${escapeHtml(stackLabel(t))}</span>${countChip}</div>`;
+    return `<div class="primary-cell"><span class="proto-pill ${cls}" data-tip="primary wire: ${escapeHtml(stackLabel(t))}">${escapeHtml(stackLabel(t))}</span>${countChip}</div>`;
   }
   // One pill in the Protocol cell — always. When TCP and UDP primary
   // modes diverge we surface the TCP shape and the divergence goes
@@ -621,7 +711,7 @@ function primaryProtocolCell(uplink) {
   const title = (tcpMode && udpMode && tcpMode !== udpMode)
     ? `primary wire — TCP: ${stackLabel(t, tcpMode)} · UDP: ${stackLabel(t, udpMode)}`
     : `primary wire: ${label}`;
-  return `<div class="primary-cell"><span class="proto-pill ${cls}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>${countChip}</div>`;
+  return `<div class="primary-cell"><span class="proto-pill ${cls}" data-tip="${escapeHtml(title)}">${escapeHtml(label)}</span>${countChip}</div>`;
 }
 /**
  * Render the per-leg wire-chain cell shown in the `TCP` / `UDP` columns
@@ -726,15 +816,15 @@ function legWireChainCell(uplink, leg) {
     ? `${legKey.toUpperCase()} unhealthy — no working transport (latest dial failed)`
     : (activeDeco.dg ? downgradeTitle(active.mode, active.mode, legKey.toUpperCase()) : `wire #${activeIdx}: ${fullLabel}`);
   const title = submodeTitle ? `${baseTitle} · ${submodeTitle}` : baseTitle;
-  const activePill = `<span class="proto-pill ${protoCls}${dgCls}${failCls}" title="${escapeHtml(title)}">${escapeHtml(fullLabel)}${dgArrow}${submodeHtml}</span>`;
+  const activePill = `<span class="proto-pill ${protoCls}${dgCls}${failCls}" data-tip="${escapeHtml(title)}">${escapeHtml(fullLabel)}${dgArrow}${submodeHtml}</span>`;
   const failChip = allDown
-    ? `<span class="proto-fail-chip" title="${escapeHtml(legKey.toUpperCase() + " unhealthy — no working transport (latest dial failed)")}">✕ DOWN</span>`
+    ? `<span class="proto-fail-chip" data-tip="${escapeHtml(legKey.toUpperCase() + " unhealthy — no working transport (latest dial failed)")}">✕ DOWN</span>`
     : "";
   // Pin timer rides outside the pill as a standalone chip — only when
   // the active wire is a fallback (i.e. not primary) and the backend
   // surfaces the remaining ms.
   const pinChip = (activeIdx !== 0 && typeof pinMs === "number")
-    ? `<span class="fb-pin" title="auto-failback in">⏱ ${(pinMs / 1000).toFixed(0)}s</span>`
+    ? `<span class="fb-pin" data-tip="auto-failback in">⏱ ${(pinMs / 1000).toFixed(0)}s</span>`
     : "";
   // Build inactive wire dots. Skip the active wire — it's already
   // shown as the full pill above. Render in chain order with a
@@ -747,7 +837,8 @@ function legWireChainCell(uplink, leg) {
     const isFailed = (i === 0 && primaryFailed) || failedSet.has(i);
     const famCls = isFailed ? "failed" : wireFamilyClass(w.transport, w.mode);
     const dotTitle = `wire #${i}: ${stackLabel(w.transport, w.mode)}`;
-    dots.push(`<span class="wire-dot ${famCls}" title="${escapeHtml(dotTitle)}"></span>`);
+    const tipEsc = escapeHtml(dotTitle);
+    dots.push(`<span class="wire-dot ${famCls}" data-tip="${tipEsc}" aria-label="${tipEsc}" role="img"></span>`);
   }
   // Single-wire uplinks: just the active pill. No dots, no arrows.
   if (totalWires <= 1) {
@@ -806,7 +897,7 @@ function activeProtocolChip(group) {
     const [submodeHtml, submodeTitle] = submodeSuffix(s.submode, s.submodeEff, s.submodeDg);
     const baseTitle = s.downgraded ? downgradeTitle(s.configured, s.effective, scope) : "";
     const title = submodeTitle ? (baseTitle ? `${baseTitle} · ${submodeTitle}` : submodeTitle) : baseTitle;
-    return `<span class="cfg-chip"><span>⇄</span><span class="cfg-key">${scope}:</span><span class="proto-pill ${cls}${dg}" title="${escapeHtml(title)}" style="margin-left:2px">${escapeHtml(stackLabel(s.transport, s.effective))}${star}${submodeHtml}</span></span>`;
+    return `<span class="cfg-chip"><span>⇄</span><span class="cfg-key">${scope}:</span><span class="proto-pill ${cls}${dg}" data-tip="${escapeHtml(title)}" style="margin-left:2px">${escapeHtml(stackLabel(s.transport, s.effective))}${star}${submodeHtml}</span></span>`;
   };
   const shapeKey = (s) => `${s.transport}|${s.effective || ""}|${s.submode || ""}|${s.submodeEff || ""}|${s.submodeDg ? 1 : 0}|${s.downgraded ? 1 : 0}`;
   return candidates.flatMap(({ scope, name, legs }) => {
