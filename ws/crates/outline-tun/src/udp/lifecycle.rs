@@ -14,7 +14,7 @@ use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
 use socks5_proto::TargetAddr;
 
 use super::types::{
-    DirectUdpFlowState, bump_last_seen_if_current, drain_idle_flows, flow_is_current,
+    DirectUdpFlowState, FlowStamp, bump_last_seen_if_current, drain_idle_flows, flow_is_current,
 };
 use super::wire::build_response_packet;
 use super::{
@@ -87,7 +87,11 @@ impl TunUdpEngine {
         let _ = self.inner.close_tx.send(CloseWork::Tunnel { flow, reason });
     }
 
-    fn enqueue_close_direct(&self, flow: Arc<Mutex<DirectUdpFlowState>>, reason: &'static str) {
+    pub(super) fn enqueue_close_direct(
+        &self,
+        flow: Arc<Mutex<DirectUdpFlowState>>,
+        reason: &'static str,
+    ) {
         let _ = self.inner.close_tx.send(CloseWork::Direct { flow, reason });
     }
 
@@ -363,12 +367,17 @@ async fn select_candidate_and_connect(
     )))
 }
 
-async fn oldest_flow_key(
-    flows: &HashMap<UdpFlowKey, Arc<Mutex<UdpFlowState>>>,
-) -> Option<UdpFlowKey> {
-    let mut oldest: Option<(UdpFlowKey, Instant)> = None;
+/// Pick the least-recently-seen flow key in a table. Generic over the flow
+/// state (via [`FlowStamp`]) so both the tunnelled (`flows`) and direct
+/// (`direct_flows`) tables share one eviction-selection routine.
+pub(super) async fn oldest_flow_key<K, F>(flows: &HashMap<K, Arc<Mutex<F>>>) -> Option<K>
+where
+    K: Clone,
+    F: FlowStamp,
+{
+    let mut oldest: Option<(K, Instant)> = None;
     for (key, handle) in flows {
-        let last_seen = handle.lock().await.last_seen;
+        let last_seen = handle.lock().await.last_seen();
         match &oldest {
             Some((_, t)) if last_seen >= *t => continue,
             _ => oldest = Some((key.clone(), last_seen)),

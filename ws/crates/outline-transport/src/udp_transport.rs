@@ -267,22 +267,43 @@ impl UdpWsTransport {
         match &self.transport {
             UdpTransport::Socket { socket } => {
                 let mut close_rx = self.close_signal.subscribe();
-                let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD + 128];
                 if *close_rx.borrow() {
                     bail!("udp transport closed");
                 }
-                let len = tokio::select! {
-                    _ = close_rx.changed() => {
-                        if *close_rx.borrow() {
-                            bail!("udp transport closed");
+                loop {
+                    tokio::select! {
+                        _ = close_rx.changed() => {
+                            if *close_rx.borrow() {
+                                bail!("udp transport closed");
+                            }
+                            bail!("udp transport close state changed unexpectedly");
                         }
-                        bail!("udp transport close state changed unexpectedly");
+                        ready = socket.readable() => {
+                            ready.context("failed to await UDP shadowsocks socket")?;
+                            // Allocate only once a datagram is ready, so an idle
+                            // UDP flow holds no per-flow receive buffer. The buffer
+                            // is dropped before the next park.
+                            let mut buf = Vec::with_capacity(SHADOWSOCKS_MAX_PAYLOAD + 128);
+                            match socket.try_recv_buf(&mut buf) {
+                                Ok(len) => {
+                                    return self
+                                        .decrypt_udp_bytes(&buf[..len])
+                                        .await
+                                        .map(Bytes::from);
+                                },
+                                Err(ref error)
+                                    if error.kind() == std::io::ErrorKind::WouldBlock =>
+                                {
+                                    continue;
+                                },
+                                Err(error) => {
+                                    return Err(error)
+                                        .context("failed to read UDP shadowsocks packet");
+                                },
+                            }
+                        }
                     }
-                    len = socket.recv(&mut buf) => {
-                        len.context("failed to read UDP shadowsocks packet")?
-                    }
-                };
-                self.decrypt_udp_bytes(&buf[..len]).await.map(Bytes::from)
+                }
             },
             UdpTransport::Channel(chan) => {
                 let bytes = chan

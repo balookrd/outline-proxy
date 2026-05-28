@@ -8,6 +8,9 @@ Wants=network-online.target
 Type=simple
 Environment=RUST_LOG=info
 Environment=NO_COLOR=1
+# mimalloc arena reservation granularity (KiB). The binary also runs a periodic
+# mi_collect to hand freed memory back to the OS after traffic bursts; set
+# MIMALLOC_PURGE_DELAY / MIMALLOC_PURGE_DECOMMITS here to tune reclamation.
 Environment=MIMALLOC_ARENA_RESERVE=262144
 # Persist active-uplink selection to the per-instance writable state directory.
 Environment=STATE_PATH=/var/lib/outline-ws-rust/%i/state.toml

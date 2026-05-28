@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::Bytes;
-use tokio::io::AsyncReadExt;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::{Mutex, watch};
 use tracing::{debug, warn};
@@ -22,22 +21,31 @@ impl TunTcpEngine {
         &self,
         key: TcpFlowKey,
         flow: Arc<Mutex<TcpFlowState>>,
-        mut read_half: OwnedReadHalf,
+        read_half: OwnedReadHalf,
         mut close_rx: watch::Receiver<bool>,
     ) {
         let engine = self.clone();
         tokio::spawn(async move {
-            let mut buf = vec![0u8; 16_384];
             loop {
-                let read_result = tokio::select! {
+                // Wait for readability (or close) without holding a receive
+                // buffer; allocate it only once data is ready and drop it
+                // before the next park, so an idle direct flow holds no
+                // per-flow read buffer.
+                let ready = tokio::select! {
                     _ = close_rx.changed() => {
                         if *close_rx.borrow() {
                             return;
                         }
                         continue;
                     }
-                    result = read_half.read(&mut buf) => result,
+                    ready = read_half.readable() => ready,
                 };
+                if ready.is_err() {
+                    engine.close_flow(&key, "read_error").await;
+                    return;
+                }
+                let mut buf = Vec::with_capacity(16_384);
+                let read_result = read_half.try_read_buf(&mut buf);
                 match read_result {
                     Ok(0) => {
                         // EOF — upstream closed.
@@ -73,7 +81,7 @@ impl TunTcpEngine {
                         return;
                     },
                     Ok(n) => {
-                        let chunk = Bytes::copy_from_slice(&buf[..n]);
+                        let chunk = Bytes::from(buf);
                         let flush = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
@@ -119,6 +127,7 @@ impl TunTcpEngine {
                             },
                         }
                     },
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => {
                         debug!(error = %format!("{error:#}"), "direct upstream TCP reader ended");
                         engine.close_flow(&key, "read_error").await;

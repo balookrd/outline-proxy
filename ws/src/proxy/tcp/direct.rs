@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result, anyhow};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tracing::info;
@@ -53,8 +53,8 @@ pub(super) async fn relay_tcp_direct(
     let bound_addr = socket_addr_to_target(client.local_addr()?);
     send_reply(&mut client, SOCKS_REP_SUCCESS, &bound_addr).await?;
 
-    let (mut client_read, mut client_write) = client.into_split();
-    let (mut upstream_read, mut upstream_write) = upstream.into_split();
+    let (client_read, mut client_write) = client.into_split();
+    let (upstream_read, mut upstream_write) = upstream.into_split();
 
     // Activity channel: c2u and u2c signal after every successful read.
     // The idle watcher resets its timer on each token; if the channel is silent
@@ -70,9 +70,17 @@ pub(super) async fn relay_tcp_direct(
     let activity_u2c = activity_tx;
 
     let c2u = async move {
-        let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
         loop {
-            let read = client_read.read(&mut buf).await?;
+            // Park on readability without holding a buffer; allocate it only
+            // once data is ready and drop it before the next park, so an idle
+            // direct TCP session holds no per-direction relay buffer.
+            client_read.readable().await?;
+            let mut buf = Vec::with_capacity(SHADOWSOCKS_MAX_PAYLOAD);
+            let read = match client_read.try_read_buf(&mut buf) {
+                Ok(read) => read,
+                Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(error) => return Err(error.into()),
+            };
             if read == 0 {
                 break;
             }
@@ -90,9 +98,17 @@ pub(super) async fn relay_tcp_direct(
         Ok::<(), anyhow::Error>(())
     };
     let u2c = async move {
-        let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
         loop {
-            let read = upstream_read.read(&mut buf).await?;
+            // Park on readability without holding a buffer; allocate it only
+            // once data is ready and drop it before the next park, so an idle
+            // direct TCP session holds no per-direction relay buffer.
+            upstream_read.readable().await?;
+            let mut buf = Vec::with_capacity(SHADOWSOCKS_MAX_PAYLOAD);
+            let read = match upstream_read.try_read_buf(&mut buf) {
+                Ok(read) => read,
+                Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(error) => return Err(error.into()),
+            };
             if read == 0 {
                 break;
             }

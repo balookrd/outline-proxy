@@ -284,7 +284,7 @@ The binary is controlled by Cargo feature flags. Mix and match as needed:
 | `h3` | ✓ | H3/QUIC transport (pulls in quinn + sockudo-ws/http3) |
 | `metrics` | ✓ | Prometheus metrics endpoint; also enables transport-layer metrics (pulls in prometheus + serde_json) |
 | `tun` | ✓ | TUN device support (tun2udp + tun2tcp engines); remove to exclude all TUN code |
-| `mimalloc` | ✓ | Replace the system allocator with mimalloc; reduces RSS fragmentation under connection churn |
+| `mimalloc` | ✓ | Replace the system allocator with mimalloc; reduces RSS fragmentation under connection churn. A background thread periodically runs `mi_collect` to hand freed memory back to the OS after traffic bursts |
 | `env-filter` | ✓ | Dynamic `RUST_LOG` parsing; disable to hardcode log level at `WARN` and save ~300 KB on MIPS |
 | `multi-thread` | ✓ | Tokio work-stealing scheduler; disable to force `current_thread` and save ~100–200 KB |
 | `router` | — | Convenience alias for `--no-default-features --features router` (disables all defaults above) |
@@ -548,6 +548,9 @@ listen = "[::1]:9090"
 # macOS / BSD example:
 # path = "/dev/tun0"
 # mtu = 1500
+# Per-table cap on concurrent UDP flows. Applies independently to tunnelled
+# flows and to direct (`via = "direct"`) flows; when a table is full the
+# least-recently-seen flow in it is evicted. Default 4096.
 # max_flows = 4096
 # idle_timeout_secs = 300
 # Built-in IKE / IPsec NAT-T bypass — see "TUN Mode" section below.
