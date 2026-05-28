@@ -43,6 +43,7 @@ async fn async_main() -> Result<()> {
     match AppMode::load()? {
         AppMode::Serve(config) => {
             init_tracing();
+            spawn_mimalloc_maintenance();
             server::run(config).await
         },
         AppMode::MigrateConfig { path } => {
@@ -68,6 +69,38 @@ async fn async_main() -> Result<()> {
             }
             Ok(())
         },
+    }
+}
+
+/// Period between forced mimalloc reclamation passes.
+const MIMALLOC_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Spawn a low-frequency background thread that forces mimalloc to return
+/// decommittable memory to the OS.
+///
+/// mimalloc purges freed pages lazily, driven by allocator activity
+/// (alloc/free traffic). A process that goes idle right after a large
+/// transient burst — e.g. tens of thousands of UDP/NAT sessions created and
+/// then drained together — can otherwise sit on its high-water-mark RSS
+/// indefinitely, because nothing triggers the delayed purge. A periodic
+/// `mi_collect(true)` forces that reclamation; a heap walk every 30 s is
+/// negligible next to the RSS it returns. mimalloc already decommits on
+/// purge by default (`mi_option_purge_decommits = 1`), so reclaimed pages
+/// are handed back to the kernel rather than merely reset.
+fn spawn_mimalloc_maintenance() {
+    let spawned = std::thread::Builder::new()
+        .name("mimalloc-purge".to_owned())
+        .spawn(|| {
+            loop {
+                std::thread::sleep(MIMALLOC_PURGE_INTERVAL);
+                // SAFETY: `mi_collect` is a thread-safe mimalloc entry point with no
+                // preconditions. `force = true` reclaims empty segments and returns
+                // decommitted memory to the OS.
+                unsafe { libmimalloc_sys::mi_collect(true) };
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "failed to spawn mimalloc maintenance thread");
     }
 }
 
