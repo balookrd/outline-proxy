@@ -14,6 +14,7 @@ use anyhow::{Context, Result, anyhow};
 use bytes::{Bytes, BytesMut};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
+    net::tcp::OwnedReadHalf,
     sync::Notify,
 };
 
@@ -71,8 +72,8 @@ pub(in crate::server) trait UpstreamSink: Send {
     fn on_chunk_encrypted(&mut self, _plaintext: usize, _ciphertext: usize) {}
 }
 
-pub(in crate::server) async fn relay_upstream_to_client<R, S>(
-    mut upstream_reader: R,
+pub(in crate::server) async fn relay_upstream_to_client<S>(
+    mut upstream_reader: OwnedReadHalf,
     mut sink: S,
     encryptor: &mut AeadStreamEncryptor,
     metrics: Arc<Metrics>,
@@ -90,20 +91,16 @@ pub(in crate::server) async fn relay_upstream_to_client<R, S>(
     // negotiate v2 pass `None`. See `docs/SESSION-RESUMPTION.md`
     // § Symmetric Downlink Replay (v2).
     downlink_ring: Option<Arc<Mutex<DownlinkRing>>>,
-) -> Result<UpstreamRelayOutcome<R>>
+) -> Result<UpstreamRelayOutcome<OwnedReadHalf>>
 where
-    R: AsyncRead + Unpin,
     S: UpstreamSink,
 {
     let user_counters = metrics.user_counters(&user_id);
     let target_to_client = user_counters.tcp_out(app_protocol, protocol);
     let aead_overhead_out = user_counters.tcp_aead_out(app_protocol, protocol);
-    let mut buffer = ScratchBuf::take();
     let mut out_buf = BytesMut::with_capacity(MAX_CHUNK_SIZE);
     let mut saw_payload = false;
     loop {
-        buffer.clear();
-        buffer.reserve(MAX_CHUNK_SIZE);
         // Cancel arm: when no cancel is registered we substitute a future
         // that never resolves, so the select degenerates to the legacy
         // single-arm read.
@@ -123,8 +120,18 @@ where
                 // might race against the resume.
                 return Ok(UpstreamRelayOutcome::Cancelled(upstream_reader));
             }
-            read_result = upstream_reader.read_buf(&mut *buffer) => {
-                let read = read_result.context("failed to read from upstream")?;
+            ready = upstream_reader.readable() => {
+                ready.context("failed to await upstream")?;
+                // Take the pooled plaintext buffer only once data is ready,
+                // so an idle download relay holds no per-connection receive
+                // buffer; it returns to the pool before the next park.
+                let mut buffer = ScratchBuf::take();
+                buffer.reserve(MAX_CHUNK_SIZE);
+                let read = match upstream_reader.try_read_buf(&mut *buffer) {
+                    Ok(read) => read,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(error) => return Err(error).context("failed to read from upstream"),
+                };
                 if read == 0 {
                     if !saw_payload {
                         sink.on_eof_before_payload();

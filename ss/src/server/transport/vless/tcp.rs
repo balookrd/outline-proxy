@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     sync::{Notify, mpsc},
 };
 use tracing::{debug, info, warn};
@@ -535,7 +535,6 @@ where
 {
     let user_counters = metrics.user_counters(&user_id);
     let target_to_client = user_counters.tcp_out(AppProtocol::Vless, protocol);
-    let mut buffer = TcpRelayBuf::take();
     loop {
         // Cancel arm: when no notify is registered, substitute a never-
         // resolving future so the select degenerates to a single-arm
@@ -555,8 +554,17 @@ where
                 // reconnect.
                 return Ok(VlessRelayOutcome::Cancelled(upstream_reader));
             }
-            read_result = upstream_reader.read(&mut *buffer) => {
-                let read = read_result.context("failed to read from vless upstream")?;
+            ready = upstream_reader.readable() => {
+                ready.context("failed to await vless upstream")?;
+                // Allocate from the pool only once data is ready, so an idle
+                // VLESS session holds no per-direction relay buffer; the
+                // buffer returns to the pool before the next park.
+                let mut buffer = TcpRelayBuf::take();
+                let read = match upstream_reader.try_read(&mut *buffer) {
+                    Ok(read) => read,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(error) => return Err(error).context("failed to read from vless upstream"),
+                };
                 if read == 0 {
                     break;
                 }

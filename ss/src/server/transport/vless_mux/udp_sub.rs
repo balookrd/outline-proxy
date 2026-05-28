@@ -9,8 +9,7 @@ use tokio::{
 use tracing::{debug, warn};
 
 use super::super::super::{
-    connect::resolve_udp_target, constants::MAX_UDP_PAYLOAD_SIZE, dns_cache::DnsCache,
-    nat::bind_nat_udp_socket, scratch::UdpRecvBuf,
+    connect::resolve_udp_target, dns_cache::DnsCache, nat::bind_nat_udp_socket, scratch::UdpRecvBuf,
 };
 use super::frames::send_end;
 use super::state::{
@@ -129,8 +128,6 @@ where
 {
     let user_counters = metrics.user_counters(&user);
     let target_to_client = user_counters.udp_out(AppProtocol::Vless, protocol);
-    let mut buf = UdpRecvBuf::take();
-    let mut frame_buf = BytesMut::with_capacity(MAX_UDP_PAYLOAD_SIZE + 32);
     loop {
         tokio::select! {
             biased;
@@ -142,9 +139,18 @@ where
                 // can buffer them per the spec's back-buffer policy.
                 return MuxReaderHarvest::UdpCancelled;
             }
-            recv_result = socket.recv_from(&mut *buf) => {
-                let (read, from) = match recv_result {
+            ready = socket.readable() => {
+                if let Err(error) = ready {
+                    debug!(session_id, error = %error, "mux udp readiness error");
+                    break;
+                }
+                // Allocate from the pool only once a datagram is ready, so an
+                // idle sub-conn holds no per-session receive buffer; the
+                // buffer returns to the pool before the next park.
+                let mut buf = UdpRecvBuf::take();
+                let (read, from) = match socket.try_recv_from(&mut *buf) {
                     Ok(v) => v,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => {
                         debug!(session_id, error = %error, "mux udp recv error");
                         break;
@@ -155,7 +161,9 @@ where
                 }
                 target_to_client.increment(read as u64);
                 let src = TargetAddr::Socket(from);
-                frame_buf.reserve(read + 32);
+                // Build the frame on demand so an idle sub-conn holds no
+                // encode buffer either.
+                let mut frame_buf = BytesMut::with_capacity(read + 32);
                 encode_frame(
                     &mut frame_buf,
                     session_id,
@@ -179,7 +187,7 @@ where
             }
         }
     }
-    frame_buf.reserve(6);
+    let mut frame_buf = BytesMut::with_capacity(6);
     encode_frame(&mut frame_buf, session_id, SessionStatus::End, 0, None, None, None);
     let _ = tx.send(make_binary(frame_buf.split().freeze())).await;
     MuxReaderHarvest::Closed

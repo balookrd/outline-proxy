@@ -19,6 +19,7 @@ use crate::{
 };
 
 use super::super::constants::MAX_UDP_PAYLOAD_SIZE;
+use super::super::scratch::UdpRecvBuf;
 use super::entry::{ActiveSession, UdpResponseSender};
 
 pub(super) struct NatReaderCtx {
@@ -47,10 +48,18 @@ pub(super) async fn nat_reader_task(ctx: NatReaderCtx) {
     } = ctx;
 
     let user_id = user.id_arc();
-    let mut buf = vec![0u8; MAX_UDP_PAYLOAD_SIZE];
     loop {
-        let (n, source) = match socket.recv_from(&mut buf).await {
+        if let Err(error) = socket.readable().await {
+            warn!(%target, %error, "UDP NAT socket readiness error, closing reader");
+            break;
+        }
+        // Allocate from the pool only once a datagram is ready, so an idle
+        // NAT session holds no per-session receive buffer; the buffer returns
+        // to the pool before the next park.
+        let mut buf = UdpRecvBuf::take();
+        let (n, source) = match socket.try_recv_from(&mut *buf) {
             Ok(v) => v,
+            Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
             Err(error) => {
                 warn!(%target, %error, "UDP NAT socket recv error, closing reader");
                 break;

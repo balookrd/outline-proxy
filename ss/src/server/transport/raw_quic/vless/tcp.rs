@@ -349,21 +349,27 @@ enum DownloadOutcome {
 
 async fn run_download(
     mut send: quinn::SendStream,
-    mut up_reader: OwnedReadHalf,
+    up_reader: OwnedReadHalf,
     target_to_client: Counter,
     cancel: Arc<Notify>,
 ) -> Result<DownloadOutcome> {
-    use tokio::io::AsyncReadExt;
-
-    let mut buf = TcpRelayBuf::take();
     loop {
         tokio::select! {
             biased;
             _ = cancel.notified() => {
                 return Ok(DownloadOutcome::Cancelled(up_reader));
             }
-            read = up_reader.read(&mut *buf) => {
-                let n = read.context("failed to read upstream tcp")?;
+            ready = up_reader.readable() => {
+                ready.context("failed to await upstream tcp")?;
+                // Allocate from the pool only once data is ready, so an idle
+                // session holds no per-direction relay buffer; the buffer
+                // returns to the pool before the next park.
+                let mut buf = TcpRelayBuf::take();
+                let n = match up_reader.try_read(&mut *buf) {
+                    Ok(n) => n,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(error) => return Err(error).context("failed to read upstream tcp"),
+                };
                 if n == 0 {
                     let _ = send.finish();
                     return Ok(DownloadOutcome::Drained);

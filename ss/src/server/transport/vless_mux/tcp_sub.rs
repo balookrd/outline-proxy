@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     net::tcp::OwnedReadHalf,
     sync::{Notify, mpsc},
 };
@@ -121,8 +121,6 @@ where
 {
     let user_counters = metrics.user_counters(&user);
     let target_to_client = user_counters.tcp_out(AppProtocol::Vless, protocol);
-    let mut buf = TcpRelayBuf::take();
-    let mut frame_buf = BytesMut::with_capacity(16 * 1024 + 16);
     loop {
         tokio::select! {
             biased;
@@ -133,10 +131,19 @@ where
                 // race the reconnect.
                 return MuxReaderHarvest::TcpCancelled(reader);
             }
-            read_result = reader.read(&mut *buf) => {
-                let read = match read_result {
+            ready = reader.readable() => {
+                if let Err(error) = ready {
+                    debug!(session_id, error = %error, "mux tcp upstream readiness error");
+                    break;
+                }
+                // Allocate from the pool only once data is ready, so an idle
+                // sub-conn holds no per-direction relay buffer; the buffer
+                // returns to the pool before the next park.
+                let mut buf = TcpRelayBuf::take();
+                let read = match reader.try_read(&mut *buf) {
                     Ok(0) => break,
                     Ok(n) => n,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => {
                         debug!(session_id, error = %error, "mux tcp upstream read error");
                         break;
@@ -160,7 +167,9 @@ where
                     }
                 }
                 target_to_client.increment(total as u64);
-                frame_buf.reserve(total + 16);
+                // Build the frame on demand so an idle sub-conn holds no
+                // encode buffer either.
+                let mut frame_buf = BytesMut::with_capacity(total + 16);
                 encode_frame(
                     &mut frame_buf,
                     session_id,
@@ -184,7 +193,7 @@ where
             }
         }
     }
-    frame_buf.reserve(6);
+    let mut frame_buf = BytesMut::with_capacity(6);
     encode_frame(&mut frame_buf, session_id, SessionStatus::End, 0, None, None, None);
     let _ = tx.send(make_binary(frame_buf.split().freeze())).await;
     MuxReaderHarvest::Closed
