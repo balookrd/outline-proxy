@@ -71,14 +71,19 @@ pub(in crate::proxy) async fn serve_udp_associate(
         let config_uplink = Arc::clone(&config);
         let responses_tx_uplink = responses_tx.clone();
         let uplink = async move {
-            let mut buf = vec![0u8; 65_535];
             let mut reassembler = UdpFragmentReassembler::default();
             let mut route_cache: UdpRouteCache = new_udp_route_cache();
             loop {
-                let (len, addr) = socket_uplink
-                    .recv_from(&mut buf)
-                    .await
-                    .map_err(ClientIo::ReadFailed)?;
+                // Park on readability without holding a buffer; allocate it
+                // only once a datagram is ready and drop it before the next
+                // park, so an idle UDP association holds no receive buffer.
+                socket_uplink.readable().await.map_err(ClientIo::ReadFailed)?;
+                let mut buf = Vec::with_capacity(65_535);
+                let (len, addr) = match socket_uplink.try_recv_buf_from(&mut buf) {
+                    Ok(v) => v,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(error) => return Err(ClientIo::ReadFailed(error).into()),
+                };
                 if addr.ip() != client_peer_ip {
                     debug!(%addr, expected_ip = %client_peer_ip, "dropping UDP packet from unexpected source");
                     continue;
@@ -209,10 +214,16 @@ pub(in crate::proxy) async fn serve_udp_associate(
             let Some(sock) = direct_socket else {
                 return std::future::pending::<Result<(), anyhow::Error>>().await;
             };
-            let mut buf = vec![0u8; MAX_UDP_RELAY_PACKET_SIZE];
             loop {
-                let (len, src_addr) =
-                    sock.recv_from(&mut buf).await.context("direct UDP recv failed")?;
+                // Allocate the receive buffer on demand so an idle association
+                // holds no per-socket buffer between datagrams.
+                sock.readable().await.context("direct UDP readiness failed")?;
+                let mut buf = Vec::with_capacity(MAX_UDP_RELAY_PACKET_SIZE);
+                let (len, src_addr) = match sock.try_recv_buf_from(&mut buf) {
+                    Ok(v) => v,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(error) => return Err(error).context("direct UDP recv failed"),
+                };
                 let client_addr = *client_udp_addr_direct.get().ok_or_else(|| {
                     anyhow!("received direct UDP response before client sent any packet")
                 })?;

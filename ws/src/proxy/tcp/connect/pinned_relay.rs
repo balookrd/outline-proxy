@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use socks5_proto::TargetAddr;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
@@ -23,20 +23,25 @@ use crate::client_io::ClientIo;
 use crate::proxy::TcpTimeouts;
 
 enum UplinkIo {
-    ClientRead(usize),
+    Readable,
     KeepaliveSent,
 }
 
-async fn read_client_or_keepalive<R: AsyncRead + Unpin>(
-    client_read: &mut R,
-    buf: &mut [u8],
+/// Wait until the client read half is readable (→ [`UplinkIo::Readable`]) or,
+/// if a keepalive interval is configured and elapses first, send an upstream
+/// keepalive (→ [`UplinkIo::KeepaliveSent`]). Parks on readiness rather than on
+/// `read(buf)` so the caller allocates the receive buffer only once data is
+/// actually present — an idle pinned relay then holds no per-connection buffer.
+async fn await_readable_or_keepalive(
+    client_read: &OwnedReadHalf,
     keepalive_interval: Option<Duration>,
     writer: &mut TcpWriter,
 ) -> Result<UplinkIo> {
     if let Some(interval) = keepalive_interval {
         tokio::select! {
-            result = client_read.read(buf) => {
-                Ok(UplinkIo::ClientRead(result.map_err(ClientIo::ReadFailed)?))
+            ready = client_read.readable() => {
+                ready.map_err(ClientIo::ReadFailed)?;
+                Ok(UplinkIo::Readable)
             }
             _ = tokio::time::sleep(interval) => {
                 writer
@@ -47,7 +52,8 @@ async fn read_client_or_keepalive<R: AsyncRead + Unpin>(
             }
         }
     } else {
-        Ok(UplinkIo::ClientRead(client_read.read(buf).await.map_err(ClientIo::ReadFailed)?))
+        client_read.readable().await.map_err(ClientIo::ReadFailed)?;
+        Ok(UplinkIo::Readable)
     }
 }
 
@@ -196,23 +202,32 @@ pub(super) async fn run_relay(
         let ring_for_uplink = ring.clone();
         let mut uplink_writer = writer;
         let uplink = async move {
-            let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
             let mut chunks_sent: u64 = 0;
             loop {
-                let read = {
-                    let mut cr_guard = cr_for_uplink.lock().await;
-                    match read_client_or_keepalive(
-                        &mut *cr_guard,
-                        &mut buf,
+                let buf = {
+                    let cr_guard = cr_for_uplink.lock().await;
+                    match await_readable_or_keepalive(
+                        &cr_guard,
                         keepalive_interval,
                         &mut uplink_writer,
                     )
                     .await?
                     {
-                        UplinkIo::ClientRead(read) => read,
+                        UplinkIo::Readable => {},
                         UplinkIo::KeepaliveSent => continue,
                     }
+                    // Allocate only once the client half is readable; an idle
+                    // pinned relay then holds no per-connection read buffer.
+                    let mut buf = Vec::with_capacity(SHADOWSOCKS_MAX_PAYLOAD);
+                    match cr_guard.try_read_buf(&mut buf) {
+                        Ok(_) => buf,
+                        Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            continue;
+                        },
+                        Err(error) => return Err(ClientIo::ReadFailed(error).into()),
+                    }
                 };
+                let read = buf.len();
                 if read == 0 {
                     // Client-side EOF. Signal upstream half-close (Close
                     // frame for WS, half-close FIN for sockets) and

@@ -145,3 +145,54 @@ fn randomized_udp_packet_roundtrip_and_mutation_smoke() {
         }
     }
 }
+
+/// Eviction-selection logic shared by the tunnelled and direct UDP flow
+/// tables. `oldest_flow_key` is generic over [`FlowStamp`], so the direct
+/// flow cap added alongside the tunnelled one reuses exactly this routine;
+/// it is exercised here with a minimal stand-in flow type.
+mod eviction {
+    use crate::udp::lifecycle::oldest_flow_key;
+    use crate::udp::types::FlowStamp;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio::sync::Mutex;
+
+    struct StampFlow {
+        id: u64,
+        last_seen: Instant,
+    }
+
+    impl FlowStamp for StampFlow {
+        fn id(&self) -> u64 {
+            self.id
+        }
+        fn last_seen(&self) -> Instant {
+            self.last_seen
+        }
+        fn set_last_seen(&mut self, now: Instant) {
+            self.last_seen = now;
+        }
+    }
+
+    fn flow(id: u64, last_seen: Instant) -> Arc<Mutex<StampFlow>> {
+        Arc::new(Mutex::new(StampFlow { id, last_seen }))
+    }
+
+    #[tokio::test]
+    async fn selects_least_recently_seen_key() {
+        let base = Instant::now();
+        let mut flows: HashMap<u32, Arc<Mutex<StampFlow>>> = HashMap::new();
+        flows.insert(1, flow(1, base + Duration::from_secs(60)));
+        flows.insert(2, flow(2, base)); // least-recently-seen → evicted first
+        flows.insert(3, flow(3, base + Duration::from_secs(5)));
+
+        assert_eq!(oldest_flow_key(&flows).await, Some(2));
+    }
+
+    #[tokio::test]
+    async fn empty_table_has_no_oldest_key() {
+        let flows: HashMap<u32, Arc<Mutex<StampFlow>>> = HashMap::new();
+        assert_eq!(oldest_flow_key(&flows).await, None);
+    }
+}

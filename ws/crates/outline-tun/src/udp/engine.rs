@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 
 use anyhow::Context;
 use tokio::net::UdpSocket;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::lifecycle::CloseWork;
 use super::types::{
@@ -25,6 +25,11 @@ use crate::{SharedTunWriter, TunRoute, TunRouting};
 use outline_metrics as metrics;
 use outline_transport::{AbortOnDrop, OversizedUdpDatagram, is_dropped_oversized_udp_error};
 use socks5_proto::TargetAddr;
+
+/// Upper bound for a single received UDP datagram (max UDP payload is 65 507
+/// bytes; the extra slack keeps the ceiling at the IPv4 total-length limit).
+/// Used to size the direct reader's receive buffer.
+const MAX_UDP_DATAGRAM: usize = 65_535;
 
 #[derive(Clone)]
 pub struct TunUdpEngine {
@@ -400,10 +405,21 @@ impl TunUdpEngine {
         let reader_key = key.clone();
         let direct_flows = Arc::clone(&self.inner.direct_flows);
         let reader = AbortOnDrop::new(tokio::spawn(async move {
-            let mut buf = vec![0u8; 65_535];
             loop {
-                let (len, src_addr) = match reader_sock.recv_from(&mut buf).await {
+                // Park on readiness without holding a receive buffer, so an
+                // idle direct flow costs no per-flow datagram buffer. The
+                // buffer is allocated only once a datagram is actually ready
+                // and released before the next park — steady-state memory then
+                // tracks in-flight datagrams rather than the number of open
+                // flows. `try_recv_buf_from` fills the spare capacity without
+                // zeroing it first, avoiding a 64 KiB memset per datagram.
+                if reader_sock.readable().await.is_err() {
+                    break;
+                }
+                let mut buf = Vec::with_capacity(MAX_UDP_DATAGRAM);
+                let (len, src_addr) = match reader_sock.try_recv_buf_from(&mut buf) {
                     Ok(v) => v,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(_) => break,
                 };
                 let src_target = socks5_proto::socket_addr_to_target(src_addr);
@@ -437,16 +453,39 @@ impl TunUdpEngine {
             }
         }));
 
-        self.inner.direct_flows.write().await.insert(
-            key,
-            Arc::new(Mutex::new(DirectUdpFlowState {
-                id: flow_id,
-                socket: sock,
-                _reader: reader,
-                created_at: now,
-                last_seen: now,
-            })),
-        );
+        let state = Arc::new(Mutex::new(DirectUdpFlowState {
+            id: flow_id,
+            socket: sock,
+            _reader: reader,
+            created_at: now,
+            last_seen: now,
+        }));
+        // Bound the direct flow table the same way `create_flow` bounds the
+        // tunnelled `flows` table: on overflow, evict the least-recently-seen
+        // flow so a UDP storm to direct-routed destinations cannot grow the
+        // table (and its per-flow sockets and reader tasks) without limit.
+        let mut evicted_flow = None;
+        {
+            let mut guard = self.inner.direct_flows.write().await;
+            if guard.len() >= self.inner.max_flows
+                && let Some(evicted_key) = super::lifecycle::oldest_flow_key(&guard).await
+                && let Some(evicted) = guard.remove(&evicted_key)
+            {
+                {
+                    let snapshot = evicted.lock().await;
+                    warn!(
+                        evicted_flow_id = snapshot.id,
+                        max_flows = self.inner.max_flows,
+                        "evicted oldest direct TUN UDP flow due to flow table limit"
+                    );
+                }
+                evicted_flow = Some(evicted);
+            }
+            guard.insert(key, state);
+        }
+        if let Some(flow) = evicted_flow {
+            self.enqueue_close_direct(flow, "evicted");
+        }
 
         super::record_udp_xfer(
             "client_to_upstream",

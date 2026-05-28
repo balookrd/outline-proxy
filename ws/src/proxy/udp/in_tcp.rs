@@ -156,10 +156,16 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
             let Some(sock) = direct_socket else {
                 return std::future::pending::<Result<(), anyhow::Error>>().await;
             };
-            let mut buf = vec![0u8; MAX_UDP_RELAY_PACKET_SIZE];
             loop {
-                let (len, src_addr) =
-                    sock.recv_from(&mut buf).await.context("direct UDP recv failed")?;
+                // Allocate the receive buffer on demand so an idle association
+                // holds no per-socket buffer between datagrams.
+                sock.readable().await.context("direct UDP readiness failed")?;
+                let mut buf = Vec::with_capacity(MAX_UDP_RELAY_PACKET_SIZE);
+                let (len, src_addr) = match sock.try_recv_buf_from(&mut buf) {
+                    Ok(v) => v,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(error) => return Err(error).context("direct UDP recv failed"),
+                };
                 let target = socket_addr_to_target(src_addr);
                 let metric_payload_len = udp_metric_payload_len(&target, len)?;
                 write_udp_tcp_response(

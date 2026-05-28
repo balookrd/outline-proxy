@@ -85,6 +85,9 @@ listen = "[::1]:9090"
 # macOS / BSD example:
 # path = "/dev/tun0"
 # mtu = 1500
+# Per-table cap on concurrent UDP flows. Applies independently to tunnelled
+# flows and to direct (`via = "direct"`) flows; when a table is full the
+# least-recently-seen flow in it is evicted. Default 4096.
 # max_flows = 4096
 # idle_timeout_secs = 300
 # Built-in bypass for IKE / IPsec NAT-T traffic. When true, UDP flows to
