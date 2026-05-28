@@ -85,10 +85,18 @@ pub(super) async fn handle_udp(
     let conn_state_for_reader = Arc::clone(conn_state);
     let socket_for_reader = Arc::clone(&socket);
     let reader_task = tokio::spawn(async move {
-        let mut buf = UdpRecvBuf::take();
         loop {
-            let n = match socket_for_reader.recv(&mut *buf).await {
+            if let Err(error) = socket_for_reader.readable().await {
+                debug!(?error, session_id, "vless raw-quic udp readiness failed");
+                return;
+            }
+            // Allocate from the pool only once a datagram is ready, so an idle
+            // session holds no per-session receive buffer; the buffer returns
+            // to the pool before the next park.
+            let mut buf = UdpRecvBuf::take();
+            let n = match socket_for_reader.try_recv(&mut *buf) {
                 Ok(n) => n,
+                Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                 Err(error) => {
                     debug!(?error, session_id, "vless raw-quic udp upstream recv failed");
                     return;

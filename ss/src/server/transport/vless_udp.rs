@@ -321,7 +321,6 @@ where
 {
     let user_counters = metrics.user_counters(&user_id);
     let target_to_client = user_counters.udp_out(AppProtocol::Vless, protocol);
-    let mut buffer = UdpRecvBuf::take();
     loop {
         let cancelled = async {
             match cancel.as_deref() {
@@ -338,9 +337,18 @@ where
                 // a resume would race against it.
                 return Ok(VlessRelayOutcome::UdpCancelled);
             }
-            recv_result = socket.recv(&mut buffer) => {
-                let read = match recv_result {
+            ready = socket.readable() => {
+                if let Err(error) = ready {
+                    let _ = tx.send(make_close()).await;
+                    return Err(error).context("failed to await vless udp upstream");
+                }
+                // Allocate from the pool only once a datagram is ready, so an
+                // idle UDP relay holds no per-session receive buffer; the
+                // buffer returns to the pool before the next park.
+                let mut buffer = UdpRecvBuf::take();
+                let read = match socket.try_recv(&mut *buffer) {
                     Ok(n) => n,
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => {
                         let _ = tx.send(make_close()).await;
                         return Err(error).context("failed to read from vless udp upstream");
