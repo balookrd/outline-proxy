@@ -14,7 +14,7 @@ use super::super::super::super::state_machine::{
     TcpFlowState, TcpFlowStatus, UpstreamWriter, clear_flow_metrics, client_fin_seen,
 };
 use super::super::super::connect::select_tcp_candidate_and_connect;
-use super::super::super::{TunTcpEngine, close_upstream_writer};
+use super::super::super::{TunTcpEngine, close_upstream_writer, target_socket_addr};
 
 impl TunTcpEngine {
     pub(in crate::tcp::engine) fn spawn_upstream_connect(
@@ -53,32 +53,19 @@ impl TunTcpEngine {
                     crate::TunRoute::Direct { fwmark } => fwmark,
                     _ => None,
                 };
-                let addr = match outline_transport::resolve_host_with_preference(
-                    engine.dns_cache(),
-                    &format!("{}", target),
-                    0, // port already in SocketAddr
-                    "resolve direct target",
-                    false,
-                )
-                .await
-                {
-                    Ok(addrs) if !addrs.is_empty() => addrs[0],
-                    _ => {
-                        // Fallback: construct from the TargetAddr directly
-                        match &target {
-                            socks5_proto::TargetAddr::IpV4(ip, port) => {
-                                std::net::SocketAddr::new(std::net::IpAddr::V4(*ip), *port)
-                            },
-                            socks5_proto::TargetAddr::IpV6(ip, port) => {
-                                std::net::SocketAddr::new(std::net::IpAddr::V6(*ip), *port)
-                            },
-                            socks5_proto::TargetAddr::Domain(_, _) => {
-                                metrics::record_tun_tcp_async_connect("failed");
-                                warn!(flow_id, remote = %target, "direct TUN TCP: domain targets not supported");
-                                engine.abort_flow_with_rst(&key, "connect_failed").await;
-                                return;
-                            },
-                        }
+                // The TUN ingress always carries a literal IP target, so map it
+                // straight to a SocketAddr. Re-resolving it through the system
+                // resolver (the previous behaviour) stringified the IP back into
+                // "<ip>:<port>", which is not a valid host literal and forced a
+                // bogus getaddrinfo lookup that blocked on the resolver's
+                // multi-second timeout before falling back to this very address.
+                let addr = match target_socket_addr(&target) {
+                    Some(addr) => addr,
+                    None => {
+                        metrics::record_tun_tcp_async_connect("failed");
+                        warn!(flow_id, remote = %target, "direct TUN TCP: domain targets not supported");
+                        engine.abort_flow_with_rst(&key, "connect_failed").await;
+                        return;
                     },
                 };
                 let stream = match timeout(

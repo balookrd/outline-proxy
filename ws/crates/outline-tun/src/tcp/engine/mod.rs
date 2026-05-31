@@ -282,7 +282,7 @@ pub(super) async fn key_group_and_uplink(flow: &Arc<Mutex<TcpFlowState>>) -> (Ar
     (state.routing.group_name.clone(), state.routing.uplink_name.clone())
 }
 
-pub(super) use crate::wire::{ip_family_from_version, ip_to_target};
+pub(super) use crate::wire::{ip_family_from_version, ip_to_target, target_socket_addr};
 
 /// Policy predicate: returns `true` when a flow bound to `flow_uplink_index`
 /// must be torn down because its group is in strict-active-uplink mode and

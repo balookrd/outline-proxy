@@ -2,7 +2,7 @@
 #[path = "tests/test_utils.rs"]
 pub(crate) mod test_utils;
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::{Result, bail};
 
@@ -41,6 +41,24 @@ pub(crate) fn ip_to_target(ip: IpAddr, port: u16) -> TargetAddr {
     match ip {
         IpAddr::V4(ip) => TargetAddr::IpV4(ip, port),
         IpAddr::V6(ip) => TargetAddr::IpV6(ip, port),
+    }
+}
+
+/// Maps a [`TargetAddr`] to a concrete [`SocketAddr`] without any DNS
+/// resolution.
+///
+/// The TUN ingress always carries literal IP targets (see [`ip_to_target`]),
+/// so the direct egress path can build the socket address synchronously. A
+/// `Domain` target — which the TUN path never produces — yields `None`, so
+/// the caller rejects it explicitly instead of stringifying the literal IP
+/// back into `"<ip>:<port>"` and issuing a bogus `getaddrinfo` lookup that
+/// stalls on the system resolver's multi-second timeout (glibc default
+/// `RES_TIMEOUT` is 5 s) before falling back to the address it already had.
+pub(crate) fn target_socket_addr(target: &TargetAddr) -> Option<SocketAddr> {
+    match target {
+        TargetAddr::IpV4(ip, port) => Some(SocketAddr::new(IpAddr::V4(*ip), *port)),
+        TargetAddr::IpV6(ip, port) => Some(SocketAddr::new(IpAddr::V6(*ip), *port)),
+        TargetAddr::Domain(_, _) => None,
     }
 }
 
