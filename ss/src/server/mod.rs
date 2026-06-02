@@ -62,7 +62,7 @@ use self::{
         build_app, build_metrics_app, ensure_rustls_provider_installed, serve_metrics_listener,
         serve_tcp_listener,
     },
-    h3::serve_h3_server,
+    h3::{serve_h3_server, spawn_h3_cert_reloader},
     setup::{describe_user_routes, describe_vless_user_routes, describe_vless_xhttp_user_routes},
     shadowsocks::{SsTcpCtx, SsUdpCtx, serve_ss_tcp_listener, serve_ss_udp_socket},
     shutdown::{shutdown_channel, wait_for_shutdown_signal},
@@ -203,6 +203,9 @@ pub async fn run(config: Config) -> Result<()> {
             )
             .await
         });
+    }
+    if let Some(h3_endpoint) = bound.h3_endpoint {
+        spawn_h3_cert_reloader(h3_endpoint, Arc::clone(&config), shutdown_signal.clone());
     }
     if let Some(metrics_listener) = bound.metrics_listener {
         let metrics_app = build_metrics_app(

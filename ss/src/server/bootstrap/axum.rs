@@ -1,6 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
 use axum::{Router, routing::any, serve::ListenerExt};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo, TokioTimer},
@@ -19,8 +20,8 @@ use crate::{
 use super::super::{
     connect::configure_tcp_stream,
     constants::{
-        H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS, HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
-        TLS_MAX_CONCURRENT_CONNECTIONS,
+        CERT_RELOAD_POLL_INTERVAL_SECS, H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS,
+        HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS, TLS_MAX_CONCURRENT_CONNECTIONS,
     },
     shutdown::ShutdownSignal,
     state::{AppState, AuthPolicy, RoutesSnapshot, Services},
@@ -31,6 +32,7 @@ use super::super::{
         xhttp_handler_with_path_seq,
     },
 };
+use super::cert_reload::{spawn_cert_reloader, tcp_cert_paths};
 use super::tls::build_tcp_tls_acceptor;
 use sni_fallback::SniFallbackContext;
 
@@ -138,7 +140,8 @@ pub(in crate::server) async fn serve_tcp_listener(
     shutdown: ShutdownSignal,
 ) -> Result<()> {
     if config.tcp_tls_enabled() {
-        let acceptor = build_tcp_tls_acceptor(config.as_ref())?;
+        let acceptor = Arc::new(ArcSwap::from_pointee(build_tcp_tls_acceptor(config.as_ref())?));
+        spawn_tcp_cert_reloader(Arc::clone(&acceptor), Arc::clone(&config), shutdown.clone());
         serve_tls_listener(listener, app, acceptor, config.tuning, sni_fallback, metrics, shutdown)
             .await
     } else {
@@ -213,10 +216,32 @@ where
     }
 }
 
+/// Watches the TCP listener's cert/key files and atomically swaps in a
+/// freshly built `TlsAcceptor` when they change, so new connections pick
+/// up renewed certificates without a restart.
+fn spawn_tcp_cert_reloader(
+    acceptor: Arc<ArcSwap<TlsAcceptor>>,
+    config: Arc<Config>,
+    shutdown: ShutdownSignal,
+) {
+    let paths = tcp_cert_paths(config.as_ref());
+    spawn_cert_reloader(
+        "tcp",
+        paths,
+        Duration::from_secs(CERT_RELOAD_POLL_INTERVAL_SECS),
+        shutdown,
+        move || {
+            let rebuilt = build_tcp_tls_acceptor(config.as_ref())?;
+            acceptor.store(Arc::new(rebuilt));
+            Ok(())
+        },
+    );
+}
+
 async fn serve_tls_listener(
     listener: TcpListener,
     app: Router,
-    acceptor: TlsAcceptor,
+    acceptor: Arc<ArcSwap<TlsAcceptor>>,
     profile: TuningProfile,
     sni_fallback: Option<Arc<SniFallbackContext>>,
     metrics: Arc<Metrics>,
@@ -260,7 +285,10 @@ async fn serve_tls_listener(
             warn!(%peer_addr, ?error, "failed to configure TLS tcp connection");
             continue;
         }
-        let acceptor = acceptor.clone();
+        // Load the current acceptor per connection so a cert reload
+        // (which swaps the pointer) takes effect on the next handshake
+        // without disturbing connections already in flight.
+        let acceptor = acceptor.load_full();
         let app = app.clone();
         let sni_fallback = sni_fallback.clone();
         let metrics = Arc::clone(&metrics);

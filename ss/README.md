@@ -505,6 +505,8 @@ key_path  = "/etc/letsencrypt/live/shop.example.com/privkey.pem"
 
 The same shape applies to the QUIC listener via `[[server.h3.certs]]`. When the `[server.h3]` table omits both `cert_path`/`key_path` and the `certs` array, the QUIC listener inherits the TCP listener's cert configuration as-is, so a single block typically covers both transports.
 
+**Automatic certificate reload.** Every configured cert/key file — the default pair and each `[[server.certs]]` / `[[server.h3.certs]]` entry — is watched on disk and reloaded in place when its contents change, with no restart or signal required. New connections pick up the renewed certificate within a few minutes (the files are polled every 5 minutes); connections already established keep the certificate they negotiated. This works out of the box with ACME renewals (certbot, lego, acme.sh, Caddy): the atomic rename / symlink swap those tools perform is detected automatically. If a reload fails — for example a certificate was rewritten before its matching key — the previously loaded certificate keeps serving and the error is logged, then the next consistent write is retried automatically.
+
 ### 3. Plain Shadowsocks Socket Service
 
 ```toml
