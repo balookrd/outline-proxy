@@ -928,6 +928,14 @@ function switchReasons(u) {
   if (u.active_udp && u.active_udp_reason) reasons.push(`udp: ${u.active_udp_reason}`);
   return [...new Set(reasons)];
 }
+// Collapse whitespace and clip an uplink's `last_error` to a tooltip-sized
+// summary. Some backend errors duplicate their chained cause in `Display`
+// (e.g. rustls' "invalid peer certificate" wraps its own message twice), so
+// a hard length cap keeps the hover readable.
+function errSummary(s) {
+  const t = String(s).replace(/\s+/g, " ").trim();
+  return t.length > 220 ? t.slice(0, 217) + "…" : t;
+}
 function weightCell(u) {
   const w = typeof u.weight === 'number' ? u.weight : '—';
   // Show smoothed per-transport probe RTT (operator-facing). The
@@ -1088,12 +1096,20 @@ function renderInstanceBody(panel, instance, groups) {
         const entry = { instance: instance.name, group: group.name, uplink };
         const rowTone = isActive(uplink) ? "good" : (healthy(uplink) ? "warn" : "bad");
         const label = rowTone === "good" ? "Active" : rowTone === "warn" ? "Ready" : "Inactive";
+        // Surface the most recent probe/runtime error so a degraded uplink
+        // (e.g. primary wire down on an expired TLS cert, traffic riding a
+        // fallback) is legible instead of looking like a healthy "Ready".
+        // `last_error` is cleared on the next successful probe
+        // (`process_probe_ok`), so a persistent chip means an ongoing failure.
+        const errChip = uplink.last_error
+          ? `<span class="proto-fail-chip" data-tip="${escapeHtml(errSummary(uplink.last_error))}" data-tip-wrap>⚠</span>`
+          : '';
         const row = document.createElement("div");
         row.className = "row";
         row.innerHTML = `
           <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
           <div>${primaryProtocolCell(uplink)}</div>
-          <div><span class="status-pill ${rowTone}">${label}</span>${fpHomogeneous ? '' : fingerprintChip(uplink)}</div>
+          <div><span class="status-pill ${rowTone}">${label}</span>${errChip}${fpHomogeneous ? '' : fingerprintChip(uplink)}</div>
           <div>${legWireChainCell(uplink, 'tcp')}</div>
           <div>${legWireChainCell(uplink, 'udp')}</div>
           <div class="muted-cell">${weightCell(uplink)}</div>
