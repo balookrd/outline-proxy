@@ -185,6 +185,7 @@ struct Metrics {
     uplink_effective_latency_seconds: GaugeVec,
     uplink_score_seconds: GaugeVec,
     uplink_weight: GaugeVec,
+    uplink_cert_expiry_timestamp_seconds: GaugeVec,
     uplink_cooldown_seconds: GaugeVec,
     uplink_standby_ready: IntGaugeVec,
     uplink_active_wire_index: IntGaugeVec,

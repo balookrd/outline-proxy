@@ -203,6 +203,12 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
  * inside it, so the failure marker reads as a separate "this leg is
  * broken" badge instead of running into the carrier-shape label. */
 .proto-fail-chip { display: inline-flex; align-items: center; margin-left: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; background: rgba(220, 38, 38, .12); color: #b91c1c; border: 1px solid rgba(185, 28, 28, .45); }
+/* TLS certificate-expiry warning chip. Shown in the Status cell only when a
+ * cert is within the warning window (amber) or already expired (red); healthy
+ * certs render nothing to keep the column uncluttered. */
+.cert-chip { display: inline-flex; align-items: center; margin-left: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; border: 1px solid; }
+.cert-chip.warn { background: var(--amber-soft); color: #b45309; border-color: rgba(180, 83, 9, .45); }
+.cert-chip.bad { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); }
 .proto-pill .proto-dg { margin-left: 5px; font-size: 10px; opacity: .85; color: #b8631a; }
 .proto-pill .proto-submode { margin-left: 4px; padding: 0 4px; font-size: 9.5px; opacity: .8; border-radius: 4px; background: rgba(0,0,0,.1); letter-spacing: .04em; }
 .proto-pill .proto-submode.proto-downgraded { border-style: solid; box-shadow: none; color: #b8631a; background: rgba(214, 130, 30, .15); opacity: 1; }
@@ -936,6 +942,26 @@ function errSummary(s) {
   const t = String(s).replace(/\s+/g, " ").trim();
   return t.length > 220 ? t.slice(0, 217) + "…" : t;
 }
+// Days before expiry at which an uplink's TLS-cert chip turns amber. The raw
+// `notAfter` is also exported on the topology JSON and the
+// `outline_ws_rust_uplink_cert_expiry_timestamp_seconds` gauge, so operators
+// who want a different threshold can alert in Prometheus directly.
+const CERT_WARN_DAYS = 14;
+// Render a cert-expiry chip for the Status cell. Nothing for a healthy cert
+// (keeps the column clean); amber `⚠ cert Nd` inside the warning window; red
+// `⚠ cert expired` once past `notAfter`. `cert_not_after_unix_ms` is absent
+// until the first check completes and for uplinks with no TLS endpoint.
+function certChip(u) {
+  const ms = u.cert_not_after_unix_ms;
+  if (ms == null) return '';
+  const days = Math.floor((ms - Date.now()) / 86400000);
+  if (days >= CERT_WARN_DAYS) return '';
+  const when = new Date(ms).toISOString().slice(0, 10);
+  if (days < 0) {
+    return `<span class="cert-chip bad" data-tip="TLS certificate expired ${-days}d ago (${escapeHtml(when)})" data-tip-wrap>⚠ cert expired</span>`;
+  }
+  return `<span class="cert-chip warn" data-tip="TLS certificate expires in ${days}d (${escapeHtml(when)})" data-tip-wrap>⚠ cert ${days}d</span>`;
+}
 function weightCell(u) {
   const w = typeof u.weight === 'number' ? u.weight : '—';
   // Show smoothed per-transport probe RTT (operator-facing). The
@@ -1109,7 +1135,7 @@ function renderInstanceBody(panel, instance, groups) {
         row.innerHTML = `
           <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
           <div>${primaryProtocolCell(uplink)}</div>
-          <div><span class="status-pill ${rowTone}">${label}</span>${errChip}${fpHomogeneous ? '' : fingerprintChip(uplink)}</div>
+          <div><span class="status-pill ${rowTone}">${label}</span>${errChip}${certChip(uplink)}${fpHomogeneous ? '' : fingerprintChip(uplink)}</div>
           <div>${legWireChainCell(uplink, 'tcp')}</div>
           <div>${legWireChainCell(uplink, 'udp')}</div>
           <div class="muted-cell">${weightCell(uplink)}</div>

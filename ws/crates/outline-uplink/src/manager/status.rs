@@ -241,6 +241,14 @@ pub(crate) struct UplinkStatus {
     pub(crate) tcp: PerTransportStatus,
     pub(crate) udp: PerTransportStatus,
     pub(crate) last_error: Option<String>,
+    /// `notAfter` of the soonest-expiring TLS certificate among this uplink's
+    /// endpoints (primary + fallback wires that dial `wss`/`https`), as Unix
+    /// milliseconds. Populated by the periodic cert-check loop
+    /// (`manager::cert_check`); `None` until the first check completes, when
+    /// the uplink has no TLS endpoint (plain Shadowsocks), or when the
+    /// `cert-check` feature is disabled. A transient check failure leaves the
+    /// last known value in place rather than clearing it.
+    pub(crate) cert_not_after_unix_ms: Option<u64>,
     pub(crate) last_checked: Option<Instant>,
     /// Wall-clock timestamp of the most recent probe cycle that actually
     /// ran on this uplink (i.e. NOT a cycle that exited via the

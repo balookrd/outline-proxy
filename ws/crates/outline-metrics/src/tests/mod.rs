@@ -57,6 +57,7 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         cooldown_udp_ms: None,
         last_checked_ago_ms: None,
         last_error: None,
+        cert_not_after_unix_ms: None,
         standby_tcp_ready: 0,
         standby_udp_ready: 0,
         tcp_consecutive_failures: 0,
@@ -98,6 +99,43 @@ fn render_prometheus_exports_session_histogram() {
     assert!(rendered.contains("outline_ws_rust_session_duration_seconds_bucket"));
     assert!(rendered.contains("protocol=\"tcp\""));
     assert!(rendered.contains("result=\"success\""));
+}
+
+#[test]
+fn render_prometheus_exports_uplink_cert_expiry_gauge() {
+    let _guard = test_guard();
+    init();
+
+    let mut snapshot = empty_snapshot();
+    let mut with_cert = snapshot_uplink("nuxt");
+    // 2126-05-09 15:45:52 UTC = 4_934_015_152 s, supplied in milliseconds.
+    with_cert.cert_not_after_unix_ms = Some(4_934_015_152_000);
+    snapshot.uplinks.push(with_cert);
+    // An uplink with no measured certificate (e.g. plain Shadowsocks).
+    snapshot.uplinks.push(snapshot_uplink("senko"));
+
+    let rendered = render_prometheus(&[snapshot]).expect("render metrics");
+
+    let line = rendered
+        .lines()
+        .find(|l| {
+            l.starts_with("outline_ws_rust_uplink_cert_expiry_timestamp_seconds{")
+                && l.contains("uplink=\"nuxt\"")
+        })
+        .expect("cert-expiry gauge present for the uplink with a certificate");
+    // Exported in seconds, not milliseconds. Parse the value so the assertion
+    // is robust to integer-vs-float text formatting of the gauge.
+    let value: f64 = line.rsplit(' ').next().unwrap().parse().expect("numeric gauge value");
+    assert_eq!(value, 4_934_015_152.0);
+
+    // An uplink with no certificate must not emit the gauge at all.
+    assert!(
+        !rendered.lines().any(|l| {
+            l.starts_with("outline_ws_rust_uplink_cert_expiry_timestamp_seconds")
+                && l.contains("uplink=\"senko\"")
+        }),
+        "uplink without a measured certificate must not emit the cert-expiry gauge"
+    );
 }
 
 #[test]

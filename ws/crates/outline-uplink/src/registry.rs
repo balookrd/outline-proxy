@@ -150,6 +150,14 @@ impl UplinkRegistry {
         }
     }
 
+    /// Spawn one TLS certificate-expiry check loop per group. No-op build
+    /// when the `cert-check` feature is disabled (router builds).
+    pub fn spawn_cert_check_loops(&self) {
+        for group in self.state.load().groups.iter() {
+            group.manager.spawn_cert_check_loop();
+        }
+    }
+
     /// Spawn one warm-probe keepalive loop per group. No-op for groups
     /// whose `load_balancing.warm_probe_keepalive_interval` is `None`.
     pub fn spawn_warm_probe_keepalive_loops(&self) {
@@ -287,6 +295,7 @@ impl UplinkRegistry {
         for group in &new_state.groups {
             group.manager.spawn_probe_loop();
             group.manager.spawn_warm_standby_loop();
+            group.manager.spawn_cert_check_loop();
             group.manager.spawn_standby_keepalive_loop();
             group.manager.spawn_warm_probe_keepalive_loop();
             group.manager.spawn_sticky_prune_loop();

@@ -340,6 +340,7 @@ impl UplinkManager {
                     .last_checked
                     .map(|checked| now.duration_since(checked).as_millis()),
                 last_error: status.last_error.clone(),
+                cert_not_after_unix_ms: status.cert_not_after_unix_ms,
                 standby_tcp_ready,
                 standby_udp_ready,
                 tcp_consecutive_failures: status.tcp.consecutive_failures,

@@ -81,6 +81,8 @@ use tokio::net::{TcpStream, UdpSocket};
 pub use resumption::{ResumeCache, SessionId, global_resume_cache};
 
 pub mod ack_prefix;
+#[cfg(feature = "cert-check")]
+pub mod cert_check;
 pub mod collections;
 mod config;
 mod dial_plan;

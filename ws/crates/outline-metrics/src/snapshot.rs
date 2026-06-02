@@ -38,6 +38,7 @@ impl Metrics {
         self.uplink_effective_latency_seconds.reset();
         self.uplink_score_seconds.reset();
         self.uplink_weight.reset();
+        self.uplink_cert_expiry_timestamp_seconds.reset();
         self.uplink_cooldown_seconds.reset();
         self.uplink_standby_ready.reset();
         self.uplink_active_wire_index.reset();
@@ -88,6 +89,11 @@ impl Metrics {
             self.uplink_weight
                 .with_label_values(&[group, &uplink.name])
                 .set(uplink.weight);
+            if let Some(cert_not_after_ms) = uplink.cert_not_after_unix_ms {
+                self.uplink_cert_expiry_timestamp_seconds
+                    .with_label_values(&[group, &uplink.name])
+                    .set((cert_not_after_ms / 1000) as f64);
+            }
             if let Some(tcp_healthy) = uplink.tcp_healthy {
                 self.uplink_health
                     .with_label_values(&[group, "tcp", &uplink.name])
