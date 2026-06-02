@@ -23,3 +23,6 @@ target
 
 # Local agent state
 .claude/
+
+# macOS
+.DS_Store
