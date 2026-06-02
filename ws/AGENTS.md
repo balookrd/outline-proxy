@@ -263,6 +263,17 @@ cargo release-router-musl-armv7
   Маппинг держите pure и под unit-тестами в `wire/tests`. Симметрично:
   SOCKS5 (`src/proxy/tcp/direct.rs`) и TUN direct обязаны оставаться
   согласованными — IP-таргеты не ресолвятся ни на одном из путей.
+- Два параллельных ingress, общая routing-логика: SOCKS5 (`src/proxy/`) и TUN
+  (`crates/outline-tun/`) — независимые точки входа, но сходятся на одном
+  `dispatch.resolve(target)` и на трёх исходах (`direct` / tunneled-`group` /
+  `drop`). Различие ingress по своей природе: SOCKS5 принимает уже
+  терминированный TCP (target может быть `Domain`), TUN сам терминирует TCP в
+  userspace и всегда несёт литеральный IP-таргет. Меняя поведение direct или
+  tunneled пути, держите оба ingress согласованными по семантике (resolve,
+  failover, strict-mode teardown, backpressure) — расхождение между ними
+  проявляется как баг «видно на TUN, не видно на SOCKS5» (или наоборот). Для
+  пер-ingress-специфики используйте существующие развилки (`TunRoute` против
+  `Route`), не дублируя routing-решение.
 
 ## Форматирование
 
