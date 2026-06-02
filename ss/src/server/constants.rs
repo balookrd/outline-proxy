@@ -102,3 +102,16 @@ pub(super) const ORPHAN_SWEEP_INTERVAL_SECS: u64 = 5;
 // the first POST landed) — without this, dead sessions accumulate
 // in the `XhttpRegistry` for the lifetime of the process.
 pub(super) const XHTTP_EVICTION_INTERVAL_SECS: u64 = 30;
+
+// How often the certificate watcher polls the configured TLS cert/key
+// files for changes. On a detected change it rebuilds the affected
+// listener's TLS config and installs it for new connections (established
+// connections keep the cert they negotiated). Polling — rather than an
+// inotify/kqueue watch — is deliberate: it is dependency-free and robust
+// to the atomic rename / symlink swap that ACME clients (certbot, lego,
+// acme.sh) perform on renewal, where a watch pinned to the original inode
+// would silently stop firing. Certs rotate rarely (ACME renews weeks
+// before expiry), so a 5-minute poll is plenty responsive while keeping
+// the steady-state cost to a handful of small file reads every few
+// minutes.
+pub(super) const CERT_RELOAD_POLL_INTERVAL_SECS: u64 = 300;

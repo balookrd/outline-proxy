@@ -8,6 +8,8 @@ listen = "0.0.0.0:3000"
 # `cert_path` / `key_path` are the canonical names; the legacy
 # `tls_cert_path` / `tls_key_path` aliases still parse for backward
 # compat with older configs.
+# All cert/key files below are watched on disk and reloaded in place
+# when they change (e.g. after an ACME renewal) — no restart needed.
 # cert_path = "./cert.pem"
 # key_path  = "./key.pem"
 

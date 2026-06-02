@@ -14,10 +14,10 @@ use crate::{
 };
 
 use super::{
-    bootstrap::load_h3_tls_config,
+    bootstrap::{h3_cert_paths, load_h3_tls_config, spawn_cert_reloader},
     constants::{
-        H3_MAX_CONCURRENT_CONNECTIONS, H3_MAX_CONCURRENT_STREAMS, H3_MAX_UDP_PAYLOAD_SIZE,
-        H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
+        CERT_RELOAD_POLL_INTERVAL_SECS, H3_MAX_CONCURRENT_CONNECTIONS, H3_MAX_CONCURRENT_STREAMS,
+        H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
     },
     state::{AuthPolicy, RoutesSnapshot, Services, VlessTransportRoute},
     transport::{
@@ -32,7 +32,7 @@ mod raw_vless;
 
 pub(in crate::server) async fn build_h3_server(
     config: &Config,
-) -> Result<H3WebSocketServer<H3Transport>> {
+) -> Result<(H3WebSocketServer<H3Transport>, quinn::Endpoint)> {
     let listen = config
         .effective_h3_listen()
         .ok_or_else(|| anyhow!("h3 server requested without tls configuration"))?;
@@ -52,7 +52,35 @@ pub(in crate::server) async fn build_h3_server(
         Arc::new(quinn::TokioRuntime),
     )
     .context("failed to create HTTP/3 QUIC endpoint")?;
-    Ok(H3WebSocketServer::<H3Transport>::from_endpoint(endpoint, ws_config))
+    // Hand back a clone of the endpoint so the cert reloader can call
+    // `set_server_config` on it; `Endpoint` is a cheap `Arc` handle and
+    // the server keeps the other clone.
+    let server = H3WebSocketServer::<H3Transport>::from_endpoint(endpoint.clone(), ws_config);
+    Ok((server, endpoint))
+}
+
+/// Watches the HTTP/3 listener's cert/key files and installs a freshly
+/// built QUIC `ServerConfig` via [`quinn::Endpoint::set_server_config`]
+/// when they change, so new QUIC connections pick up renewed certificates
+/// without a restart.
+pub(in crate::server) fn spawn_h3_cert_reloader(
+    endpoint: quinn::Endpoint,
+    config: Arc<Config>,
+    shutdown: super::shutdown::ShutdownSignal,
+) {
+    let paths = h3_cert_paths(config.as_ref());
+    spawn_cert_reloader(
+        "h3",
+        paths,
+        Duration::from_secs(CERT_RELOAD_POLL_INTERVAL_SECS),
+        shutdown,
+        move || {
+            let tls_config = load_h3_tls_config(config.as_ref())?;
+            let server_config = build_h3_quinn_server_config(tls_config, &config.tuning)?;
+            endpoint.set_server_config(Some(server_config));
+            Ok(())
+        },
+    );
 }
 
 fn build_h3_ws_config(profile: &TuningProfile) -> H3WebSocketConfig {

@@ -16,6 +16,10 @@ pub(super) struct Bound {
     pub(super) ss_udp_socket: Option<Arc<UdpSocket>>,
     pub(super) metrics_listener: Option<TcpListener>,
     pub(super) h3_server: Option<H3WebSocketServer<H3Transport>>,
+    /// Clone of the QUIC endpoint behind `h3_server`, kept so the cert
+    /// reloader can swap the listener's TLS config at runtime via
+    /// `set_server_config`. `Some` exactly when `h3_server` is.
+    pub(super) h3_endpoint: Option<quinn::Endpoint>,
 }
 
 pub(super) async fn bind(config: &Config) -> Result<Bound> {
@@ -53,10 +57,11 @@ pub(super) async fn bind(config: &Config) -> Result<Bound> {
     } else {
         None
     };
-    let h3_server = if config.h3_enabled() {
-        Some(build_h3_server(config).await?)
+    let (h3_server, h3_endpoint) = if config.h3_enabled() {
+        let (server, endpoint) = build_h3_server(config).await?;
+        (Some(server), Some(endpoint))
     } else {
-        None
+        (None, None)
     };
     Ok(Bound {
         listener,
@@ -64,5 +69,6 @@ pub(super) async fn bind(config: &Config) -> Result<Bound> {
         ss_udp_socket,
         metrics_listener,
         h3_server,
+        h3_endpoint,
     })
 }
