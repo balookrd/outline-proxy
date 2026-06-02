@@ -49,6 +49,7 @@ impl Metrics {
             uplink_effective_latency_seconds: u.uplink_effective_latency_seconds,
             uplink_score_seconds: u.uplink_score_seconds,
             uplink_weight: u.uplink_weight,
+            uplink_cert_expiry_timestamp_seconds: u.uplink_cert_expiry_timestamp_seconds,
             uplink_cooldown_seconds: u.uplink_cooldown_seconds,
             uplink_standby_ready: u.uplink_standby_ready,
             uplink_active_wire_index: u.uplink_active_wire_index,

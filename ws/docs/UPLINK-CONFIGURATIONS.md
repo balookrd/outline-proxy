@@ -1578,3 +1578,32 @@ mode-downgrade cap) but no longer changes `active_wire`.
 The single-uplink inline shape (`tcp_ws_url` etc. directly on
 `[outline]`) does **not** expose fallback configuration — declare an
 explicit `[[outline.uplinks]]` array entry to use fallbacks.
+
+## TLS certificate-expiry monitoring
+
+Independently of the data-path probes, the proxy runs a low-rate
+background check (every 6 hours, plus once at startup and after a config
+reload) that opens a direct TLS connection to each uplink's own endpoint
+— every `wss://` / `https://` host across the primary and fallback wires,
+deduplicated by `(host, port)` and dialed with the uplink's `fwmark` — and
+reads the leaf certificate's `notAfter`. The connection accepts the
+certificate regardless of validity (so an already-expired cert is still
+read) and is dropped immediately without exchanging any data. This is the
+**outer** certificate the uplink server itself presents — distinct from
+the `[outline.probe.tls]` data-path probe, which validates an external
+SNI reached *through* the tunnel.
+
+The soonest `notAfter` across an uplink's endpoints is surfaced two ways:
+
+- **Prometheus**: `outline_ws_rust_uplink_cert_expiry_timestamp_seconds{group,uplink}`
+  — the expiry as a Unix timestamp in seconds. Absent until the first
+  check completes and for uplinks with no TLS endpoint (plain
+  Shadowsocks). Alert with your own threshold, e.g.
+  `outline_ws_rust_uplink_cert_expiry_timestamp_seconds - time() < 14 * 86400`.
+- **Dashboard**: the uplink's Status cell shows an amber `⚠ cert Nd` chip
+  when the certificate expires within 14 days and a red `⚠ cert expired`
+  chip once it is past; a healthy certificate shows nothing.
+
+This is wired through the `metrics` and `dashboard` build features (via
+their `cert-check` sub-feature); stripped `router` builds omit the check
+and the X.509 parser entirely.

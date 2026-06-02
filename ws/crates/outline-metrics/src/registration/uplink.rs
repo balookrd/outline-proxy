@@ -106,6 +106,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_effective_latency_seconds: GaugeVec,
     pub(super) uplink_score_seconds: GaugeVec,
     pub(super) uplink_weight: GaugeVec,
+    pub(super) uplink_cert_expiry_timestamp_seconds: GaugeVec,
     pub(super) uplink_cooldown_seconds: GaugeVec,
     pub(super) uplink_standby_ready: IntGaugeVec,
     pub(super) uplink_active_wire_index: IntGaugeVec,
@@ -256,6 +257,15 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         GaugeVec,
         "outline_ws_rust_uplink_weight",
         "Configured static weight for each uplink.",
+        ["group", "uplink"]
+    );
+    let uplink_cert_expiry_timestamp_seconds = register_labeled!(
+        registry,
+        GaugeVec,
+        "outline_ws_rust_uplink_cert_expiry_timestamp_seconds",
+        "notAfter of the soonest-expiring TLS certificate among an uplink's \
+         endpoints, as a Unix timestamp in seconds. Absent until the first \
+         cert check completes or for uplinks with no TLS endpoint.",
         ["group", "uplink"]
     );
     let uplink_cooldown_seconds = register_labeled!(
@@ -431,6 +441,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_effective_latency_seconds,
         uplink_score_seconds,
         uplink_weight,
+        uplink_cert_expiry_timestamp_seconds,
         uplink_cooldown_seconds,
         uplink_standby_ready,
         uplink_active_wire_index,

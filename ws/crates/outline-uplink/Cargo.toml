@@ -5,8 +5,12 @@ edition = "2024"
 
 [features]
 default = ["metrics"]
-metrics = ["outline-metrics/prometheus"]
+metrics = ["outline-metrics/prometheus", "cert-check"]
 quic = ["outline-transport/quic"]
+# Periodic per-uplink TLS certificate-expiry check. Pulls
+# `outline-transport/cert-check` (the X.509 parser). Enabled transitively by
+# `metrics` and by the top-level `dashboard` feature; left off router builds.
+cert-check = ["outline-transport/cert-check"]
 # Exposes test-only public methods on `UplinkManager` (`new_for_test`,
 # `test_set_tcp_health`, …). Enabled automatically by dependent crates'
 # `[dev-dependencies]` so integration tests can drive uplink state directly.

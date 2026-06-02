@@ -207,6 +207,20 @@ cargo release-router-musl-armv7
 - Метрики, tracing и dashboard helpers не должны менять поведение relay paths
   при выключенных feature flags. Stub-реализации обязаны компилироваться и
   сохранять публичные типы там, где они используются другими crates.
+- TLS cert-expiry check: проверка срока сертификатов endpoint'ов аплинков
+  закрыта feature `cert-check`. Низкоуровневый хелпер (accept-any TLS
+  handshake + X.509 `notAfter` парсер на `x509-cert`) живёт в
+  `crates/outline-transport/src/cert_check.rs`; периодический луп (раз в 6 ч,
+  плюс старт и reload) — в `crates/outline-uplink/src/manager/cert_check.rs`,
+  пишет `UplinkStatus.cert_not_after_unix_ms`. Значение течёт через
+  `UplinkSnapshot` в control-топологию, gauge
+  `outline_ws_rust_uplink_cert_expiry_timestamp_seconds` и dashboard-чип.
+  `cert-check` включается транзитивно из `metrics` и top-level `dashboard`, но
+  НЕ из `control`/`router` — `x509-cert` не должен попадать в
+  `--no-default-features --features router` (проверка:
+  `cargo tree -e features --no-default-features --features router | grep x509`
+  должна быть пустой). Это отдельный путь от data-path пробы
+  `[outline.probe.tls]`, которая валидирует внешний SNI через туннель.
 - Active-wire shuffle живёт на двух осях: `shuffle_wires` переставляет цепочку
   `[primary, fallbacks…]` один раз при загрузке конфига (и обязан давать
   collision-free перестановки внутри одной группы — см.

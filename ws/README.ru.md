@@ -190,6 +190,7 @@ tun2udp + tun2tcp"]
 - метрики Prometheus
 - встроенный multi-instance дашборд
 - готовые дашборды Grafana
+- проактивный контроль срока TLS-сертификатов аплинков (чип на дашборде + Prometheus-gauge `outline_ws_rust_uplink_cert_expiry_timestamp_seconds`)
 - hardened systemd unit
 - Linux `fwmark` / `SO_MARK`
 - IPv6-совместимые слушатели, upstream'ы, пробы и SOCKS5-цели

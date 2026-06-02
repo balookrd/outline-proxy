@@ -190,6 +190,7 @@ tun2udp + tun2tcp"]
 - Prometheus metrics
 - built-in multi-instance dashboard
 - packaged Grafana dashboards
+- proactive uplink TLS certificate-expiry monitoring (dashboard chip + Prometheus gauge `outline_ws_rust_uplink_cert_expiry_timestamp_seconds`)
 - hardened systemd unit
 - Linux `fwmark` / `SO_MARK`
 - IPv6-capable listeners, upstreams, probes, and SOCKS5 targets

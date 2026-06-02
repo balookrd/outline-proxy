@@ -135,6 +135,12 @@ struct ControlUplinkTopology {
     tcp_health_effective: Option<bool>,
     udp_health_effective: Option<bool>,
     last_error: Option<String>,
+    /// `notAfter` of the soonest-expiring TLS certificate among this uplink's
+    /// endpoints (Unix milliseconds), or `None` until the first cert check
+    /// completes / for uplinks with no TLS endpoint. The dashboard derives a
+    /// days-to-expiry warning chip from this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cert_not_after_unix_ms: Option<u64>,
     active_global: bool,
     active_global_reason: Option<String>,
     active_tcp: bool,
@@ -336,6 +342,7 @@ fn build_uplink_topology(
         udp_health_effective: uplink.udp_health_effective,
         udp_healthy: uplink.udp_healthy,
         last_error: uplink.last_error.clone(),
+        cert_not_after_unix_ms: uplink.cert_not_after_unix_ms,
         active_global: snapshot.global_active_uplink.as_deref() == Some(uplink.name.as_str()),
         active_global_reason: (snapshot.global_active_uplink.as_deref()
             == Some(uplink.name.as_str()))

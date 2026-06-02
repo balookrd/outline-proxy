@@ -24,8 +24,10 @@ metrics = ["outline-metrics/prometheus", "outline-transport/metrics", "outline-u
 # Independent of `metrics`; both planes bind separate sockets but share hyper's server stack.
 control = ["hyper/server", "dep:serde_json", "dep:toml_edit"]
 # dashboard: built-in multi-instance monitor/activation UI. Enabled in VM/server
-# builds, disabled in stripped router builds to save binary size.
-dashboard = ["hyper/server", "dep:serde_json"]
+# builds, disabled in stripped router builds to save binary size. Pulls
+# `outline-uplink/cert-check` so the cert-expiry chip has data even in a
+# dashboard build that omits Prometheus `metrics`.
+dashboard = ["hyper/server", "dep:serde_json", "outline-uplink/cert-check"]
 # env-filter: dynamic log level via RUST_LOG (pulls in regex, ~300 KB on MIPS).
 # Disabled in router builds — log level is hardcoded to WARN instead.
 env-filter = ["tracing-subscriber/env-filter"]
