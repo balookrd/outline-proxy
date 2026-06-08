@@ -299,7 +299,13 @@ cargo release-router-musl-armv7
   доказывать живость по входящим WS-фреймам = спурьёзно рвать здоровую сессию.
   На h1/h2 общего QUIC keep_alive нет — watchdog и Ping там сохраняются.
   Серверная половина фикса (`outline-ss-rust`) дренит застрявший reactive Pong
-  таймерным `WsSocket::flush`, а не шлёт server-originated Ping.
+  таймерным `WsSocket::flush`, а не шлёт server-originated Ping. Тот же выбор
+  несущей вынесен в `frame_io_ws::carrier_liveness` и применяется на всех
+  WS-over-* путях: SS-UDP / VLESS-UDP / VLESS-TCP (через `carrier_liveness`),
+  а SS-TCP-over-WS reader снимает 300-секундный watchdog на H3 по `diag.mode`
+  (`tcp_transport/reader/transport.rs`). Не возвращай WS-watchdog/Ping на H3 ни
+  на одном из них — H3/QUIC keepalive не виден как WS-фрейм, и сервер на H3 не
+  пингует, так что watchdog мог бы только ложно сработать на тихой живой сессии.
 
 ## Форматирование
 
