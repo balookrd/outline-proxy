@@ -12,8 +12,7 @@ use url::Url;
 use crate::{
     DialNetworkOptions, DialResumeOptions, DnsCache, TransportDialOptions, TransportOperation,
     TransportStream, UplinkConnectionBinding, UpstreamTransportGuard, WsClosed,
-    config::TransportMode, connect_transport, frame_io_ws::WS_READ_IDLE_TIMEOUT,
-    resumption::SessionId,
+    config::TransportMode, connect_transport, frame_io_ws::carrier_liveness, resumption::SessionId,
 };
 
 use super::header::{MAX_VLESS_UDP_PAYLOAD, VLESS_CMD_UDP, VLESS_VERSION, build_request_header};
@@ -54,12 +53,11 @@ impl VlessUdpTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Self {
+        // On H3 the QUIC layer owns liveness; disable the WS watchdog and the
+        // keepalive Ping (the latter is unsafe on H3). See `carrier_liveness`.
+        let (idle_timeout, keepalive) = carrier_liveness(ws_stream.is_h3(), keepalive_interval);
         let chan: Arc<dyn crate::frame_io::DatagramChannel> =
-            Arc::new(crate::frame_io_ws::from_ws_datagrams(
-                ws_stream,
-                Some(WS_READ_IDLE_TIMEOUT),
-                keepalive_interval,
-            ));
+            Arc::new(crate::frame_io_ws::from_ws_datagrams(ws_stream, idle_timeout, keepalive));
         Self::from_channel(chan, uuid, target, source)
     }
 

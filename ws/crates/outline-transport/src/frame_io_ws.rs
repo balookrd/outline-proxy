@@ -45,6 +45,31 @@ use crate::{AbortOnDrop, TransportOperation, TransportStream, WsClosed};
 /// VLESS WS path and the SS WS reader.
 pub(crate) const WS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Carrier-aware liveness knobs `(read_idle_timeout, keepalive)` for a
+/// WebSocket-over-* session.
+///
+/// On the H3 carrier the WS stream rides a QUIC connection that already runs
+/// its own keep-alive (10 s) and `max_idle_timeout` liveness check, so both
+/// the WS read-idle watchdog and the client keepalive Ping are redundant —
+/// and the Ping is unsafe: the server cannot deliver a reactive Pong on a
+/// quiet H3 stream without risking a connection-level `H3_INTERNAL_ERROR`
+/// that tears down every multiplexed stream on the QUIC connection, so
+/// proving liveness from inbound WS frames would spuriously kill a
+/// healthy-but-quiet session. Both are disabled on H3 (we trust QUIC). On
+/// h1/h2 there is no shared QUIC keep-alive underneath, so the configured
+/// watchdog and keepalive stay. Mirrors the server, which sends no keepalive
+/// Ping on H3.
+pub(crate) fn carrier_liveness(
+    is_h3: bool,
+    keepalive_interval: Option<Duration>,
+) -> (Option<Duration>, Option<Duration>) {
+    if is_h3 {
+        (None, None)
+    } else {
+        (Some(WS_READ_IDLE_TIMEOUT), keepalive_interval)
+    }
+}
+
 // ── Writer task ────────────────────────────────────────────────────────────
 
 /// Spawn the WS writer task: drains `ctrl_rx` (Pings/Pongs/Close) with
@@ -369,3 +394,7 @@ pub fn from_ws_datagrams(
         _keepalive_task: keepalive_task,
     }
 }
+
+#[cfg(test)]
+#[path = "tests/frame_io_ws.rs"]
+mod tests;

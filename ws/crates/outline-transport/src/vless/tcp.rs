@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 
 use crate::ack_prefix::{FRAME_LEN_V1, ParseResult, parse_v1};
 use crate::{
-    TransportStream, UpstreamTransportGuard, WsClosed, frame_io_ws::WS_READ_IDLE_TIMEOUT,
+    TransportStream, UpstreamTransportGuard, WsClosed, frame_io_ws::carrier_liveness,
     resumption::SessionId,
 };
 
@@ -555,11 +555,10 @@ pub fn vless_tcp_pair_from_ws(
     diag: crate::WsReadDiag,
     keepalive_interval: Option<Duration>,
 ) -> (VlessTcpWriter, VlessTcpReader) {
-    let (sink, source) = crate::frame_io_ws::from_ws_frames(
-        ws_stream,
-        Some(WS_READ_IDLE_TIMEOUT),
-        keepalive_interval,
-    );
+    // On H3 the QUIC layer owns liveness; disable the WS watchdog and the
+    // keepalive Ping (the latter is unsafe on H3). See `carrier_liveness`.
+    let (idle_timeout, keepalive) = carrier_liveness(ws_stream.is_h3(), keepalive_interval);
+    let (sink, source) = crate::frame_io_ws::from_ws_frames(ws_stream, idle_timeout, keepalive);
     let source = source.with_diag(diag.uplink, diag.target);
     let writer = VlessTcpWriter::with_sink(Box::new(sink), uuid, target, Arc::clone(&lifetime));
     let reader = VlessTcpReader::with_source(Box::new(source), lifetime);

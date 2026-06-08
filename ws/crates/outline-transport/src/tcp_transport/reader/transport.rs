@@ -70,30 +70,46 @@ pub struct WsReadTransport {
 impl ReadTransport for WsReadTransport {
     async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<Vec<u8>> {
         while self.buffer.len() < len {
-            let next = match timeout(WS_READ_IDLE_TIMEOUT, self.stream.next()).await {
-                Err(_elapsed) => {
-                    // `closed_cleanly` stays false so the session layer reports
-                    // a runtime uplink failure; this is what triggers prompt
-                    // failover and cache eviction of the broken shared conn.
-                    debug!(
-                        target: "outline_ws_rust::session_death",
-                        timeout_secs = WS_READ_IDLE_TIMEOUT.as_secs(),
-                        need = len,
-                        have = self.buffer.len(),
-                        uplink = %self.diag.uplink,
-                        target_addr = %self.diag.target,
-                        mode = self.diag.mode,
-                        conn_id = ?self.diag.conn_id,
-                        "reader: websocket stream idle beyond timeout; treating as dead"
-                    );
-                    bail!(
-                        "websocket upstream read idle for {}s on uplink {} target {}",
-                        WS_READ_IDLE_TIMEOUT.as_secs(),
-                        self.diag.uplink,
-                        self.diag.target,
-                    );
+            // On the H3 carrier the QUIC layer owns liveness (~120 s idle
+            // timeout + 10 s keep-alive), and H3/QUIC keepalive frames never
+            // surface as WS messages — so a WS read-idle watchdog would only
+            // ever false-fire on a healthy-but-quiet stream (e.g. a server
+            // spending minutes processing before it streams a response).
+            // Disable it on H3 and let QUIC detect a dead peer; keep the 300 s
+            // last-resort watchdog on h1/h2, which have no multiplexer
+            // liveness underneath. Mirrors the server, which sends no keepalive
+            // Ping on H3 (it would risk H3_INTERNAL_ERROR).
+            let watchdog = (self.diag.mode != "h3").then_some(WS_READ_IDLE_TIMEOUT);
+            let item = match watchdog {
+                Some(timeout_dur) => match timeout(timeout_dur, self.stream.next()).await {
+                    Err(_elapsed) => {
+                        // `closed_cleanly` stays false so the session layer reports
+                        // a runtime uplink failure; this is what triggers prompt
+                        // failover and cache eviction of the broken shared conn.
+                        debug!(
+                            target: "outline_ws_rust::session_death",
+                            timeout_secs = timeout_dur.as_secs(),
+                            need = len,
+                            have = self.buffer.len(),
+                            uplink = %self.diag.uplink,
+                            target_addr = %self.diag.target,
+                            mode = self.diag.mode,
+                            conn_id = ?self.diag.conn_id,
+                            "reader: websocket stream idle beyond timeout; treating as dead"
+                        );
+                        bail!(
+                            "websocket upstream read idle for {}s on uplink {} target {}",
+                            timeout_dur.as_secs(),
+                            self.diag.uplink,
+                            self.diag.target,
+                        );
+                    },
+                    Ok(item) => item,
                 },
-                Ok(None) => {
+                None => self.stream.next().await,
+            };
+            let next = match item {
+                None => {
                     *closed_cleanly = true;
                     debug!(
                         target: "outline_ws_rust::session_death",
@@ -107,8 +123,8 @@ impl ReadTransport for WsReadTransport {
                     );
                     return Err(anyhow::Error::from(WsClosed));
                 },
-                Ok(Some(Ok(msg))) => msg,
-                Ok(Some(Err(e))) => {
+                Some(Ok(msg)) => msg,
+                Some(Err(e)) => {
                     debug!(
                         target: "outline_ws_rust::session_death",
                         need = len,
