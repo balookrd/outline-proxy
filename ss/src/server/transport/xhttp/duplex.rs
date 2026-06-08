@@ -4,8 +4,10 @@
 //! VLESS session whose underlying transport is the GET/POST pair
 //! of an XHTTP packet-up handshake. The reader pops in-order
 //! uplink chunks from the session ring; the writer enqueues
-//! downlink bytes. WebSocket Ping/Pong/Close map to no-ops or to
-//! a session close, respectively — XHTTP has no ping framing.
+//! downlink bytes. XHTTP has no on-wire ping framing, so a
+//! WebSocket Ping (the relay's keepalive tick) maps to a session
+//! `touch()` that holds off idle eviction; Pong is a no-op and
+//! Close tears the session down.
 
 use std::sync::Arc;
 
@@ -24,8 +26,10 @@ use super::{DownlinkPushError, XhttpSession};
 
 /// Message exchanged on an XHTTP duplex. The variants mirror the
 /// subset of `WsMessage` the VLESS relay actually emits: payload
-/// bytes, an explicit close, and a no-op slot for keepalive
-/// frames the relay sends but XHTTP has no place to put.
+/// bytes, an explicit close, and a `Noop` carrier for the relay's
+/// keepalive ticks — there is no XHTTP downlink ping frame, so the
+/// tick is consumed server-side as a session `touch()` (see
+/// `XhttpDuplex::send`) rather than written to the wire.
 #[derive(Debug)]
 pub(in crate::server) enum XhttpMsg {
     Binary(Bytes),
@@ -88,7 +92,21 @@ impl WsSocket for XhttpDuplex {
                 writer.session.close();
                 Ok(())
             },
-            XhttpMsg::Noop => Ok(()),
+            // Keepalive tick from `run_vless_relay`. XHTTP has no
+            // on-wire Ping frame, so we cannot reset the *client's*
+            // datagram idle watchdog from here — but we can keep the
+            // *server* session alive: bump `last_activity` so the
+            // registry janitor does not evict an idle-but-live relay
+            // out from under us. Without this a UDP datagram channel
+            // with a lull longer than `SESSION_IDLE_EVICTION` (DNS
+            // between lookups, a quiet QUIC connection) is torn down
+            // mid-session and the client sees a spurious `ws closed`.
+            // The lower transport (h2/h3 keepalive) keeps the carrier
+            // itself live, so the client side does not need a frame.
+            XhttpMsg::Noop => {
+                writer.session.touch();
+                Ok(())
+            },
         }
     }
 
@@ -178,3 +196,7 @@ impl ResponseSender for XhttpUdpResponseSender {
         self.app_protocol
     }
 }
+
+#[cfg(test)]
+#[path = "tests/duplex.rs"]
+mod tests;

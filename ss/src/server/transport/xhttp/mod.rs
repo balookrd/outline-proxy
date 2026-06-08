@@ -117,9 +117,19 @@ const UPLINK_REORDER_BUFFER_BYTES_CAP: usize = 256 * 1024;
 /// client from forcing unbounded buffering by skipping seq numbers.
 const UPLINK_REORDER_MAX_GAP: u64 = 64;
 /// Time a session may sit with no I/O before the registry janitor
-/// evicts it. Generous enough that a CDN reconnect (10–20 s gap
-/// while the client picks a new edge) is not yet eviction-eligible.
-pub(in crate::server) const SESSION_IDLE_EVICTION: Duration = Duration::from_secs(60);
+/// evicts it. Must stay comfortably above the relay's keepalive
+/// cadence (`WS_TCP_KEEPALIVE_PING_INTERVAL_SECS`, 60 s): on an
+/// idle-but-live UDP datagram channel the relay's keepalive tick
+/// `touch()`es the session every 60 s (see `XhttpDuplex::send`), so
+/// the eviction window has to tolerate a missed keepalive or two
+/// before declaring a live relay dead — otherwise the janitor races
+/// the keepalive and tears down quiet-but-healthy UDP sessions (DNS
+/// between lookups, an idle QUIC connection), surfacing as a
+/// spurious `ws closed` on the client. 180 s = 3× keepalive mirrors
+/// the `WS_PONG_DEADLINE_MULTIPLIER` budget while still being
+/// generous enough that a CDN reconnect (10–20 s gap while the
+/// client picks a new edge) is not yet eviction-eligible.
+pub(in crate::server) const SESSION_IDLE_EVICTION: Duration = Duration::from_secs(180);
 
 /// Process-wide store of live XHTTP sessions, keyed by client-
 /// chosen opaque id. Cheap to clone (`Arc`).
@@ -183,11 +193,6 @@ impl XhttpRegistry {
             }
             true
         });
-    }
-
-    #[cfg(test)]
-    pub(in crate::server) fn len(&self) -> usize {
-        self.sessions.len()
     }
 
     /// Returns any one live session in the registry. Tests use this
