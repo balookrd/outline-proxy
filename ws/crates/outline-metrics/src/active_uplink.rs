@@ -88,6 +88,7 @@ pub fn current_active_uplink(group: &str, transport: &str) -> Option<Arc<str>> {
 /// Forget every cached active-uplink entry. Test-only — production code
 /// never calls this; the sync snapshot is overwritten on every successful
 /// `set_*_active_uplink` call from the manager.
+#[cfg(test)]
 #[doc(hidden)]
 pub fn reset_for_tests() {
     ACTIVE_UPLINKS.write().clear();
