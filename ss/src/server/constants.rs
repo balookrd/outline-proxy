@@ -53,6 +53,24 @@ pub(super) const WS_TCP_KEEPALIVE_PING_INTERVAL_SECS: u64 = 60;
 /// idle window. A multiplier of 3 means we tolerate two missed pongs
 /// before declaring the peer gone.
 pub(super) const WS_PONG_DEADLINE_MULTIPLIER: u32 = 3;
+/// Cadence at which the per-session WebSocket writer task flushes any
+/// control-frame responses its split reader has buffered — chiefly a
+/// `Pong` queued in reply to a client keepalive `Ping`. On the H3 carrier
+/// the vendored `sockudo-ws` split reader swallows the inbound Ping and
+/// parks the Pong in an internal channel that is only drained when the
+/// writer next runs `process_control_requests` (via `send`/`flush`). On a
+/// quiet UDP datagram channel the writer would otherwise never run — no
+/// downlink packets, and the SS-UDP relay sends no server-originated
+/// Ping — so the Pong would sit unsent until the client's
+/// `WS_READ_IDLE_TIMEOUT` (300 s on outline-ws-rust) trips and tears the
+/// session down. Pumping a flush on this cadence delivers that Pong
+/// WITHOUT writing a server-originated Ping: an unconditional Ping write
+/// is unsafe on H3, where it races stream teardown on a `shuffle_timer`
+/// reroll and escalates to a connection-level `H3_INTERNAL_ERROR` that
+/// kills every multiplexed stream on the QUIC connection. 30 s is an
+/// order of magnitude inside the 300 s client watchdog, so even several
+/// dropped flushes leave a wide margin.
+pub(super) const WS_CONTROL_FLUSH_INTERVAL_SECS: u64 = 30;
 pub(super) const TCP_HAPPY_EYEBALLS_DELAY_MS: u64 = 250;
 
 pub(super) const UDP_MAX_CONCURRENT_RELAY_TASKS: usize = 256;
