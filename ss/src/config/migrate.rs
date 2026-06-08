@@ -89,6 +89,8 @@ const MAPPINGS: &[(&str, &[&str])] = &[
     ("outbound_ipv6_prefix", &["outbound", "ipv6_prefix"]),
     ("outbound_ipv6_interface", &["outbound", "ipv6_interface"]),
     ("outbound_ipv6_refresh_secs", &["outbound", "ipv6_refresh_secs"]),
+    ("outbound_ipv6_sticky", &["outbound", "ipv6_sticky"]),
+    ("outbound_ipv6_sticky_ttl_secs", &["outbound", "ipv6_sticky_ttl_secs"]),
     ("ws_path_tcp", &["websocket", "ws_path_tcp"]),
     ("ws_path_udp", &["websocket", "ws_path_udp"]),
     ("ws_path_vless", &["websocket", "ws_path_vless"]),

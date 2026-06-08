@@ -9,7 +9,7 @@ use crate::{
     config::Config,
     crypto::UserKey,
     metrics::{Metrics, Transport},
-    outbound::{self, InterfaceSource, OutboundIpv6},
+    outbound::{self, InterfaceSource, OutboundIpv6, OutboundIpv6Source, StickyIpv6Cache},
 };
 
 use super::{
@@ -65,22 +65,28 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     let vless_routes = Arc::new(build_vless_transport_route_map(vless_user_routes.as_ref()));
     let xhttp_vless_routes =
         Arc::new(build_xhttp_vless_route_map(vless_xhttp_user_routes.as_ref()));
-    let outbound_ipv6: Option<Arc<OutboundIpv6>> = if let Some(prefix) = config.outbound_ipv6_prefix
-    {
-        Some(Arc::new(OutboundIpv6::Prefix(prefix)))
-    } else if let Some(iface) = config.outbound_ipv6_interface.clone() {
-        let iface_for_err = iface.clone();
-        let source = InterfaceSource::bind(iface).with_context(|| {
-            format!(
-                "failed to enumerate IPv6 addresses on outbound interface {iface_for_err:?} \
+    let outbound_ipv6_source: Option<OutboundIpv6Source> =
+        if let Some(prefix) = config.outbound_ipv6_prefix {
+            Some(OutboundIpv6Source::Prefix(prefix))
+        } else if let Some(iface) = config.outbound_ipv6_interface.clone() {
+            let iface_for_err = iface.clone();
+            let source = InterfaceSource::bind(iface).with_context(|| {
+                format!(
+                    "failed to enumerate IPv6 addresses on outbound interface {iface_for_err:?} \
                      (getifaddrs(3) uses AF_NETLINK on Linux — if running under systemd, \
                      ensure RestrictAddressFamilies includes AF_NETLINK)"
-            )
-        })?;
-        Some(Arc::new(OutboundIpv6::Interface(source)))
-    } else {
-        None
-    };
+                )
+            })?;
+            Some(OutboundIpv6Source::Interface(source))
+        } else {
+            None
+        };
+    let outbound_ipv6: Option<Arc<OutboundIpv6>> = outbound_ipv6_source.map(|source| {
+        let sticky = config
+            .outbound_ipv6_sticky
+            .then(|| StickyIpv6Cache::new(config.outbound_ipv6_sticky_ttl_secs));
+        Arc::new(OutboundIpv6::new(source, sticky))
+    });
     let outbound_ipv6 = outbound_ipv6.and_then(probe_or_disable);
     let nat_table = NatTable::with_outbound_ipv6(
         Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs),

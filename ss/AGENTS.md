@@ -30,7 +30,12 @@ Prometheus metrics и локально пропатченные копии `h3` 
 - `src/protocol/`: target-address helpers для Shadowsocks и parsing/encoding для
   VLESS/mux.
 - `src/outbound.rs`: upstream connect/bind behavior, включая выбор IPv6 source
-  address.
+  address. Ротация source (`ipv6_prefix`/`ipv6_interface`) тянет новый случайный
+  адрес на каждый connect; `ipv6_sticky` закрепляет source per-destination в
+  `StickyIpv6Cache` (bounded LRU + per-entry TTL), чтобы Cloudflare-origin'ы не
+  сбрасывали `cf_clearance` на каждый запрос. Bind-call-sites (`connect.rs`,
+  `nat/table.rs`) ходят через `OutboundIpv6::source_for(dest, now)`; стартовая
+  проба намеренно остаётся на `random_addr()`.
 - `src/metrics/`: Prometheus metrics и render/export behavior.
 - `vendor/h3` и `vendor/sockudo-ws`: пропатченные крейты, подключенные через
   `[patch.crates-io]`; не считай их одноразовым generated code.

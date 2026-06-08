@@ -95,6 +95,19 @@ path = "/metrics"
 # the prefix is not known statically). The pool is refreshed periodically.
 # ipv6_interface = "eth0"
 # ipv6_refresh_secs = 30
+#
+# Sticky source. Pin one source address per upstream destination IP instead of
+# drawing a fresh random one on every connect. Without it a Cloudflare-fronted
+# origin (claude.ai, …) sees each request from a different source and re-issues
+# its "Verifying you are human" challenge — the cf_clearance cookie is bound to
+# the client source IP, so a rotating source never carries a solved challenge
+# forward. With sticky on, a destination keeps the same source for
+# `ipv6_sticky_ttl_secs` (default 1800 — above Cloudflare's ~30 min clearance),
+# so the challenge stays solved; rotation is preserved between different
+# destinations and across the TTL. Bounded, in-memory cache. No effect unless
+# `ipv6_prefix` or `ipv6_interface` is set. Enabled by default; set
+# `ipv6_sticky = false` to restore per-connect random source selection.
+# ipv6_sticky_ttl_secs = 1800
 
 [websocket]
 ws_path_tcp = "/tcp"

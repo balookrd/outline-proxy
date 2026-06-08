@@ -19,8 +19,14 @@
 //!
 //! At the call site the two modes are unified behind [`OutboundIpv6`].
 
-use std::{net::Ipv6Addr, num::ParseIntError, str::FromStr, sync::Arc};
+use std::{
+    net::{IpAddr, Ipv6Addr},
+    num::ParseIntError,
+    str::FromStr,
+    sync::Arc,
+};
 
+use dashmap::DashMap;
 use parking_lot::RwLock;
 use serde::{Deserialize, Deserializer};
 use thiserror::Error;
@@ -220,32 +226,171 @@ impl InterfaceSource {
     }
 }
 
+// ── Sticky per-destination source cache ──────────────────────────────────────
+
+/// Default upper bound on distinct destinations pinned at once. ~64k entries ×
+/// (16-byte key + 24-byte value) ≈ a few MiB — generous for a busy multi-tenant
+/// box while staying bounded so a destination-spraying client cannot grow the
+/// map without limit.
+const STICKY_CACHE_CAP: usize = 65_536;
+
+#[derive(Clone, Copy)]
+struct StickyEntry {
+    source: Ipv6Addr,
+    expires_at_unix: u64,
+}
+
+/// Bounded cache pinning one outbound IPv6 **source** address per upstream
+/// **destination** IP for a TTL. Without it, `ipv6_prefix` / `ipv6_interface`
+/// rotation draws a fresh random source on *every* connect, so a Cloudflare-
+/// protected origin (e.g. claude.ai) sees each request from a different address
+/// and re-issues its anti-bot challenge — the `cf_clearance` cookie is bound to
+/// the client source IP, so a rotating source never carries a solved challenge
+/// forward. Pinning the source per destination keeps the challenge solved
+/// across a client's successive requests. Rotation is preserved *between*
+/// destinations and across the TTL window.
+///
+/// Bounded two ways so it cannot grow without limit (see the AGENTS UDP/NAT
+/// rule): at most `cap` entries (expired-first, then soonest-to-expire eviction
+/// on a full insert) and `ttl_secs` per entry (a stale pin is regenerated).
+pub(crate) struct StickyIpv6Cache {
+    map: DashMap<IpAddr, StickyEntry>,
+    ttl_secs: u64,
+    cap: usize,
+}
+
+impl StickyIpv6Cache {
+    pub(crate) fn new(ttl_secs: u64) -> Self {
+        Self::with_cap(ttl_secs, STICKY_CACHE_CAP)
+    }
+
+    fn with_cap(ttl_secs: u64, cap: usize) -> Self {
+        Self {
+            map: DashMap::new(),
+            ttl_secs: ttl_secs.max(1),
+            cap: cap.max(1),
+        }
+    }
+
+    /// Pinned source for `dest`, or a freshly generated one via `gen`. `now` is
+    /// whole Unix seconds (`crate::clock::current_unix_secs`). Returns `None`
+    /// (clearing any stale pin) when the pool is currently empty, so the caller
+    /// falls back to the kernel default source exactly as on the non-sticky
+    /// path.
+    fn source_for(
+        &self,
+        dest: IpAddr,
+        now: u64,
+        generate: impl FnOnce() -> std::io::Result<Option<Ipv6Addr>>,
+    ) -> std::io::Result<Option<Ipv6Addr>> {
+        // Fast path: a live pin. The `get` read-guard is dropped at the end of
+        // this block, before any insert/remove below, so we never take a write
+        // lock on a shard we still hold a read lock on.
+        if let Some(entry) = self.map.get(&dest)
+            && entry.expires_at_unix > now
+        {
+            return Ok(Some(entry.source));
+        }
+        let Some(source) = generate()? else {
+            self.map.remove(&dest);
+            return Ok(None);
+        };
+        self.evict_if_full(now);
+        self.map.insert(
+            dest,
+            StickyEntry {
+                source,
+                expires_at_unix: now.saturating_add(self.ttl_secs),
+            },
+        );
+        Ok(Some(source))
+    }
+
+    /// Keep the map bounded. Cold path: only runs at capacity. Drops expired
+    /// entries first; if still full of live pins, evicts the one closest to
+    /// expiry.
+    fn evict_if_full(&self, now: u64) {
+        if self.map.len() < self.cap {
+            return;
+        }
+        self.map.retain(|_, e| e.expires_at_unix > now);
+        if self.map.len() < self.cap {
+            return;
+        }
+        if let Some(soonest) = self.map.iter().min_by_key(|e| e.expires_at_unix).map(|e| *e.key()) {
+            self.map.remove(&soonest);
+        }
+    }
+}
+
 // ── Unified selector ─────────────────────────────────────────────────────────
 
-/// Runtime handle for outbound IPv6 source selection. Either a statically
-/// configured prefix or a live-refreshed interface address pool.
-pub(crate) enum OutboundIpv6 {
+/// How outbound IPv6 source addresses are drawn: a statically configured prefix
+/// or a live-refreshed interface address pool.
+pub(crate) enum OutboundIpv6Source {
     Prefix(Ipv6Prefix),
     Interface(Arc<InterfaceSource>),
 }
 
-impl OutboundIpv6 {
+impl OutboundIpv6Source {
     /// Returns a random outbound IPv6 address, or `None` when the configured
     /// source currently has no usable addresses (interface-based sources only).
     pub(crate) fn random_addr(&self) -> std::io::Result<Option<Ipv6Addr>> {
         match self {
-            OutboundIpv6::Prefix(p) => p.random_addr().map(Some),
-            OutboundIpv6::Interface(i) => i.random_addr(),
+            OutboundIpv6Source::Prefix(p) => p.random_addr().map(Some),
+            OutboundIpv6Source::Interface(i) => i.random_addr(),
+        }
+    }
+}
+
+/// Runtime handle for outbound IPv6 source selection: a [`OutboundIpv6Source`]
+/// plus an optional [`StickyIpv6Cache`] that pins one source per destination.
+pub(crate) struct OutboundIpv6 {
+    source: OutboundIpv6Source,
+    sticky: Option<StickyIpv6Cache>,
+}
+
+impl OutboundIpv6 {
+    pub(crate) fn new(source: OutboundIpv6Source, sticky: Option<StickyIpv6Cache>) -> Self {
+        Self { source, sticky }
+    }
+
+    /// A fresh random source, ignoring stickiness. Used by the startup probe,
+    /// which validates raw random addresses regardless of the sticky setting.
+    pub(crate) fn random_addr(&self) -> std::io::Result<Option<Ipv6Addr>> {
+        self.source.random_addr()
+    }
+
+    /// Source address to bind for an upstream connection to `dest`. With
+    /// stickiness on, the same source is reused for the same destination IP
+    /// within the TTL; otherwise a fresh random source per call (legacy
+    /// behaviour). `now` is whole Unix seconds (`crate::clock`).
+    pub(crate) fn source_for(&self, dest: IpAddr, now: u64) -> std::io::Result<Option<Ipv6Addr>> {
+        match &self.sticky {
+            Some(cache) => cache.source_for(dest, now, || self.source.random_addr()),
+            None => self.source.random_addr(),
+        }
+    }
+
+    /// The interface-address pool when in interface mode, for periodic refresh.
+    pub(crate) fn interface_source(&self) -> Option<&Arc<InterfaceSource>> {
+        match &self.source {
+            OutboundIpv6Source::Interface(i) => Some(i),
+            OutboundIpv6Source::Prefix(_) => None,
         }
     }
 }
 
 impl std::fmt::Display for OutboundIpv6 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OutboundIpv6::Prefix(p) => write!(f, "prefix:{p}"),
-            OutboundIpv6::Interface(i) => write!(f, "interface:{}", i.name()),
+        match &self.source {
+            OutboundIpv6Source::Prefix(p) => write!(f, "prefix:{p}")?,
+            OutboundIpv6Source::Interface(i) => write!(f, "interface:{}", i.name())?,
         }
+        if let Some(cache) = &self.sticky {
+            write!(f, "+sticky({}s)", cache.ttl_secs)?;
+        }
+        Ok(())
     }
 }
 

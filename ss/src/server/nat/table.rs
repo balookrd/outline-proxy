@@ -42,8 +42,8 @@ pub(crate) fn bind_nat_udp_socket(
         match outbound_ipv6 {
             Some(src) => {
                 let picked = src
-                    .random_addr()
-                    .context("failed to generate random outbound IPv6 address")?;
+                    .source_for(target.ip(), clock::current_unix_secs())
+                    .context("failed to generate outbound IPv6 source address")?;
                 if picked.is_none() {
                     tracing::debug!(
                         %target,

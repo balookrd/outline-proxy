@@ -192,6 +192,13 @@ impl Config {
         if self.outbound_ipv6_refresh_secs == 0 {
             bail!("outbound_ipv6_refresh_secs must be > 0");
         }
+        // `outbound_ipv6_sticky` defaults to true and is a harmless no-op
+        // without an IPv6 source (the cache is only built when a prefix /
+        // interface is configured), so it is intentionally not an error to
+        // leave it on with no source.
+        if self.outbound_ipv6_sticky && self.outbound_ipv6_sticky_ttl_secs == 0 {
+            bail!("outbound_ipv6_sticky_ttl_secs must be > 0 when outbound_ipv6_sticky is set");
+        }
         if let Some(fb) = self.http_fallback.as_ref() {
             if fb.apply_to_h1 && self.listen.is_none() {
                 bail!(
