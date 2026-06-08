@@ -22,6 +22,8 @@ fn test_config() -> Config {
         outbound_ipv6_prefix: None,
         outbound_ipv6_interface: None,
         outbound_ipv6_refresh_secs: 30,
+        outbound_ipv6_sticky: false,
+        outbound_ipv6_sticky_ttl_secs: 1800,
         ws_path_tcp: "/tcp".to_owned(),
         ws_path_udp: "/udp".to_owned(),
         ws_path_vless: None,

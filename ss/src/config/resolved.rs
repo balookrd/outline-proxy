@@ -95,6 +95,16 @@ pub struct Config {
     pub outbound_ipv6_interface: Option<String>,
     /// How often to re-enumerate the outbound interface's IPv6 addresses.
     pub outbound_ipv6_refresh_secs: u64,
+    /// Pin one outbound IPv6 source address per upstream destination IP for
+    /// [`Self::outbound_ipv6_sticky_ttl_secs`] instead of drawing a fresh
+    /// random source on every connect. Keeps a Cloudflare `cf_clearance`
+    /// challenge (bound to the client source IP) valid across a client's
+    /// successive requests. On by default; no effect unless an IPv6
+    /// prefix/interface is set.
+    pub outbound_ipv6_sticky: bool,
+    /// TTL (seconds) for sticky source pins. Should exceed the origin's
+    /// challenge-clearance lifetime (Cloudflare's is ~30 min). Default 1800.
+    pub outbound_ipv6_sticky_ttl_secs: u64,
     pub ws_path_tcp: String,
     pub ws_path_udp: String,
     pub ws_path_vless: Option<String>,

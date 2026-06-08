@@ -77,6 +77,18 @@ pub(super) struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_OUTBOUND_IPV6_REFRESH_SECS")]
     pub outbound_ipv6_refresh_secs: Option<u64>,
 
+    /// Pin one outbound IPv6 source per destination IP (sticky) instead of a
+    /// fresh random source on every connect. Keeps a Cloudflare `cf_clearance`
+    /// challenge valid across a client's requests. No effect without an IPv6
+    /// prefix/interface.
+    #[arg(long, env = "OUTLINE_SS_OUTBOUND_IPV6_STICKY")]
+    pub outbound_ipv6_sticky: Option<bool>,
+
+    /// TTL in seconds for sticky IPv6 source pins. Should exceed the origin's
+    /// challenge-clearance lifetime (Cloudflare's is ~30 min). Default: 1800.
+    #[arg(long, env = "OUTLINE_SS_OUTBOUND_IPV6_STICKY_TTL_SECS")]
+    pub outbound_ipv6_sticky_ttl_secs: Option<u64>,
+
     #[arg(long = "ws-path-tcp", visible_alias = "ws-path", env = "OUTLINE_SS_WS_PATH_TCP")]
     pub ws_path_tcp: Option<String>,
 

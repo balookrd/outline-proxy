@@ -224,8 +224,8 @@ async fn connect_tcp_addr(
         && resolved.is_ipv6()
     {
         match out
-            .random_addr()
-            .context("failed to generate random outbound IPv6 address")?
+            .source_for(resolved.ip(), crate::clock::current_unix_secs())
+            .context("failed to generate outbound IPv6 source address")?
         {
             Some(source) => {
                 set_ipv6_freebind(&socket)

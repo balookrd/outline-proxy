@@ -143,6 +143,14 @@ impl AppMode {
                 .outbound_ipv6_refresh_secs
                 .or(outbound.ipv6_refresh_secs)
                 .unwrap_or(30),
+            outbound_ipv6_sticky: args
+                .outbound_ipv6_sticky
+                .or(outbound.ipv6_sticky)
+                .unwrap_or(true),
+            outbound_ipv6_sticky_ttl_secs: args
+                .outbound_ipv6_sticky_ttl_secs
+                .or(outbound.ipv6_sticky_ttl_secs)
+                .unwrap_or(1800),
             ws_path_tcp: args
                 .ws_path_tcp
                 .or(websocket.ws_path_tcp)

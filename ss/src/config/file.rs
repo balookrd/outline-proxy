@@ -123,6 +123,8 @@ pub(super) struct OutboundSection {
     pub ipv6_prefix: Option<String>,
     pub ipv6_interface: Option<String>,
     pub ipv6_refresh_secs: Option<u64>,
+    pub ipv6_sticky: Option<bool>,
+    pub ipv6_sticky_ttl_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
