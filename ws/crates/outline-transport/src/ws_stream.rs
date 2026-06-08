@@ -362,6 +362,20 @@ impl TransportStream {
         }
     }
 
+    /// Whether the carrier is HTTP/3 — a WebSocket riding a QUIC stream.
+    ///
+    /// The QUIC connection underneath runs its own keep-alive and
+    /// `max_idle_timeout` liveness check, so a UDP datagram channel on this
+    /// carrier can skip the WS-level read-idle watchdog and the client
+    /// keepalive Ping: not only are they redundant, the Ping is unsafe to
+    /// rely on here. On a quiet H3 datagram channel the server cannot emit a
+    /// reactive Pong without risking a connection-level `H3_INTERNAL_ERROR`,
+    /// so proving liveness from inbound WS frames would spuriously tear down
+    /// a healthy-but-quiet session. Callers trust the QUIC layer instead.
+    pub fn is_h3(&self) -> bool {
+        matches!(self, TransportStream::H3 { .. })
+    }
+
     /// XHTTP submode the dialer actually landed on (after any inline
     /// `stream-one → packet-up` retry). `None` for non-XHTTP variants —
     /// the concept does not apply to WS or QUIC carriers. Used by the

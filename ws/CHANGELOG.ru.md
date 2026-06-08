@@ -78,6 +78,7 @@
 
 ### Исправлено
 
+- **Keepalive SS-UDP-over-WebSocket теперь H3-aware.** На H3-карьере WS datagram-канал едет по QUIC-стриму, чьё соединение уже держит keep-alive (10 с) и проверку живости `max_idle_timeout`, поэтому WS read-idle watchdog (`WS_READ_IDLE_TIMEOUT`, 300 с) и клиентский keepalive Ping (`udp_ws_keepalive_secs`) оба избыточны — а Ping ещё и небезопасен: сервер не может доставить reactive Pong на тихом H3-datagram-канале, не рискуя connection-level `H3_INTERNAL_ERROR`, рвущим все мультиплексированные стримы на QUIC-соединении, так что доказывать живость по входящим WS-фреймам означало бы спурьёзно убить здоровую-но-тихую UDP-сессию. `UdpWsTransport::from_websocket` теперь отключает оба на H3-карьере (через новый хелпер `TransportStream::is_h3()` / `ws_datagram_liveness`) и полагается на живость QUIC-слоя; h1/h2 без изменений (под ними нет общего QUIC keep-alive, поэтому watchdog и Ping остаются). В паре с серверным фиксом в `outline-ss-rust`, который дренит reactive Pong таймерным flush'ем вместо записи server-originated Ping.
 - **Hints для control uplink apply** — `/control/apply` выводил misleading-сообщения для некоторых payload'ов; канонический hint-флоу восстановлен.
 
 - **`VlessTcpReader::read_chunk` возвращает header-bundled tail** вместо того, чтобы выбрасывать его — закрыта тихая потеря данных на первом read'е после header-bundled VLESS-фрейма.

@@ -219,7 +219,7 @@ name = "example.com"
 # runtime_failure_window_secs = 60  # 0 = legacy stacking
 # global_udp_strict_health = false  # true = pre-1.4.x strict UDP gating
 # auto_failback = false
-# udp_ws_keepalive_secs = 60
+# udp_ws_keepalive_secs = 60        # ignored on the H3 carrier (QUIC keep-alive owns liveness)
 # tcp_ws_keepalive_secs = 60
 # tcp_ws_standby_keepalive_secs = 20
 # tcp_active_keepalive_secs = 20

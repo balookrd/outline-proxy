@@ -440,7 +440,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `runtime_failure_window_secs`        | `60`               | s     | window over which back-to-back data-plane failures stack toward a health flip; `0` = legacy (no decay) |
 | `mode_downgrade_secs`                | `60`               | s     | cooldown before retrying the configured advanced mode (H3 / QUIC / `xhttp_h{2,3}`) after fallback. Legacy alias: `h3_downgrade_secs` |
 | `global_udp_strict_health`           | `false`            | bool  | in `routing_scope = "global"`, also gate the active uplink on UDP health; default lenient — UDP failures are informational |
-| `udp_ws_keepalive_secs`              | `60`               | s     | WS Ping cadence on idle UDP-WS sockets (`0` disables)                                             |
+| `udp_ws_keepalive_secs`              | `60`               | s     | WS Ping cadence on idle UDP-WS sockets (`0` disables; ignored on the H3 carrier — QUIC keep-alive owns liveness there, and a WS Ping/Pong on a quiet H3 datagram stream risks `H3_INTERNAL_ERROR`) |
 | `tcp_ws_keepalive_secs`              | `60`               | s     | WS Ping cadence on idle VLESS-over-WS TCP sessions (`0` disables; SS-over-WS ignores)             |
 | `tcp_ws_standby_keepalive_secs`      | `20`               | s     | WS Ping cadence on warm-standby TCP sockets (`0` disables)                                        |
 | `tcp_active_keepalive_secs`          | `20`               | s     | SS2022 0-length keepalive on active SOCKS TCP sessions (`0` disables; SS1 ignores)                |

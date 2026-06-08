@@ -72,6 +72,30 @@ pub fn is_dropped_oversized_udp_error(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Picks the `(read_idle_timeout, keepalive)` knobs for an SS-UDP-over-WS
+/// datagram channel given its carrier.
+///
+/// On the H3 carrier the channel rides a QUIC stream whose connection
+/// already runs a keep-alive (10 s) and a `max_idle_timeout` liveness check,
+/// so both the WS read-idle watchdog and the client keepalive Ping are
+/// redundant — and the Ping is actively harmful: the server cannot deliver a
+/// reactive Pong on a quiet H3 datagram channel without risking a
+/// connection-level `H3_INTERNAL_ERROR` that tears down every multiplexed
+/// stream on the QUIC connection, so proving liveness from WS frames would
+/// spuriously kill a healthy-but-quiet UDP session. We disable both and
+/// trust the QUIC layer. On h1/h2 there is no shared QUIC keep-alive
+/// underneath, so the configured watchdog and keepalive stay.
+fn ws_datagram_liveness(
+    is_h3: bool,
+    keepalive_interval: Option<Duration>,
+) -> (Option<Duration>, Option<Duration>) {
+    if is_h3 {
+        (None, None)
+    } else {
+        (Some(WS_READ_IDLE_TIMEOUT), keepalive_interval)
+    }
+}
+
 impl UdpWsTransport {
     pub fn from_websocket(
         ws_stream: TransportStream,
@@ -80,8 +104,12 @@ impl UdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
+        // On H3 the QUIC layer owns liveness, so the WS read-idle watchdog
+        // and client keepalive Ping are both disabled (the latter is unsafe
+        // on H3) — see `ws_datagram_liveness`.
+        let (idle_timeout, keepalive) = ws_datagram_liveness(ws_stream.is_h3(), keepalive_interval);
         let channel: Arc<dyn DatagramChannel> =
-            Arc::new(from_ws_datagrams(ws_stream, Some(WS_READ_IDLE_TIMEOUT), keepalive_interval));
+            Arc::new(from_ws_datagrams(ws_stream, idle_timeout, keepalive));
         Self::from_channel(channel, cipher, password, source)
     }
 
@@ -398,3 +426,7 @@ impl UdpSessionTransport {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/udp_transport.rs"]
+mod tests;

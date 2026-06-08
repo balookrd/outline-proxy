@@ -439,7 +439,7 @@ password = "Secret0"
 | `runtime_failure_window_secs`        | `60`               | с     | окно, в котором подряд идущие data-plane провалы складываются к health flip; `0` = legacy без затухания |
 | `mode_downgrade_secs`                | `60`               | с     | cooldown перед повтором настроенного «продвинутого» режима (H3 / QUIC / `xhttp_h{2,3}`) после фолбэка. Legacy alias: `h3_downgrade_secs` |
 | `global_udp_strict_health`           | `false`            | bool  | в `routing_scope = "global"` дополнительно гейтить активный аплинк по UDP-здоровью; по умолчанию мягко — UDP-провалы информативные |
-| `udp_ws_keepalive_secs`              | `60`               | с     | период WS Ping на простаивающих UDP-WS-сокетах (`0` отключает)                                   |
+| `udp_ws_keepalive_secs`              | `60`               | с     | период WS Ping на простаивающих UDP-WS-сокетах (`0` отключает; на H3-карьере игнорируется — живость держит QUIC keep-alive, а WS Ping/Pong на тихом H3-datagram-стриме рискует `H3_INTERNAL_ERROR`) |
 | `tcp_ws_keepalive_secs`              | `60`               | с     | период WS Ping на простаивающих VLESS-over-WS TCP-сессиях (`0` отключает; SS-over-WS игнорирует) |
 | `tcp_ws_standby_keepalive_secs`      | `20`               | с     | период WS Ping на warm-standby TCP-сокетах (`0` отключает)                                       |
 | `tcp_active_keepalive_secs`          | `20`               | с     | период SS2022 0-байтного keepalive на активных SOCKS TCP-сессиях (`0` отключает; SS1 игнорирует) |

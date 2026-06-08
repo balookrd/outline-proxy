@@ -288,6 +288,18 @@ cargo release-router-musl-armv7
   проявляется как баг «видно на TUN, не видно на SOCKS5» (или наоборот). Для
   пер-ingress-специфики используйте существующие развилки (`TunRoute` против
   `Route`), не дублируя routing-решение.
+- SS-UDP-over-WS liveness, H3-aware: на H3-карьере UDP datagram-канал едет по
+  QUIC-стриму, у которого уже есть keep_alive (10 с) и `max_idle_timeout`.
+  Поэтому `UdpWsTransport::from_websocket` на H3 (`TransportStream::is_h3()`,
+  чистый хелпер `ws_datagram_liveness`) отключает и WS read-idle watchdog
+  (`WS_READ_IDLE_TIMEOUT`, 300 с), и клиентский keepalive Ping
+  (`udp_ws_keepalive_secs`), полагаясь на живость QUIC-слоя. Не возвращайте
+  WS-Ping/watchdog на H3: сервер не может доставить reactive Pong на тихом
+  H3-datagram-стриме, не рискуя connection-level `H3_INTERNAL_ERROR`, поэтому
+  доказывать живость по входящим WS-фреймам = спурьёзно рвать здоровую сессию.
+  На h1/h2 общего QUIC keep_alive нет — watchdog и Ping там сохраняются.
+  Серверная половина фикса (`outline-ss-rust`) дренит застрявший reactive Pong
+  таймерным `WsSocket::flush`, а не шлёт server-originated Ping.
 
 ## Форматирование
 
