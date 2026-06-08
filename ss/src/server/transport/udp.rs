@@ -3,6 +3,7 @@ use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::WebSocket;
@@ -26,7 +27,7 @@ use crate::{
 use super::super::connect::resolve_udp_target;
 use super::super::constants::{
     MAX_UDP_PAYLOAD_SIZE, UDP_CACHED_USER_INDEX_EMPTY, UDP_MAX_CONCURRENT_RELAY_TASKS,
-    WS_CTRL_CHANNEL_CAPACITY,
+    WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
 };
 use super::super::dns_cache::DnsCache;
 use super::super::resumption::{
@@ -413,6 +414,22 @@ async fn run_udp_relay<T: WsSocket>(
         AppProtocol::Shadowsocks,
     ));
 
+    // Server→client WebSocket keepalive, mirroring the TCP and VLESS
+    // relays. A Ping every `WS_TCP_KEEPALIVE_PING_INTERVAL_SECS`
+    // resets the client's datagram idle watchdog (`WS_READ_IDLE_TIMEOUT`,
+    // 300 s on outline-ws-rust) so a quiet-but-live UDP session — DNS
+    // between lookups, an idle QUIC connection — is not torn down for
+    // lack of downlink traffic. The same tick reaps a silently-dead
+    // peer: if no inbound frame (Pong/Binary/Ping/Close) has arrived
+    // within `pong_deadline` the relay exits rather than pinning NAT
+    // entries and reader buffers on a black-holed client.
+    let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);
+    let pong_deadline = ping_interval * WS_PONG_DEADLINE_MULTIPLIER;
+    let mut keepalive = tokio::time::interval(ping_interval);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    keepalive.tick().await; // skip the immediate first tick
+    let mut last_inbound = Instant::now();
+
     let mut loop_result = Ok(());
     loop {
         tokio::select! {
@@ -426,6 +443,7 @@ async fn run_udp_relay<T: WsSocket>(
                         break;
                     }
                 };
+                last_inbound = Instant::now();
                 match T::classify(frame) {
                     WsFrame::Binary(data) => {
                         server.metrics.record_websocket_binary_frame(
@@ -511,6 +529,23 @@ async fn run_udp_relay<T: WsSocket>(
                         break;
                     }
                 }
+            }
+            _ = keepalive.tick() => {
+                if last_inbound.elapsed() > pong_deadline {
+                    debug!(
+                        elapsed_secs = last_inbound.elapsed().as_secs(),
+                        "udp websocket pong deadline exceeded; closing session"
+                    );
+                    server
+                        .metrics
+                        .record_pong_deadline_disconnect(Transport::Udp, AppProtocol::Shadowsocks);
+                    break;
+                }
+                // Don't fail the session on a Ping send error — the writer
+                // task may have already exited if the WS connection closed
+                // cleanly on the write side while we were reading. The next
+                // `T::recv()` then returns None and we exit normally.
+                let _ = outbound_ctrl_tx.send(T::ping_msg()).await;
             }
         }
     }
