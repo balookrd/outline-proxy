@@ -513,7 +513,13 @@ async fn run_tcp_relay<T: WsSocket>(
                     WsFrame::Text => return Err(anyhow!("text websocket frames are not supported")),
                 }
             },
-            _ = keepalive.tick() => {
+            // Disabled on the H3 carrier (see `WsSocket::is_h3`): a server
+            // Ping would risk a connection-level `H3_INTERNAL_ERROR`, and the
+            // pong-deadline reaping would false-fire because the client's
+            // keepalive Pings are swallowed by the split reader and never
+            // refresh `last_inbound`. QUIC keep-alive detects a dead peer; the
+            // writer task's periodic flush delivers the reactive Pong.
+            _ = keepalive.tick(), if !T::is_h3() => {
                 // Tear down silently-dead sessions: if no inbound frame has
                 // been seen for `pong_deadline`, the peer is gone (mobile in
                 // tunnel, NAT rebind, ISP black-hole). Without this check we

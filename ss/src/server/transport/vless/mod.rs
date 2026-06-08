@@ -153,7 +153,13 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
                     WsFrame::Text => return Err(anyhow!("text websocket frames are not supported")),
                 }
             },
-            _ = keepalive.tick() => {
+            // Disabled on the H3 carrier (see `WsSocket::is_h3`): a server
+            // Ping would risk a connection-level `H3_INTERNAL_ERROR`, and the
+            // pong-deadline reaping would false-fire because the client's
+            // keepalive Pings are swallowed by the split reader. QUIC
+            // keep-alive detects a dead peer; the writer's flush delivers the
+            // reactive Pong.
+            _ = keepalive.tick(), if !T::is_h3() => {
                 if last_inbound.elapsed() > pong_deadline {
                     debug!(
                         elapsed_secs = last_inbound.elapsed().as_secs(),
