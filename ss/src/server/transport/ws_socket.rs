@@ -50,6 +50,17 @@ pub(super) trait WsSocket: Send + Sized + 'static {
     /// read-idle watchdog — WITHOUT the relay ever emitting a
     /// server-originated Ping, which is unsafe on the H3 carrier.
     fn flush(writer: &mut Self::Writer) -> impl Future<Output = Result<()>> + Send + '_;
+    /// Whether this carrier multiplexes WebSocket frames over an HTTP/3
+    /// (QUIC) stream. On H3 a relay must NOT emit a server→client keepalive
+    /// `Ping` (an unconditional Ping write races stream teardown on a
+    /// `shuffle_timer` reroll and escalates to a connection-level
+    /// `H3_INTERNAL_ERROR` that kills every multiplexed stream on the QUIC
+    /// connection) and must NOT run pong-deadline reaping (the client's
+    /// keepalive Ping is swallowed by the split reader, so `last_inbound`
+    /// never refreshes and the deadline would false-fire on a live session).
+    /// The QUIC layer's own keep-alive / idle-timeout detects a dead peer,
+    /// and the writer task's periodic `flush` delivers the reactive Pong.
+    fn is_h3() -> bool;
     fn classify(msg: Self::Msg) -> WsFrame;
     fn binary_msg(data: Bytes) -> Self::Msg;
     fn close_msg() -> Self::Msg;
@@ -108,6 +119,10 @@ impl WsSocket for AxumWs {
         // `SplitSink::send` flushes each frame as it goes, so there is
         // nothing left to drain here.
         Ok(())
+    }
+
+    fn is_h3() -> bool {
+        false
     }
 
     fn classify(msg: Message) -> WsFrame {
@@ -203,6 +218,10 @@ impl WsSocket for H3Ws {
             .flush()
             .await
             .context("failed to flush websocket control frames")
+    }
+
+    fn is_h3() -> bool {
+        true
     }
 
     fn classify(msg: H3Message) -> WsFrame {

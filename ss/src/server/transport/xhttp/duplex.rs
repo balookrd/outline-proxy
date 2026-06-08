@@ -121,6 +121,14 @@ impl WsSocket for XhttpDuplex {
         Ok(())
     }
 
+    fn is_h3() -> bool {
+        // XHTTP rides h2/h3 underneath, but its keepalive is handled
+        // out-of-band via session `touch()` and it emits no WS Ping, so the
+        // H3-Ping hazard does not apply — report `false` so the relay keeps
+        // its normal keepalive-tick bookkeeping.
+        false
+    }
+
     fn classify(msg: XhttpMsg) -> WsFrame {
         match msg {
             XhttpMsg::Binary(b) => WsFrame::Binary(b),

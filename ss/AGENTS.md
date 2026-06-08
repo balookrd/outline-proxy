@@ -147,7 +147,12 @@ Prometheus metrics и локально пропатченные копии `h3` 
   без серверного Ping. `WsSocket::flush` обязан оставаться no-op там, где Pong
   доходит иначе (axum h1/h2 — реактивный Pong через `outbound_ctrl_tx`; XHTTP —
   out-of-band `touch()`). Не подменяй этот механизм server-originated Ping или
-  Pong-по-таймеру на H3.
+  Pong-по-таймеру на H3. То же относится к TCP-over-WS и VLESS-over-WS
+  (`run_tcp_relay` / `run_vless_relay`): их keepalive-тик (Ping +
+  pong-deadline reaping) огорожен `if !T::is_h3()`. На H3 ни Ping, ни reaping —
+  клиентские keepalive Ping проглатываются split-reader'ом, `last_inbound` не
+  обновляется, и reaping ложно срубил бы живую сессию. Живость на H3 держит
+  QUIC keep-alive / idle-timeout; reactive Pong доставляет тот же flush.
 
 ## Vendored patches
 

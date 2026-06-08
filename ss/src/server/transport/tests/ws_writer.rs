@@ -69,6 +69,10 @@ impl WsSocket for MockWs {
         Ok(())
     }
 
+    fn is_h3() -> bool {
+        false
+    }
+
     fn classify(_msg: Self::Msg) -> WsFrame {
         unimplemented!("the writer task never classifies")
     }
