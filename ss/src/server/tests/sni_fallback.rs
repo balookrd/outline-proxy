@@ -13,9 +13,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use rustls::{
-    ClientConfig, RootCertStore,
+    ClientConfig,
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
+    pki_types::{CertificateDer, ServerName},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
