@@ -127,7 +127,8 @@ rtt_ewma_alpha = 0.3
 failure_penalty_ms = 1000
 failure_penalty_max_ms = 60000
 failure_penalty_halflife_secs = 120
-# Keepalive on the active UDP path to prevent NAT timeouts.
+# Keepalive on the active UDP path to prevent NAT timeouts. Ignored on the
+# H3 carrier — QUIC keep-alive owns liveness there.
 udp_ws_keepalive_secs = 60
 
 # ── Uplinks ──────────────────────────────────────────────────────────────────
