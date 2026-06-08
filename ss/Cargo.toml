@@ -57,6 +57,10 @@ control = []
 [dev-dependencies]
 proptest = "1.5"
 rcgen = "0.14"
+# `test-util` enables tokio's paused virtual clock so timer-driven paths
+# (e.g. the WebSocket writer's control-flush cadence) can be tested without
+# real-time sleeps.
+tokio = { version = "1.48", features = ["test-util"] }
 tokio-tungstenite = "0.28"
 # Cross-repo end-to-end tests dial the real `outline-ws-rust` client
 # against this server (sibling repo, not published). The path dep

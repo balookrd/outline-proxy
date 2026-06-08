@@ -72,7 +72,7 @@ fn build_test_state(
     (routes, services, auth)
 }
 
-fn sample_config(listen: SocketAddr) -> Config {
+pub(in crate::server) fn sample_config(listen: SocketAddr) -> Config {
     sample_config_with_users(
         listen,
         vec![UserEntry {

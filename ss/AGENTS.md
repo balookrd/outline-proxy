@@ -135,6 +135,19 @@ Prometheus metrics и локально пропатченные копии `h3` 
 - Session resumption и NAT behavior stateful. Сохраняй bounded queues, idle
   timeouts, replay windows и cancellation/shutdown semantics, если задача явно
   не меняет их.
+- UDP-over-WebSocket keepalive, H3-safe: НЕ слать server→client WS `Ping` на
+  H3-карьере. Безусловная запись Ping на h3-стрим гонится с teardown'ом при
+  `shuffle_timer`-реролле и эскалирует до connection-level `H3_INTERNAL_ERROR`,
+  рвущего все мультиплексированные стримы на QUIC-соединении (см. откат в
+  истории `run_udp_relay`). Клиент (`outline-ws-rust`) сам шлёт keepalive Ping;
+  на H3 vendored `sockudo-ws` split-reader проглатывает его и паркует ответный
+  Pong, который уходит на провод только при следующем `send`/`flush` writer'а.
+  Поэтому `run_ws_writer` периодически зовёт `WsSocket::flush`
+  (`WS_CONTROL_FLUSH_INTERVAL_SECS`), доставляя застрявший Pong на тихом канале
+  без серверного Ping. `WsSocket::flush` обязан оставаться no-op там, где Pong
+  доходит иначе (axum h1/h2 — реактивный Pong через `outbound_ctrl_tx`; XHTTP —
+  out-of-band `touch()`). Не подменяй этот механизм server-originated Ping или
+  Pong-по-таймеру на H3.
 
 ## Vendored patches
 

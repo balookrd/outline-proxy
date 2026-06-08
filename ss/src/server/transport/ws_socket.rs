@@ -42,6 +42,14 @@ pub(super) trait WsSocket: Send + Sized + 'static {
         msg: Self::Msg,
     ) -> impl Future<Output = Result<()>> + Send + '_;
     fn finish(writer: &mut Self::Writer) -> impl Future<Output = ()> + Send + '_;
+    /// Flush any control-frame responses the transport buffered but has not
+    /// yet written — chiefly a `Pong` the split reader queued in reply to a
+    /// client keepalive `Ping`. The per-session writer task calls this on a
+    /// timer (`WS_CONTROL_FLUSH_INTERVAL_SECS`) so that on a quiet datagram
+    /// channel the reactive Pong still reaches the client and resets its
+    /// read-idle watchdog — WITHOUT the relay ever emitting a
+    /// server-originated Ping, which is unsafe on the H3 carrier.
+    fn flush(writer: &mut Self::Writer) -> impl Future<Output = Result<()>> + Send + '_;
     fn classify(msg: Self::Msg) -> WsFrame;
     fn binary_msg(data: Bytes) -> Self::Msg;
     fn close_msg() -> Self::Msg;
@@ -91,6 +99,16 @@ impl WsSocket for AxumWs {
     }
 
     async fn finish(_writer: &mut Self::Writer) {}
+
+    async fn flush(_writer: &mut Self::Writer) -> Result<()> {
+        // h1/h2: the split stream surfaces an inbound Ping to the relay
+        // loop, which queues the Pong reply through the writer's
+        // `outbound_ctrl` channel — so the writer is already woken to send
+        // it, and nothing sits buffered behind a quiet writer. axum's
+        // `SplitSink::send` flushes each frame as it goes, so there is
+        // nothing left to drain here.
+        Ok(())
+    }
 
     fn classify(msg: Message) -> WsFrame {
         match msg {
@@ -169,6 +187,22 @@ impl WsSocket for H3Ws {
 
     async fn finish(writer: &mut Self::Writer) {
         let _ = writer.close(1000, "").await;
+    }
+
+    async fn flush(writer: &mut Self::Writer) -> Result<()> {
+        // The vendored sockudo split reader answers a client Ping by
+        // parking a Pong in an internal channel that is only drained when
+        // the writer runs `process_control_requests` — which `flush` does
+        // (as does `send`). On a quiet UDP datagram channel this timed
+        // flush is the only thing that delivers that Pong to the client,
+        // keeping its 300 s read-idle watchdog from tripping — and it does
+        // so WITHOUT writing a server-originated Ping, which on H3 races
+        // stream teardown and escalates to a connection-level
+        // `H3_INTERNAL_ERROR`.
+        writer
+            .flush()
+            .await
+            .context("failed to flush websocket control frames")
     }
 
     fn classify(msg: H3Message) -> WsFrame {

@@ -114,6 +114,13 @@ impl WsSocket for XhttpDuplex {
         writer.session.close();
     }
 
+    async fn flush(_writer: &mut Self::Writer) -> Result<()> {
+        // XHTTP has no on-wire control frames; its session is kept warm
+        // out-of-band via `touch()` on the keepalive tick (see
+        // `XhttpMsg::Noop`), so there is nothing buffered to flush.
+        Ok(())
+    }
+
     fn classify(msg: XhttpMsg) -> WsFrame {
         match msg {
             XhttpMsg::Binary(b) => WsFrame::Binary(b),
