@@ -1000,6 +1000,7 @@ Capabilities:
 - IPv4 and IPv6 IP fragment reassembly on the TUN ingress path
 - local IPv4 ICMP echo reply (`ping`) handling
 - local IPv6 ICMPv6 echo reply handling, with source fragmentation to the IPv6 minimum MTU when needed
+- optional group-health gating of those echo replies (`tun_suppress_icmp_reply_when_down` on the uplink group): pings routed to a group stop being answered while the group has no healthy uplink, so an external watchdog can detect a dead tunnel
 - IPv6 UDP and ICMPv6 handling across supported extension-header paths
 - per-flow uplink transport
 - flow idle cleanup

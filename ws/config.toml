@@ -227,6 +227,7 @@ name = "example.com"
 # vless_udp_max_sessions = 256
 # vless_udp_session_idle_secs = 60
 # vless_udp_janitor_interval_secs = 15
+# tun_suppress_icmp_reply_when_down = false  # stop answering TUN pings while every uplink is down
 
 # ── Uplink groups ───────────────────────────────────────────────────────────
 # Each group is an isolated UplinkManager with its own probe loop, standby
@@ -266,6 +267,13 @@ runtime_failure_window_secs = 60
 # vless_udp_max_sessions = 256
 # vless_udp_session_idle_secs = 60
 # vless_udp_janitor_interval_secs = 15
+# Stop answering ICMP echo (ping) on the TUN interface for destinations routed
+# to this group while the group has no healthy uplink on either transport.
+# Turns a plain `ping` through the tunnel into a group-liveness signal external
+# watchdogs (router failover scripts) can act on. Note: replies also stay
+# suppressed right after startup until the first probe confirms an uplink.
+# Default `false` — always reply, legacy behaviour.
+# tun_suppress_icmp_reply_when_down = false
 
 # Optional second group — useful for a fallback path with different LB mode.
 # [[uplink_group]]

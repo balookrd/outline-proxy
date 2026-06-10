@@ -155,6 +155,13 @@ pub(super) fn load_balancing_config(
         tcp_symmetric_replay_max_bytes: lb
             .and_then(|l| l.tcp_symmetric_replay_max_bytes)
             .unwrap_or(1_048_576),
+        // Default: `false` — TUN-side ICMP echo requests are always
+        // answered locally, regardless of uplink health. Opting in turns
+        // a ping through the TUN interface into a group-liveness signal:
+        // replies stop while every uplink in the group is down.
+        tun_suppress_icmp_reply_when_down: lb
+            .and_then(|l| l.tun_suppress_icmp_reply_when_down)
+            .unwrap_or(false),
         vless_udp_mux_limits: {
             let defaults = VlessUdpMuxLimits::default();
             VlessUdpMuxLimits {

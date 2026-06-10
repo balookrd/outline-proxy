@@ -411,6 +411,11 @@ pub(super) struct UplinkGroupSection {
     /// Per-group override of `tcp_symmetric_replay_max_bytes`. Default
     /// inherits the top-level value (`1_048_576`).
     pub(super) tcp_symmetric_replay_max_bytes: Option<usize>,
+    /// Suppress local ICMP echo replies on the TUN interface for
+    /// destinations routed to this group while every uplink in the group
+    /// is down — lets external watchdogs detect a dead tunnel by pinging
+    /// through it. Default: `false` (always reply).
+    pub(super) tun_suppress_icmp_reply_when_down: Option<bool>,
     /// Per-group override of top-level `[probe]`; unspecified fields inherit.
     pub(super) probe: Option<ProbeSection>,
 }
@@ -579,4 +584,8 @@ pub(super) struct LoadBalancingSection {
     /// drop the session — protection against a malicious server
     /// inducing unbounded memory pressure on the client.
     pub(super) tcp_symmetric_replay_max_bytes: Option<usize>,
+    /// Suppress local ICMP echo replies on the TUN interface while
+    /// every uplink in the (implicit) group is down. See the
+    /// same-named field on `UplinkGroupSection`. Default: `false`.
+    pub(super) tun_suppress_icmp_reply_when_down: Option<bool>,
 }

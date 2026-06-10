@@ -9,7 +9,7 @@
 //!   refuses to carry it. Without these, PMTUD inside the tunnel is blind
 //!   and clients keep retransmitting the same too-large payload.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -18,6 +18,10 @@ use crate::wire::{
     IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_ICMPV6, checksum16, ipv6_payload_checksum,
     locate_ipv6_upper_layer,
 };
+
+#[cfg(test)]
+#[path = "tests/icmp.rs"]
+mod tests;
 
 pub(crate) const IPV6_MIN_PATH_MTU: usize = 1280;
 
@@ -36,6 +40,26 @@ const ICMPV4_PROTOCOL: u8 = 1;
 /// 1812 §4.3.2.3 says the receiver needs at least this much to match the
 /// reply back to the offending socket.
 const ICMPV4_QUOTED_PACKET_BYTES: usize = IPV4_HEADER_LEN + 8;
+
+/// Destination IP of an ICMP echo request, read straight off the fixed
+/// IP-header fields (IPv4 options and IPv6 extension headers do not move
+/// them). The TUN engine resolves this address through policy routing to
+/// find the group whose uplink health gates the local echo reply. `None`
+/// on a packet too short to carry the field — the caller then falls back
+/// to the reply builder, which performs full validation.
+pub(crate) fn icmp_echo_destination(packet: &[u8]) -> Option<IpAddr> {
+    match packet.first()? >> 4 {
+        4 if packet.len() >= IPV4_HEADER_LEN => {
+            let octets: [u8; 4] = packet[16..20].try_into().ok()?;
+            Some(IpAddr::V4(Ipv4Addr::from(octets)))
+        },
+        6 if packet.len() >= IPV6_HEADER_LEN => {
+            let octets: [u8; 16] = packet[24..40].try_into().ok()?;
+            Some(IpAddr::V6(Ipv6Addr::from(octets)))
+        },
+        _ => None,
+    }
+}
 
 pub(crate) fn build_icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>> {
     let version = packet.first().ok_or_else(|| anyhow!("empty TUN packet"))? >> 4;

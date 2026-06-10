@@ -207,6 +207,7 @@ fn load_balancing_config_from_group(
             .tcp_mid_session_retry_consume_timeout_secs,
         tcp_symmetric_replay_enabled: section.tcp_symmetric_replay_enabled,
         tcp_symmetric_replay_max_bytes: section.tcp_symmetric_replay_max_bytes,
+        tun_suppress_icmp_reply_when_down: section.tun_suppress_icmp_reply_when_down,
     };
     load_balancing_config(Some(&shim))
 }
