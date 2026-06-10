@@ -260,6 +260,16 @@ cargo release-router-musl-armv7
   `false`); политику суппрессии держите в pure helper'ах под unit-тестами,
   а не в async путях. Протокольные клампы 576/1280 в самих ICMP-билдерах
   остаются неизменными.
+- TUN ICMP echo health-gate: per-group флаг `tun_suppress_icmp_reply_when_down`
+  (поле `LoadBalancingConfig`, default `false`) подавляет локальный echo reply
+  в `tun_read_loop`, когда destination пакета резолвится в группу без единого
+  здорового uplink'а — критерий тот же `has_any_healthy` по обоим транспортам,
+  что и у route-fallback решения в `TunRouting::materialize_target`; держите их
+  согласованными. Gate (`echo_reply_suppressed_for_down_group` в `engine.rs`)
+  срабатывает только на `TunRoute::Group`: Direct/Drop-маршруты и пакеты без
+  парсибельного destination (`icmp_echo_destination`, pure-хелпер в `icmp.rs`
+  под unit-тестами) отвечаются как раньше. Подавленные запросы считаются как
+  `outcome="icmp_reply_suppressed"` на `outline_ws_rust_tun_packets_total`.
 - TUN IPsec bypass: `tun.ipsec_bypass = true` short-circuits UDP/{500,4500} в
   `TunRoute::Direct` ещё до policy-routing, переиспользуя `direct_fwmark` для
   выхода из TUN routing loop. Не оптимизируйте этот fast-path так, чтобы он

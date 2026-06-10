@@ -599,6 +599,73 @@ async fn load_config_new_shape_groups_and_routes() {
 }
 
 #[tokio::test]
+async fn load_config_parses_tun_icmp_suppression_flag_on_groups() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+        tun_suppress_icmp_reply_when_down = true
+
+        [[uplink_group]]
+        name = "backup"
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://main.example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[uplinks]]
+        name = "edge"
+        group = "backup"
+        tcp_ws_url = "wss://backup.example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = super::load_config(&path, &args).await.unwrap();
+    assert!(config.groups[0].load_balancing.tun_suppress_icmp_reply_when_down);
+    // Unset groups keep the legacy always-reply behaviour.
+    assert!(!config.groups[1].load_balancing.tun_suppress_icmp_reply_when_down);
+}
+
+#[tokio::test]
+async fn load_config_parses_tun_icmp_suppression_flag_in_legacy_load_balancing() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [outline]
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [outline.load_balancing]
+        tun_suppress_icmp_reply_when_down = true
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = super::load_config(&path, &args).await.unwrap();
+    assert!(config.groups[0].load_balancing.tun_suppress_icmp_reply_when_down);
+}
+
+#[tokio::test]
 async fn load_config_rejects_unknown_group_in_route() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("config.toml");

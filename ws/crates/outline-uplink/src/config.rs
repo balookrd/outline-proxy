@@ -712,6 +712,20 @@ pub struct LoadBalancingConfig {
     /// cap (default 64 KiB), so the cap fires only on a genuinely
     /// hostile peer.
     pub tcp_symmetric_replay_max_bytes: usize,
+    /// Stop answering TUN-side ICMP echo requests routed to this group
+    /// while the group has no healthy uplink on either transport.
+    ///
+    /// The TUN engine normally synthesises a local echo reply for every
+    /// ping whose destination routes into the tunnel — there is no remote
+    /// side for raw ICMP, so the reply only proves the TUN device is up,
+    /// not that the tunnel can carry traffic. With this flag the reply is
+    /// suppressed while every uplink in the group is down, turning a plain
+    /// `ping` through the TUN interface into a liveness signal external
+    /// watchdogs (e.g. a router's failover script) can act on.
+    ///
+    /// Default: `false` — echo replies are unconditional, preserving the
+    /// legacy behaviour.
+    pub tun_suppress_icmp_reply_when_down: bool,
 }
 
 /// Policy for the `tcp_mid_session_retry_overflow_policy` knob.

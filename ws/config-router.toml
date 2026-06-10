@@ -130,6 +130,10 @@ failure_penalty_halflife_secs = 120
 # Keepalive on the active UDP path to prevent NAT timeouts. Ignored on the
 # H3 carrier — QUIC keep-alive owns liveness there.
 udp_ws_keepalive_secs = 60
+# Stop answering ICMP echo (ping) on the TUN interface while every uplink in
+# this group is down — lets a router-side watchdog detect a dead tunnel by
+# pinging through it. Default `false` (always reply).
+# tun_suppress_icmp_reply_when_down = true
 
 # ── Uplinks ──────────────────────────────────────────────────────────────────
 # Use h2 instead of h3/QUIC: QUIC requires maintaining per-packet state that

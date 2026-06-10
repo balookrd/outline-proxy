@@ -19,11 +19,16 @@ use crate::classify::{PacketDisposition, classify_packet};
 use crate::config::TunConfig;
 use crate::defrag::{DefragmentedPacket, TunDefragmenter};
 use crate::device::{open_tun_device_with_retry, set_nonblocking};
-use crate::icmp::build_icmp_echo_reply_packets;
-use crate::routing::TunRouting;
+use crate::icmp::{build_icmp_echo_reply_packets, icmp_echo_destination};
+use crate::routing::{TunRoute, TunRouting};
 use crate::tcp::TunTcpEngine;
 use crate::udp::{TunUdpEngine, classify_tun_udp_forward_error, parse_udp_packet};
+use crate::wire::ip_to_target;
 use crate::writer::SharedTunWriter;
+
+#[cfg(test)]
+#[path = "tests/engine.rs"]
+mod tests;
 
 pub async fn spawn_tun_loop(
     config: TunConfig,
@@ -72,6 +77,7 @@ pub async fn spawn_tun_loop(
             writer,
             udp_engine,
             tcp_engine,
+            routing,
             tun_mtu,
             defrag_max_total_bytes,
             defrag_max_bytes_per_set,
@@ -101,6 +107,7 @@ async fn tun_read_loop(
     writer: SharedTunWriter,
     udp_engine: TunUdpEngine,
     tcp_engine: TunTcpEngine,
+    routing: TunRouting,
     mtu: usize,
     defrag_max_total_bytes: usize,
     defrag_max_bytes_per_set: usize,
@@ -247,52 +254,62 @@ async fn tun_read_loop(
                     );
                 }
             },
-            PacketDisposition::IcmpEchoRequest => match build_icmp_echo_reply_packets(packet) {
-                Ok(replies) => {
+            PacketDisposition::IcmpEchoRequest => {
+                if echo_reply_suppressed_for_down_group(&routing, packet).await {
                     metrics::record_tun_packet(
                         "tun_to_upstream",
                         ip_family_name(version_nibble),
-                        "icmp_local_reply",
+                        "icmp_reply_suppressed",
                     );
-                    if replies.len() > 1 {
-                        debug!(
-                            reply_packet_len = replies.iter().map(Vec::len).sum::<usize>(),
-                            fragment_count = replies.len(),
-                            "fragmented local IPv6 ICMP echo reply to minimum MTU"
-                        );
-                    }
-                    if let Err(error) = writer.write_packets(&replies).await {
+                    continue;
+                }
+                match build_icmp_echo_reply_packets(packet) {
+                    Ok(replies) => {
                         metrics::record_tun_packet(
-                            "upstream_to_tun",
-                            ip_family_name(version_nibble),
-                            "error",
-                        );
-                        warn!(
-                            error = %format!("{error:#}"),
-                            packet_len = read,
-                            "failed to write local ICMP echo reply to TUN"
-                        );
-                    } else {
-                        metrics::record_tun_icmp_local_reply(ip_family_name(version_nibble));
-                        metrics::record_tun_packet(
-                            "upstream_to_tun",
+                            "tun_to_upstream",
                             ip_family_name(version_nibble),
                             "icmp_local_reply",
                         );
-                    }
-                },
-                Err(error) => {
-                    metrics::record_tun_packet(
-                        "tun_to_upstream",
-                        ip_family_name(version_nibble),
-                        "error",
-                    );
-                    debug!(
-                        error = %format!("{error:#}"),
-                        packet_len = read,
-                        "dropping malformed ICMP packet from TUN"
-                    );
-                },
+                        if replies.len() > 1 {
+                            debug!(
+                                reply_packet_len = replies.iter().map(Vec::len).sum::<usize>(),
+                                fragment_count = replies.len(),
+                                "fragmented local IPv6 ICMP echo reply to minimum MTU"
+                            );
+                        }
+                        if let Err(error) = writer.write_packets(&replies).await {
+                            metrics::record_tun_packet(
+                                "upstream_to_tun",
+                                ip_family_name(version_nibble),
+                                "error",
+                            );
+                            warn!(
+                                error = %format!("{error:#}"),
+                                packet_len = read,
+                                "failed to write local ICMP echo reply to TUN"
+                            );
+                        } else {
+                            metrics::record_tun_icmp_local_reply(ip_family_name(version_nibble));
+                            metrics::record_tun_packet(
+                                "upstream_to_tun",
+                                ip_family_name(version_nibble),
+                                "icmp_local_reply",
+                            );
+                        }
+                    },
+                    Err(error) => {
+                        metrics::record_tun_packet(
+                            "tun_to_upstream",
+                            ip_family_name(version_nibble),
+                            "error",
+                        );
+                        debug!(
+                            error = %format!("{error:#}"),
+                            packet_len = read,
+                            "dropping malformed ICMP packet from TUN"
+                        );
+                    },
+                }
             },
             PacketDisposition::Unsupported(reason) => {
                 metrics::record_tun_packet(
@@ -304,6 +321,39 @@ async fn tun_read_loop(
             },
         }
     }
+}
+
+/// Group-health gate for the local ICMP echo reply.
+///
+/// Returns `true` when the echo request's destination routes to a group
+/// that opted into `tun_suppress_icmp_reply_when_down` and that group
+/// currently has no healthy uplink on either transport — the same
+/// `has_any_healthy` signal the route-fallback decision uses. Direct/drop
+/// routes and unparseable destinations never suppress; the reply builder
+/// remains the sole validator for malformed packets.
+async fn echo_reply_suppressed_for_down_group(routing: &TunRouting, packet: &[u8]) -> bool {
+    let Some(destination) = icmp_echo_destination(packet) else {
+        return false;
+    };
+    // Port 0: policy routing matches on CIDR prefixes only.
+    let target = ip_to_target(destination, 0);
+    let TunRoute::Group { name, manager } = routing.resolve(&target).await else {
+        return false;
+    };
+    if !manager.load_balancing().tun_suppress_icmp_reply_when_down {
+        return false;
+    }
+    if manager.has_any_healthy(outline_uplink::TransportKind::Tcp).await
+        || manager.has_any_healthy(outline_uplink::TransportKind::Udp).await
+    {
+        return false;
+    }
+    debug!(
+        group = %name,
+        destination = %destination,
+        "suppressing local ICMP echo reply: no healthy uplink in group"
+    );
+    true
 }
 
 fn spawn_tun_defragmenter_cleanup(defragmenter: Weak<Mutex<TunDefragmenter>>) {

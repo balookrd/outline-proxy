@@ -85,6 +85,7 @@ fn make_group(name: &str, uplink_names: &[&str]) -> UplinkGroupConfig {
             tcp_mid_session_retry_consume_timeout: Duration::from_secs(5),
             tcp_symmetric_replay_enabled: true,
             tcp_symmetric_replay_max_bytes: 1_048_576,
+            tun_suppress_icmp_reply_when_down: false,
         },
     }
 }
