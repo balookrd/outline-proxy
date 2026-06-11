@@ -201,6 +201,19 @@ pub async fn connect_ss_udp_quic(
     let conn = connect_quic_uplink(cache, url, fwmark, ipv6_first, source, ALPN_SS)
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+    ss_udp_over_connection(conn, cipher, password, source)
+}
+
+/// Build an SS-UDP transport over an already-established `ss`-ALPN QUIC
+/// connection — the connection-establishing half of [`connect_ss_udp_quic`],
+/// factored out so the reverse-tunnel listener can carry SS-UDP over an
+/// accepted carrier (the peer's `ss` server already runs the datagram pump).
+pub fn ss_udp_over_connection(
+    conn: Arc<crate::quic::SharedQuicConnection>,
+    cipher: CipherKind,
+    password: &str,
+    source: &'static str,
+) -> Result<UdpWsTransport> {
     let chan: Arc<dyn crate::frame_io::DatagramChannel> = Arc::new(QuicDatagramChannel::new(conn));
     UdpWsTransport::from_channel(chan, cipher, password, source)
 }

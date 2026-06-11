@@ -1,11 +1,12 @@
-//! End-to-end reverse-tunnel (topology A) runtime test.
+//! End-to-end reverse-tunnel (topology A) runtime tests.
 //!
 //! Proves the carrier inversion actually carries bytes: the `ss` server is
 //! the QUIC **client** (dials out) yet still `accept_bi`-loops the carrier
 //! via the production `handle_raw_ss_connection`, while the `ws` role is the
-//! QUIC **server** (accepts) and opens a per-session stream through the same
-//! `ss_tcp_over_connection` pipeline the listener uses. mTLS with pinned
-//! self-signed certs gates both directions.
+//! QUIC **server** (accepts) and opens per-session streams / datagrams
+//! through the same `ss_tcp_over_connection` / `ss_udp_over_connection`
+//! pipelines the listener uses. mTLS with pinned self-signed certs gates
+//! both directions.
 //!
 //! The `ws`-side relay/registry are thin bin wrappers over the same
 //! `outline-transport` primitives exercised directly here, so this covers
@@ -20,20 +21,20 @@ use anyhow::Result;
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{Semaphore, oneshot};
+use tokio::task::JoinHandle;
 
+use outline_transport::quic::{SharedQuicConnection, shared_connection_from_accepted};
 use outline_transport::tls_reverse::{build_reverse_server_quic_config, cert_fingerprint};
 use outline_transport::{
-    CipherKind, UpstreamTransportGuard, quic::shared_connection_from_accepted,
-    ss_tcp_over_connection,
+    CipherKind, UpstreamTransportGuard, ss_tcp_over_connection, ss_udp_over_connection,
 };
 
 use super::super::bootstrap::build_reverse_client_quic_config;
 use super::super::h3::handle_raw_ss_connection;
 use super::super::nat::NatTable;
 use super::super::replay::ReplayStore;
-use super::super::shutdown::ShutdownSignal;
 use super::super::transport::{RawQuicSsCtx, RawSsConnectionCtx};
 use super::super::{DnsCache, Services, UdpServices, build_users};
 use super::sample_config;
@@ -82,6 +83,40 @@ fn raw_ss_ctx() -> Result<Arc<RawSsConnectionCtx>> {
     }))
 }
 
+/// Stand up both reverse-tunnel roles on loopback with mTLS-pinned certs:
+/// the `ws` QUIC server accepts the carrier and hands back a
+/// [`SharedQuicConnection`]; the `ss` QUIC client dials out and runs the
+/// production raw-SS accept loop. Returns the accepted carrier plus the
+/// client endpoint / handler task to keep alive for the test's duration.
+async fn setup_reverse_carrier()
+-> Result<(Arc<SharedQuicConnection>, quinn::Endpoint, JoinHandle<Result<()>>)> {
+    let (ws_chain, ws_key, ws_pin) = gen_cert("ws-reverse");
+    let (ss_chain, ss_key, ss_pin) = gen_cert("ss-reverse");
+    let alpn: &[&[u8]] = &[b"ss-mtu", b"ss"];
+
+    let server_config = build_reverse_server_quic_config(ws_chain, ws_key, vec![ss_pin], alpn)?;
+    let ws_endpoint =
+        quinn::Endpoint::server(server_config, SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    let ws_addr = ws_endpoint.local_addr()?;
+    let (peer_tx, peer_rx) = oneshot::channel();
+    let ws_accept_endpoint = ws_endpoint.clone();
+    tokio::spawn(async move {
+        let incoming = ws_endpoint.accept().await.expect("ws accept");
+        let connection = incoming.await.expect("ws handshake");
+        let shared = shared_connection_from_accepted(ws_accept_endpoint, connection);
+        let _ = peer_tx.send(shared);
+    });
+
+    let ctx = raw_ss_ctx()?;
+    let client_config = build_reverse_client_quic_config(ss_chain, ss_key, ws_pin, alpn)?;
+    let ss_endpoint = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?;
+    let ss_conn = ss_endpoint.connect_with(client_config, ws_addr, "localhost")?.await?;
+    let ss_handler = tokio::spawn(handle_raw_ss_connection(ss_conn, ctx));
+
+    let shared = peer_rx.await.expect("ws received reverse peer");
+    Ok((shared, ss_endpoint, ss_handler))
+}
+
 #[tokio::test]
 async fn reverse_tunnel_ss_tcp_round_trip() -> Result<()> {
     // Upstream echo standing in for the real internet egress the ss server
@@ -96,34 +131,10 @@ async fn reverse_tunnel_ss_tcp_round_trip() -> Result<()> {
         Result::<_, anyhow::Error>::Ok(got)
     });
 
-    let (ws_chain, ws_key, ws_pin) = gen_cert("ws-reverse");
-    let (ss_chain, ss_key, ss_pin) = gen_cert("ss-reverse");
-    let alpn: &[&[u8]] = &[b"ss-mtu", b"ss"];
+    let (shared, ss_endpoint, ss_handler) = setup_reverse_carrier().await?;
 
-    // ── ws role: QUIC server endpoint (accepts the carrier) ──────────────
-    let server_config = build_reverse_server_quic_config(ws_chain, ws_key, vec![ss_pin], alpn)?;
-    let ws_endpoint =
-        quinn::Endpoint::server(server_config, SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
-    let ws_addr = ws_endpoint.local_addr()?;
-    let (peer_tx, peer_rx) = oneshot::channel();
-    let ws_accept_endpoint = ws_endpoint.clone();
-    tokio::spawn(async move {
-        let incoming = ws_endpoint.accept().await.expect("ws accept");
-        let connection = incoming.await.expect("ws handshake");
-        let shared = shared_connection_from_accepted(ws_accept_endpoint, connection);
-        let _ = peer_tx.send(shared);
-    });
-
-    // ── ss role: QUIC client endpoint (dials out), then accept_bi loop ───
-    let ctx = raw_ss_ctx()?;
-    let client_config = build_reverse_client_quic_config(ss_chain, ss_key, ws_pin, alpn)?;
-    let ss_endpoint = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?;
-    let ss_conn = ss_endpoint.connect_with(client_config, ws_addr, "localhost")?.await?;
-    let ss_handler = tokio::spawn(handle_raw_ss_connection(ss_conn, ctx));
-
-    // ── drive: open a session stream from the ws side (server-initiated
-    //    bidi) → ss accept_bi → ss connects to the echo → round-trip ──────
-    let shared = peer_rx.await.expect("ws received reverse peer");
+    // Open a session stream from the ws side (server-initiated bidi) → ss
+    // accept_bi → ss connects to the echo → round-trip.
     let cipher = CipherKind::Chacha20IetfPoly1305;
     let master_key = cipher.derive_master_key(SS_PASSWORD).expect("derive master key");
     let lifetime = UpstreamTransportGuard::new("reverse-e2e", "ss-tcp");
@@ -147,6 +158,40 @@ async fn reverse_tunnel_ss_tcp_round_trip() -> Result<()> {
     drop(writer);
     ss_handler.abort();
     let _ = ss_endpoint; // keep the client endpoint alive until here
+    Ok(())
+}
+
+#[tokio::test]
+async fn reverse_tunnel_ss_udp_round_trip() -> Result<()> {
+    // UDP echo upstream: bounce whatever it receives back to the sender.
+    let echo = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let echo_addr = echo.local_addr()?;
+    tokio::spawn(async move {
+        let mut buf = [0_u8; 64];
+        let (n, from) = echo.recv_from(&mut buf).await?;
+        echo.send_to(&buf[..n], from).await?;
+        Result::<_, anyhow::Error>::Ok(())
+    });
+
+    let (shared, ss_endpoint, ss_handler) = setup_reverse_carrier().await?;
+
+    // One SS-UDP datagram over the reverse carrier: ws send_packet → ss
+    // datagram pump (spawned inside the accept handler) → echo → back.
+    let cipher = CipherKind::Chacha20IetfPoly1305;
+    let transport =
+        ss_udp_over_connection(Arc::clone(&shared), cipher, SS_PASSWORD, "reverse-e2e-udp")?;
+
+    let mut packet = TargetAddr::from(echo_addr).to_wire_bytes()?;
+    packet.extend_from_slice(b"ping");
+    transport.send_packet(&packet).await?;
+
+    let reply = tokio::time::timeout(Duration::from_secs(5), transport.read_packet()).await??;
+    let (_target, consumed) = TargetAddr::from_wire_bytes(&reply)?;
+    assert_eq!(&reply[consumed..], b"ping", "reverse SS-UDP datagram round-trips");
+
+    drop(transport);
+    ss_handler.abort();
+    let _ = ss_endpoint;
     Ok(())
 }
 
