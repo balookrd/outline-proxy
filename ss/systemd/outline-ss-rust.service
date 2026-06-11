@@ -1,0 +1,78 @@
+[Unit]
+Description=outline-ss-rust Shadowsocks WebSocket relay
+Documentation=https://github.com/balookrd/outline-ss-rust
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=outline-ss-rust
+Group=outline-ss-rust
+Environment=RUST_LOG=outline_ss_rust=info,tower_http=info
+Environment=NO_COLOR=1
+Environment=MIMALLOC_ARENA_RESERVE=262144
+ExecStart=/usr/local/bin/outline-ss-rust --config /etc/outline-ss-rust/config.toml
+Restart=on-failure
+RestartSec=3
+
+# Graceful shutdown bound. The relay's HTTP listeners cap their own drain at
+# HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS (10 s); this gives systemd a slightly
+# wider window to collect the process before falling back to SIGKILL, instead
+# of the 90 s default that makes `systemctl restart` look hung when long-lived
+# WebSocket tunnels keep connection tasks alive.
+TimeoutStopSec=20s
+KillMode=mixed
+SendSIGKILL=yes
+
+# Keep logs in journald.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=outline-ss-rust
+
+# Needed for low ports and per-user fwmark.
+# If you only use high ports and do not configure fwmark, you can remove both.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+NoNewPrivileges=true
+WorkingDirectory=/var/lib/outline-ss-rust
+
+# Reasonable production limits.
+LimitNOFILE=1048576
+LimitSTACK=8M
+TasksMax=infinity
+
+# Sandboxing that still allows outbound networking, TLS cert reads and QUIC.
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+# AF_NETLINK is required by glibc's getifaddrs(3), which the interface-based
+# outbound IPv6 selection (outbound_ipv6_interface) uses to enumerate prefixes.
+# Without it that path fails with EAFNOSUPPORT at startup. Harmless to leave
+# enabled when the feature is unused.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+# Config directory needs write access so the service can auto-migrate
+# legacy flat-key configs into the sectioned layout in place (with a .bak
+# backup alongside). Switch back to ReadOnlyPaths once migrations are no
+# longer performed in this deployment.
+ReadWritePaths=/etc/outline-ss-rust
+
+# Writable runtime state if the deployment wants to use it later.
+StateDirectory=outline-ss-rust
+RuntimeDirectory=outline-ss-rust
+RuntimeDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

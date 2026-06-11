@@ -1,0 +1,280 @@
+[server]
+# IPv4 example:
+listen = "0.0.0.0:3000"
+# IPv6 example:
+# listen = "[::]:3000"
+# Optional TLS for the TCP listener (HTTP/1.1 + HTTP/2 / RFC 8441).
+# If set, clients should use `wss://` for the TCP listener. The keys
+# `cert_path` / `key_path` are the canonical names; the legacy
+# `tls_cert_path` / `tls_key_path` aliases still parse for backward
+# compat with older configs.
+# All cert/key files below are watched on disk and reloaded in place
+# when they change (e.g. after an ACME renewal) — no restart needed.
+# cert_path = "./cert.pem"
+# key_path  = "./key.pem"
+
+# Optional additional TLS certs selected by SNI on the TCP listener.
+# Each entry's `sni` is matched exactly (case-insensitive) against the
+# inbound ClientHello SNI; an unmatched SNI (or one with no SNI at all)
+# falls back to `cert_path`/`key_path` above. Omit `sni` to derive
+# names from the cert's SAN (and Subject CN as a last-resort fallback).
+# [[server.certs]]
+# cert_path = "./api.pem"
+# key_path  = "./api.key"
+# sni = ["api.example.com", "api2.example.com"]
+#
+# [[server.certs]]
+# cert_path = "./shop.pem"
+# key_path  = "./shop.key"
+# # `sni` omitted → derive from SAN/CN
+
+# Optional plain Shadowsocks listener.
+# This starts a separate TCP+UDP service on the same address for classic `ss://` clients.
+# It must differ from [server] listen, [server.h3] listen, and [metrics] listen.
+# [server.ss]
+# listen = "0.0.0.0:8388"
+
+# Optional HTTP/3 / QUIC listener for RFC 9220.
+# `listen` may reuse the same ip:port as [server] listen, because H3 binds UDP
+# while [server] listen binds TCP.
+# `cert_path` / `key_path` and the `[[server.h3.certs]]` array work
+# exactly like their TCP counterparts above. Both are optional: when
+# the QUIC table omits them entirely, the listener inherits the TCP
+# listener's defaults (and its `[[server.certs]]` array), so a single
+# cert block covers both transports.
+# [server.h3]
+# listen = "0.0.0.0:3000"
+# cert_path = "./cert.pem"
+# key_path  = "./key.pem"
+#
+# [[server.h3.certs]]
+# cert_path = "./api.pem"
+# key_path  = "./api.key"
+# sni = ["api.example.com"]
+
+# Optional Prometheus listener. Prefer binding this to loopback or a private network.
+[metrics]
+# listen = "127.0.0.1:9090"
+path = "/metrics"
+
+# Optional runtime user-management API. Keep this on loopback or a private
+# management network.
+# [control]
+# listen = "127.0.0.1:7001"
+# token_file = "/etc/outline-ss-rust/control.token"
+
+# Optional browser UI on a separate listener. It proxies to the configured
+# control instances, keeping bearer tokens server-side.
+# [dashboard]
+# listen = "127.0.0.1:7002"
+# request_timeout_secs = 15
+# refresh_interval_secs = 10
+#
+# [[dashboard.instances]]
+# name = "local"
+# control_url = "http://127.0.0.1:7001"
+# token_file = "/etc/outline-ss-rust/control.token"
+
+[outbound]
+# Prefer IPv4 when resolving upstream targets.
+# Useful when some clients or CDNs break over IPv6 but work over IPv4.
+# prefer_ipv4 = true
+#
+# Randomize the source address of every upstream IPv6 TCP connect and UDP NAT
+# socket. Pick ONE of the two modes below (they are mutually exclusive); IPv4
+# upstream traffic is unaffected in either case.
+#
+# Mode A — static CIDR. Each bind picks a random address inside the prefix.
+# Typical setup: `ip -6 addr add 2001:db8:dead::1/64 dev eth0` so the whole /64
+# is on-link; IPV6_FREEBIND (set automatically on Linux) lets bind() use any
+# address from the prefix. Fallback when FREEBIND is unavailable:
+# `ip -6 route add local 2001:db8:dead::/64 dev lo` (AnyIP).
+# ipv6_prefix = "2001:db8:dead::/64"
+#
+# Mode B — enumerate prefixes from a live interface (for DHCPv6 / SLAAC, where
+# the prefix is not known statically). The pool is refreshed periodically.
+# ipv6_interface = "eth0"
+# ipv6_refresh_secs = 30
+#
+# Sticky source. Pin one source address per upstream destination IP instead of
+# drawing a fresh random one on every connect. Without it a Cloudflare-fronted
+# origin (claude.ai, …) sees each request from a different source and re-issues
+# its "Verifying you are human" challenge — the cf_clearance cookie is bound to
+# the client source IP, so a rotating source never carries a solved challenge
+# forward. With sticky on, a destination keeps the same source for
+# `ipv6_sticky_ttl_secs` (default 1800 — above Cloudflare's ~30 min clearance),
+# so the challenge stays solved; rotation is preserved between different
+# destinations and across the TTL. Bounded, in-memory cache. No effect unless
+# `ipv6_prefix` or `ipv6_interface` is set. Enabled by default; set
+# `ipv6_sticky = false` to restore per-connect random source selection.
+# ipv6_sticky_ttl_secs = 1800
+
+[websocket]
+ws_path_tcp = "/tcp"
+ws_path_udp = "/udp"
+# Optional VLESS over WebSocket path on the main TCP listener.
+# Use with TLS for public deployments. MVP supports TCP CONNECT only.
+# ws_path_vless = "/vless"
+
+# Optional OpenConnect-style password prompt on GET /.
+# The browser username is ignored; the password is matched against configured users.
+# After 3 failed passwords in the same browser session, the server returns 403.
+# Non-root HTTP paths still return 404.
+# [http_root]
+# auth = true
+# realm = "Authorization required"
+
+# Optional reverse-proxy fallback for unmatched HTTP requests. When set,
+# every request that does not hit a configured WebSocket / XHTTP /
+# metrics / control / dashboard route is forwarded to `backend` instead
+# of returning 404 — useful for masquerading the listener as a regular
+# web service in front of nginx / haproxy / caddy.
+# [http_fallback]
+# backend = "http://127.0.0.1:8080"
+# request_timeout_secs = 30
+# add_x_forwarded_for = true
+# add_x_forwarded_proto = true
+# add_x_forwarded_host = true
+# proxy_protocol = "v1"   # or "v2"; omit to disable. Upstream MUST be
+#                         # configured to expect the matching version.
+#                         # `v1` is incompatible with `apply_to_h3`
+#                         # (RFC has no UDP form for v1).
+# backend_proto = "h1"    # or "h2"; default "h1". "h2" speaks
+#                         # prior-knowledge HTTP/2 (h2c, no ALPN) to
+#                         # the backend — useful for gRPC gateways or
+#                         # nginx upstreams configured for h2c.
+# apply_to_h1 = true      # default true. Apply the fallback to the
+#                         # TCP listener (HTTP/1.1 + HTTP/2 via ALPN).
+# apply_to_h3 = false     # default false. Apply the fallback to the
+#                         # HTTP/3 listener (UDP/QUIC). Independent
+#                         # of `apply_to_h1` — both can be on at once
+#                         # so the same backend masquerades probes on
+#                         # 443/TCP and 443/UDP. Requires [server.h3].
+
+# Optional L4 SNI fallback for the TLS listener. When set, the
+# L4 SNI-routed fallback. ClientHello is peeked before handshake; if
+# the SNI is in `match_sni` (or missing and `allow_no_sni = true`) the
+# connection is handled locally. Otherwise the raw TCP stream is spliced
+# to a backend chosen by SNI, which must present its own cert. Sister of
+# [http_fallback] one OSI layer below. Requires built-in TLS on the
+# main listener (`[server].cert_path` / `[server].key_path`, or at
+# least one `[[server.certs]]` entry).
+#
+# Single-backend mode — all foreign SNIs go to one upstream:
+# [sni_fallback]
+# backend = "127.0.0.1:8443"
+# match_sni = ["vpn.example.com", "*.api.example.com"]   # required
+# allow_no_sni = false
+# proxy_protocol = "v2"   # strongly recommended; upstream must expect it
+# max_client_hello_bytes = 8192
+#
+# Multi-backend mode — route different domains to different upstreams:
+# [sni_fallback]
+# match_sni = ["vpn.example.com"]   # stays on local TLS terminator
+# allow_no_sni = false
+# max_client_hello_bytes = 8192
+#
+# [[sni_fallback.backends]]
+# backend = "127.0.0.1:8443"
+# match_sni = ["nginx.example.com", "*.nginx.example.com"]
+# proxy_protocol = "v2"
+#
+# [[sni_fallback.backends]]
+# backend = "127.0.0.1:9443"
+# match_sni = ["caddy.example.com"]
+#
+# [[sni_fallback.backends]]
+# backend = "127.0.0.1:10443"
+# # no match_sni = catch-all; must be the last entry
+#
+# Routing: exact `match_sni` entries (across local and every backend)
+# are indexed in a HashMap and resolved first; wildcards are scanned
+# only on miss. Exact always beats wildcard regardless of which list
+# declared it — useful for "wildcard apex stays local, but this one
+# host goes to a backend":
+#
+# [sni_fallback]
+# match_sni = ["*.example.com"]   # apex → local
+# allow_no_sni = false
+#
+# [[sni_fallback.backends]]
+# backend = "127.0.0.1:10443"
+# match_sni = ["px.example.com"]  # exact carve-out wins over the apex wildcard
+# proxy_protocol = "v2"
+#
+# [[sni_fallback.backends]]
+# backend = "127.0.0.1:11443"     # catch-all for SNIs outside *.example.com
+# proxy_protocol = "v1"
+
+[access_keys]
+# Used for generated Outline access keys.
+# For IPv6 hosts, use brackets:
+# public_host = "[2001:db8::10]:443"
+public_host = "vpn.example.com"
+public_scheme = "wss"
+url_base = "https://keys.example.com/outline"
+# file_extension = ".yaml"
+
+# Set to true to print Outline YAML configs and ssconf:// URLs, then exit.
+print = false
+# Or write one generated YAML file per user into a directory, then exit.
+# write_dir = "./keys"
+
+[shadowsocks]
+method = "chacha20-ietf-poly1305"
+# For `2022-*` methods, use a base64-encoded raw PSK, e.g. `openssl rand -base64 16`.
+
+[[users]]
+id = "alice"
+password = "change-me"
+# vless_id = "550e8400-e29b-41d4-a716-446655440000"
+# ws_path_vless = "/alice/vless"
+fwmark = 1001
+method = "aes-128-gcm"
+ws_path_tcp = "/alice/tcp"
+ws_path_udp = "/alice/udp"
+
+[[users]]
+id = "bob"
+password = "another-secret"
+fwmark = 1002
+
+[[users]]
+id = "carol-2022"
+password = "MDEyMzQ1Njc4OWFiY2RlZg=="
+method = "2022-blake3-aes-128-gcm"
+ws_path_tcp = "/carol/tcp"
+ws_path_udp = "/carol/udp"
+
+[[users]]
+id = "dave-2022-chacha"
+password = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+method = "2022-blake3-chacha20-poly1305"
+ws_path_tcp = "/dave/tcp"
+ws_path_udp = "/dave/udp"
+
+# Optional VLESS-only user. Requires `[websocket].ws_path_vless` (global) or
+# a per-user `ws_path_vless`.
+# [[users]]
+# id = "eve-vless"
+# vless_id = "650e8400-e29b-41d4-a716-446655440000"
+# ws_path_vless = "/eve/vless"
+
+# Resource-limit preset. Presets: "small" | "medium" | "large" (default).
+# Each preset defines H2/H3 flow-control windows and stream limits plus
+# session/NAT timeouts and the global UDP relay task cap.
+# tuning_profile = "large"
+
+# Per-field overrides on top of the selected preset. Any field left unset
+# inherits from the preset. Unknown fields are rejected.
+# [tuning]
+# client_active_ttl_secs = 300           # used by client_active / client_up metrics
+# udp_nat_idle_timeout_secs = 300        # NAT entry idle timeout (seconds)
+# udp_max_concurrent_relay_tasks = 4096  # process-wide cap; 0 disables
+# udp_replay_max_sessions = 262144       # SS-2022 anti-replay session cap; 0 disables
+# h3_udp_socket_buffer_bytes = 33554432
+# h3_max_concurrent_bidi_streams = 4096
+# ws_data_channel_capacity = 128         # per-session WS writer queue depth (chunks);
+                                         # raise to absorb upstream-vs-WS write
+                                         # speed mismatches under bursty video,
+                                         # lower to cap per-session memory.
