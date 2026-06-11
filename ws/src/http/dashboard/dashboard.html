@@ -178,6 +178,13 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .cfg-chip.scope { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
 .cfg-chip.fb-on { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
 .cfg-chip.fb-off { background: var(--gray-soft); color: var(--muted); border-color: var(--line); }
+/* Group-level `bypass_when_down` chip. Armed = the option is on but every
+ * transport still has a healthy uplink (traffic tunnels normally); active =
+ * the group is down and new flows are escaping DIRECT, bypassing the tunnel
+ * — same amber treatment as the cert-expiry warning so "needs operator
+ * attention, but traffic still flows" reads consistently. */
+.cfg-chip.bypass-armed { background: var(--gray-soft); color: var(--muted); border-color: var(--line); }
+.cfg-chip.bypass-active { background: var(--amber-soft); color: #b45309; border-color: rgba(180, 83, 9, .45); font-weight: 800; }
 .cfg-chip.fp-stable { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
 .cfg-chip.fp-random { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
 .cfg-active { color: var(--green-strong); font-weight: 600; white-space: nowrap; }
@@ -534,7 +541,28 @@ function groupConfigChips(group) {
   return `
     <span class="cfg-chip mode" data-tip="load_balancing_mode"><span>⚖</span><span class="cfg-key">Mode:</span><span>${escapeHtml(mode)}</span></span>
     <span class="cfg-chip scope" data-tip="routing_scope"><span>⌘</span><span class="cfg-key">Scope:</span><span>${escapeHtml(scope)}</span></span>
-    <span class="cfg-chip ${fbCls}" data-tip="auto_failback"><span>↺</span><span class="cfg-key">Auto-failback:</span><span>${fbLabel}</span></span>`;
+    <span class="cfg-chip ${fbCls}" data-tip="auto_failback"><span>↺</span><span class="cfg-key">Auto-failback:</span><span>${fbLabel}</span></span>${groupBypassChip(group)}`;
+}
+// `bypass_when_down` group chip. Hidden entirely when the option is off
+// (the topology omits the fields, so `group.bypass_when_down` is simply
+// undefined). Armed (grey) while every transport still has a healthy
+// uplink; active (amber) while the group is down and new flows are being
+// dispatched DIRECT — the label names the diverted transports so a
+// TCP-only or UDP-only divert is distinguishable at a glance. TUN flows
+// bypass only when both transports are diverted.
+function groupBypassChip(group) {
+  if (!group || !group.bypass_when_down) return "";
+  const tcp = !!group.bypass_active_tcp;
+  const udp = !!group.bypass_active_udp;
+  if (!tcp && !udp) {
+    const tip = "bypass_when_down = true: new flows will go direct (tunnel bypass) while the group has no healthy uplink";
+    return `
+    <span class="cfg-chip bypass-armed" data-tip="${escapeHtml(tip)}"><span>⤳</span><span class="cfg-key">Bypass:</span><span>armed</span></span>`;
+  }
+  const legs = [tcp ? "TCP" : null, udp ? "UDP" : null].filter(Boolean).join(" + ");
+  const tip = `bypass_when_down: no healthy ${legs} uplink in the group — new ${legs} flows are going DIRECT, bypassing the tunnel`;
+  return `
+    <span class="cfg-chip bypass-active" data-tip="${escapeHtml(tip)}"><span>⤳</span><span class="cfg-key">Bypass:</span><span>DIRECT (${escapeHtml(legs)})</span></span>`;
 }
 // Render a small chip showing the active browser-fingerprint profile
 // for an uplink. The chip is visible only when there is *something*

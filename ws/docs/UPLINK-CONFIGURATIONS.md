@@ -547,6 +547,18 @@ Bypass on a fully-down group (`bypass_when_down`):
   the first probe (or first successful flow) confirms an uplink.
   Bypassed traffic is visible in metrics under the `direct` group
   label, like any policy-direct traffic.
+- Visibility: the built-in dashboard renders a chip in the group
+  header — grey `Bypass: armed` while every transport still has a
+  healthy uplink, amber `Bypass: DIRECT (TCP + UDP)` naming the
+  diverted transports while the bypass is live. The same state is
+  exported as `outline_ws_rust_group_bypass_active{group, transport}`
+  (`1` = diverting direct, `0` = tunnelling; series exist only for
+  opted-in groups) and rides through `/control/topology` as the
+  group-level `bypass_when_down` / `bypass_active_tcp` /
+  `bypass_active_udp` fields (omitted while `false`). The packaged
+  Grafana dashboard has a matching stat + timeline in the Routing
+  Policy section. Alert example:
+  `max by (group) (outline_ws_rust_group_bypass_active) == 1`.
 
 Mid-session retry (Ack-Prefix Protocol v1):
 

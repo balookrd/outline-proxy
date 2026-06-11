@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "tests/snapshot.rs"]
+mod tests;
+
 use tokio::time::Instant;
 
 use super::super::config::{LoadBalancingMode, RoutingScope, UplinkTransport};
@@ -491,6 +495,16 @@ impl UplinkManager {
                 .collect()
         };
 
+        // Live bypass state: mirrors the dispatch-layer decision
+        // (`group_bypasses_when_down`) — the flag is config, the per-transport
+        // active bits consult the same `has_any_healthy` signal routing uses,
+        // so the dashboard / metrics and the router always agree on whether
+        // traffic is currently escaping direct. The health walk only runs for
+        // opted-in groups.
+        let bypass_when_down = self.inner.load_balancing.bypass_when_down;
+        let bypass_active_tcp = bypass_when_down && !self.has_any_healthy(TransportKind::Tcp).await;
+        let bypass_active_udp = bypass_when_down && !self.has_any_healthy(TransportKind::Udp).await;
+
         UplinkManagerSnapshot {
             group: self.inner.group_name.clone(),
             generated_at_unix_ms: std::time::SystemTime::now()
@@ -501,6 +515,9 @@ impl UplinkManager {
                 .to_string(),
             routing_scope: routing_scope_name(self.inner.load_balancing.routing_scope).to_string(),
             auto_failback: self.inner.load_balancing.auto_failback,
+            bypass_when_down,
+            bypass_active_tcp,
+            bypass_active_udp,
             global_active_uplink,
             global_active_reason,
             tcp_active_uplink,

@@ -546,6 +546,18 @@ abort — оставайтесь на `active_active` + `per_flow`.
   direct, пока первая проба (или первый успешный flow) не подтвердит
   uplink. Байпасс-трафик виден в метриках под группой `direct`, как и
   любой policy-direct трафик.
+- Наблюдаемость: встроенный dashboard рисует чип в заголовке группы —
+  серый `Bypass: armed`, пока у каждого транспорта ещё есть здоровый
+  uplink, и янтарный `Bypass: DIRECT (TCP + UDP)` с перечислением
+  отведённых транспортов, пока байпасс активен. То же состояние
+  экспортируется как `outline_ws_rust_group_bypass_active{group,
+  transport}` (`1` = идёт direct, `0` = туннелируется; серии есть
+  только у opted-in групп) и едет через `/control/topology` полями
+  группы `bypass_when_down` / `bypass_active_tcp` /
+  `bypass_active_udp` (опускаются, пока `false`). В поставляемом
+  Grafana-дашборде — парная stat-панель и таймлайн в секции Routing
+  Policy. Пример алерта:
+  `max by (group) (outline_ws_rust_group_bypass_active) == 1`.
 
 Mid-session retry (Ack-Prefix Protocol v1):
 

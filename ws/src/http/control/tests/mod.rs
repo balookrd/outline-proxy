@@ -80,6 +80,9 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
         load_balancing_mode: "active_passive".to_string(),
         routing_scope: "per_uplink".to_string(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
         global_active_uplink: Some("uplink-01".to_string()),
         global_active_reason: None,
         tcp_active_uplink: Some("uplink-02".to_string()),
@@ -410,6 +413,46 @@ fn topology_serialises_active_fingerprint_profile_name() {
         "default `none` uplink must not carry a profile name; got {u0}",
     );
     assert_eq!(u1["fingerprint_profile_name"], "chrome-142-macos");
+}
+
+#[test]
+fn topology_omits_bypass_fields_when_off() {
+    // The fixture group has `bypass_when_down = false`, so none of the
+    // three bypass fields may appear — `skip_serializing_if` keeps the
+    // wire shape backward-compatible for older topology consumers and
+    // for the common opt-out deployment.
+    let topology = ControlTopologyResponse {
+        instance: build_instance_topology(&snapshot_fixture()),
+    };
+    let json: Value = serde_json::to_value(topology).unwrap();
+    let group = &json["instance"]["groups"][0];
+    assert!(
+        group.get("bypass_when_down").is_none(),
+        "opt-out group must not serialise bypass fields; got {group}",
+    );
+    assert!(group.get("bypass_active_tcp").is_none());
+    assert!(group.get("bypass_active_udp").is_none());
+}
+
+#[test]
+fn topology_serialises_bypass_fields_when_on() {
+    // An opted-in group surfaces the flag plus the live per-transport
+    // divert state — the dashboard's `groupBypassChip` keys on these
+    // exact field names.
+    let mut snapshots = snapshot_fixture();
+    snapshots[0].bypass_when_down = true;
+    snapshots[0].bypass_active_tcp = true;
+    snapshots[0].bypass_active_udp = false;
+    let topology = ControlTopologyResponse {
+        instance: build_instance_topology(&snapshots),
+    };
+    let json: Value = serde_json::to_value(topology).unwrap();
+    let group = &json["instance"]["groups"][0];
+    assert_eq!(group["bypass_when_down"], true);
+    assert_eq!(group["bypass_active_tcp"], true);
+    // `false` while the flag is on is still omitted (skip_serializing_if
+    // is per-field); the dashboard treats absent as false.
+    assert!(group.get("bypass_active_udp").is_none());
 }
 
 #[test]

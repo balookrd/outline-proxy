@@ -25,6 +25,9 @@ fn empty_snapshot() -> UplinkManagerSnapshot {
         uplinks: Vec::new(),
         sticky_routes: Vec::new(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
     }
 }
 
@@ -135,6 +138,35 @@ fn render_prometheus_exports_uplink_cert_expiry_gauge() {
                 && l.contains("uplink=\"senko\"")
         }),
         "uplink without a measured certificate must not emit the cert-expiry gauge"
+    );
+}
+
+#[test]
+fn render_prometheus_exports_group_bypass_active_for_opted_in_groups() {
+    let _guard = test_guard();
+    init();
+
+    let mut bypassing = empty_snapshot();
+    bypassing.group = "edge".to_string();
+    bypassing.bypass_when_down = true;
+    bypassing.bypass_active_tcp = true;
+    bypassing.bypass_active_udp = false;
+    // Opt-out group: must not publish the series at all — absence is the
+    // "option off" signal the dashboards key on.
+    let plain = empty_snapshot();
+
+    let rendered = render_prometheus(&[bypassing, plain]).expect("render metrics");
+    assert!(
+        rendered
+            .contains("outline_ws_rust_group_bypass_active{group=\"edge\",transport=\"tcp\"} 1")
+    );
+    assert!(
+        rendered
+            .contains("outline_ws_rust_group_bypass_active{group=\"edge\",transport=\"udp\"} 0")
+    );
+    assert!(
+        !rendered.contains("outline_ws_rust_group_bypass_active{group=\"main\""),
+        "group without bypass_when_down must not emit the gauge"
     );
 }
 
@@ -317,6 +349,9 @@ fn render_prometheus_exports_uplink_fingerprint_profile_strategy_info() {
         uplinks: vec![stable, off],
         sticky_routes: Vec::new(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
     }])
     .expect("render metrics");
 
@@ -373,6 +408,9 @@ fn render_prometheus_publishes_process_stable_strategy_label() {
         uplinks: vec![process],
         sticky_routes: Vec::new(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
     }])
     .expect("render metrics");
 
@@ -413,6 +451,9 @@ fn render_prometheus_clears_stale_uplink_fingerprint_profile_strategy() {
         uplinks: vec![stable],
         sticky_routes: Vec::new(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
     }])
     .expect("render first metrics");
 
@@ -431,6 +472,9 @@ fn render_prometheus_clears_stale_uplink_fingerprint_profile_strategy() {
         uplinks: vec![off],
         sticky_routes: Vec::new(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
     }])
     .expect("render second metrics");
 
@@ -461,6 +505,9 @@ fn render_prometheus_exports_routing_selection_info() {
         uplinks: Vec::new(),
         sticky_routes: Vec::new(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
     }])
     .expect("render metrics");
 
@@ -500,6 +547,9 @@ fn render_prometheus_clears_previous_global_active_uplink() {
         uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
         sticky_routes: Vec::new(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
     }])
     .expect("render first metrics");
 
@@ -517,6 +567,9 @@ fn render_prometheus_clears_previous_global_active_uplink() {
         uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
         sticky_routes: Vec::new(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
     }])
     .expect("render second metrics");
 
@@ -555,6 +608,9 @@ fn render_prometheus_exports_mode_downgrade_state() {
         uplinks: vec![uplink],
         sticky_routes: Vec::new(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
     }])
     .expect("render metrics");
 
@@ -610,6 +666,9 @@ fn render_prometheus_clears_previous_mode_downgrade_window() {
         uplinks: vec![downgraded],
         sticky_routes: Vec::new(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
     }])
     .expect("render first metrics");
 
@@ -627,6 +686,9 @@ fn render_prometheus_clears_previous_mode_downgrade_window() {
         uplinks: vec![snapshot_uplink("nuxt")],
         sticky_routes: Vec::new(),
         auto_failback: false,
+        bypass_when_down: false,
+        bypass_active_tcp: false,
+        bypass_active_udp: false,
     }])
     .expect("render second metrics");
 

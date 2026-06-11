@@ -59,6 +59,7 @@ impl Metrics {
             uplink_configured_fallbacks_count: u.uplink_configured_fallbacks_count,
             selection_mode_info: u.selection_mode_info,
             routing_scope_info: u.routing_scope_info,
+            group_bypass_active: u.group_bypass_active,
             global_active_uplink_info: u.global_active_uplink_info,
             per_uplink_active_uplink_info: u.per_uplink_active_uplink_info,
             sticky_routes_total: u.sticky_routes_total,

@@ -63,6 +63,21 @@ pub(crate) struct ControlGroupTopology {
     load_balancing_mode: String,
     routing_scope: String,
     auto_failback: bool,
+    /// `bypass_when_down` group flag — traffic routed to this group escapes
+    /// direct (tunnel bypass) while the group has no healthy uplink. All
+    /// three fields are omitted from JSON when the option is off so older
+    /// consumers (and the common opt-out deployment) keep the payload shape
+    /// they had before this landed.
+    #[serde(default, skip_serializing_if = "is_false_ref")]
+    bypass_when_down: bool,
+    /// True while new TCP flows routed to this group are currently being
+    /// dispatched direct (no TCP-healthy uplink in the group).
+    #[serde(default, skip_serializing_if = "is_false_ref")]
+    bypass_active_tcp: bool,
+    /// UDP counterpart of `bypass_active_tcp`. The TUN path bypasses only
+    /// when both transports are down — i.e. both fields read `true`.
+    #[serde(default, skip_serializing_if = "is_false_ref")]
+    bypass_active_udp: bool,
     global_active_uplink: Option<String>,
     global_active_reason: Option<String>,
     tcp_active_uplink: Option<String>,
@@ -274,6 +289,9 @@ fn build_group_topology(snapshot: &UplinkManagerSnapshot) -> ControlGroupTopolog
         load_balancing_mode: snapshot.load_balancing_mode.clone(),
         routing_scope: snapshot.routing_scope.clone(),
         auto_failback: snapshot.auto_failback,
+        bypass_when_down: snapshot.bypass_when_down,
+        bypass_active_tcp: snapshot.bypass_active_tcp,
+        bypass_active_udp: snapshot.bypass_active_udp,
         global_active_uplink: snapshot.global_active_uplink.clone(),
         global_active_reason: snapshot.global_active_reason.clone(),
         tcp_active_uplink: snapshot.tcp_active_uplink.clone(),

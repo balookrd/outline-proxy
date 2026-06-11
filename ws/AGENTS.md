@@ -284,7 +284,16 @@ cargo release-router-musl-armv7
   bypass-датаграммы молча дропаются в `send_udp_direct`. Включённый bypass
   намеренно «гасит» ICMP-gate (маршрут становится `TunRoute::Direct`, пинги
   отвечаются — путь жив); это контрактное поведение под тестом
-  `replies_when_down_group_bypasses_to_direct`.
+  `replies_when_down_group_bypasses_to_direct`. Наблюдаемость живёт на
+  снапшоте: `UplinkManagerSnapshot.{bypass_when_down,bypass_active_tcp,
+  bypass_active_udp}` считаются в `manager/snapshot.rs` тем же
+  `has_any_healthy`, что и dispatch (не дублируйте критерий в потребителях);
+  оттуда поле течёт в gauge `outline_ws_rust_group_bypass_active{group,
+  transport}` (публикуется ТОЛЬКО для opted-in групп — отсутствие серии =
+  опция выключена), в `/control/topology` (групповые поля скрываются при
+  `false` через `skip_serializing_if`) и в чип `groupBypassChip` в
+  `dashboard.html`; в `grafana/outline-ws-rust-dashboard.json` — панели
+  Direct Bypass (id 230/231) в секции Routing Policy.
 - TUN IPsec bypass: `tun.ipsec_bypass = true` short-circuits UDP/{500,4500} в
   `TunRoute::Direct` ещё до policy-routing, переиспользуя `direct_fwmark` для
   выхода из TUN routing loop. Не оптимизируйте этот fast-path так, чтобы он
