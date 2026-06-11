@@ -213,6 +213,16 @@ cargo release-router-musl-armv7
   `DialNetworkOptions`, `DialResumeOptions` и `connect_transport`. Новые
   transport branches, downgrade planning и resume/fallback plumbing добавляйте
   рядом с этим планировщиком, не возвращая длинные positional args в facade.
+- Reverse-tunnel (топология A, `src/reverse/`, gated `#[cfg(feature = "h3")]`):
+  ws — QUIC-**server**, принимает несущие от ss-пиров за NAT (mTLS, pinned
+  client-cert fingerprint), пулит их в `ReversePeerRegistry` и открывает поток
+  на сессию через `ss_tcp_over_connection` / `ss_udp_over_connection`. Сделано
+  ОТДЕЛЬНЫМ `Route::Reverse` (см. `proxy/dispatcher.rs apply_reverse` +
+  `proxy/udp/reverse.rs`), НЕ через `UplinkManager`/`UplinkCandidate` — у
+  менеджера per-index массивы фиксируются при старте, а пиры приходят/уходят в
+  рантайме. Не суй reverse-пиров в candidates; горячий forward-путь не трогай.
+  Серверный TLS-config + `PinnedClientCertVerifier` — в
+  `crates/outline-transport/src/tls_reverse.rs`. См. `docs/REVERSE-TUNNEL.md`.
 - Горячие TCP/UDP/TUN paths должны избегать лишних allocations, глобальных locks
   и O(n) scans. Если линейный обход остается, он должен быть ограничен холодным
   путем, лимитом или понятным backpressure.

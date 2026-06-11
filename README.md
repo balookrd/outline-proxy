@@ -17,6 +17,11 @@ WebSocket / XHTTP / HTTP/3 / raw QUIC.
 The client dials the server; both speak the same wire protocol and share a set
 of common crates, which is why they live in one repository.
 
+A **reverse-tunnel** mode (topology A) inverts the carrier so the server can run
+behind NAT without a public IP: it dials *out* to the public client, which
+listens and routes user traffic back through it. See
+[docs/REVERSE-TUNNEL.md](docs/REVERSE-TUNNEL.md).
+
 *Русская версия: [README.ru.md](README.ru.md)*
 
 ## Layout
