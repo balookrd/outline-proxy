@@ -117,7 +117,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
         // uplinks in the same group. Doing the shuffle here would
         // produce statistical collisions (≈ 44% probability of two
         // 3-wire uplinks landing on the same permutation under
-        // independent `thread_rng()` samples), defeating the operator
+        // independent `rng()` samples), defeating the operator
         // intent of "different wires on different uplinks".
         Ok(UplinkConfig { fallbacks, ..parent })
     }
@@ -126,7 +126,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
 /// Randomly permute the wire chain `[primary, fallbacks[0], …]` in place.
 ///
 /// The chain is materialised as a `Vec<FallbackTransport>` (each element
-/// carries the wire-shape fields), shuffled with `rand::thread_rng()`,
+/// carries the wire-shape fields), shuffled with `rand::rng()`,
 /// and the first entry is folded back into the parent's primary slot
 /// while the rest become the new `fallbacks` list. Parent-level identity
 /// fields (`name`, `weight`, `fwmark`, `ipv6_first`, `fingerprint_profile`)
@@ -252,7 +252,7 @@ pub(super) fn load_uplinks(
 /// permutation of its wire chain that does **not** collide with the
 /// permutations already given to other uplinks in the same group.
 ///
-/// Why this matters: an independent `rand::thread_rng()` shuffle per
+/// Why this matters: an independent `rand::rng()` shuffle per
 /// uplink would give two 3-wire uplinks in the same group a ≈ 44%
 /// chance of landing on the same `[primary, fallback, fallback]`
 /// ordering at process start, even though both ran through
@@ -276,7 +276,7 @@ pub(in crate::config::load) fn shuffle_wire_chains_per_group(
 ) {
     debug_assert_eq!(uplinks.len(), group_labels.len());
     let mut seen_per_group: HashMap<String, HashSet<Vec<usize>>> = HashMap::new();
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     for (i, uplink) in uplinks.iter_mut().enumerate() {
         if !uplink.shuffle_wires || uplink.fallbacks.is_empty() {
             continue;

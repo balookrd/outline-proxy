@@ -378,7 +378,7 @@ pub fn select_with_strategy(url: &Url, strategy: Strategy) -> Option<&'static Pr
         Strategy::None => None,
         Strategy::PerHostStable => Some(&PROFILES[host_index(url)]),
         Strategy::ProcessStable => Some(&PROFILES[process_index()]),
-        Strategy::Random => Some(&PROFILES[rand::random::<usize>() % PROFILES.len()]),
+        Strategy::Random => Some(&PROFILES[rand::random_range(0..PROFILES.len())]),
     }
 }
 
@@ -421,7 +421,7 @@ fn process_index() -> usize {
             name.hash(&mut hasher);
             (hasher.finish() as usize) % PROFILES.len()
         },
-        None => rand::random::<usize>() % PROFILES.len(),
+        None => rand::random_range(0..PROFILES.len()),
     })
 }
 

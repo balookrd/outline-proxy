@@ -336,7 +336,7 @@ impl XhttpTarget {
 
 pub(super) fn generate_session_id() -> Result<String> {
     let mut raw = [0_u8; SESSION_ID_BYTES];
-    rand::thread_rng().fill_bytes(&mut raw);
+    rand::rng().fill_bytes(&mut raw);
     // URL-safe alphanumeric. Bias from `% 62` is negligible at
     // these lengths and gives a strict subset of `is_valid_session_id`
     // on the server side.

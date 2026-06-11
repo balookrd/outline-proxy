@@ -90,12 +90,12 @@ fn randomized_udp_packet_roundtrip_and_mutation_smoke() {
     let mut rng = seeded_rng(0x5eed_4eed);
     for _ in 0..128 {
         let payload = random_payload(&mut rng, 63);
-        let source_port = rng.gen_range(1..=65000);
-        let destination_port = rng.gen_range(1..=65000);
+        let source_port = rng.random_range(1..=65000);
+        let destination_port = rng.random_range(1..=65000);
 
-        if rng.gen_bool(0.5) {
-            let source_ip = Ipv4Addr::new(8, 8, 4, rng.gen_range(1..=250));
-            let destination_ip = Ipv4Addr::new(10, 0, 0, rng.gen_range(2..=250));
+        if rng.random_bool(0.5) {
+            let source_ip = Ipv4Addr::new(8, 8, 4, rng.random_range(1..=250));
+            let destination_ip = Ipv4Addr::new(10, 0, 0, rng.random_range(2..=250));
             let packet = build_ipv4_udp_packet(
                 source_ip,
                 destination_ip,
@@ -119,8 +119,8 @@ fn randomized_udp_packet_roundtrip_and_mutation_smoke() {
             assert!(parse_udp_packet(&corrupt_ip_length_field(&packet)).is_err());
             assert!(parse_udp_packet(&corrupt_udp_length_field(&packet)).is_err());
         } else {
-            let source_ip = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, rng.gen_range(2..=250));
-            let destination_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, rng.gen_range(2..=250));
+            let source_ip = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, rng.random_range(2..=250));
+            let destination_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, rng.random_range(2..=250));
             let packet = build_ipv6_udp_packet(
                 source_ip,
                 destination_ip,

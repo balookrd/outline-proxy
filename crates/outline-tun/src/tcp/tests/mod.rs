@@ -444,30 +444,30 @@ fn randomized_tcp_packet_round_trip_and_mutation_smoke() {
             TCP_FLAG_ACK | TCP_FLAG_FIN,
             TCP_FLAG_SYN,
             TCP_FLAG_SYN | TCP_FLAG_ACK,
-        ][rng.gen_range(0..5)];
+        ][rng.random_range(0..5)];
         let payload = if (flags & TCP_FLAG_SYN) != 0 {
             Vec::new()
         } else {
             payload
         };
-        let options = match rng.gen_range(0..4) {
+        let options = match rng.random_range(0..4) {
             0 => Vec::new(),
             1 => tcp_option_pad(vec![2, 4, 0x05, 0xb4]),
             2 => tcp_option_pad(vec![1, 3, 3, 7]),
             _ => tcp_option_pad(vec![8, 10, 0, 0, 0, 9, 0, 0, 0, 7]),
         };
-        let sequence_number = rng.r#gen::<u32>();
-        let acknowledgement_number = rng.r#gen::<u32>();
-        let window_size = rng.gen_range(1..=u16::MAX);
+        let sequence_number = rng.random::<u32>();
+        let acknowledgement_number = rng.random::<u32>();
+        let window_size = rng.random_range(1..=u16::MAX);
 
-        if rng.gen_bool(0.5) {
-            let client_ip = Ipv4Addr::new(10, 0, 0, rng.gen_range(2..=250));
-            let remote_ip = Ipv4Addr::new(8, 8, 4, rng.gen_range(1..=250));
+        if rng.random_bool(0.5) {
+            let client_ip = Ipv4Addr::new(10, 0, 0, rng.random_range(2..=250));
+            let remote_ip = Ipv4Addr::new(8, 8, 4, rng.random_range(1..=250));
             let packet = build_client_packet_with_options(
                 client_ip,
                 remote_ip,
-                rng.gen_range(1024..=65000),
-                rng.gen_range(1..=65000),
+                rng.random_range(1024..=65000),
+                rng.random_range(1..=65000),
                 sequence_number,
                 acknowledgement_number,
                 window_size,
@@ -487,13 +487,13 @@ fn randomized_tcp_packet_round_trip_and_mutation_smoke() {
             let mutated = flip_packet_byte(&packet, transport_offset(&packet) + 4);
             assert!(super::parse_tcp_packet(&mutated).is_err());
         } else {
-            let client_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, rng.gen_range(2..=250));
-            let remote_ip = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, rng.gen_range(2..=250));
+            let client_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, rng.random_range(2..=250));
+            let remote_ip = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, rng.random_range(2..=250));
             let packet = build_client_ipv6_packet_with_options(
                 client_ip,
                 remote_ip,
-                rng.gen_range(1024..=65000),
-                rng.gen_range(1..=65000),
+                rng.random_range(1024..=65000),
+                rng.random_range(1..=65000),
                 sequence_number,
                 acknowledgement_number,
                 window_size,
@@ -519,19 +519,19 @@ fn randomized_tcp_packet_round_trip_and_mutation_smoke() {
 fn randomized_out_of_order_reassembly_smoke() {
     let mut rng = StdRng::seed_from_u64(0x51ce_2026);
     for _ in 0..64 {
-        let sequence_start = rng.gen_range(10_000..50_000);
-        let total_len = rng.gen_range(12..96);
+        let sequence_start = rng.random_range(10_000..50_000);
+        let total_len = rng.random_range(12..96);
         let mut original = vec![0u8; total_len];
         rng.fill(original.as_mut_slice());
 
         let mut segments = Vec::new();
         let mut cursor = 0usize;
         while cursor < total_len {
-            let len = rng.gen_range(1..=(total_len - cursor).min(16));
+            let len = rng.random_range(1..=(total_len - cursor).min(16));
             segments
                 .push((sequence_start + cursor as u32, original[cursor..cursor + len].to_vec()));
-            if cursor > 0 && rng.gen_bool(0.35) {
-                let overlap_start = cursor.saturating_sub(rng.gen_range(1..=cursor.min(4)));
+            if cursor > 0 && rng.random_bool(0.35) {
+                let overlap_start = cursor.saturating_sub(rng.random_range(1..=cursor.min(4)));
                 segments.push((
                     sequence_start + overlap_start as u32,
                     original[overlap_start..cursor + len].to_vec(),
