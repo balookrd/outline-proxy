@@ -33,6 +33,18 @@ pub(in crate::server) struct RawQuicSsCtx {
     pub(in crate::server) services: Arc<Services>,
 }
 
+/// The slice of per-connection state the raw-SS-over-QUIC accept loop
+/// actually needs: the user keys / services and the global stream
+/// admission semaphore. Carved out of the much larger `H3ConnectionCtx`
+/// so the same handler drives both the forward H3 path (where the carrier
+/// was `accept`ed) and the reverse-tunnel dialer (where the carrier was
+/// dialed outbound) — the accept-loop logic is identical and agnostic to
+/// how the `quinn::Connection` was obtained.
+pub(in crate::server) struct RawSsConnectionCtx {
+    pub(in crate::server) raw_ss_ctx: Arc<RawQuicSsCtx>,
+    pub(in crate::server) stream_semaphore: Arc<tokio::sync::Semaphore>,
+}
+
 /// Per-QUIC-connection state for raw SS — tracks the lazily-opened
 /// oversize-record stream so server→client oversized SS-UDP packets
 /// can fall back to it instead of being dropped.

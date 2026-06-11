@@ -19,7 +19,9 @@ pub use loader::AppMode;
 #[cfg(test)]
 pub use loader::default_http_root_realm;
 pub use migrate::migrate_config_in_place;
-pub use resolved::{AccessKeyConfig, Config, H3Alpn, SessionResumptionConfig};
+pub use resolved::{
+    AccessKeyConfig, Config, H3Alpn, ReverseTunnelEndpoint, SessionResumptionConfig,
+};
 pub use sni::{SniBackend, SniFallbackConfig, SniMatcher, TlsCertEntry};
 pub use tuning::{TuningOverrides, TuningPreset, TuningProfile};
 pub use user_entry::{CipherKind, ConfigError, UserEntry};

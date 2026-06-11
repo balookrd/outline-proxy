@@ -41,6 +41,55 @@ pub(super) struct FileConfig {
     pub http_fallback: Option<HttpFallbackSection>,
     #[serde(default)]
     pub sni_fallback: Option<SniFallbackSection>,
+    /// Reverse-tunnel dialer (topology A): this server dials out to one or
+    /// more public `outline-ws-rust` listeners over QUIC instead of (or in
+    /// addition to) listening locally. `None` keeps the listen-only model.
+    #[serde(default)]
+    pub reverse_tunnel: Option<ReverseTunnelSection>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReverseTunnelSection {
+    /// Master switch. When absent or `false`, no reverse dialer runs even
+    /// if endpoints are listed.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub endpoints: Option<Vec<ReverseTunnelEndpointSection>>,
+}
+
+/// One public `ws` listener this server dials. Each becomes an independent
+/// reconnect loop carrying raw Shadowsocks over the QUIC streams the `ws`
+/// peer opens per SOCKS5/TUN session.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReverseTunnelEndpointSection {
+    /// `host:port` of the public `ws` QUIC listener. `host` may be a DNS
+    /// name (resolved at dial time) or a literal IP.
+    pub addr: String,
+    /// TLS SNI / server name presented in the ClientHello. Defaults to the
+    /// host part of `addr` when omitted.
+    #[serde(default)]
+    pub server_name: Option<String>,
+    /// SHA-256 fingerprint of the `ws` server certificate to pin: 64 hex
+    /// chars (optionally colon-separated) or base64 of 32 bytes. Replaces
+    /// webpki validation (CDN fronting is not applicable to the reverse
+    /// carrier).
+    pub server_cert_pin: String,
+    /// Client certificate + key presented for mTLS. The `ws` peer pins this
+    /// cert's fingerprint to authenticate this server.
+    pub client_cert_path: PathBuf,
+    pub client_key_path: PathBuf,
+    /// `true` (default) offers `ss-mtu` then `ss` so the oversize-record
+    /// stream fallback is available; `false` offers only `ss`.
+    #[serde(default)]
+    pub mtu: Option<bool>,
+    /// Reconnect backoff floor / ceiling in seconds. Defaults 1 / 60.
+    #[serde(default)]
+    pub backoff_min_secs: Option<u64>,
+    #[serde(default)]
+    pub backoff_max_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -7,7 +7,7 @@ edition = "2024"
 default = []
 # Raw QUIC transport (no HTTP/3 framing). Required by `h3` since both share
 # the underlying quinn endpoint and TLS config builder.
-quic = ["dep:quinn", "dep:once_cell"]
+quic = ["dep:quinn", "dep:once_cell", "dep:ring", "dep:subtle", "dep:base64"]
 h3 = ["quic", "dep:h3", "dep:h3-quinn", "sockudo-ws/http3"]
 metrics = ["outline-metrics/prometheus", "hyper/server"]
 # Exposes `install_test_tls_root` so cross-repo integration tests
@@ -24,6 +24,8 @@ cert-check = ["dep:x509-cert"]
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+# Reverse-tunnel mTLS pin parsing (hex/base64). Gated under `quic`.
+base64 = { version = "0.22", optional = true }
 bytes = "1.10"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hashbrown = "0.14"
@@ -49,6 +51,10 @@ parking_lot = "0.12"
 pin-project-lite = "0.2"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 rand = "0.9"
+# SHA-256 cert fingerprinting + constant-time compare for reverse-tunnel
+# mTLS pinning. Gated under `quic` so router builds (no quic) pull neither.
+ring = { version = "0.17", optional = true }
+subtle = { version = "2.6", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 shadowsocks-crypto = { path = "../shadowsocks-crypto" }

@@ -4,15 +4,19 @@ use anyhow::{Result, anyhow};
 use tracing::{debug, warn};
 
 use super::super::transport::{
-    OversizeStream, SsQuicConn, StreamKind, classify_accept_bi,
+    OversizeStream, RawSsConnectionCtx, SsQuicConn, StreamKind, classify_accept_bi,
     handle_raw_ss_quic_stream_with_prefix, is_handshake_rejected, is_normal_h3_shutdown,
     serve_raw_ss_oversize_records, serve_raw_ss_quic_datagrams,
 };
-use super::H3ConnectionCtx;
 
-pub(super) async fn handle_raw_ss_connection(
+/// Drives one raw-SS-over-QUIC carrier: spawns the SS-UDP datagram pump and
+/// loops on `accept_bi()`, peeking each stream to split the oversize-record
+/// stream from fresh SS-TCP requests. Agnostic to how `connection` was
+/// obtained — the forward H3 path `accept`s it, the reverse-tunnel dialer
+/// dials it outbound; both hand it here unchanged.
+pub(in crate::server) async fn handle_raw_ss_connection(
     connection: quinn::Connection,
-    ctx: Arc<H3ConnectionCtx>,
+    ctx: Arc<RawSsConnectionCtx>,
 ) -> Result<()> {
     debug!(remote = %connection.remote_address(), "raw SS QUIC connection accepted");
     let mtu_aware = connection

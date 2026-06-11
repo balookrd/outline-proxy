@@ -25,12 +25,14 @@
 
 #![cfg(feature = "quic")]
 
+mod accept;
 mod connection;
 mod dial;
 pub(crate) mod oversize;
 mod tls_config;
 pub(crate) mod vless_udp;
 
+pub use accept::shared_connection_from_accepted;
 pub use connection::SharedQuicConnection;
 pub use dial::connect_quic_uplink;
 pub(crate) use dial::gc_shared_quic_connections;

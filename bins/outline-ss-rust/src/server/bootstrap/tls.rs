@@ -122,7 +122,7 @@ fn load_certified_key(
     Ok(CertifiedKey::new(certs, signing_key))
 }
 
-fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
+pub(in crate::server) fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
     let pem = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("der")) {
         return Ok(vec![CertificateDer::from(pem)]);
@@ -133,7 +133,7 @@ fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
         .with_context(|| format!("failed to parse certificate chain {}", path.display()))
 }
 
-fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
+pub(in crate::server) fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
     let key = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
     if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("der")) {
         return PrivateKeyDer::try_from(key)

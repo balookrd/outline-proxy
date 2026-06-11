@@ -137,6 +137,44 @@ pub struct Config {
     /// configured backend. `None` keeps every TLS connection on the
     /// local terminator.
     pub sni_fallback: Option<SniFallbackConfig>,
+    /// Reverse-tunnel dialer (topology A). When `Some` and enabled, the
+    /// server dials each configured public `ws` listener over QUIC and
+    /// serves raw Shadowsocks on the streams the peer opens. `None` keeps
+    /// the listen-only model. See `docs/REVERSE-TUNNEL.md`.
+    pub reverse_tunnel: Option<ReverseTunnelConfig>,
+}
+
+/// Resolved reverse-tunnel dialer config: one or more public `ws`
+/// endpoints to dial. Empty `endpoints` or `enabled = false` means no
+/// dialer runs.
+#[derive(Debug, Clone)]
+pub struct ReverseTunnelConfig {
+    pub endpoints: Vec<ReverseTunnelEndpoint>,
+}
+
+/// One resolved reverse-tunnel endpoint. The pinned `ws` server-cert
+/// fingerprint stays a string and the client cert/key stay paths — all
+/// three are parsed/loaded by the dialer at startup (mirrors how the H3
+/// listener keeps `h3_cert_path` as a path). A malformed pin or unreadable
+/// cert fails that one endpoint's dial loop without aborting the server.
+#[derive(Debug, Clone)]
+pub struct ReverseTunnelEndpoint {
+    pub addr: String,
+    pub server_name: String,
+    pub server_cert_pin: String,
+    pub client_cert_path: PathBuf,
+    pub client_key_path: PathBuf,
+    /// `true` offers `[ss-mtu, ss]`; `false` offers `[ss]`.
+    pub mtu: bool,
+    pub backoff_min: std::time::Duration,
+    pub backoff_max: std::time::Duration,
+}
+
+impl ReverseTunnelEndpoint {
+    /// ALPN list to offer, MTU-aware sibling first when enabled.
+    pub fn advertised_alpns(&self) -> &'static [&'static [u8]] {
+        if self.mtu { &[b"ss-mtu", b"ss"] } else { &[b"ss"] }
+    }
 }
 
 /// Public snapshot of the `[session_resumption]` config. Mirrors
