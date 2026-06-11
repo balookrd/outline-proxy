@@ -1,10 +1,24 @@
 [env]
+# zig as cross-linker/ar for cargo-zigbuild musl targets.
 AR = { value = "zig ar", force = true }
 RANLIB = { value = "zig ranlib", force = true }
 
 [alias]
-release-musl-x86_64 = "zigbuild --release --target x86_64-unknown-linux-musl"
-release-musl-aarch64 = "zigbuild --release --target aarch64-unknown-linux-musl"
-release-router-musl-arm = "zigbuild --profile release-router --no-default-features --features router --target arm-unknown-linux-musleabi"
-release-router-musl-armv7 = "zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf"
-release-router-musl-aarch64 = "zigbuild --profile release-router --no-default-features --features router --target aarch64-unknown-linux-musl"
+# --- outline-ss-rust (server) cross builds ---
+ss-build-musl-x86_64 = "zigbuild -p outline-ss-rust --target x86_64-unknown-linux-musl"
+ss-release-musl-x86_64 = "zigbuild --release -p outline-ss-rust --target x86_64-unknown-linux-musl"
+ss-build-musl-aarch64 = "zigbuild -p outline-ss-rust --target aarch64-unknown-linux-musl"
+ss-release-musl-aarch64 = "zigbuild --release -p outline-ss-rust --target aarch64-unknown-linux-musl"
+ss-build-musl-arm = "zigbuild -p outline-ss-rust --target arm-unknown-linux-musleabi"
+ss-release-musl-arm = "zigbuild --release -p outline-ss-rust --target arm-unknown-linux-musleabi"
+ss-build-musl-armv7 = "zigbuild -p outline-ss-rust --target armv7-unknown-linux-musleabihf"
+ss-release-musl-armv7 = "zigbuild --release -p outline-ss-rust --target armv7-unknown-linux-musleabihf"
+
+# --- outline-ws-rust (client) cross builds ---
+ws-release-musl-x86_64 = "zigbuild --release -p outline-ws-rust --target x86_64-unknown-linux-musl"
+ws-release-musl-aarch64 = "zigbuild --release -p outline-ws-rust --target aarch64-unknown-linux-musl"
+
+# --- outline-ws-rust router builds (stripped, memory-constrained MIPS/armv7) ---
+ws-release-router-musl-arm = "zigbuild --profile release-router --no-default-features --features router -p outline-ws-rust --target arm-unknown-linux-musleabi"
+ws-release-router-musl-armv7 = "zigbuild --profile release-router --no-default-features --features router -p outline-ws-rust --target armv7-unknown-linux-musleabihf"
+ws-release-router-musl-aarch64 = "zigbuild --profile release-router --no-default-features --features router -p outline-ws-rust --target aarch64-unknown-linux-musl"
