@@ -24,9 +24,18 @@ use super::{ControlResponse, is_authorized, plain_response, unauthorized_respons
 use crate::config::ControlConfig;
 use crate::http::serve::{ServeConfig, serve_with_shutdown};
 
+/// Snapshot source for live reverse-tunnel peer counts: `(group, live)`.
+/// Kept as an opaque closure so the control layer (compiled under `control`)
+/// never names the `h3`-gated `ReversePeerRegistry`; the closure is built in
+/// `bootstrap` only when both features are on, and is `None` otherwise.
+pub(crate) type ReversePeersFn = std::sync::Arc<dyn Fn() -> Vec<(String, usize)> + Send + Sync>;
+
 pub(crate) struct ControlState {
     pub(crate) token: String,
     pub(crate) uplinks: UplinkRegistry,
+    /// Live reverse-tunnel peer counts, or `None` when no reverse listener
+    /// is configured. Surfaced in `/control/topology`.
+    pub(crate) reverse_peers: Option<ReversePeersFn>,
     /// Path to the TOML config file. Populated when the binary was launched
     /// with an on-disk config; `None` for pure-CLI / test invocations. CRUD
     /// endpoints return 409 Conflict when this is absent.
@@ -60,11 +69,13 @@ pub fn spawn_control_server(
     config: ControlConfig,
     uplinks: UplinkRegistry,
     apply: Option<Arc<ApplyHandle>>,
+    reverse_peers: Option<ReversePeersFn>,
     shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     let state = Arc::new(ControlState {
         token: config.token,
         uplinks,
+        reverse_peers,
         config_path: config.config_path,
         config_write_lock: tokio::sync::Mutex::new(()),
         apply,
@@ -143,7 +154,8 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
             response
         },
         "/control/topology" => {
-            let response = handle_topology(&request, state.uplinks.clone()).await;
+            let response =
+                handle_topology(&request, state.uplinks.clone(), state.reverse_peers.clone()).await;
             record_metrics_http_request("/control/topology", response.status().as_u16());
             response
         },

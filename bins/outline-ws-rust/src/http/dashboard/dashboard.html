@@ -1046,13 +1046,15 @@ function applyInstanceView(inst) {
   if (!inst.ok) {
     state.instances.set(inst.name, {
       name: inst.name, ok: false, error: inst.error || "instance unavailable",
-      groups: prev.groups || [], updatedAt: Date.now(), loading: false,
+      groups: prev.groups || [], reversePeers: prev.reversePeers || [],
+      updatedAt: Date.now(), loading: false,
     });
     return;
   }
   const groups = inst.topology?.instance?.groups || [];
+  const reversePeers = inst.topology?.instance?.reverse_peers || [];
   state.instances.set(inst.name, {
-    name: inst.name, ok: true, error: null, groups,
+    name: inst.name, ok: true, error: null, groups, reversePeers,
     updatedAt: Date.now(), loading: false,
   });
   state.lastUpdated = Date.now();
@@ -1083,6 +1085,9 @@ function renderInstancePanel(instance) {
         <strong>${escapeHtml(instance.name)}</strong>
         <span class="status-pill ${tone}">${instance.ok === null ? "Loading" : statusLabel(tone)}</span>
         ${loadingTag}
+        ${(instance.reversePeers || []).map(r =>
+          `<span class="status-pill ${r.live_peers > 0 ? "ok" : "warn"}" title="Live reverse-tunnel peers in group ${escapeHtml(r.group)}">⇄ ${escapeHtml(r.group)} ${r.live_peers}</span>`
+        ).join("")}
       </div>
       <span class="subtitle" style="margin-right:8px">↻ ${stamp}</span>
       <span class="collapse-chev">⌃</span>
