@@ -179,6 +179,26 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     // observes `shutdown_rx` internally and bounds its drain window.
     #[cfg(any(feature = "control", feature = "dashboard", feature = "metrics"))]
     let mut http_servers: Vec<JoinHandle<()>> = Vec::new();
+
+    // Reverse-tunnel listener (topology A): bind the QUIC server endpoint and
+    // start accepting carriers from `ss` peers. Done before the control plane
+    // so the latter can surface live peer counts; the returned registry also
+    // feeds the dispatcher's reverse route.
+    #[cfg(feature = "h3")]
+    let reverse = config
+        .reverse_listener
+        .as_ref()
+        .map(|cfg| crate::reverse::spawn_reverse_listener(cfg, shutdown_rx.clone()));
+    #[cfg(all(feature = "control", feature = "h3"))]
+    let reverse_peers_fn: Option<crate::http::control::ReversePeersFn> =
+        reverse.as_ref().map(|registry| {
+            let registry = Arc::clone(registry);
+            Arc::new(move || vec![(registry.group().to_string(), registry.live_count())])
+                as crate::http::control::ReversePeersFn
+        });
+    #[cfg(all(feature = "control", not(feature = "h3")))]
+    let reverse_peers_fn: Option<crate::http::control::ReversePeersFn> = None;
+
     #[cfg(feature = "metrics")]
     if let Some(metrics) = config.metrics.clone() {
         http_servers.push(spawn_metrics_server(metrics, registry.clone(), shutdown_rx.clone()));
@@ -199,6 +219,7 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
             control,
             registry.clone(),
             apply,
+            reverse_peers_fn,
             shutdown_rx.clone(),
         ));
     }
@@ -208,15 +229,6 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     if let Some(dashboard) = config.dashboard.clone() {
         http_servers.push(spawn_dashboard_server(dashboard, shutdown_rx.clone()));
     }
-
-    // Reverse-tunnel listener (topology A): bind the QUIC server endpoint and
-    // start accepting carriers from `ss` peers. The returned registry feeds
-    // the dispatcher's reverse route.
-    #[cfg(feature = "h3")]
-    let reverse = config
-        .reverse_listener
-        .as_ref()
-        .map(|cfg| crate::reverse::spawn_reverse_listener(cfg, shutdown_rx.clone()));
 
     // Build the thin proxy-layer config slice from the fully-resolved AppConfig.
     // Each accepted connection clones only this Arc — not the full AppConfig —

@@ -54,6 +54,17 @@ pub(crate) struct ControlTopologyResponse {
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct ControlInstanceTopology {
     pub(crate) groups: Vec<ControlGroupTopology>,
+    /// Live reverse-tunnel peers per reverse group (topology A). Omitted
+    /// when no reverse listener is configured, so the payload shape is
+    /// unchanged for the common forward-only deployment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) reverse_peers: Vec<ReverseGroupTopology>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ReverseGroupTopology {
+    pub(crate) group: String,
+    pub(crate) live_peers: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -276,9 +287,11 @@ pub(crate) struct ControlSummaryResponse {
 
 pub(crate) fn build_instance_topology(
     snapshots: &[UplinkManagerSnapshot],
+    reverse_peers: Vec<ReverseGroupTopology>,
 ) -> ControlInstanceTopology {
     ControlInstanceTopology {
         groups: snapshots.iter().map(build_group_topology).collect(),
+        reverse_peers,
     }
 }
 
