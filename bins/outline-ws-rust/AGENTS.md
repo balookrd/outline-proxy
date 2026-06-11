@@ -2,6 +2,14 @@
 
 ## Обзор проекта
 
+> **Монорепо `outline-proxy`.** Этот файл описывает бинарь `outline-ws-rust`
+> (`bins/outline-ws-rust/`). Общая структура, команды и монорепо-инварианты —
+> в корневом [`AGENTS.md`](../../AGENTS.md), он имеет приоритет. Учитывай: крейты
+> `crates/*` и vendored — на уровне workspace; сборка — `cargo … -p outline-ws-rust`
+> (router: `--no-default-features --features router -p outline-ws-rust`); rustls
+> держать только на `ring`. Описание «workspace» ниже относится к историческому
+> раздельному репо — теперь workspace это `outline-proxy`.
+
 `outline-ws-rust` — Rust 2024 workspace для production-ориентированного прокси.
 Верхнеуровневый пакет собирает бинарь `outline-ws-rust`, принимает локальный
 SOCKS5 и опциональный TUN-трафик и отправляет его через Outline-совместимые

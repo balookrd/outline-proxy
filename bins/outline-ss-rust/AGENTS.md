@@ -2,7 +2,14 @@
 
 ## Область действия
 
-Эти инструкции действуют на весь репозиторий.
+> **Монорепо `outline-proxy`.** Этот файл описывает бинарь `outline-ss-rust`
+> (`bins/outline-ss-rust/`). Общая структура, команды и монорепо-инварианты —
+> в корневом [`AGENTS.md`](../../AGENTS.md), он имеет приоритет. Учитывай:
+> vendored-крейты и `[patch.crates-io]` теперь на уровне workspace (`vendor/`,
+> корневой `Cargo.toml`); сборка — `cargo … -p outline-ss-rust`; dev-dependency
+> `outline-transport` теперь in-workspace (`crates/`), не cross-repo.
+
+Архитектурные и протокольные правила ниже относятся к коду этого бинаря.
 
 ## Кратко о проекте
 
