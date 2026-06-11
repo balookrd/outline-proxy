@@ -1963,6 +1963,8 @@ dependencies = [
  "outline-transport",
  "outline-tun",
  "outline-uplink",
+ "parking_lot",
+ "quinn",
  "rand",
  "rustls",
  "serde",

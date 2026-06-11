@@ -13,6 +13,8 @@ pub mod http;
 pub mod memory;
 pub mod metrics;
 pub mod proxy;
+#[cfg(feature = "h3")]
+pub(crate) mod reverse;
 
 mod bootstrap;
 

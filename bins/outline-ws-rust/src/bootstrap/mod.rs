@@ -209,6 +209,15 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
         http_servers.push(spawn_dashboard_server(dashboard, shutdown_rx.clone()));
     }
 
+    // Reverse-tunnel listener (topology A): bind the QUIC server endpoint and
+    // start accepting carriers from `ss` peers. The returned registry feeds
+    // the dispatcher's reverse route.
+    #[cfg(feature = "h3")]
+    let reverse = config
+        .reverse_listener
+        .as_ref()
+        .map(|cfg| crate::reverse::spawn_reverse_listener(cfg, shutdown_rx.clone()));
+
     // Build the thin proxy-layer config slice from the fully-resolved AppConfig.
     // Each accepted connection clones only this Arc — not the full AppConfig —
     // so there is no unnecessary coupling to uplink/tun/metrics fields.
@@ -218,6 +227,8 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
         router: routing_table.clone().map(|t| t as Arc<dyn crate::proxy::Router>),
         direct_fwmark: config.direct_fwmark,
         tcp_timeouts: config.tcp_timeouts,
+        #[cfg(feature = "h3")]
+        reverse,
     });
 
     let accept_result = if let Some(listener) = listener {
