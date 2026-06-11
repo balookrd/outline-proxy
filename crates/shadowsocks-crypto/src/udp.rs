@@ -1,4 +1,4 @@
-use rand::RngCore;
+use rand::rand_core::RngCore;
 
 use crate::cipher_kind::CipherKind;
 use crate::error::{CryptoError, Result};
@@ -21,7 +21,7 @@ pub fn encrypt_udp_packet(
     // Use a stack buffer (max salt size = max key size = 32 bytes) to avoid heap allocation
     let mut salt_buf = [0u8; 32];
     let salt = &mut salt_buf[..salt_len];
-    rand::thread_rng().fill_bytes(salt);
+    rand::rng().fill_bytes(salt);
     let key = derive_subkey(cipher, master_key, salt)?;
     let mut encrypted = encrypt(cipher, &key[..cipher.key_len()], &UDP_ZERO_NONCE, payload)?;
     let mut packet = Vec::with_capacity(salt_len + encrypted.len());

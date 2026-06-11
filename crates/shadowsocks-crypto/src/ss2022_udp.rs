@@ -3,7 +3,7 @@ use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes256};
 use chacha20poly1305::aead::AeadInPlace;
 use chacha20poly1305::{XChaCha20Poly1305, XNonce as XChaNonce};
-use rand::RngCore;
+use rand::rand_core::RngCore;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cipher_kind::CipherKind;
@@ -199,7 +199,7 @@ pub(crate) fn encrypt_udp_packet_2022_chacha(
         return Err(CryptoError::Protocol(ERR_REQUIRES_2022_CHACHA));
     }
     let mut nonce = [0u8; 24];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    rand::rng().fill_bytes(&mut nonce);
     let mut buffer = plaintext.to_vec();
     let cipher = XChaCha20Poly1305::new_from_slice(master_key)
         .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_XCHACHA })?;

@@ -390,8 +390,8 @@ impl UplinkManager {
         }
         let total = total_wires as u8;
         let (tcp_wire, udp_wire) = {
-            let mut rng = rand::thread_rng();
-            (rng.gen_range(0..total), rng.gen_range(0..total))
+            let mut rng = rand::rng();
+            (rng.random_range(0..total), rng.random_range(0..total))
         };
         let group_name = self.inner.group_name.clone();
         let uplink_name = uplink.name.clone();

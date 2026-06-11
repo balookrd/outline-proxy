@@ -47,7 +47,7 @@ impl TcpShadowsocksWriter<WsWriteTransport> {
         lifetime: Arc<UpstreamTransportGuard>,
     ) -> Result<(Self, mpsc::Sender<Message>)> {
         let mut salt = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut salt[..cipher.salt_len()]);
+        rand::rng().fill_bytes(&mut salt[..cipher.salt_len()]);
 
         let (transport, ctrl_tx) = WsWriteTransport::spawn(sink);
 
@@ -78,7 +78,7 @@ impl TcpShadowsocksWriter<SocketWriteTransport> {
         lifetime: Arc<UpstreamTransportGuard>,
     ) -> Result<Self> {
         let mut salt = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut salt[..cipher.salt_len()]);
+        rand::rng().fill_bytes(&mut salt[..cipher.salt_len()]);
         let key = derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?;
         let cipher_state = AeadCipher::new(cipher, &key[..cipher.key_len()])?;
         Ok(Self {
@@ -107,7 +107,7 @@ impl TcpShadowsocksWriter<QuicWriteTransport> {
         lifetime: Arc<UpstreamTransportGuard>,
     ) -> Result<Self> {
         let mut salt = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut salt[..cipher.salt_len()]);
+        rand::rng().fill_bytes(&mut salt[..cipher.salt_len()]);
         let key = derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?;
         let cipher_state = AeadCipher::new(cipher, &key[..cipher.key_len()])?;
         Ok(Self {

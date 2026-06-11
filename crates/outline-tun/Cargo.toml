@@ -23,7 +23,7 @@ outline-routing = { path = "../outline-routing" }
 outline-transport = { path = "../outline-transport" }
 outline-uplink = { path = "../outline-uplink", default-features = false }
 parking_lot = "0.12"
-rand = "0.8"
+rand = "0.9"
 shadowsocks-crypto = { path = "../shadowsocks-crypto" }
 socks5-proto = { path = "../socks5-proto" }
 tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
