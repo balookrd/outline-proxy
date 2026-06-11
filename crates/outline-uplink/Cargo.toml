@@ -31,7 +31,7 @@ shadowsocks-crypto = { path = "../shadowsocks-crypto" }
 socks5-proto = { path = "../socks5-proto" }
 tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
-toml = "0.8"
+toml = "0.9"
 tracing = "0.1"
 url = { version = "2.5", features = ["serde"] }
 
