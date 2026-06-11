@@ -1,10 +1,10 @@
-name: Release
+name: Release (server)
 
 on:
   workflow_dispatch:
     inputs:
       major_minor:
-        description: "MAJOR.MINOR (например 1.7)"
+        description: "MAJOR.MINOR (например 1.4)"
         required: true
         type: string
 
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.event.inputs.major_minor }}
+  group: ss-release-${{ github.event.inputs.major_minor }}
   cancel-in-progress: false
 
 jobs:
@@ -41,13 +41,13 @@ jobs:
           set -euo pipefail
 
           if [[ ! "$SERIES" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            echo "invalid format, expected 1.7" >&2
+            echo "invalid format, expected 1.4" >&2
             exit 1
           fi
 
           git fetch origin '+refs/tags/*:refs/tags/*' --force
 
-          latest="$(git tag -l "v${SERIES}.*" --sort=-v:refname | head -n1)"
+          latest="$(git tag -l "ss-v${SERIES}.*" --sort=-v:refname | head -n1)"
 
           if [[ -n "$latest" ]]; then
             patch="${latest##*.}"
@@ -57,7 +57,7 @@ jobs:
           fi
 
           version="${SERIES}.${next}"
-          tag="v${version}"
+          tag="ss-v${version}"
 
           if git show-ref --verify --quiet "refs/tags/${tag}"; then
             echo "tag ${tag} already exists" >&2
@@ -78,7 +78,7 @@ jobs:
           import re
 
           version = os.environ["VERSION"]
-          path = Path("Cargo.toml")
+          path = Path("bins/outline-ss-rust/Cargo.toml")
           text = path.read_text()
 
           new_text, count = re.subn(
@@ -89,7 +89,7 @@ jobs:
               flags=re.M,
           )
           if count != 1:
-              raise SystemExit("failed to update package version in Cargo.toml")
+              raise SystemExit("failed to update package version in bins/outline-ss-rust/Cargo.toml")
 
           path.write_text(new_text)
           PY
@@ -108,10 +108,10 @@ jobs:
           path = Path("Cargo.lock")
           text = path.read_text()
 
-          pattern = r'(\[\[package\]\]\nname = "outline-ws-rust"\nversion = ")([^"]+)(")'
+          pattern = r'(\[\[package\]\]\nname = "outline-ss-rust"\nversion = ")([^"]+)(")'
           new_text, count = re.subn(pattern, r'\g<1>' + version + r'\3', text, count=1)
           if count != 1:
-              raise SystemExit("failed to update outline-ws-rust version in Cargo.lock")
+              raise SystemExit("failed to update outline-ss-rust version in Cargo.lock")
 
           path.write_text(new_text)
           PY
@@ -121,7 +121,7 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
-          git add Cargo.toml Cargo.lock
+          git add bins/outline-ss-rust/Cargo.toml Cargo.lock
           if git diff --cached --quiet; then
             echo "No version file changes for ${TAG}; release will use current HEAD"
           else
@@ -149,6 +149,6 @@ jobs:
             git tag -s ${TAG} -m "${TAG}"
             git push origin ${TAG}
 
-          After that, workflow "Tag Release" will build and publish the release.
+          After that, workflow "Tag Release (server)" will build and publish the release.
 
           EOF
