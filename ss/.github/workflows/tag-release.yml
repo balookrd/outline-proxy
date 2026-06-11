@@ -1,0 +1,21 @@
+name: Tag Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tag-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: ./.github/workflows/_release-build.yml
+    with:
+      tag: ${{ github.ref_name }}
+      prerelease: false
+      make_latest: "true"

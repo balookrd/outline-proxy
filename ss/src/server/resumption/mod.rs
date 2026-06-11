@@ -1,0 +1,26 @@
+//! Cross-transport session resumption.
+//!
+//! When a client transport stream closes (mid-session, for any reason)
+//! the upstream relay state is moved into an in-memory orphan registry
+//! instead of being torn down. A subsequent client connect — possibly on
+//! a different transport — can present the Session ID it received earlier
+//! and reattach to the parked upstream without re-establishing the
+//! connection to the destination host.
+//!
+//! See `docs/SESSION-RESUMPTION.md` for the wire format and the lifecycle
+//! contract.
+
+pub(crate) mod ack_prefix;
+mod config;
+pub(crate) mod downlink_ring;
+mod parked;
+mod registry;
+mod session_id;
+
+pub(super) use config::ResumptionConfig;
+pub(super) use parked::{
+    Parked, ParkedMuxSubConn, ParkedMuxSubKind, ParkedSsUdpStream, ParkedTcp, ParkedVlessMux,
+    ParkedVlessUdpSingle, TcpProtocolContext,
+};
+pub(super) use registry::{OrphanRegistry, ResumeOutcome};
+pub(super) use session_id::SessionId;

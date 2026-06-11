@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      major_minor:
+        description: "MAJOR.MINOR (например 1.7)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.major_minor }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - id: version
+        name: Compute next version
+        env:
+          SERIES: ${{ github.event.inputs.major_minor }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$SERIES" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "invalid format, expected 1.7" >&2
+            exit 1
+          fi
+
+          git fetch origin '+refs/tags/*:refs/tags/*' --force
+
+          latest="$(git tag -l "v${SERIES}.*" --sort=-v:refname | head -n1)"
+
+          if [[ -n "$latest" ]]; then
+            patch="${latest##*.}"
+            next=$((patch+1))
+          else
+            next=0
+          fi
+
+          version="${SERIES}.${next}"
+          tag="v${version}"
+
+          if git show-ref --verify --quiet "refs/tags/${tag}"; then
+            echo "tag ${tag} already exists" >&2
+            exit 1
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Cargo.toml
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          version = os.environ["VERSION"]
+          path = Path("Cargo.toml")
+          text = path.read_text()
+
+          new_text, count = re.subn(
+              r'^version = "[^"]+"$',
+              f'version = "{version}"',
+              text,
+              count=1,
+              flags=re.M,
+          )
+          if count != 1:
+              raise SystemExit("failed to update package version in Cargo.toml")
+
+          path.write_text(new_text)
+          PY
+
+      - name: Update Cargo.lock
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          version = os.environ["VERSION"]
+          path = Path("Cargo.lock")
+          text = path.read_text()
+
+          pattern = r'(\[\[package\]\]\nname = "outline-ss-rust"\nversion = ")([^"]+)(")'
+          new_text, count = re.subn(pattern, r'\g<1>' + version + r'\3', text, count=1)
+          if count != 1:
+              raise SystemExit("failed to update outline-ss-rust version in Cargo.lock")
+
+          path.write_text(new_text)
+          PY
+
+      - name: Commit
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git add Cargo.toml Cargo.lock
+          if git diff --cached --quiet; then
+            echo "No version file changes for ${TAG}; release will use current HEAD"
+          else
+            git commit -m "release: cut ${TAG}"
+          fi
+
+      - name: Push
+        run: |
+          set -euo pipefail
+          git push origin HEAD:main
+
+      - name: Next steps
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          cat <<EOF
+
+          Release commit pushed to main.
+
+          Create a signed tag locally:
+
+            git fetch origin
+            git checkout main
+            git pull --ff-only origin main
+            git tag -s ${TAG} -m "${TAG}"
+            git push origin ${TAG}
+
+          After that, workflow "Tag Release" will build and publish the release.
+
+          EOF

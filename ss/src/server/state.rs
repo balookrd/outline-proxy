@@ -1,0 +1,184 @@
+//! Shared application state used by the websocket/H3 server.
+
+use std::{collections::BTreeMap, sync::Arc};
+
+use arc_swap::ArcSwap;
+use tokio::sync::Semaphore;
+
+use crate::{
+    crypto::{SessionKeyCache, UserKey},
+    metrics::Metrics,
+    outbound::OutboundIpv6,
+    protocol::vless::VlessUser,
+};
+
+use super::nat::NatTable;
+use super::peer_user_cache::PeerUserCache;
+use super::replay::ReplayStore;
+use super::resumption::OrphanRegistry;
+use super::transport::{
+    HttpFallbackContext, UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx, XhttpRegistry,
+};
+
+use super::dns_cache::DnsCache;
+
+/// Per-path TCP/UDP route tables.
+pub(super) struct RouteRegistry {
+    pub(super) tcp: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+    pub(super) udp: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+    pub(super) vless: Arc<BTreeMap<String, Arc<VlessTransportRoute>>>,
+    /// XHTTP-VLESS routes, keyed by base path (the `{id}` capture
+    /// is appended at axum/h3 routing time). The route record is
+    /// the same `VlessTransportRoute` used for ws-vless because
+    /// the auth surface is identical — only the carrier differs.
+    pub(super) xhttp_vless: Arc<BTreeMap<String, Arc<VlessTransportRoute>>>,
+}
+
+/// Snapshot of live routing state that control-plane mutations swap atomically.
+///
+/// Handlers do `state.routes.load_full()` once per request to obtain an
+/// `Arc<RouteRegistry>`, then look up the path inside. Updates publish a new
+/// `RouteRegistry` via `store`, so in-flight requests keep seeing the prior
+/// snapshot — no reader ever sees a torn view.
+pub(super) type RoutesSnapshot = Arc<ArcSwap<RouteRegistry>>;
+
+/// Snapshot of the HTTP Basic Auth user set. Same atomic-swap pattern as
+/// [`RoutesSnapshot`]; mutations rebuild the slice and publish it.
+pub(super) type AuthUsersSnapshot = Arc<ArcSwap<UserKeySlice>>;
+
+/// Newtype wrapper so `ArcSwap` can hold what logically is `Arc<[UserKey]>`.
+pub(super) struct UserKeySlice(pub Arc<[UserKey]>);
+
+/// UDP-only services. Not touched by the TCP path.
+pub(super) struct UdpServices {
+    pub(super) nat_table: Arc<NatTable>,
+    pub(super) replay_store: Arc<ReplayStore>,
+    /// Process-wide semaphore limiting concurrent UDP relay tasks across all
+    /// WebSocket sessions. `None` means no global cap is enforced.
+    pub(super) relay_semaphore: Option<Arc<Semaphore>>,
+}
+
+/// Process-wide services shared by every transport handler.
+///
+/// Each `*ServerCtx` already holds the shared `metrics` / `dns_cache` /
+/// `outbound_ipv6` / `prefer_ipv4_upstream` it needs, so callers reach those
+/// through the matching ctx (e.g. `services.tcp_server.metrics`) instead of
+/// keeping a second copy on `Services`.
+pub(super) struct Services {
+    pub(super) tcp_server: Arc<WsTcpServerCtx>,
+    pub(super) udp_server: Arc<UdpServerCtx>,
+    pub(super) vless_server: Arc<VlessWsServerCtx>,
+    /// Cross-transport session-resumption registry. Always present; if
+    /// resumption is disabled the registry is a no-op (see
+    /// [`OrphanRegistry::enabled`]). Keeping the field unconditional avoids
+    /// `Option` plumbing through every relay path.
+    pub(super) orphan_registry: Arc<OrphanRegistry>,
+    /// Per-process XHTTP session registry. Shared between the axum
+    /// (h1/h2) and h3 entry points so a session opened over one
+    /// transport version is not split-brain with the other.
+    pub(super) xhttp_registry: Arc<XhttpRegistry>,
+}
+
+impl Services {
+    /// Constructs the shared services bundle. Pass `None` for
+    /// `orphan_registry` in tests / setups that do not exercise
+    /// session-resumption — a permanently disabled (no-op) registry will
+    /// be substituted.
+    pub(super) fn new(
+        metrics: Arc<Metrics>,
+        dns_cache: Arc<DnsCache>,
+        prefer_ipv4_upstream: bool,
+        outbound_ipv6: Option<Arc<OutboundIpv6>>,
+        udp: UdpServices,
+        orphan_registry: Option<Arc<OrphanRegistry>>,
+        ws_data_channel_capacity: usize,
+    ) -> Self {
+        let orphan_registry = orphan_registry
+            .unwrap_or_else(|| Arc::new(OrphanRegistry::new_disabled(Arc::clone(&metrics))));
+        let tcp_server = Arc::new(WsTcpServerCtx {
+            metrics: Arc::clone(&metrics),
+            dns_cache: Arc::clone(&dns_cache),
+            prefer_ipv4_upstream,
+            outbound_ipv6: outbound_ipv6.clone(),
+            orphan_registry: Arc::clone(&orphan_registry),
+            ws_data_channel_capacity,
+        });
+        let udp_server = Arc::new(UdpServerCtx {
+            metrics: Arc::clone(&metrics),
+            nat_table: udp.nat_table,
+            replay_store: udp.replay_store,
+            dns_cache: Arc::clone(&dns_cache),
+            prefer_ipv4_upstream,
+            relay_semaphore: udp.relay_semaphore,
+            orphan_registry: Arc::clone(&orphan_registry),
+            session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
+            ws_data_channel_capacity,
+        });
+        let vless_server = Arc::new(VlessWsServerCtx {
+            metrics,
+            dns_cache,
+            prefer_ipv4_upstream,
+            outbound_ipv6,
+            orphan_registry: Arc::clone(&orphan_registry),
+            ws_data_channel_capacity,
+        });
+        Self {
+            tcp_server,
+            udp_server,
+            vless_server,
+            orphan_registry,
+            xhttp_registry: XhttpRegistry::new(),
+        }
+    }
+}
+
+/// Credentials and HTTP front-door auth policy.
+pub(super) struct AuthPolicy {
+    pub(super) users: AuthUsersSnapshot,
+    pub(super) http_root_auth: bool,
+    pub(super) http_root_realm: Arc<str>,
+}
+
+#[derive(Clone)]
+pub(super) struct AppState {
+    pub(super) routes: RoutesSnapshot,
+    pub(super) services: Arc<Services>,
+    pub(super) auth: Arc<AuthPolicy>,
+    /// Reverse-proxy context for the HTTP fallback handler. `None`
+    /// keeps the legacy 404 behaviour for unmatched paths.
+    pub(super) http_fallback: Option<Arc<HttpFallbackContext>>,
+}
+
+#[derive(Clone)]
+pub(super) struct TransportRoute {
+    pub(super) users: Arc<[UserKey]>,
+    pub(super) candidate_users: Arc<[Arc<str>]>,
+    /// Per-route LRU mapping `peer_addr -> user_index` to skip the O(N)
+    /// AEAD-decryption probe at handshake time. Lives with the route because
+    /// `user_index` is meaningful only against `users`; on any control-plane
+    /// route rebuild the cache is replaced together with `users`.
+    pub(super) peer_user_cache: Arc<PeerUserCache>,
+}
+
+#[derive(Clone)]
+pub(super) struct VlessTransportRoute {
+    pub(super) users: Arc<[VlessUser]>,
+    pub(super) candidate_users: Arc<[Arc<str>]>,
+}
+
+pub(super) fn empty_transport_route() -> Arc<TransportRoute> {
+    Arc::new(TransportRoute {
+        users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+        candidate_users: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+        peer_user_cache: Arc::new(PeerUserCache::with_capacity(
+            super::constants::TCP_PEER_USER_CACHE_CAPACITY,
+        )),
+    })
+}
+
+pub(super) fn empty_vless_transport_route() -> Arc<VlessTransportRoute> {
+    Arc::new(VlessTransportRoute {
+        users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+        candidate_users: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+    })
+}
