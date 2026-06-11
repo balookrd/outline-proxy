@@ -1,0 +1,183 @@
+use std::{
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
+use anyhow::Result;
+use bytes::Bytes;
+use futures_util::future::BoxFuture;
+use parking_lot::Mutex;
+use tokio::net::UdpSocket;
+
+use crate::server::abort::AbortOnDrop;
+use crate::{
+    clock,
+    crypto::UdpCipherMode,
+    metrics::{AppProtocol, PerUserCounters, Protocol},
+};
+
+/// Lookup key for a NAT entry.  Uniquely identifies the (user, routing mark,
+/// resolved upstream address) triple.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct NatKey {
+    pub user_id: Arc<str>,
+    pub fwmark: Option<u32>,
+    pub target: SocketAddr,
+}
+
+// ── Response sender abstraction ───────────────────────────────────────────────
+
+/// Transport-agnostic outbound path for a client session.
+///
+/// Implementations live in the transport modules (`server::transport`,
+/// `server::shadowsocks`); the NAT layer only sees this trait so it stays
+/// independent of WebSocket / HTTP/3 / raw-socket specifics.
+pub(crate) trait ResponseSender: Send + Sync {
+    /// Returns `false` when the receiving channel has been closed (session gone).
+    fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool>;
+    fn protocol(&self) -> Protocol;
+    /// Application-layer protocol carried by this responder. Lets the
+    /// shared NAT reader tag per-datagram metrics by `app_protocol`
+    /// without needing to know which transport module created the entry.
+    fn app_protocol(&self) -> AppProtocol;
+}
+
+/// A cloneable handle to the outbound path of the currently active client
+/// session.
+#[derive(Clone)]
+pub(crate) struct UdpResponseSender {
+    inner: Arc<dyn ResponseSender>,
+}
+
+impl UdpResponseSender {
+    pub(crate) fn new(inner: Arc<dyn ResponseSender>) -> Self {
+        Self { inner }
+    }
+
+    pub(crate) fn protocol(&self) -> Protocol {
+        self.inner.protocol()
+    }
+
+    pub(crate) fn app_protocol(&self) -> AppProtocol {
+        self.inner.app_protocol()
+    }
+
+    pub(crate) async fn send_bytes(&self, data: Bytes) -> bool {
+        self.inner.send_bytes(data).await
+    }
+}
+
+// ── NAT entry ─────────────────────────────────────────────────────────────────
+
+pub(crate) struct ActiveSession {
+    pub(crate) sender: UdpResponseSender,
+    pub(crate) session: UdpCipherMode,
+    /// Identifies the registering WS-stream so a resumption-driven
+    /// `detach_session_for_stream` only clears the slot when we are
+    /// still the registered owner — not when a newer stream has
+    /// already taken over (e.g. concurrent reconnect by the same
+    /// user). Allocated by the relay code once per stream lifetime.
+    pub(crate) stream_id: u64,
+}
+
+pub(crate) struct NatEntry {
+    socket: Arc<UdpSocket>,
+    /// The currently active client session: where to deliver upstream responses
+    /// and which `UdpCipherMode` (carrying the live `client_session_id` for SS-2022)
+    /// to use when encrypting them. Replaced atomically on every reconnect so
+    /// the NAT socket — and therefore the source port and server_session_id —
+    /// survives client session changes.
+    active: Arc<Mutex<Option<ActiveSession>>>,
+    /// Pre-resolved per-user metrics counters, shared with the reader task.
+    /// Lets the per-datagram client→upstream and upstream→client paths skip the
+    /// `counter!()` registry lookup and the per-call `Arc<str>` clone.
+    user_counters: Arc<PerUserCounters>,
+    /// Unix timestamp (seconds) of the last datagram in either direction, for idle eviction.
+    last_active_secs: Arc<AtomicU64>,
+    /// Dropped when the entry is evicted, which aborts the background reader task.
+    _reader: AbortOnDrop<()>,
+}
+
+impl NatEntry {
+    pub(crate) fn new(
+        socket: Arc<UdpSocket>,
+        active: Arc<Mutex<Option<ActiveSession>>>,
+        user_counters: Arc<PerUserCounters>,
+        last_active_secs: Arc<AtomicU64>,
+        reader: tokio::task::JoinHandle<()>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            socket,
+            active,
+            user_counters,
+            last_active_secs,
+            _reader: AbortOnDrop::new(reader),
+        })
+    }
+
+    pub(crate) fn user_counters(&self) -> &PerUserCounters {
+        &self.user_counters
+    }
+
+    /// Set the active client session that should receive upstream responses,
+    /// along with the `UdpCipherMode` used to encrypt them. The previous session
+    /// (if any) is replaced; its channel may be closed.
+    ///
+    /// `stream_id` identifies the registering WS-stream (or
+    /// shadowsocks plain-UDP session). It is matched by
+    /// [`Self::detach_session_for_stream`] so a stream's park-on-drop
+    /// only clears the slot when we are still the registered owner.
+    pub(crate) fn register_session(
+        &self,
+        sender: UdpResponseSender,
+        session: UdpCipherMode,
+        stream_id: u64,
+    ) {
+        *self.active.lock() = Some(ActiveSession { sender, session, stream_id });
+    }
+
+    /// Atomically clears the active session slot iff its `stream_id`
+    /// matches `expected`. Returns `true` on detach. Used by the
+    /// SS-UDP-over-WS park path to release the entry's response sender
+    /// without disrupting other streams that may have taken over
+    /// in the meantime.
+    pub(crate) fn detach_session_for_stream(&self, expected: u64) -> bool {
+        let mut guard = self.active.lock();
+        match guard.as_ref() {
+            Some(active) if active.stream_id == expected => {
+                *guard = None;
+                true
+            },
+            _ => false,
+        }
+    }
+
+    /// Reset the idle-eviction timer.  Call after every successful outbound send.
+    pub(crate) fn touch(&self) {
+        self.last_active_secs
+            .store(clock::current_unix_secs(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn socket(&self) -> &UdpSocket {
+        &self.socket
+    }
+
+    pub(crate) fn last_active_secs(&self) -> &AtomicU64 {
+        &self.last_active_secs
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+pub(crate) fn random_session_id() -> Result<[u8; 8]> {
+    use ring::rand::{SecureRandom, SystemRandom};
+
+    let mut session_id = [0_u8; 8];
+    SystemRandom::new()
+        .fill(&mut session_id)
+        .map_err(|error| anyhow::anyhow!("failed to generate UDP session id: {error:?}"))?;
+    Ok(session_id)
+}

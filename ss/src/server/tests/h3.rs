@@ -1,0 +1,824 @@
+use std::{
+    collections::BTreeMap,
+    net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
+
+use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
+use axum::http::{Method, Request, StatusCode, Version, header};
+use futures_util::SinkExt;
+use futures_util::StreamExt;
+use h3::ext::Protocol as H3Protocol;
+use quinn::Endpoint;
+use sockudo_ws::{
+    Config as H3WsConfig, Http3 as H3Transport, Message as H3Message, Role as H3Role,
+    Stream as H3Stream, WebSocketServer as H3WebSocketServer, WebSocketStream as H3WebSocketStream,
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, UdpSocket},
+};
+
+use super::super::nat::NatTable;
+use super::super::setup::{VlessUserRoute, build_vless_transport_route_map};
+use super::super::shutdown::ShutdownSignal;
+use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
+use super::super::{DnsCache, build_user_routes, serve_h3_server};
+use super::{build_test_state, sample_config, test_h3_client_config, test_h3_server_tls};
+use crate::metrics::Metrics;
+use crate::protocol::TargetAddr;
+use crate::protocol::vless::{
+    COMMAND_MUX, COMMAND_TCP, COMMAND_UDP, VERSION, VlessUser, parse_uuid,
+};
+use crate::protocol::vless_mux::{
+    OPTION_DATA, ParsedFrame, SessionStatus, encode_frame, parse_frame,
+};
+use bytes::BytesMut;
+
+#[tokio::test]
+async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let config = sample_config(addr);
+    let user_routes = build_user_routes(&config)?;
+    let metrics = Metrics::new(&config);
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        user_routes,
+        metrics,
+        nat_table,
+        dns_cache,
+        false,
+        config.http_root_realm.clone(),
+    );
+    let server = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://localhost:{}/tcp", addr.port()))
+        .version(Version::HTTP_3)
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .extension(H3Protocol::WEBSOCKET)
+        .body(())?;
+
+    let stream = send_request.send_request(request).await?;
+    let mut stream = stream;
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.version(), Version::HTTP_3);
+
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+    socket.send(H3Message::Close(None)).await?;
+
+    driver.abort();
+    server.abort();
+    let _ = driver.await;
+    let _ = server.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut request = [0_u8; 4];
+        stream.read_exact(&mut request).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(request)
+    });
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let config = sample_config(addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
+    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
+        user: vless_user,
+        ws_path: Arc::from("/vless"),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: vless_routes,
+        xhttp_vless: Arc::new(BTreeMap::new()),
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(std::time::Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+    let server_task = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://localhost:{}/vless", addr.port()))
+        .version(Version::HTTP_3)
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .extension(H3Protocol::WEBSOCKET)
+        .body(())?;
+
+    let mut stream = send_request.send_request(request).await?;
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+
+    let mut payload = Vec::new();
+    payload.push(VERSION);
+    payload.extend_from_slice(&parse_uuid("550e8400-e29b-41d4-a716-446655440000")?);
+    payload.push(0);
+    payload.push(COMMAND_TCP);
+    payload.extend_from_slice(&upstream_addr.port().to_be_bytes());
+    payload.push(0x01);
+    payload.extend_from_slice(&[127, 0, 0, 1]);
+    payload.extend_from_slice(b"ping");
+    socket.send(H3Message::Binary(payload.into())).await?;
+
+    let response_header = match socket.next().await {
+        Some(Ok(H3Message::Binary(bytes))) => bytes,
+        other => anyhow::bail!("missing vless response header: {other:?}"),
+    };
+    assert_eq!(response_header.as_ref(), &[VERSION, 0x00]);
+
+    let reply = match socket.next().await {
+        Some(Ok(H3Message::Binary(bytes))) => bytes,
+        other => anyhow::bail!("missing vless upstream reply: {other:?}"),
+    };
+    assert_eq!(reply.as_ref(), b"pong");
+
+    socket.send(H3Message::Close(None)).await?;
+    assert_eq!(upstream_task.await??, *b"ping");
+
+    driver.abort();
+    server_task.abort();
+    let _ = driver.await;
+    let _ = server_task.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let mut config = sample_config(addr);
+    config.h3_listen = Some(addr);
+    config.h3_cert_path = Some("cert.pem".into());
+    config.h3_key_path = Some("key.pem".into());
+    config.http_root_auth = true;
+    let user_routes = build_user_routes(&config)?;
+    let metrics = Metrics::new(&config);
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        user_routes,
+        metrics,
+        nat_table,
+        dns_cache,
+        true,
+        config.http_root_realm.clone(),
+    );
+    let server = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("https://localhost:{}/", addr.port()))
+        .version(Version::HTTP_3)
+        .body(())?;
+
+    let mut stream = send_request.send_request(request).await?;
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        response
+            .headers()
+            .get(header::SET_COOKIE)
+            .context("missing HTTP/3 auth challenge cookie")?
+            .to_str()?
+            .contains("Max-Age=300")
+    );
+
+    driver.abort();
+    server.abort();
+    let _ = driver.await;
+    let _ = server.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<()> {
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let mut config = sample_config(addr);
+    config.h3_listen = Some(addr);
+    config.h3_cert_path = Some("cert.pem".into());
+    config.h3_key_path = Some("key.pem".into());
+    config.http_root_auth = true;
+    let user_routes = build_user_routes(&config)?;
+    let metrics = Metrics::new(&config);
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        user_routes,
+        metrics,
+        nat_table,
+        dns_cache,
+        true,
+        config.http_root_realm.clone(),
+    );
+    let server = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://localhost:{}/tcp", addr.port()))
+        .version(Version::HTTP_3)
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .extension(H3Protocol::WEBSOCKET)
+        .body(())?;
+
+    let mut stream = send_request.send_request(request).await?;
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+    socket.send(H3Message::Close(None)).await?;
+
+    driver.abort();
+    server.abort();
+    let _ = driver.await;
+    let _ = server.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let mut buf = [0_u8; 1500];
+        let (n, peer) = upstream.recv_from(&mut buf).await?;
+        let received = buf[..n].to_vec();
+        upstream.send_to(b"pong", peer).await?;
+        Result::<_, anyhow::Error>::Ok(received)
+    });
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let config = sample_config(addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
+    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
+        user: vless_user,
+        ws_path: Arc::from("/vless"),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: vless_routes,
+        xhttp_vless: Arc::new(BTreeMap::new()),
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(std::time::Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+    let server_task = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://localhost:{}/vless", addr.port()))
+        .version(Version::HTTP_3)
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .extension(H3Protocol::WEBSOCKET)
+        .body(())?;
+
+    let mut stream = send_request.send_request(request).await?;
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+
+    let mut frame = Vec::new();
+    frame.push(VERSION);
+    frame.extend_from_slice(&parse_uuid("550e8400-e29b-41d4-a716-446655440000")?);
+    frame.push(0);
+    frame.push(COMMAND_UDP);
+    frame.extend_from_slice(&upstream_addr.port().to_be_bytes());
+    frame.push(0x01);
+    frame.extend_from_slice(&[127, 0, 0, 1]);
+    let payload: &[u8] = b"ping";
+    frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    frame.extend_from_slice(payload);
+    socket.send(H3Message::Binary(frame.into())).await?;
+
+    let response_header = match socket.next().await {
+        Some(Ok(H3Message::Binary(bytes))) => bytes,
+        other => anyhow::bail!("missing vless response header: {other:?}"),
+    };
+    assert_eq!(response_header.as_ref(), &[VERSION, 0x00]);
+
+    let reply = match socket.next().await {
+        Some(Ok(H3Message::Binary(bytes))) => bytes,
+        other => anyhow::bail!("missing vless upstream udp reply: {other:?}"),
+    };
+    assert_eq!(reply.len(), 2 + 4);
+    let reply_len = u16::from_be_bytes([reply[0], reply[1]]) as usize;
+    assert_eq!(reply_len, 4);
+    assert_eq!(&reply[2..], b"pong");
+
+    socket.send(H3Message::Close(None)).await?;
+    assert_eq!(upstream_task.await??, b"ping");
+
+    driver.abort();
+    server_task.abort();
+    let _ = driver.await;
+    let _ = server_task.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
+    const PAYLOAD_LEN: usize = 2048;
+
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut request = vec![0_u8; PAYLOAD_LEN];
+        stream.read_exact(&mut request).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(request)
+    });
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let config = sample_config(addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
+    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
+        user: vless_user,
+        ws_path: Arc::from("/vless"),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: vless_routes,
+        xhttp_vless: Arc::new(BTreeMap::new()),
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(std::time::Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+    let server_task = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://localhost:{}/vless", addr.port()))
+        .version(Version::HTTP_3)
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .extension(H3Protocol::WEBSOCKET)
+        .body(())?;
+
+    let mut stream = send_request.send_request(request).await?;
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+
+    let mut payload_frame = Vec::new();
+    payload_frame.push(VERSION);
+    payload_frame.extend_from_slice(&parse_uuid("550e8400-e29b-41d4-a716-446655440000")?);
+    payload_frame.push(0);
+    payload_frame.push(COMMAND_TCP);
+    payload_frame.extend_from_slice(&upstream_addr.port().to_be_bytes());
+    payload_frame.push(0x01);
+    payload_frame.extend_from_slice(&[127, 0, 0, 1]);
+    let payload: Vec<u8> = (0..PAYLOAD_LEN).map(|i| (i % 251) as u8).collect();
+    payload_frame.extend_from_slice(&payload);
+    socket.send(H3Message::Binary(payload_frame.into())).await?;
+
+    let response_header = match socket.next().await {
+        Some(Ok(H3Message::Binary(bytes))) => bytes,
+        other => anyhow::bail!("missing vless response header: {other:?}"),
+    };
+    assert_eq!(response_header.as_ref(), &[VERSION, 0x00]);
+
+    let reply = match socket.next().await {
+        Some(Ok(H3Message::Binary(bytes))) => bytes,
+        other => anyhow::bail!("missing vless upstream reply: {other:?}"),
+    };
+    assert_eq!(reply.as_ref(), b"pong");
+
+    socket.send(H3Message::Close(None)).await?;
+    assert_eq!(upstream_task.await??, payload);
+
+    driver.abort();
+    server_task.abort();
+    let _ = driver.await;
+    let _ = server_task.await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut request = [0_u8; 4];
+        stream.read_exact(&mut request).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(request)
+    });
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let config = sample_config(addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new(
+        "550e8400-e29b-41d4-a716-446655440000".into(),
+        std::sync::Arc::from("test"),
+        None,
+    )?;
+    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
+        user: vless_user,
+        ws_path: Arc::from("/vless"),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: vless_routes,
+        xhttp_vless: Arc::new(BTreeMap::new()),
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(std::time::Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+    let server_task = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://localhost:{}/vless", addr.port()))
+        .version(Version::HTTP_3)
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .extension(H3Protocol::WEBSOCKET)
+        .body(())?;
+
+    let mut stream = send_request.send_request(request).await?;
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+
+    let mut payload = Vec::new();
+    payload.push(VERSION);
+    payload.extend_from_slice(&parse_uuid("550e8400-e29b-41d4-a716-446655440000")?);
+    payload.push(0);
+    payload.push(COMMAND_MUX);
+    payload.extend_from_slice(&0_u16.to_be_bytes());
+    payload.push(0x02);
+    let domain = b"v1.mux.cool";
+    payload.push(domain.len() as u8);
+    payload.extend_from_slice(domain);
+
+    let mut new_frame = BytesMut::new();
+    let target = TargetAddr::Socket(SocketAddr::from((Ipv4Addr::LOCALHOST, upstream_addr.port())));
+    encode_frame(
+        &mut new_frame,
+        1,
+        SessionStatus::New,
+        OPTION_DATA,
+        Some(crate::protocol::vless_mux::Network::Tcp),
+        Some(&target),
+        Some(b"ping"),
+    );
+    payload.extend_from_slice(&new_frame);
+    socket.send(H3Message::Binary(payload.into())).await?;
+
+    let response_header = match socket.next().await {
+        Some(Ok(H3Message::Binary(bytes))) => bytes,
+        other => anyhow::bail!("missing vless mux response header: {other:?}"),
+    };
+    assert_eq!(response_header.as_ref(), &[VERSION, 0x00]);
+
+    let reply = match socket.next().await {
+        Some(Ok(H3Message::Binary(bytes))) => bytes,
+        other => anyhow::bail!("missing mux upstream reply frame: {other:?}"),
+    };
+    let ParsedFrame { meta, data, consumed } =
+        parse_frame(&reply)?.expect("complete mux frame in single binary message");
+    assert_eq!(consumed, reply.len());
+    assert_eq!(meta.session_id, 1);
+    assert_eq!(meta.status, SessionStatus::Keep);
+    assert_eq!(data, Some(b"pong".as_ref()));
+
+    socket.send(H3Message::Close(None)).await?;
+    assert_eq!(upstream_task.await??, *b"ping");
+
+    driver.abort();
+    server_task.abort();
+    let _ = driver.await;
+    let _ = server_task.await;
+    Ok(())
+}

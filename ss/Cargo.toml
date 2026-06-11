@@ -1,0 +1,81 @@
+[package]
+name = "outline-ss-rust"
+version = "1.4.2"
+edition = "2024"
+
+[dependencies]
+aes = "0.8"
+anyhow = "1.0"
+arc-swap = "1.7"
+axum = { version = "0.8", features = ["ws", "http2"] }
+base64 = "0.22"
+blake3 = "1.8"
+bytes = "1.10"
+chacha20poly1305 = "0.10"
+clap = { version = "4.5", features = ["derive", "env"] }
+dashmap = "6"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+hyper = { version = "1.8", features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "server", "server-auto", "service", "tokio"] }
+http-body-util = "0.1"
+libc = "0.2"
+libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"] }
+lru = "0.18"
+md-5 = "0.10"
+mimalloc = { version = "0.1", default-features = false }
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+metrics-util = { version = "0.20", default-features = false, features = ["recency"] }
+hashbrown = "0.15"
+parking_lot = "0.12"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pemfile = "2.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+socket2 = "0.5"
+sockudo-ws = { version = "1.7.3", default-features = false, features = ["tokio", "http3", "fastrand"] }
+subtle = "2.6"
+thiserror = "2.0"
+tokio = { version = "1.48", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
+tokio-rustls = "0.26"
+tungstenite = { version = "0.28", default-features = false }
+toml = "0.9"
+toml_edit = { version = "0.23", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "tracing-log"] }
+webpki-roots = "1.0"
+x509-parser = "0.18"
+
+[features]
+default = ["control"]
+control = []
+
+[dev-dependencies]
+proptest = "1.5"
+rcgen = "0.14"
+# `test-util` enables tokio's paused virtual clock so timer-driven paths
+# (e.g. the WebSocket writer's control-flush cadence) can be tested without
+# real-time sleeps.
+tokio = { version = "1.48", features = ["test-util"] }
+tokio-tungstenite = "0.28"
+# Cross-repo end-to-end tests dial the real `outline-ws-rust` client
+# against this server (sibling repo, not published). The path dep
+# only kicks in for `cargo test` / `cargo check --tests`; the
+# release binary does not build it.
+outline-transport = { path = "../outline-ws-rust/crates/outline-transport", features = ["h3", "test-tls"] }
+url = "2.5"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[patch.crates-io]
+h3 = { path = "vendor/h3" }
+sockudo-ws = { path = "vendor/sockudo-ws" }
