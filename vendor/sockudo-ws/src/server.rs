@@ -622,7 +622,9 @@ impl WebSocketServer<Http3> {
 
             tokio::spawn(async move {
                 if let Err(e) = handle_http3_connection(incoming, handler, config).await {
-                    eprintln!("HTTP/3 connection error: {}", e);
+                    if !is_normal_h3_shutdown(&e) {
+                        eprintln!("HTTP/3 connection error: {}", e);
+                    }
                 }
             });
         }
@@ -660,7 +662,9 @@ impl WebSocketServer<Http3> {
                 if let Err(e) =
                     handle_http3_connection_filtered(incoming, filter, handler, config).await
                 {
-                    eprintln!("HTTP/3 connection error: {}", e);
+                    if !is_normal_h3_shutdown(&e) {
+                        eprintln!("HTTP/3 connection error: {}", e);
+                    }
                 }
             });
         }
@@ -720,7 +724,9 @@ where
             },
             Ok(None) => break,
             Err(e) => {
-                eprintln!("HTTP/3 accept error: {}", e);
+                if !is_normal_h3_shutdown(&e) {
+                    eprintln!("HTTP/3 accept error: {}", e);
+                }
                 break;
             },
         }
@@ -774,7 +780,9 @@ where
             },
             Ok(None) => break,
             Err(e) => {
-                eprintln!("HTTP/3 accept error: {}", e);
+                if !is_normal_h3_shutdown(&e) {
+                    eprintln!("HTTP/3 accept error: {}", e);
+                }
                 break;
             },
         }
@@ -835,6 +843,19 @@ where
     handler(ws, ws_req).await;
 
     Ok(())
+}
+
+#[cfg(feature = "http3")]
+fn is_normal_h3_shutdown(error: &dyn std::error::Error) -> bool {
+    let message = error.to_string();
+    message.contains("ApplicationClose: H3_NO_ERROR")
+        || message.contains("Remote error: ApplicationClose: H3_NO_ERROR")
+        || message.contains("ApplicationClose: 0x0")
+        || message.contains(
+            "InternalError in the quic trait implementation: internal error in the http stack",
+        )
+        || message.contains("Connection error: Timeout")
+        || message.contains("Timeout")
 }
 
 #[cfg(feature = "http3")]
