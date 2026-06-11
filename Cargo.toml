@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+# Two binaries (server + client) over shared crates. The vendored sockudo-ws
+# is listed explicitly so workspace checks see the vendor participant (Cargo
+# would otherwise hide an in-tree path dependency).
+members = [
+    "bins/outline-ss-rust",
+    "bins/outline-ws-rust",
+    "crates/outline-metrics",
+    "crates/outline-net",
+    "crates/outline-routing",
+    "crates/outline-ss2022",
+    "crates/outline-transport",
+    "crates/outline-tun",
+    "crates/outline-uplink",
+    "crates/shadowsocks-crypto",
+    "crates/socks5-proto",
+    "vendor/sockudo-ws",
+]
+
+# Shared release profile. lto="fat" + single codegen unit + panic=abort match
+# the previous per-repo release builds (ws used lto=true, which is "fat").
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Router build (memory-constrained MIPS/armv7): size over throughput. Use:
+# cargo zigbuild --profile release-router --no-default-features --features router -p outline-ws-rust
+[profile.release-router]
+inherits = "release"
+opt-level = "z"
+
+# HTTP/3 WebSocket path depends on these patched copies — do not drop.
+[patch.crates-io]
+h3 = { path = "vendor/h3" }
+sockudo-ws = { path = "vendor/sockudo-ws" }
