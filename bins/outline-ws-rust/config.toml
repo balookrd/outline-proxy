@@ -609,3 +609,21 @@ via = "main"
 # file_poll_secs = 60
 # via = "backup"
 # fallback_via = "main"
+
+# Reverse tunnel listener (topology A): accept QUIC carriers dialed by
+# outline-ss-rust peers behind NAT and route traffic out through them.
+# Pin each peer's client cert (mTLS) and give its Shadowsocks credentials.
+# See docs/REVERSE-TUNNEL.md.
+# [reverse_listener]
+# enabled = true
+# listen = "0.0.0.0:8443"               # UDP bind for the QUIC server endpoint
+# server_cert_path = "/etc/outline-ws/ws-server.crt"
+# server_key_path  = "/etc/outline-ws/ws-server.key"
+# group = "reverse"                     # route traffic here via [[route]] via = "reverse"
+# mtu = true                            # advertise [ss-mtu, ss] (default true)
+# max_peers = 8                         # cap on concurrent peers (default 8)
+#
+# [[reverse_listener.peers]]
+# client_cert_pin = "aa:bb:cc:..."      # SHA-256 of the ss client cert (DER)
+# method = "2022-blake3-aes-256-gcm"    # must match an ss server user
+# password = "<base64-psk-or-password>"
