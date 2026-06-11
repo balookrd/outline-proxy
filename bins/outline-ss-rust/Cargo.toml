@@ -41,7 +41,7 @@ sockudo-ws = { version = "1.7.3", default-features = false, features = ["tokio",
 subtle = "2.6"
 thiserror = "2.0"
 tokio = { version = "1.48", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
-tokio-rustls = "0.26"
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
 tungstenite = { version = "0.28", default-features = false }
 toml = "0.9"
 toml_edit = { version = "0.23", features = ["serde"] }
@@ -56,7 +56,10 @@ control = []
 
 [dev-dependencies]
 proptest = "1.5"
-rcgen = "0.14"
+# Pin rcgen to the ring backend. Its default `aws_lc_rs` backend would add a
+# second rustls CryptoProvider to the shared workspace graph, making rustls
+# unable to pick a process-level default (breaks ws-rust's tls_probe tests).
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
 # `test-util` enables tokio's paused virtual clock so timer-driven paths
 # (e.g. the WebSocket writer's control-flush cadence) can be tested without
 # real-time sleeps.
