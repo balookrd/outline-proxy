@@ -1,0 +1,494 @@
+//! Per-uplink, per-transport "active wire" state machine.
+//!
+//! For an uplink declared with `[[outline.uplinks.fallbacks]]`, the active
+//! wire is the index into `[primary, fallbacks[0], fallbacks[1], ...]` of the
+//! wire that subsequent **new sessions** should start with. The dial loop
+//! still tries every wire in a single session (so a freshly-broken active
+//! wire still recovers via fallback inside that session), but the per-session
+//! starting point is sticky across sessions until either the active wire
+//! has accumulated `probe.min_failures` consecutive dial failures or the
+//! auto-failback timer fires.
+//!
+//! Auto-failback uses the existing `LoadBalancingConfig::mode_downgrade_duration`
+//! knob — one timer for both per-wire mode downgrades and per-uplink
+//! active-wire pinning. When the pin expires, the active wire snaps back to
+//! the primary (index 0) so the next session retries the operator's
+//! configured first-choice wire.
+//!
+//! State is per-transport (TCP and UDP advance independently) — TCP failures
+//! must not flip a UDP wire that may still be working, and vice versa.
+//! Probe rerouting onto the active wire and snapshot/dashboard exposure of
+//! this state are wired in subsequent commits.
+//!
+//! For uplinks **without** any fallbacks, every method here is a no-op or
+//! returns the trivial answer (`active_wire = 0`, dial order = `[0]`).
+
+use rand::Rng;
+use tokio::time::{Instant, sleep};
+use tracing::{debug, info, warn};
+
+use super::standby::resume_cache_key;
+use crate::types::{TransportKind, UplinkManager};
+
+impl UplinkManager {
+    /// Drain the warm-standby deque for `(uplink_index, transport)`.
+    ///
+    /// The pool today holds sockets dialed against the parent uplink's
+    /// **primary** wire; when active_wire advances away from primary
+    /// (0 → 1+), those sockets are now to the wire we just abandoned
+    /// because it has been failing. Holding them until the next probe
+    /// cycle's `validate` peek would either dispatch a stale socket to
+    /// a session that lands on primary again (rare but possible) or
+    /// keep an FD alive needlessly. Drain on transition is the cleanup.
+    ///
+    /// Per-wire warm pools (separate slots for primary vs each
+    /// fallback) are a follow-up; until they land, this drain is a
+    /// no-op on the fallback side because no fallback sockets are ever
+    /// pooled in the first place.
+    pub async fn drain_standby_pool(&self, uplink_index: usize, transport: TransportKind) {
+        let pool = match self.inner.standby_pools.get(uplink_index) {
+            Some(p) => p,
+            None => return,
+        };
+        let mut guard = match transport {
+            TransportKind::Tcp => pool.tcp.lock().await,
+            TransportKind::Udp => pool.udp.lock().await,
+        };
+        if guard.is_empty() {
+            return;
+        }
+        let drained = guard.len();
+        guard.clear();
+        debug!(
+            uplink_index,
+            transport = ?transport,
+            drained,
+            "drained warm-standby pool on active-wire transition",
+        );
+    }
+}
+
+impl UplinkManager {
+    /// Public-facing handle for the cross-transport resume-cache key used by
+    /// the dial paths to look up / store an `X-Outline-Resume` token. The
+    /// key is identity-level (parent uplink name + transport label, no wire
+    /// disambiguation) so primary and fallback dials of the same uplink
+    /// share the same upstream session token — enabling handover-via-resume
+    /// when the dial loop switches wires mid-flight.
+    ///
+    /// `transport_label` must be one of `"tcp"` / `"udp"`.
+    pub fn resume_cache_key_for(&self, uplink_name: &str, transport_label: &str) -> String {
+        resume_cache_key(uplink_name, transport_label)
+    }
+
+    /// Read the currently-active wire index for `uplink_index` on `transport`.
+    /// Performs an inline pin-expiry check: if the auto-failback pin has
+    /// expired, the pin is cleared so the state machine is free to advance
+    /// again on the next failure — but the active wire itself is **not**
+    /// forced back to primary. Auto-failback to primary is probe-driven
+    /// (the early-failback block in `record_transport_success` snaps active
+    /// back to 0 once `min_failures` consecutive primary probes succeed),
+    /// not timer-driven, so an active fallback wire that is actually
+    /// delivering traffic stays in place until probe confirms primary
+    /// recovery. The previous timer-driven snap forced a periodic `0 → 1
+    /// → 2 → 0` cycle through known-broken wires whenever primary
+    /// remained dead, walking real user-flows back through every failed
+    /// wire each pin window — fixed here.
+    ///
+    /// Always `0` for uplinks declared without `[[outline.uplinks.fallbacks]]`.
+    pub fn active_wire(&self, uplink_index: usize, transport: TransportKind) -> u8 {
+        let now = Instant::now();
+        self.inner.with_status_mut(uplink_index, |status| {
+            let st = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            if let Some(until) = st.active_wire_pinned_until {
+                if until <= now {
+                    st.active_wire_pinned_until = None;
+                    st.active_wire_streak = 0;
+                }
+            }
+            st.active_wire
+        })
+    }
+
+    /// Build the per-session dial order over the wire chain
+    /// `[primary, fallbacks[0], ..., fallbacks[total_wires-1]]`. Returns
+    /// indices in the order they should be tried this session: starting at
+    /// the currently-active wire, then continuing through the chain wrapping
+    /// at the end so primary still gets tried as a last resort even when
+    /// active is pinned to a fallback.
+    ///
+    /// `total_wires` is `1 + uplink.fallbacks.len()`. Caller passes it
+    /// explicitly to keep this module independent of the uplink config slice.
+    pub fn wire_dial_order(
+        &self,
+        uplink_index: usize,
+        transport: TransportKind,
+        total_wires: usize,
+    ) -> Vec<u8> {
+        if total_wires <= 1 {
+            return vec![0];
+        }
+        let active = self.active_wire(uplink_index, transport) as usize;
+        let active = active.min(total_wires - 1); // defensive cap
+        let total = total_wires as u8;
+        let mut order = Vec::with_capacity(total_wires);
+        for offset in 0..total_wires {
+            let idx = ((active + offset) % total_wires) as u8;
+            order.push(idx);
+        }
+        debug_assert_eq!(order.len(), total_wires);
+        debug_assert!(order.iter().all(|&i| i < total));
+        order
+    }
+
+    /// Record the outcome of a single wire dial attempt. Drives the active-
+    /// wire transitions:
+    ///
+    /// - **Success** on `attempted_wire`: clears `active_wire_streak`. The
+    ///   active wire is *not* changed by a success — sticky behaviour is
+    ///   driven entirely by failures and the auto-failback timer.
+    /// - **Failure** on `attempted_wire`: increments `active_wire_streak`
+    ///   when the failed wire matches the current active wire (failures on
+    ///   non-active wires inside the same session are session-local fallback
+    ///   churn and don't influence the sticky state machine). When the
+    ///   streak reaches `min_failures` and at least one alternative wire
+    ///   exists (`total_wires > 1`), `active_wire` advances to the next wire
+    ///   in the chain (wrapping at `total_wires`), the streak resets, and
+    ///   `active_wire_pinned_until` is set to `now + mode_downgrade_duration`
+    ///   to keep the new active sticky for that window.
+    ///
+    /// `min_failures` comes from the per-group `ProbeConfig`, mirroring the
+    /// existing health-flip threshold so operators don't have to learn a new
+    /// knob.
+    pub fn record_wire_outcome(
+        &self,
+        uplink_index: usize,
+        transport: TransportKind,
+        attempted_wire: u8,
+        success: bool,
+        total_wires: usize,
+    ) {
+        if total_wires <= 1 {
+            return;
+        }
+        let min_failures = self.inner.probe.min_failures.max(1) as u32;
+        let pin_window = self.inner.load_balancing.mode_downgrade_duration;
+        let failure_cooldown = self.inner.load_balancing.failure_cooldown;
+        let now = Instant::now();
+        let group_name = self.inner.group_name.clone();
+        let uplink_name = self.inner.uplinks[uplink_index].name.clone();
+        let total = total_wires as u8;
+        let total_u32 = total_wires as u32;
+        // Only the shuffle_wires mode interprets a full round-trip of
+        // active_wire advancements as "every wire is dead" and surrenders
+        // to uplink-failover. Legacy chains keep wrapping forever; the
+        // operator-ordered primary is special-cased on wrap-back-to-zero
+        // by the existing pin reset above and unrelated to this counter.
+        let shuffle_wires = self.inner.uplinks[uplink_index].shuffle_wires;
+
+        // We collect the transition signal inside the sync `with_status_mut`
+        // closure and act on it (spawn the async pool drain) after the
+        // status lock is released — async work can't happen inside the
+        // sync closure.
+        let mut transition_away_from_primary = false;
+        let mut chain_exhausted = false;
+
+        self.inner.with_status_mut(uplink_index, |status| {
+            let st = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            if success {
+                // Stamp the any-wire liveness timestamp regardless of which
+                // wire succeeded — this is the signal `selection_health`
+                // uses to keep an uplink in the candidate set when the
+                // probe has marked the *primary* wire unhealthy but a
+                // fallback wire is doing the actual work.
+                st.last_any_wire_success = Some(now);
+                if attempted_wire == st.active_wire {
+                    st.active_wire_streak = 0;
+                }
+                // ANY working wire (primary or fallback) means traffic has
+                // stabilised, so the shuffle_wires round counter resets —
+                // the next failure starts a fresh forward sweep from
+                // wherever active_wire currently points.
+                st.wires_failed_in_round = 0;
+                return;
+            }
+            // Failure on a non-active wire is session-local churn — the
+            // active wire's sticky state machine is driven only by failures
+            // on the wire that *new sessions* land on.
+            if attempted_wire != st.active_wire {
+                return;
+            }
+            st.active_wire_streak = st.active_wire_streak.saturating_add(1);
+            if st.active_wire_streak < min_failures {
+                return;
+            }
+            // shuffle_wires "vertical carrier cascade" gate: hold off
+            // the wire-rotation step while the active wire still has
+            // unused ranks in its carrier-downgrade stack (xhttp_h3 →
+            // xhttp_h2 → xhttp_h1, ws_h3 → ws_h2 → ws_h1). The
+            // failure that brought us here was already routed through
+            // `extend_mode_downgrade` upstream, which caps one rank
+            // lower; surfacing the wire-advance now would skip the
+            // intermediate ranks and jump straight to the next wire.
+            // Once the wire's effective mode reaches the floor of its
+            // family (h1) — or the family has no descent stack at
+            // all, e.g. Shadowsocks direct — the gate releases and
+            // the rotation step fires like the legacy chain.
+            //
+            // Streak is reset here too: the next batch of failures on
+            // the new (capped) carrier starts a fresh per-wire budget
+            // before being held up against the gate again.
+            if shuffle_wires
+                && !super::mode_downgrade::wire_is_at_carrier_floor(
+                    &self.inner.uplinks[uplink_index],
+                    st,
+                    transport,
+                    attempted_wire,
+                )
+            {
+                st.active_wire_streak = 0;
+                return;
+            }
+            // Streak threshold reached — advance the active wire.
+            let previous = st.active_wire;
+            let next = (previous + 1) % total;
+            st.active_wire = next;
+            st.active_wire_streak = 0;
+            // Pin the new active wire only when we moved away from primary;
+            // wrapping back to primary clears the pin so the next session is
+            // a clean retry from the operator's first-choice wire.
+            st.active_wire_pinned_until = if next == 0 { None } else { Some(now + pin_window) };
+            transition_away_from_primary = previous == 0 && next != 0;
+            info!(
+                group = %group_name,
+                uplink = %uplink_name,
+                transport = ?transport,
+                previous_wire = previous,
+                new_wire = next,
+                pin_window_secs = pin_window.as_secs(),
+                "active wire advanced after consecutive dial failures",
+            );
+            outline_metrics::record_failover(
+                match transport {
+                    TransportKind::Tcp => "tcp_active_wire",
+                    TransportKind::Udp => "udp_active_wire",
+                },
+                &group_name,
+                &previous.to_string(),
+                &next.to_string(),
+            );
+            debug!(
+                uplink = %uplink_name,
+                transport = ?transport,
+                "active_wire_streak reset; pin = {:?}",
+                st.active_wire_pinned_until,
+            );
+            // shuffle_wires accounting: fresh wire = fresh failure budget
+            // for downstream gates (probe-driven healthy flip in
+            // `record_transport_failure`, runtime-driven flip in
+            // `report_runtime_failure_inner`). Resetting these here keeps
+            // the per-wire semantics consistent with the probe-driven
+            // advance in `advance_active_wire_on_probe_failure`.
+            if shuffle_wires {
+                st.consecutive_failures = 0;
+                st.consecutive_runtime_failures = 0;
+                st.wires_failed_in_round = st.wires_failed_in_round.saturating_add(1);
+                if st.wires_failed_in_round >= total_u32 {
+                    // Chain exhausted: every wire has been the active wire
+                    // of a failed round since the last success. Force the
+                    // uplink-level health flip and cooldown right here so
+                    // the load balancer drops us from candidates on its
+                    // next pass — no recursive `report_runtime_failure`
+                    // hop required.
+                    chain_exhausted = true;
+                    st.wires_failed_in_round = 0;
+                    st.healthy = Some(false);
+                    st.cooldown_until = Some(now + failure_cooldown);
+                }
+            }
+        });
+
+        // Drain the warm-standby pool when active just moved off primary —
+        // see `drain_standby_pool` for the rationale. Spawned because we
+        // cannot `.await` inside the sync `with_status_mut` closure above;
+        // ordering with subsequent dials is fine because a stale socket
+        // arriving before the drain completes still gets liveness-peeked
+        // by the standby validate path before being handed out.
+        if transition_away_from_primary && tokio::runtime::Handle::try_current().is_ok() {
+            // `try_current` guards the unit-test path: those tests call
+            // `record_wire_outcome` synchronously from a `#[test]` (no
+            // tokio runtime), and `tokio::spawn` would panic. The drain
+            // is best-effort cleanup anyway — production callers always
+            // run inside the tokio runtime, so the guard short-circuits
+            // only in tests.
+            let manager = self.clone();
+            tokio::spawn(async move {
+                manager.drain_standby_pool(uplink_index, transport).await;
+            });
+        }
+
+        // Round exhausted: every wire of the chain has been advanced
+        // through without an intervening success on this transport.
+        // The healthy flip + cooldown are applied inside the lock above,
+        // so out here we only emit the operator-facing log + metric. A
+        // later wire success or probe success resets the round counter
+        // via `record_wire_outcome(success=true)` /
+        // `record_transport_success`; probe recovery clears the cooldown
+        // and re-flips `healthy = Some(true)` through the existing
+        // health-recovery paths.
+        if chain_exhausted {
+            warn!(
+                group = %group_name,
+                uplink = %uplink_name,
+                transport = ?transport,
+                total_wires,
+                "shuffle_wires round exhausted: every wire failed since last success, surrendering to uplink-failover",
+            );
+            let kind = match transport {
+                TransportKind::Tcp => "tcp_shuffle_round_exhausted",
+                TransportKind::Udp => "udp_shuffle_round_exhausted",
+            };
+            outline_metrics::record_failover(kind, &group_name, &uplink_name, &uplink_name);
+        }
+    }
+
+    /// Reroll the active wire on both transports for `uplink_index` to a
+    /// fresh random index drawn from `0..total_wires`. Powers the
+    /// `shuffle_timer` scheduler: a periodic task fires this on each
+    /// tick so an uplink that has been serving traffic on the same
+    /// wire for hours pivots to a different carrier shape on schedule
+    /// (defence against time-based DPI heuristics).
+    ///
+    /// The reroll is per-transport — TCP and UDP land on independently
+    /// chosen wires — and resets the per-wire failure budgets
+    /// (`active_wire_streak`, `wires_failed_in_round`,
+    /// `consecutive_failures`, `consecutive_runtime_failures`) so the
+    /// new wire starts from a clean budget rather than inheriting any
+    /// accumulated failure history from the wire it just replaced.
+    /// The mode-downgrade cap (if any) is also cleared because the
+    /// new wire's carrier stack is independent of the old wire's; a
+    /// stale cap installed for a previous wire would otherwise persist
+    /// across the pivot and skew the dial-time mode for the freshly-
+    /// chosen wire.
+    ///
+    /// No-op for uplinks without any fallbacks (the chain is a
+    /// singleton; nothing to reroll to).
+    ///
+    /// Returns the `(tcp_wire, udp_wire)` pair the uplink landed on,
+    /// or `None` for the no-fallback case.
+    pub fn rotate_active_wire(&self, uplink_index: usize) -> Option<(u8, u8)> {
+        let uplink = &self.inner.uplinks[uplink_index];
+        let total_wires = 1 + uplink.fallbacks.len();
+        if total_wires <= 1 {
+            return None;
+        }
+        let total = total_wires as u8;
+        let (tcp_wire, udp_wire) = {
+            let mut rng = rand::thread_rng();
+            (rng.gen_range(0..total), rng.gen_range(0..total))
+        };
+        let group_name = self.inner.group_name.clone();
+        let uplink_name = uplink.name.clone();
+        let now = Instant::now();
+        let pin_window = self.inner.load_balancing.mode_downgrade_duration;
+        self.inner.with_status_mut(uplink_index, |status| {
+            let apply = |st: &mut super::status::PerTransportStatus, new_wire: u8| {
+                // Reset every per-wire counter so the freshly-rotated
+                // wire is judged on its own dial / probe / runtime
+                // failures from this point forward, not on whatever
+                // streak the previous wire had accumulated.
+                st.active_wire = new_wire;
+                st.active_wire_streak = 0;
+                st.wires_failed_in_round = 0;
+                st.consecutive_failures = 0;
+                st.consecutive_runtime_failures = 0;
+                st.chunk0_consecutive_failures = 0;
+                // Pin the freshly-rolled wire for the standard
+                // mode-downgrade duration window, except when we
+                // happen to roll back to primary — primary is never
+                // pinned (matches the dial-path / probe-path advance
+                // semantics).
+                st.active_wire_pinned_until =
+                    if new_wire == 0 { None } else { Some(now + pin_window) };
+                // Wipe any in-flight mode-downgrade cap left over from
+                // the previous wire — the new wire's carrier stack is
+                // independent and starts at the configured rank.
+                st.mode_downgrade_until = None;
+                st.mode_downgrade_capped_to = None;
+                st.recovery_probe_success_streak = 0;
+                st.recovery_probe_cooldown_until = None;
+            };
+            apply(&mut status.tcp, tcp_wire);
+            apply(&mut status.udp, udp_wire);
+        });
+        info!(
+            group = %group_name,
+            uplink = %uplink_name,
+            tcp_wire,
+            udp_wire,
+            total_wires,
+            "shuffle_timer reroll: active wire randomized for both transports",
+        );
+        outline_metrics::record_failover(
+            "tcp_shuffle_timer",
+            &group_name,
+            &uplink_name,
+            &uplink_name,
+        );
+        outline_metrics::record_failover(
+            "udp_shuffle_timer",
+            &group_name,
+            &uplink_name,
+            &uplink_name,
+        );
+        Some((tcp_wire, udp_wire))
+    }
+
+    /// Spawn one background tokio task per uplink that has
+    /// `shuffle_timer = Some(_)` configured. Each task wakes up every
+    /// `shuffle_timer` interval and calls [`Self::rotate_active_wire`].
+    /// Uplinks without a configured interval, or with no fallbacks
+    /// (where rotation is a no-op anyway), are skipped — no idle
+    /// task is created for them.
+    ///
+    /// The tasks honour the manager's shutdown channel and exit
+    /// promptly on graceful shutdown.
+    pub fn spawn_shuffle_timer_loops(&self) {
+        for (index, uplink) in self.inner.uplinks.iter().enumerate() {
+            let Some(interval) = uplink.shuffle_timer else { continue };
+            if uplink.fallbacks.is_empty() {
+                debug!(
+                    uplink = %uplink.name,
+                    "shuffle_timer set but uplink has no fallbacks — no rotation task spawned"
+                );
+                continue;
+            }
+            let manager = self.clone();
+            let mut shutdown = self.shutdown_rx();
+            let uplink_name = uplink.name.clone();
+            let group_name = self.inner.group_name.clone();
+            info!(
+                group = %group_name,
+                uplink = %uplink_name,
+                interval_secs = interval.as_secs(),
+                "shuffle_timer rotation loop spawned",
+            );
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = shutdown.changed() => break,
+                        _ = sleep(interval) => {}
+                    }
+                    manager.rotate_active_wire(index);
+                }
+            });
+        }
+    }
+}

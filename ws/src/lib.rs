@@ -1,0 +1,62 @@
+//! outline-ws-rust — main binary crate.
+//!
+//! Wires together: configuration loading ([`config`]), startup and listener
+//! binding (private `bootstrap` module), SOCKS5 TCP/UDP ingress ([`proxy`]),
+//! and the optional read-only metrics and authenticated control-plane HTTP
+//! listeners ([`http`]).
+
+pub(crate) mod client_io;
+pub mod config;
+pub(crate) mod error_class;
+#[cfg(any(feature = "metrics", feature = "control", feature = "dashboard"))]
+pub mod http;
+pub mod memory;
+pub mod metrics;
+pub mod proxy;
+
+mod bootstrap;
+
+pub use bootstrap::run_with_config;
+
+use anyhow::{Result, anyhow};
+use rustls::crypto::ring;
+
+use crate::config::{Args, load_config};
+use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
+
+pub fn init_rustls_crypto_provider() -> Result<()> {
+    let provider = ring::default_provider();
+    match provider.install_default() {
+        Ok(()) => Ok(()),
+        Err(_) if rustls::crypto::CryptoProvider::get_default().is_some() => Ok(()),
+        Err(_) => Err(anyhow!("failed to install rustls ring CryptoProvider")),
+    }
+}
+
+pub async fn run(args: Args) -> Result<()> {
+    if args.migrate_config {
+        let changed = config::migrate_config_file(&args.config).await?;
+        if changed {
+            tracing::info!(
+                path = %args.config.display(),
+                "config: migration persisted; original saved as .bak",
+            );
+        } else {
+            tracing::info!(
+                path = %args.config.display(),
+                "config: no legacy fields detected; nothing to migrate",
+            );
+        }
+        return Ok(());
+    }
+
+    init_metrics();
+    spawn_process_metrics_sampler();
+    let config = load_config(&args.config, &args).await?;
+    outline_transport::init_h2_window_sizes(
+        config.h2.initial_stream_window_size,
+        config.h2.initial_connection_window_size,
+    );
+    outline_net::init_udp_socket_bufs(config.udp_recv_buf_bytes, config.udp_send_buf_bytes);
+    run_with_config(config, args).await
+}

@@ -1,0 +1,201 @@
+name: Release Build
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      checkout_ref:
+        required: false
+        type: string
+        default: ""
+      prerelease:
+        required: false
+        type: boolean
+        default: false
+      make_latest:
+        required: false
+        type: string
+        default: "true"
+      release_name:
+        required: false
+        type: string
+        default: ""
+      artifact_version:
+        required: false
+        type: string
+        default: ""
+      rolling_tag:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact_name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            artifact_name: server-x86_64-unknown-linux-musl
+            profile: release
+            flavor: server
+
+          - target: aarch64-unknown-linux-musl
+            artifact_name: server-aarch64-unknown-linux-musl
+            profile: release
+            flavor: server
+
+          - target: x86_64-unknown-linux-musl
+            artifact_name: router-x86_64-unknown-linux-musl
+            profile: release-router
+            flavor: router
+
+          - target: aarch64-unknown-linux-musl
+            artifact_name: router-aarch64-unknown-linux-musl
+            profile: release-router
+            flavor: router
+
+    steps:
+      - id: vars
+        name: Resolve workflow variables
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ inputs.tag }}"
+          checkout_ref="${{ inputs.checkout_ref }}"
+          release_name="${{ inputs.release_name }}"
+          artifact_version="${{ inputs.artifact_version }}"
+
+          if [[ -z "$checkout_ref" ]]; then
+            checkout_ref="$tag"
+          fi
+
+          if [[ -z "$release_name" ]]; then
+            release_name="Release $tag"
+          fi
+
+          if [[ -z "$artifact_version" ]]; then
+            if [[ "$tag" == v* ]]; then
+              artifact_version="${tag#v}"
+            else
+              artifact_version="$tag"
+            fi
+          fi
+
+          echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+          echo "artifact_version=$artifact_version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.vars.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: Build release asset
+        shell: bash
+        env:
+          VERSION: ${{ steps.vars.outputs.artifact_version }}
+        run: |
+          set -euo pipefail
+          ./.github/scripts/build-release-asset.sh \
+            "${{ matrix.target }}" \
+            "${{ matrix.profile }}" \
+            "${{ matrix.flavor }}" \
+            dist
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ matrix.artifact_name }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v5
+        if: ${{ inputs.rolling_tag }}
+        with:
+          fetch-depth: 0
+
+      - name: Move rolling tag
+        if: ${{ inputs.rolling_tag }}
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ inputs.checkout_ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin --tags --force
+          git tag -f "$TAG" "$REF"
+          git push origin "refs/tags/$TAG" --force
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS.txt
+
+      - name: Delete old nightly assets
+        if: ${{ inputs.rolling_tag }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Nightly release does not exist yet, nothing to clean."
+            exit 0
+          fi
+
+          mapfile -t assets < <(gh release view "$TAG" --json assets --jq '.assets[].name')
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "No old assets to delete."
+            exit 0
+          fi
+
+          for asset in "${assets[@]}"; do
+            echo "Deleting old asset: $asset"
+            gh release delete-asset "$TAG" "$asset" --yes
+          done
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.release_name != '' && inputs.release_name || format('Release {0}', inputs.tag) }}
+          prerelease: ${{ inputs.prerelease }}
+          make_latest: ${{ inputs.make_latest }}
+          generate_release_notes: ${{ !inputs.rolling_tag }}
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt

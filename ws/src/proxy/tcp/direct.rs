@@ -1,0 +1,249 @@
+use std::net::SocketAddr;
+
+use anyhow::{Context, Result, anyhow};
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
+use tokio::time::timeout;
+use tracing::info;
+
+use crate::proxy::TcpTimeouts;
+use outline_metrics as metrics;
+use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
+use socks5_proto::{SOCKS_REP_SUCCESS, TargetAddr, send_reply, socket_addr_to_target};
+
+// Direct TCP sessions (bypass-routed) are held open as long as both sides
+// keep the connection alive.  Applications such as DNS-over-HTTPS/TLS clients
+// open a new TCP+TLS connection per query burst and then abandon the old one
+// without sending FIN — the HTTP/2 server keeps its side open.  Without a
+// bound these accumulate indefinitely.
+//
+// `direct_idle` (from TcpTimeouts) closes a direct session once BOTH
+// directions have been silent for this long.  Activity in either direction
+// resets the timer.  Default 2 min: generous for DoH/DoT (a silent connection
+// is always abandoned) while safe for periodic-push traffic (Telegram, FCM,
+// etc. send heartbeats every 30–60 s so their connections will never hit it).
+
+pub(super) async fn relay_tcp_direct(
+    mut client: TcpStream,
+    target: TargetAddr,
+    fwmark: Option<u32>,
+    cache: &outline_transport::DnsCache,
+    timeouts: TcpTimeouts,
+) -> Result<()> {
+    let addr = match &target {
+        TargetAddr::IpV4(ip, port) => SocketAddr::new(std::net::IpAddr::V4(*ip), *port),
+        TargetAddr::IpV6(ip, port) => SocketAddr::new(std::net::IpAddr::V6(*ip), *port),
+        TargetAddr::Domain(host, port) => outline_transport::resolve_host_with_preference(
+            cache,
+            host,
+            *port,
+            &format!("failed to resolve {target}"),
+            false,
+        )
+        .await?
+        .first()
+        .copied()
+        .ok_or_else(|| anyhow!("no address resolved for {target}"))?,
+    };
+
+    let upstream = outline_net::connect_tcp_socket(addr, fwmark)
+        .await
+        .with_context(|| format!("direct TCP connect to {target} failed"))?;
+
+    let bound_addr = socket_addr_to_target(client.local_addr()?);
+    send_reply(&mut client, SOCKS_REP_SUCCESS, &bound_addr).await?;
+
+    let (client_read, mut client_write) = client.into_split();
+    let (upstream_read, mut upstream_write) = upstream.into_split();
+
+    // Activity channel: c2u and u2c signal after every successful read.
+    // The idle watcher resets its timer on each token; if the channel is silent
+    // for timeouts.direct_idle it fires, closing the session.
+    //
+    // Capacity-1 bounded channel: we only care about "any activity", not how
+    // many bytes moved, so a single queued token is enough.  try_send discards
+    // the signal when a token is already pending — cheaper than an unbounded
+    // channel that accumulates one node per read under high throughput.
+    // The watcher exits when both sender halves drop (channel closes → recv → None).
+    let (activity_tx, mut activity_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let activity_c2u = activity_tx.clone();
+    let activity_u2c = activity_tx;
+
+    let c2u = async move {
+        loop {
+            // Park on readability without holding a buffer; allocate it only
+            // once data is ready and drop it before the next park, so an idle
+            // direct TCP session holds no per-direction relay buffer.
+            client_read.readable().await?;
+            let mut buf = Vec::with_capacity(SHADOWSOCKS_MAX_PAYLOAD);
+            let read = match client_read.try_read_buf(&mut buf) {
+                Ok(read) => read,
+                Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if read == 0 {
+                break;
+            }
+            let _ = activity_c2u.try_send(());
+            metrics::add_bytes(
+                "tcp",
+                "client_to_upstream",
+                metrics::DIRECT_GROUP_LABEL,
+                metrics::DIRECT_UPLINK_LABEL,
+                read,
+            );
+            upstream_write.write_all(&buf[..read]).await?;
+        }
+        upstream_write.shutdown().await?;
+        Ok::<(), anyhow::Error>(())
+    };
+    let u2c = async move {
+        loop {
+            // Park on readability without holding a buffer; allocate it only
+            // once data is ready and drop it before the next park, so an idle
+            // direct TCP session holds no per-direction relay buffer.
+            upstream_read.readable().await?;
+            let mut buf = Vec::with_capacity(SHADOWSOCKS_MAX_PAYLOAD);
+            let read = match upstream_read.try_read_buf(&mut buf) {
+                Ok(read) => read,
+                Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if read == 0 {
+                break;
+            }
+            let _ = activity_u2c.try_send(());
+            metrics::add_bytes(
+                "tcp",
+                "upstream_to_client",
+                metrics::DIRECT_GROUP_LABEL,
+                metrics::DIRECT_UPLINK_LABEL,
+                read,
+            );
+            client_write.write_all(&buf[..read]).await?;
+        }
+        client_write.shutdown().await?;
+        Ok::<(), anyhow::Error>(())
+    };
+
+    // Idle watcher: loops receiving activity tokens.  Each received token
+    // resets the timeouts.direct_idle deadline.  If the deadline expires before
+    // the next token (no data in either direction), the future returns,
+    // signalling that the session should be forcibly closed.  When the channel
+    // is closed (both tasks finished normally), recv() returns None and the
+    // watcher exits without triggering the idle path.
+    let idle_watcher = async move {
+        loop {
+            match timeout(timeouts.direct_idle, activity_rx.recv()).await {
+                Ok(Some(())) => continue,
+                Ok(None) => return false, // channel closed — tasks completed normally
+                Err(_elapsed) => return true, // idle timeout
+            }
+        }
+    };
+
+    // Drive both halves concurrently.
+    //
+    // When EITHER side errors, abort the other immediately.
+    //
+    // When the server closes first (u2c Ok), abort c2u — there is nothing
+    // more to forward and waiting for the client to also close is not
+    // necessary.
+    //
+    // When the CLIENT closes first (c2u Ok), give the server a bounded window
+    // to flush remaining data and send its own FIN.  Without the timeout a
+    // server that keeps the connection half-open indefinitely — e.g. a VPN or
+    // signalling server — holds two socket FDs (inbound SOCKS + outbound
+    // direct) open forever.
+    //
+    // If neither side closes and no data flows for timeouts.direct_idle, the
+    // idle watcher fires and we forcibly close both sides.
+    let mut c2u_task = tokio::spawn(c2u);
+    let mut u2c_task = tokio::spawn(u2c);
+    let mut idle_task = tokio::spawn(idle_watcher);
+
+    tokio::select! {
+        c2u_done = &mut c2u_task => {
+            idle_task.abort();
+            let _ = idle_task.await;
+            match c2u_done {
+                Ok(Ok(())) => {
+                    match timeout(timeouts.post_client_eof_downstream, &mut u2c_task).await {
+                        Ok(Ok(result)) => result,
+                        Ok(Err(e)) => Err(anyhow!("direct TCP u2c task failed: {e}")),
+                        Err(_elapsed) => {
+                            info!(
+                                %target,
+                                timeout_secs = timeouts.post_client_eof_downstream.as_secs(),
+                                "direct TCP upstream did not close within timeout after client EOF"
+                            );
+                            u2c_task.abort();
+                            let _ = u2c_task.await;
+                            Ok(())
+                        }
+                    }
+                }
+                Ok(Err(e)) => { u2c_task.abort(); let _ = u2c_task.await; Err(e) }
+                Err(e) => { u2c_task.abort(); let _ = u2c_task.await; Err(anyhow!("direct TCP c2u task panicked: {e}")) }
+            }
+        }
+        u2c_done = &mut u2c_task => {
+            idle_task.abort();
+            let _ = idle_task.await;
+            c2u_task.abort();
+            let _ = c2u_task.await;
+            match u2c_done {
+                Ok(result) => result,
+                Err(e) => Err(anyhow!("direct TCP u2c task panicked: {e}")),
+            }
+        }
+        idle_done = &mut idle_task => {
+            match idle_done {
+                Ok(true) => {
+                    // Idle timeout — no data in either direction for timeouts.direct_idle.
+                    info!(
+                        %target,
+                        timeout_secs = timeouts.direct_idle.as_secs(),
+                        "direct TCP session idle timeout — closing"
+                    );
+                    c2u_task.abort();
+                    u2c_task.abort();
+                    let _ = c2u_task.await;
+                    let _ = u2c_task.await;
+                    Ok(())
+                }
+                Ok(false) => {
+                    // The idle channel closed — both data tasks already finished.
+                    // abort() is a no-op on a completed task; await to collect
+                    // their results and propagate any error instead of swallowing it.
+                    c2u_task.abort();
+                    u2c_task.abort();
+                    let c2u_res = c2u_task.await;
+                    let u2c_res = u2c_task.await;
+                    match (c2u_res, u2c_res) {
+                        (Ok(Err(e)), _) => Err(e),
+                        (_, Ok(Err(e))) => Err(e),
+                        (Err(e), _) if !e.is_cancelled() => {
+                            Err(anyhow!("direct TCP c2u task panicked: {e}"))
+                        }
+                        (_, Err(e)) if !e.is_cancelled() => {
+                            Err(anyhow!("direct TCP u2c task panicked: {e}"))
+                        }
+                        _ => Ok(()),
+                    }
+                }
+                Err(e) => {
+                    c2u_task.abort();
+                    u2c_task.abort();
+                    let _ = c2u_task.await;
+                    let _ = u2c_task.await;
+                    Err(anyhow!("direct TCP idle watcher panicked: {e}"))
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/direct.rs"]
+mod tests;

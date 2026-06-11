@@ -1,0 +1,43 @@
+[package]
+name = "outline-uplink"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["metrics"]
+metrics = ["outline-metrics/prometheus", "cert-check"]
+quic = ["outline-transport/quic"]
+# Periodic per-uplink TLS certificate-expiry check. Pulls
+# `outline-transport/cert-check` (the X.509 parser). Enabled transitively by
+# `metrics` and by the top-level `dashboard` feature; left off router builds.
+cert-check = ["outline-transport/cert-check"]
+# Exposes test-only public methods on `UplinkManager` (`new_for_test`,
+# `test_set_tcp_health`, …). Enabled automatically by dependent crates'
+# `[dev-dependencies]` so integration tests can drive uplink state directly.
+test-helpers = []
+
+[dependencies]
+anyhow = "1.0"
+arc-swap = "1.7"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+outline-metrics = { path = "../outline-metrics", default-features = false }
+outline-ss2022 = { path = "../outline-ss2022" }
+outline-transport = { path = "../outline-transport" }
+parking_lot = "0.12"
+percent-encoding = "2.3"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+shadowsocks-crypto = { path = "../shadowsocks-crypto" }
+socks5-proto = { path = "../socks5-proto" }
+tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+toml = "0.8"
+tracing = "0.1"
+url = { version = "2.5", features = ["serde"] }
+
+[dev-dependencies]
+async-trait = "0.1"
+bytes = "1.6"
+tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
