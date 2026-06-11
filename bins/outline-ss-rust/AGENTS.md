@@ -32,6 +32,13 @@ Prometheus metrics и локально пропатченные копии `h3` 
 - `src/server/transport/`: WebSocket, XHTTP, raw QUIC, VLESS transport, fallback,
   SNI fallback и proxy-protocol plumbing.
 - `src/server/shadowsocks/`: plain Shadowsocks TCP/UDP listeners.
+- `src/server/reverse_tunnel/`: reverse-tunnel dialer (топология A) — исходящий
+  QUIC-client endpoint + reconnect loop; на установленной несущей зовёт
+  существующий `handle_raw_ss_connection` БЕЗ изменений (несущая инвертирована,
+  но stream-направление и accept_bi-цикл те же). TLS-client + pinned-серт ws +
+  client cert (mTLS) — в `src/server/bootstrap/reverse_tls.rs`. См.
+  `docs/REVERSE-TUNNEL.md`. Меняя raw-SS accept-путь, помни оба источника
+  `quinn::Connection` (forward accept и reverse dial) — handler агностичен.
 - `src/crypto/`: Shadowsocks AEAD stream/UDP primitives и логика
   replay/session cache. SS2022-заголовки парсятся общим крейтом
   `crates/outline-wire`; `ss2022_header.rs` — тонкая обёртка (clock,
