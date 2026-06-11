@@ -343,7 +343,7 @@ fn probe_disabled() -> ProbeConfig {
 #[test]
 fn topology_serialization_shape_has_active_flags() {
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshot_fixture()),
+        instance: build_instance_topology(&snapshot_fixture(), Vec::new()),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     assert_eq!(json["instance"]["groups"][0]["name"], "core");
@@ -369,7 +369,7 @@ fn topology_omits_fingerprint_profile_strategy_when_default() {
     // the wire shape backward-compatible for older snapshot consumers
     // that don't yet know about fingerprint diversification.
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshot_fixture()),
+        instance: build_instance_topology(&snapshot_fixture(), Vec::new()),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let u0 = &json["instance"]["groups"][0]["uplinks"][0];
@@ -386,7 +386,7 @@ fn topology_serialises_non_default_fingerprint_profile_strategy() {
     // on this exact lowercase token, and the Prometheus label uses
     // the same string, so renaming a variant is detected here.
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshot_fixture()),
+        instance: build_instance_topology(&snapshot_fixture(), Vec::new()),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let u1 = &json["instance"]["groups"][0]["uplinks"][1];
@@ -403,7 +403,7 @@ fn topology_serialises_active_fingerprint_profile_name() {
     // `none` (no profile applies), so this test exercises both
     // branches in one go.
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshot_fixture()),
+        instance: build_instance_topology(&snapshot_fixture(), Vec::new()),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let u0 = &json["instance"]["groups"][0]["uplinks"][0];
@@ -422,7 +422,7 @@ fn topology_omits_bypass_fields_when_off() {
     // wire shape backward-compatible for older topology consumers and
     // for the common opt-out deployment.
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshot_fixture()),
+        instance: build_instance_topology(&snapshot_fixture(), Vec::new()),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let group = &json["instance"]["groups"][0];
@@ -444,7 +444,7 @@ fn topology_serialises_bypass_fields_when_on() {
     snapshots[0].bypass_active_tcp = true;
     snapshots[0].bypass_active_udp = false;
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshots),
+        instance: build_instance_topology(&snapshots, Vec::new()),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let group = &json["instance"]["groups"][0];
@@ -555,6 +555,7 @@ async fn send_raw_http(raw_request: &str, uplinks: UplinkRegistry, token: &str) 
     let state = Arc::new(ControlState {
         token: token.to_string(),
         uplinks,
+        reverse_peers: None,
         config_path: None,
         config_write_lock: tokio::sync::Mutex::new(()),
         apply: None,

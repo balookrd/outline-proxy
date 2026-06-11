@@ -7,7 +7,9 @@ use tracing::{info, warn};
 
 use outline_uplink::{TransportKind, UplinkRegistry};
 
-use super::topology::{ControlTopologyResponse, build_instance_topology, build_summary};
+use super::topology::{
+    ControlTopologyResponse, ReverseGroupTopology, build_instance_topology, build_summary,
+};
 use super::{ControlResponse, json_error, json_response, plain_response, require_method};
 
 #[derive(Debug, Deserialize)]
@@ -118,15 +120,24 @@ pub(crate) async fn handle_switch(
 pub(crate) async fn handle_topology(
     request: &Request<Incoming>,
     uplinks: UplinkRegistry,
+    reverse_peers: Option<super::server::ReversePeersFn>,
 ) -> ControlResponse {
     if let Some(response) = require_method(request.method(), Method::GET, "GET") {
         return response;
     }
     let snapshots = uplinks.snapshots().await;
+    let reverse = reverse_peers
+        .map(|source| {
+            source()
+                .into_iter()
+                .map(|(group, live_peers)| ReverseGroupTopology { group, live_peers })
+                .collect()
+        })
+        .unwrap_or_default();
     json_response(
         StatusCode::OK,
         &ControlTopologyResponse {
-            instance: build_instance_topology(&snapshots),
+            instance: build_instance_topology(&snapshots, reverse),
         },
     )
 }

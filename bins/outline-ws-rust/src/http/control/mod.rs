@@ -13,6 +13,7 @@ mod uplinks_crud;
 
 pub use apply::ApplyHandle;
 
+pub(crate) use server::ReversePeersFn;
 pub use server::spawn_control_server;
 
 use bytes::Bytes;
