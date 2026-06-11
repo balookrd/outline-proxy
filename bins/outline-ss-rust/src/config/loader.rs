@@ -7,8 +7,14 @@ use super::{
     cli::ConfigArgs,
     dashboard::{resolve_control_config, resolve_dashboard_config},
     fallback::HttpFallbackConfig,
-    file::{FileConfig, TlsCertSection, default_config_path_if_exists, load_file_config},
-    resolved::{AccessKeyConfig, Config, H3Alpn, SessionResumptionConfig},
+    file::{
+        FileConfig, ReverseTunnelSection, TlsCertSection, default_config_path_if_exists,
+        load_file_config,
+    },
+    resolved::{
+        AccessKeyConfig, Config, H3Alpn, ReverseTunnelConfig, ReverseTunnelEndpoint,
+        SessionResumptionConfig,
+    },
     sni::{SniFallbackConfig, TlsCertEntry},
     user_entry::CipherKind,
 };
@@ -184,6 +190,7 @@ impl AppMode {
                 file.http_fallback.unwrap_or_default(),
             )?,
             sni_fallback: SniFallbackConfig::from_section(file.sni_fallback.unwrap_or_default())?,
+            reverse_tunnel: resolve_reverse_tunnel(file.reverse_tunnel)?,
         };
         config.validate()?;
 
@@ -221,6 +228,65 @@ fn normalize_access_key_file_extension(extension: Option<String>) -> String {
 
 pub fn default_http_root_realm() -> String {
     "Authorization required".to_owned()
+}
+
+/// Resolve the `[reverse_tunnel]` section into runtime config. Returns
+/// `None` (no dialer) when the section is absent, `enabled` is not `true`,
+/// or no endpoints are listed. Per-endpoint defaults: `server_name` = host
+/// part of `addr`, `mtu` = true, backoff 1s..60s. The pin string and cert
+/// paths are validated lazily by the dialer at startup.
+fn resolve_reverse_tunnel(
+    section: Option<ReverseTunnelSection>,
+) -> Result<Option<ReverseTunnelConfig>> {
+    use std::time::Duration;
+    let Some(section) = section else { return Ok(None) };
+    if !section.enabled.unwrap_or(false) {
+        return Ok(None);
+    }
+    let raw = section.endpoints.unwrap_or_default();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let mut endpoints = Vec::with_capacity(raw.len());
+    for (idx, ep) in raw.into_iter().enumerate() {
+        if ep.addr.trim().is_empty() {
+            anyhow::bail!("reverse_tunnel.endpoints[{idx}].addr must not be empty");
+        }
+        // SNI defaults to the host part of `addr` (strip a trailing
+        // `:port`, handling bracketed IPv6 literals).
+        let server_name = ep.server_name.clone().unwrap_or_else(|| host_of(&ep.addr));
+        let backoff_min = Duration::from_secs(ep.backoff_min_secs.unwrap_or(1).max(1));
+        let backoff_max =
+            Duration::from_secs(ep.backoff_max_secs.unwrap_or(60).max(backoff_min.as_secs()));
+        endpoints.push(ReverseTunnelEndpoint {
+            addr: ep.addr,
+            server_name,
+            server_cert_pin: ep.server_cert_pin,
+            client_cert_path: ep.client_cert_path,
+            client_key_path: ep.client_key_path,
+            mtu: ep.mtu.unwrap_or(true),
+            backoff_min,
+            backoff_max,
+        });
+    }
+    Ok(Some(ReverseTunnelConfig { endpoints }))
+}
+
+/// Host part of a `host:port` / `[v6]:port` / bare-host string.
+fn host_of(addr: &str) -> String {
+    let addr = addr.trim();
+    if let Some(rest) = addr.strip_prefix('[') {
+        // `[v6]:port` or `[v6]`.
+        if let Some(end) = rest.find(']') {
+            return rest[..end].to_string();
+        }
+    }
+    match addr.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) && !host.is_empty() => {
+            host.to_string()
+        },
+        _ => addr.to_string(),
+    }
 }
 
 fn resolve_h3_alpn(input: Option<&[String]>) -> Result<Vec<H3Alpn>> {

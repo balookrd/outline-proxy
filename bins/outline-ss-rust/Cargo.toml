@@ -32,6 +32,7 @@ hashbrown = "0.15"
 outline-wire = { path = "../../crates/outline-wire", features = ["clap"] }
 parking_lot = "0.12"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rand = "0.9"
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }
