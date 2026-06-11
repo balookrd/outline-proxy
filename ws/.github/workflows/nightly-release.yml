@@ -1,0 +1,29 @@
+name: Nightly Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      !startsWith(github.event.head_commit.message, 'release: cut v')
+    uses: ./.github/workflows/_release-build.yml
+    with:
+      tag: nightly
+      checkout_ref: ${{ github.sha }}
+      prerelease: true
+      make_latest: "false"
+      release_name: Nightly
+      artifact_version: nightly-${{ github.sha }}
+      rolling_tag: true

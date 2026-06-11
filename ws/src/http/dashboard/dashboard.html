@@ -1,0 +1,1328 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" id="themeColorMeta" content="#0a0f1c">
+<title>Network Dashboard</title>
+<style>
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0a0f1c;
+  --theme-chrome: #0a0f1c;
+  --nav: #0f1626;
+  --nav-2: #1a2238;
+  --nav-3: #243049;
+  --nav-text: #cbd5e1;
+  --nav-muted: #8ea0bd;
+  --nav-brand: #ffffff;
+  --nav-hover: rgba(255, 255, 255, 0.04);
+  --nav-card-bg: rgba(255, 255, 255, 0.02);
+  --nav-card-border: rgba(255, 255, 255, 0.06);
+  --nav-card-text: #ffffff;
+  --text: #e2e8f0;
+  --muted: #8ea0bd;
+  --line: #1e293b;
+  --line-strong: #334155;
+  --soft: #151c2e;
+  --soft-2: #111828;
+  --panel: #131b2c;
+  --panel-tint: #151c2e;
+  --green: #22c55e;
+  --green-strong: #86efac;
+  --green-soft: rgba(34, 197, 94, 0.15);
+  --amber: #f59e0b;
+  --amber-soft: rgba(245, 158, 11, 0.15);
+  --gray-soft: rgba(148, 163, 184, 0.12);
+  --blue: #6366f1;
+  --blue-soft: rgba(99, 102, 241, 0.18);
+  --red: #f87171;
+  --red-soft: rgba(248, 113, 113, 0.15);
+  --dot-idle: #475569;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --chip-mode-text: #c7d2fe;
+  --chip-mode-border: rgba(99, 102, 241, 0.3);
+  --chip-scope-bg: rgba(34, 211, 238, 0.12);
+  --chip-scope-text: #a5f3fc;
+  --chip-scope-border: rgba(34, 211, 238, 0.28);
+  --chip-fb-border: rgba(34, 197, 94, 0.3);
+  --error-bg: rgba(248, 113, 113, 0.15);
+  --error-text: #fca5a5;
+  --error-border: rgba(248, 113, 113, 0.35);
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f8fafc;
+  --theme-chrome: #f8fafc;
+  --nav: #ffffff;
+  --nav-2: #f1f5f9;
+  --nav-3: #e2e8f0;
+  --nav-text: #334155;
+  --nav-muted: #64748b;
+  --nav-brand: #0f172a;
+  --nav-hover: rgba(15, 23, 42, 0.05);
+  --nav-card-bg: #f8fafc;
+  --nav-card-border: #e2e8f0;
+  --nav-card-text: #0f172a;
+  --text: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --soft: #f1f5f9;
+  --soft-2: #f8fafc;
+  --panel: #ffffff;
+  --panel-tint: #f8fafc;
+  --green: #22c55e;
+  --green-strong: #15803d;
+  --green-soft: #dcfce7;
+  --amber: #f59e0b;
+  --amber-soft: #fef3c7;
+  --gray-soft: #f1f5f9;
+  --blue: #6366f1;
+  --blue-soft: #eef2ff;
+  --red: #dc2626;
+  --red-soft: #fee2e2;
+  --dot-idle: #cbd5e1;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-soft: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --chip-mode-text: #3730a3;
+  --chip-mode-border: #e0e7ff;
+  --chip-scope-bg: #ecfeff;
+  --chip-scope-text: #155e75;
+  --chip-scope-border: #cffafe;
+  --chip-fb-border: #bbf7d0;
+  --error-bg: #fef2f2;
+  --error-text: #991b1b;
+  --error-border: #fecaca;
+}
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body { margin: 0; font-family: "SF Pro Display", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif; color: var(--text); background: var(--bg); font-size: 13px; line-height: 1.34; transition: color .25s ease; }
+button, input, select { font: inherit; }
+a { text-decoration: none; }
+.shell { min-height: 100vh; display: grid; grid-template-columns: 214px minmax(0, 1fr); }
+.nav { background: var(--nav); color: var(--nav-text); display: flex; flex-direction: column; min-height: 100vh; border-right: 1px solid var(--nav-card-border); padding: 12px 8px; }
+.brand { min-height: 52px; display: flex; gap: 10px; align-items: center; padding: 4px 6px 10px; color: var(--nav-brand); }
+.brand-text { display: grid; gap: 2px; line-height: 1.1; min-width: 0; }
+.brand-title { font-weight: 760; font-size: 14px; color: var(--nav-brand); letter-spacing: 0; white-space: nowrap; }
+.brand-subtitle { font-size: 10px; color: var(--nav-text); opacity: 0.7; white-space: nowrap; }
+.logo { width: 38px; height: 38px; display: grid; place-items: center; flex-shrink: 0; }
+.logo img { width: 38px; height: 38px; object-fit: contain; display: block; }
+.menu { padding: 0; display: grid; gap: 4px; margin-top: 4px; }
+.item { min-height: 38px; width: 100%; border: 0; border-radius: 11px; display: flex; align-items: center; gap: 9px; padding: 0 10px; color: var(--nav-text); background: transparent; text-align: left; font-size: 13px; font-weight: 640; cursor: pointer; transition: background .18s ease, color .18s ease, transform .18s ease; }
+.item:hover { background: var(--nav-hover); color: var(--nav-brand); transform: translateX(2px); }
+.item.active { background: var(--blue); color: #fff; box-shadow: var(--shadow-soft); }
+.item-icon { width: 20px; display: inline-grid; place-items: center; font-size: 14px; opacity: .85; }
+.spacer { flex: 1; }
+.nav-footer { margin-top: 12px; padding: 10px; display: grid; gap: 8px; }
+.nav-card { border: 1px solid var(--nav-card-border); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; background: var(--nav-card-bg); }
+.nav-card-title { color: var(--nav-muted); font-size: 11px; font-weight: 740; }
+.nav-card-value { display: flex; align-items: center; gap: 8px; color: var(--nav-card-text); font-size: 11px; line-height: 1.45; }
+.nav-card-value .dot { width: 7px; height: 7px; border-radius: 99px; background: var(--green); }
+main { padding: 12px 16px 16px; min-width: 0; background: var(--bg); }
+.topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.topbar-copy { display: grid; gap: 4px; }
+h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spacing: 0; }
+.subtitle { color: var(--muted); font-size: 11px; }
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.updated-inline { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); box-shadow: var(--shadow-soft); white-space: nowrap; }
+.updated-inline span { color: var(--text); font-weight: 720; }
+.refresh { min-height: 32px; border: 1px solid var(--line-strong); background: var(--panel); border-radius: 10px; padding: 0 10px; display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 12px; font-weight: 650; cursor: pointer; box-shadow: var(--shadow-soft); transition: border-color .18s ease, background .18s ease, color .18s ease; }
+.refresh:hover { border-color: var(--blue); }
+.refresh.off { color: var(--muted); background: var(--soft-2); }
+.dot { width: 10px; height: 10px; border-radius: 99px; background: var(--green); display: inline-block; box-shadow: 0 0 0 5px rgba(34,197,94,.12); }
+.refresh.off .dot { background: var(--dot-idle); }
+.theme-toggle { border: 2px solid var(--line-strong); background: var(--panel); border-radius: 10px; width: 34px; height: 32px; display: grid; place-items: center; color: var(--blue); font-size: 15px; font-weight: 700; cursor: pointer; box-shadow: var(--shadow-soft); transition: border-color .18s ease, background .18s ease, color .18s ease; }
+.theme-toggle:hover { border-color: var(--blue); }
+.summary-grid { display: grid; grid-template-columns: repeat(5, minmax(128px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.summary-card { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; padding: 10px 12px; box-shadow: var(--shadow-soft); display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; }
+.summary-copy { display: grid; gap: 4px; min-width: 0; }
+.summary-label { color: var(--muted); font-size: 10px; font-weight: 700; }
+.summary-value { font-size: 16px; font-weight: 800; line-height: 1; letter-spacing: 0; }
+.summary-value.good { color: var(--green); }
+.summary-icon { width: 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; background: var(--soft); color: var(--blue); font-size: 14px; flex: 0 0 auto; }
+.summary-icon.good { background: var(--green-soft); color: var(--green-strong); }
+.summary-icon.warn { background: var(--blue-soft); color: var(--blue); }
+.summary-icon.muted { background: var(--gray-soft); color: var(--muted); }
+.stack { display: grid; gap: 8px; }
+.instance-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); }
+.instance-panel-header:hover, .group-table-head:hover, .row:hover { background: var(--soft); }
+.instance-panel.collapsed .instance-panel-body { display: none; }
+.instance-panel-header { min-height: 46px; display: flex; align-items: center; gap: 10px; padding: 14px 18px; cursor: pointer; user-select: none; }
+.instance-panel:not(.collapsed) .instance-panel-header { border-bottom: 1px solid var(--line); }
+.panel-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.panel-title strong { font-size: 15px; font-weight: 600; }
+.collapse-chev { color: var(--muted); font-size: 14px; transition: transform .15s; }
+.instance-panel.collapsed .collapse-chev { transform: rotate(180deg); }
+.instance-panel-body { padding: 13px 18px; display: grid; gap: 12px; background: var(--panel); }
+.section-title { font-size: 13px; font-weight: 600; color: var(--muted); }
+.group-table { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); }
+/* `overflow: hidden` would clip the wire-dot tooltips on the
+ * bottom row; instead we keep the table un-clipped and rely on
+ * `border-radius` alone. Inner row borders sit several pixels
+ * inside the rounded corner so the rounding remains visually clean. */
+.group-table > * { border-radius: inherit; }
+.group-table .group-table-head { border-top-left-radius: 18px; border-top-right-radius: 18px; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.group-table .rows { border-bottom-left-radius: 18px; border-bottom-right-radius: 18px; border-top-left-radius: 0; border-top-right-radius: 0; }
+.group-table-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; background: var(--panel-tint); border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; }
+.group-table.collapsed .rows { display: none; }
+.group-table.collapsed .group-table-head { border-bottom: 0; }
+.group-table-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px; }
+.group-count { min-height: 28px; display: inline-flex; align-items: center; padding: 0 10px; border-radius: 999px; background: var(--gray-soft); color: var(--muted); font-size: 11px; font-weight: 730; }
+.group-table-meta { display: flex; align-items: center; gap: 10px; color: var(--green-strong); font-size: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.cfg-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cfg-chip { min-height: 26px; display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 0 10px; font-size: 11px; font-weight: 760; background: var(--soft); color: var(--text); border: 1px solid var(--line); }
+.cfg-chip .cfg-key { color: var(--muted); font-weight: 500; }
+.cfg-chip.mode { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
+.cfg-chip.scope { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
+.cfg-chip.fb-on { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
+.cfg-chip.fb-off { background: var(--gray-soft); color: var(--muted); border-color: var(--line); }
+/* Group-level `bypass_when_down` chip. Armed = the option is on but every
+ * transport still has a healthy uplink (traffic tunnels normally); active =
+ * the group is down and new flows are escaping DIRECT, bypassing the tunnel
+ * — same amber treatment as the cert-expiry warning so "needs operator
+ * attention, but traffic still flows" reads consistently. */
+.cfg-chip.bypass-armed { background: var(--gray-soft); color: var(--muted); border-color: var(--line); }
+.cfg-chip.bypass-active { background: var(--amber-soft); color: #b45309; border-color: rgba(180, 83, 9, .45); font-weight: 800; }
+.cfg-chip.fp-stable { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
+.cfg-chip.fp-random { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
+.cfg-active { color: var(--green-strong); font-weight: 600; white-space: nowrap; }
+.rows { width: 100%; }
+.rows-head,.row { display: grid; grid-template-columns: minmax(80px, max-content) minmax(110px, .9fr) minmax(80px, .7fr) minmax(170px, 1.5fr) minmax(170px, 1.5fr) minmax(80px, .7fr) minmax(120px, 1fr) 100px; gap: 12px; align-items: center; padding: 13px 18px; }
+.proto-pill { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 4px; font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; background: var(--soft); color: var(--text); border: 1px solid var(--line); }
+.proto-pill.proto-vless { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
+.proto-pill.proto-shadowsocks { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
+.proto-pill.proto-ws { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
+/* Leg label ("TCP" / "UDP") shares the same inset-chip styling as the
+ * submode badge ("(S)" / "(P)") — both are sub-pills inside the parent
+ * pill, so they should read as a uniform pair of inset frames. The
+ * only differences are placement (leg goes left of the carrier label,
+ * submode goes right) and the side margin handled inline in the
+ * markup. */
+.proto-pill .proto-leg, .fb-chain .fb-link .proto-leg { font-size: 9.5px; opacity: .8; margin-right: 4px; padding: 0 4px; border-radius: 4px; background: rgba(0,0,0,.1); letter-spacing: .04em; text-transform: uppercase; font-weight: 700; }
+.proto-stack { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.proto-pill.proto-downgraded { border-style: dashed; box-shadow: inset 0 0 0 1px rgba(214, 130, 30, .35); }
+.proto-pill.proto-failed { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); border-style: solid; box-shadow: inset 0 0 0 1px rgba(185, 28, 28, .35); }
+.proto-pill.proto-failed .proto-leg { background: rgba(185, 28, 28, .18); color: #7f1d1d; opacity: .9; }
+.proto-pill .proto-fail { margin-left: 5px; font-size: 10px; font-weight: 800; letter-spacing: .06em; }
+/* Standalone DOWN chip — sits alongside the protocol pill rather than
+ * inside it, so the failure marker reads as a separate "this leg is
+ * broken" badge instead of running into the carrier-shape label. */
+.proto-fail-chip { display: inline-flex; align-items: center; margin-left: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; background: rgba(220, 38, 38, .12); color: #b91c1c; border: 1px solid rgba(185, 28, 28, .45); }
+/* TLS certificate-expiry warning chip. Shown in the Status cell only when a
+ * cert is within the warning window (amber) or already expired (red); healthy
+ * certs render nothing to keep the column uncluttered. */
+.cert-chip { display: inline-flex; align-items: center; margin-left: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; border: 1px solid; }
+.cert-chip.warn { background: var(--amber-soft); color: #b45309; border-color: rgba(180, 83, 9, .45); }
+.cert-chip.bad { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); }
+.proto-pill .proto-dg { margin-left: 5px; font-size: 10px; opacity: .85; color: #b8631a; }
+.proto-pill .proto-submode { margin-left: 4px; padding: 0 4px; font-size: 9.5px; opacity: .8; border-radius: 4px; background: rgba(0,0,0,.1); letter-spacing: .04em; }
+.proto-pill .proto-submode.proto-downgraded { border-style: solid; box-shadow: none; color: #b8631a; background: rgba(214, 130, 30, .15); opacity: 1; }
+.proto-pill .proto-submode .proto-dg { margin: 0 1px; }
+.fb-chain { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 4px; font-size: 10.5px; }
+.fb-chain .fb-link { padding: 1px 6px; border-radius: 4px; background: var(--soft); color: var(--muted); border: 1px solid var(--line); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+/* Active chip keeps the same compact / square geometry as inactive
+ * chain chips — only the colour changes, picked up from the per-
+ * transport palette below. Operators read the chain as a sequence of
+ * uniform markers, with the active one tinted to its protocol colour
+ * rather than blown up into a separate visual class. */
+.fb-chain .fb-link.fb-active { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); font-weight: 800; }
+.fb-chain .fb-link.fb-active.proto-vless { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
+.fb-chain .fb-link.fb-active.proto-shadowsocks { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
+.fb-chain .fb-link.fb-active.proto-ws { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
+.fb-chain .fb-link.fb-failed { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); font-weight: 800; }
+.fb-chain .fb-arrow { color: var(--muted); font-size: 10px; }
+.fb-chain .fb-pin { padding: 1px 6px; border-radius: 4px; background: var(--amber-soft); color: #b45309; border: 1px solid rgba(180, 83, 9, .4); font-size: 10px; font-weight: 700; }
+/* Inline decorations on the chain chips, mirroring the styling that
+ * used to live on the (now-removed) top pill: submode badge, carrier
+ * auto-downgrade arrow, and a "✕" failure mark on the active chip
+ * when effective health is false on every leg. */
+.fb-chain .fb-link .proto-submode { margin-left: 4px; padding: 0 4px; font-size: 9px; opacity: .8; border-radius: 3px; background: rgba(0,0,0,.1); letter-spacing: .04em; text-transform: none; font-weight: 600; }
+.fb-chain .fb-link .proto-submode.proto-downgraded { color: #b8631a; background: rgba(214, 130, 30, .15); opacity: 1; }
+.fb-chain .fb-link .proto-submode .proto-dg { margin: 0 1px; }
+.fb-chain .fb-link .fb-dg { margin-left: 4px; color: #b8631a; font-weight: 800; }
+.fb-chain .fb-link .fb-down { margin-left: 4px; color: #b91c1c; font-weight: 800; font-size: 10px; }
+/* Primary-wire identity cell in the Protocol column (variant C.3): the
+ * configured primary wire (wire #0) rendered as a full `proto-pill`, plus
+ * a small `+N` counter chip when fallback wires exist. The active-wire
+ * shape lives in the per-leg wire-chain cells — Protocol now answers
+ * "where does this uplink want to be" while TCP/UDP answer "where is it
+ * actually running right now". */
+.primary-cell { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.wire-count-chip { padding: 1px 7px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); color: var(--muted); font-size: 10.5px; font-weight: 700; letter-spacing: .04em; }
+/* Per-leg wire-chain cell: active wire as a full `proto-pill` (carrying
+ * leg label, submode, downgrade arrow, ✕ DOWN marker, and the pin
+ * timer), other wires collapsed to colour-coded squares keyed by
+ * carrier family. Hovering a dot reveals the wire's full label via
+ * `title`. Failed-in-shuffle-round wires are painted red the same way
+ * the legacy chain paints them. */
+.leg-chain { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; overflow: visible; }
+.leg-chain .wire-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255, 255, 255, 0.08); flex: 0 0 auto; cursor: help; position: relative; transition: transform .12s ease, box-shadow .12s ease; }
+.leg-chain .wire-dot:hover { transform: scale(1.35); box-shadow: 0 0 0 2px var(--panel-tint), 0 0 0 3px rgba(99, 102, 241, .55); z-index: 5; }
+/* Universal custom tooltip — any element with a non-empty
+ * `data-tip="..."` attribute gets an instant CSS pop-over on hover.
+ * Replaces the slow native `title=` tooltip site-wide. Centred above
+ * the element, fades in instantly, drops on the panel-tint background
+ * so it reads cleanly on both themes. Keep `aria-label="..."` on
+ * interactive elements (buttons / inputs) so screen readers still
+ * announce the same hint — the visible CSS tooltip is desktop-only. */
+[data-tip] { position: relative; }
+[data-tip]:not([data-tip=""])::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-tint);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .1s ease .04s;
+  z-index: 50;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+  letter-spacing: 0;
+  text-transform: none;
+  max-width: 320px;
+}
+[data-tip]:not([data-tip=""])::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--line-strong);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .1s ease .04s;
+  z-index: 50;
+}
+[data-tip]:not([data-tip=""]):hover::after,
+[data-tip]:not([data-tip=""]):hover::before,
+[data-tip]:not([data-tip=""]):focus-visible::after,
+[data-tip]:not([data-tip=""]):focus-visible::before { opacity: 1; }
+/* Long-form tooltips (multi-line, used on the wire-chain active pill
+ * and config chips) opt in by switching from a single line to wrapped
+ * text. Apply with `data-tip-wrap` next to `data-tip`. */
+[data-tip-wrap][data-tip]::after { white-space: normal; min-width: 180px; }
+.wire-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255, 255, 255, 0.08); flex: 0 0 auto; }
+.wire-dot.failed { background: rgba(220, 38, 38, .55); border-color: rgba(185, 28, 28, .55); }
+.wire-dot.fam-vless-ws    { background: #6366f1; }
+.wire-dot.fam-vless-xhttp { background: #a855f7; }
+.wire-dot.fam-vless-quic  { background: #ec4899; }
+.wire-dot.fam-ss-ws       { background: #06b6d4; }
+.wire-dot.fam-ss-quic     { background: #94a3b8; }
+.wire-dot.fam-unknown     { background: var(--dot-idle); }
+.leg-chain .leg-arrow { color: var(--muted); font-size: 9px; opacity: .6; }
+[data-theme="light"] .wire-dot { border-color: rgba(15, 23, 42, 0.10); }
+[data-theme="light"] .wire-dot.fam-vless-ws    { background: #818cf8; }
+[data-theme="light"] .wire-dot.fam-vless-xhttp { background: #c084fc; }
+[data-theme="light"] .wire-dot.fam-vless-quic  { background: #f472b6; }
+[data-theme="light"] .wire-dot.fam-ss-ws       { background: #22d3ee; }
+[data-theme="light"] .wire-dot.fam-ss-quic     { background: #94a3b8; }
+/* Wire-chain legend — collapsed by default so it doesn't crowd the
+ * summary cards. Click the summary chip to expand the colour key.
+ * Keeps the same look on light + dark themes. */
+.wire-legend { margin: 8px 0 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+.wire-legend > summary { list-style: none; cursor: pointer; padding: 8px 14px; display: flex; align-items: center; gap: 10px; user-select: none; }
+.wire-legend > summary::-webkit-details-marker { display: none; }
+.wire-legend > summary::before { content: "▸"; color: var(--muted); font-size: 11px; transition: transform .15s ease; }
+.wire-legend[open] > summary::before { transform: rotate(90deg); }
+.wire-legend-title { font-size: 12px; font-weight: 700; color: var(--text); }
+.wire-legend-hint { color: var(--muted); font-size: 11px; }
+.wire-legend[open] .wire-legend-hint { display: none; }
+.wire-legend-body { display: flex; flex-wrap: wrap; gap: 14px 22px; padding: 4px 14px 12px; }
+.wire-legend-item { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); }
+.wire-legend-item .wire-dot { width: 12px; height: 12px; }
+.wire-legend-note { color: var(--muted); font-size: 11.5px; flex-basis: 100%; margin-top: 4px; }
+.wire-legend-note code { background: var(--soft); border: 1px solid var(--line); padding: 0 4px; border-radius: 4px; font-size: 11px; }
+/* The pin timer is the existing `.fb-pin`, reused outside the
+ * `.fb-chain` scope. Keeping its full selector path lets us drop in
+ * the chip next to the active wire pill in the new leg-chain cell
+ * without duplicating the rule. */
+.leg-chain .fb-pin { padding: 1px 6px; border-radius: 4px; background: var(--amber-soft); color: #b45309; border: 1px solid rgba(180, 83, 9, .4); font-size: 10px; font-weight: 700; }
+.rows-head { min-height: 46px; color: var(--muted); font-size: 11px; font-weight: 780; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid var(--line); }
+.row { border-bottom: 1px solid var(--line); font-size: 13px; }
+.row:last-child { border-bottom: 0; }
+.uplink-cell { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.role-cell { display: grid; gap: 2px; min-width: 0; }
+.switch-reason { color: var(--muted); font-size: 11px; line-height: 1.25; overflow-wrap: anywhere; }
+.status-pill { min-height: 26px; display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 0 10px; font-size: 11px; font-weight: 760; background: var(--gray-soft); color: var(--muted); }
+.status-pill.good { background: var(--green-soft); color: var(--green-strong); }
+.status-pill.warn { background: var(--amber-soft); color: #b45309; }
+.status-pill.bad { background: var(--gray-soft); color: var(--muted); }
+.status-dot { width: 8px; height: 8px; border-radius: 99px; background: var(--dot-idle); flex: 0 0 auto; }
+.status-dot.good { background: var(--green); }
+.status-dot.warn { background: var(--amber); }
+.status-dot.bad { background: var(--dot-idle); }
+.muted-cell { color: var(--muted); }
+.action-btn { min-height: 26px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font-weight: 700; font-size: 11px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; transition: border-color .18s ease, color .18s ease, transform .18s ease; }
+.action-btn:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); transform: translateY(-1px); }
+.action-btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 10px 24px rgba(99,102,241,.22); }
+.action-btn.primary:hover { background: #4f46e5; }
+.action-btn:disabled { opacity: .5; cursor: default; }
+.error { border: 1px solid var(--error-border); background: var(--error-bg); color: var(--error-text); border-radius: 12px; padding: 10px 14px; font-size: 12px; }
+@media (max-width: 1240px) {
+  .summary-grid { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+}
+@media (max-width: 1024px) {
+  .shell { grid-template-columns: 1fr; }
+  .nav { display: none; }
+  main { padding: 22px 18px 30px; }
+  .topbar { flex-direction: column; align-items: stretch; }
+  .toolbar { justify-content: flex-start; }
+}
+@media (max-width: 760px) {
+  .menu,.nav-footer { display: none; }
+  .summary-grid { grid-template-columns: 1fr; }
+  .rows-head { display: none; }
+  .row { grid-template-columns: 1fr; gap: 6px; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="brand">
+      <span class="logo"><img src="/dashboard/outline-logo.png" alt="" aria-hidden="true"></span>
+      <span class="brand-text">
+        <span class="brand-title">Network Dashboard</span>
+        <span class="brand-subtitle">outline-ws-rust control</span>
+      </span>
+    </div>
+    <nav class="menu">
+      <a class="item active" href="/dashboard"><span class="item-icon">▣</span><span>Instances</span></a>
+      <a class="item" href="/dashboard/uplinks"><span class="item-icon">⚒</span><span>Uplinks</span></a>
+      <button class="item" type="button"><span class="item-icon">◉</span><span>Alerts</span></button>
+      <button class="item" type="button"><span class="item-icon">▤</span><span>Logs</span></button>
+      <button class="item" type="button"><span class="item-icon">⚙</span><span>Settings</span></button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="nav-footer">
+      <div class="nav-card">
+        <div class="nav-card-title">Control tokens stay server-side</div>
+        <div class="nav-card-value">Browser JS talks only to this dashboard proxy.</div>
+      </div>
+    </div>
+  </aside>
+  <main>
+    <div class="topbar">
+      <div class="topbar-copy">
+        <h1>Instances</h1>
+        <div class="subtitle">Overview of all instances, uplink groups and uplinks</div>
+      </div>
+      <div class="toolbar">
+        <div class="updated-inline">↻ Last updated: <span id="updatedAtInline">-</span></div>
+        <button class="refresh" id="refreshBtn" type="button"><span class="dot"></span><span id="refreshLabel">Auto</span></button>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme" data-tip="Toggle theme"><span id="themeIcon">☀</span></button>
+      </div>
+    </div>
+    <section class="summary-grid" id="summaryGrid"></section>
+    <details class="wire-legend" id="wireLegend">
+      <summary><span class="wire-legend-title">Wire chain legend</span><span class="wire-legend-hint">click to expand</span></summary>
+      <div class="wire-legend-body">
+        <span class="wire-legend-item"><span class="wire-dot fam-vless-ws"></span>VLESS / WS · H1 / H2 / H3</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-vless-xhttp"></span>VLESS / XHTTP · H1 / H2 / H3</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-vless-quic"></span>VLESS / QUIC</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-ss-ws"></span>Shadowsocks / WS</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-ss-quic"></span>Shadowsocks direct (QUIC&nbsp;UDP)</span>
+        <span class="wire-legend-item"><span class="wire-dot failed"></span>failed in current shuffle round</span>
+        <span class="wire-legend-item wire-legend-note">Active wire of the leg is rendered as a full pill; hover any square for the exact `transport / mode` of that wire.</span>
+      </div>
+    </details>
+    <div id="errors"></div>
+    <section class="stack" id="groups"></section>
+  </main>
+</div>
+<script>
+const refreshMs = __DASHBOARD_REFRESH_MS__;
+let autoRefreshEnabled = (() => {
+  try { return localStorage.getItem("dashboard-auto-refresh") !== "off"; }
+  catch (_) { return true; }
+})();
+let listLoaded = false;
+const instanceTimers = new Map();
+const inflight = new Map();
+function loadCollapsed(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch (_) { return new Set(); }
+}
+function saveCollapsed(key, set) {
+  try { localStorage.setItem(key, JSON.stringify(Array.from(set))); } catch (_) {}
+}
+const state = {
+  order: [],
+  instances: new Map(),
+  collapsedInstances: loadCollapsed("dashboard-collapsed-instances"),
+  collapsedGroups: loadCollapsed("dashboard-collapsed-groups"),
+  listError: null,
+  lastUpdated: null,
+};
+function instancesArray() { return state.order.map(name => state.instances.get(name)).filter(Boolean); }
+
+/**
+ * Effective health for tone / status calculations. Reads
+ * `*_health_effective` (probe-confirmed OR any-wire recently worked) when
+ * the uplink has fallbacks configured, falling back to `*_healthy`
+ * (probe-only) for single-wire uplinks. Without this an uplink whose
+ * primary is down but whose fallback is delivering traffic would render
+ * red here while still being selected by the router — confusing.
+ *
+ * The legacy `tcp_healthy` / `udp_healthy` fields stay readable on
+ * individual leg cells so an operator who specifically wants to see the
+ * primary wire's probe verdict can.
+ */
+function legHealth(u, leg) {
+  const eff = leg === 'tcp' ? u.tcp_health_effective : u.udp_health_effective;
+  if (eff === true || eff === false) return eff;
+  return leg === 'tcp' ? u.tcp_healthy : u.udp_healthy;
+}
+function healthy(u) {
+  return legHealth(u, 'tcp') !== false && legHealth(u, 'udp') !== false;
+}
+function isActive(u) { return Boolean(u.active_global || u.active_tcp || u.active_udp); }
+function computeStats() {
+  const list = instancesArray();
+  const healthyInstances = list.filter(i => i.ok).length;
+  const totalInstances = list.length;
+  let totalGroups = 0, activeUplinks = 0, inactiveUplinks = 0;
+  for (const inst of list) {
+    for (const g of inst.groups || []) {
+      totalGroups += 1;
+      for (const u of g.uplinks || []) {
+        if (isActive(u)) activeUplinks += 1; else inactiveUplinks += 1;
+      }
+    }
+  }
+  return { totalInstances, healthyInstances, totalGroups, activeUplinks, inactiveUplinks };
+}
+function statusTone(ok, groups) {
+  if (!ok) return "bad";
+  const uplinks = groups.flatMap(g => g.uplinks || []);
+  if (uplinks.length === 0) return "warn";
+  const healthyCount = uplinks.filter(healthy).length;
+  const activeCount = uplinks.filter(isActive).length;
+  if (healthyCount === uplinks.length && activeCount > 0) return "good";
+  if (healthyCount > 0) return "warn";
+  return "bad";
+}
+function statusLabel(tone) { return tone === "good" ? "Healthy" : tone === "warn" ? "Degraded" : "Offline"; }
+function prettyMode(value) {
+  const v = String(value || "").toLowerCase();
+  if (v === "active_passive") return "Active / Passive";
+  if (v === "active_active") return "Active / Active";
+  return value || "—";
+}
+function prettyScope(value) {
+  const v = String(value || "").toLowerCase();
+  if (v === "global") return "Global";
+  if (v === "per_uplink") return "Per uplink";
+  if (v === "per_flow") return "Per flow";
+  return value || "—";
+}
+function groupConfigChips(group) {
+  const mode = prettyMode(group.load_balancing_mode);
+  const scope = prettyScope(group.routing_scope);
+  const failback = group.auto_failback;
+  const fbCls = failback ? "fb-on" : "fb-off";
+  const fbLabel = failback ? "On" : "Off";
+  return `
+    <span class="cfg-chip mode" data-tip="load_balancing_mode"><span>⚖</span><span class="cfg-key">Mode:</span><span>${escapeHtml(mode)}</span></span>
+    <span class="cfg-chip scope" data-tip="routing_scope"><span>⌘</span><span class="cfg-key">Scope:</span><span>${escapeHtml(scope)}</span></span>
+    <span class="cfg-chip ${fbCls}" data-tip="auto_failback"><span>↺</span><span class="cfg-key">Auto-failback:</span><span>${fbLabel}</span></span>${groupBypassChip(group)}`;
+}
+// `bypass_when_down` group chip. Hidden entirely when the option is off
+// (the topology omits the fields, so `group.bypass_when_down` is simply
+// undefined). Armed (grey) while every transport still has a healthy
+// uplink; active (amber) while the group is down and new flows are being
+// dispatched DIRECT — the label names the diverted transports so a
+// TCP-only or UDP-only divert is distinguishable at a glance. TUN flows
+// bypass only when both transports are diverted.
+function groupBypassChip(group) {
+  if (!group || !group.bypass_when_down) return "";
+  const tcp = !!group.bypass_active_tcp;
+  const udp = !!group.bypass_active_udp;
+  if (!tcp && !udp) {
+    const tip = "bypass_when_down = true: new flows will go direct (tunnel bypass) while the group has no healthy uplink";
+    return `
+    <span class="cfg-chip bypass-armed" data-tip="${escapeHtml(tip)}"><span>⤳</span><span class="cfg-key">Bypass:</span><span>armed</span></span>`;
+  }
+  const legs = [tcp ? "TCP" : null, udp ? "UDP" : null].filter(Boolean).join(" + ");
+  const tip = `bypass_when_down: no healthy ${legs} uplink in the group — new ${legs} flows are going DIRECT, bypassing the tunnel`;
+  return `
+    <span class="cfg-chip bypass-active" data-tip="${escapeHtml(tip)}"><span>⤳</span><span class="cfg-key">Bypass:</span><span>DIRECT (${escapeHtml(legs)})</span></span>`;
+}
+// Render a small chip showing the active browser-fingerprint profile
+// for an uplink. The chip is visible only when there is *something*
+// to show — i.e. when the snapshot's `fingerprint_profile_name` is
+// populated. That field comes from the snapshot builder running
+// `select_with_strategy(primary_dial_url, effective_strategy)`, so:
+//   * `per_host_stable` → concrete profile id like `chrome-142-macos`,
+//   * `random` → the literal `"random"` (no fixed profile applies),
+//   * `none` (or shadowsocks-over-raw-socket) → field absent → no chip.
+// `prettyProfileName` translates the kebab-case id into a human label
+// (`Chrome 130 macOS`) so the chip reads as identity, not config.
+function prettyProfileName(name) {
+  if (!name) return "";
+  if (name === "random") return "Random";
+  // Pool ids are `<family>-<version>-<os>`. Anything else is shown
+  // verbatim — keeps an unrecognised id (post-refresh) visible
+  // instead of silently turning into a blank chip.
+  const parts = name.split("-");
+  if (parts.length !== 3) return name;
+  const [family, version, os] = parts;
+  const familyLabel = family.charAt(0).toUpperCase() + family.slice(1);
+  let osLabel;
+  if (os === "macos") osLabel = "macOS";
+  else if (os === "windows") osLabel = "Windows";
+  else if (os === "linux") osLabel = "Linux";
+  else osLabel = os.charAt(0).toUpperCase() + os.slice(1);
+  return `${familyLabel} ${version} ${osLabel}`;
+}
+// Shared HTML builder for the fingerprint chip. Both the per-uplink
+// chip (Status column) and the group-level chip (header) render the
+// same shape — colour, glyph, tooltip — so a single helper keeps
+// them in lockstep when the styling shifts.
+function renderFingerprintChip(name, strategy) {
+  if (!name) return "";
+  const cls = (strategy === "random" || name === "random") ? "fp-random" : "fp-stable";
+  const label = prettyProfileName(name);
+  const title = strategy
+    ? `fingerprint_profile_name = ${name} · strategy = ${strategy}`
+    : `fingerprint_profile_name = ${name}`;
+  return `<span class="cfg-chip ${cls}" data-tip="${escapeHtml(title)}"><span>⊛</span><span>${escapeHtml(label)}</span></span>`;
+}
+function fingerprintChip(uplink) {
+  const name = uplink && uplink.fingerprint_profile_name;
+  if (!name) return "";
+  return renderFingerprintChip(name, uplink.fingerprint_profile_strategy || "");
+}
+// `process_stable` / `random` produce one identity for the whole
+// process, so every uplink in the group reports the same name —
+// in that case the per-uplink chip is redundant and the operator
+// gets a single chip in the group header instead. PerHostStable
+// (and any future heterogeneous case) keeps the per-uplink chip
+// because each uplink resolves to its own identity.
+//
+// Returns `true` when *all* uplinks share the same
+// `fingerprint_profile_name` (including all-empty, which means the
+// group is on `none` and no chip is shown anywhere). `false`
+// otherwise — render mode falls back to per-uplink chips.
+function groupFingerprintIsHomogeneous(group) {
+  const uplinks = (group && group.uplinks) || [];
+  if (uplinks.length === 0) return false;
+  const first = uplinks[0] && uplinks[0].fingerprint_profile_name;
+  return uplinks.every(u => ((u && u.fingerprint_profile_name) || undefined) === (first || undefined));
+}
+// Group-header version of the chip. Visible only when all uplinks in
+// the group share the same fingerprint identity (the `process_stable`
+// / `random` case) — in the heterogeneous case the per-uplink chips
+// in the Status column carry the information instead.
+function groupFingerprintChip(group) {
+  const uplinks = (group && group.uplinks) || [];
+  if (uplinks.length === 0) return "";
+  if (!groupFingerprintIsHomogeneous(group)) return "";
+  const first = uplinks[0];
+  const name = first && first.fingerprint_profile_name;
+  if (!name) return ""; // homogeneous-but-all-`none` → nothing to show
+  return renderFingerprintChip(name, (first && first.fingerprint_profile_strategy) || "");
+}
+function protocolLabel(transport) {
+  const v = String(transport || "").toLowerCase();
+  if (v === "vless") return "VLESS";
+  if (v === "shadowsocks" || v === "ws") return "SS";
+  return transport ? String(transport) : "—";
+}
+function transportLabel(mode) {
+  const v = String(mode || "").toLowerCase();
+  if (v === "ws_h1"||v === "http1") return "WS/H1";
+  if (v === "ws_h2"||v === "h2") return "WS/H2";
+  if (v === "ws_h3"||v === "h3") return "WS/H3";
+  if (v === "quic") return "QUIC";
+  if (v === "xhttp_h1") return "XHTTP/H1";
+  if (v === "xhttp_h2") return "XHTTP/H2";
+  if (v === "xhttp_h3") return "XHTTP/H3";
+  if (!v) return null;
+  // Defensive: surface unknown effective modes verbatim instead of
+  // silently dropping the carrier from the pill (which made an
+  // `xhttp_h1` cap-down look like plain VLESS over TLS).
+  return v.toUpperCase();
+}
+function stackLabel(transport, mode) {
+  const t = String(transport || "").toLowerCase();
+  if (t === "shadowsocks") return "SS/QUIC";
+  const enc = protocolLabel(transport);
+  const tr = transportLabel(mode);
+  if (!tr) return enc;
+  return `${enc}/${tr}`;
+}
+function downgradeTitle(configured, effective, leg) {
+  return `${leg} auto-downgraded ${configured.toUpperCase()} → ${effective.toUpperCase()} (H3/QUIC unreachable)`;
+}
+// Compact suffix that surfaces the XHTTP submode on the pill. Hidden
+// for packet-up (the default — showing "/P" everywhere clutters the
+// row) and shown explicitly only when stream-one is configured. When
+// the per-host stream-one block is live the suffix becomes "/S↘P" so
+// the dashboard reflects the actual carrier shape, not the configured
+// one. Returns ["", ""] for non-XHTTP carriers.
+function submodeSuffix(submode, effective, downgraded) {
+  if (!submode) return ["", ""];
+  if (submode === "packet-up" && !downgraded) return ["", ""];
+  if (downgraded) {
+    return [
+      "<span class=\"proto-submode proto-downgraded\">(S)<span class=\"proto-dg\">↘</span>(P)</span>",
+      `submode auto-downgraded stream-one → packet-up (recent stream-one failure cached)`,
+    ];
+  }
+  if (submode === "stream-one") return ["<span class=\"proto-submode\">(S)</span>", "submode: stream-one"];
+  return ["<span class=\"proto-submode\">(P)</span>", "submode: packet-up"];
+}
+// Carrier-family CSS class for the per-wire dot in the leg chain cell.
+// Maps `(transport, mode)` onto the colour palette declared in CSS
+// (`fam-vless-ws`, `fam-vless-xhttp`, `fam-vless-quic`, `fam-ss-ws`,
+// `fam-ss-quic`). `transport = "ws"` is Shadowsocks-over-WS (collapses
+// to `fam-ss-ws`); `transport = "shadowsocks"` is direct SS (QUIC for
+// UDP, raw TCP for TCP — `fam-ss-quic`). Returns `fam-unknown` for
+// anything the dashboard doesn't recognise so the dot still renders.
+function wireFamilyClass(transport, mode) {
+  const t = String(transport || "").toLowerCase();
+  const m = String(mode || "").toLowerCase();
+  if (t === "ws") return "fam-ss-ws";
+  if (t === "shadowsocks") return "fam-ss-quic";
+  if (t === "vless") {
+    if (m.startsWith("xhttp")) return "fam-vless-xhttp";
+    if (m === "quic") return "fam-vless-quic";
+    if (m.startsWith("ws") || m === "h2" || m === "h3" || m === "http1") return "fam-vless-ws";
+    return "fam-vless-ws";
+  }
+  return "fam-unknown";
+}
+// Primary identity cell rendered in the `Protocol` column (variant C.3).
+// Shows wire #0 as a full `proto-pill` (transport+mode → e.g. `VLESS/WS/H3`)
+// plus a small `+N` count chip when fallback wires exist. The active-wire
+// shape lives in the per-leg wire-chain cells — this cell answers
+// "where does this uplink want to be" instead of "where is it right now".
+function primaryProtocolCell(uplink) {
+  const t = String(uplink.transport || "").toLowerCase();
+  const cls = t === "vless" || t === "shadowsocks" || t === "ws" ? `proto-${t}` : "";
+  const fallbacks = Array.isArray(uplink.configured_fallbacks) ? uplink.configured_fallbacks : [];
+  const wireChain = Array.isArray(uplink.configured_wire_chain) ? uplink.configured_wire_chain : [];
+  const wire0 = wireChain[0] || null;
+  // Configured primary modes only — no per-leg downgrade arrow or
+  // submode badge on this cell. Real-time carrier shape (post downgrade,
+  // post submode block) lives in the leg-chain cell where it belongs.
+  const tcpMode = (wire0 && wire0.tcp_mode) || uplink.tcp_mode || null;
+  const udpMode = (wire0 && wire0.udp_mode) || uplink.udp_mode || null;
+  const countChip = fallbacks.length > 0
+    ? `<span class="wire-count-chip" data-tip="${fallbacks.length} fallback wire${fallbacks.length === 1 ? "" : "s"} configured">+${fallbacks.length}</span>`
+    : "";
+  if (t === "shadowsocks") {
+    return `<div class="primary-cell"><span class="proto-pill ${cls}" data-tip="primary wire: ${escapeHtml(stackLabel(t))}">${escapeHtml(stackLabel(t))}</span>${countChip}</div>`;
+  }
+  // One pill in the Protocol cell — always. When TCP and UDP primary
+  // modes diverge we surface the TCP shape and the divergence goes
+  // into the hover title. The live per-leg carrier (post-downgrade,
+  // post-failover) is what the wire-chain cells show; Protocol's job
+  // is to identify "what this uplink is configured to be" without
+  // splitting into two rows that wrap the table awkwardly.
+  const primaryMode = tcpMode || udpMode || null;
+  if (!primaryMode) {
+    return `<div class="primary-cell"><span class="proto-pill ${cls}">${escapeHtml(protocolLabel(t))}</span>${countChip}</div>`;
+  }
+  const label = stackLabel(t, primaryMode);
+  const title = (tcpMode && udpMode && tcpMode !== udpMode)
+    ? `primary wire — TCP: ${stackLabel(t, tcpMode)} · UDP: ${stackLabel(t, udpMode)}`
+    : `primary wire: ${label}`;
+  return `<div class="primary-cell"><span class="proto-pill ${cls}" data-tip="${escapeHtml(title)}">${escapeHtml(label)}</span>${countChip}</div>`;
+}
+/**
+ * Render the per-leg wire-chain cell shown in the `TCP` / `UDP` columns
+ * (variant C.3). The active wire becomes a full `proto-pill`
+ * (`VLESS/WS/H3`, with submode + downgrade arrow + ✕ DOWN marker), every
+ * other wire collapses to a small colour-coded `wire-dot` keyed by
+ * carrier family. The auto-failback pin timer (`⏱ Ns`) sits next to
+ * the active pill, outside it — same convention as the legacy chain.
+ *
+ * `leg` is `"tcp"` or `"udp"`. The cell reads `*_active_wire`,
+ * `*_active_wire_pin_remaining_ms`, `*_healthy` / `*_health_effective`
+ * for the named leg, plus per-wire decorations (submode, carrier
+ * downgrade) from `configured_wire_chain[i]` for each wire. Falls back
+ * to legacy uplink-level fields on wire 0 when the chain isn't shipped
+ * by the backend (rolling-deploy guard).
+ *
+ * Single-wire uplinks (no `configured_fallbacks`) render just the
+ * active pill — no dots, no arrows.
+ */
+function legWireChainCell(uplink, leg) {
+  const legKey = leg; // "tcp" / "udp"
+  const fallbacks = Array.isArray(uplink.configured_fallbacks) ? uplink.configured_fallbacks : [];
+  const wireChain = Array.isArray(uplink.configured_wire_chain) ? uplink.configured_wire_chain : [];
+  const totalWires = (wireChain.length || (1 + fallbacks.length)) | 0;
+  // Resolve the per-wire (transport, mode) tuple. Same precedence as
+  // the legacy chain: per-wire chain entry first (carries effective
+  // mode after carrier downgrade), then fall back to uplink-level
+  // fields for wire 0 on snapshots that pre-date the per-wire chain.
+  const wireAt = (i) => {
+    const w = wireChain[i];
+    if (w) {
+      const transport = String(w.transport || "?").toLowerCase();
+      const mode = w[`${legKey}_mode_effective`] || w[`${legKey}_mode`] || w.tcp_mode || w.udp_mode || null;
+      return { transport, mode };
+    }
+    if (i === 0) {
+      const transport = String(uplink.transport || "?").toLowerCase();
+      const mode = uplink[`${legKey}_mode_effective`] || uplink[`${legKey}_mode`] || null;
+      return { transport, mode };
+    }
+    if (i - 1 < fallbacks.length) {
+      return { transport: String(fallbacks[i - 1]).toLowerCase(), mode: null };
+    }
+    return { transport: "?", mode: null };
+  };
+  // Per-wire decorations: submode + carrier downgrade state. Always
+  // sourced from the chain entry; legacy uplink-level fields back it
+  // up for wire 0 only (old snapshots).
+  const decoAt = (i) => {
+    const w = wireChain[i];
+    if (w) {
+      const sm = w[`${legKey}_xhttp_submode`] || null;
+      const smEff = w[`${legKey}_xhttp_submode_effective`] || sm;
+      const smDg = !!w[`${legKey}_xhttp_submode_downgrade_active`] && sm !== smEff;
+      const cm = w[`${legKey}_mode`];
+      const cEff = w[`${legKey}_mode_effective`];
+      const dg = !!w[`${legKey}_downgrade_active`] && cm && cm !== cEff;
+      return { sm, smEff, smDg, dg };
+    }
+    if (i === 0) {
+      const sm = uplink[`${legKey}_xhttp_submode`] || null;
+      const smEff = uplink[`${legKey}_xhttp_submode_effective`] || sm;
+      const smDg = !!uplink[`${legKey}_xhttp_submode_downgrade_active`] && sm !== smEff;
+      const cm = uplink[`${legKey}_mode`];
+      const cEff = uplink[`${legKey}_mode_effective`];
+      const dg = !!uplink[`${legKey}_downgrade_active`] && cm && cm !== cEff;
+      return { sm, smEff, smDg, dg };
+    }
+    return { sm: null, smEff: null, smDg: false, dg: false };
+  };
+  const activeIdx = uplink[`${legKey}_active_wire`] || 0;
+  const pinMs = uplink[`${legKey}_active_wire_pin_remaining_ms`];
+  const allDown = legHealth(uplink, legKey) === false;
+  const active = wireAt(activeIdx);
+  const activeDeco = decoAt(activeIdx);
+  // shuffle_wires round visualization: any wire that was the active
+  // wire of a failed sub-round (preceding `activeIdx` in forward order
+  // since the last success) is painted red. The snapshot field is
+  // optional — missing on older snapshots / on non-shuffle uplinks —
+  // so we coerce to 0 and skip when there's nothing to paint.
+  const shuffleWires = !!uplink.shuffle_wires;
+  const failedCount = uplink[`${legKey}_wires_failed_in_round`] || 0;
+  const failedSet = new Set();
+  if (shuffleWires && failedCount > 0 && totalWires > 1) {
+    const capped = Math.min(failedCount, totalWires);
+    for (let k = 1; k <= capped; k += 1) {
+      const idx = ((activeIdx - k) % totalWires + totalWires) % totalWires;
+      failedSet.add(idx);
+    }
+  }
+  const primaryFailed = uplink[`${legKey}_healthy`] === false;
+  // Build the active pill — same shape as the old `legPill` minus the
+  // leg label (the column header carries that now).
+  const t = active.transport;
+  const protoCls = (t === "vless" || t === "shadowsocks" || t === "ws") ? `proto-${t}` : "";
+  const dgArrow = activeDeco.dg ? "<span class=\"proto-dg\">↘</span>" : "";
+  const [submodeHtml, submodeTitle] = submodeSuffix(activeDeco.sm, activeDeco.smEff, activeDeco.smDg);
+  const dgCls = activeDeco.dg ? " proto-downgraded" : "";
+  const failCls = allDown ? " proto-failed" : "";
+  const fullLabel = stackLabel(t, active.mode);
+  const baseTitle = allDown
+    ? `${legKey.toUpperCase()} unhealthy — no working transport (latest dial failed)`
+    : (activeDeco.dg ? downgradeTitle(active.mode, active.mode, legKey.toUpperCase()) : `wire #${activeIdx}: ${fullLabel}`);
+  const title = submodeTitle ? `${baseTitle} · ${submodeTitle}` : baseTitle;
+  const activePill = `<span class="proto-pill ${protoCls}${dgCls}${failCls}" data-tip="${escapeHtml(title)}">${escapeHtml(fullLabel)}${dgArrow}${submodeHtml}</span>`;
+  const failChip = allDown
+    ? `<span class="proto-fail-chip" data-tip="${escapeHtml(legKey.toUpperCase() + " unhealthy — no working transport (latest dial failed)")}">✕ DOWN</span>`
+    : "";
+  // Pin timer rides outside the pill as a standalone chip — only when
+  // the active wire is a fallback (i.e. not primary) and the backend
+  // surfaces the remaining ms.
+  const pinChip = (activeIdx !== 0 && typeof pinMs === "number")
+    ? `<span class="fb-pin" data-tip="auto-failback in">⏱ ${(pinMs / 1000).toFixed(0)}s</span>`
+    : "";
+  // Build inactive wire dots. Skip the active wire — it's already
+  // shown as the full pill above. Render in chain order with a
+  // separator arrow so the operator can still see "primary, then
+  // fallback 1, then fallback 2, …".
+  const dots = [];
+  for (let i = 0; i < totalWires; i += 1) {
+    if (i === activeIdx) continue;
+    const w = wireAt(i);
+    const isFailed = (i === 0 && primaryFailed) || failedSet.has(i);
+    const famCls = isFailed ? "failed" : wireFamilyClass(w.transport, w.mode);
+    const dotTitle = `wire #${i}: ${stackLabel(w.transport, w.mode)}`;
+    const tipEsc = escapeHtml(dotTitle);
+    dots.push(`<span class="wire-dot ${famCls}" data-tip="${tipEsc}" aria-label="${tipEsc}" role="img"></span>`);
+  }
+  // Single-wire uplinks: just the active pill. No dots, no arrows.
+  if (totalWires <= 1) {
+    return `<div class="leg-chain">${activePill}${failChip}${pinChip}</div>`;
+  }
+  return `<div class="leg-chain">${activePill}${failChip}${pinChip}${dots.join("")}</div>`;
+}
+function activeProtocolChip(group) {
+  const byName = new Map((group.uplinks || []).map(u => [u.name, u]));
+  // `legs` lists which legs the chip is supposed to reflect. The
+  // global-active candidate covers both legs of one uplink and may
+  // split into per-leg chips when its TCP and UDP active wires
+  // diverge; the TCP / UDP candidates fire only when the active
+  // *uplink* differs across legs and stay single-leg.
+  const candidates = [];
+  if (group.global_active_uplink) candidates.push({ scope: "Active", name: group.global_active_uplink, legs: ["tcp", "udp"] });
+  if (group.tcp_active_uplink && group.tcp_active_uplink !== group.global_active_uplink) {
+    candidates.push({ scope: "TCP", name: group.tcp_active_uplink, legs: ["tcp"] });
+  }
+  if (group.udp_active_uplink && group.udp_active_uplink !== group.global_active_uplink && group.udp_active_uplink !== group.tcp_active_uplink) {
+    candidates.push({ scope: "UDP", name: group.udp_active_uplink, legs: ["udp"] });
+  }
+  if (!candidates.length) return "";
+  // Resolve the **active wire**'s shape on a leg. Reading
+  // `u.tcp_mode` alone left the chip stuck on primary's configured
+  // mode even after a fallback wire took over — the operator saw the
+  // wire chain in the row flip but the header chip stayed put.
+  // Walking `configured_wire_chain[active_wire]` first makes the chip
+  // track the wire actually carrying traffic; the uplink-level
+  // fields stay as a fallback for snapshots that pre-date the
+  // per-wire chain (older instances mid rolling-deploy).
+  const wireShape = (u, leg) => {
+    const isUdp = leg === "udp";
+    const wireIdx = isUdp ? (u.udp_active_wire || 0) : (u.tcp_active_wire || 0);
+    const chain = Array.isArray(u.configured_wire_chain) ? u.configured_wire_chain : [];
+    const w = chain[wireIdx] || null;
+    const upMode = isUdp ? u.udp_mode : u.tcp_mode;
+    const upEff = isUdp ? u.udp_mode_effective : u.tcp_mode_effective;
+    const upDg = isUdp ? u.udp_downgrade_active : u.tcp_downgrade_active;
+    const upSm = isUdp ? u.udp_xhttp_submode : u.tcp_xhttp_submode;
+    const upSmEff = isUdp ? u.udp_xhttp_submode_effective : u.tcp_xhttp_submode_effective;
+    const upSmDg = isUdp ? u.udp_xhttp_submode_downgrade_active : u.tcp_xhttp_submode_downgrade_active;
+    const transport = String((w && w.transport) || u.transport || "").toLowerCase();
+    const configured = (w && w[`${leg}_mode`]) || upMode || null;
+    const effective = (w && w[`${leg}_mode_effective`]) || upEff || configured;
+    const downgraded = !!((w && w[`${leg}_downgrade_active`]) || upDg) && !!configured && configured !== effective;
+    const submode = (w && w[`${leg}_xhttp_submode`]) || upSm || null;
+    const submodeEff = upSmEff || submode;
+    const submodeDg = !!upSmDg && submode !== submodeEff;
+    return { transport, configured, effective, downgraded, submode, submodeEff, submodeDg };
+  };
+  const renderChip = (scope, s) => {
+    const cls = s.transport === "vless" || s.transport === "shadowsocks" || s.transport === "ws" ? `proto-${s.transport}` : "";
+    const dg = s.downgraded ? " proto-downgraded" : "";
+    const star = s.downgraded ? "<span class=\"proto-dg\">↘</span>" : "";
+    const [submodeHtml, submodeTitle] = submodeSuffix(s.submode, s.submodeEff, s.submodeDg);
+    const baseTitle = s.downgraded ? downgradeTitle(s.configured, s.effective, scope) : "";
+    const title = submodeTitle ? (baseTitle ? `${baseTitle} · ${submodeTitle}` : submodeTitle) : baseTitle;
+    return `<span class="cfg-chip"><span>⇄</span><span class="cfg-key">${scope}:</span><span class="proto-pill ${cls}${dg}" data-tip="${escapeHtml(title)}" style="margin-left:2px">${escapeHtml(stackLabel(s.transport, s.effective))}${star}${submodeHtml}</span></span>`;
+  };
+  const shapeKey = (s) => `${s.transport}|${s.effective || ""}|${s.submode || ""}|${s.submodeEff || ""}|${s.submodeDg ? 1 : 0}|${s.downgraded ? 1 : 0}`;
+  return candidates.flatMap(({ scope, name, legs }) => {
+    const u = byName.get(name);
+    if (!u) return [];
+    if (legs.length === 1) return [renderChip(scope, wireShape(u, legs[0]))];
+    // Two-leg "Active" chip: collapse when both legs share a wire
+    // shape; split into TCP+UDP chips when they diverge so the
+    // header reflects each leg's actual carrier instead of averaging
+    // them behind a single primary mode.
+    const tcp = wireShape(u, "tcp");
+    const udp = wireShape(u, "udp");
+    if (shapeKey(tcp) === shapeKey(udp)) return [renderChip(scope, tcp)];
+    return [renderChip("TCP", tcp), renderChip("UDP", udp)];
+  }).join("");
+}
+function uplinkRole(u) {
+  const parts = [];
+  if (u.active_global) parts.push("global");
+  if (u.active_tcp) parts.push("tcp");
+  if (u.active_udp) parts.push("udp");
+  return parts.length ? parts.join(", ") : "standby";
+}
+function switchReasons(u) {
+  const reasons = [];
+  if (u.active_global && u.active_global_reason) reasons.push(`global: ${u.active_global_reason}`);
+  if (u.active_tcp && u.active_tcp_reason) reasons.push(`tcp: ${u.active_tcp_reason}`);
+  if (u.active_udp && u.active_udp_reason) reasons.push(`udp: ${u.active_udp_reason}`);
+  return [...new Set(reasons)];
+}
+// Collapse whitespace and clip an uplink's `last_error` to a tooltip-sized
+// summary. Some backend errors duplicate their chained cause in `Display`
+// (e.g. rustls' "invalid peer certificate" wraps its own message twice), so
+// a hard length cap keeps the hover readable.
+function errSummary(s) {
+  const t = String(s).replace(/\s+/g, " ").trim();
+  return t.length > 220 ? t.slice(0, 217) + "…" : t;
+}
+// Days before expiry at which an uplink's TLS-cert chip turns amber. The raw
+// `notAfter` is also exported on the topology JSON and the
+// `outline_ws_rust_uplink_cert_expiry_timestamp_seconds` gauge, so operators
+// who want a different threshold can alert in Prometheus directly.
+const CERT_WARN_DAYS = 14;
+// Render a cert-expiry chip for the Status cell. Nothing for a healthy cert
+// (keeps the column clean); amber `⚠ cert Nd` inside the warning window; red
+// `⚠ cert expired` once past `notAfter`. `cert_not_after_unix_ms` is absent
+// until the first check completes and for uplinks with no TLS endpoint.
+function certChip(u) {
+  const ms = u.cert_not_after_unix_ms;
+  if (ms == null) return '';
+  const days = Math.floor((ms - Date.now()) / 86400000);
+  if (days >= CERT_WARN_DAYS) return '';
+  const when = new Date(ms).toISOString().slice(0, 10);
+  if (days < 0) {
+    return `<span class="cert-chip bad" data-tip="TLS certificate expired ${-days}d ago (${escapeHtml(when)})" data-tip-wrap>⚠ cert expired</span>`;
+  }
+  return `<span class="cert-chip warn" data-tip="TLS certificate expires in ${days}d (${escapeHtml(when)})" data-tip-wrap>⚠ cert ${days}d</span>`;
+}
+function weightCell(u) {
+  const w = typeof u.weight === 'number' ? u.weight : '—';
+  // Show smoothed per-transport probe RTT (operator-facing). The
+  // `selection_score` fields are intentionally not shown here: in global
+  // routing scope `selection_score` returns one combined value for the
+  // uplink (TCP base + 0.05·UDP base), so `tcp_score_ms` and `udp_score_ms`
+  // are deliberately equal for every uplink — confusing in a column the
+  // operator reads as "TCP latency vs UDP latency". The raw EWMA fields
+  // already differ between transports and are what people expect to see.
+  const parts = [];
+  // Prefer active-wire EWMA so the cell shows the latency of the wire
+  // actually carrying traffic — primary's `tcp_rtt_ewma_ms` is null when
+  // primary's probe never produced a sample (e.g. server disabled XHTTP
+  // and the dial loop has moved onto the WS fallback). Falls back to
+  // primary's value for older snapshots / single-wire uplinks.
+  const tcpRtt = u.tcp_active_wire_rtt_ewma_ms ?? u.tcp_rtt_ewma_ms;
+  const udpRtt = u.udp_active_wire_rtt_ewma_ms ?? u.udp_rtt_ewma_ms;
+  if (tcpRtt != null) parts.push(`tcp: ${tcpRtt}ms`);
+  if (udpRtt != null) parts.push(`udp: ${udpRtt}ms`);
+  const rtt = parts.length
+    ? `<span class="switch-reason">${escapeHtml(parts.join(' · '))}</span>`
+    : '';
+  return `<div class="role-cell"><span>${escapeHtml(String(w))}</span>${rtt}</div>`;
+}
+function uplinkRoleCell(u) {
+  const reasons = switchReasons(u);
+  const detail = reasons.length
+    ? `<span class="switch-reason">${escapeHtml(reasons.join(" · "))}</span>`
+    : "";
+  return `<div class="role-cell"><span>${escapeHtml(uplinkRole(u))}</span>${detail}</div>`;
+}
+function summaryCards(stats) {
+  return [
+    { label: "Total Instances", value: stats.totalInstances, icon: "▣", tone: "" },
+    { label: "Healthy Instances", value: stats.healthyInstances, icon: "♥", tone: "good" },
+    { label: "Total Uplink Groups", value: stats.totalGroups, icon: "◎", tone: "warn" },
+    { label: "Active Uplinks", value: stats.activeUplinks, icon: "↗", tone: "good", good: true },
+    { label: "Inactive Uplinks", value: stats.inactiveUplinks, icon: "⊘", tone: "muted" },
+  ];
+}
+function renderSummary(stats) {
+  const root = document.getElementById("summaryGrid");
+  root.innerHTML = summaryCards(stats).map(c => `
+    <article class="summary-card">
+      <div class="summary-copy">
+        <div class="summary-label">${c.label}</div>
+        <div class="summary-value ${c.good ? "good" : ""}">${c.value}</div>
+      </div>
+      <div class="summary-icon ${c.tone}">${c.icon}</div>
+    </article>`).join("");
+}
+function applyInstanceView(inst) {
+  const prev = state.instances.get(inst.name) || {};
+  if (!inst.ok) {
+    state.instances.set(inst.name, {
+      name: inst.name, ok: false, error: inst.error || "instance unavailable",
+      groups: prev.groups || [], updatedAt: Date.now(), loading: false,
+    });
+    return;
+  }
+  const groups = inst.topology?.instance?.groups || [];
+  state.instances.set(inst.name, {
+    name: inst.name, ok: true, error: null, groups,
+    updatedAt: Date.now(), loading: false,
+  });
+  state.lastUpdated = Date.now();
+}
+function renderErrors() {
+  const box = document.getElementById("errors");
+  const errs = [];
+  if (state.listError) errs.push(state.listError);
+  box.innerHTML = errs.map(e => `<div class="error">${escapeHtml(e)}</div>`).join("");
+}
+function renderInstancePanel(instance) {
+  const panel = document.createElement("article");
+  const collapsed = state.collapsedInstances.has(instance.name);
+  panel.className = "instance-panel" + (collapsed ? " collapsed" : "");
+  panel.dataset.instance = instance.name;
+  const groups = instance.groups || [];
+  const tone = instance.ok === null ? "warn" : statusTone(instance.ok, groups);
+  const stamp = instance.updatedAt
+    ? new Date(instance.updatedAt).toLocaleTimeString()
+    : "—";
+  const loadingTag = instance.loading
+    ? `<span class="status-pill" style="margin-left:6px">updating…</span>`
+    : "";
+  panel.innerHTML = `
+    <header class="instance-panel-header">
+      <div class="status-dot ${tone}"></div>
+      <div class="panel-title">
+        <strong>${escapeHtml(instance.name)}</strong>
+        <span class="status-pill ${tone}">${instance.ok === null ? "Loading" : statusLabel(tone)}</span>
+        ${loadingTag}
+      </div>
+      <span class="subtitle" style="margin-right:8px">↻ ${stamp}</span>
+      <span class="collapse-chev">⌃</span>
+    </header>`;
+  panel.querySelector(".instance-panel-header").addEventListener("click", () => toggleInstance(instance.name));
+  if (instance.ok === false) {
+    const body = document.createElement("div");
+    body.className = "instance-panel-body";
+    body.innerHTML = `<div class="error">${escapeHtml(instance.error || "instance недоступен")}</div>`;
+    panel.appendChild(body);
+    return panel;
+  }
+  if (instance.ok === null) {
+    const body = document.createElement("div");
+    body.className = "instance-panel-body";
+    body.innerHTML = `<div class="subtitle">Loading topology…</div>`;
+    panel.appendChild(body);
+    return panel;
+  }
+  return renderInstanceBody(panel, instance, groups);
+}
+function renderInstanceBody(panel, instance, groups) {
+    const body = document.createElement("div");
+    body.className = "instance-panel-body";
+    body.innerHTML = `<div class="section-title">Uplink Groups</div>`;
+    for (const group of groups) {
+      const groupEl = document.createElement("section");
+      const groupKey = instance.name + "\u0000" + group.name;
+      const groupCollapsed = state.collapsedGroups.has(groupKey);
+      const activeInGroup = (group.uplinks || []).filter(isActive).length;
+      const activeProtoChip = activeProtocolChip(group);
+      // Homogeneous fingerprint → one chip in the header; per-uplink
+      // chips suppressed below. Heterogeneous → no header chip,
+      // per-uplink chips render normally.
+      const fpHomogeneous = groupFingerprintIsHomogeneous(group);
+      const groupFpChip = fpHomogeneous ? groupFingerprintChip(group) : "";
+      groupEl.className = "group-table" + (groupCollapsed ? " collapsed" : "");
+      groupEl.innerHTML = `
+        <div class="group-table-head">
+          <div class="group-table-title">
+            <span>${escapeHtml(group.name)}</span>
+            <span class="group-count">${(group.uplinks || []).length} uplinks</span>
+          </div>
+          <div class="group-table-meta">
+            <div class="cfg-chips">${groupConfigChips(group)}${groupFpChip}${activeProtoChip}</div>
+            <span class="cfg-active">${activeInGroup} active</span>
+            <span class="collapse-chev">⌃</span>
+          </div>
+        </div>
+        <div class="rows">
+          <div class="rows-head">
+            <div>Uplink</div>
+            <div>Protocol</div>
+            <div>Status</div>
+            <div>TCP wire chain</div>
+            <div>UDP wire chain</div>
+            <div>Weight</div>
+            <div>Role</div>
+            <div>Action</div>
+          </div>
+        </div>`;
+      groupEl.querySelector(".group-table-head").addEventListener("click", () => toggleGroup(groupKey));
+      const rows = groupEl.querySelector(".rows");
+      for (const uplink of group.uplinks || []) {
+        const entry = { instance: instance.name, group: group.name, uplink };
+        const rowTone = isActive(uplink) ? "good" : (healthy(uplink) ? "warn" : "bad");
+        const label = rowTone === "good" ? "Active" : rowTone === "warn" ? "Ready" : "Inactive";
+        // Surface the most recent probe/runtime error so a degraded uplink
+        // (e.g. primary wire down on an expired TLS cert, traffic riding a
+        // fallback) is legible instead of looking like a healthy "Ready".
+        // `last_error` is cleared on the next successful probe
+        // (`process_probe_ok`), so a persistent chip means an ongoing failure.
+        const errChip = uplink.last_error
+          ? `<span class="proto-fail-chip" data-tip="${escapeHtml(errSummary(uplink.last_error))}" data-tip-wrap>⚠</span>`
+          : '';
+        const row = document.createElement("div");
+        row.className = "row";
+        row.innerHTML = `
+          <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
+          <div>${primaryProtocolCell(uplink)}</div>
+          <div><span class="status-pill ${rowTone}">${label}</span>${errChip}${certChip(uplink)}${fpHomogeneous ? '' : fingerprintChip(uplink)}</div>
+          <div>${legWireChainCell(uplink, 'tcp')}</div>
+          <div>${legWireChainCell(uplink, 'udp')}</div>
+          <div class="muted-cell">${weightCell(uplink)}</div>
+          <div class="muted-cell">${uplinkRoleCell(uplink)}</div>
+          <div>${rowTone === "good" ? `<button class="action-btn" type="button" disabled>Active</button>` : `<button class="action-btn primary" type="button">▶ Activate</button>`}</div>`;
+        if (rowTone !== "good") {
+          row.querySelector("button").addEventListener("click", ev => { ev.stopPropagation(); activateEntries([entry]); });
+        }
+        rows.appendChild(row);
+      }
+      body.appendChild(groupEl);
+    }
+    panel.appendChild(body);
+    return panel;
+}
+function render() {
+  renderErrors();
+  const stats = computeStats();
+  renderSummary(stats);
+  const root = document.getElementById("groups");
+  root.innerHTML = "";
+  for (const instance of instancesArray()) {
+    root.appendChild(renderInstancePanel(instance));
+  }
+  const stamp = state.lastUpdated
+    ? new Date(state.lastUpdated).toLocaleTimeString()
+    : "—";
+  document.getElementById("updatedAtInline").textContent = stamp;
+  renderRefreshButton();
+}
+function renderRefreshButton() {
+  const btn = document.getElementById("refreshBtn");
+  const label = document.getElementById("refreshLabel");
+  btn.classList.toggle("off", !autoRefreshEnabled);
+  btn.setAttribute("aria-pressed", String(autoRefreshEnabled));
+  label.textContent = autoRefreshEnabled ? "Auto" : "Paused";
+}
+function stopInstanceTimer(name) {
+  const t = instanceTimers.get(name);
+  if (t !== undefined) { clearInterval(t); instanceTimers.delete(name); }
+}
+function startInstanceTimer(name) {
+  stopInstanceTimer(name);
+  if (!autoRefreshEnabled) return;
+  const id = setInterval(() => loadInstance(name), refreshMs);
+  instanceTimers.set(name, id);
+}
+function stopAllInstanceTimers() {
+  for (const name of Array.from(instanceTimers.keys())) stopInstanceTimer(name);
+}
+function startAllInstanceTimers() {
+  if (!autoRefreshEnabled) return;
+  for (const name of state.order) startInstanceTimer(name);
+}
+function toggleAutoRefresh() {
+  autoRefreshEnabled = !autoRefreshEnabled;
+  try { localStorage.setItem("dashboard-auto-refresh", autoRefreshEnabled ? "on" : "off"); } catch (_) {}
+  renderRefreshButton();
+  if (autoRefreshEnabled) startAllInstanceTimers();
+  else stopAllInstanceTimers();
+}
+function toggleInstance(name) {
+  if (state.collapsedInstances.has(name)) state.collapsedInstances.delete(name);
+  else state.collapsedInstances.add(name);
+  saveCollapsed("dashboard-collapsed-instances", state.collapsedInstances);
+  render();
+}
+function toggleGroup(key) {
+  if (state.collapsedGroups.has(key)) state.collapsedGroups.delete(key);
+  else state.collapsedGroups.add(key);
+  saveCollapsed("dashboard-collapsed-groups", state.collapsedGroups);
+  render();
+}
+async function loadInstanceList() {
+  const res = await fetch("/dashboard/api/instances", { cache: "no-store" });
+  if (!res.ok) throw new Error(`instances: HTTP ${res.status}`);
+  const raw = await res.json();
+  const names = (raw.instances || []).map(i => i.name);
+  const seen = new Set(names);
+  for (const old of Array.from(state.instances.keys())) {
+    if (!seen.has(old)) { state.instances.delete(old); stopInstanceTimer(old); }
+  }
+  state.order = names;
+  for (const name of names) {
+    if (!state.instances.has(name)) {
+      state.instances.set(name, { name, ok: null, error: null, groups: [], updatedAt: null, loading: true });
+    }
+  }
+  state.listError = null;
+  listLoaded = true;
+  render();
+  for (const name of names) {
+    loadInstance(name);
+    startInstanceTimer(name);
+  }
+}
+async function loadInstance(name) {
+  if (inflight.get(name)) return;
+  inflight.set(name, true);
+  const cur = state.instances.get(name);
+  if (cur) { cur.loading = true; render(); }
+  try {
+    const url = `/dashboard/api/topology?instance=${encodeURIComponent(name)}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      applyInstanceView({ name, ok: false, error: `HTTP ${res.status}${text ? ": " + text : ""}` });
+    } else {
+      const view = await res.json();
+      applyInstanceView(view);
+    }
+  } catch (err) {
+    applyInstanceView({ name, ok: false, error: String(err) });
+  } finally {
+    inflight.delete(name);
+    render();
+  }
+}
+async function activateEntries(entries) {
+  const targets = entries.map(e => ({ instance: e.instance, group: e.group, uplink: e.uplink.name }));
+  await fetch("/dashboard/api/activate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ targets, transport: "both" })
+  });
+  const touched = new Set(entries.map(e => e.instance));
+  await Promise.all(Array.from(touched).map(name => loadInstance(name)));
+}
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  const icon = document.getElementById("themeIcon");
+  if (icon) icon.textContent = theme === "dark" ? "☀" : "☾";
+  const meta = document.getElementById("themeColorMeta");
+  if (meta) {
+    const navColor = getComputedStyle(document.documentElement).getPropertyValue("--nav").trim();
+    if (navColor) meta.setAttribute("content", navColor);
+  }
+  try { localStorage.setItem("dashboard-theme", theme); } catch (_) {}
+}
+(function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem("dashboard-theme"); } catch (_) {}
+  const prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+  applyTheme(saved || (prefersLight ? "light" : "dark"));
+})();
+document.getElementById("themeToggle").addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme") || "dark";
+  applyTheme(cur === "dark" ? "light" : "dark");
+});
+document.getElementById("refreshBtn").addEventListener("click", toggleAutoRefresh);
+renderRefreshButton();
+loadInstanceList().catch(err => {
+  state.listError = "instances: " + String(err);
+  render();
+  setTimeout(() => loadInstanceList().catch(() => {}), refreshMs);
+});
+</script>
+</body>
+</html>

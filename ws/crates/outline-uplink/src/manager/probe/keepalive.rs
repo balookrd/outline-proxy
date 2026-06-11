@@ -1,0 +1,199 @@
+//! Warm-probe keepalive loop.
+//!
+//! Periodically tickles the cached probe pipes for VLESS uplinks (see
+//! [`super::warm_udp`] / [`super::warm_tcp`]) so the server-side state
+//! that makes them cheap — UDP NAT entry, HTTP keep-alive socket, WS
+//! framing — survives the gap between regular probe cycles even when
+//! `probe.interval` exceeds the upstream idle timeout.
+//!
+//! An empty slot is a no-op: keepalive never dials. The next regular
+//! probe cycle is responsible for filling the slot fresh. Failed
+//! keepalive ticks drop the cached pipe so the next regular probe also
+//! re-dials cleanly.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::time::sleep;
+use tracing::debug;
+
+use crate::config::UplinkTransport;
+use crate::penalty::update_rtt_ewma;
+use crate::probe::dns::build_dns_query;
+use crate::probe::http::build_http_probe_request;
+use crate::types::{TransportKind, UplinkManager};
+
+use super::warm_tcp;
+use super::warm_udp;
+
+impl UplinkManager {
+    /// Spawn the warm-probe keepalive task.
+    ///
+    /// Cheap when there is nothing to do: an idle slot returns
+    /// immediately, a non-VLESS uplink is skipped without locking
+    /// anything. Disabled entirely when
+    /// `load_balancing.warm_probe_keepalive_interval` is `None`.
+    pub fn spawn_warm_probe_keepalive_loop(&self) {
+        let interval = match self.inner.load_balancing.warm_probe_keepalive_interval {
+            Some(d) if !d.is_zero() => d,
+            _ => return,
+        };
+        // Run only when the regular HTTP/DNS probes are configured —
+        // there is no point keeping a slot warm that no probe ever
+        // populates.
+        let probe = self.inner.probe.clone();
+        if probe.dns.is_none() && probe.http.is_none() {
+            return;
+        }
+        // Auto-disable when the regular probe cycle is already tight
+        // enough to keep the cached pipes hot on its own. A keepalive
+        // tick that fires more rarely than the probe loop is pure
+        // overhead — every probe cycle already exercises the same
+        // send/recv path the keepalive would. The threshold matches
+        // the keepalive interval itself: as long as the probe cadence
+        // is at least as fast, no extra ticks are needed. A short log
+        // line at startup makes the auto-skip discoverable so users
+        // do not waste time hunting for a dormant background task.
+        if probe.interval <= interval {
+            tracing::debug!(
+                group = %self.inner.group_name,
+                probe_interval_ms = probe.interval.as_millis(),
+                keepalive_interval_ms = interval.as_millis(),
+                "warm-probe keepalive loop skipped: probe.interval is already tight enough"
+            );
+            return;
+        }
+        let manager = self.clone();
+        let mut shutdown = self.shutdown_rx();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => break,
+                    _ = sleep(interval) => {}
+                }
+                manager.tick_warm_probe_keepalive(&probe).await;
+            }
+        });
+    }
+
+    async fn tick_warm_probe_keepalive(&self, probe: &crate::config::ProbeConfig) {
+        // Pre-build the wire payloads once per tick: every uplink uses
+        // the same probe configuration, and the build cost is dominated
+        // by a few small allocations rather than the round-trip itself.
+        let dns_query: Option<Arc<Vec<u8>>> =
+            probe.dns.as_ref().map(|cfg| Arc::new(build_dns_query(&cfg.name)));
+        // SS-over-WS UDP additionally needs the target wire form
+        // prefixed to every datagram (per SS-UDP framing). Build it
+        // once and pass alongside the bare DNS query.
+        let ss_udp_payload: Option<Arc<Vec<u8>>> = probe.dns.as_ref().and_then(|cfg| {
+            let target = cfg.target_addr().ok()?;
+            let mut payload = target.to_wire_bytes().ok()?;
+            payload.extend_from_slice(&build_dns_query(&cfg.name));
+            Some(Arc::new(payload))
+        });
+        // The HTTP request is rebuilt per-uplink so the rotation cursor on
+        // `HttpProbeConfig` advances once per keepalive target — mirroring
+        // the regular probe loop, where each call yields the next URL in
+        // the configured list.
+        let build_http_request = |cfg: &crate::config::HttpProbeConfig| -> Option<Arc<Vec<u8>>> {
+            let url = cfg.next_url();
+            let host = url.host_str()?;
+            let port = url.port_or_known_default().unwrap_or(80);
+            let mut path = if url.path().is_empty() {
+                "/".to_string()
+            } else {
+                url.path().to_string()
+            };
+            if let Some(q) = url.query() {
+                path.push('?');
+                path.push_str(q);
+            }
+            Some(Arc::new(build_http_probe_request(host, port, &path).into_bytes()))
+        };
+
+        for (index, uplink) in self.inner.uplinks.iter().enumerate() {
+            if !matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ws,) {
+                continue;
+            }
+            // UDP keepalive. The Vless and Ws variants of the warm slot
+            // both consume the same `query` bytes (transaction id +
+            // question section); the SS variant additionally needs the
+            // SS-UDP target prefix, supplied via `ss_payload`. Successful
+            // round-trips feed the `latency` and `rtt_ewma` fields on
+            // status so dashboards see fresh measurements even when the
+            // regular probe loop is skipping cycles for active uplinks
+            // (see `should_skip_probe_cycle_for_recent_activity`).
+            if let (Some(query), Some(ss_payload)) = (dns_query.as_ref(), ss_udp_payload.as_ref()) {
+                let slot = self.inner.warm_udp_probe_slot(index);
+                let rtt = tokio::time::timeout(
+                    keepalive_per_tick_timeout(probe.timeout),
+                    warm_udp::keepalive_tick(slot, query, ss_payload),
+                )
+                .await
+                .unwrap_or(None);
+                if let Some(rtt) = rtt {
+                    self.record_keepalive_latency(index, TransportKind::Udp, rtt);
+                }
+                debug!(
+                    uplink = %uplink.name,
+                    transport = "udp",
+                    probe = "warm_keepalive",
+                    rtt_ms = rtt.map(|d| d.as_millis() as u64),
+                    "warm UDP probe keepalive tick"
+                );
+            }
+            // TCP keepalive.
+            if let Some(request) = probe.http.as_ref().and_then(&build_http_request) {
+                let slot = self.inner.warm_tcp_probe_slot(index);
+                let rtt = tokio::time::timeout(
+                    keepalive_per_tick_timeout(probe.timeout),
+                    warm_tcp::keepalive_tick(slot, &request),
+                )
+                .await
+                .unwrap_or(None);
+                if let Some(rtt) = rtt {
+                    self.record_keepalive_latency(index, TransportKind::Tcp, rtt);
+                }
+                debug!(
+                    uplink = %uplink.name,
+                    transport = "tcp",
+                    probe = "warm_keepalive",
+                    rtt_ms = rtt.map(|d| d.as_millis() as u64),
+                    "warm TCP probe keepalive tick"
+                );
+            }
+        }
+    }
+}
+
+/// Cap each per-slot keepalive at the configured probe timeout (or 5 s
+/// when the probe has no timeout). Stops a wedged warm transport from
+/// blocking other uplinks' keepalives in the same tick.
+fn keepalive_per_tick_timeout(probe_timeout: Duration) -> Duration {
+    if probe_timeout.is_zero() {
+        Duration::from_secs(5)
+    } else {
+        probe_timeout
+    }
+}
+
+impl UplinkManager {
+    /// Stamp a successful keepalive round-trip into the per-transport
+    /// `latency` / `rtt_ewma` fields. Mirrors what `process_probe_ok`
+    /// does after a regular probe so the dashboard surface (snapshot
+    /// JSON, Prometheus gauges via metrics that read from status) sees
+    /// fresh values even when the real probe loop has skipped this
+    /// uplink for the last N cycles.
+    fn record_keepalive_latency(&self, index: usize, transport: TransportKind, rtt: Duration) {
+        let alpha = self.inner.load_balancing.rtt_ewma_alpha;
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            per.latency = Some(rtt);
+            update_rtt_ewma(&mut per.rtt_ewma, Some(rtt), alpha);
+        });
+    }
+}

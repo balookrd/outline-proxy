@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" id="themeColorMeta" content="#0a0f1c">
+<title>Uplinks · Network Dashboard</title>
+<style>
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0a0f1c;
+  --theme-chrome: #0a0f1c;
+  --nav: #0f1626;
+  --nav-2: #1a2238;
+  --nav-text: #cbd5e1;
+  --nav-muted: #8ea0bd;
+  --nav-brand: #ffffff;
+  --nav-hover: rgba(255, 255, 255, 0.04);
+  --nav-card-bg: rgba(255, 255, 255, 0.02);
+  --nav-card-border: rgba(255, 255, 255, 0.06);
+  --nav-card-text: #ffffff;
+  --text: #e2e8f0;
+  --muted: #8ea0bd;
+  --line: #1e293b;
+  --line-strong: #334155;
+  --soft: #151c2e;
+  --soft-2: #111828;
+  --panel: #131b2c;
+  --panel-tint: #0f1626;
+  --green: #22c55e;
+  --green-strong: #86efac;
+  --green-soft: rgba(34, 197, 94, 0.15);
+  --amber: #f59e0b;
+  --amber-soft: rgba(245, 158, 11, 0.15);
+  --gray-soft: rgba(148, 163, 184, 0.12);
+  --blue: #6366f1;
+  --blue-soft: rgba(99, 102, 241, 0.18);
+  --red: #f87171;
+  --red-soft: rgba(248, 113, 113, 0.15);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --error-bg: rgba(248, 113, 113, 0.15);
+  --error-text: #fca5a5;
+  --error-border: rgba(248, 113, 113, 0.35);
+  --input-bg: #0f1626;
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f8fafc;
+  --theme-chrome: #f8fafc;
+  --nav: #ffffff;
+  --nav-2: #f1f5f9;
+  --nav-text: #334155;
+  --nav-muted: #64748b;
+  --nav-brand: #0f172a;
+  --nav-hover: rgba(15, 23, 42, 0.05);
+  --nav-card-bg: #f8fafc;
+  --nav-card-border: #e2e8f0;
+  --nav-card-text: #0f172a;
+  --text: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --soft: #f1f5f9;
+  --soft-2: #f8fafc;
+  --panel: #ffffff;
+  --panel-tint: #f8fafc;
+  --green: #22c55e;
+  --green-strong: #15803d;
+  --green-soft: #dcfce7;
+  --amber: #f59e0b;
+  --amber-soft: #fef3c7;
+  --gray-soft: #f1f5f9;
+  --blue: #6366f1;
+  --blue-soft: #eef2ff;
+  --red: #dc2626;
+  --red-soft: #fee2e2;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-soft: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --error-bg: #fef2f2;
+  --error-text: #991b1b;
+  --error-border: #fecaca;
+  --input-bg: #ffffff;
+}
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body { margin: 0; font-family: "SF Pro Display", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif; color: var(--text); background: var(--bg); font-size: 13px; line-height: 1.34; transition: color .25s ease; }
+button, input, select { font: inherit; }
+a { text-decoration: none; }
+.shell { min-height: 100vh; display: grid; grid-template-columns: 214px minmax(0, 1fr); }
+.nav { background: var(--nav); color: var(--nav-text); display: flex; flex-direction: column; min-height: 100vh; border-right: 1px solid var(--nav-card-border); padding: 12px 8px; }
+.brand { min-height: 52px; display: flex; gap: 10px; align-items: center; padding: 4px 6px 10px; color: var(--nav-brand); }
+.brand-text { display: grid; gap: 2px; line-height: 1.1; min-width: 0; }
+.brand-title { font-weight: 760; font-size: 14px; color: var(--nav-brand); letter-spacing: 0; white-space: nowrap; }
+.brand-subtitle { font-size: 10px; color: var(--nav-text); opacity: .7; white-space: nowrap; }
+.logo { width: 38px; height: 38px; display: grid; place-items: center; flex-shrink: 0; }
+.logo img { width: 38px; height: 38px; object-fit: contain; display: block; }
+.menu { padding: 0; display: grid; gap: 4px; margin-top: 4px; }
+.item { min-height: 38px; width: 100%; border: 0; border-radius: 11px; display: flex; align-items: center; gap: 9px; padding: 0 10px; color: var(--nav-text); background: transparent; text-align: left; font-size: 13px; font-weight: 640; cursor: pointer; transition: background .18s ease, color .18s ease, transform .18s ease; }
+.item:hover { background: var(--nav-hover); color: var(--nav-brand); transform: translateX(2px); }
+.item.active { background: var(--blue); color: #fff; box-shadow: var(--shadow-soft); }
+.item-icon { width: 20px; display: inline-grid; place-items: center; font-size: 14px; opacity: .85; }
+.spacer { flex: 1; }
+.nav-footer { margin-top: 12px; padding: 10px; display: grid; gap: 8px; }
+.nav-card { border: 1px solid var(--nav-card-border); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; background: var(--nav-card-bg); }
+.nav-card-title { color: var(--nav-muted); font-size: 11px; font-weight: 740; }
+.nav-card-value { color: var(--nav-card-text); font-size: 11px; line-height: 1.45; }
+main { padding: 12px 16px 16px; min-width: 0; background: var(--bg); }
+.topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.topbar-copy { display: grid; gap: 4px; }
+h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spacing: 0; }
+.subtitle { color: var(--muted); font-size: 11px; }
+.toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+select, input { color: var(--text); background: var(--input-bg); border: 1px solid var(--line); border-radius: 12px; padding: 0 14px; min-height: 38px; outline: none; transition: border-color .18s ease, box-shadow .18s ease, background .18s ease; }
+select:focus, input:focus { border-color: var(--blue); box-shadow: 0 0 0 4px rgba(99,102,241,.12); background: var(--panel); }
+.btn { min-height: 32px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--text); font-weight: 650; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; box-shadow: var(--shadow-soft); transition: border-color .18s ease, background .18s ease, color .18s ease, transform .18s ease; }
+.btn:hover:not(:disabled) { border-color: var(--blue); color: var(--blue); transform: translateY(-1px); }
+.btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 10px 24px rgba(99,102,241,.22); }
+.btn.primary:hover:not(:disabled) { background: #4f46e5; }
+.btn.danger { color: var(--red); border-color: var(--red); background: transparent; }
+.btn:disabled { opacity: .45; cursor: default; }
+.theme-toggle { border: 2px solid var(--line-strong); background: var(--panel); border-radius: 10px; width: 34px; height: 32px; display: grid; place-items: center; color: var(--blue); font-size: 15px; font-weight: 700; cursor: pointer; box-shadow: var(--shadow-soft); transition: border-color .18s ease, background .18s ease, color .18s ease; }
+.theme-toggle:hover { border-color: var(--blue); }
+.dirty-pill { min-height: 28px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 730; color: var(--amber); background: var(--amber-soft); border: 1px solid transparent; border-radius: 999px; padding: 0 10px; white-space: nowrap; }
+.dirty-pill.clean { color: var(--muted); background: var(--gray-soft); border-color: var(--line); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); padding: 0; margin-bottom: 12px; overflow: hidden; }
+.group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0; padding: 14px 18px; background: var(--panel-tint); border-bottom: 1px solid var(--line); }
+.group-title { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 10px; }
+.group-count { min-height: 28px; display: inline-flex; align-items: center; padding: 0 10px; border-radius: 999px; background: var(--gray-soft); color: var(--muted); font-size: 11px; font-weight: 730; }
+.uplink-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 18px; border-top: 1px solid var(--line); transition: background .18s ease; }
+.uplink-row:hover { background: var(--soft); }
+.uplink-row:first-child { border-top: 0; }
+.uplink-info { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.uplink-name { font-weight: 600; font-size: 13.5px; }
+.uplink-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+.meta-chip { min-height: 26px; display: inline-flex; align-items: center; font-size: 11px; font-weight: 760; padding: 0 10px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); color: var(--muted); }
+.meta-chip strong { color: var(--text); font-weight: 500; }
+.meta-chip.transport { background: var(--blue-soft); color: var(--blue); border-color: var(--blue-soft); }
+.uplink-actions { display: flex; gap: 6px; }
+.form-box { margin: 0 18px 14px; padding: 12px; border: 1px dashed var(--line-strong); border-radius: 12px; background: var(--soft-2); display: grid; gap: 8px; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.form-field { display: grid; gap: 3px; }
+.form-field label { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.form-field input, .form-field select { width: 100%; }
+.form-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.error { border: 1px solid var(--error-border); background: var(--error-bg); color: var(--error-text); border-radius: 12px; padding: 10px 14px; font-size: 12px; margin-bottom: 12px; }
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); min-width: min(560px, calc(100vw - 32px)); padding: 12px 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); box-shadow: 0 18px 36px rgba(0,0,0,.28); font-size: 13px; text-align: center; }
+.toast.ok { border-color: var(--green); color: var(--green-strong); }
+.toast.err { border-color: var(--red); color: var(--red); }
+.empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
+/* Universal custom tooltip — any element with `data-tip="..."` shows
+ * an instant CSS pop-over on hover. Same shape as dashboard.html so
+ * both pages feel consistent. */
+[data-tip] { position: relative; }
+[data-tip]:not([data-tip=""])::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel-tint);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .1s ease .04s;
+  z-index: 50;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+[data-tip]:not([data-tip=""])::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--line-strong);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .1s ease .04s;
+  z-index: 50;
+}
+[data-tip]:not([data-tip=""]):hover::after,
+[data-tip]:not([data-tip=""]):hover::before,
+[data-tip]:not([data-tip=""]):focus-visible::after,
+[data-tip]:not([data-tip=""]):focus-visible::before { opacity: 1; }
+@media (max-width: 1024px) {
+  .shell { grid-template-columns: 1fr; }
+  .nav { display: none; }
+  main { padding: 22px 18px 30px; }
+  .topbar { flex-direction: column; align-items: stretch; }
+  .toolbar { justify-content: flex-start; }
+}
+@media (max-width: 760px) {
+  .toolbar { align-items: stretch; }
+  .toolbar select { width: 100%; }
+  .group-head, .uplink-row { align-items: flex-start; flex-direction: column; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="brand">
+      <span class="logo"><img src="/dashboard/outline-logo.png" alt="" aria-hidden="true"></span>
+      <span class="brand-text">
+        <span class="brand-title">Network Dashboard</span>
+        <span class="brand-subtitle">outline-ws-rust control</span>
+      </span>
+    </div>
+    <nav class="menu">
+      <a class="item" href="/dashboard"><span class="item-icon">▣</span><span>Instances</span></a>
+      <a class="item active" href="/dashboard/uplinks"><span class="item-icon">⚒</span><span>Uplinks</span></a>
+      <button class="item" type="button"><span class="item-icon">◉</span><span>Alerts</span></button>
+      <button class="item" type="button"><span class="item-icon">▤</span><span>Logs</span></button>
+      <button class="item" type="button"><span class="item-icon">⚙</span><span>Settings</span></button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="nav-footer">
+      <div class="nav-card">
+        <div class="nav-card-title">Hot apply</div>
+        <div class="nav-card-value">Edits are staged locally until `/control/apply` succeeds.</div>
+      </div>
+    </div>
+  </aside>
+  <main>
+    <div class="topbar">
+      <div class="topbar-copy">
+        <h1>Uplinks configuration</h1>
+        <div class="subtitle">Edit per-instance uplinks and hot-apply via /control/apply</div>
+      </div>
+      <div class="toolbar">
+        <label for="instanceSelect" style="color: var(--muted); font-size: 12.5px;">Instance</label>
+        <select id="instanceSelect"></select>
+        <span class="dirty-pill clean" id="dirtyPill">● no changes</span>
+        <button class="btn primary" id="applyBtn" type="button" disabled>Apply</button>
+        <button class="btn" id="reloadBtn" type="button" aria-label="Reload from server" data-tip="Reload from server">↻</button>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme" data-tip="Toggle theme"><span id="themeIcon">☀</span></button>
+      </div>
+    </div>
+    <div id="errors"></div>
+    <section id="groups"></section>
+  </main>
+</div>
+<div id="toast" style="display: none;"></div>
+<script>
+const state = {
+  instances: [],
+  currentInstance: null,
+  groups: [],
+  // map: instance name -> { "group\u0000name": configObject }
+  detailsByInstance: {},
+  dirtyInstances: new Set(),
+  openForm: null, // { kind: 'create'|'edit', group, name? }
+  errors: [],
+};
+
+function detailsKey(group, name) { return group + "\u0000" + name; }
+function getUplinkConfig(group, name) {
+  const map = state.detailsByInstance[state.currentInstance];
+  return map ? (map[detailsKey(group, name)] || null) : null;
+}
+
+const TRANSPORTS = ["shadowsocks", "vless"];
+// `tcp_mode` / `udp_mode` apply to `transport = "ws"` (Shadowsocks-over-WS).
+// XHTTP modes are VLESS-only, so they live in VLESS_MODES instead.
+const WS_MODES = ["", "ws_h1", "ws_h2", "ws_h3", "quic"];
+const VLESS_MODES = ["", "ws_h1", "ws_h2", "ws_h3", "quic", "xhttp_h2", "xhttp_h3"];
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+}
+
+function showToast(message, tone) {
+  const el = document.getElementById("toast");
+  el.className = "toast " + (tone || "");
+  el.textContent = message;
+  el.style.display = "block";
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => { el.style.display = "none"; }, 3500);
+}
+
+function renderErrors() {
+  const box = document.getElementById("errors");
+  box.innerHTML = state.errors.map(e => `<div class="error">${escapeHtml(e)}</div>`).join("");
+}
+
+function renderDirty() {
+  const pill = document.getElementById("dirtyPill");
+  const dirty = state.currentInstance && state.dirtyInstances.has(state.currentInstance);
+  pill.className = "dirty-pill" + (dirty ? "" : " clean");
+  pill.textContent = dirty ? "● pending changes" : "● no changes";
+  document.getElementById("applyBtn").disabled = !dirty;
+}
+
+function renderInstanceSelect() {
+  const select = document.getElementById("instanceSelect");
+  select.innerHTML = state.instances.map(i => {
+    const label = i.name + (state.dirtyInstances.has(i.name) ? " •" : "");
+    return `<option value="${escapeHtml(i.name)}" ${i.name === state.currentInstance ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  }).join("");
+}
+
+function renderGroups() {
+  const root = document.getElementById("groups");
+  if (!state.currentInstance) {
+    root.innerHTML = `<div class="empty">No instance selected.</div>`;
+    return;
+  }
+  if (!state.groups.length) {
+    root.innerHTML = `<div class="empty">Instance has no groups.</div>`;
+    return;
+  }
+  root.innerHTML = "";
+  for (const group of state.groups) {
+    const panel = document.createElement("section");
+    panel.className = "panel";
+    const uplinks = group.uplinks || [];
+    panel.innerHTML = `
+      <div class="group-head">
+        <div class="group-title">
+          <span>${escapeHtml(group.name)}</span>
+          <span class="group-count">${uplinks.length} uplinks</span>
+        </div>
+        <button class="btn" type="button" data-add="${escapeHtml(group.name)}">+ Add uplink</button>
+      </div>
+      <div class="uplinks"></div>`;
+    const list = panel.querySelector(".uplinks");
+    for (const u of uplinks) {
+      const cfg = getUplinkConfig(group.name, u.name) || {};
+      const chips = [];
+      if (cfg.transport) chips.push(`<span class="meta-chip transport">${escapeHtml(cfg.transport)}</span>`);
+      if (cfg.tcp_addr) chips.push(`<span class="meta-chip">TCP <strong>${escapeHtml(cfg.tcp_addr)}</strong></span>`);
+      if (cfg.udp_addr) chips.push(`<span class="meta-chip">UDP <strong>${escapeHtml(cfg.udp_addr)}</strong></span>`);
+      if (cfg.tcp_ws_url) chips.push(`<span class="meta-chip">TCP WS <strong>${escapeHtml(cfg.tcp_ws_url)}</strong></span>`);
+      if (cfg.tcp_mode) chips.push(`<span class="meta-chip">TCP mode <strong>${escapeHtml(cfg.tcp_mode)}</strong></span>`);
+      if (cfg.udp_ws_url) chips.push(`<span class="meta-chip">UDP WS <strong>${escapeHtml(cfg.udp_ws_url)}</strong></span>`);
+      if (cfg.udp_mode) chips.push(`<span class="meta-chip">UDP mode <strong>${escapeHtml(cfg.udp_mode)}</strong></span>`);
+      if (cfg.vless_ws_url) chips.push(`<span class="meta-chip">VLESS WS <strong>${escapeHtml(cfg.vless_ws_url)}</strong></span>`);
+      if (cfg.vless_xhttp_url) chips.push(`<span class="meta-chip">VLESS XHTTP <strong>${escapeHtml(cfg.vless_xhttp_url)}</strong></span>`);
+      if (cfg.vless_mode) chips.push(`<span class="meta-chip">VLESS mode <strong>${escapeHtml(cfg.vless_mode)}</strong></span>`);
+      if (cfg.method) chips.push(`<span class="meta-chip">${escapeHtml(cfg.method)}</span>`);
+      if (cfg.weight != null) chips.push(`<span class="meta-chip">w=${escapeHtml(cfg.weight)}</span>`);
+      // Smoothed per-transport probe RTT (raw EWMA). Score fields are not
+      // shown here because in global routing scope `selection_score` is a
+      // single combined value, so `tcp_score_ms` and `udp_score_ms` end up
+      // identical for every uplink — confusing. RTT EWMA is what the
+      // operator wants to see anyway.
+      if (u.tcp_rtt_ewma_ms != null || u.udp_rtt_ewma_ms != null) {
+        const sp = [];
+        if (u.tcp_rtt_ewma_ms != null) sp.push(`tcp: ${u.tcp_rtt_ewma_ms}ms`);
+        if (u.udp_rtt_ewma_ms != null) sp.push(`udp: ${u.udp_rtt_ewma_ms}ms`);
+        chips.push(`<span class="meta-chip">rtt <strong>${escapeHtml(sp.join(' · '))}</strong></span>`);
+      }
+      if (cfg.fwmark != null) chips.push(`<span class="meta-chip">fwmark=${escapeHtml(cfg.fwmark)}</span>`);
+      const row = document.createElement("div");
+      row.className = "uplink-row";
+      row.innerHTML = `
+        <div class="uplink-info">
+          <div class="uplink-name">${escapeHtml(u.name)}</div>
+          <div class="uplink-meta">${chips.join("") || `<span class="meta-chip">no on-disk config</span>`}</div>
+        </div>
+        <div class="uplink-actions">
+          <button class="btn" type="button" data-edit-group="${escapeHtml(group.name)}" data-edit-name="${escapeHtml(u.name)}">Edit</button>
+          <button class="btn danger" type="button" data-del-group="${escapeHtml(group.name)}" data-del-name="${escapeHtml(u.name)}">Delete</button>
+        </div>`;
+      list.appendChild(row);
+    }
+    if (state.openForm && state.openForm.group === group.name) {
+      panel.appendChild(renderForm(state.openForm));
+    }
+    root.appendChild(panel);
+  }
+  root.querySelectorAll("button[data-add]").forEach(btn => {
+    btn.addEventListener("click", () => openForm({ kind: "create", group: btn.dataset.add }));
+  });
+  root.querySelectorAll("button[data-edit-group]").forEach(btn => {
+    btn.addEventListener("click", () => openForm({
+      kind: "edit",
+      group: btn.dataset.editGroup,
+      name: btn.dataset.editName,
+    }));
+  });
+  root.querySelectorAll("button[data-del-group]").forEach(btn => {
+    btn.addEventListener("click", () => deleteUplink(btn.dataset.delGroup, btn.dataset.delName));
+  });
+}
+
+const FIELDS = [
+  { key: "name",        label: "Name (required for create)" },
+  { key: "transport",   label: "Transport", type: "select", options: TRANSPORTS },
+  { key: "tcp_addr",    label: "TCP addr" },
+  { key: "udp_addr",    label: "UDP addr" },
+  { key: "method",      label: "Cipher" },
+  { key: "password",    label: "Password" },
+  { key: "vless_id",    label: "VLESS id" },
+  { key: "tcp_ws_url",     label: "TCP WS URL (transport=ws)" },
+  { key: "tcp_mode",       label: "TCP mode (transport=ws)", type: "select", options: WS_MODES },
+  { key: "udp_ws_url",     label: "UDP WS URL (transport=ws)" },
+  { key: "udp_mode",       label: "UDP mode (transport=ws)", type: "select", options: WS_MODES },
+  { key: "vless_ws_url",   label: "VLESS WS URL (vless_mode=ws_*/quic)" },
+  { key: "vless_xhttp_url", label: "VLESS XHTTP URL (vless_mode=xhttp_*)" },
+  { key: "vless_mode",     label: "VLESS mode", type: "select", options: VLESS_MODES },
+  { key: "weight",      label: "Weight", type: "number" },
+  { key: "fwmark",      label: "fwmark", type: "number" },
+  { key: "ipv6_first",  label: "IPv6 first", type: "select", options: ["", "true", "false"] },
+];
+
+function renderForm(form) {
+  const box = document.createElement("div");
+  box.className = "form-box";
+  const existing = form.kind === "edit" ? (getUplinkConfig(form.group, form.name) || {}) : {};
+  const title = form.kind === "create"
+    ? `Add uplink to "${form.group}"`
+    : `Edit "${form.name}" in "${form.group}" (only changed fields are sent)`;
+  const fields = FIELDS.map(f => {
+    if (form.kind === "edit" && f.key === "name") return "";
+    const cur = existing[f.key];
+    if (f.type === "select") {
+      const opts = f.options.map(v => {
+        const selected = (v !== "" && String(cur) === v) ? " selected" : "";
+        return `<option value="${escapeHtml(v)}"${selected}>${v === "" ? "—" : escapeHtml(v)}</option>`;
+      }).join("");
+      return `<div class="form-field"><label>${escapeHtml(f.label)}</label><select data-field="${f.key}">${opts}</select></div>`;
+    }
+    const type = f.type === "number" ? "number" : "text";
+    const step = f.type === "number" && f.key === "weight" ? ` step="0.1"` : "";
+    const value = cur != null ? ` value="${escapeHtml(cur)}"` : "";
+    return `<div class="form-field"><label>${escapeHtml(f.label)}</label><input type="${type}" data-field="${f.key}"${step}${value}></div>`;
+  }).join("");
+  box.innerHTML = `
+    <div style="font-weight:600;">${escapeHtml(title)}</div>
+    <div class="form-grid">${fields}</div>
+    <div class="form-actions">
+      <button class="btn" type="button" data-cancel="1">Cancel</button>
+      <button class="btn primary" type="button" data-submit="1">${form.kind === "create" ? "Create" : "Update"}</button>
+    </div>`;
+  box.querySelector("button[data-cancel]").addEventListener("click", () => { state.openForm = null; renderGroups(); });
+  box.querySelector("button[data-submit]").addEventListener("click", () => submitForm(box, form));
+  return box;
+}
+
+function collectForm(box) {
+  const payload = {};
+  box.querySelectorAll("[data-field]").forEach(el => {
+    const key = el.dataset.field;
+    const raw = el.value;
+    if (raw === "" || raw == null) return;
+    if (key === "weight") payload[key] = parseFloat(raw);
+    else if (key === "fwmark") payload[key] = parseInt(raw, 10);
+    else if (key === "ipv6_first") payload[key] = raw === "true";
+    else payload[key] = raw;
+  });
+  return payload;
+}
+
+async function submitForm(box, form) {
+  const payload = collectForm(box);
+  const instance = state.currentInstance;
+  try {
+    if (form.kind === "create") {
+      if (!payload.name) { showToast("name is required", "err"); return; }
+      await callProxy("POST", { instance, body: { group: form.group, uplink: payload } });
+    } else {
+      await callProxy("PATCH", { instance, body: { group: form.group, name: form.name, patch: payload } });
+    }
+    state.dirtyInstances.add(instance);
+    state.openForm = null;
+    showToast("Saved to config (not yet applied)", "ok");
+    await loadInstance(instance);
+  } catch (err) {
+    showToast(String(err.message || err), "err");
+  }
+}
+
+async function deleteUplink(group, name) {
+  if (!confirm(`Delete uplink "${name}" from "${group}"?`)) return;
+  const instance = state.currentInstance;
+  try {
+    await callProxy("DELETE", { instance, body: { group, name } });
+    state.dirtyInstances.add(instance);
+    showToast("Deleted from config (not yet applied)", "ok");
+    await loadInstance(instance);
+  } catch (err) {
+    showToast(String(err.message || err), "err");
+  }
+}
+
+async function applyChanges() {
+  const instance = state.currentInstance;
+  try {
+    const res = await fetch("/dashboard/api/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instance }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    state.dirtyInstances.delete(instance);
+    renderInstanceSelect();
+    renderDirty();
+    showToast(`Applied: ${data.groups || "?"} groups, ${data.total_uplinks || "?"} uplinks`, "ok");
+  } catch (err) {
+    showToast("Apply failed: " + String(err.message || err), "err");
+  }
+}
+
+async function callProxy(method, envelope) {
+  const res = await fetch("/dashboard/api/uplinks", {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(envelope),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function openForm(form) {
+  state.openForm = form;
+  renderGroups();
+}
+
+async function loadInstances() {
+  state.errors = [];
+  try {
+    // Two-step fetch: `/dashboard/api/instances` returns just the list
+    // of instance names; `/dashboard/api/topology?instance=X` returns
+    // one instance's full topology. `uplinks.html` previously called
+    // `/dashboard/api/topology` without a query and expected the
+    // combined shape, but the backend rejects that with 400 — leaving
+    // the instance picker empty. Mirror what `dashboard.html` does:
+    // populate the select from `/instances`, then load the current
+    // instance's groups separately.
+    const listRes = await fetch("/dashboard/api/instances", { cache: "no-store" });
+    if (!listRes.ok) throw new Error(`instances: HTTP ${listRes.status}`);
+    const list = await listRes.json();
+    const names = (list.instances || []).map(i => i.name);
+    // Keep the currently selected instance if it still exists; otherwise
+    // fall back to the first available name. Names that disappear get
+    // removed from the cached details map below.
+    if (!state.currentInstance || !names.includes(state.currentInstance)) {
+      state.currentInstance = names.length ? names[0] : null;
+    }
+    state.instances = names.map(name => ({ name, ok: null, groups: [] }));
+    // Drop cached details for instances the backend no longer reports.
+    for (const cached of Object.keys(state.detailsByInstance)) {
+      if (!names.includes(cached)) delete state.detailsByInstance[cached];
+    }
+    if (state.currentInstance) {
+      const topoRes = await fetch(
+        `/dashboard/api/topology?instance=${encodeURIComponent(state.currentInstance)}`,
+        { cache: "no-store" },
+      );
+      const topo = await topoRes.json().catch(() => ({}));
+      if (!topoRes.ok) {
+        const msg = topo && topo.error ? topo.error : `HTTP ${topoRes.status}`;
+        state.errors.push(`${state.currentInstance}: ${msg}`);
+      } else {
+        const target = state.instances.find(i => i.name === state.currentInstance);
+        if (target) {
+          target.ok = topo.ok !== false;
+          target.groups = topo.topology?.instance?.groups || [];
+        }
+        if (topo.ok === false && topo.error) {
+          state.errors.push(`${state.currentInstance}: ${topo.error}`);
+        }
+      }
+    }
+    const cur = state.instances.find(i => i.name === state.currentInstance);
+    state.groups = cur ? cur.groups : [];
+  } catch (err) {
+    state.errors.push(String(err));
+  }
+  if (state.currentInstance) {
+    await loadDetails(state.currentInstance);
+  }
+  renderErrors();
+  renderInstanceSelect();
+  renderDirty();
+  renderGroups();
+}
+
+async function loadDetails(instance) {
+  try {
+    const res = await fetch(`/dashboard/api/uplinks?instance=${encodeURIComponent(instance)}`, { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const map = {};
+    for (const entry of data.uplinks || []) {
+      if (entry.config) map[detailsKey(entry.group, entry.name)] = entry.config;
+    }
+    state.detailsByInstance[instance] = map;
+  } catch (err) {
+    state.errors.push(`details for ${instance}: ${err.message || err}`);
+  }
+}
+
+async function loadInstance(name) {
+  state.currentInstance = name;
+  await loadInstances();
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  const icon = document.getElementById("themeIcon");
+  if (icon) icon.textContent = theme === "dark" ? "☀" : "☾";
+  const meta = document.getElementById("themeColorMeta");
+  if (meta) {
+    const navColor = getComputedStyle(document.documentElement).getPropertyValue("--nav").trim();
+    if (navColor) meta.setAttribute("content", navColor);
+  }
+  try { localStorage.setItem("dashboard-theme", theme); } catch (_) {}
+}
+(function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem("dashboard-theme"); } catch (_) {}
+  const prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+  applyTheme(saved || (prefersLight ? "light" : "dark"));
+})();
+document.getElementById("themeToggle").addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme") || "dark";
+  applyTheme(cur === "dark" ? "light" : "dark");
+});
+document.getElementById("instanceSelect").addEventListener("change", async e => {
+  state.currentInstance = e.target.value;
+  state.openForm = null;
+  const cur = state.instances.find(i => i.name === state.currentInstance);
+  state.groups = cur ? cur.groups : [];
+  if (!state.detailsByInstance[state.currentInstance]) {
+    await loadDetails(state.currentInstance);
+  }
+  renderDirty();
+  renderGroups();
+});
+document.getElementById("applyBtn").addEventListener("click", applyChanges);
+document.getElementById("reloadBtn").addEventListener("click", () => loadInstances());
+loadInstances();
+</script>
+</body>
+</html>

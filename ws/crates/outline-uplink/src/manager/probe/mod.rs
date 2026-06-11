@@ -1,0 +1,21 @@
+//! Manager-side probe loop.  Split into four submodules:
+//!
+//! * [`scheduler`] — spawn loop, fan-out of per-uplink probe tasks with
+//!   timeouts/retries, and the policy for skipping probes on active healthy
+//!   uplinks.
+//! * [`outcome`] — applies a probe result to `UplinkStatus` (health, penalty,
+//!   EWMA, H3 downgrade bookkeeping).
+//! * [`h3_recovery`] — explicit H3 re-probe that confirms recovery and clears
+//!   (or extends) the downgrade window.
+//! * [`wire`] — per-fallback-wire probe walks: when the primary wire fails,
+//!   probe the currently-targeted fallback so `last_any_wire_success` and
+//!   `effective_health` reflect "uplink is delivering on a fallback" without
+//!   needing client traffic to land on this uplink first.
+
+mod h3_recovery;
+mod keepalive;
+pub(crate) mod outcome;
+mod scheduler;
+pub(crate) mod warm_tcp;
+pub(crate) mod warm_udp;
+pub(crate) mod wire;

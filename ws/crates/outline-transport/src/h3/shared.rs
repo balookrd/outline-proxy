@@ -1,0 +1,660 @@
+// Connection infrastructure for the HTTP/3 WebSocket transport.
+//
+// Owns the QUIC/TLS configs, shared endpoints, per-key connect locks,
+// shared-connection cache, and all connect / gc logic.  The stream adapter
+// types (`H3WsStream`, `H3ConnectionGuard`) and the message-conversion helpers
+// live in the parent module (`mod.rs`) because they are the public API
+// consumed by `ws_stream.rs`.
+
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, anyhow, bail};
+use bytes::Bytes;
+use h3::client::{RequestStream as H3RequestStream, SendRequest as H3SendRequest};
+use http::{Method, Request};
+use once_cell::sync::OnceCell;
+use rustls::ClientConfig;
+use sockudo_ws::{
+    Config as SockudoConfig, Http3 as SockudoHttp3, Stream as SockudoTransportStream,
+    WebSocketStream as SockudoWebSocketStream,
+};
+use tokio::sync::Mutex;
+use tokio::time::timeout;
+use tracing::info;
+use url::Url;
+
+use crate::shared_cache::{
+    ConnCloseLog, SharedConnectionRegistry, classify_by_substrings, log_conn_close,
+};
+use crate::{AbortOnDrop, DnsCache, TransportStream, bind_addr_for, bind_udp_socket};
+
+use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri, websocket_path};
+
+type H3RequestStreamHandle = H3RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
+type H3SendRequestHandle = H3SendRequest<h3_quinn::OpenStreams, Bytes>;
+
+// Upper bound for opening a new H3 WebSocket stream on top of an already
+// established QUIC connection.  Without this bound, a silently-broken shared
+// QUIC connection (network dropped but quinn has not yet hit its 120s idle
+// timeout) makes every new SOCKS TCP session hang indefinitely on the CONNECT
+// request instead of producing an error that would invalidate the shared
+// connection and trigger failover through `report_runtime_failure`.  The
+// handshake itself is already complete at this point; a generous budget of a
+// few seconds is plenty for a healthy path and keeps the worst-case recovery
+// latency bounded.
+const OPEN_WEBSOCKET_TIMEOUT: Duration = Duration::from_secs(7);
+
+// Upper bound for establishing a fresh HTTP/3 connection (QUIC handshake +
+// HTTP/3 handshake).  Without this bound, a server black hole would let the
+// QUIC handshake stall for up to `max_idle_timeout` (120s), which masks
+// failover in exactly the same way as the shared-connection stalls do.
+// 10 seconds matches the bound used for fresh H2 and H1 handshakes.
+const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+// ── Connection key ────────────────────────────────────────────────────────────
+
+// The cache key is intentionally based on the *hostname* and port rather than
+// the resolved IP address.  Using the IP address would create a new cache entry
+// on every DNS rotation (round-robin CDN, failover, etc.), leaving the old
+// QUIC connection alive in the map forever because `is_open()` stays `true`
+// until the server eventually drops the idle connection.  A hostname-based key
+// means there is at most one shared H3 connection per logical server: when the
+// DNS answer changes, the old connection is kept until it fails naturally, at
+// which point a fresh connection is made to the (now re-resolved) new address.
+pub(super) type H3ConnectionKey = crate::shared_cache::ConnectionKey;
+
+// ── Shared connection ─────────────────────────────────────────────────────────
+
+pub(super) struct SharedH3Connection {
+    pub(super) id: u64,
+    #[allow(dead_code)]
+    endpoint: quinn::Endpoint,
+    connection: quinn::Connection,
+    // Kept alive to prevent the h3 driver from initiating graceful shutdown
+    // (H3_NO_ERROR) prematurely. The h3 layer treats the last SendRequest
+    // being dropped as a signal that no more requests will be made.
+    send_request: Mutex<H3SendRequestHandle>,
+    /// Soft-close flag: set to `true` by `open_websocket` on timeout so no
+    /// new streams are opened, but existing streams continue to work
+    /// undisturbed.  Using `connection.close()` was too aggressive — it kills
+    /// ALL active H3 streams on the shared connection, causing a cascade of
+    /// reconnects and rapid FD growth.
+    closed: AtomicBool,
+    // conn_life diagnostics: counts every WS stream opened on this connection
+    // (observed at close by the driver task) to correlate session_death bursts
+    // with a single underlying connection's death.
+    streams_opened: Arc<AtomicU64>,
+    _connection_guard: H3ConnectionGuard,
+    _driver_task: AbortOnDrop,
+}
+
+impl SharedH3Connection {
+    pub(super) fn is_open(&self) -> bool {
+        !self.closed.load(Ordering::Relaxed) && self.connection.close_reason().is_none()
+    }
+
+    pub(super) async fn open_websocket(
+        self: &Arc<Self>,
+        server_name: &str,
+        server_port: u16,
+        path: &str,
+        resume_request: Option<crate::resumption::SessionId>,
+        ack_prefix_requested: bool,
+        symmetric_replay_requested: bool,
+        client_acked_offset: u64,
+        profile: Option<&'static crate::fingerprint_profile::Profile>,
+    ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>, bool, bool)> {
+        match self
+            .open_websocket_inner(
+                server_name,
+                server_port,
+                path,
+                resume_request,
+                ack_prefix_requested,
+                symmetric_replay_requested,
+                client_acked_offset,
+                profile,
+            )
+            .await
+        {
+            Ok(ws) => Ok(ws),
+            Err(error) => {
+                // Any failure opening a new CONNECT stream on an already-cached
+                // shared QUIC connection is a strong signal the connection is
+                // sick (send timeout, response timeout, non-2xx status, etc.).
+                // Soft-close so concurrent callers racing to open another
+                // stream skip this entry in `is_open()` and fall through to
+                // the cache-invalidation path.
+                self.closed.store(true, Ordering::Relaxed);
+                Err(error)
+            },
+        }
+    }
+
+    async fn open_websocket_inner(
+        self: &Arc<Self>,
+        server_name: &str,
+        server_port: u16,
+        path: &str,
+        resume_request: Option<crate::resumption::SessionId>,
+        ack_prefix_requested: bool,
+        symmetric_replay_requested: bool,
+        client_acked_offset: u64,
+        profile: Option<&'static crate::fingerprint_profile::Profile>,
+    ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>, bool, bool)> {
+        if !self.is_open() {
+            bail!("shared h3 connection is already closed");
+        }
+
+        let mut request_builder = Request::builder()
+            .method(Method::CONNECT)
+            .uri(websocket_h3_target_uri(server_name, server_port, path)?)
+            .extension(h3::ext::Protocol::WEBSOCKET)
+            .header("sec-websocket-version", "13")
+            .header(crate::resumption::RESUME_CAPABLE_HEADER, "1");
+        if let Some(id) = resume_request {
+            request_builder =
+                request_builder.header(crate::resumption::RESUME_REQUEST_HEADER, id.to_hex());
+        }
+        if ack_prefix_requested {
+            // Capability advertise for Ack-Prefix Protocol v1; mirrors the
+            // h2 path. Server emits the 14-byte control frame (SS-WS path
+            // only, in v1) when it sees this header AND the resume hits.
+            request_builder = request_builder.header(crate::resumption::ACK_PREFIX_HEADER, "1");
+        }
+        if symmetric_replay_requested {
+            // v2 Symmetric Downlink Replay capability advertise. Mirror
+            // of the h2 site; spec gates v2 on v1, enforced by the
+            // orchestrator above this layer.
+            request_builder =
+                request_builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
+        }
+        // v2 client-reported downstream-acked offset header.
+        if symmetric_replay_requested && client_acked_offset > 0 {
+            request_builder = request_builder
+                .header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
+        }
+        let mut request: Request<()> =
+            request_builder.body(()).expect("request builder never fails");
+        if let Some(profile) = profile {
+            crate::fingerprint_profile::apply(
+                profile,
+                request.headers_mut(),
+                crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
+            );
+        }
+
+        let mut stream: H3RequestStreamHandle = timeout(OPEN_WEBSOCKET_TIMEOUT, async {
+            let mut send_request = self.send_request.lock().await;
+            send_request
+                .send_request(request)
+                .await
+                .context("failed to send HTTP/3 websocket CONNECT request")
+        })
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "HTTP/3 websocket CONNECT request timed out after {}s on shared connection",
+                OPEN_WEBSOCKET_TIMEOUT.as_secs()
+            )
+        })??;
+
+        let response = timeout(OPEN_WEBSOCKET_TIMEOUT, stream.recv_response())
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "HTTP/3 websocket CONNECT response timed out after {}s on shared connection",
+                    OPEN_WEBSOCKET_TIMEOUT.as_secs()
+                )
+            })?
+            .context("failed to receive HTTP/3 websocket response")?;
+        if !response.status().is_success() {
+            bail!("HTTP/3 websocket CONNECT failed with status {}", response.status());
+        }
+        let issued_session_id = response
+            .headers()
+            .get(crate::resumption::SESSION_RESPONSE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::resumption::SessionId::parse_hex);
+        // Same gating rationale as the h2 path: trust both sides of the
+        // negotiation; a server that emits the echo without us asking would
+        // still leave us without the control frame in the byte stream.
+        let ack_prefix_advertised_by_server = ack_prefix_requested
+            && response
+                .headers()
+                .get(crate::resumption::ACK_PREFIX_HEADER)
+                .and_then(|v| v.to_str().ok())
+                == Some("1");
+        // v2 echo: server must echo v2 AND v1 must already be on. The
+        // `ack_prefix_advertised_by_server` check enforces the v2-on-v1
+        // invariant locally even if a buggy server echoes v2 alone.
+        let symmetric_replay_advertised_by_server = symmetric_replay_requested
+            && ack_prefix_advertised_by_server
+            && response
+                .headers()
+                .get(crate::resumption::SYMMETRIC_REPLAY_HEADER)
+                .and_then(|v| v.to_str().ok())
+                == Some("1");
+
+        let h3_stream = SockudoTransportStream::<SockudoHttp3>::from_h3_client(stream);
+        self.streams_opened.fetch_add(1, Ordering::Relaxed);
+        Ok((
+            H3WsStream {
+                inner: SockudoWebSocketStream::from_raw(
+                    h3_stream,
+                    sockudo_ws::Role::Client,
+                    SockudoConfig::builder().http3_idle_timeout(90_000).build(),
+                ),
+                _shared_connection: Arc::clone(self),
+            },
+            issued_session_id,
+            ack_prefix_advertised_by_server,
+            symmetric_replay_advertised_by_server,
+        ))
+    }
+}
+
+impl crate::SharedConnectionHealth for SharedH3Connection {
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+
+    fn conn_id(&self) -> u64 {
+        self.id
+    }
+
+    fn mode(&self) -> &'static str {
+        "h3"
+    }
+}
+
+impl crate::shared_cache::CachedEntry for SharedH3Connection {
+    fn conn_id(&self) -> u64 {
+        self.id
+    }
+
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+}
+
+// ── TLS / QUIC client configs (initialised once) ─────────────────────────────
+
+static H3_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+static H3_QUIC_CLIENT_CONFIG: OnceLock<quinn::ClientConfig> = OnceLock::new();
+
+/// Returns a shared, lazily-initialised TLS config for H3 connections.
+/// Building the config (parsing root certificates) is expensive; doing it once
+/// avoids the cost on every connection attempt and every warm-standby refill.
+fn h3_client_tls_config() -> Arc<ClientConfig> {
+    Arc::clone(H3_CLIENT_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"h3"])))
+}
+
+/// Returns a cloned QUIC client config built once from the cached TLS config.
+fn h3_quic_client_config() -> quinn::ClientConfig {
+    H3_QUIC_CLIENT_CONFIG
+        .get_or_init(|| {
+            let tls = h3_client_tls_config();
+            let quic = quinn::crypto::rustls::QuicClientConfig::try_from((*tls).clone())
+                .expect("H3 TLS ALPN config is always QUIC-compatible");
+            let mut config = quinn::ClientConfig::new(Arc::new(quic));
+            let mut transport = quinn::TransportConfig::default();
+            // Send QUIC PING frames so NAT mappings stay alive and the server
+            // detects dead connections promptly.  Tighter max_idle_timeout
+            // (30s, down from 120s) so a silently-dropped QUIC path on
+            // consumer-router conntrack is torn down within ~30s instead of 2
+            // minutes, letting the shared-connection cache evict the dead
+            // entry and reconnects succeed promptly.  PING every 10s keeps
+            // NAT mappings fresh well inside that budget.
+            transport.keep_alive_interval(Some(Duration::from_secs(10)));
+            transport.max_idle_timeout(Some(
+                Duration::from_secs(30)
+                    .try_into()
+                    .expect("valid H3 QUIC client idle timeout"),
+            ));
+            config.transport_config(Arc::new(transport));
+            config
+        })
+        .clone()
+}
+
+// ── Shared endpoints ──────────────────────────────────────────────────────────
+
+// One UDP socket per address family, shared across all H3 connections that do
+// not require a per-socket fwmark. Sharing the endpoint eliminates the "N
+// warm-standby connections = N UDP sockets" resource explosion.
+static H3_CLIENT_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::new();
+static H3_CLIENT_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::new();
+
+fn get_or_init_shared_h3_endpoint(bind_addr: std::net::SocketAddr) -> Result<quinn::Endpoint> {
+    // Cross-repo integration tests run each `#[tokio::test]` in its
+    // own runtime; the shared endpoint's driver task is spawned on
+    // whichever runtime first hit the cache, so it dies the moment
+    // that test ends. Bypass the cache in test mode and bind a fresh
+    // endpoint per dial — production behaviour is unchanged.
+    if crate::tls::test_mode_active() {
+        let socket = bind_udp_socket(bind_addr, None)?;
+        return quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )
+        .with_context(|| format!("failed to bind H3 QUIC client endpoint on {bind_addr}"));
+    }
+    let cell = if bind_addr.is_ipv4() {
+        &H3_CLIENT_ENDPOINT_V4
+    } else {
+        &H3_CLIENT_ENDPOINT_V6
+    };
+    let endpoint = cell.get_or_try_init(|| {
+        let socket = bind_udp_socket(bind_addr, None)?;
+        quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )
+        .with_context(|| format!("failed to bind shared QUIC client endpoint on {bind_addr}"))
+    })?;
+    Ok(endpoint.clone())
+}
+
+// ── Shared-connection cache ───────────────────────────────────────────────────
+
+// Global registry holding the shared-connection map, the per-key reconnect
+// locks, and the connection-id counter. Mirrors the flow-table pattern in
+// `tun_tcp` / `tun_udp`: hot-path lookups take only a brief read-lock on the
+// inner map. The registry abstraction lives in `shared_cache` and is shared
+// with H2.
+static H3_REGISTRY: OnceLock<SharedConnectionRegistry<H3ConnectionKey, SharedH3Connection>> =
+    OnceLock::new();
+
+fn h3_registry() -> &'static SharedConnectionRegistry<H3ConnectionKey, SharedH3Connection> {
+    H3_REGISTRY.get_or_init(SharedConnectionRegistry::new)
+}
+
+// ── H3Dialer ──────────────────────────────────────────────────────────────────
+
+struct H3Dialer {
+    /// Session ID the caller wants to resume on this open. Captured at
+    /// dialer construction so the trait `open_on` method can stay
+    /// signature-stable while threading the request through.
+    resume_request: Option<crate::resumption::SessionId>,
+    /// Whether to advertise the Ack-Prefix Protocol v1 capability on
+    /// this open. Same threading rationale as `resume_request`.
+    ack_prefix_requested: bool,
+    /// Whether to advertise the v2 Symmetric Downlink Replay capability.
+    /// Spec gates v2 on v1; the orchestrator above this layer enforces
+    /// the invariant.
+    symmetric_replay_requested: bool,
+    /// v2 client-reported downstream-acked offset for the
+    /// `X-Outline-Resume-Down-Acked` request header.
+    client_acked_offset: u64,
+    /// Browser identity to mix into the CONNECT request headers, or
+    /// `None` when fingerprint diversification is disabled. Threaded
+    /// alongside `resume_request` for the same reason — the trait
+    /// signature stays unchanged.
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
+}
+
+impl crate::shared_dial::WsDialer for H3Dialer {
+    type Key = H3ConnectionKey;
+    type Conn = SharedH3Connection;
+
+    fn registry(&self) -> &'static SharedConnectionRegistry<H3ConnectionKey, SharedH3Connection> {
+        h3_registry()
+    }
+
+    fn metric_label(&self) -> &'static str {
+        "h3"
+    }
+
+    fn multi_address_failover_enabled(&self) -> bool {
+        true
+    }
+
+    fn make_key(
+        &self,
+        server_name: &str,
+        server_port: u16,
+        fwmark: Option<u32>,
+    ) -> H3ConnectionKey {
+        H3ConnectionKey::new(server_name, server_port, fwmark)
+    }
+
+    async fn establish(
+        &self,
+        addr: SocketAddr,
+        server_name: &str,
+        fwmark: Option<u32>,
+        cache_key: Option<H3ConnectionKey>,
+    ) -> Result<Arc<SharedH3Connection>> {
+        Ok(Arc::new(connect_h3_connection(addr, server_name, fwmark, cache_key).await?))
+    }
+
+    async fn open_on(
+        &self,
+        conn: &Arc<SharedH3Connection>,
+        server_name: &str,
+        server_port: u16,
+        path: &str,
+    ) -> Result<TransportStream> {
+        let (
+            ws,
+            issued_session_id,
+            ack_prefix_advertised_by_server,
+            symmetric_replay_advertised_by_server,
+        ) = conn
+            .open_websocket(
+                server_name,
+                server_port,
+                path,
+                self.resume_request,
+                self.ack_prefix_requested,
+                self.symmetric_replay_requested,
+                self.client_acked_offset,
+                self.profile,
+            )
+            .await?;
+        Ok(TransportStream::H3 {
+            inner: ws,
+            issued_session_id,
+            downgraded_from: None,
+            ack_prefix_advertised_by_server,
+            symmetric_replay_advertised_by_server,
+        })
+    }
+}
+
+// ── Connect ───────────────────────────────────────────────────────────────────
+
+pub(crate) async fn connect_websocket_h3(
+    cache: &DnsCache,
+    url: &Url,
+    fwmark: Option<u32>,
+    ipv6_first: bool,
+    source: &'static str,
+    resume_request: Option<crate::resumption::SessionId>,
+    ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
+) -> Result<TransportStream> {
+    if url.scheme() != "wss" {
+        bail!("h3 websocket transport currently requires wss:// URLs");
+    }
+
+    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("URL is missing port"))?;
+    let path = websocket_path(url);
+    let profile = crate::fingerprint_profile::select(url);
+    let dialer = H3Dialer {
+        resume_request,
+        ack_prefix_requested,
+        symmetric_replay_requested,
+        client_acked_offset,
+        profile,
+    };
+
+    if crate::shared_cache::should_reuse_connection(source) {
+        // DNS resolution is deferred to the slow path inside connect_ws_reused
+        // so the cache key stays hostname-based and is not affected by DNS rotation.
+        crate::shared_dial::connect_ws_reused(
+            &dialer, cache, host, port, &path, fwmark, ipv6_first, source,
+        )
+        .await
+    } else {
+        // Probes never share connections; resolve DNS upfront and try each address.
+        crate::shared_dial::connect_ws_probe(
+            &dialer, cache, host, port, &path, fwmark, ipv6_first, source,
+        )
+        .await
+    }
+}
+
+async fn connect_h3_connection(
+    server_addr: SocketAddr,
+    server_name: &str,
+    fwmark: Option<u32>,
+    cache_key: Option<H3ConnectionKey>,
+) -> Result<SharedH3Connection> {
+    let bind_addr = bind_addr_for(server_addr);
+    let client_config = h3_quic_client_config();
+
+    // For fwmark connections the socket must be bound with the mark set before
+    // connect, so each stream needs its own UDP socket and endpoint.  For all
+    // other connections we reuse one shared endpoint per address family so that
+    // N warm-standby streams share a single UDP socket rather than opening N.
+    let endpoint = if fwmark.is_some() {
+        let socket = bind_udp_socket(bind_addr, fwmark)?;
+        quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )
+        .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"))?
+    } else {
+        get_or_init_shared_h3_endpoint(bind_addr)?
+    };
+
+    let connecting = endpoint
+        .connect_with(client_config, server_addr, server_name)
+        .with_context(|| format!("failed to initiate QUIC connection to {server_addr}"))?;
+    let (connection_handle, mut driver, send_request) = timeout(FRESH_CONNECT_TIMEOUT, async {
+        let connection = connecting
+            .await
+            .with_context(|| format!("QUIC handshake failed for {server_addr}"))?;
+        let connection_handle = connection.clone();
+        let (driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection))
+            .await
+            .context("HTTP/3 handshake failed")?;
+        Ok::<_, anyhow::Error>((connection_handle, driver, send_request))
+    })
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "HTTP/3 fresh connect timed out after {}s to {server_addr}",
+            FRESH_CONNECT_TIMEOUT.as_secs()
+        )
+    })??;
+
+    let id = h3_registry().next_id();
+    let streams_opened = Arc::new(AtomicU64::new(0));
+    let streams_opened_driver = Arc::clone(&streams_opened);
+    let opened_at = Instant::now();
+    let peer = server_addr.to_string();
+    let peer_for_driver = peer.clone();
+    info!(
+        target: "outline_transport::conn_life",
+        id, peer = %peer, mode = "h3", "h3 connection opened"
+    );
+    let driver_task = AbortOnDrop::new(tokio::spawn(async move {
+        let err = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
+        if let Some(cache_key) = cache_key {
+            h3_registry().invalidate_if_current(&cache_key, id).await;
+        }
+        let err_text = err.to_string();
+        let class = classify_h3_close(&err_text);
+        let expected = is_expected_h3_close(&err_text);
+        let fields = ConnCloseLog {
+            id,
+            peer: &peer_for_driver,
+            mode: "h3",
+            age_secs: opened_at.elapsed().as_secs(),
+            streams: streams_opened_driver.load(Ordering::Relaxed),
+        };
+        log_conn_close(fields, Some(&err_text), class, expected);
+    }));
+
+    Ok(SharedH3Connection {
+        id,
+        endpoint,
+        connection: connection_handle.clone(),
+        send_request: Mutex::new(send_request),
+        closed: AtomicBool::new(false),
+        streams_opened,
+        _connection_guard: H3ConnectionGuard(connection_handle),
+        _driver_task: driver_task,
+    })
+}
+
+fn classify_h3_close(err: &str) -> &'static str {
+    // H3 close strings are produced by h3/quinn and retain mixed case; match
+    // as-is rather than normalizing so categories remain precise (e.g.
+    // `Timeout` is quinn's idle-timeout enum variant).
+    classify_by_substrings(
+        err,
+        &[
+            (&["H3_NO_ERROR"], "h3_no_error"),
+            (&["H3_INTERNAL_ERROR"], "h3_internal"),
+            (&["H3_REQUEST_REJECTED"], "h3_rejected"),
+            (&["H3_CONNECT_ERROR"], "h3_connect_error"),
+            (&["ApplicationClose"], "app_close"),
+            (&["Timeout", "timed out"], "timeout"),
+            (&["closed by client", "Connection closed by client"], "local_close"),
+            (&["reset", "Reset"], "rst"),
+            (&["tls", "TLS", "certificate"], "tls"),
+        ],
+        "other",
+    )
+}
+
+// ── Cache helpers ─────────────────────────────────────────────────────────────
+
+/// Remove all cache entries whose shared connection is no longer open.
+/// Called periodically from the warm-standby maintenance loop so dead entries
+/// do not linger indefinitely when no new request re-checks their key (e.g.
+/// after DNS rotation changes the resolved address for a server name).
+pub(crate) async fn gc_shared_h3_connections() {
+    h3_registry().gc().await;
+}
+
+fn is_expected_h3_close(err: &str) -> bool {
+    err.contains("H3_NO_ERROR")
+        || err.contains("Connection closed by client")
+        || err.contains("connection closed by client")
+        // H3 application-level closes from the server (e.g. H3_INTERNAL_ERROR
+        // when the backend crashes under load). These are already reported as
+        // runtime uplink failures via closed_cleanly=false in the flow reader;
+        // logging them as ERROR here would just add noise.
+        || err.contains("H3_INTERNAL_ERROR")
+        || err.contains("H3_REQUEST_REJECTED")
+        || err.contains("H3_CONNECT_ERROR")
+        || err.contains("ApplicationClose")
+        // QUIC idle timeout: Quinn surfaces this as the plain string "Timeout".
+        // The session side already records a runtime failure; the driver task
+        // logging it again at ERROR is redundant noise.
+        || err.contains("Timeout")
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[path = "tests/shared.rs"]
+mod tests;

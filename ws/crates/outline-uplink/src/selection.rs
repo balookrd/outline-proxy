@@ -1,0 +1,306 @@
+use std::time::Duration;
+
+use tokio::time::Instant;
+
+use crate::config::{LoadBalancingConfig, RoutingScope};
+
+use super::manager::status::UplinkStatus;
+use super::penalty::current_penalty;
+use super::types::{TransportKind, Uplink};
+
+pub(crate) fn effective_health(
+    status: &UplinkStatus,
+    transport: TransportKind,
+    now: Instant,
+) -> bool {
+    status.of(transport).healthy == Some(true) && !cooldown_active(status, transport, now)
+}
+
+/// Liveness override for uplinks with `[[outline.uplinks.fallbacks]]`
+/// configured: when the parent's primary wire has been marked unhealthy
+/// by probe but a *fallback* wire has dialed successfully within the
+/// runtime-failure window, the uplink stays in the candidate set so the
+/// active-wire dial loop can keep using the working fallback.
+///
+/// Without this, probe health on the primary wire would gate the entire
+/// uplink out of selection (`selection_health` → `effective_health` → false)
+/// and the fallback wire would never get a chance — defeating the point
+/// of declaring a fallback in the first place. Returns `false` for
+/// single-wire uplinks (where no fallback exists, the override would
+/// give false-positive liveness based on stale primary successes).
+pub(crate) fn any_wire_recent_success(
+    status: &UplinkStatus,
+    uplink: &Uplink,
+    transport: TransportKind,
+    now: Instant,
+    config: &LoadBalancingConfig,
+) -> bool {
+    if uplink.fallbacks.is_empty() {
+        return false;
+    }
+    let st = status.of(transport);
+    let last = match st.last_any_wire_success {
+        Some(t) => t,
+        None => return false,
+    };
+    // Reuse the existing runtime-failure-window knob: it already shapes
+    // "how recent does runtime activity have to be to count as a signal".
+    // Operators tune it once and both the failure-streak decay and this
+    // liveness override use the same window.
+    now.duration_since(last) <= config.runtime_failure_window
+}
+
+/// Bootstrap pass-through for uplinks with `[[outline.uplinks.fallbacks]]`
+/// configured: when probe has marked the primary unhealthy (or has not
+/// yet rendered a verdict) AND no wire has ever recorded a successful
+/// dial, still admit the uplink into the candidate set so the active-wire
+/// dial loop can finally attempt the fallback.
+///
+/// Without this, an uplink whose primary wire is unhealthy from the very
+/// first probe — or comes up failing after a restart — would be excluded
+/// from selection forever: `last_any_wire_success` only ever gets stamped
+/// from inside the dial loop (see `record_wire_outcome`), but the dial
+/// loop only runs for uplinks already in the candidate set. That is a
+/// chicken-and-egg deadlock that defeats the point of declaring a
+/// fallback in the first place.
+///
+/// Gated on cooldown so that an uplink whose fallback is ALSO failing
+/// eventually drops out of selection on the normal failure-streak path
+/// instead of getting hammered with bootstrap dials forever. Returns
+/// `false` for single-wire uplinks — there is no fallback wire to dial.
+pub(crate) fn fallback_bootstrap_allowed(
+    status: &UplinkStatus,
+    uplink: &Uplink,
+    transport: TransportKind,
+    now: Instant,
+) -> bool {
+    if uplink.fallbacks.is_empty() {
+        return false;
+    }
+    if cooldown_active(status, transport, now) {
+        return false;
+    }
+    status.of(transport).last_any_wire_success.is_none()
+}
+
+pub(crate) fn supports_transport_for_scope(
+    uplink: &Uplink,
+    transport: TransportKind,
+    scope: RoutingScope,
+) -> bool {
+    // For UDP we use `supports_udp_any()` — true when the primary or any
+    // configured fallback transport on this uplink can carry UDP. Without
+    // this an uplink whose primary is UDP-incapable but whose fallback is
+    // would be filtered out of the UDP candidate set entirely, defeating
+    // the point of declaring a UDP-capable fallback in the first place.
+    match scope {
+        RoutingScope::Global => match transport {
+            TransportKind::Tcp => true,
+            TransportKind::Udp => uplink.supports_udp_any(),
+        },
+        _ => match transport {
+            TransportKind::Tcp => true,
+            TransportKind::Udp => uplink.supports_udp_any(),
+        },
+    }
+}
+
+pub(crate) fn selection_health(
+    status: &UplinkStatus,
+    uplink: &Uplink,
+    transport: TransportKind,
+    now: Instant,
+    scope: RoutingScope,
+    config: &LoadBalancingConfig,
+) -> bool {
+    match scope {
+        RoutingScope::Global => {
+            // Global routing is primarily driven by TCP quality (see
+            // `global_selection_score_latency` — UDP only acts as a weak
+            // tie-breaker). Gate the active uplink on TCP health alone by
+            // default: a flaky UDP path (XHTTP/H3 over a network that drops
+            // QUIC, broken UDP NAT, etc.) must not cascade-flap the active
+            // uplink while TCP and the bulk of traffic on it are fine.
+            //
+            // Operators that want the legacy strict behaviour — UDP-unhealthy
+            // on the active drops it from selection — can set
+            // `global_udp_strict_health = true` in their load_balancing
+            // config block.
+            let tcp_ok = effective_health(status, TransportKind::Tcp, now)
+                || any_wire_recent_success(status, uplink, TransportKind::Tcp, now, config)
+                || fallback_bootstrap_allowed(status, uplink, TransportKind::Tcp, now);
+            if !tcp_ok {
+                return false;
+            }
+            if !config.global_udp_strict_health {
+                return true;
+            }
+            !uplink.supports_udp()
+                || (status.udp.healthy != Some(false)
+                    && !cooldown_active(status, TransportKind::Udp, now))
+        },
+        _ => {
+            effective_health(status, transport, now)
+                || any_wire_recent_success(status, uplink, transport, now, config)
+                || fallback_bootstrap_allowed(status, uplink, transport, now)
+        },
+    }
+}
+
+pub(crate) fn strict_gate_transport(
+    scope: RoutingScope,
+    transport: TransportKind,
+) -> TransportKind {
+    match scope {
+        RoutingScope::Global => TransportKind::Tcp,
+        RoutingScope::PerUplink | RoutingScope::PerFlow => transport,
+    }
+}
+
+pub(crate) fn cooldown_active(
+    status: &UplinkStatus,
+    transport: TransportKind,
+    now: Instant,
+) -> bool {
+    status.of(transport).cooldown_until.is_some_and(|until| until > now)
+}
+
+pub(crate) fn cooldown_remaining(
+    status: &UplinkStatus,
+    transport: TransportKind,
+    now: Instant,
+) -> Duration {
+    status
+        .of(transport)
+        .cooldown_until
+        .map_or(Duration::ZERO, |t| t.saturating_duration_since(now))
+}
+
+pub(crate) fn effective_latency(
+    status: &UplinkStatus,
+    transport: TransportKind,
+    now: Instant,
+    config: &LoadBalancingConfig,
+) -> Option<Duration> {
+    let ts = status.of(transport);
+    let base = scoring_base_latency(status, transport);
+    let mut penalty = current_penalty(&ts.penalty, now, config);
+    // While an H3 downgrade is active for this transport, add failure_penalty_max
+    // on top of the existing penalty.  This keeps the uplink's score high enough
+    // that active-active flows (per-flow scope) prefer the backup uplink and do not
+    // switch back to the primary while it is operating in H2 fallback mode.
+    //
+    // Without this, the primary's score recovers as good H2 latency feeds into
+    // the EWMA and the failure penalty decays, causing flows to shift back to
+    // primary.  Once mode_downgrade_until expires, those flows then try H3,
+    // encounter the same failure, and the whole cycle repeats.
+    if ts.mode_downgrade_until.is_some_and(|t| t > now) {
+        let extra = config.failure_penalty_max;
+        penalty = Some(penalty.unwrap_or_default().saturating_add(extra));
+    }
+    match (base, penalty) {
+        (Some(base), Some(penalty)) => Some(base.saturating_add(penalty)),
+        (Some(base), None) => Some(base),
+        (None, Some(penalty)) => Some(penalty),
+        (None, None) => None,
+    }
+}
+
+pub(crate) fn scoring_base_latency(
+    status: &UplinkStatus,
+    transport: TransportKind,
+) -> Option<Duration> {
+    let ts = status.of(transport);
+    // Prefer the active wire's measured RTT so cross-uplink scoring
+    // compares the latency of the wire that is **actually carrying
+    // traffic**. When the dial loop / probe walk has moved `active_wire`
+    // off primary, primary's `rtt_ewma` may belong to a completely
+    // different (now-broken) wire — using it would mis-rank this uplink
+    // against its peers.
+    //
+    // Fall back to primary's `rtt_ewma`, then to the latest probe
+    // `latency`, when the active wire has no per-wire sample yet (cold
+    // start right after a wire flip). The first per-wire probe writes
+    // the slot within one cycle, so this stale-primary window is bounded.
+    ts.active_wire_rtt_ewma().or(ts.rtt_ewma).or(ts.latency)
+}
+
+pub(crate) fn weighted_latency_score(base: Option<Duration>, weight: f64) -> Option<Duration> {
+    let base = base?;
+    let weight = weight.max(0.000_001);
+    Some(Duration::from_secs_f64(base.as_secs_f64() / weight))
+}
+
+pub(crate) fn score_latency(
+    status: &UplinkStatus,
+    weight: f64,
+    transport: TransportKind,
+    now: Instant,
+    config: &LoadBalancingConfig,
+) -> Option<Duration> {
+    weighted_latency_score(effective_latency(status, transport, now, config), weight)
+}
+
+pub(crate) fn base_score_latency(
+    status: &UplinkStatus,
+    weight: f64,
+    transport: TransportKind,
+) -> Option<Duration> {
+    weighted_latency_score(scoring_base_latency(status, transport), weight)
+}
+
+pub(crate) fn selection_score(
+    status: &UplinkStatus,
+    weight: f64,
+    transport: TransportKind,
+    now: Instant,
+    config: &LoadBalancingConfig,
+    scope: RoutingScope,
+) -> Option<Duration> {
+    match scope {
+        RoutingScope::Global => global_selection_score_latency(status, weight, now, config),
+        RoutingScope::PerUplink => base_score_latency(status, weight, transport),
+        RoutingScope::PerFlow => score_latency(status, weight, transport, now, config),
+    }
+}
+
+pub(crate) fn global_selection_score_latency(
+    status: &UplinkStatus,
+    weight: f64,
+    now: Instant,
+    config: &LoadBalancingConfig,
+) -> Option<Duration> {
+    // Global routing should primarily follow TCP quality.
+    // UDP only acts as a weak tie-breaker and should not dominate selection.
+    //
+    // Penalty inclusion is gated on `auto_failback`:
+    //   * `auto_failback = true`  → raw EWMA only.  Failback to a higher-priority
+    //     primary is gated separately by weight + consecutive probe successes
+    //     (see candidates.rs); under load the active uplink's EWMA inflates while
+    //     the idle backup keeps a low probe-derived EWMA, so a decayed penalty
+    //     would make the active look permanently worse and starve failback.
+    //   * `auto_failback = false` → include decayed failure penalty.  In this
+    //     mode the active is sticky as long as it is healthy, so the score is
+    //     only consulted to pick a backup on failover; including the penalty
+    //     prevents bouncing onto a backup that itself just failed.
+    let (tcp_score, udp_score) = if config.auto_failback {
+        (
+            base_score_latency(status, weight, TransportKind::Tcp),
+            base_score_latency(status, weight, TransportKind::Udp),
+        )
+    } else {
+        (
+            score_latency(status, weight, TransportKind::Tcp, now, config),
+            score_latency(status, weight, TransportKind::Udp, now, config),
+        )
+    };
+
+    match (tcp_score, udp_score) {
+        (Some(tcp), Some(udp)) => {
+            Some(Duration::from_secs_f64(tcp.as_secs_f64() + udp.as_secs_f64() * 0.05))
+        },
+        (Some(tcp), None) => Some(tcp),
+        (None, Some(udp)) => Some(udp),
+        (None, None) => None,
+    }
+}
