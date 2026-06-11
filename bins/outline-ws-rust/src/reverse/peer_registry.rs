@@ -88,9 +88,11 @@ impl<T: Live> PeerPool<T> {
         let mut peers = self.peers.write();
         peers.retain(|p| p.is_live());
         if peers.len() >= self.max_peers {
+            outline_metrics::set_reverse_peers(&self.group, peers.len());
             return false;
         }
         peers.push(peer);
+        outline_metrics::set_reverse_peers(&self.group, peers.len());
         true
     }
 
@@ -99,6 +101,7 @@ impl<T: Live> PeerPool<T> {
     pub(crate) fn pick_live(&self) -> Option<Arc<T>> {
         let mut peers = self.peers.write();
         peers.retain(|p| p.is_live());
+        outline_metrics::set_reverse_peers(&self.group, peers.len());
         if peers.is_empty() {
             return None;
         }
@@ -110,6 +113,7 @@ impl<T: Live> PeerPool<T> {
     pub(crate) fn live_count(&self) -> usize {
         let mut peers = self.peers.write();
         peers.retain(|p| p.is_live());
+        outline_metrics::set_reverse_peers(&self.group, peers.len());
         peers.len()
     }
 }
