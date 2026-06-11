@@ -62,20 +62,7 @@ rcgen = "0.14"
 # real-time sleeps.
 tokio = { version = "1.48", features = ["test-util"] }
 tokio-tungstenite = "0.28"
-# Cross-repo end-to-end tests dial the real `outline-ws-rust` client
-# against this server (sibling repo, not published). The path dep
-# only kicks in for `cargo test` / `cargo check --tests`; the
-# release binary does not build it.
-outline-transport = { path = "../outline-ws-rust/crates/outline-transport", features = ["h3", "test-tls"] }
+# End-to-end tests dial the outline-ws-rust client transport against this
+# server. Now an in-workspace path dependency (previously cross-repo).
+outline-transport = { path = "../../crates/outline-transport", features = ["h3", "test-tls"] }
 url = "2.5"
-
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-strip = true
-
-[patch.crates-io]
-h3 = { path = "vendor/h3" }
-sockudo-ws = { path = "vendor/sockudo-ws" }
