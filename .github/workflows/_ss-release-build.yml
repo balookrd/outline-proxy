@@ -154,11 +154,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          release_id="$(
-            gh api "/repos/${REPO}/releases/tags/${TAG}" --jq '.id' 2>/dev/null || true
-          )"
+          # First rolling run: the release does not exist yet. `gh release
+          # view` returns non-zero, so skip cleanly instead of feeding a 404
+          # body into the DELETE below.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Rolling release $TAG does not exist yet, nothing to reset."
+            exit 0
+          fi
 
-          if [[ -n "$release_id" ]]; then
+          release_id="$(gh api "/repos/${REPO}/releases/tags/${TAG}" --jq '.id' 2>/dev/null || true)"
+          if [[ "$release_id" =~ ^[0-9]+$ ]]; then
             gh api -X DELETE "/repos/${REPO}/releases/${release_id}"
           fi
 
