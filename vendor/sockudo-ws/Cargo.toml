@@ -125,7 +125,7 @@ futures-sink = "^0.3"
 flate2 = { version = "^1.0", default-features = false, features = ["zlib-rs"], optional = true }
 
 # Socket options (SO_REUSEPORT, TCP_NODELAY)
-socket2 = { version = "^0.5", features = ["all"] }
+socket2 = { version = "^0.6", features = ["all"] }
 
 # SIMD-accelerated UTF-8 validation (battle-tested, used by simd-json, polars, arrow)
 simdutf8 = "^0.1"
