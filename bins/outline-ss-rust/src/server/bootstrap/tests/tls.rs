@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
 use rustls::{
     crypto::CryptoProvider,
-    pki_types::{CertificateDer, PrivateKeyDer},
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     sign::CertifiedKey,
 };
 
@@ -191,8 +191,6 @@ fn build_listener_tls_config_array_with_default() {
 /// each time.
 #[tokio::test]
 async fn end_to_end_handshake_selects_cert_per_sni() {
-    use std::io::Cursor;
-
     use rustls::{
         ClientConfig, RootCertStore,
         client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
@@ -247,11 +245,10 @@ async fn end_to_end_handshake_selects_cert_per_sni() {
     });
 
     fn pem_to_der(pem: &str) -> CertificateDer<'static> {
-        let parsed = rustls_pemfile::certs(&mut Cursor::new(pem))
+        CertificateDer::pem_slice_iter(pem.as_bytes())
             .next()
             .expect("at least one cert")
-            .expect("cert parses");
-        parsed
+            .expect("cert parses")
     }
 
     fn read_cert_der(path: &std::path::Path) -> CertificateDer<'static> {

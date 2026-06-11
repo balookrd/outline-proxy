@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use rustls::{
     crypto::CryptoProvider,
-    pki_types::{CertificateDer, PrivateKeyDer},
+    pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
 };
@@ -128,7 +128,7 @@ fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
         return Ok(vec![CertificateDer::from(pem)]);
     }
 
-    rustls_pemfile::certs(&mut pem.as_slice())
+    CertificateDer::pem_slice_iter(&pem)
         .collect::<std::result::Result<Vec<_>, _>>()
         .with_context(|| format!("failed to parse certificate chain {}", path.display()))
 }
@@ -141,9 +141,9 @@ fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
             .with_context(|| format!("failed to parse private key {}", path.display()));
     }
 
-    rustls_pemfile::private_key(&mut key.as_slice())
-        .with_context(|| format!("failed to parse private key {}", path.display()))?
-        .ok_or_else(|| anyhow!("no private key found in {}", path.display()))
+    PrivateKeyDer::from_pem_slice(&key)
+        .map_err(|error| anyhow!("{error}"))
+        .with_context(|| format!("failed to parse private key {}", path.display()))
 }
 
 /// Extract the set of DNS names this end-entity cert is valid for.
