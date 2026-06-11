@@ -1756,7 +1756,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "libc",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tokio",
 ]
 
@@ -1809,7 +1809,7 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "sockudo-ws",
  "subtle",
  "thiserror 2.0.18",
@@ -1949,7 +1949,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shadowsocks-crypto",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "socks5-proto",
  "tempfile",
  "tokio",
@@ -2766,16 +2766,6 @@ dependencies = [
 
 [[package]]
 name = "socket2"
-version = "0.5.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
-dependencies = [
- "libc",
- "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "socket2"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
@@ -2827,7 +2817,7 @@ dependencies = [
  "sha1",
  "sha1_smol",
  "simdutf8",
- "socket2 0.5.10",
+ "socket2 0.6.4",
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
