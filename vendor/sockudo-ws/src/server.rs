@@ -580,6 +580,19 @@ impl WebSocketServer<Http3> {
         }
     }
 
+    /// Decompose the server back into its QUIC endpoint and WebSocket config.
+    ///
+    /// Used by callers that drive their own QUIC accept loop instead of
+    /// `serve()` (outline-ss-rust owns the H3 accept loop). Present in the
+    /// vendored 1.7.4 copy; restored here on top of upstream 1.7.5.
+    pub fn into_parts(self) -> (Endpoint, Config) {
+        let config = self.config;
+        match self.inner {
+            ServerInner::Http3 { endpoint } => (endpoint, config),
+            _ => unreachable!(),
+        }
+    }
+
     /// Get the local address the server is bound to
     pub fn local_addr(&self) -> Result<SocketAddr> {
         match &self.inner {
