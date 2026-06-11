@@ -1,0 +1,182 @@
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result};
+use bytes::Bytes;
+use http::header::{CONTENT_TYPE, HeaderValue};
+use http::{Request, Response, StatusCode};
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{Mutex, watch};
+use tokio::task::JoinHandle;
+use tracing::{info, warn};
+
+use crate::config::MetricsConfig;
+use crate::http::serve::{ServeConfig, serve_with_shutdown};
+use outline_metrics::{record_metrics_http_request, render_prometheus};
+use outline_uplink::UplinkRegistry;
+
+type MetricsResponse = Response<Full<Bytes>>;
+
+pub fn spawn_metrics_server(
+    config: MetricsConfig,
+    uplinks: UplinkRegistry,
+    shutdown: watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(error) = run_metrics_server(config, uplinks, shutdown).await {
+            warn!(error = %format!("{error:#}"), "metrics server stopped");
+        }
+    })
+}
+
+/// Cap concurrent in-flight observability requests. Metrics is usually
+/// scraped by one or two Prometheus instances, so 64 leaves ample slack
+/// for overlapping scrapes without letting a slowloris hold sockets
+/// unbounded.
+const MAX_CONCURRENT_METRICS_CONNECTIONS: usize = 64;
+
+/// Hard cap on how long a client may take to send its request headers.
+/// Prevents slowloris-style idle holds against the observability plane.
+const METRICS_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Window for an in-flight scrape to finish on SIGTERM before the listener
+/// returns. Scrapes are short and the next one will arrive on a fresh process.
+const METRICS_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Time window during which a rendered Prometheus body is reused instead of
+/// rebuilt. Bounds snapshot/render cost to ~1 Hz regardless of how many
+/// scrapers hit the endpoint; clients receive data at most this stale.
+const METRICS_CACHE_TTL: Duration = Duration::from_secs(1);
+
+#[derive(Default)]
+struct RenderCache {
+    entry: Option<(Instant, Bytes)>,
+}
+
+/// Shared across all incoming scrapes. Concurrent requests serialize on the
+/// mutex: within one TTL the first rebuilds, the rest return the cached body.
+type SharedCache = Arc<Mutex<RenderCache>>;
+
+async fn run_metrics_server(
+    config: MetricsConfig,
+    uplinks: UplinkRegistry,
+    shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    let listener = TcpListener::bind(config.listen)
+        .await
+        .with_context(|| format!("failed to bind metrics listener {}", config.listen))?;
+    info!(listen = %config.listen, "metrics server started");
+
+    let cache: SharedCache = Arc::new(Mutex::new(RenderCache::default()));
+
+    serve_with_shutdown(
+        listener,
+        ServeConfig {
+            server_name: "metrics",
+            max_concurrent: MAX_CONCURRENT_METRICS_CONNECTIONS,
+            drain_timeout: METRICS_DRAIN_TIMEOUT,
+        },
+        shutdown,
+        move |stream, _peer| {
+            let uplinks = uplinks.clone();
+            let cache = cache.clone();
+            async move { handle_connection(stream, uplinks, cache).await }
+        },
+    )
+    .await
+}
+
+async fn handle_connection(
+    stream: TcpStream,
+    uplinks: UplinkRegistry,
+    cache: SharedCache,
+) -> Result<()> {
+    let io = TokioIo::new(stream);
+    http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(METRICS_HEADER_READ_TIMEOUT)
+        .serve_connection(
+            io,
+            service_fn(move |request: Request<Incoming>| {
+                let uplinks = uplinks.clone();
+                let cache = cache.clone();
+                async move { Ok::<_, Infallible>(handle_request(request, uplinks, cache).await) }
+            }),
+        )
+        .await
+        .context("failed to serve metrics HTTP connection")?;
+    Ok(())
+}
+
+async fn handle_request(
+    request: Request<Incoming>,
+    uplinks: UplinkRegistry,
+    cache: SharedCache,
+) -> MetricsResponse {
+    let path = request.uri().path();
+
+    match path {
+        "/metrics" => match render_metrics_response(uplinks, cache).await {
+            Ok(response) => {
+                record_metrics_http_request("/metrics", 200);
+                response
+            },
+            Err(error) => {
+                warn!(error = %format!("{error:#}"), "failed to render metrics response");
+                record_metrics_http_request("/metrics", 500);
+                plain_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "text/plain; charset=utf-8",
+                    Bytes::from_static(b"internal server error\n"),
+                )
+            },
+        },
+        _ => {
+            record_metrics_http_request("other", 404);
+            plain_response(
+                StatusCode::NOT_FOUND,
+                "text/plain; charset=utf-8",
+                Bytes::from_static(b"not found\n"),
+            )
+        },
+    }
+}
+
+async fn render_metrics_response(
+    uplinks: UplinkRegistry,
+    cache: SharedCache,
+) -> Result<MetricsResponse> {
+    let body = cached_render(&uplinks, &cache).await?;
+    Ok(plain_response(StatusCode::OK, "text/plain; version=0.0.4", body))
+}
+
+async fn cached_render(uplinks: &UplinkRegistry, cache: &SharedCache) -> Result<Bytes> {
+    // Hold the lock across the rebuild so that concurrent scrapes coalesce
+    // onto a single snapshot+render instead of each doing their own.
+    let mut guard = cache.lock().await;
+    if let Some((stored_at, body)) = guard.entry.as_ref() {
+        if stored_at.elapsed() < METRICS_CACHE_TTL {
+            return Ok(body.clone());
+        }
+    }
+    let snapshots = uplinks.snapshots().await;
+    let rendered = render_prometheus(&snapshots)?;
+    let body = Bytes::from(rendered);
+    guard.entry = Some((Instant::now(), body.clone()));
+    Ok(body)
+}
+
+fn plain_response(status: StatusCode, content_type: &'static str, body: Bytes) -> MetricsResponse {
+    let mut response = Response::new(Full::new(body));
+    *response.status_mut() = status;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+}

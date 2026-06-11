@@ -1,0 +1,175 @@
+mod attribution;
+mod chunk0_failover;
+mod failover_step;
+mod first_chunk;
+mod pinned_relay;
+mod replay;
+mod retry;
+mod ring_buffer;
+
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use anyhow::{Result, anyhow};
+use tokio::net::TcpStream;
+use tracing::{debug, info};
+
+use outline_metrics as metrics;
+use socks5_proto::{
+    SOCKS_REP_NOT_ALLOWED, SOCKS_REP_SUCCESS, TargetAddr, send_reply, socket_addr_to_target,
+};
+
+use outline_uplink::TransportKind;
+
+use super::super::Route;
+use super::direct::relay_tcp_direct;
+use super::failover::{ActiveTcpUplink, connect_tcp_uplink};
+use crate::proxy::TcpTimeouts;
+
+use chunk0_failover::{Chunk0FailoverParams, try_uplinks};
+use pinned_relay::run_relay;
+use replay::ReplayBufState;
+
+pub async fn serve_tcp_connect(
+    mut client: TcpStream,
+    dispatch: Route,
+    target: TargetAddr,
+    dns_cache: Arc<outline_transport::DnsCache>,
+    timeouts: TcpTimeouts,
+) -> Result<()> {
+    let uplinks = match dispatch {
+        Route::Direct { fwmark } => {
+            info!(target = %target, "TCP route: direct connection");
+            return relay_tcp_direct(client, target, fwmark, &dns_cache, timeouts).await;
+        },
+        Route::Drop => {
+            info!(target = %target, "TCP route: policy drop");
+            return reject_tcp_connection(client, &target).await;
+        },
+        Route::Group { name, manager } => {
+            debug!(target = %target, group = %name, "TCP route: dispatching via group");
+            manager
+        },
+    };
+
+    let session = metrics::track_session("tcp");
+    let result = async {
+        // ── Initial uplink selection ─────────────────────────────────────────
+        let mut last_error = None;
+        let mut selected = None;
+        let strict_transport = uplinks.strict_active_uplink_for(TransportKind::Tcp);
+        let chunk0_attempt_timeout = uplinks.load_balancing().tcp_chunk0_failover_timeout;
+        let mut tried_indexes = HashSet::new();
+        loop {
+            let mut candidates = uplinks.tcp_candidates(&target).await;
+            if strict_transport {
+                candidates.truncate(1);
+            }
+            if candidates.is_empty() {
+                break;
+            }
+            let mut progressed = false;
+            for candidate in candidates {
+                if strict_transport && !tried_indexes.insert(candidate.index) {
+                    continue;
+                }
+                progressed = true;
+                match connect_tcp_uplink(&uplinks, &candidate, &target).await {
+                    Ok(connected) => {
+                        selected = Some((candidate, connected));
+                        break;
+                    },
+                    Err(error) => {
+                        uplinks
+                            .report_runtime_failure(candidate.index, TransportKind::Tcp, &error)
+                            .await;
+                        last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
+                    },
+                }
+            }
+            if selected.is_some() || !strict_transport || !progressed {
+                break;
+            }
+        }
+
+        let (candidate, connected) = selected.ok_or_else(|| {
+            anyhow!(
+                "all TCP uplinks failed: {}",
+                last_error.unwrap_or_else(|| "no uplinks available".to_string())
+            )
+        })?;
+        let mut active = ActiveTcpUplink::new(candidate.clone(), connected);
+        uplinks
+            .confirm_selected_uplink(TransportKind::Tcp, Some(&target), active.index)
+            .await;
+        metrics::record_uplink_selected("tcp", uplinks.group_name(), &active.name);
+        info!(
+            uplink = %active.name,
+            weight = candidate.uplink.weight,
+            target = %target,
+            "selected TCP uplink"
+        );
+
+        let bound_addr = socket_addr_to_target(client.local_addr()?);
+        send_reply(&mut client, SOCKS_REP_SUCCESS, &bound_addr).await?;
+
+        let (mut client_read, mut client_write) = client.into_split();
+        let mut replay = ReplayBufState::new();
+
+        // ── Chunk-0 failover ─────────────────────────────────────────────────
+        let chunk0_params = Chunk0FailoverParams {
+            uplinks: &uplinks,
+            target: &target,
+            strict_transport,
+            chunk0_attempt_timeout,
+            timeouts: &timeouts,
+        };
+        let first_chunk = match try_uplinks(
+            &chunk0_params,
+            &mut active,
+            &mut tried_indexes,
+            &mut client_read,
+            &mut client_write,
+            &mut replay,
+        )
+        .await?
+        {
+            Some(chunk) => chunk,
+            None => return Ok(()),
+        };
+
+        // Chunk-0 replay buffer is no longer needed; release memory before
+        // the long-lived pinned-relay tasks take over.
+        drop(replay);
+
+        // ── Pinned bidirectional relay ───────────────────────────────────────
+        let target_label: Arc<str> = Arc::from(target.to_string());
+        run_relay(
+            uplinks,
+            active,
+            target,
+            target_label,
+            first_chunk,
+            client_read,
+            client_write,
+            &timeouts,
+        )
+        .await
+    }
+    .await;
+
+    session.finish(result.is_ok());
+    result
+}
+
+/// Send a SOCKS5 reply with REP=0x02 (connection not allowed by ruleset) and
+/// close the client connection. Used when a matched route has `via = "drop"`.
+async fn reject_tcp_connection(mut client: TcpStream, target: &TargetAddr) -> Result<()> {
+    let bound_addr = socket_addr_to_target(client.local_addr()?);
+    send_reply(&mut client, SOCKS_REP_NOT_ALLOWED, &bound_addr).await?;
+    debug!(target = %target, "TCP route: drop reply sent");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

@@ -1,0 +1,1047 @@
+//! Single source of truth for the per-uplink mode-downgrade window.
+//!
+//! The window is family-aware: it covers the WS chain (`H3` → `H2`,
+//! raw `QUIC` → `H2`) and the XHTTP chain (`XhttpH3` → `XhttpH2`,
+//! `XhttpH2` → `XhttpH1`). Four independent events can (re)set
+//! [`PerTransportStatus::mode_downgrade_until`]: runtime traffic failure,
+//! probe transport failure, probe connect failure, and a recovery
+//! re-probe that failed to confirm recovery. All of them go through
+//! [`UplinkManager::extend_mode_downgrade`] so the guard conditions
+//! (Ws/Vless transport, downgrade-eligible mode), the "set or extend —
+//! never shorten" rule, and the "log once per window start" rule live
+//! in exactly one place.
+//!
+//! Multi-step downgrades (`XhttpH3` → `XhttpH2` → `XhttpH1`) converge
+//! over consecutive dials: each fallback observed by the dispatcher
+//! lowers [`PerTransportStatus::mode_downgrade_capped_to`] by one
+//! family rank, never raising it inside an active window. After two
+//! dials the cap reaches the deepest fallback the chain can produce,
+//! so probe / refill / fresh-dial paths stop paying the doomed
+//! handshake cost for the broken upper carriers.
+//!
+//! [`PerTransportStatus::mode_downgrade_until`]: crate::types::PerTransportStatus::mode_downgrade_until
+//! [`PerTransportStatus::mode_downgrade_capped_to`]: crate::types::PerTransportStatus::mode_downgrade_capped_to
+
+use tokio::time::Instant;
+use tracing::{debug, warn};
+
+use crate::config::{TransportMode, UplinkTransport};
+
+use super::super::types::{TransportKind, UplinkManager};
+
+/// Why a downgrade window is being set or extended.  Controls the log
+/// message and level emitted when the call starts a *new* window (silent
+/// when it extends one that is already active).
+pub(crate) enum ModeDowngradeTrigger<'a> {
+    /// Real traffic observed a transport-level failure on an H3 session.
+    RuntimeFailure(&'a anyhow::Error),
+    /// Probe task completed but the per-transport check failed
+    /// (e.g. `tcp_ok=false` in `ProbeOutcome`). Carries the **effective**
+    /// mode the probe actually attempted — when a downgrade window is
+    /// active the probe runs against the capped carrier (e.g. `xhttp_h2`
+    /// after a previous `xhttp_h3 → xhttp_h2` cap), not the configured
+    /// one. Threading the actually-failed carrier through here lets the
+    /// monotonic downward cap continue (`xhttp_h2 → xhttp_h1`) instead
+    /// of stalling at the first downgrade step forever.
+    ProbeTransportFailure(TransportMode),
+    /// Probe task itself errored out (ws connect failure, timeout).
+    /// Carries the effective mode that was attempted — same reasoning as
+    /// [`Self::ProbeTransportFailure`].
+    ProbeConnectFailure(&'a anyhow::Error, TransportMode),
+    /// Explicit H3 recovery re-probe failed to confirm H3 liveness.
+    RecoveryReprobeFail,
+    /// A dial succeeded but at a lower mode than requested — the host-level
+    /// `ws_mode_cache` clamp or inline H3→H2/H1 fallback inside
+    /// `connect_transport` silently produced a downgraded
+    /// stream. Carries the originally-requested mode for the log message.
+    /// Fired from probe / refill / fresh-dial / mux paths so the per-uplink
+    /// `mode_downgrade_until` window stays in sync with the actually-dialable
+    /// transport even when the operation itself reports success.
+    SilentTransportFallback(TransportMode),
+}
+
+impl UplinkManager {
+    /// Set or extend the H3→H2 downgrade window for `(index, transport)`.
+    ///
+    /// No-op when the uplink is not a WS transport or its WS mode for this
+    /// transport is not H3.  The deadline is only advanced (never shortened),
+    /// so a fresh trigger with a shorter configured duration cannot cut an
+    /// already-longer window short.
+    ///
+    /// A log line is emitted only when this call *starts* a new window
+    /// (previous deadline absent or expired).  Extensions inside an active
+    /// window are silent, except [`ModeDowngradeTrigger::RecoveryReprobeFail`]
+    /// which still emits a debug breadcrumb when it actually advances the
+    /// deadline (preserves the pre-refactor recovery log).
+    pub(crate) fn extend_mode_downgrade(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        trigger: ModeDowngradeTrigger<'_>,
+    ) {
+        let uplink = &self.inner.uplinks[index];
+        if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+            return;
+        }
+        // Operator-opt-out of the per-wire `h3 → h2 → h1` carrier
+        // cascade. When this uplink has `carrier_downgrade = false`,
+        // no descent window is installed: failures keep firing
+        // `extend_mode_downgrade` from upstream callers (dial /
+        // runtime / probe paths), but the cap state never changes and
+        // `wire_is_at_carrier_floor` reports the wire as "at floor"
+        // for the wire-rotation gate, so the next wire (or the next
+        // uplink) is tried immediately. Useful when intermediate
+        // ranks are known-useless on this uplink (DPI drops the
+        // whole upstream regardless of HTTP version, for example).
+        if !uplink.carrier_downgrade {
+            return;
+        }
+        let configured_mode = match transport {
+            TransportKind::Tcp => uplink.tcp_dial_mode(),
+            TransportKind::Udp => uplink.udp_dial_mode(),
+        };
+        // The "what just failed" mode: explicit for `SilentTransportFallback`
+        // (which carries the originally-requested carrier from the dial
+        // result), otherwise the configured dial mode — probe and runtime
+        // triggers don't carry their own mode field, but for those triggers
+        // the failure is by definition on the configured carrier.
+        let failed_mode = match &trigger {
+            ModeDowngradeTrigger::SilentTransportFallback(requested) => *requested,
+            ModeDowngradeTrigger::ProbeTransportFailure(attempted)
+            | ModeDowngradeTrigger::ProbeConnectFailure(_, attempted) => *attempted,
+            _ => configured_mode,
+        };
+        // Map the failed carrier to the carrier the next dial should
+        // try. Returning `None` here means the failed carrier is already
+        // the deepest fallback in its family — there is nothing left to
+        // cap to, so skip the window update entirely.
+        let new_cap = match one_step_down(failed_mode) {
+            Some(cap) => cap,
+            None => return,
+        };
+        // Sanity gate: cap must be a real downgrade relative to the
+        // configured mode and live in the same family. This catches
+        // two bogus shapes:
+        //
+        // * A `SilentTransportFallback(WsH3)` trigger fired against an
+        //   uplink configured at `WsH2` (or below) would otherwise
+        //   *raise* the effective mode from `WsH1` to `WsH2`.
+        // * A cross-family trigger (an `XhttpH3` failure note arriving
+        //   on a `WsH3`-configured uplink) would clamp the WS uplink
+        //   to an XHTTP carrier the dispatcher cannot dial.
+        //
+        // Both indicate a wiring bug somewhere upstream; the right
+        // response is to ignore the trigger rather than mis-park the
+        // uplink.
+        //
+        // Comparing against `configured_mode` (rather than `failed_mode`)
+        // here is important: under multi-step downgrades the failed mode
+        // may already be a previous cap (`xhttp_h2`), and the new cap
+        // (`xhttp_h1`) ranks below configured (`xhttp_h3`) — so the
+        // multi-step `xhttp_h3 → h2 → h1` walk is admitted, while a
+        // mis-wired cross-family or above-configured trigger is still
+        // rejected.
+        if family(new_cap) != family(configured_mode) || rank(new_cap) >= rank(configured_mode) {
+            return;
+        }
+
+        let now = Instant::now();
+        let duration = self.inner.load_balancing.mode_downgrade_duration;
+        let new_until = now + duration;
+
+        let (prev_until, prev_cap, consecutive_failures, last_recovery_success_at, grace_attempts) = {
+            let per = self.inner.read_status(index);
+            let snapshot = per.of(transport);
+            (
+                snapshot.mode_downgrade_until,
+                snapshot.mode_downgrade_capped_to,
+                snapshot.consecutive_failures,
+                snapshot.last_recovery_success_at,
+                snapshot.post_recovery_grace_descent_attempts,
+            )
+        };
+        let window_active = prev_until.is_some_and(|t| t > now);
+        let newly_started = prev_until.is_none_or(|t| t < now);
+        let advances_deadline = prev_until.is_none_or(|t| t < new_until);
+
+        // Min-failures gate for further descent (cap currently set):
+        // when a **probe** trigger arrives in an already-capped window
+        // and the failed mode is the same as (or below) the current
+        // cap — i.e. the probe tested the capped carrier and failed —
+        // we hold the cap in place until `consecutive_failures` reaches
+        // `probe.min_failures`. Without this a single flaky probe at
+        // the capped rank pushes the cap one step deeper for a full
+        // TTL even when the capped carrier is mostly healthy. Limited
+        // to probe triggers because `consecutive_failures` is the
+        // probe-only streak counter; runtime / silent-fallback triggers
+        // are stronger real-traffic signals and descend immediately
+        // when the existing cap can still be lowered.
+        let probe_trigger = matches!(
+            trigger,
+            ModeDowngradeTrigger::ProbeTransportFailure(_)
+                | ModeDowngradeTrigger::ProbeConnectFailure(_, _)
+        );
+        let probe_min_failures = self.inner.probe.min_failures.max(1) as u32;
+        let probe_at_or_below_cap = match prev_cap {
+            Some(prev) => {
+                window_active
+                    && family(prev) == family(failed_mode)
+                    && rank(failed_mode) <= rank(prev)
+            },
+            None => false,
+        };
+        let descent_gated_at_cap =
+            probe_trigger && consecutive_failures < probe_min_failures && probe_at_or_below_cap;
+
+        // Post-recovery grace gate (cap currently None): a recovery
+        // probe just successfully cleared the cap. The grace window
+        // absorbs descent triggers (probe-fail, silent fallback,
+        // runtime failure) so an isolated post-clear flap doesn't
+        // immediately re-install the cap. Three properties make the
+        // gate match what operators see in practice:
+        //
+        // 1. **Window length = 2 × `mode_downgrade_duration`.** A
+        //    single window of 60 s misses the common pattern of one
+        //    flaky probe every 70-90 s — the fail arrives just past
+        //    the deadline, gate inactive, cap re-installs. 2× covers
+        //    that gap without making grace effectively forever.
+        //
+        // 2. **Renewable on absorbed attempts.** Each absorbed
+        //    descent trigger refreshes `last_recovery_success_at = now`,
+        //    so the window slides forward as long as the system keeps
+        //    receiving descent signals at less than the window length
+        //    apart. With pure-fail patterns the counter still rises
+        //    and eventually releases (see point 3); with mixed
+        //    success/fail patterns the counter resets to zero on
+        //    success (see `record_transport_success`), so isolated
+        //    flaps are absorbed indefinitely while a real all-fail
+        //    streak still releases.
+        //
+        // 3. **Counter cap = `min_failures`.** Releases on the
+        //    `min_failures`-th absorbed attempt without an intervening
+        //    success. Consecutive failures with no success between
+        //    them is the strongest "configured really is broken"
+        //    signal we have, and crossing the operator's `min_failures`
+        //    threshold lets the cap re-install at the demanded rank.
+        //    With `min_failures = 1` this evaluates to "release on
+        //    first attempt", matching the in-window descent gate's
+        //    single-failure-descent semantics.
+        //
+        // The dedicated `post_recovery_grace_descent_attempts`
+        // counter is used (not `consecutive_failures`, which only
+        // increments on probe outcomes) so silent / runtime triggers
+        // are also counted toward the gate budget.
+        let grace_window = duration.saturating_mul(2);
+        let in_post_recovery_grace =
+            last_recovery_success_at.is_some_and(|t| now.duration_since(t) < grace_window);
+        let grace_gate_active =
+            prev_cap.is_none() && in_post_recovery_grace && grace_attempts < probe_min_failures;
+        if grace_gate_active {
+            self.inner.with_status_mut(index, |status| {
+                let per = match transport {
+                    TransportKind::Tcp => &mut status.tcp,
+                    TransportKind::Udp => &mut status.udp,
+                };
+                per.post_recovery_grace_descent_attempts =
+                    per.post_recovery_grace_descent_attempts.saturating_add(1);
+                // Slide the grace window forward — descent signals
+                // arriving at < grace_window apart keep the gate
+                // alive; the counter (capped at `min_failures`) is
+                // the bound on total tolerance, not the wall-clock.
+                per.last_recovery_success_at = Some(now);
+            });
+            return;
+        }
+        // descent_gated_at_cap reuses the existing cap-held path
+        // (`updated_cap = prev` below) — we don't early-return here
+        // because the deadline still needs to be refreshed so the
+        // window survives until the cap is either walked up or the
+        // gate releases on the next failure.
+        let descent_gated = descent_gated_at_cap;
+
+        // Cap update rule: monotonically downward inside an active
+        // window. If the previous cap is in the same family and already
+        // ranks lower than `new_cap`, keep it — a `XhttpH3 → XhttpH2`
+        // re-trigger after a previous `XhttpH2 → XhttpH1` step must not
+        // raise the ceiling back to `XhttpH2`. Outside an active window
+        // the previous cap is stale, so always overwrite. The descent
+        // gate above can also pin the cap in place when probe failures
+        // on the capped carrier haven't yet stacked to `min_failures`.
+        let updated_cap = match prev_cap {
+            Some(prev) if descent_gated => prev,
+            Some(prev)
+                if window_active
+                    && family(prev) == family(new_cap)
+                    && rank(prev) < rank(new_cap) =>
+            {
+                prev
+            },
+            _ => new_cap,
+        };
+
+        let cap_changed = prev_cap != Some(updated_cap);
+        let is_recovery_fail = matches!(trigger, ModeDowngradeTrigger::RecoveryReprobeFail);
+        if advances_deadline || cap_changed || is_recovery_fail {
+            self.inner.with_status_mut(index, |status| {
+                let per = match transport {
+                    TransportKind::Tcp => &mut status.tcp,
+                    TransportKind::Udp => &mut status.udp,
+                };
+                if advances_deadline {
+                    per.mode_downgrade_until = Some(new_until);
+                }
+                per.mode_downgrade_capped_to = Some(updated_cap);
+                if cap_changed {
+                    // The capped carrier just moved (first entry into the
+                    // window or step further down) — `walk_up_mode_downgrade`
+                    // must observe a fresh `min_failures`-long streak of
+                    // successes against the **new** rank before lifting it
+                    // again. Without resetting here, a probe-success stretch
+                    // accumulated against the old (higher) rank could
+                    // immediately walk back up the cap that
+                    // `SilentTransportFallback` / `RuntimeFailure` just set.
+                    per.consecutive_successes = 0;
+                    // Cap is back in place — the post-recovery grace
+                    // window is implicitly over. Reset the attempts
+                    // counter so the next clear (whenever it happens)
+                    // starts a fresh budget.
+                    per.post_recovery_grace_descent_attempts = 0;
+                    // Any recovery streak accumulated for the previous
+                    // (now-cleared) cap is moot — descent invalidated
+                    // the streak's premise.
+                    per.recovery_probe_success_streak = 0;
+                }
+                if is_recovery_fail {
+                    // A failed recovery probe means the previous
+                    // tentative success(es) (if any) were unlucky —
+                    // start the streak from zero so the next clear
+                    // requires the full threshold of consecutive
+                    // successes again.
+                    per.recovery_probe_success_streak = 0;
+                }
+                if is_recovery_fail {
+                    // The configured-carrier recovery probe just failed.
+                    // Suppress the next recovery push for the same window
+                    // by parking a cooldown deadline — re-running it on
+                    // every cycle (probe interval, often << window
+                    // duration) on a flaky configured carrier makes the
+                    // cap oscillate cleared/installed for traffic. The
+                    // cap stays sticky at the deepest stable rank for
+                    // `mode_downgrade_duration`, then a single recovery
+                    // attempt is allowed again.
+                    per.recovery_probe_cooldown_until = Some(new_until);
+                }
+            });
+            // The cached probe transport (if any) was dialled with the
+            // old effective mode; the next probe will request the new
+            // capped carrier, so a stale cached transport would either
+            // mismatch and be discarded anyway or — worse — keep the
+            // probe pinned to the failing carrier. Clear it now so the
+            // refresh is unambiguous.
+            match transport {
+                TransportKind::Udp => {
+                    super::probe::warm_udp::clear(self.inner.warm_udp_probe_slot(index));
+                },
+                TransportKind::Tcp => {
+                    super::probe::warm_tcp::clear(self.inner.warm_tcp_probe_slot(index));
+                },
+            }
+        }
+
+        let downgrade_secs = duration.as_secs();
+        let kind_label = match transport {
+            TransportKind::Tcp => "TCP",
+            TransportKind::Udp => "UDP",
+        };
+        if newly_started {
+            match &trigger {
+                ModeDowngradeTrigger::RuntimeFailure(err) => warn!(
+                    uplink = %uplink.name,
+                    error = %format!("{err:#}"),
+                    failed_mode = %failed_mode,
+                    capped_to = %updated_cap,
+                    downgrade_secs,
+                    "{kind_label} runtime error on {failed_mode}, capping carrier to {updated_cap}"
+                ),
+                ModeDowngradeTrigger::ProbeTransportFailure(_) => warn!(
+                    uplink = %uplink.name,
+                    failed_mode = %failed_mode,
+                    capped_to = %updated_cap,
+                    downgrade_secs,
+                    "{kind_label} probe failed on {failed_mode}, capping carrier to {updated_cap} for next probe cycle"
+                ),
+                ModeDowngradeTrigger::ProbeConnectFailure(err, _) => warn!(
+                    uplink = %uplink.name,
+                    error = %format!("{err:#}"),
+                    failed_mode = %failed_mode,
+                    capped_to = %updated_cap,
+                    downgrade_secs,
+                    "{kind_label} probe connection failed on {failed_mode}, capping carrier to {updated_cap}"
+                ),
+                ModeDowngradeTrigger::RecoveryReprobeFail => debug!(
+                    uplink = %uplink.name,
+                    kind = ?transport,
+                    failed_mode = %failed_mode,
+                    capped_to = %updated_cap,
+                    downgrade_secs,
+                    "advanced carrier still unreachable, starting downgrade window after recovery probe"
+                ),
+                ModeDowngradeTrigger::SilentTransportFallback(requested) => warn!(
+                    uplink = %uplink.name,
+                    requested_mode = %requested,
+                    capped_to = %updated_cap,
+                    downgrade_secs,
+                    "{kind_label} dial silently fell back from {requested}, syncing per-uplink downgrade window to {updated_cap}"
+                ),
+            }
+        } else if matches!(trigger, ModeDowngradeTrigger::RecoveryReprobeFail) && advances_deadline
+        {
+            debug!(
+                uplink = %uplink.name,
+                kind = ?transport,
+                failed_mode = %failed_mode,
+                capped_to = %updated_cap,
+                downgrade_secs,
+                "advanced carrier still unreachable after recovery probe, extending downgrade window"
+            );
+        }
+    }
+
+    /// Public entry-point for dial-time fallback: a synchronous QUIC (or H3)
+    /// dial just failed, so mark the downgrade window the same way a runtime
+    /// failure would.  The next call to `effective_*_mode` will return the
+    /// one-step-down carrier (`WsH2` for `WsH3` / `Quic`,
+    /// `XhttpH2` for `XhttpH3`, `XhttpH1` for `XhttpH2`) for the rest of
+    /// the window.
+    pub fn note_advanced_mode_dial_failure(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        error: &anyhow::Error,
+    ) {
+        self.extend_mode_downgrade(index, transport, ModeDowngradeTrigger::RuntimeFailure(error));
+    }
+
+    /// Public entry-point for callers that observe a transport-level WS-mode
+    /// downgrade after a *successful* dial — the `ws_mode_cache` clamped the
+    /// requested mode or `connect_transport` ran an inline
+    /// fallback. Distinct from `note_advanced_mode_dial_failure` so the log
+    /// reflects "silent fallback" rather than "runtime error", which makes
+    /// the operational signal accurate when this fires from the probe loop,
+    /// the standby-refill loop, or fresh-dial paths.
+    pub fn note_silent_transport_fallback(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        requested: TransportMode,
+    ) {
+        self.extend_mode_downgrade(
+            index,
+            transport,
+            ModeDowngradeTrigger::SilentTransportFallback(requested),
+        );
+    }
+
+    /// Wire-aware variant of [`Self::note_silent_transport_fallback`]: when
+    /// `wire_index == 0`, identical to the primary entry-point; when
+    /// `wire_index >= 1`, the downgrade observation is stored against
+    /// `fallback_mode_downgrades[wire_index - 1]` instead of primary's
+    /// slot. Used by fallback-wire dial paths so a fallback that observes
+    /// (e.g.) `XhttpH3 → XhttpH2` doesn't mis-park the primary's mode
+    /// while still letting subsequent dials of the same fallback wire
+    /// honour the cap.
+    ///
+    /// Reuses the same family/rank logic as the primary path: the cap
+    /// must be in the same family as the wire's configured mode and rank
+    /// strictly below it (cross-family or upward triggers are dropped).
+    pub fn note_silent_transport_fallback_for_wire(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        wire_index: u8,
+        requested: TransportMode,
+    ) {
+        if wire_index == 0 {
+            self.note_silent_transport_fallback(index, transport, requested);
+            return;
+        }
+        let slot_idx = (wire_index - 1) as usize;
+        let uplink = &self.inner.uplinks[index];
+        let Some(fallback) = uplink.fallbacks.get(slot_idx) else {
+            return;
+        };
+        let configured_mode = match transport {
+            TransportKind::Tcp => fallback.tcp_dial_mode(),
+            TransportKind::Udp => fallback.udp_dial_mode(),
+        };
+        let new_cap = match one_step_down(requested) {
+            Some(cap) => cap,
+            None => return,
+        };
+        if family(new_cap) != family(configured_mode) || rank(new_cap) >= rank(configured_mode) {
+            return;
+        }
+        let now = Instant::now();
+        let duration = self.inner.load_balancing.mode_downgrade_duration;
+        let new_until = now + duration;
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            // Lazy-extend the per-wire vec; entries default to (None, None).
+            while per.fallback_mode_downgrades.len() <= slot_idx {
+                per.fallback_mode_downgrades
+                    .push(super::status::ModeDowngradeSlot::default());
+            }
+            let slot = &mut per.fallback_mode_downgrades[slot_idx];
+            let window_active = slot.until.is_some_and(|t| t > now);
+            // Monotonically-downward cap update mirroring primary's rule:
+            // an in-window re-trigger must not raise the ceiling.
+            let updated_cap = match slot.capped_to {
+                Some(prev)
+                    if window_active
+                        && family(prev) == family(new_cap)
+                        && rank(prev) < rank(new_cap) =>
+                {
+                    prev
+                },
+                _ => new_cap,
+            };
+            slot.until = Some(new_until);
+            slot.capped_to = Some(updated_cap);
+        });
+        debug!(
+            uplink = %uplink.name,
+            transport = ?transport,
+            wire_index,
+            requested = %requested,
+            capped_to = %new_cap,
+            duration_secs = duration.as_secs(),
+            "fallback wire mode-downgrade window opened"
+        );
+    }
+
+    /// Read the effective TCP / UDP mode for a specific wire on this uplink:
+    /// configured mode for that wire, capped by any active downgrade window
+    /// in the wire's slot. Wire 0 reuses the existing primary path; wire >= 1
+    /// reads `fallback_mode_downgrades[wire_index - 1]`. Out-of-range wires
+    /// return their configured mode unchanged (no slot, no downgrade).
+    pub async fn effective_tcp_mode_for_wire(
+        &self,
+        index: usize,
+        wire_index: u8,
+    ) -> crate::config::TransportMode {
+        if wire_index == 0 {
+            return self.effective_tcp_mode(index).await;
+        }
+        let uplink = &self.inner.uplinks[index];
+        let slot_idx = (wire_index - 1) as usize;
+        let Some(fallback) = uplink.fallbacks.get(slot_idx) else {
+            return uplink.tcp_dial_mode();
+        };
+        let configured = fallback.tcp_dial_mode();
+        if !matches!(fallback.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+            return configured;
+        }
+        let status = self.inner.read_status(index);
+        wire_capped_or_configured(&status.tcp, slot_idx, configured)
+    }
+
+    /// UDP counterpart to [`Self::effective_tcp_mode_for_wire`].
+    pub async fn effective_udp_mode_for_wire(
+        &self,
+        index: usize,
+        wire_index: u8,
+    ) -> crate::config::TransportMode {
+        if wire_index == 0 {
+            return self.effective_udp_mode(index).await;
+        }
+        let uplink = &self.inner.uplinks[index];
+        let slot_idx = (wire_index - 1) as usize;
+        let Some(fallback) = uplink.fallbacks.get(slot_idx) else {
+            return uplink.udp_dial_mode();
+        };
+        let configured = fallback.udp_dial_mode();
+        if !matches!(fallback.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+            return configured;
+        }
+        let status = self.inner.read_status(index);
+        wire_capped_or_configured(&status.udp, slot_idx, configured)
+    }
+
+    /// Walk the active mode-downgrade cap up by one carrier rank when
+    /// the regular probe has succeeded against the capped (effective)
+    /// carrier `min_failures` times in a row. Used as the
+    /// reactive-recovery counterpart to the configured-carrier
+    /// recovery probe: while `run_h3_recovery_probes` tests the
+    /// configured carrier directly, this path lets the system claw
+    /// back **intermediate** ranks when only the capped carrier has
+    /// been confirmed healthy by the ordinary probe loop.
+    ///
+    /// Behaviour:
+    /// * No active window or no cap set → no-op.
+    /// * Counter `consecutive_successes < min_failures` → no-op (the
+    ///   regular probe success increments the counter, so this builds
+    ///   up over `min_failures` cycles before each step).
+    /// * Otherwise the cap moves one rank up via [`one_step_up`]
+    ///   **only when the new rank is still strictly below configured**.
+    ///   The final hop from `one-step-below-configured` to configured
+    ///   is owned by the configured-carrier recovery probe alone
+    ///   ([`Self::run_h3_recovery_probes`]) — promoting the cap there
+    ///   from the regular probe loop would let an intermittent
+    ///   configured carrier oscillate the cap every `interval +
+    ///   min_failures*interval` cycles (a probe success at H2 walks
+    ///   the cap up, the next probe targets H3 and fails, descent
+    ///   sets cap=H2, walk-up succeeds again on the next H2 success
+    ///   streak, …). Recovery probes specifically test the
+    ///   configured rank, so leaving the top-step exclusively to them
+    ///   keeps the cap pinned at the deepest stable rank when
+    ///   configured is genuinely intermittent.
+    /// * The success counter is reset on each step so the next step
+    ///   requires a fresh `min_failures` streak.
+    ///
+    /// Without this path the cap could only fall through TTL expiry,
+    /// which in combination with `extend_mode_downgrade` re-firing on
+    /// every cycle's H2 probe failure traps real traffic on the
+    /// deepest fallback for `mode_downgrade_duration` at a stretch
+    /// even when the capped carrier itself is healthy.
+    pub(crate) fn walk_up_mode_downgrade(&self, index: usize, transport: TransportKind) {
+        let uplink = &self.inner.uplinks[index];
+        if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+            return;
+        }
+        let configured_mode = match transport {
+            TransportKind::Tcp => uplink.tcp_dial_mode(),
+            TransportKind::Udp => uplink.udp_dial_mode(),
+        };
+        let min_successes = self.inner.probe.min_failures.max(1) as u32;
+        let now = Instant::now();
+
+        // Outcome captured inside the critical section so the log can
+        // run after the lock is released — `tracing` macros allocate
+        // and we'd rather not hold the status lock across that.
+        enum Outcome {
+            NoOp,
+            Cleared { from: TransportMode },
+            StepUp { from: TransportMode, to: TransportMode },
+        }
+        let mut outcome = Outcome::NoOp;
+
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            let Some(prev_cap) = per.mode_downgrade_capped_to else { return };
+            if per.mode_downgrade_until.is_none_or(|t| t <= now) {
+                return;
+            }
+            if per.consecutive_successes < min_successes {
+                return;
+            }
+            // Defensive: a cross-family cap shouldn't exist alongside the
+            // current configured family (the descent path enforces same-
+            // family writes), but if it does we'd rather clear it than
+            // mis-walk into the wrong chain.
+            if family(prev_cap) != family(configured_mode) {
+                per.mode_downgrade_until = None;
+                per.mode_downgrade_capped_to = None;
+                per.recovery_probe_cooldown_until = None;
+                per.post_recovery_grace_descent_attempts = 0;
+                per.consecutive_successes = 0;
+                outcome = Outcome::Cleared { from: prev_cap };
+                return;
+            }
+            match one_step_up(prev_cap) {
+                None => {
+                    // Already at the family's top — nothing higher to
+                    // walk to. Drop the cap; configured carrier is the
+                    // ceiling.
+                    per.mode_downgrade_until = None;
+                    per.mode_downgrade_capped_to = None;
+                    per.recovery_probe_cooldown_until = None;
+                    per.post_recovery_grace_descent_attempts = 0;
+                    per.consecutive_successes = 0;
+                    outcome = Outcome::Cleared { from: prev_cap };
+                },
+                Some(next) if rank(next) >= rank(configured_mode) => {
+                    // Walking up one rank would land on (or above) the
+                    // configured carrier. That hop is owned by the
+                    // recovery probe, which tests the configured rank
+                    // directly — only it can prove configured is
+                    // healthy and clear the cap. Hold here so an
+                    // intermittent configured carrier doesn't bounce
+                    // the cap up via walk-up, get re-installed by
+                    // descent, and oscillate.
+                },
+                Some(next) => {
+                    per.mode_downgrade_capped_to = Some(next);
+                    // Refresh the deadline so the new rank gets a full
+                    // window's worth of probe cycles to prove itself
+                    // before the natural TTL fires.
+                    per.mode_downgrade_until =
+                        Some(now + self.inner.load_balancing.mode_downgrade_duration);
+                    per.consecutive_successes = 0;
+                    outcome = Outcome::StepUp { from: prev_cap, to: next };
+                },
+            }
+            // The cached probe transport (if any) was dialled at the
+            // old cap; clear it so the next probe refreshes against
+            // the walked-up carrier. Skip in the hold-at-pre-configured
+            // arm — cap didn't move there, the warm pipe is still valid.
+            if !matches!(outcome, Outcome::NoOp) {
+                match transport {
+                    TransportKind::Udp => {
+                        super::probe::warm_udp::clear(self.inner.warm_udp_probe_slot(index));
+                    },
+                    TransportKind::Tcp => {
+                        super::probe::warm_tcp::clear(self.inner.warm_tcp_probe_slot(index));
+                    },
+                }
+            }
+        });
+
+        let kind_label = match transport {
+            TransportKind::Tcp => "TCP",
+            TransportKind::Udp => "UDP",
+        };
+        match outcome {
+            Outcome::NoOp => {},
+            Outcome::Cleared { from } => debug!(
+                uplink = %uplink.name,
+                kind = ?transport,
+                from = %from,
+                configured = %configured_mode,
+                "{kind_label} mode-downgrade cap cleared by walk-up — capped carrier confirmed healthy"
+            ),
+            Outcome::StepUp { from, to } => debug!(
+                uplink = %uplink.name,
+                kind = ?transport,
+                from = %from,
+                to = %to,
+                "{kind_label} mode-downgrade cap walked up after consecutive successes on capped carrier"
+            ),
+        }
+    }
+
+    /// Clear the downgrade window for `(index, transport)`. Resets the
+    /// deadline, the cap, the recovery-probe cooldown, the recovery
+    /// success streak, and the post-recovery grace counter so the
+    /// next dial returns to the configured mode and the next descent
+    /// → recovery cycle starts clean. Stamps `last_recovery_success_at`
+    /// so `extend_mode_downgrade` can apply the post-recovery grace
+    /// window. Called by the reactive walk-up's defensive clear arms
+    /// and indirectly via [`Self::note_recovery_probe_success`] once
+    /// the streak threshold is met.
+    pub(crate) fn clear_mode_downgrade(&self, index: usize, transport: TransportKind) {
+        let now = Instant::now();
+        self.inner.with_status_mut(index, |status| match transport {
+            TransportKind::Tcp => {
+                status.tcp.mode_downgrade_until = None;
+                status.tcp.mode_downgrade_capped_to = None;
+                status.tcp.recovery_probe_cooldown_until = None;
+                status.tcp.last_recovery_success_at = Some(now);
+                status.tcp.post_recovery_grace_descent_attempts = 0;
+                status.tcp.recovery_probe_success_streak = 0;
+            },
+            TransportKind::Udp => {
+                status.udp.mode_downgrade_until = None;
+                status.udp.mode_downgrade_capped_to = None;
+                status.udp.recovery_probe_cooldown_until = None;
+                status.udp.last_recovery_success_at = Some(now);
+                status.udp.post_recovery_grace_descent_attempts = 0;
+                status.udp.recovery_probe_success_streak = 0;
+            },
+        });
+    }
+
+    /// Threshold (consecutive successful recovery probes) required
+    /// before the cap is cleared. A single recovery success only
+    /// proves handshake-level connectivity to the configured carrier;
+    /// on uplinks where the data plane is flaky (server emits stream
+    /// errors after handshake completes — the `xhttp/h3 stream-one
+    /// downlink ended` pattern in the field) the cap would otherwise
+    /// clear after every cap install and immediately re-install on
+    /// the next descent trigger, producing a permanent `H3 ↔ H2` flap.
+    /// Two consecutive recovery successes (separated by at least
+    /// `probe.interval`) raise the bar enough to break the flap.
+    const RECOVERY_SUCCESS_STREAK_THRESHOLD: u32 = 2;
+
+    /// Record a successful configured-carrier recovery probe. The
+    /// cap is cleared **only** when the streak counter reaches
+    /// [`Self::RECOVERY_SUCCESS_STREAK_THRESHOLD`] consecutive
+    /// successes; before that, this is a tentative-success record.
+    /// On a flaky configured carrier this filters out the
+    /// "handshake works once, data plane breaks" cycle that drives
+    /// visible flapping.
+    pub(crate) fn note_recovery_probe_success(&self, index: usize, transport: TransportKind) {
+        let mut should_clear = false;
+        let mut new_streak = 0u32;
+        // shuffle_wires "stay on the capped carrier" gate. With the
+        // vertical cascade (xhttp_h3 → xhttp_h2 → xhttp_h1) the operator
+        // explicitly wants traffic to settle at the deepest working
+        // carrier on the current wire before any rotation away from
+        // it. A handshake-only recovery probe on the *configured*
+        // carrier (e.g. xhttp_h3) routinely succeeds even when real
+        // data-plane traffic still fails (the production case in the
+        // log this branch was built for); clearing the cap on that
+        // signal yanks user-flows back onto the broken configured
+        // carrier and re-triggers the same descent on the next
+        // failure, looping at the upper rank instead of walking
+        // down. With `shuffle_wires = true` we therefore refuse to
+        // clear the cap from this path entirely — the cap can still
+        // expire naturally via its `mode_downgrade_until` deadline
+        // (default 60 s, controlled by `mode_downgrade_secs`).
+        let shuffle_wires = self.inner.uplinks[index].shuffle_wires;
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            // If the cap is already cleared (e.g. a previous
+            // recovery success in this cycle already met the
+            // threshold) there is nothing to do — a stray duplicate
+            // success notification must not double-stamp grace.
+            if per.mode_downgrade_capped_to.is_none() && per.mode_downgrade_until.is_none() {
+                per.recovery_probe_success_streak = 0;
+                return;
+            }
+            per.recovery_probe_success_streak = per.recovery_probe_success_streak.saturating_add(1);
+            new_streak = per.recovery_probe_success_streak;
+            if new_streak >= Self::RECOVERY_SUCCESS_STREAK_THRESHOLD && !shuffle_wires {
+                should_clear = true;
+            }
+        });
+        let uplink = &self.inner.uplinks[index];
+        let kind_label = match transport {
+            TransportKind::Tcp => "TCP",
+            TransportKind::Udp => "UDP",
+        };
+        if shuffle_wires && new_streak >= Self::RECOVERY_SUCCESS_STREAK_THRESHOLD {
+            debug!(
+                uplink = %uplink.name,
+                kind = ?transport,
+                streak = new_streak,
+                "{kind_label} recovery probe streak met but shuffle_wires = true: \
+                 leaving cap in place so the vertical carrier cascade keeps walking \
+                 the wire down to its floor before rotating to the next wire"
+            );
+        }
+        if should_clear {
+            debug!(
+                uplink = %uplink.name,
+                kind = ?transport,
+                streak = new_streak,
+                "{kind_label} recovery probe streak met — clearing downgrade window"
+            );
+            self.clear_mode_downgrade(index, transport);
+        } else {
+            debug!(
+                uplink = %uplink.name,
+                kind = ?transport,
+                streak = new_streak,
+                threshold = Self::RECOVERY_SUCCESS_STREAK_THRESHOLD,
+                "{kind_label} recovery probe tentatively succeeded — awaiting another consecutive success before clearing cap"
+            );
+        }
+    }
+}
+
+/// Mirror of `capped_or_configured` (in standby/mod.rs) but for a
+/// fallback wire's per-wire slot in `fallback_mode_downgrades`.
+/// Returns the cap when the per-wire window is active and the cap is
+/// set; falls back to the configured mode in any other case (no slot,
+/// expired window, missing cap — defensive).
+fn wire_capped_or_configured(
+    status: &super::status::PerTransportStatus,
+    slot_idx: usize,
+    configured: TransportMode,
+) -> TransportMode {
+    let now = Instant::now();
+    let Some(slot) = status.fallback_mode_downgrades.get(slot_idx) else {
+        return configured;
+    };
+    match (slot.until, slot.capped_to) {
+        (Some(until), Some(cap)) if until > now => cap,
+        _ => configured,
+    }
+}
+
+/// Family designator for [`one_step_down`] / [`rank`]. The downgrade
+/// chain is split into the WS family (`WsH1` ≺ `WsH2` ≺ `WsH3`, with
+/// `Quic` clamping to `WsH2` on fallback) and the XHTTP family
+/// (`XhttpH1` ≺ `XhttpH2` ≺ `XhttpH3`). Cap updates inside an active
+/// window only respect rank within the same family — a cross-family
+/// previous cap is treated as stale and overwritten.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Family {
+    Ws,
+    Xhttp,
+}
+
+fn family(mode: TransportMode) -> Family {
+    match mode {
+        TransportMode::WsH1 | TransportMode::WsH2 | TransportMode::WsH3 | TransportMode::Quic => {
+            Family::Ws
+        },
+        TransportMode::XhttpH1 | TransportMode::XhttpH2 | TransportMode::XhttpH3 => Family::Xhttp,
+    }
+}
+
+/// Rank inside a family. Lower = more downgraded. Used to enforce the
+/// "monotonically downward" rule on the cap field. Cross-family
+/// comparisons are not meaningful — the caller checks [`family`] first.
+fn rank(mode: TransportMode) -> u8 {
+    match mode {
+        TransportMode::WsH1 => 0,
+        TransportMode::WsH2 => 1,
+        TransportMode::WsH3 => 2,
+        TransportMode::Quic => 3,
+        TransportMode::XhttpH1 => 0,
+        TransportMode::XhttpH2 => 1,
+        TransportMode::XhttpH3 => 2,
+    }
+}
+
+/// Map a failed carrier to the carrier the next dial should attempt.
+/// Returns `None` when the failed carrier is already the deepest
+/// fallback in its family — there is no further step to cap to.
+///
+/// `Quic` clamps to `WsH2` to match the legacy raw-QUIC fallback
+/// behaviour. Both family chains walk three ranks deep:
+/// `WsH3 → WsH2 → WsH1` and `XhttpH3 → XhttpH2 → XhttpH1`. The WS
+/// chain's `WsH2 → WsH1` step duplicates the cross-uplink per-host
+/// `ws_mode_cache` clamp at the dial layer — that's intentional:
+/// without the per-uplink cap rank visible on the dashboard,
+/// operators observing `H2 ↘ DOWN` couldn't tell whether the dial
+/// loop had already fallen back to H1 (via `ws_mode_cache`) or
+/// was still spinning on a doomed H2 attempt. The minor double
+/// log on a one-off `WsH2` failure is the price.
+fn one_step_down(failed: TransportMode) -> Option<TransportMode> {
+    match failed {
+        TransportMode::WsH3 => Some(TransportMode::WsH2),
+        TransportMode::WsH2 => Some(TransportMode::WsH1),
+        TransportMode::Quic => Some(TransportMode::WsH2),
+        TransportMode::XhttpH3 => Some(TransportMode::XhttpH2),
+        TransportMode::XhttpH2 => Some(TransportMode::XhttpH1),
+        TransportMode::WsH1 | TransportMode::XhttpH1 => None,
+    }
+}
+
+/// `true` when this transport mode is the bottom of its carrier-downgrade
+/// stack — i.e. [`one_step_down`] would return `None`. Used by the
+/// shuffle_wires wire-advance gate: as long as the active wire's
+/// effective mode is **above** the floor, a runtime / probe / dial
+/// failure on this wire is funnelled into the carrier-cascade
+/// machinery (`extend_mode_downgrade` caps one rank lower) instead of
+/// the per-wire failure streak, so the wire never advances away from
+/// h3 / h2 before its own carrier stack has been walked down to
+/// h1. Once the wire is at h1 (or the carrier family doesn't have a
+/// downgrade stack at all, e.g. Shadowsocks direct sockets), failures
+/// resume their normal role of driving wire-rotation.
+///
+/// Modes outside the Ws / Xhttp families never enter the downgrade
+/// stack (see [`extend_mode_downgrade`] guard) — those wires count as
+/// "at the floor" from the very first failure, so wire rotation kicks
+/// in immediately like the legacy path.
+pub(crate) fn is_carrier_floor_mode(mode: TransportMode) -> bool {
+    one_step_down(mode).is_none()
+}
+
+/// Synchronous "is the wire at the floor of its carrier-downgrade
+/// stack?" helper, callable from inside an already-held
+/// `with_status_mut` closure — `record_wire_outcome` needs this gate
+/// without re-entering the per-uplink status lock that
+/// [`UplinkManager::effective_tcp_mode_for_wire`] /
+/// [`UplinkManager::effective_udp_mode_for_wire`] take.
+///
+/// Mirrors the dispatch logic of the async helpers: wire 0 reads the
+/// primary cap on `status.<transport>`; wire ≥ 1 reads
+/// `fallback_mode_downgrades[wire - 1]`. Returns:
+///
+/// * `true` when the wire's family is **not** Ws/XHTTP (Shadowsocks,
+///   raw VLESS) — those carriers have no descent stack, so the gate
+///   should never block wire-rotation on them;
+/// * `true` when the wire's effective mode is the floor of its family
+///   (`WsH1` or `XhttpH1`) — no further descent possible;
+/// * `false` otherwise.
+///
+/// The wire's *configured* mode comes from the parent uplink's
+/// primary fields (wire 0) or the matching
+/// `UplinkConfig::fallbacks[wire - 1]` entry. The *effective* mode is
+/// the cap when an in-window downgrade is installed, else the
+/// configured mode.
+pub(crate) fn wire_is_at_carrier_floor(
+    uplink: &crate::config::UplinkConfig,
+    status: &super::status::PerTransportStatus,
+    transport: TransportKind,
+    wire_index: u8,
+) -> bool {
+    // Operator-opt-out of the vertical cascade: when this uplink has
+    // `carrier_downgrade = false`, every wire counts as "at the floor"
+    // for the rotation gate. The matching `extend_mode_downgrade` guard
+    // also no-ops, so no descent window is installed and the wire's
+    // effective mode is always the configured one — there is nothing
+    // to walk down, the gate must release.
+    if !uplink.carrier_downgrade {
+        return true;
+    }
+    if wire_index == 0 {
+        let (family_transport, configured) = match transport {
+            TransportKind::Tcp => (uplink.transport, uplink.tcp_dial_mode()),
+            TransportKind::Udp => (uplink.transport, uplink.udp_dial_mode()),
+        };
+        // Only WS / VLESS families participate in the carrier-downgrade
+        // stack (see `extend_mode_downgrade` guard). SS direct sockets
+        // and any other family count as "at floor" so wire-rotation is
+        // not held back.
+        if !matches!(
+            family_transport,
+            crate::config::UplinkTransport::Ws | crate::config::UplinkTransport::Vless
+        ) {
+            return true;
+        }
+        let effective = match (status.mode_downgrade_until, status.mode_downgrade_capped_to) {
+            (Some(until), Some(cap)) if until > Instant::now() => cap,
+            _ => configured,
+        };
+        return is_carrier_floor_mode(effective);
+    }
+    let slot_idx = (wire_index - 1) as usize;
+    let Some(fallback) = uplink.fallbacks.get(slot_idx) else {
+        return true;
+    };
+    if !matches!(
+        fallback.transport,
+        crate::config::UplinkTransport::Ws | crate::config::UplinkTransport::Vless
+    ) {
+        return true;
+    }
+    let configured = match transport {
+        TransportKind::Tcp => fallback.tcp_dial_mode(),
+        TransportKind::Udp => fallback.udp_dial_mode(),
+    };
+    let effective = wire_capped_or_configured(status, slot_idx, configured);
+    is_carrier_floor_mode(effective)
+}
+
+/// Inverse of [`one_step_down`]: map a capped carrier to the next
+/// higher rank in its own family. Drives the walk-up path that lifts
+/// a probe-confirmed cap one rank at a time toward the configured
+/// carrier when the capped carrier itself proves healthy. Returns
+/// `None` for the deepest fallbacks (`WsH3`, `XhttpH3`, raw `Quic`)
+/// — they have nothing higher to walk to.
+///
+/// `WsH2 → WsH3` matches the WS family's natural top; the WS chain
+/// never walks up to `Quic` (raw-QUIC is operator-configured-only —
+/// recovery returns to the configured carrier, never above it).
+fn one_step_up(capped: TransportMode) -> Option<TransportMode> {
+    match capped {
+        TransportMode::WsH1 => Some(TransportMode::WsH2),
+        TransportMode::WsH2 => Some(TransportMode::WsH3),
+        TransportMode::XhttpH1 => Some(TransportMode::XhttpH2),
+        TransportMode::XhttpH2 => Some(TransportMode::XhttpH3),
+        TransportMode::WsH3 | TransportMode::XhttpH3 | TransportMode::Quic => None,
+    }
+}

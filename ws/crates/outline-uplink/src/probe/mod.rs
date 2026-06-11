@@ -1,0 +1,326 @@
+//! Uplink probe orchestration.  This module decides which sub-probes to run
+//! for a given uplink+probe config and records the attribution metrics around
+//! each attempt.  Protocol-specific probe logic lives in the sibling
+//! submodules (`ws`, `http`, `tcp_tunnel`, `dns`) and the shared Shadowsocks
+//! TCP setup lives in `transport`.
+
+pub(crate) mod dns;
+pub(crate) mod http;
+mod metrics;
+mod tcp_tunnel;
+pub(crate) mod tls;
+mod transport;
+mod ws;
+
+#[cfg(test)]
+mod tests;
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Result, anyhow};
+use tokio::sync::Semaphore;
+use tokio::time::{Instant, timeout};
+
+use outline_transport::DnsCache;
+
+use crate::config::{ProbeConfig, TransportMode, UplinkConfig, UplinkTransport};
+
+use self::dns::run_dns_probe;
+use self::http::run_http_probe;
+use self::metrics::record_attempt;
+use self::tcp_tunnel::run_tcp_tunnel_probe;
+use self::tls::run_tls_probe;
+use self::ws::{
+    run_quic_handshake_probe, run_tcp_socket_probe, run_udp_socket_probe, run_ws_probe,
+};
+use super::manager::probe::outcome::ProbeOutcome;
+use super::manager::probe::warm_tcp::WarmTcpProbeSlot;
+use super::manager::probe::warm_udp::WarmUdpProbeSlot;
+
+#[cfg(test)]
+pub(crate) use self::http::build_http_probe_request;
+
+pub(crate) fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
+    crate::error_classify::is_expected_standby_probe_failure(error)
+}
+
+pub(crate) async fn probe_uplink(
+    cache: &DnsCache,
+    group: &str,
+    uplink: &UplinkConfig,
+    probe: &ProbeConfig,
+    dial_limit: Arc<Semaphore>,
+    effective_tcp_mode: crate::config::TransportMode,
+    effective_udp_mode: crate::config::TransportMode,
+    warm_tcp_slot: Option<WarmTcpProbeSlot>,
+    warm_udp_slot: Option<WarmUdpProbeSlot>,
+) -> Result<ProbeOutcome> {
+    let (tcp_ok, tcp_latency, tcp_downgraded_from) = timeout(
+        probe.timeout,
+        run_tcp_probe(
+            cache,
+            group,
+            uplink,
+            probe,
+            Arc::clone(&dial_limit),
+            effective_tcp_mode,
+            warm_tcp_slot,
+        ),
+    )
+    .await
+    .map_err(|_| anyhow!("tcp probe timed out after {:?}", probe.timeout))??;
+    let (udp_ok, udp_applicable, udp_latency, udp_downgraded_from) = timeout(
+        probe.timeout,
+        run_udp_probe(cache, group, uplink, probe, dial_limit, effective_udp_mode, warm_udp_slot),
+    )
+    .await
+    .map_err(|_| anyhow!("udp probe timed out after {:?}", probe.timeout))??;
+
+    Ok(ProbeOutcome {
+        tcp_ok,
+        udp_ok,
+        udp_applicable,
+        tcp_latency,
+        udp_latency,
+        tcp_downgraded_from,
+        udp_downgraded_from,
+    })
+}
+
+async fn run_tcp_probe(
+    cache: &DnsCache,
+    group: &str,
+    uplink: &UplinkConfig,
+    probe: &ProbeConfig,
+    dial_limit: Arc<Semaphore>,
+    effective_tcp_mode: crate::config::TransportMode,
+    warm_tcp_slot: Option<WarmTcpProbeSlot>,
+) -> Result<(bool, Option<Duration>, Option<TransportMode>)> {
+    let started = Instant::now();
+    let mut downgraded_from: Option<TransportMode> = None;
+    // The WS sub-probe verifies that the TCP+TLS+WebSocket-upgrade
+    // (or QUIC handshake) pipeline can still be established. When a
+    // warm-TCP slot already holds a pipe at the same effective carrier
+    // mode, *that pipe is itself proof the same pipeline succeeded on
+    // the previous cycle and is still alive* (the keepalive loop and/or
+    // the next HTTP sub-probe will exercise it). Re-dialling a fresh WS
+    // handshake here is redundant and pays the very cost the warm slot
+    // exists to avoid. Skip it; the HTTP sub-probe below still validates
+    // the data path through the warm pipe.
+    let ws_warm_elided = probe.ws.enabled
+        && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ws)
+        && warm_tcp_slot.as_ref().is_some_and(|slot| {
+            use crate::manager::probe::warm_tcp::peek_matches;
+            peek_matches(slot, effective_tcp_mode)
+        });
+    if probe.ws.enabled && !ws_warm_elided {
+        let ws_attempt = async {
+            match uplink.transport {
+                UplinkTransport::Ws | UplinkTransport::Vless => {
+                    let url = uplink
+                        .tcp_dial_url()
+                        .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
+                    if effective_tcp_mode == TransportMode::Quic {
+                        run_quic_handshake_probe(
+                            cache,
+                            &uplink.name,
+                            "tcp",
+                            url,
+                            uplink.transport,
+                            uplink.fwmark,
+                            uplink.ipv6_first,
+                            Arc::clone(&dial_limit),
+                        )
+                        .await
+                    } else {
+                        run_ws_probe(
+                            cache,
+                            group,
+                            &uplink.name,
+                            "tcp",
+                            url,
+                            effective_tcp_mode,
+                            uplink.fwmark,
+                            Arc::clone(&dial_limit),
+                            probe.timeout,
+                        )
+                        .await
+                    }
+                },
+                UplinkTransport::Shadowsocks => {
+                    run_tcp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
+                },
+            }
+        };
+        let marker = record_attempt(group, &uplink.name, "tcp", "ws", ws_attempt).await?;
+        downgraded_from = downgraded_from.or(marker);
+    }
+    // TLS handshake-only sub-probe takes precedence over the application-level
+    // HTTP/TCP variants: when configured, it most closely reproduces the
+    // user-flow `chunk0_timeout` failure mode (silent upstream after
+    // ClientHello) so health flips fire on the right signal. Mutually
+    // exclusive with `[probe.http]` / `[probe.tcp]` for the same reason
+    // those two are: only one application-level probe runs per cycle to
+    // bound the per-cycle handshake count.
+    if let Some(tls_probe) = &probe.tls {
+        let target_spec = tls_probe.next_target();
+        let (ok, marker) = record_attempt(
+            group,
+            &uplink.name,
+            "tcp",
+            "tls",
+            run_tls_probe(
+                cache,
+                group,
+                uplink,
+                target_spec,
+                Arc::clone(&dial_limit),
+                effective_tcp_mode,
+            ),
+        )
+        .await?;
+        downgraded_from = downgraded_from.or(marker);
+        return Ok((ok, Some(started.elapsed()), downgraded_from));
+    }
+    if let Some(http_probe) = &probe.http {
+        let url = http_probe.next_url();
+        let (ok, marker) = record_attempt(
+            group,
+            &uplink.name,
+            "tcp",
+            "http",
+            run_http_probe(
+                cache,
+                group,
+                uplink,
+                url,
+                Arc::clone(&dial_limit),
+                effective_tcp_mode,
+                warm_tcp_slot.as_ref(),
+            ),
+        )
+        .await?;
+        downgraded_from = downgraded_from.or(marker);
+        return Ok((ok, Some(started.elapsed()), downgraded_from));
+    }
+    if let Some(tcp_probe) = &probe.tcp {
+        let (ok, marker) = record_attempt(
+            group,
+            &uplink.name,
+            "tcp",
+            "tcp",
+            run_tcp_tunnel_probe(
+                cache,
+                group,
+                uplink,
+                tcp_probe,
+                Arc::clone(&dial_limit),
+                effective_tcp_mode,
+            ),
+        )
+        .await?;
+        downgraded_from = downgraded_from.or(marker);
+        return Ok((ok, Some(started.elapsed()), downgraded_from));
+    }
+    if probe.ws.enabled {
+        return Ok((true, Some(started.elapsed()), downgraded_from));
+    }
+    Ok((true, None, downgraded_from))
+}
+
+async fn run_udp_probe(
+    cache: &DnsCache,
+    group: &str,
+    uplink: &UplinkConfig,
+    probe: &ProbeConfig,
+    dial_limit: Arc<Semaphore>,
+    effective_udp_mode: crate::config::TransportMode,
+    warm_udp_slot: Option<WarmUdpProbeSlot>,
+) -> Result<(bool, bool, Option<Duration>, Option<TransportMode>)> {
+    if !uplink.supports_udp() {
+        return Ok((false, false, None, None));
+    }
+
+    let started = Instant::now();
+    let mut downgraded_from: Option<TransportMode> = None;
+    // Symmetric to the TCP-side WS-elide: when a warm UDP slot already
+    // holds a transport at the same effective carrier mode, that pipe is
+    // itself proof the UDP-side WS handshake (or QUIC handshake) still
+    // works. Re-dialling a fresh handshake here is redundant and pays
+    // exactly the cost the warm slot exists to avoid — it dominates
+    // the measured UDP probe latency for VLESS uplinks once the DNS
+    // sub-probe path is cheap (e.g. local dnsmasq cache on the server).
+    let ws_warm_elided = probe.ws.enabled
+        && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ws)
+        && warm_udp_slot.as_ref().is_some_and(|slot| {
+            use crate::manager::probe::warm_udp::peek_matches;
+            peek_matches(slot, effective_udp_mode)
+        });
+    if probe.ws.enabled && !ws_warm_elided {
+        let ws_attempt = async {
+            match uplink.transport {
+                UplinkTransport::Ws | UplinkTransport::Vless => {
+                    let url = uplink
+                        .udp_dial_url()
+                        .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
+                    if effective_udp_mode == TransportMode::Quic {
+                        run_quic_handshake_probe(
+                            cache,
+                            &uplink.name,
+                            "udp",
+                            url,
+                            uplink.transport,
+                            uplink.fwmark,
+                            uplink.ipv6_first,
+                            Arc::clone(&dial_limit),
+                        )
+                        .await
+                    } else {
+                        run_ws_probe(
+                            cache,
+                            group,
+                            &uplink.name,
+                            "udp",
+                            url,
+                            effective_udp_mode,
+                            uplink.fwmark,
+                            Arc::clone(&dial_limit),
+                            probe.timeout,
+                        )
+                        .await
+                    }
+                },
+                UplinkTransport::Shadowsocks => {
+                    run_udp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
+                },
+            }
+        };
+        let marker = record_attempt(group, &uplink.name, "udp", "ws", ws_attempt).await?;
+        downgraded_from = downgraded_from.or(marker);
+    }
+    if let Some(dns_probe) = &probe.dns {
+        let (ok, marker) = record_attempt(
+            group,
+            &uplink.name,
+            "udp",
+            "dns",
+            run_dns_probe(
+                cache,
+                group,
+                uplink,
+                dns_probe,
+                Arc::clone(&dial_limit),
+                effective_udp_mode,
+                warm_udp_slot.as_ref(),
+            ),
+        )
+        .await?;
+        downgraded_from = downgraded_from.or(marker);
+        return Ok((ok, true, Some(started.elapsed()), downgraded_from));
+    }
+    if probe.ws.enabled {
+        return Ok((true, true, Some(started.elapsed()), downgraded_from));
+    }
+    Ok((true, true, None, downgraded_from))
+}

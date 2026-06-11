@@ -1,0 +1,70 @@
+[Unit]
+Description=SOCKS5 to Outline-over-WebSocket proxy instance %i
+Documentation=https://github.com/balookrd/outline-ws-rust
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=RUST_LOG=info
+Environment=NO_COLOR=1
+# mimalloc arena reservation granularity (KiB). The binary also runs a periodic
+# mi_collect to hand freed memory back to the OS after traffic bursts; set
+# MIMALLOC_PURGE_DELAY / MIMALLOC_PURGE_DECOMMITS here to tune reclamation.
+Environment=MIMALLOC_ARENA_RESERVE=262144
+# Persist active-uplink selection to the per-instance writable state directory.
+Environment=STATE_PATH=/var/lib/outline-ws-rust/%i/state.toml
+ExecStart=/usr/local/bin/outline-ws-rust --config /etc/outline-ws-rust/instances/%i.toml
+Restart=on-failure
+RestartSec=3s
+
+# If OUTLINE_FWMARK is configured, keep CAP_NET_ADMIN. Otherwise these two
+# lines can be removed.
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+# Reasonable production limits.
+LimitNOFILE=1048576
+LimitSTACK=8M
+TasksMax=infinity
+NoNewPrivileges=true
+
+User=outline-ws
+Group=outline-ws
+StateDirectory=outline-ws-rust/%i
+LogsDirectory=outline-ws-rust/%i
+RuntimeDirectory=outline-ws-rust-%i
+WorkingDirectory=/var/lib/outline-ws-rust/%i
+UMask=0077
+
+PrivateTmp=true
+# TUN support needs access to /dev/net/tun on the host.
+PrivateDevices=false
+PrivateUsers=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+# /etc/outline-ws-rust/instances is writable so dashboard CRUD endpoints and
+# the on-load config migrator (legacy top-level keys → [outline]) can persist
+# changes. The directory must be owned by outline-ws:outline-ws — install.sh
+# sets this up; for manual installs, `chown -R outline-ws:outline-ws
+# /etc/outline-ws-rust && chmod 0750 /etc/outline-ws-rust`.
+ReadWritePaths=/var/lib/outline-ws-rust/%i /etc/outline-ws-rust/instances
+
+[Install]
+WantedBy=multi-user.target

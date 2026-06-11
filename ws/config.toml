@@ -1,0 +1,611 @@
+# Path for persisting the active-uplink selection across restarts.
+# Defaults to the config file path with extension replaced by ".state.toml"
+# (i.e. this file → config.state.toml in the same directory).
+# Override when the config directory is not writable by the process, e.g.:
+# state_path = "/var/lib/outline-ws-rust/state.toml"
+
+# ── TCP session timeouts ─────────────────────────────────────────────────────
+# post_client_eof_downstream_secs: after the client half-closes (sent full
+# request body), how long the downstream half-flow is allowed to keep
+# flushing the server's response before being forcibly closed.  The default
+# (600 s = 10 min) covers modern AI inference patterns where the client
+# finishes uploading, then the server thinks for minutes before streaming
+# back. Earlier versions used 30 s here, which silently killed Codex
+# `compact` and Claude long-context jobs mid-response and surfaced as
+# client-side "error sending request" / "stream disconnected".
+#
+# upstream_response_secs: how long to wait for the first response byte from the
+# upstream target after the full request has been sent to the server (phase 1,
+# no-failover path).  The default (15 s) is fine for normal browsing but far
+# too short for long-running AI operations such as Codex context compact, which
+# send a large request body and then wait for the server to process and return a
+# large result — a step that routinely takes 1-5 minutes.
+#
+# socks_upstream_idle_secs: how long a fully-established session may be
+# bidirectionally silent before it is torn down (default: 300 s = 5 min).
+# During long model-inference pauses neither direction carries payload; the
+# 60 s server-side WS Ping and the 20 s SS2022 application keepalive prevent
+# NAT/HAProxy from dropping the path, but the idle watcher still fires at this
+# ceiling.  Raise it if you regularly have thinking pauses longer than 5 min.
+[tcp_timeouts]
+upstream_response_secs = 300     # 5 min — covers long Codex compact / AI batch
+# post_client_eof_downstream_secs = 600  # default; raise for >10 min thinking
+# socks_upstream_idle_secs = 600  # uncomment if model pauses exceed 5 min
+
+[socks5]
+# Optional. If omitted, the SOCKS5 listener is disabled.
+listen = "[::]:1080"
+# Optional local SOCKS5 auth for clients.
+#
+# [[socks5.users]]
+# username = "alice"
+# password = "secret1"
+#
+# [[socks5.users]]
+# username = "bob"
+# password = "secret2"
+
+[metrics]
+listen = "[::1]:9090"
+
+# ── Control plane ───────────────────────────────────────────────────────────
+# Required on each instance that should be visible and switchable from the
+# built-in dashboard.
+# [control]
+# listen = "127.0.0.1:9091"
+# token_file = "/etc/outline-ws/control.token"
+
+# ── Built-in dashboard ──────────────────────────────────────────────────────
+# Optional multi-instance UI. Open http://LISTEN/dashboard in a browser.
+# The dashboard stores per-instance control tokens server-side and proxies
+# /control/topology + /control/activate to each configured instance.
+# [dashboard]
+# listen = "127.0.0.1:9092"
+# refresh_interval_secs = 5
+# # Per-instance control HTTP request timeout (default 5s). Raise for slow WAN
+# # links, lower for tighter dashboard responsiveness.
+# request_timeout_secs = 5
+#
+# [[dashboard.instances]]
+# name = "inst-01"
+# # http:// or https:// — TLS control endpoints are supported.
+# control_url = "http://127.0.0.1:9091"
+# token_file = "/etc/outline-ws/inst-01.control.token"
+#
+# [[dashboard.instances]]
+# name = "inst-02"
+# control_url = "https://10.0.0.12:9091"
+# token = "long-random-secret"
+
+[tun]
+# Existing TUN device path. Creation, IP addresses and routes stay outside the app.
+# Linux example:
+# path = "/dev/net/tun"
+# name = "tun0"
+# macOS / BSD example:
+# path = "/dev/tun0"
+# mtu = 1500
+# Per-table cap on concurrent UDP flows. Applies independently to tunnelled
+# flows and to direct (`via = "direct"`) flows; when a table is full the
+# least-recently-seen flow in it is evicted. Default 4096.
+# max_flows = 4096
+# idle_timeout_secs = 300
+# Built-in bypass for IKE / IPsec NAT-T traffic. When true, UDP flows to
+# destination port 500 or 4500 skip policy routing and use the direct path
+# (same as `via = "direct"`), so VoWiFi / IKEv2 clients can establish ESP
+# datagrams that cannot otherwise be tunnelled. Pairs with `direct_fwmark`
+# below: on Linux setups where TUN catches the default route, you must set
+# `direct_fwmark` and configure a matching `ip rule fwmark X lookup Y` so the
+# bypassed sockets escape the TUN routing loop. Default false.
+# ipsec_bypass = false
+#
+# Whether the TUN UDP path may emit ICMP Frag-Needed / Packet-Too-Big
+# replies that advertise a path MTU below QUIC v1's Initial-datagram
+# minimum (1200 v4 / 1280 v6, RFC 9000 §14.1). Default false — such a
+# PTB would tell compliant QUIC stacks the destination cannot carry QUIC
+# and evict real QUIC traffic (YouTube, Google services) onto TCP. Set
+# to true to restore unconditional PTB emission for VoWiFi / IKE-only
+# deployments that need explicit PMTUD signalling on every sub-minimum
+# drop. See `docs/TUN-PMTUD.md` for the full contract.
+# pmtud_emit_below_quic_initial = false
+
+# [tun.tcp]
+# connect_timeout_secs = 10
+# handshake_timeout_secs = 15
+# half_close_timeout_secs = 60
+# max_pending_server_bytes = 4194304
+# backlog_abort_grace_secs = 3
+# backlog_hard_limit_multiplier = 2
+# backlog_no_progress_abort_secs = 8
+# max_buffered_client_segments = 4096
+# max_buffered_client_bytes = 262144
+# max_retransmits = 12
+
+# ── Direct (bypass) routing ──────────────────────────────────────────────────
+# SO_MARK applied to sockets used by `via = "direct"` routes (both TCP connect
+# and UDP bind). Prevents direct traffic from being routed back into the TUN
+# device on hosts where all traffic is captured. Linux only; omit on other
+# platforms. Requires CAP_NET_ADMIN.
+# direct_fwmark = 100
+
+# ── Probe template ──────────────────────────────────────────────────────────
+# [outline.probe] is a template: each [[uplink_group]] inherits these
+# defaults, and [uplink_group.probe] overrides individual fields per group.
+[outline.probe]
+interval_secs = 30
+timeout_secs = 10
+max_concurrent = 4
+max_dials = 2
+# When true (default), probe cycles are skipped on uplinks that are already
+# carrying healthy traffic — re-validation handshakes would only repeat what
+# the data plane already confirmed and add load on upstream rate limiters.
+# Set to false to keep probing active uplinks every interval (useful when
+# operators want continuous probe-metric coverage on dashboards even for
+# uplinks the data plane is exercising). An in-flight chunk-0 streak still
+# overrides the skip independently of this flag.
+# skip_when_active = true
+
+# Liveness-probe override: even with `skip_when_active = true`, force a
+# probe cycle to run after this many seconds without one. Provides a
+# regular "pulse" in `probe_runs_total{probe=...}` so dashboards never
+# go flat-zero on healthy active uplinks, and operators get continuous
+# coverage of "is this uplink's probe target still reachable?". Set to
+# 0 to disable the override (legacy behaviour: skip can hold forever
+# while traffic flows). Default 300 seconds (5 minutes).
+# liveness_interval_secs = 300
+
+[outline.probe.ws]
+enabled = true
+
+[outline.probe.http]
+# Single URL:
+#   url = "http://example.com/"
+# Or a rotation list — one URL per probe cycle, advancing through the list.
+# Spreading load across endpoints surfaces per-site outages instead of masking
+# them behind one always-reachable target.
+urls = [
+    "http://example.com/",
+    "http://www.iana.org/",
+]
+
+[outline.probe.dns]
+server = "1.1.1.1"
+port = 53
+name = "example.com"
+
+# TLS handshake-only data-path probe. Drives ClientHello → ServerHello/Certificate
+# → Finished → close_notify through the uplink tunnel against a real product SNI,
+# without any HTTP exchange afterwards. Reproduces the user-flow chunk0_timeout
+# pattern when upstream filtering silently drops TLS records for specific SNIs —
+# a failure mode the plain HTTP probe cannot see (it never exercises TLS).
+#
+# Mutually exclusive with [outline.probe.http] / [outline.probe.tcp]: when this
+# block is set it is the application-level sub-probe that runs each cycle, so
+# the per-cycle handshake count stays bounded. Metrics use probe="tls" — split
+# it out on the dashboard's "Probe Runs (success/error, by sub-probe)" panel.
+#
+# Each target is one of: "https://host[:port][/path]" (full URL, scheme must
+# be https), "host:port", or bare "host" (port defaults to 443). IPv6 hosts
+# use bracketed form: "[::1]:443". The probe rotates through the list one
+# entry per cycle so per-SNI filtering surfaces instead of being masked by
+# a single still-reachable target.
+# [outline.probe.tls]
+# targets = [
+#   "https://www.youtube.com/",
+#   "www.instagram.com",     # bare host → port 443
+# ]
+
+# ── Load-balancing template (legacy single-group shape only) ─────────────────
+# [outline.load_balancing] is used ONLY when no [[uplink_group]] is declared
+# (inline single-uplink shorthand path). When [[uplink_group]] is present —
+# as in this file — the same field names live directly on each [[uplink_group]]
+# and this block is silently ignored. See docs/UPLINK-CONFIGURATIONS.md
+# "Load-balancing reference" for the full field table and defaults.
+#
+# [outline.load_balancing]
+# mode = "active_active"            # | "active_passive"
+# routing_scope = "per_flow"        # | "per_uplink" | "global"
+# sticky_ttl_secs = 300
+# hysteresis_ms = 50
+# failure_cooldown_secs = 10
+# tcp_chunk0_failover_timeout_secs = 10
+# warm_standby_tcp = 1
+# warm_standby_udp = 1
+# rtt_ewma_alpha = 0.3
+# failure_penalty_ms = 500
+# failure_penalty_max_ms = 30000
+# failure_penalty_halflife_secs = 60
+# mode_downgrade_secs = 60          # legacy alias: h3_downgrade_secs
+# runtime_failure_window_secs = 60  # 0 = legacy stacking
+# global_udp_strict_health = false  # true = pre-1.4.x strict UDP gating
+# auto_failback = false
+# udp_ws_keepalive_secs = 60        # ignored on the H3 carrier (QUIC keep-alive owns liveness)
+# tcp_ws_keepalive_secs = 60
+# tcp_ws_standby_keepalive_secs = 20
+# tcp_active_keepalive_secs = 20
+# warm_probe_keepalive_secs = 20
+# vless_udp_max_sessions = 256
+# vless_udp_session_idle_secs = 60
+# vless_udp_janitor_interval_secs = 15
+# tun_suppress_icmp_reply_when_down = false  # stop answering TUN pings while every uplink is down
+# bypass_when_down = false          # route traffic direct while every uplink is down
+
+# ── Uplink groups ───────────────────────────────────────────────────────────
+# Each group is an isolated UplinkManager with its own probe loop, standby
+# pool, sticky-routes store, active-uplink state, and load-balancing policy.
+# Uplinks below are assigned to a group via `group = "..."`.
+#
+# Note: [[uplink_group]] stays at the top level, not under [outline].
+[[uplink_group]]
+name = "main"
+mode = "active_active"          # "active_active" or "active_passive"
+routing_scope = "per_flow"      # "per_flow" | "per_uplink" | "global"
+warm_standby_tcp = 1
+warm_standby_udp = 1
+sticky_ttl_secs = 300
+hysteresis_ms = 50
+failure_cooldown_secs = 10
+tcp_chunk0_failover_timeout_secs = 10
+rtt_ewma_alpha = 0.3
+failure_penalty_ms = 500
+failure_penalty_max_ms = 30000
+failure_penalty_halflife_secs = 60
+# Window over which consecutive runtime (data-plane) failures count toward the
+# health-flip escalation. A new failure arriving later than this window after
+# the previous one resets the streak instead of stacking — important on
+# low-traffic uplinks where two unrelated transient errors minutes apart would
+# otherwise reach `probe.min_failures` and force a spurious failover.
+# Set to 0 to disable decay (legacy behaviour). Default: 60.
+runtime_failure_window_secs = 60
+# In `routing_scope = "global"`, gate the active uplink on UDP health alongside
+# TCP. Default `false` — UDP-unhealthy on the active uplink does not kick it
+# out as long as TCP is healthy (UDP probe failures are informational and
+# surfaced in metrics / role badges). Set to `true` to restore pre-1.4.x
+# strict gating, which can cause cascade flapping when UDP is flaky on the
+# network path (XHTTP/H3 over QUIC-blocking carriers, broken UDP NAT, etc.).
+# global_udp_strict_health = false
+# VLESS UDP session-mux bounds (applied only to `transport = "vless"` uplinks).
+# vless_udp_max_sessions = 256
+# vless_udp_session_idle_secs = 60
+# vless_udp_janitor_interval_secs = 15
+# Stop answering ICMP echo (ping) on the TUN interface for destinations routed
+# to this group while the group has no healthy uplink on either transport.
+# Turns a plain `ping` through the tunnel into a group-liveness signal external
+# watchdogs (router failover scripts) can act on. Note: replies also stay
+# suppressed right after startup until the first probe confirms an uplink.
+# Default `false` — always reply, legacy behaviour.
+# tun_suppress_icmp_reply_when_down = false
+# Bypass the tunnel while this group has no healthy uplink: traffic whose route
+# resolves to this group goes `direct` (host's own networking stack, with
+# `direct_fwmark` applied) instead of failing on a dead group. Re-evaluated
+# live per flow / per datagram, so traffic returns to the tunnel as soon as
+# any uplink recovers. Group-level analogue of a `fallback_direct = true`
+# route fallback; an explicit fallback on a [[route]] rule takes precedence.
+# On TUN hosts set `direct_fwmark` (and the matching `ip rule`) so bypassed
+# sockets escape the TUN routing loop. Note: with both this flag and
+# `tun_suppress_icmp_reply_when_down`, pings keep being answered while the
+# bypass is active — the path is alive, just not tunnelled.
+# Default `false` — a down group keeps failing (legacy behaviour).
+# bypass_when_down = false
+
+# Optional second group — useful for a fallback path with different LB mode.
+# [[uplink_group]]
+# name = "backup"
+# mode = "active_passive"
+# routing_scope = "global"
+#
+# # Per-group probe override (merged with the [outline.probe] template).
+# [uplink_group.probe]
+# interval_secs = 60
+
+# ── Uplinks ─────────────────────────────────────────────────────────────────
+# Uplinks live under [outline]. Each [[outline.uplinks]] entry must set
+# `group = "..."` matching an [[uplink_group]].name above.
+#
+# Alternative inline single-uplink shorthand (one implicit uplink, no group):
+# write transport / *_url / *_mode / method / password / link directly under
+# [outline] — the same fields the array entries below carry. CLI flags target
+# this shape too. Mutually exclusive with [[outline.uplinks]] / [[uplink_group]].
+# See docs/UPLINK-CONFIGURATIONS.md "Top-level [outline] shape".
+#
+# [outline]
+# transport = "ws"                  # "ws" (default; alias "websocket") | "shadowsocks" | "vless"
+# tcp_ws_url = "wss://example.com/SECRET/tcp"
+# udp_ws_url = "wss://example.com/SECRET/udp"
+# tcp_mode = "h3"
+# udp_mode = "h3"
+# method = "chacha20-ietf-poly1305"
+# password = "Secret0"
+
+[[outline.uplinks]]
+name = "primary"
+group = "main"
+transport = "ws"
+tcp_ws_url = "wss://example.com/SECRET/tcp"
+weight = 1.0
+# Requested transport mode. WebSocket variants ("h3", "h2", "http1") fall
+# back automatically: h3 -> h2 -> http1. "quic" selects raw QUIC (no
+# WebSocket / no HTTP/3) — see the QUIC examples below; raw QUIC has no
+# fallback (dial failure surfaces as an uplink failure).
+tcp_mode = "h3"
+# Linux only, requires CAP_NET_ADMIN if set
+# fwmark = 100
+# Prefer IPv6 addresses first for this uplink
+# ipv6_first = true
+udp_ws_url = "wss://example.com/SECRET/udp"
+udp_mode = "h3"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
+# for ss2022 methods use a base64 PSK, for example:
+# method = "2022-blake3-aes-128-gcm"
+# password = "AQIDBAUGBwgJCgsMDQ4PEA=="
+# method = "2022-blake3-chacha20-poly1305"
+# password = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="
+
+[[outline.uplinks]]
+name = "backup"
+group = "main"
+transport = "ws"
+tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
+weight = 0.8
+# requested mode; runtime fallback order is h2 -> http1
+tcp_mode = "h2"
+udp_ws_url = "wss://backup.example.com/SECRET/udp"
+udp_mode = "h2"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
+
+# VLESS-over-WebSocket example. Uses the same WSS dial plumbing as
+# `transport = "ws"` but authenticates with `vless_id` instead of
+# cipher+password. The VLESS server exposes a single WS path
+# (`ws_path_vless`) shared by TCP and UDP, so VLESS uplinks take a
+# single `vless_ws_url` / `vless_mode` pair (NOT `tcp_ws_url`/
+# `udp_ws_url`, which are rejected for `transport = "vless"`).
+# Equivalent VLESS configuration is also accepted as a single share-link
+# URI; see the `link = "vless://..."` example below and
+# docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs".
+# [[outline.uplinks]]
+# name = "vless-edge"
+# group = "main"
+# transport = "vless"
+# vless_ws_url = "wss://vless.example.com/SECRET/vless"
+# vless_mode = "h2"
+# vless_id = "11111111-2222-3333-4444-555555555555"
+# weight = 0.5
+
+# Same uplink configured from a single VLESS share-link URI. The loader
+# expands the link into the matching `vless_id` / `vless_*_url` /
+# `vless_mode` fields; mixing `link` with the explicit fields is
+# rejected. See docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs".
+# [[outline.uplinks]]
+# name = "vless-share"
+# group = "main"
+# link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fvless&alpn=h2#vless-edge"
+# weight = 0.5
+
+# Per-uplink fallback transports. Each [[outline.uplinks]] entry can
+# declare additional wire shapes that the dial loop tries when the
+# primary transport on this uplink fails. After `probe.min_failures`
+# consecutive primary failures the active wire becomes sticky for
+# `mode_downgrade_secs` (auto-failback to primary on pin expiry).
+# Resume tokens (X-Outline-Resume) ride through the wire switch, so
+# handover between WS-family wires is seamless on a feature-enabled
+# server. See docs/UPLINK-CONFIGURATIONS.md "Per-uplink fallback transports".
+#
+# Inheritance: `cipher` / `password` / `fwmark` / `ipv6_first` /
+# `fingerprint_profile` default to the parent uplink's value when
+# omitted; `vless_id` is per-wire and NOT inherited.
+#
+# [[outline.uplinks]]
+# name = "edge-1"
+# group = "main"
+# transport = "vless"
+# vless_xhttp_url = "https://cdn.example.com/SECRET/xhttp"
+# vless_id = "00000000-0000-0000-0000-000000000000"
+# vless_mode = "xhttp_h3"
+# method = "2022-blake3-aes-256-gcm"
+# password = "BASE64=="
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "ws"
+# tcp_ws_url = "wss://ws.example.com/SECRET/tcp"
+# udp_ws_url = "wss://ws.example.com/SECRET/udp"
+# tcp_mode = "h2"
+# udp_mode = "h1"
+# # cipher / password inherited from parent edge-1
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "shadowsocks"
+# tcp_addr = "1.2.3.4:8388"
+# udp_addr = "1.2.3.4:8389"
+
+# Random forward-only wire rotation. When set to `true`:
+#   * the wire chain `[primary, fallbacks[0], fallbacks[1], …]` is reshuffled
+#     once at config load (each process restart picks a different ordering —
+#     the operator-configured primary may end up at any position);
+#   * the active-wire state machine still walks the chain forward on
+#     consecutive dial failures (wrapping at the end);
+#   * once the active wire has been advanced through every wire of the
+#     chain without a single successful dial in between, the uplink is
+#     reported as runtime-failed on that transport so the load balancer
+#     fails over to another uplink instead of looping over a dead chain;
+#   * any successful wire dial (primary or fallback) clears the "round"
+#     counter — traffic stabilising on any wire restarts the round, and
+#     the next failure resumes forward rotation from the wire that just
+#     worked.
+# Useful when you have several near-equivalent fallback endpoints and
+# want different process restarts (or different replicas) to spread
+# load across them deterministically. Leave unset / `false` to keep the
+# legacy operator-ordered chain and the wrap-forever wire state machine.
+#
+# [[outline.uplinks]]
+# name = "edge-shuffled"
+# group = "main"
+# transport = "vless"
+# vless_xhttp_url = "https://cdn-a.example.com/SECRET/xhttp"
+# vless_id = "00000000-0000-0000-0000-000000000000"
+# vless_mode = "xhttp_h3"
+# shuffle_wires = true
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "vless"
+# vless_xhttp_url = "https://cdn-b.example.com/SECRET/xhttp"
+# vless_id = "11111111-1111-1111-1111-111111111111"
+# vless_mode = "xhttp_h3"
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "vless"
+# vless_xhttp_url = "https://cdn-c.example.com/SECRET/xhttp"
+# vless_id = "22222222-2222-2222-2222-222222222222"
+# vless_mode = "xhttp_h3"
+
+# Per-uplink carrier-downgrade switch. Defaults to `true` (legacy
+# `h3 → h2 → h1` and `xhttp_h3 → xhttp_h2 → xhttp_h1` descent on each
+# WS / VLESS-XHTTP wire, controlled by `mode_downgrade_secs`).
+#
+# Set `carrier_downgrade = false` to disable the vertical cascade
+# entirely on this uplink. With the flag off:
+#   * `extend_mode_downgrade` is a no-op — no `mode_downgrade_*` state
+#     is ever installed, no `↘` arrows on the dashboard, no
+#     `mode_downgrade_secs` window per rank;
+#   * `wire_is_at_carrier_floor` reports every wire as "at floor", so
+#     under `shuffle_wires = true` the very next failure rolls
+#     straight over to the next wire (without spending one downgrade
+#     window per intermediate carrier);
+#   * recovery probes don't have a cap to clear, so there's nothing
+#     to fight with.
+#
+# Useful when intermediate carriers (h2, h1) are known-useless on this
+# uplink — e.g. DPI drops the whole upstream regardless of HTTP
+# version, so spending `mode_downgrade_secs` per rank before rotating
+# is pure latency and wasted dial attempts.
+#
+# [[outline.uplinks]]
+# name = "edge-no-cascade"
+# group = "main"
+# transport = "vless"
+# vless_xhttp_url = "https://cdn.example.com/SECRET/xhttp"
+# vless_id = "00000000-0000-0000-0000-000000000000"
+# vless_mode = "xhttp_h3"
+# shuffle_wires = true
+# carrier_downgrade = false
+
+# Periodic active-wire reroll. Accepts human-readable durations:
+# `"30s"`, `"5m"`, `"1h"`, `"1h30m"`, `"2d"`, plus the bare-seconds
+# form (`"3600"`). A background task wakes up every interval, picks a
+# random wire of the chain for TCP and UDP independently, and resets
+# the per-wire failure counters + any in-flight mode-downgrade cap so
+# the freshly-rolled wire starts with a clean budget. Useful as a
+# defence against time-based DPI heuristics — even an uplink that has
+# been serving traffic on the same wire for hours will pivot to a
+# different carrier on every tick, refusing to look like a long-lived
+# stable flow on one specific carrier shape. Independent of
+# `shuffle_wires` (which controls the initial chain order at config
+# load): the two can be combined or set independently.
+#
+# [[outline.uplinks]]
+# name = "edge-hourly"
+# group = "main"
+# transport = "vless"
+# vless_xhttp_url = "https://cdn.example.com/SECRET/xhttp"
+# vless_id = "00000000-0000-0000-0000-000000000000"
+# vless_mode = "xhttp_h3"
+# shuffle_wires = true
+# shuffle_timer = "1h"
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "vless"
+# vless_ws_url = "wss://cdn.example.com/SECRET/ws"
+# vless_id = "00000000-0000-0000-0000-000000000000"
+# vless_mode = "ws_h3"
+#
+# [[outline.uplinks.fallbacks]]
+# transport = "websocket"
+# tcp_ws_url = "wss://cdn.example.com/SECRET/tcp"
+# udp_ws_url = "wss://cdn.example.com/SECRET/udp"
+# tcp_mode = "ws_h3"
+# udp_mode = "ws_h3"
+# method = "2022-blake3-aes-256-gcm"
+# password = "BASE64=="
+
+# Raw QUIC examples (no WebSocket / no HTTP/3 framing). Pairs with the
+# outline-ss-rust server's `transport::raw_quic` listener — ALPN selects
+# the protocol on the same QUIC endpoint, then VLESS / SS framing rides
+# directly on QUIC bidi streams (TCP-like sessions) or QUIC datagrams
+# (UDP-like sessions). Available when the workspace `h3` feature is on
+# (default builds). On dial / handshake failure raw-QUIC paths fall back
+# to WS over H2 (with H1 as a further fallback) and open an H3-downgrade
+# window so subsequent dials skip QUIC until the recovery probe confirms
+# QUIC is reachable again.
+#
+# The dial URL is reused as the QUIC dial target — only host:port matter
+# (path is ignored on raw-QUIC), so any scheme works.
+#
+# VLESS over raw QUIC. ALPN = "vless". Multiple TCP / UDP sessions to
+# different targets share one QUIC connection; UDP sessions are demuxed
+# by a 4-byte server-allocated session_id prefix on each datagram.
+# [[outline.uplinks]]
+# name = "vless-quic"
+# group = "main"
+# transport = "vless"
+# vless_ws_url = "https://vless.example.com:443"
+# vless_mode = "quic"
+# vless_id = "11111111-2222-3333-4444-555555555555"
+# weight = 1.0
+#
+# Shadowsocks over raw QUIC. ALPN = "ss". One QUIC bidi per SS-TCP
+# session; SS-UDP rides QUIC datagrams 1:1 with SS-AEAD packets. Same
+# cipher / password as the WS path.
+# [[outline.uplinks]]
+# name = "ss-quic"
+# group = "main"
+# transport = "ws"   # ws+quic mode = SS-over-QUIC; vless+quic = VLESS-over-QUIC
+# tcp_ws_url = "https://ss.example.com:443"
+# udp_ws_url = "https://ss.example.com:443"
+# tcp_mode = "quic"
+# udp_mode = "quic"
+# method = "chacha20-ietf-poly1305"
+# password = "Secret0"
+
+# Direct Shadowsocks example (no WebSocket wrapper):
+# [[outline.uplinks]]
+# name = "direct-ss"
+# group = "main"
+# transport = "shadowsocks"
+# tcp_addr = "ss.example.com:8388"
+# udp_addr = "ss.example.com:8388"
+# method = "chacha20-ietf-poly1305"
+# password = "Secret0"
+
+# ── Policy routing ──────────────────────────────────────────────────────────
+# First-match-wins: each [[route]] matches destination IPs against its CIDR
+# list; the rule's `via` target picks what to do. One rule must carry
+# `default = true` and applies when nothing else matches.
+#
+# `via` accepts either a declared group name or the reserved `direct`
+# (forward outside any uplink) / `drop` (SOCKS5 REP=0x02 for TCP, drop UDP).
+#
+# Optional fallback (mutually exclusive): `fallback_via = "<group>"`,
+# `fallback_direct = true`, `fallback_drop = true`. Used when the primary
+# group has zero healthy uplinks at dispatch time.
+#
+# Prefixes may be inline via `prefixes = [...]` and/or loaded from a file
+# (one CIDR per line, `#` comments). The file is hot-reloaded on mtime
+# change (poll interval: `file_poll_secs`, default 60).
+
+# RFC1918 / ULA / loopback — never through the tunnel.
+[[route]]
+prefixes = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "127.0.0.0/8", "::1/128"]
+via = "direct"
+
+# Everything else goes through the main group.
+[[route]]
+default = true
+via = "main"
+
+# Example with a file-backed CIDR list and fallback:
+# [[route]]
+# file = "/etc/outline-ws-rust/geoip-cn.list"
+# file_poll_secs = 60
+# via = "backup"
+# fallback_via = "main"

@@ -1,0 +1,17 @@
+[package]
+name = "outline-routing"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+socks5-proto = { path = "../socks5-proto" }
+# `rt` + `time` are required by the file-poll task (tokio::spawn +
+# tokio::time::sleep) used by `compile_routing_table`. `macros` is needed
+# for `tokio::select!` in the watcher cancellation path.
+tokio = { version = "1.44", features = ["fs", "macros", "rt", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+# `macros` for `#[tokio::test]`, `test-util` for paused/manual time control.
+tokio = { version = "1.44", features = ["macros", "rt", "rt-multi-thread", "test-util", "time"] }

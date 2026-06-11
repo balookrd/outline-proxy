@@ -1,0 +1,436 @@
+//! DNS data-path probe.  Sends a single A query through the Shadowsocks UDP
+//! tunnel and verifies the response transaction id and rcode — enough to
+//! detect that the far side is reachable, addressed correctly, and returning
+//! well-formed DNS packets.
+
+use std::sync::Arc;
+
+use anyhow::{Context, Result, anyhow, bail};
+use tokio::sync::Semaphore;
+use tracing::debug;
+
+use outline_transport::{
+    DnsCache, TransportOperation, UdpWsTransport, VlessUdpWsTransport,
+    connect_shadowsocks_udp_with_source,
+};
+#[cfg(feature = "quic")]
+use outline_transport::{connect_ss_udp_quic, connect_vless_udp_session_quic};
+
+use crate::config::{DnsProbeConfig, TargetAddr, TransportMode, UplinkConfig, UplinkTransport};
+use crate::manager::probe::warm_udp::{self, WarmUdpProbe, WarmUdpProbeSlot};
+
+use super::metrics::BytesRecorder;
+
+pub(super) async fn run_dns_probe(
+    cache: &DnsCache,
+    group: &str,
+    uplink: &UplinkConfig,
+    probe: &DnsProbeConfig,
+    dial_limit: Arc<Semaphore>,
+    effective_udp_mode: TransportMode,
+    warm_slot: Option<&WarmUdpProbeSlot>,
+) -> Result<(bool, Option<TransportMode>)> {
+    let dns_server = probe.target_addr()?;
+    let query = build_dns_query(&probe.name);
+
+    let bytes = BytesRecorder {
+        group,
+        uplink: &uplink.name,
+        transport: "udp",
+        probe: "dns",
+    };
+
+    match uplink.transport {
+        UplinkTransport::Ws | UplinkTransport::Shadowsocks => {
+            let mut payload = dns_server.to_wire_bytes()?;
+            payload.extend_from_slice(&query);
+
+            // WS uplinks are eligible for warm reuse: the SS-UDP wire
+            // form already carries the target on every datagram, so a
+            // cached transport just means "keep the WS open" — no
+            // per-session state to worry about. Plain Shadowsocks
+            // (direct UDP socket) is excluded: there is no handshake
+            // to amortize and the slot is never populated for it.
+            let warm_taken = if matches!(uplink.transport, UplinkTransport::Ws) {
+                warm_slot.and_then(|slot| warm_udp::take_if_matches(slot, effective_udp_mode))
+            } else {
+                None
+            };
+
+            let (transport, downgraded_from, dialed_fresh) = match warm_taken {
+                Some(WarmUdpProbe::Ws { transport, .. }) => (transport, None, false),
+                Some(WarmUdpProbe::Vless { transport, .. }) => {
+                    // Wrong variant for this WS branch — should not
+                    // happen (slot is keyed per uplink) but guard rather
+                    // than panic.
+                    let _ = transport.close().await;
+                    return Err(anyhow!(
+                        "warm UDP slot for WS uplink {} held a non-WS transport",
+                        uplink.name
+                    ));
+                },
+                None => {
+                    let (t, downgraded) = {
+                        let _permit =
+                            dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
+                        match uplink.transport {
+                            UplinkTransport::Ws => {
+                                let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
+                                    anyhow!(
+                                        "uplink {} has no udp_ws_url for DNS probe",
+                                        uplink.name
+                                    )
+                                })?;
+                                if effective_udp_mode == TransportMode::Quic {
+                                    #[cfg(feature = "quic")]
+                                    {
+                                        let t = connect_ss_udp_quic(
+                                            cache,
+                                            udp_ws_url,
+                                            uplink.fwmark,
+                                            uplink.ipv6_first,
+                                            "probe_dns",
+                                            uplink.cipher,
+                                            &uplink.password,
+                                        )
+                                        .await
+                                        .with_context(|| TransportOperation::Connect {
+                                            target: format!(
+                                                "DNS probe raw-QUIC for uplink {}",
+                                                uplink.name
+                                            ),
+                                        })?;
+                                        // Raw QUIC bypasses WS — no
+                                        // `ws_mode_cache` clamp can apply.
+                                        (t, None)
+                                    }
+                                    #[cfg(not(feature = "quic"))]
+                                    {
+                                        let _ = udp_ws_url;
+                                        return Err(anyhow!(
+                                            "TransportMode::Quic requested but binary was built without the `quic` feature"
+                                        ));
+                                    }
+                                } else {
+                                    // Use `connect_with_resume(..., None)` so the
+                                    // WS-mode downgrade marker propagates the same
+                                    // way as the SS branch below. DNS probes do
+                                    // not participate in cross-transport session
+                                    // resumption, so the SessionId tuple element
+                                    // is discarded.
+                                    let (t, _issued, downgraded) =
+                                        UdpWsTransport::connect_with_resume(
+                                            cache,
+                                            udp_ws_url,
+                                            effective_udp_mode,
+                                            uplink.cipher,
+                                            &uplink.password,
+                                            uplink.fwmark,
+                                            uplink.ipv6_first,
+                                            "probe_dns",
+                                            None,
+                                            None,
+                                        )
+                                        .await
+                                        .with_context(
+                                            || TransportOperation::Connect {
+                                                target: format!(
+                                                    "DNS probe websocket for uplink {}",
+                                                    uplink.name
+                                                ),
+                                            },
+                                        )?;
+                                    (t, downgraded)
+                                }
+                            },
+                            UplinkTransport::Shadowsocks => {
+                                let socket = connect_shadowsocks_udp_with_source(
+                                    cache,
+                                    uplink.udp_addr.as_ref().ok_or_else(|| {
+                                        anyhow!(
+                                            "uplink {} has no udp_addr for DNS probe",
+                                            uplink.name
+                                        )
+                                    })?,
+                                    uplink.fwmark,
+                                    uplink.ipv6_first,
+                                    "probe_dns",
+                                )
+                                .await
+                                .with_context(|| {
+                                    TransportOperation::Connect {
+                                        target: format!(
+                                            "DNS probe shadowsocks socket for uplink {}",
+                                            uplink.name
+                                        ),
+                                    }
+                                })?;
+                                let t = UdpWsTransport::from_socket(
+                                    socket,
+                                    uplink.cipher,
+                                    &uplink.password,
+                                    "probe_dns",
+                                )?;
+                                (t, None)
+                            },
+                            UplinkTransport::Vless => unreachable!(),
+                        }
+                    };
+                    (t, downgraded, true)
+                },
+            };
+
+            let result = async {
+                transport
+                    .send_packet(&payload)
+                    .await
+                    .context("failed to send DNS probe packet")?;
+                bytes.outgoing(payload.len());
+                let response = transport
+                    .read_packet()
+                    .await
+                    .context("failed to read DNS probe response")?;
+                bytes.incoming(response.len());
+                let (_, consumed) = TargetAddr::from_wire_bytes(&response)?;
+                validate_dns_response(&response[consumed..], &query)?;
+                Ok::<bool, anyhow::Error>(true)
+            }
+            .await;
+
+            // Stash the WS transport for the next cycle on success +
+            // no-downgrade. Plain Shadowsocks (no warm slot) and any
+            // error path fall through to the close branch.
+            let keep_warm = result.is_ok()
+                && downgraded_from.is_none()
+                && matches!(uplink.transport, UplinkTransport::Ws)
+                && warm_slot.is_some();
+            if keep_warm {
+                if let Some(slot) = warm_slot {
+                    warm_udp::put_back(
+                        slot,
+                        WarmUdpProbe::Ws { transport, mode: effective_udp_mode },
+                    );
+                }
+            } else {
+                debug!(
+                    uplink = %uplink.name,
+                    transport = "udp",
+                    probe = "dns",
+                    dialed_fresh,
+                    "closing probe transport after DNS probe"
+                );
+                if let Err(error) = transport.close().await {
+                    debug!(
+                        uplink = %uplink.name,
+                        transport = "udp",
+                        probe = "dns",
+                        error = %format!("{error:#}"),
+                        "probe transport close returned error during teardown"
+                    );
+                }
+            }
+            result.map(|ok| (ok, downgraded_from))
+        },
+        UplinkTransport::Vless => {
+            let udp_ws_url = uplink.udp_dial_url().ok_or_else(|| {
+                anyhow!("uplink {} has no vless dial URL for DNS probe", uplink.name)
+            })?;
+            let uuid = uplink
+                .vless_id
+                .as_ref()
+                .ok_or_else(|| anyhow!("uplink {} has no vless_id for DNS probe", uplink.name))?;
+
+            if effective_udp_mode == TransportMode::Quic {
+                #[cfg(feature = "quic")]
+                {
+                    let session = {
+                        let _permit =
+                            dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
+                        connect_vless_udp_session_quic(
+                            cache,
+                            udp_ws_url,
+                            uplink.fwmark,
+                            uplink.ipv6_first,
+                            "probe_dns",
+                            uuid,
+                            &dns_server,
+                        )
+                        .await
+                        .with_context(|| TransportOperation::Connect {
+                            target: format!("DNS probe VLESS raw-QUIC for uplink {}", uplink.name),
+                        })?
+                    };
+                    let result = async {
+                        session
+                            .send_packet(&query)
+                            .await
+                            .context("failed to send DNS probe packet")?;
+                        bytes.outgoing(query.len());
+                        let response = session
+                            .read_packet()
+                            .await
+                            .context("failed to read DNS probe response")?;
+                        bytes.incoming(response.len());
+                        validate_dns_response(&response, &query)?;
+                        Ok::<bool, anyhow::Error>(true)
+                    }
+                    .await;
+                    debug!(
+                        uplink = %uplink.name,
+                        transport = "udp",
+                        probe = "dns",
+                        "closing probe transport after DNS probe"
+                    );
+                    if let Err(error) = session.close().await {
+                        debug!(
+                            uplink = %uplink.name,
+                            transport = "udp",
+                            probe = "dns",
+                            error = %format!("{error:#}"),
+                            "probe transport close returned error during teardown"
+                        );
+                    }
+                    // Raw QUIC bypasses WS — no `ws_mode_cache` clamp can apply.
+                    return result.map(|ok| (ok, None));
+                }
+                #[cfg(not(feature = "quic"))]
+                {
+                    let _ = (udp_ws_url, uuid);
+                    return Err(anyhow!(
+                        "TransportMode::Quic requested but binary was built without the `quic` feature"
+                    ));
+                }
+            }
+
+            // Try to reuse a transport cached from a previous probe cycle.
+            // Same uplink + same effective mode + same probe target ⇒ the
+            // server-side NAT entry, reader task, and DNS resolve for the
+            // probe target stay hot. A fresh dial pays all three on every
+            // probe, which dominates UDP-probe latency vs. TCP.
+            let warm_taken =
+                warm_slot.and_then(|slot| warm_udp::take_if_matches(slot, effective_udp_mode));
+
+            let (transport, downgraded_from, dialed_fresh) = match warm_taken {
+                Some(WarmUdpProbe::Vless { transport, .. }) => (transport, None, false),
+                Some(WarmUdpProbe::Ws { transport, .. }) => {
+                    // Wrong variant for this VLESS branch — should not
+                    // happen (slot is keyed per uplink) but guard rather
+                    // than panic.
+                    let _ = transport.close().await;
+                    return Err(anyhow!(
+                        "warm UDP slot for VLESS uplink {} held a non-VLESS transport",
+                        uplink.name
+                    ));
+                },
+                None => {
+                    // Use `connect_with_resume(..., None)` so the WS-mode downgrade
+                    // marker propagates the same way as the SS branch above. DNS
+                    // probes do not participate in cross-transport session
+                    // resumption — the SessionId tuple element is discarded.
+                    let (t, downgraded) = {
+                        let _permit =
+                            dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
+                        let (t, _issued, downgraded) = VlessUdpWsTransport::connect_with_resume(
+                            cache,
+                            udp_ws_url,
+                            effective_udp_mode,
+                            uuid,
+                            &dns_server,
+                            uplink.fwmark,
+                            uplink.ipv6_first,
+                            "probe_dns",
+                            None,
+                            None,
+                        )
+                        .await
+                        .with_context(|| TransportOperation::Connect {
+                            target: format!("DNS probe VLESS websocket for uplink {}", uplink.name),
+                        })?;
+                        (t, downgraded)
+                    };
+                    (t, downgraded, true)
+                },
+            };
+
+            let result = async {
+                transport
+                    .send_packet(&query)
+                    .await
+                    .context("failed to send DNS probe packet")?;
+                bytes.outgoing(query.len());
+                let response = transport
+                    .read_packet()
+                    .await
+                    .context("failed to read DNS probe response")?;
+                bytes.incoming(response.len());
+                validate_dns_response(&response, &query)?;
+                Ok::<bool, anyhow::Error>(true)
+            }
+            .await;
+
+            // On success: stash the transport for the next cycle. On error:
+            // drop it (the underlying stream may be half-broken). A fresh-
+            // dial result that produced a downgrade marker is also dropped
+            // — `effective_udp_mode` for the next cycle will reflect the
+            // new clamp, so a cached transport at the old mode would just
+            // be discarded by `take_if_matches` anyway; closing it now
+            // releases the server-side NAT entry promptly.
+            let keep_warm = result.is_ok() && downgraded_from.is_none() && warm_slot.is_some();
+            if keep_warm {
+                if let Some(slot) = warm_slot {
+                    warm_udp::put_back(
+                        slot,
+                        WarmUdpProbe::Vless { transport, mode: effective_udp_mode },
+                    );
+                }
+            } else {
+                debug!(
+                    uplink = %uplink.name,
+                    transport = "udp",
+                    probe = "dns",
+                    dialed_fresh,
+                    "closing probe transport after DNS probe"
+                );
+                if let Err(error) = transport.close().await {
+                    debug!(
+                        uplink = %uplink.name,
+                        transport = "udp",
+                        probe = "dns",
+                        error = %format!("{error:#}"),
+                        "probe transport close returned error during teardown"
+                    );
+                }
+            }
+            result.map(|ok| (ok, downgraded_from))
+        },
+    }
+}
+
+pub(crate) fn validate_dns_response(dns: &[u8], query: &[u8]) -> Result<()> {
+    if dns.len() < 12 {
+        bail!("DNS probe response is too short");
+    }
+    if dns[..2] != query[..2] {
+        bail!("DNS probe transaction id mismatch");
+    }
+    if dns[3] & 0x0f != 0 {
+        bail!("DNS probe returned non-zero rcode");
+    }
+    Ok(())
+}
+
+pub(crate) fn build_dns_query(name: &str) -> Vec<u8> {
+    let txid = 0x5353u16.to_be_bytes();
+    let mut out = Vec::with_capacity(64);
+    out.extend_from_slice(&txid);
+    out.extend_from_slice(&[0x01, 0x00]);
+    out.extend_from_slice(&[0x00, 0x01]);
+    out.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    for label in name.split('.') {
+        out.push(label.len() as u8);
+        out.extend_from_slice(label.as_bytes());
+    }
+    out.push(0);
+    out.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]);
+    out
+}

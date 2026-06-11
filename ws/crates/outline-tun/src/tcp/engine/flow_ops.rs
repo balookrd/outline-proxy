@@ -1,0 +1,321 @@
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
+
+use anyhow::{Result, bail};
+use tokio::sync::{Mutex, watch};
+use tracing::debug;
+
+use outline_metrics as metrics;
+
+use super::super::maintenance::commit_flow_changes;
+use super::super::state_machine::{
+    FlowControlSignals, FlowRouting, FlowTimestamps, TcpFlowState, TcpFlowStatus,
+    build_flow_packet, build_flow_syn_ack_packet, clear_flow_metrics, decode_client_window,
+    set_flow_status,
+};
+use super::super::wire::{ParsedTcpPacket, build_reset_response};
+use super::super::{
+    MAX_SERVER_SEGMENT_PAYLOAD, TCP_FLAG_ACK, TCP_FLAG_RST, TCP_FLAG_SYN,
+    TCP_INITIAL_CWND_SEGMENTS, TCP_INITIAL_RTO, TCP_SERVER_RECV_WINDOW_CAPACITY,
+    TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL, TcpFlowKey,
+};
+use super::{TunTcpEngine, close_upstream_writer, ip_family_from_version, ip_to_target};
+use crate::TunRoute;
+
+impl TunTcpEngine {
+    pub(super) async fn handle_new_flow(
+        &self,
+        key: TcpFlowKey,
+        packet: ParsedTcpPacket,
+    ) -> Result<()> {
+        if (packet.flags & TCP_FLAG_SYN) == 0 || (packet.flags & TCP_FLAG_ACK) != 0 {
+            let reset = build_reset_response(&packet)?;
+            self.inner.writer.write_packet(&reset).await?;
+            metrics::record_tun_packet(
+                "upstream_to_tun",
+                ip_family_from_version(packet.version),
+                "tcp_rst",
+            );
+            return Ok(());
+        }
+
+        let target = ip_to_target(key.remote_ip, key.remote_port);
+        let route = self.inner.dispatch.resolve(&target).await;
+        let (manager, route) = match &route {
+            TunRoute::Group { manager, .. } => (manager.clone(), route.clone()),
+            TunRoute::Direct { .. } => {
+                // For direct flows, use a dummy manager (default group); the
+                // actual connect skips the uplink pipeline entirely.
+                (self.inner.dispatch.default_group().clone(), route)
+            },
+            TunRoute::Drop { reason } => {
+                let reset = build_reset_response(&packet)?;
+                self.inner.writer.write_packet(&reset).await?;
+                metrics::record_tun_packet(
+                    "upstream_to_tun",
+                    ip_family_from_version(packet.version),
+                    "tcp_rst",
+                );
+                debug!(remote = %target, reason, "TUN TCP route: dropping flow");
+                return Ok(());
+            },
+        };
+
+        if !self.begin_pending_connect(key.clone()).await {
+            debug!(remote = %target, "ignoring duplicate SYN while TUN TCP connect is already in progress");
+            return Ok(());
+        }
+
+        let server_isn = rand::random::<u32>();
+        let flow_id = self.inner.next_flow_id.fetch_add(1, Ordering::Relaxed);
+        let now = Instant::now();
+        let (close_signal, close_rx) = watch::channel(false);
+        let scheduler = Arc::clone(&self.inner.scheduler);
+        let idle_timeout = self.inner.idle_timeout;
+        let state = Arc::new(Mutex::new(TcpFlowState {
+            id: flow_id,
+            key: key.clone(),
+            routing: FlowRouting {
+                uplink_index: usize::MAX,
+                uplink_name: Arc::from("connecting"),
+                group_name: Arc::from(manager.group_name()),
+                manager: manager.clone(),
+                route: route.clone(),
+                upstream_writer: None,
+            },
+            signals: FlowControlSignals { close_signal, scheduler, idle_timeout },
+            status: TcpFlowStatus::SynReceived,
+            rcv_nxt: packet.sequence_number.wrapping_add(1),
+            client_window_scale: packet.window_scale.unwrap_or(0),
+            client_sack_permitted: packet.sack_permitted,
+            client_max_segment_size: packet.max_segment_size,
+            timestamps_enabled: packet.timestamp_value.is_some(),
+            recent_client_timestamp: packet.timestamp_value,
+            server_timestamp_offset: rand::random::<u32>(),
+            client_window: u32::from(packet.window_size),
+            client_window_end: server_isn
+                .wrapping_add(1)
+                .wrapping_add(decode_client_window(&packet, packet.window_scale.unwrap_or(0))),
+            client_window_update_seq: packet.sequence_number,
+            client_window_update_ack: packet.acknowledgement_number,
+            server_seq: server_isn.wrapping_add(1),
+            last_client_ack: packet.sequence_number.wrapping_add(1),
+            duplicate_ack_count: 0,
+            fast_recovery_end: None,
+            receive_window_capacity: self.inner.tcp.max_buffered_client_bytes,
+            smoothed_rtt: None,
+            rttvar: TCP_INITIAL_RTO / 2,
+            retransmission_timeout: TCP_INITIAL_RTO,
+            congestion_window: MAX_SERVER_SEGMENT_PAYLOAD * TCP_INITIAL_CWND_SEGMENTS,
+            slow_start_threshold: TCP_SERVER_RECV_WINDOW_CAPACITY,
+            pending_server_data: VecDeque::new(),
+            backlog_limit_exceeded_since: None,
+            last_ack_progress_at: now,
+            pending_client_data: VecDeque::new(),
+            unacked_server_segments: VecDeque::new(),
+            sack_scoreboard: Vec::new(),
+            pending_client_segments: VecDeque::new(),
+            server_fin_pending: false,
+            zero_window_probe_backoff: TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL,
+            next_zero_window_probe_at: None,
+            keepalive_probes_sent: 0,
+            last_keepalive_probe_at: None,
+            reported: super::super::state_machine::ReportedFlowMetrics::default(),
+            timestamps: FlowTimestamps {
+                created_at: now,
+                status_since: now,
+                last_seen: now,
+            },
+            next_scheduled_deadline: None,
+        }));
+
+        if let Err(error) = self.insert_flow(key.clone(), Arc::clone(&state)).await {
+            self.finish_pending_connect(&key).await;
+            return Err(error);
+        }
+        self.finish_pending_connect(&key).await;
+
+        let syn_ack = {
+            let mut state = state.lock().await;
+            commit_flow_changes(&mut state, &self.inner.tcp);
+            build_flow_syn_ack_packet(&state, server_isn, packet.sequence_number.wrapping_add(1))?
+        };
+        self.write_tun_packet_or_close_flow(&key, &syn_ack).await?;
+        metrics::record_tun_packet(
+            "upstream_to_tun",
+            ip_family_from_version(packet.version),
+            "tcp_synack",
+        );
+        self.spawn_upstream_connect(
+            key,
+            target,
+            flow_id,
+            state,
+            close_rx,
+            ip_family_from_version(packet.version),
+        );
+        Ok(())
+    }
+
+    pub(super) async fn begin_pending_connect(&self, key: TcpFlowKey) -> bool {
+        let mut guard = self.inner.pending_connects.lock().await;
+        guard.insert(key)
+    }
+
+    pub(super) async fn finish_pending_connect(&self, key: &TcpFlowKey) {
+        self.inner.pending_connects.lock().await.remove(key);
+    }
+
+    pub(super) async fn insert_flow(
+        &self,
+        key: TcpFlowKey,
+        flow: Arc<Mutex<TcpFlowState>>,
+    ) -> Result<()> {
+        while self.inner.flows.len() >= self.inner.max_flows {
+            let Some(candidate) = self.inner.eviction_index.pop_oldest() else {
+                bail!("TUN TCP flow table limit reached and no flow could be evicted");
+            };
+            self.abort_flow_with_rst_if_id(&candidate.key, candidate.flow_id, "evicted")
+                .await;
+        }
+
+        let (flow_id, group_name, uplink_name, last_seen) = {
+            let state = flow.lock().await;
+            (
+                state.id,
+                state.routing.group_name.clone(),
+                state.routing.uplink_name.clone(),
+                state.timestamps.last_seen,
+            )
+        };
+        self.inner.flows.insert(key.clone(), flow);
+        self.inner.eviction_index.upsert(key, flow_id, last_seen);
+        metrics::record_tun_tcp_event(&group_name, &uplink_name, "flow_created");
+
+        Ok(())
+    }
+
+    pub(super) async fn abort_flow_with_rst(&self, key: &TcpFlowKey, reason: &'static str) {
+        let Some((_, flow)) = self.inner.flows.remove(key) else {
+            return;
+        };
+
+        self.abort_removed_flow_with_rst(key, flow, reason).await;
+    }
+
+    async fn abort_flow_with_rst_if_id(
+        &self,
+        key: &TcpFlowKey,
+        expected_flow_id: u64,
+        reason: &'static str,
+    ) {
+        let Some(flow) = self.lookup_flow(key).await else {
+            self.inner.eviction_index.remove(key, expected_flow_id);
+            return;
+        };
+        if flow.lock().await.id != expected_flow_id {
+            self.inner.eviction_index.remove(key, expected_flow_id);
+            return;
+        }
+        let Some((_, flow)) = self
+            .inner
+            .flows
+            .remove_if(key, |_, current| Arc::ptr_eq(current, &flow))
+        else {
+            self.inner.eviction_index.remove(key, expected_flow_id);
+            return;
+        };
+
+        self.abort_removed_flow_with_rst(key, flow, reason).await;
+    }
+
+    async fn abort_removed_flow_with_rst(
+        &self,
+        key: &TcpFlowKey,
+        flow: Arc<Mutex<TcpFlowState>>,
+        reason: &'static str,
+    ) {
+        let (
+            flow_id,
+            group_name,
+            uplink_name,
+            _duration,
+            upstream_writer,
+            close_signal,
+            rst_packet,
+        ) = {
+            let mut state = flow.lock().await;
+            let rst_packet = if matches!(state.status, TcpFlowStatus::Closed) {
+                None
+            } else {
+                build_flow_packet(
+                    &state,
+                    state.server_seq,
+                    state.rcv_nxt,
+                    TCP_FLAG_RST | TCP_FLAG_ACK,
+                    &[],
+                )
+                .ok()
+            };
+            state.status = TcpFlowStatus::Closed;
+            clear_flow_metrics(&mut state);
+            self.inner.eviction_index.remove(key, state.id);
+            (
+                state.id,
+                state.routing.group_name.clone(),
+                state.routing.uplink_name.clone(),
+                state.timestamps.created_at.elapsed(),
+                state.routing.upstream_writer.clone(),
+                state.signals.close_signal.clone(),
+                rst_packet,
+            )
+        };
+
+        let _ = close_signal.send(true);
+        if let Some(packet) = rst_packet {
+            let _ = self.inner.writer.write_packet(&packet).await;
+            metrics::record_tun_packet(
+                "upstream_to_tun",
+                ip_family_from_version(key.version),
+                "tcp_rst",
+            );
+        }
+        close_upstream_writer(upstream_writer).await;
+        metrics::record_tun_tcp_event(&group_name, &uplink_name, reason);
+        debug!(flow_id, uplink = %uplink_name, reason, "aborted TUN TCP flow");
+    }
+
+    pub(super) async fn close_flow(&self, key: &TcpFlowKey, reason: &'static str) {
+        if let Some((_, flow)) = self.inner.flows.remove(key) {
+            let (flow_id, group_name, uplink_name, _duration, upstream_writer, close_signal) = {
+                let mut state = flow.lock().await;
+                set_flow_status(&mut state, TcpFlowStatus::Closed);
+                clear_flow_metrics(&mut state);
+                self.inner.eviction_index.remove(key, state.id);
+                (
+                    state.id,
+                    state.routing.group_name.clone(),
+                    state.routing.uplink_name.clone(),
+                    state.timestamps.created_at.elapsed(),
+                    state.routing.upstream_writer.clone(),
+                    state.signals.close_signal.clone(),
+                )
+            };
+            let _ = close_signal.send(true);
+            close_upstream_writer(upstream_writer).await;
+            metrics::record_tun_tcp_event(&group_name, &uplink_name, reason);
+            debug!(flow_id, uplink = %uplink_name, reason, "closed TUN TCP flow");
+        }
+    }
+
+    pub(super) fn record_flow_activity(&self, state: &TcpFlowState) {
+        if matches!(state.status, TcpFlowStatus::Closed) {
+            return;
+        }
+        self.inner
+            .eviction_index
+            .upsert(state.key.clone(), state.id, state.timestamps.last_seen);
+    }
+}
