@@ -416,6 +416,11 @@ pub(super) struct UplinkGroupSection {
     /// is down — lets external watchdogs detect a dead tunnel by pinging
     /// through it. Default: `false` (always reply).
     pub(super) tun_suppress_icmp_reply_when_down: Option<bool>,
+    /// Dispatch traffic routed to this group `direct` (bypassing the
+    /// tunnel) while the group has no healthy uplink. Group-level analogue
+    /// of a `fallback_direct = true` route fallback; explicit `[[route]]`
+    /// fallbacks take precedence. Default: `false`.
+    pub(super) bypass_when_down: Option<bool>,
     /// Per-group override of top-level `[probe]`; unspecified fields inherit.
     pub(super) probe: Option<ProbeSection>,
 }
@@ -588,4 +593,8 @@ pub(super) struct LoadBalancingSection {
     /// every uplink in the (implicit) group is down. See the
     /// same-named field on `UplinkGroupSection`. Default: `false`.
     pub(super) tun_suppress_icmp_reply_when_down: Option<bool>,
+    /// Dispatch traffic `direct` (bypassing the tunnel) while the
+    /// (implicit) group has no healthy uplink. See the same-named
+    /// field on `UplinkGroupSection`. Default: `false`.
+    pub(super) bypass_when_down: Option<bool>,
 }

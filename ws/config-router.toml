@@ -134,6 +134,12 @@ udp_ws_keepalive_secs = 60
 # this group is down — lets a router-side watchdog detect a dead tunnel by
 # pinging through it. Default `false` (always reply).
 # tun_suppress_icmp_reply_when_down = true
+# Bypass the tunnel while every uplink in this group is down: traffic routed
+# to the group goes `direct` (with `direct_fwmark`) instead of failing, and
+# returns to the tunnel as soon as any uplink recovers. Requires
+# `direct_fwmark` + the matching `ip rule` when TUN holds the default route,
+# otherwise bypassed packets loop back into the TUN device. Default `false`.
+# bypass_when_down = true
 
 # ── Uplinks ──────────────────────────────────────────────────────────────────
 # Use h2 instead of h3/QUIC: QUIC requires maintaining per-packet state that

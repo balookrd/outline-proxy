@@ -270,6 +270,21 @@ cargo release-router-musl-armv7
   парсибельного destination (`icmp_echo_destination`, pure-хелпер в `icmp.rs`
   под unit-тестами) отвечаются как раньше. Подавленные запросы считаются как
   `outcome="icmp_reply_suppressed"` на `outline_ws_rust_tun_packets_total`.
+- Group-level bypass: per-group флаг `bypass_when_down` (поле
+  `LoadBalancingConfig`, default `false`) диспатчит трафик упавшей группы в
+  `direct` (с `direct_fwmark`) на обоих ingress. Критерий «группа лежит»
+  наследует route-fallback каждого пути: per-transport `has_any_healthy` на
+  SOCKS5 (`apply_fallback_strategy` в `dispatcher.rs`, плюс no-router ветки
+  `resolve_dispatch` / `resolve_udp_packet_route`), оба транспорта на TUN
+  (`materialize_target` / `group_bypasses_when_down` в `routing.rs`). Явный
+  route-fallback выигрывает; подменённый fallback-таргет переоценивается на
+  bypass ровно на один уровень (`bypass_substituted_group` ≡ TUN-рекурсия) —
+  не вводите цепочки глубже. SOCKS5 UDP: `direct_udp_possible` обязан
+  преаллоцировать direct-сокет, когда хоть одна группа opted-in, иначе
+  bypass-датаграммы молча дропаются в `send_udp_direct`. Включённый bypass
+  намеренно «гасит» ICMP-gate (маршрут становится `TunRoute::Direct`, пинги
+  отвечаются — путь жив); это контрактное поведение под тестом
+  `replies_when_down_group_bypasses_to_direct`.
 - TUN IPsec bypass: `tun.ipsec_bypass = true` short-circuits UDP/{500,4500} в
   `TunRoute::Direct` ещё до policy-routing, переиспользуя `direct_fwmark` для
   выхода из TUN routing loop. Не оптимизируйте этот fast-path так, чтобы он

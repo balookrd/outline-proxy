@@ -315,6 +315,7 @@ fn lb() -> LoadBalancingConfig {
         tcp_symmetric_replay_enabled: true,
         tcp_symmetric_replay_max_bytes: 1_048_576,
         tun_suppress_icmp_reply_when_down: false,
+        bypass_when_down: false,
     }
 }
 

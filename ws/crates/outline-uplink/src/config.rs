@@ -726,6 +726,22 @@ pub struct LoadBalancingConfig {
     /// Default: `false` — echo replies are unconditional, preserving the
     /// legacy behaviour.
     pub tun_suppress_icmp_reply_when_down: bool,
+    /// Bypass the tunnel while this group has no healthy uplink: traffic
+    /// whose route resolves to this group is dispatched `direct` (out the
+    /// host's own networking stack, with `direct_fwmark` applied where
+    /// configured) instead of being forwarded through a dead group.
+    ///
+    /// This is the group-level analogue of a `fallback_direct = true` route
+    /// fallback and is evaluated live per flow / per datagram, so traffic
+    /// returns to the tunnel as soon as any uplink in the group recovers.
+    /// An explicit `fallback_via` / `fallback_direct` / `fallback_drop` on a
+    /// `[[route]]` rule takes precedence; the bypass then still applies to
+    /// the group the fallback lands on, if that group also opted in and is
+    /// down.
+    ///
+    /// Default: `false` — a down group keeps the legacy behaviour (traffic
+    /// stays parked on the group and fails until an uplink recovers).
+    pub bypass_when_down: bool,
 }
 
 /// Policy for the `tcp_mid_session_retry_overflow_policy` knob.

@@ -11,10 +11,10 @@ use crate::routing::TunRouting;
 use crate::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN};
 
 /// Single-uplink manager (TCP + UDP capable, probes disabled) with the
-/// ICMP suppression flag under test. A freshly-built manager has no
-/// probe verdict yet (`healthy = None`), which `has_any_healthy` reports
-/// as "no healthy uplink" — the same state a fully-down group is in.
-fn icmp_gate_manager(suppress_when_down: bool) -> UplinkManager {
+/// ICMP suppression and bypass flags under test. A freshly-built manager
+/// has no probe verdict yet (`healthy = None`), which `has_any_healthy`
+/// reports as "no healthy uplink" — the same state a fully-down group is in.
+fn icmp_gate_manager(suppress_when_down: bool, bypass_when_down: bool) -> UplinkManager {
     UplinkManager::new_for_test(
         "main",
         vec![UplinkConfig {
@@ -87,6 +87,7 @@ fn icmp_gate_manager(suppress_when_down: bool) -> UplinkManager {
             tcp_symmetric_replay_enabled: true,
             tcp_symmetric_replay_max_bytes: 1_048_576,
             tun_suppress_icmp_reply_when_down: suppress_when_down,
+            bypass_when_down,
         },
     )
     .unwrap()
@@ -118,7 +119,7 @@ fn ipv6_echo_request_to(destination: std::net::Ipv6Addr) -> Vec<u8> {
 
 #[tokio::test]
 async fn suppresses_echo_reply_when_opted_in_group_has_no_healthy_uplink() {
-    let manager = icmp_gate_manager(true);
+    let manager = icmp_gate_manager(true, false);
     let routing = TunRouting::from_single_manager(manager.clone());
     let packet = ipv4_echo_request_to([8, 8, 8, 8]);
 
@@ -136,7 +137,7 @@ async fn suppresses_echo_reply_when_opted_in_group_has_no_healthy_uplink() {
 
 #[tokio::test]
 async fn replies_while_any_transport_has_a_healthy_uplink() {
-    let manager = icmp_gate_manager(true);
+    let manager = icmp_gate_manager(true, false);
     let routing = TunRouting::from_single_manager(manager.clone());
     let packet = ipv4_echo_request_to([8, 8, 8, 8]);
 
@@ -152,7 +153,7 @@ async fn replies_while_any_transport_has_a_healthy_uplink() {
 
 #[tokio::test]
 async fn replies_when_group_did_not_opt_in() {
-    let manager = icmp_gate_manager(false);
+    let manager = icmp_gate_manager(false, false);
     let routing = TunRouting::from_single_manager(manager.clone());
     manager.test_set_tcp_health(0, false, 0).await;
     manager.test_set_udp_health(0, false, 0).await;
@@ -163,10 +164,25 @@ async fn replies_when_group_did_not_opt_in() {
 
 #[tokio::test]
 async fn unparseable_destination_never_suppresses() {
-    let manager = icmp_gate_manager(true);
+    let manager = icmp_gate_manager(true, false);
     let routing = TunRouting::from_single_manager(manager);
 
     // Too short to carry a destination field — the gate steps aside and
     // leaves validation to the reply builder.
     assert!(!echo_reply_suppressed_for_down_group(&routing, &[0x45u8; 8]).await);
+}
+
+/// With `bypass_when_down` the destination of a down group resolves to
+/// `TunRoute::Direct`, so the gate never fires: traffic keeps flowing via
+/// the bypass, and the echo reply correctly reports a live path instead of
+/// signalling a dead tunnel.
+#[tokio::test]
+async fn replies_when_down_group_bypasses_to_direct() {
+    let manager = icmp_gate_manager(true, true);
+    let routing = TunRouting::from_single_manager(manager.clone());
+    manager.test_set_tcp_health(0, false, 0).await;
+    manager.test_set_udp_health(0, false, 0).await;
+
+    let packet = ipv4_echo_request_to([8, 8, 8, 8]);
+    assert!(!echo_reply_suppressed_for_down_group(&routing, &packet).await);
 }

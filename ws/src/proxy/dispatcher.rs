@@ -92,9 +92,17 @@ async fn resolve_dispatch(
     transport: TransportKind,
 ) -> Route {
     let Some(router) = config.router.as_ref() else {
+        let manager = registry.default_group();
+        if group_bypasses_when_down(&manager, transport).await {
+            debug!(
+                group = registry.default_group_name(),
+                "default group has no healthy uplinks, bypassing to direct"
+            );
+            return Route::Direct { fwmark: config.direct_fwmark };
+        }
         return Route::Group {
             name: registry.default_group_name().into(),
-            manager: registry.default_group(),
+            manager,
         };
     };
     let decision = router.resolve(target).await;
@@ -121,7 +129,11 @@ async fn resolve_dispatch(
 ///   substituting the default — a declared fallback is an explicit user
 ///   escape hatch.
 /// - Known group with no healthy uplinks of `transport`: use declared
-///   fallback if present, otherwise stay on the primary.
+///   fallback if present; otherwise bypass to direct when the group opted
+///   into `bypass_when_down`; otherwise stay on the primary.
+/// - When the substituted target is itself a group, its own
+///   `bypass_when_down` is honoured one level deep — mirroring the TUN
+///   path, where the fallback recurses through `materialize_target`.
 pub(super) async fn apply_fallback_strategy<R, F>(
     registry: &UplinkRegistry,
     primary: RouteTarget,
@@ -135,35 +147,74 @@ where
     if let RouteTarget::Group(ref name) = primary {
         match registry.group_by_name(name) {
             None => {
-                if let Some(fb) = fallback {
+                let substitute = if let Some(fb) = fallback {
                     warn!(group = %name, fallback = ?fb, "unknown group, using declared fallback");
-                    return to_route(fb);
-                }
-                warn!(
-                    group = %name,
-                    default = registry.default_group_name(),
-                    "unknown group and no fallback; dispatching to default"
-                );
-                return to_route(RouteTarget::Group(registry.default_group_name().into()));
+                    fb
+                } else {
+                    warn!(
+                        group = %name,
+                        default = registry.default_group_name(),
+                        "unknown group and no fallback; dispatching to default"
+                    );
+                    RouteTarget::Group(registry.default_group_name().into())
+                };
+                return to_route(bypass_substituted_group(registry, substitute, transport).await);
             },
             Some(manager) => {
-                // Short-circuit on `fallback.is_none()` BEFORE running the
-                // health probe. `has_any_healthy` walks every uplink in the
-                // group under per-uplink `parking_lot::Mutex`es and clones
-                // each `UplinkStatus`; when there is no declared fallback
-                // the result cannot change the decision, so the work is
-                // pure overhead. UDP is the hot caller — this runs on
-                // *every* datagram via `resolve_udp_packet_route` /
-                // `classify_decision`, even after the per-association
-                // route cache hit.
-                if let Some(fb) = fallback
-                    && !manager.has_any_healthy(transport).await
-                {
-                    debug!(primary = %name, fallback = ?fb, "primary group unhealthy, using fallback");
-                    return to_route(fb);
+                // Short-circuit on `fallback.is_none()` (and the group's
+                // bypass opt-out) BEFORE running the health probe.
+                // `has_any_healthy` walks every uplink in the group under
+                // per-uplink `parking_lot::Mutex`es and clones each
+                // `UplinkStatus`; when neither a fallback nor a bypass can
+                // change the decision, the work is pure overhead. UDP is
+                // the hot caller — this runs on *every* datagram via
+                // `resolve_udp_packet_route` / `classify_decision`, even
+                // after the per-association route cache hit.
+                let bypass = manager.load_balancing().bypass_when_down;
+                if (fallback.is_some() || bypass) && !manager.has_any_healthy(transport).await {
+                    if let Some(fb) = fallback {
+                        debug!(primary = %name, fallback = ?fb, "primary group unhealthy, using fallback");
+                        return to_route(bypass_substituted_group(registry, fb, transport).await);
+                    }
+                    debug!(primary = %name, "group has no healthy uplinks, bypassing to direct");
+                    return to_route(RouteTarget::Direct);
                 }
             },
         }
     }
     to_route(primary)
 }
+
+/// `bypass_when_down` check for the group `manager`: true when the group
+/// opted in and currently has no healthy uplink of `transport`. The flag
+/// read costs nothing, so the health walk only runs for opted-in groups.
+pub(super) async fn group_bypasses_when_down(
+    manager: &UplinkManager,
+    transport: TransportKind,
+) -> bool {
+    manager.load_balancing().bypass_when_down && !manager.has_any_healthy(transport).await
+}
+
+/// Honour `bypass_when_down` on a fallback-substituted target: a declared
+/// `fallback_via` (or the unknown-group default substitute) may itself land
+/// on a fully-down group that opted into the bypass. One level deep only —
+/// the substitute's own fallback chain is never consulted, matching the
+/// route-fallback "no chaining" rule.
+async fn bypass_substituted_group(
+    registry: &UplinkRegistry,
+    substitute: RouteTarget,
+    transport: TransportKind,
+) -> RouteTarget {
+    if let RouteTarget::Group(ref name) = substitute
+        && let Some(manager) = registry.group_by_name(name)
+        && group_bypasses_when_down(&manager, transport).await
+    {
+        debug!(group = %name, "fallback group has no healthy uplinks, bypassing to direct");
+        return RouteTarget::Direct;
+    }
+    substitute
+}
+
+#[cfg(test)]
+#[path = "tests/dispatcher.rs"]
+mod tests;

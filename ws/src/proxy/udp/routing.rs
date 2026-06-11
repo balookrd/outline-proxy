@@ -4,7 +4,7 @@ use std::sync::Arc;
 use lru::LruCache;
 
 use crate::proxy::ProxyConfig;
-use crate::proxy::dispatcher::apply_fallback_strategy;
+use crate::proxy::dispatcher::{apply_fallback_strategy, group_bypasses_when_down};
 use outline_routing::{RouteDecision, RouteTarget};
 use outline_uplink::{TransportKind, UplinkRegistry};
 use socks5_proto::TargetAddr;
@@ -47,6 +47,9 @@ pub(super) async fn resolve_udp_packet_route(
     target: &TargetAddr,
 ) -> UdpPacketRoute {
     let Some(router) = config.router.as_ref() else {
+        if group_bypasses_when_down(&registry.default_group(), TransportKind::Udp).await {
+            return UdpPacketRoute::Direct;
+        }
         return UdpPacketRoute::Tunnel(registry.default_group_name().into());
     };
     let current_version = router.version();
@@ -85,8 +88,15 @@ pub(super) async fn classify_decision(
 /// resolve to `Direct` at packet time. Inspecting every rule's target up-front
 /// would couple this to routing internals and still require a fallback for
 /// dynamically reloaded rules; a single socket bind is cheap by comparison.
-pub(super) fn routing_table_active(config: &ProxyConfig) -> bool {
+/// Even without a routing table, a group that opted into `bypass_when_down`
+/// can resolve packets to `Direct` whenever its uplinks all go unhealthy, so
+/// any opted-in group forces the pre-allocation too.
+pub(super) fn direct_udp_possible(config: &ProxyConfig, registry: &UplinkRegistry) -> bool {
     config.router.is_some()
+        || registry
+            .groups()
+            .iter()
+            .any(|group| group.manager.load_balancing().bypass_when_down)
 }
 
 #[cfg(test)]

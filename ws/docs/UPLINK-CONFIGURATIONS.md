@@ -451,6 +451,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `tcp_symmetric_replay_enabled`       | `true`             | bool  | opt into the v2 Symmetric Downlink Replay protocol on retry redials; flip to `false` to suppress the v2 advertise without disabling v1.x retry (e.g. while staging the server-side rollout) |
 | `tcp_symmetric_replay_max_bytes`     | `1048576`          | bytes | hard cap on accepted v2 `replay_len` from the server; replies above this drop the session — protection against a hostile peer forcing unbounded buffering |
 | `tun_suppress_icmp_reply_when_down`  | `false`            | bool  | stop answering TUN-side ICMP echo (ping) for destinations routed to this group while the group has no healthy uplink on either transport — turns a ping through the tunnel into a liveness signal for external watchdogs. Replies also stay suppressed after startup until the first probe (or first successful flow) confirms an uplink |
+| `bypass_when_down`                   | `false`            | bool  | bypass the tunnel while the group has no healthy uplink: traffic routed to this group dispatches `direct` (host's own networking stack, with `direct_fwmark`) instead of failing on a dead group, and returns to the tunnel as soon as any uplink recovers. See "Bypass on a fully-down group" below |
 | `vless_udp_max_sessions`             | `256`              | int   | hard cap on concurrent VLESS UDP sessions (LRU-evicted on overflow)                               |
 | `vless_udp_session_idle_secs`        | `60`               | s     | evict VLESS UDP sessions idle longer than this (`0` disables eviction)                            |
 | `vless_udp_janitor_interval_secs`    | `15`               | s     | how often the VLESS UDP janitor scans for idle sessions                                           |
@@ -513,6 +514,39 @@ scope); `active_active` is unaffected — the strict-abort watcher
 never fires there because there is no single "active" uplink to
 diverge from. Operators who want session-by-session migration without
 the abort should stay on `active_active` + `per_flow`.
+
+Bypass on a fully-down group (`bypass_when_down`):
+
+- With `bypass_when_down = true` on a group, any flow or datagram whose
+  route resolves to that group is dispatched `direct` — out the host's
+  own networking stack, exactly like a `via = "direct"` route — for as
+  long as the group has no healthy uplink. The decision is re-evaluated
+  live (per TCP dial, per UDP datagram, per TUN flow), so traffic
+  returns to the tunnel as soon as any uplink in the group recovers.
+- The health criterion matches the existing route-fallback decision:
+  on the SOCKS5 path it is per-transport (`has_any_healthy` for TCP or
+  UDP respectively — a TCP-healthy group keeps tunnelling TCP even
+  while its UDP side is fully down), on the TUN path the group must be
+  down on **both** transports, same as
+  `tun_suppress_icmp_reply_when_down`.
+- Precedence: an explicit `fallback_via` / `fallback_direct` /
+  `fallback_drop` on the matching `[[route]]` rule wins. The bypass
+  then still applies to the group the fallback lands on, one level
+  deep, if that group also opted in and is down. Routes without a
+  declared fallback — including the implicit "everything to the
+  default group" dispatch when no `[[route]]` is configured — get the
+  bypass directly.
+- On TUN hosts (and SOCKS5 hosts where TUN holds the default route)
+  set `direct_fwmark` and the matching `ip rule … lookup …` so the
+  bypassed sockets escape the TUN routing loop; startup logs a warning
+  for the missing combination on Linux. Combined with
+  `tun_suppress_icmp_reply_when_down`, pings keep being answered while
+  the bypass is active — the path is alive, just not tunnelled.
+- Note: right after startup a group has no probe verdict yet and
+  counts as down, so the first moments of traffic may go direct until
+  the first probe (or first successful flow) confirms an uplink.
+  Bypassed traffic is visible in metrics under the `direct` group
+  label, like any policy-direct traffic.
 
 Mid-session retry (Ack-Prefix Protocol v1):
 

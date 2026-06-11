@@ -119,6 +119,7 @@ tun2udp + tun2tcp"]
 - SOCKS5 UDP fragmentation reassembly on inbound client traffic
 - IPv4, IPv6, and domain-name targets
 - declarative policy routing by destination CIDR with per-rule file-backed lists (hot-reloaded), per-rule fallback (`fallback_via` / `fallback_direct` / `fallback_drop`), and a `direct` / `drop` built-in targets for bypass or policy blocks
+- group-level tunnel bypass (`bypass_when_down` on the uplink group): while a group has no healthy uplink, traffic routed to it dispatches `direct` instead of failing, and returns to the tunnel as soon as any uplink recovers
 
 ### Outline transports
 
@@ -869,6 +870,10 @@ Every rule with at least one `file` / `files` entry gets a background tokio task
 ### Fallback semantics
 
 When the primary `via` resolves to a group with no currently-healthy uplinks, the rule's fallback target is tried instead (one level, no recursion). Health is checked non-side-effectingly at dispatch time via `UplinkManager::has_any_healthy(transport)`; this is cheaper than building a candidate list and does not touch sticky-routes state. If the primary group recovers mid-session, future connections go through it normally — fallback is only consulted at dispatch.
+
+### Group-level bypass (`bypass_when_down`)
+
+Instead of declaring `fallback_direct = true` on every route, a group can opt into the bypass itself: with `bypass_when_down = true` on the `[[uplink_group]]`, traffic routed to the group dispatches `direct` while the group has no healthy uplink — including the implicit "everything to the default group" dispatch when no `[[route]]` is configured. An explicit route fallback still takes precedence; the bypass then applies (one level deep) to the group the fallback lands on. Like route fallbacks, the decision is re-evaluated live per dial/datagram/flow, so traffic returns to the tunnel as soon as any uplink recovers. On hosts where TUN holds the default route, set `direct_fwmark` so bypassed sockets escape the TUN routing loop. See "Bypass on a fully-down group" in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) for details.
 
 ## Transport Modes
 

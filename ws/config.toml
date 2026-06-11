@@ -228,6 +228,7 @@ name = "example.com"
 # vless_udp_session_idle_secs = 60
 # vless_udp_janitor_interval_secs = 15
 # tun_suppress_icmp_reply_when_down = false  # stop answering TUN pings while every uplink is down
+# bypass_when_down = false          # route traffic direct while every uplink is down
 
 # ── Uplink groups ───────────────────────────────────────────────────────────
 # Each group is an isolated UplinkManager with its own probe loop, standby
@@ -274,6 +275,18 @@ runtime_failure_window_secs = 60
 # suppressed right after startup until the first probe confirms an uplink.
 # Default `false` — always reply, legacy behaviour.
 # tun_suppress_icmp_reply_when_down = false
+# Bypass the tunnel while this group has no healthy uplink: traffic whose route
+# resolves to this group goes `direct` (host's own networking stack, with
+# `direct_fwmark` applied) instead of failing on a dead group. Re-evaluated
+# live per flow / per datagram, so traffic returns to the tunnel as soon as
+# any uplink recovers. Group-level analogue of a `fallback_direct = true`
+# route fallback; an explicit fallback on a [[route]] rule takes precedence.
+# On TUN hosts set `direct_fwmark` (and the matching `ip rule`) so bypassed
+# sockets escape the TUN routing loop. Note: with both this flag and
+# `tun_suppress_icmp_reply_when_down`, pings keep being answered while the
+# bypass is active — the path is alive, just not tunnelled.
+# Default `false` — a down group keeps failing (legacy behaviour).
+# bypass_when_down = false
 
 # Optional second group — useful for a fallback path with different LB mode.
 # [[uplink_group]]
