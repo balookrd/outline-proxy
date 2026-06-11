@@ -26,6 +26,7 @@ use crate::reverse::peer_registry::{ReversePeer, ReversePeerRegistry};
 struct PeerCreds {
     cipher: CipherKind,
     master_key: Vec<u8>,
+    password: Arc<str>,
     label: Arc<str>,
 }
 
@@ -55,6 +56,7 @@ pub(crate) async fn run_reverse_listener(
             PeerCreds {
                 cipher: peer.method,
                 master_key,
+                password: Arc::from(peer.password.as_str()),
                 label: Arc::from(format!("reverse-{idx}").as_str()),
             },
         );
@@ -91,9 +93,14 @@ pub(crate) async fn run_reverse_listener(
         let endpoint = endpoint.clone();
         // Resolve creds once the handshake completes (the client cert is
         // available only then). Clone the small creds map per accept task.
-        let creds: HashMap<[u8; 32], (CipherKind, Vec<u8>, Arc<str>)> = creds
+        let creds: HashMap<[u8; 32], (CipherKind, Vec<u8>, Arc<str>, Arc<str>)> = creds
             .iter()
-            .map(|(k, v)| (*k, (v.cipher, v.master_key.clone(), Arc::clone(&v.label))))
+            .map(|(k, v)| {
+                (
+                    *k,
+                    (v.cipher, v.master_key.clone(), Arc::clone(&v.password), Arc::clone(&v.label)),
+                )
+            })
             .collect();
         tokio::spawn(async move {
             if let Err(error) = accept_peer(incoming, endpoint, &registry, &creds).await {
@@ -107,7 +114,7 @@ async fn accept_peer(
     incoming: quinn::Incoming,
     endpoint: quinn::Endpoint,
     registry: &Arc<ReversePeerRegistry>,
-    creds: &HashMap<[u8; 32], (CipherKind, Vec<u8>, Arc<str>)>,
+    creds: &HashMap<[u8; 32], (CipherKind, Vec<u8>, Arc<str>, Arc<str>)>,
 ) -> Result<()> {
     let connection = incoming.await.context("reverse: QUIC handshake failed")?;
 
@@ -116,7 +123,7 @@ async fn accept_peer(
     // in the rustls peer identity.
     let fingerprint = client_cert_fingerprint(&connection)
         .ok_or_else(|| anyhow!("reverse: accepted carrier has no client certificate"))?;
-    let (cipher, master_key, label) = creds
+    let (cipher, master_key, password, label) = creds
         .get(&fingerprint)
         .ok_or_else(|| anyhow!("reverse: client cert not in configured peer set"))?;
 
@@ -125,6 +132,7 @@ async fn accept_peer(
         conn: shared,
         cipher: *cipher,
         master_key: master_key.clone(),
+        password: Arc::clone(password),
         label: Arc::clone(label),
     });
     if registry.try_insert(Arc::clone(&peer)) {

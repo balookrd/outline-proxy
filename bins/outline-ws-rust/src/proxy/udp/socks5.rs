@@ -58,6 +58,14 @@ pub(in crate::proxy) async fn serve_udp_associate(
 
         let client_udp_addr: Arc<OnceCell<SocketAddr>> = Arc::new(OnceCell::new());
         let groups = AssocGroupMap::new();
+        // Reverse-tunnel SS-UDP for this association: one transport pinned to a
+        // live peer, lazily opened on the first datagram routed to the reverse
+        // group. `reverse_tasks` owns its downlink pump so it is aborted on
+        // session end alongside the group downlinks.
+        #[cfg(feature = "h3")]
+        let reverse_udp: Arc<OnceCell<super::reverse::ReverseUdpAssoc>> = Arc::new(OnceCell::new());
+        #[cfg(feature = "h3")]
+        let reverse_tasks = Arc::new(std::sync::Mutex::new(tokio::task::JoinSet::new()));
         let (responses_tx, mut responses_rx) = mpsc::channel::<UdpResponse>(64);
 
         send_reply(&mut client, SOCKS_REP_SUCCESS, &socket_addr_to_target(relay_addr)).await?;
@@ -70,6 +78,10 @@ pub(in crate::proxy) async fn serve_udp_associate(
         let dns_cache_uplink = Arc::clone(&config.dns_cache);
         let config_uplink = Arc::clone(&config);
         let responses_tx_uplink = responses_tx.clone();
+        #[cfg(feature = "h3")]
+        let reverse_udp_uplink = Arc::clone(&reverse_udp);
+        #[cfg(feature = "h3")]
+        let reverse_tasks_uplink = Arc::clone(&reverse_tasks);
         let uplink = async move {
             let mut reassembler = UdpFragmentReassembler::default();
             let mut route_cache: UdpRouteCache = new_udp_route_cache();
@@ -140,6 +152,29 @@ pub(in crate::proxy) async fn serve_udp_associate(
                         "dropping oversized incoming UDP packet"
                     );
                     metrics::record_dropped_oversized_udp_packet("incoming", "socks_client");
+                    continue;
+                }
+
+                // Reverse-tunnel egress: when the resolved group is the reverse
+                // group and a peer is live, send over the peer carrier instead
+                // of a configured uplink. Falls through to the normal group path
+                // when no peer is connected.
+                #[cfg(feature = "h3")]
+                if let Some(registry) = config_uplink.reverse.as_ref()
+                    && registry.group() == group_name.as_ref()
+                    && let Some(peer) = registry.pick_live()
+                {
+                    let assoc = reverse_udp_uplink
+                        .get_or_try_init(|| async {
+                            super::reverse::ReverseUdpAssoc::open(
+                                &peer,
+                                Arc::clone(&group_name),
+                                responses_tx_uplink.clone(),
+                                &reverse_tasks_uplink,
+                            )
+                        })
+                        .await?;
+                    assoc.send_packet(&payload).await?;
                     continue;
                 }
 
@@ -269,6 +304,8 @@ pub(in crate::proxy) async fn serve_udp_associate(
             result = direct_downlink => result,
         };
         groups.shutdown("session_end").await;
+        #[cfg(feature = "h3")]
+        reverse_tasks.lock().expect("reverse udp tasks poisoned").abort_all();
         session_result
     }
     .await;

@@ -28,6 +28,11 @@ pub(crate) struct ReversePeer {
     pub(crate) conn: Arc<SharedQuicConnection>,
     pub(crate) cipher: CipherKind,
     pub(crate) master_key: Vec<u8>,
+    /// The configured SS password. Kept alongside the pre-derived
+    /// `master_key` because the SS-UDP transport derives its own key from
+    /// the password string (`UdpWsTransport::from_channel`), whereas the
+    /// SS-TCP writer takes the master key directly.
+    pub(crate) password: Arc<str>,
     /// Short, non-reversible label for logs/metrics (never the fingerprint).
     pub(crate) label: Arc<str>,
 }
