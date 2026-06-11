@@ -2,8 +2,9 @@
 set -Eeuo pipefail
 
 REPO_OWNER="${REPO_OWNER:-balookrd}"
-REPO_NAME="${REPO_NAME:-outline-ws-rust}"
+REPO_NAME="${REPO_NAME:-outline-proxy}"
 REPO_REF="${REPO_REF:-main}"
+TAG_PREFIX="ws-"
 
 BINARY_NAME="${BINARY_NAME:-outline-ws-rust}"
 INSTALL_PATH="${INSTALL_PATH:-/usr/local/bin/${BINARY_NAME}}"
@@ -22,12 +23,13 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
 # Откуда качать unit-файлы
 RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_REF}}"
-RAW_SERVICE_URL="${RAW_SERVICE_URL:-${RAW_BASE}/systemd/outline-ws-rust.service}"
-RAW_TEMPLATE_URL="${RAW_TEMPLATE_URL:-${RAW_BASE}/systemd/outline-ws-rust@.service}"
+BIN_SUBDIR="bins/outline-ws-rust"
+RAW_SERVICE_URL="${RAW_SERVICE_URL:-${RAW_BASE}/${BIN_SUBDIR}/systemd/outline-ws-rust.service}"
+RAW_TEMPLATE_URL="${RAW_TEMPLATE_URL:-${RAW_BASE}/${BIN_SUBDIR}/systemd/outline-ws-rust@.service}"
 
 # Откуда качать config-файлы
-RAW_CONFIG_URL="${RAW_CONFIG_URL:-${RAW_BASE}/config.toml}"
-RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-${RAW_BASE}/config.toml}"
+RAW_CONFIG_URL="${RAW_CONFIG_URL:-${RAW_BASE}/${BIN_SUBDIR}/config.toml}"
+RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-${RAW_BASE}/${BIN_SUBDIR}/config.toml}"
 
 SERVICE_NAME="outline-ws-rust.service"
 TEMPLATE_NAME="outline-ws-rust@.service"
@@ -147,9 +149,9 @@ normalize_version_tag() {
     if [[ -z "$v" ]]; then
       echo ""
     elif [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo "$v"
+      echo "${TAG_PREFIX}${v}"
     elif [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-      echo "v${v}"
+      echo "${TAG_PREFIX}v${v}"
     else
       die "Для CHANNEL=stable VERSION должен быть вида 1.2.3 или v1.2.3"
     fi
@@ -157,7 +159,7 @@ normalize_version_tag() {
     if [[ -z "$v" ]]; then
       echo ""
     elif [[ "$v" == "nightly" ]]; then
-      echo "$v"
+      echo "${TAG_PREFIX}${v}"
     else
       die "Для CHANNEL=nightly VERSION должен быть равен nightly"
     fi
@@ -173,10 +175,20 @@ select_release_json() {
   else
     case "$CHANNEL" in
       stable)
-        api_path="releases/latest"
+        # Monorepo: /releases/latest may point at the server binary's
+        # release, so list releases and pick the newest ${TAG_PREFIX}v* tag.
+        local releases_json stable_tag
+        releases_json="$(github_api_get "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/releases?per_page=30")" \
+          || die "Не удалось получить список релизов из GitHub API"
+        stable_tag="$(printf '%s' "$releases_json" \
+          | grep -oE "\"tag_name\":[[:space:]]*\"${TAG_PREFIX}v[^\"]*\"" \
+          | head -n1 \
+          | sed -E "s/.*\"(${TAG_PREFIX}v[^\"]*)\"\$/\\1/")"
+        [[ -n "$stable_tag" ]] || die "Не найден stable-релиз с тегом ${TAG_PREFIX}v*"
+        api_path="releases/tags/${stable_tag}"
         ;;
       nightly)
-        api_path="releases/tags/nightly"
+        api_path="releases/tags/${TAG_PREFIX}nightly"
         ;;
       *)
         die "Неподдерживаемый CHANNEL: ${CHANNEL}. Допустимо: stable, nightly"
@@ -222,7 +234,7 @@ get_nightly_commit_sha() {
 
   # target_commitish — имя ветки; резолвим через refs API
   ref_json="$(github_api_get \
-    "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/tags/nightly" 2>/dev/null || true)"
+    "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/tags/${TAG_PREFIX}nightly" 2>/dev/null || true)"
 
   [[ -n "$ref_json" ]] || { echo ""; return; }
 

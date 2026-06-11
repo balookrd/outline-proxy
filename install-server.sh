@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPO="${REPO:-balookrd/outline-ss-rust}"
+REPO="${REPO:-balookrd/outline-proxy}"
+TAG_PREFIX="ss-"
 BINARY_NAME="outline-ss-rust"
 SERVICE_NAME="${SERVICE_NAME:-outline-ss-rust.service}"
 CHANNEL="${CHANNEL:-stable}"
@@ -211,7 +212,7 @@ get_nightly_commit_sha() {
   fi
 
   # target_commitish — имя ветки; резолвим через refs API
-  ref_json="$(github_api_get "$(github_api_url "git/ref/tags/nightly")" 2>/dev/null || true)"
+  ref_json="$(github_api_get "$(github_api_url "git/ref/tags/${TAG_PREFIX}nightly")" 2>/dev/null || true)"
 
   [[ -n "$ref_json" ]] || { echo ""; return; }
 
@@ -237,16 +238,26 @@ resolve_release() {
   local api_path release_json asset_pattern
 
   if [[ -n "$VERSION" ]]; then
-    [[ "$VERSION" == v* ]] || die "VERSION должен быть в формате v1.2.3"
+    [[ "$VERSION" == ${TAG_PREFIX}v* ]] || die "VERSION должен быть в формате ${TAG_PREFIX}v1.2.3"
     [[ "$CHANNEL" == "stable" ]] || die "Нельзя одновременно задавать VERSION и CHANNEL=${CHANNEL}. Используй либо stable по VERSION, либо CHANNEL=nightly."
     api_path="releases/tags/${VERSION}"
   else
     case "$CHANNEL" in
       stable)
-        api_path="releases/latest"
+        # Monorepo: /releases/latest may point at the client binary's
+        # release, so list releases and pick the newest ${TAG_PREFIX}v* tag.
+        local releases_json stable_tag
+        releases_json="$(github_api_get "$(github_api_url "releases?per_page=30")")" \
+          || die "Не удалось получить список релизов из GitHub API"
+        stable_tag="$(printf '%s' "$releases_json" \
+          | grep -oE "\"tag_name\":[[:space:]]*\"${TAG_PREFIX}v[^\"]*\"" \
+          | head -n1 \
+          | sed -E "s/.*\"(${TAG_PREFIX}v[^\"]*)\"\$/\\1/")"
+        [[ -n "$stable_tag" ]] || die "Не найден stable-релиз с тегом ${TAG_PREFIX}v*"
+        api_path="releases/tags/${stable_tag}"
         ;;
       nightly)
-        api_path="releases/tags/nightly"
+        api_path="releases/tags/${TAG_PREFIX}nightly"
         ;;
       *)
         die "Неподдерживаемый CHANNEL: ${CHANNEL}. Допустимо: stable, nightly"
@@ -341,7 +352,7 @@ install_config_if_missing() {
   fi
 
   local cfg_url
-  cfg_url="$(tag_raw_url "$RELEASE_TAG" "config.toml")"
+  cfg_url="$(tag_raw_url "$RELEASE_TAG" "bins/outline-ss-rust/config.toml")"
 
   log "Скачиваю пример конфига ${cfg_url}"
   fetch "$cfg_url" "$CONFIG_PATH"
@@ -351,7 +362,7 @@ install_config_if_missing() {
 
 install_systemd_unit() {
   local unit_url tmp_unit
-  unit_url="$(tag_raw_url "$RELEASE_TAG" "systemd/${SERVICE_NAME}")"
+  unit_url="$(tag_raw_url "$RELEASE_TAG" "bins/outline-ss-rust/systemd/${SERVICE_NAME}")"
   tmp_unit="${TMP_DIR}/${SERVICE_NAME}"
 
   log "Скачиваю systemd unit ${unit_url}"
