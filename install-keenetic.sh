@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-REPO="balookrd/outline-ws-rust"
+REPO="balookrd/outline-proxy"
+TAG_PREFIX="ws-"
 APP_NAME="outline-ws-rust"
 CHANNEL="${CHANNEL:-stable}"
 VERSION="${VERSION:-}"
@@ -158,12 +159,12 @@ select_release_tag() {
         case "$CHANNEL:$VERSION" in
             stable:v[0-9]*.[0-9]*.[0-9]*|stable:[0-9]*.[0-9]*.[0-9]*)
                 case "$VERSION" in
-                    v*) echo "$VERSION" ;;
-                    *) echo "v$VERSION" ;;
+                    v*) echo "${TAG_PREFIX}$VERSION" ;;
+                    *) echo "${TAG_PREFIX}v$VERSION" ;;
                 esac
                 ;;
             nightly:nightly)
-                echo "nightly"
+                echo "${TAG_PREFIX}nightly"
                 ;;
             stable:*)
                 die "for CHANNEL=stable, VERSION must be 1.2.3 or v1.2.3"
@@ -184,8 +185,8 @@ select_release_tag() {
                 map(select(.draft == false and .prerelease == false))
                 | map(select(
                     .tag_name
-                    | startswith("v")
-                    and ((.[1:] | split(".")) as $parts
+                    | startswith("ws-v")
+                    and ((.[4:] | split(".")) as $parts
                         | ($parts | length) == 3
                         and all($parts[]; (tonumber?) != null))
                 ))
@@ -194,7 +195,7 @@ select_release_tag() {
             ;;
         nightly)
             jq -r '
-                map(select(.draft == false and .prerelease == true and .tag_name == "nightly"))
+                map(select(.draft == false and .prerelease == true and .tag_name == "ws-nightly"))
                 | .[0].tag_name // empty
             ' "$json"
             ;;
