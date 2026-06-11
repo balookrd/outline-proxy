@@ -1273,15 +1273,15 @@ The experimental uplinks/control-plane Grafana dashboard is intentionally not pa
 
 ## Production Operations
 
-### `install.sh`
+### `install-client.sh`
 
-For a basic production install on Linux use the bundled [install.sh](install.sh) script. Run it as `root` on the target host:
+For a basic production install on Linux use the bundled [install-client.sh](../../install-client.sh) script. Run it as `root` on the target host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/balookrd/outline-ws-rust/main/install.sh -o install.sh
-chmod +x install.sh
-./install.sh --help
-sudo ./install.sh
+curl -fsSL https://raw.githubusercontent.com/balookrd/outline-proxy/main/install-client.sh -o install-client.sh
+chmod +x install-client.sh
+./install-client.sh --help
+sudo ./install-client.sh
 ```
 
 Install modes:
@@ -1293,11 +1293,11 @@ Install modes:
 Examples:
 
 ```bash
-./install.sh --help
-sudo ./install.sh
-sudo ./install.sh --force
-sudo CHANNEL=nightly ./install.sh
-sudo VERSION=v1.2.3 ./install.sh
+./install-client.sh --help
+sudo ./install-client.sh
+sudo ./install-client.sh --force
+sudo CHANNEL=nightly ./install-client.sh
+sudo VERSION=v1.2.3 ./install-client.sh
 ```
 
 What the script does:
@@ -1344,7 +1344,7 @@ If `github.com` or its release CDN (`objects.githubusercontent.com`) is unreacha
 Important: `sudo` strips `http_proxy`/`https_proxy` from the environment by default, so pass them explicitly:
 
 ```bash
-sudo https_proxy=http://HOST:PORT http_proxy=http://HOST:PORT ./install.sh
+sudo https_proxy=http://HOST:PORT http_proxy=http://HOST:PORT ./install-client.sh
 ```
 
 or export and use `sudo -E`:
@@ -1352,7 +1352,7 @@ or export and use `sudo -E`:
 ```bash
 export https_proxy=http://HOST:PORT
 export http_proxy=http://HOST:PORT
-sudo -E ./install.sh
+sudo -E ./install-client.sh
 ```
 
 For SOCKS5 (e.g. an `ssh -D 1080 user@vps` tunnel) use `ALL_PROXY=socks5h://HOST:PORT`. Authenticated proxies use `http://USER:PASS@HOST:PORT` (URL-encode special characters in the password).
@@ -1384,7 +1384,7 @@ The unit includes:
 - journald logging
 - elevated `LimitNOFILE`
 - `LimitSTACK=8M` to avoid oversized anonymous thread-stack reservations
-- a fixed `outline-ws` system user / group (provisioned by `install.sh`) so state files keep a stable owner across restarts and `StateDirectory=outline-ws-rust/_default` lands on a writable, unit-managed path
+- a fixed `outline-ws` system user / group (provisioned by `install-client.sh`) so state files keep a stable owner across restarts and `StateDirectory=outline-ws-rust/_default` lands on a writable, unit-managed path
 - `CAP_NET_ADMIN` for `fwmark`; remove if `fwmark` is not used
 - `PrivateDevices=false` — required for TUN mode; harmless if TUN is not used
 - conservative systemd hardening flags

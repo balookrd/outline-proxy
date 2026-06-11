@@ -862,15 +862,15 @@ sysctl -w kern.ipc.maxsockbuf=33554432
 
 ## Production Operations
 
-### `install.sh`
+### `install-server.sh`
 
-For a basic production install on Linux you can use the bundled [install.sh](install.sh) script. Run it as `root` on the target host:
+For a basic production install on Linux you can use the bundled [install-server.sh](../../install-server.sh) script. Run it as `root` on the target host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/balookrd/outline-ss-rust/main/install.sh -o install.sh
-chmod +x install.sh
-./install.sh --help
-sudo ./install.sh
+curl -fsSL https://raw.githubusercontent.com/balookrd/outline-proxy/main/install-server.sh -o install-server.sh
+chmod +x install-server.sh
+./install-server.sh --help
+sudo ./install-server.sh
 ```
 
 Install modes:
@@ -882,10 +882,10 @@ Install modes:
 Examples:
 
 ```bash
-./install.sh --help
-sudo ./install.sh
-sudo CHANNEL=nightly ./install.sh
-sudo VERSION=v1.2.3 ./install.sh
+./install-server.sh --help
+sudo ./install-server.sh
+sudo CHANNEL=nightly ./install-server.sh
+sudo VERSION=v1.2.3 ./install-server.sh
 ```
 
 What the script does:

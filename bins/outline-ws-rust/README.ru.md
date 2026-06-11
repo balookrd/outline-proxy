@@ -1270,15 +1270,15 @@ Snapshot дескрипторов включает общее количеств
 
 ## Production-эксплуатация
 
-### `install.sh`
+### `install-client.sh`
 
-Для базовой production-установки на Linux используйте bundled-скрипт [install.sh](install.sh). Запускайте от `root` на целевом хосте:
+Для базовой production-установки на Linux используйте bundled-скрипт [install-client.sh](../../install-client.sh). Запускайте от `root` на целевом хосте:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/balookrd/outline-ws-rust/main/install.sh -o install.sh
-chmod +x install.sh
-./install.sh --help
-sudo ./install.sh
+curl -fsSL https://raw.githubusercontent.com/balookrd/outline-proxy/main/install-client.sh -o install-client.sh
+chmod +x install-client.sh
+./install-client.sh --help
+sudo ./install-client.sh
 ```
 
 Режимы установки:
@@ -1290,11 +1290,11 @@ sudo ./install.sh
 Примеры:
 
 ```bash
-./install.sh --help
-sudo ./install.sh
-sudo ./install.sh --force
-sudo CHANNEL=nightly ./install.sh
-sudo VERSION=v1.2.3 ./install.sh
+./install-client.sh --help
+sudo ./install-client.sh
+sudo ./install-client.sh --force
+sudo CHANNEL=nightly ./install-client.sh
+sudo VERSION=v1.2.3 ./install-client.sh
 ```
 
 Что делает скрипт:
@@ -1341,7 +1341,7 @@ sudo VERSION=v1.2.3 ./install.sh
 Важно: `sudo` по умолчанию вырезает `http_proxy`/`https_proxy` из окружения, поэтому передавай их явно:
 
 ```bash
-sudo https_proxy=http://HOST:PORT http_proxy=http://HOST:PORT ./install.sh
+sudo https_proxy=http://HOST:PORT http_proxy=http://HOST:PORT ./install-client.sh
 ```
 
 или экспортируй и запускай через `sudo -E`:
@@ -1349,7 +1349,7 @@ sudo https_proxy=http://HOST:PORT http_proxy=http://HOST:PORT ./install.sh
 ```bash
 export https_proxy=http://HOST:PORT
 export http_proxy=http://HOST:PORT
-sudo -E ./install.sh
+sudo -E ./install-client.sh
 ```
 
 Для SOCKS5 (например, туннель `ssh -D 1080 user@vps`) используй `ALL_PROXY=socks5h://HOST:PORT`. Прокси с авторизацией — `http://USER:PASS@HOST:PORT` (спецсимволы в пароле URL-encode'ить).
@@ -1381,7 +1381,7 @@ Unit включает:
 - логирование через journald
 - увеличенный `LimitNOFILE`
 - `LimitSTACK=8M`, чтобы не раздувать anonymous thread-stack mappings
-- фиксированный системный пользователь / группа `outline-ws` (создаётся `install.sh`) — state-файлы сохраняют стабильного владельца между рестартами, а `StateDirectory=outline-ws-rust/_default` оседает на записываемом, управляемом юнитом пути
+- фиксированный системный пользователь / группа `outline-ws` (создаётся `install-client.sh`) — state-файлы сохраняют стабильного владельца между рестартами, а `StateDirectory=outline-ws-rust/_default` оседает на записываемом, управляемом юнитом пути
 - `CAP_NET_ADMIN` для `fwmark`; удалите, если `fwmark` не используется
 - `PrivateDevices=false` — необходим для TUN-режима; безвреден, если TUN не используется
 - консервативные флаги hardening systemd

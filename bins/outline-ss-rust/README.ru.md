@@ -864,15 +864,15 @@ sysctl -w kern.ipc.maxsockbuf=33554432
 
 ## Production-эксплуатация
 
-### `install.sh`
+### `install-server.sh`
 
-Для базовой production-установки на Linux можно использовать bundled-скрипт [install.sh](install.sh). Запускать его нужно от `root` на целевом хосте:
+Для базовой production-установки на Linux можно использовать bundled-скрипт [install-server.sh](../../install-server.sh). Запускать его нужно от `root` на целевом хосте:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/balookrd/outline-ss-rust/main/install.sh -o install.sh
-chmod +x install.sh
-./install.sh --help
-sudo ./install.sh
+curl -fsSL https://raw.githubusercontent.com/balookrd/outline-proxy/main/install-server.sh -o install-server.sh
+chmod +x install-server.sh
+./install-server.sh --help
+sudo ./install-server.sh
 ```
 
 Режимы установки:
@@ -884,10 +884,10 @@ sudo ./install.sh
 Примеры:
 
 ```bash
-./install.sh --help
-sudo ./install.sh
-sudo CHANNEL=nightly ./install.sh
-sudo VERSION=v1.2.3 ./install.sh
+./install-server.sh --help
+sudo ./install-server.sh
+sudo CHANNEL=nightly ./install-server.sh
+sudo VERSION=v1.2.3 ./install-server.sh
 ```
 
 Что делает скрипт:
