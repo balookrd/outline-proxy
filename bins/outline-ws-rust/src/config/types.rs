@@ -52,6 +52,37 @@ pub struct AppConfig {
     /// config key applies per-host-stable or random browser headers
     /// to WS / XHTTP dials. See `docs/UPLINK-CONFIGURATIONS.md`.
     pub fingerprint_profile: outline_transport::FingerprintProfileStrategy,
+    /// Reverse-tunnel listener (topology A). `Some` and enabled means a QUIC
+    /// server endpoint accepts carriers dialed by `ss` peers behind NAT,
+    /// pooled under [`ReverseListenerConfig::group`]. `None` keeps the
+    /// dial-only client model. See `docs/REVERSE-TUNNEL.md`.
+    pub reverse_listener: Option<ReverseListenerConfig>,
+}
+
+/// Resolved reverse-tunnel listener config. Cert paths and pin strings are
+/// kept as-is and parsed/loaded by the listener at startup (a malformed pin
+/// or unreadable cert fails listener bind, logged, without aborting the
+/// client).
+#[derive(Debug, Clone)]
+pub struct ReverseListenerConfig {
+    pub listen: SocketAddr,
+    pub server_cert_path: PathBuf,
+    pub server_key_path: PathBuf,
+    /// Uplink group reverse peers are pooled under.
+    pub group: std::sync::Arc<str>,
+    /// `true` advertises `[ss-mtu, ss]`; `false` only `[ss]`.
+    pub mtu: bool,
+    pub max_peers: usize,
+    pub peers: Vec<ReversePeerConfig>,
+}
+
+/// One expected reverse `ss` peer: its pinned client-cert fingerprint plus
+/// the SS credentials used to frame streams opened to it.
+#[derive(Debug, Clone)]
+pub struct ReversePeerConfig {
+    pub client_cert_pin: String,
+    pub method: shadowsocks_crypto::CipherKind,
+    pub password: String,
 }
 
 /// HTTP/2 flow-control window sizes for WebSocket transports.

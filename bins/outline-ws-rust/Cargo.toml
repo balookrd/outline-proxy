@@ -12,7 +12,7 @@ edition = "2024"
 [features]
 default = ["h3", "metrics", "control", "dashboard", "env-filter", "multi-thread", "mimalloc", "tun"]
 tun = ["dep:outline-tun", "outline-tun/metrics", "outline-metrics/tun"]   # TUN device support (transparent proxy)
-h3 = ["outline-transport/h3", "outline-tun?/quic", "outline-uplink/quic"]
+h3 = ["outline-transport/h3", "outline-tun?/quic", "outline-uplink/quic", "dep:quinn"]
 metrics = ["outline-metrics/prometheus", "outline-transport/metrics", "outline-uplink/metrics", "dep:serde_json", "hyper/server"]
 # control: authenticated mutating HTTP plane (manual uplink switch etc.).
 # Independent of `metrics`; both planes bind separate sockets but share hyper's server stack.
@@ -52,6 +52,10 @@ outline-routing = { path = "../../crates/outline-routing" }
 outline-transport = { path = "../../crates/outline-transport" }
 outline-tun = { path = "../../crates/outline-tun", default-features = false, optional = true }
 outline-uplink = { path = "../../crates/outline-uplink", default-features = false }
+parking_lot = "0.12"
+# QUIC server endpoint for the reverse-tunnel listener. Gated under `h3`
+# (which already pulls the QUIC client stack) so router builds stay quinn-free.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 rand = "0.9"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }

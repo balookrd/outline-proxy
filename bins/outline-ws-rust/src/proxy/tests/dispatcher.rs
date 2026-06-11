@@ -123,6 +123,8 @@ fn no_router_config() -> ProxyConfig {
         router: None,
         direct_fwmark: Some(FWMARK),
         tcp_timeouts: TcpTimeouts::DEFAULT,
+        #[cfg(feature = "h3")]
+        reverse: None,
     }
 }
 
@@ -135,6 +137,8 @@ fn route_kind(route: &Route) -> &'static str {
         Route::Direct { .. } => "Direct",
         Route::Drop => "Drop",
         Route::Group { .. } => "Group",
+        #[cfg(feature = "h3")]
+        Route::Reverse { .. } => "Reverse",
     }
 }
 

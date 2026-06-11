@@ -165,6 +165,20 @@ pub async fn connect_ss_tcp_quic(
     let conn = connect_quic_uplink(cache, url, fwmark, ipv6_first, source, ALPN_SS)
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+    ss_tcp_over_connection(&conn, cipher, master_key, lifetime).await
+}
+
+/// Open one SS-TCP bidi stream on an already-established `ss`-ALPN QUIC
+/// connection and wrap it in the AEAD codec. The connection-establishing
+/// half of [`connect_ss_tcp_quic`], factored out so the reverse-tunnel
+/// listener — which *accepts* the carrier instead of dialing it — can open
+/// per-session streams through the same writer/reader pipeline.
+pub async fn ss_tcp_over_connection(
+    conn: &Arc<crate::quic::SharedQuicConnection>,
+    cipher: CipherKind,
+    master_key: &[u8],
+    lifetime: Arc<UpstreamTransportGuard>,
+) -> Result<(QuicTcpWriter, QuicTcpReader)> {
     let (send, recv) = conn.open_bidi_stream().await?;
     let writer =
         TcpShadowsocksWriter::connect_quic(send, cipher, master_key, Arc::clone(&lifetime))?;

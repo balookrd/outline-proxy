@@ -123,6 +123,8 @@ fn no_router_config() -> ProxyConfig {
         router: None,
         direct_fwmark: None,
         tcp_timeouts: TcpTimeouts::DEFAULT,
+        #[cfg(feature = "h3")]
+        reverse: None,
     }
 }
 
