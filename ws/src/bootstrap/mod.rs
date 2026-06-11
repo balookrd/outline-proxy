@@ -123,6 +123,21 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
                  `ip rule fwmark X lookup Y` to escape the loop."
             );
         }
+        // `bypass_when_down` direct sockets rely on the same SO_MARK escape
+        // from the TUN routing loop as ipsec_bypass / `via = "direct"` rules.
+        #[cfg(target_os = "linux")]
+        if config.tun.is_some()
+            && config.direct_fwmark.is_none()
+            && let Some(group) = config.groups.iter().find(|g| g.load_balancing.bypass_when_down)
+        {
+            tracing::warn!(
+                group = %group.name,
+                "bypass_when_down = true with no direct_fwmark: bypassed traffic will \
+                 reuse the default route. If TUN is the default route, packets will loop \
+                 back into TUN. Set direct_fwmark and add a matching `ip rule fwmark X \
+                 lookup Y` to escape the loop."
+            );
+        }
         let tun_routing = outline_tun::TunRouting::new(
             registry.clone(),
             routing_table.clone(),

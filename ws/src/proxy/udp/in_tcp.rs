@@ -21,8 +21,8 @@ use super::dispatch::{
 };
 use super::group::{AssocGroupMap, UdpResponse, resolve_group_context};
 use super::routing::{
-    UdpPacketRoute, UdpRouteCache, new_udp_route_cache, resolve_udp_packet_route,
-    routing_table_active,
+    UdpPacketRoute, UdpRouteCache, direct_udp_possible, new_udp_route_cache,
+    resolve_udp_packet_route,
 };
 
 pub(in crate::proxy) async fn serve_udp_in_tcp(
@@ -34,7 +34,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
     let session = metrics::track_session("udp");
     let result = async {
         let bind_ip = client.local_addr()?.ip();
-        let direct_socket = if routing_table_active(&config) {
+        let direct_socket = if direct_udp_possible(&config, &registry) {
             let std_sock =
                 outline_net::bind_udp_socket(SocketAddr::new(bind_ip, 0), config.direct_fwmark)
                     .with_context(|| format!("failed to bind direct UDP socket on {}", bind_ip))?;

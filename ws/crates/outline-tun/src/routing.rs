@@ -15,12 +15,9 @@ use outline_uplink::{UplinkManager, UplinkRegistry};
 /// Per-flow dispatch context for the TUN path.
 ///
 /// Resolves destination targets through the policy routing table to pick a
-/// group's [`UplinkManager`]. `direct` and `drop` rules on the TUN side both
-/// result in the packet being dropped — TUN cannot synthesise a "host's own
-/// networking stack" path without fwmark/SO_BINDTODEVICE plumbing, which is
-/// OS-specific and out of scope for this module. Users that want part of
-/// their traffic to go outside the tunnel should exclude those prefixes
-/// from the TUN routing table on the host.
+/// group's [`UplinkManager`], escape the tunnel via a local socket
+/// ([`TunRoute::Direct`], marked with `direct_fwmark` so it does not loop
+/// back through the TUN device), or drop the flow by policy.
 #[derive(Clone)]
 pub struct TunRouting {
     registry: UplinkRegistry,
@@ -83,6 +80,9 @@ impl TunRouting {
     /// Resolve a TUN flow's destination to a group manager.
     pub async fn resolve(&self, target: &TargetAddr) -> TunRoute {
         let Some(table) = self.routing.as_ref() else {
+            if group_bypasses_when_down(&self.default_group).await {
+                return TunRoute::Direct { fwmark: self.direct_fwmark };
+            }
             return TunRoute::Group {
                 name: self.registry.default_group_name().into(),
                 manager: self.default_group.clone(),
@@ -128,21 +128,39 @@ impl TunRouting {
                     }
                     return TunRoute::Drop { reason: "unknown_group" };
                 };
-                // Fallback applies only when the primary group has no
-                // healthy uplinks at resolve time; Direct/Drop primaries are
-                // terminal decisions.
-                if fallback.is_some()
+                // Fallback / bypass applies only when the primary group has
+                // no healthy uplinks at resolve time; Direct/Drop primaries
+                // are terminal decisions. An explicit route fallback wins
+                // over the group's own `bypass_when_down`; the recursion
+                // then re-evaluates the bypass on the fallback group.
+                let bypass = manager.load_balancing().bypass_when_down;
+                if (fallback.is_some() || bypass)
                     && !manager.has_any_healthy(outline_uplink::TransportKind::Udp).await
                     && !manager.has_any_healthy(outline_uplink::TransportKind::Tcp).await
-                    && let Some(fb) = fallback
                 {
-                    // Recurse once — fallback doesn't chain further.
-                    return Box::pin(self.materialize_target(fb, None)).await;
+                    if let Some(fb) = fallback {
+                        // Recurse once — fallback doesn't chain further.
+                        return Box::pin(self.materialize_target(fb, None)).await;
+                    }
+                    return TunRoute::Direct { fwmark: self.direct_fwmark };
                 }
                 TunRoute::Group { name, manager: manager.clone() }
             },
         }
     }
+}
+
+/// `bypass_when_down` check for a group on the TUN path: true when the
+/// group opted in and currently has no healthy uplink on *either*
+/// transport — the same criterion as the route-fallback decision in
+/// [`TunRouting::materialize_target`] and the ICMP echo health-gate
+/// (`echo_reply_suppressed_for_down_group`); keep the three consistent.
+/// The flag read costs nothing, so the health walk only runs for
+/// opted-in groups.
+async fn group_bypasses_when_down(manager: &UplinkManager) -> bool {
+    manager.load_balancing().bypass_when_down
+        && !manager.has_any_healthy(outline_uplink::TransportKind::Udp).await
+        && !manager.has_any_healthy(outline_uplink::TransportKind::Tcp).await
 }
 
 pub(crate) fn target_port(target: &TargetAddr) -> u16 {
@@ -159,3 +177,7 @@ pub(crate) fn target_port(target: &TargetAddr) -> u16 {
 pub(crate) fn is_ipsec_port(port: u16) -> bool {
     matches!(port, 500 | 4500)
 }
+
+#[cfg(test)]
+#[path = "tests/routing.rs"]
+mod tests;

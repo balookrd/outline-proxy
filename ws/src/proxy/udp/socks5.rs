@@ -23,8 +23,8 @@ use super::dispatch::{
 };
 use super::group::{AssocGroupMap, UdpResponse, resolve_group_context};
 use super::routing::{
-    UdpPacketRoute, UdpRouteCache, new_udp_route_cache, resolve_udp_packet_route,
-    routing_table_active,
+    UdpPacketRoute, UdpRouteCache, direct_udp_possible, new_udp_route_cache,
+    resolve_udp_packet_route,
 };
 
 pub(in crate::proxy) async fn serve_udp_associate(
@@ -45,7 +45,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
 
         // Optional socket for direct UDP packets with fwmark to prevent
         // loopback through TUN when all traffic is captured.
-        let direct_socket = if routing_table_active(&config) {
+        let direct_socket = if direct_udp_possible(&config, &registry) {
             let std_sock = outline_net::bind_udp_socket(
                 SocketAddr::new(bind_ip, 0),
                 config.direct_fwmark,

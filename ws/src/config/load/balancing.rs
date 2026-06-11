@@ -162,6 +162,10 @@ pub(super) fn load_balancing_config(
         tun_suppress_icmp_reply_when_down: lb
             .and_then(|l| l.tun_suppress_icmp_reply_when_down)
             .unwrap_or(false),
+        // Default: `false` — a group with no healthy uplinks keeps traffic
+        // parked on the group (legacy behaviour). Opting in turns a fully
+        // down group into a live `direct` bypass until any uplink recovers.
+        bypass_when_down: lb.and_then(|l| l.bypass_when_down).unwrap_or(false),
         vless_udp_mux_limits: {
             let defaults = VlessUdpMuxLimits::default();
             VlessUdpMuxLimits {
