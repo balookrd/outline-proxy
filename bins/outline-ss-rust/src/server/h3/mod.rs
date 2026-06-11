@@ -30,6 +30,11 @@ mod http;
 mod raw_ss;
 mod raw_vless;
 
+// Re-exported so the reverse-tunnel dialer can drive the same raw-SS accept
+// loop on an outbound-dialed carrier (topology A) — the handler is agnostic
+// to how the `quinn::Connection` was obtained.
+pub(in crate::server) use raw_ss::handle_raw_ss_connection;
+
 pub(in crate::server) async fn build_h3_server(
     config: &Config,
 ) -> Result<(H3WebSocketServer<H3Transport>, quinn::Endpoint)> {
@@ -358,7 +363,11 @@ async fn handle_quic_connection(
             raw_vless::handle_raw_vless_connection(connection, ctx).await
         },
         Some(H3Alpn::Ss) if ctx.alpn.contains(&H3Alpn::Ss) => {
-            raw_ss::handle_raw_ss_connection(connection, ctx).await
+            let raw_ss_ctx = Arc::new(crate::server::transport::RawSsConnectionCtx {
+                raw_ss_ctx: Arc::clone(&ctx.raw_ss_ctx),
+                stream_semaphore: Arc::clone(&ctx.stream_semaphore),
+            });
+            raw_ss::handle_raw_ss_connection(connection, raw_ss_ctx).await
         },
         other => {
             warn!(?other, "rejecting QUIC connection with unsupported or disabled ALPN");

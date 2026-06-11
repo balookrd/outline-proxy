@@ -39,6 +39,7 @@ mod periodic;
 mod relay;
 mod replay;
 mod resumption;
+mod reverse_tunnel;
 mod scratch;
 mod services;
 mod setup;
@@ -233,6 +234,10 @@ pub async fn run(config: Config) -> Result<()> {
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move { serve_ss_udp_socket(socket, ctx, shutdown).await });
     }
+
+    // Reverse-tunnel dialers (topology A): outbound QUIC carriers to public
+    // `ws` listeners, each serving raw SS on the streams the peer opens.
+    reverse_tunnel::spawn_reverse_tunnels(&config, &built, &mut tasks, &shutdown_signal);
 
     // `shutdown_signal` lives past the spawn block so receivers inherited above
     // can observe cancellation; drop our copy so the watch channel can close

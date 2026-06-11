@@ -58,6 +58,7 @@ fn test_config() -> Config {
         session_resumption: Default::default(),
         http_fallback: None,
         sni_fallback: None,
+        reverse_tunnel: None,
         config_path: None,
         control: None,
         dashboard: None,
