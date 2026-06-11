@@ -30,6 +30,7 @@ mod h3;
 mod nat;
 mod raw_quic;
 mod resumption;
+mod reverse_tunnel;
 mod shadowsocks;
 mod sni_fallback;
 mod vless;
