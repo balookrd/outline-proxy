@@ -1,20 +1,20 @@
-name: Tag Release
+name: Tag Release (server)
 
 on:
   push:
     tags:
-      - "v*"
+      - "ss-v*"
 
 permissions:
   contents: write
 
 concurrency:
-  group: tag-release-${{ github.ref }}
+  group: ss-tag-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   release:
-    uses: ./.github/workflows/_release-build.yml
+    uses: ./.github/workflows/_ss-release-build.yml
     with:
       tag: ${{ github.ref_name }}
       prerelease: false
