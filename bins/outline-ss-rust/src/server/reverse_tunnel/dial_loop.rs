@@ -41,18 +41,24 @@ pub(super) async fn run_dial_loop(
             result = dialer.dial() => match result {
                 Ok(connection) => {
                     info!(addr = %dialer.addr(), "reverse tunnel carrier established");
+                    metrics::counter!("outline_ss_reverse_tunnel_connects_total", "result" => "success")
+                        .increment(1);
+                    metrics::gauge!("outline_ss_reverse_tunnel_active_connections").increment(1.0);
                     // A clean, long-lived carrier resets the backoff so the
                     // next reconnect is prompt; a carrier that dies almost
                     // immediately still re-enters the bounded backoff below.
                     backoff = ep.backoff_min;
-                    if let Err(error) =
-                        handle_raw_ss_connection(connection, Arc::clone(&ctx)).await
+                    let carrier = handle_raw_ss_connection(connection, Arc::clone(&ctx)).await;
+                    metrics::gauge!("outline_ss_reverse_tunnel_active_connections").decrement(1.0);
+                    if let Err(error) = carrier
                         && !is_normal_h3_shutdown(&error)
                     {
                         warn!(?error, addr = %dialer.addr(), "reverse tunnel carrier ended with error");
                     }
                 },
                 Err(error) => {
+                    metrics::counter!("outline_ss_reverse_tunnel_connects_total", "result" => "failure")
+                        .increment(1);
                     warn!(?error, addr = %dialer.addr(), "reverse tunnel dial failed");
                 },
             },
