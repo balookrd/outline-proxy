@@ -107,7 +107,7 @@ impl UserKey {
     }
 
     pub fn matches_password(&self, password: &str) -> Result<bool, CryptoError> {
-        if self.cipher.is_2022() {
+        if self.cipher.is_ss2022() {
             let Ok(decoded) = STANDARD.decode(password.as_bytes()) else {
                 return Ok(false);
             };
@@ -123,7 +123,7 @@ impl UserKey {
 }
 
 fn password_to_master_key(password: &str, cipher: CipherKind) -> Result<Vec<u8>, CryptoError> {
-    if cipher.is_2022() {
+    if cipher.is_ss2022() {
         let key = STANDARD
             .decode(password.as_bytes())
             .map_err(|_| CryptoError::InvalidBase64Key)?;

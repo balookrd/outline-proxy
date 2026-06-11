@@ -44,7 +44,7 @@ where
     Msg: Send + 'static,
 {
     let target = request.target.clone();
-    let target_display = target.display_host_port();
+    let target_display = target.to_string();
 
     // Resume attempt: re-attach a parked single-target VLESS-UDP
     // session before doing any DNS / bind work. The target sent in

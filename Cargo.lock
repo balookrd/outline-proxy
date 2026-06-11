@@ -1800,6 +1800,7 @@ dependencies = [
  "metrics-util",
  "mimalloc",
  "outline-transport",
+ "outline-wire",
  "parking_lot",
  "proptest",
  "quinn",
@@ -1849,6 +1850,7 @@ dependencies = [
  "outline-metrics",
  "outline-net",
  "outline-ss2022",
+ "outline-wire",
  "parking_lot",
  "pin-project-lite",
  "quinn",
@@ -1917,6 +1919,20 @@ dependencies = [
  "toml",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "outline-wire"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bytes",
+ "clap",
+ "md5",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2656,6 +2672,7 @@ dependencies = [
  "chacha20poly1305",
  "hkdf",
  "md5",
+ "outline-wire",
  "rand",
  "serde",
  "sha1",
@@ -2747,6 +2764,7 @@ dependencies = [
 name = "socks5-proto"
 version = "0.1.0"
 dependencies = [
+ "outline-wire",
  "thiserror 2.0.18",
  "tokio",
 ]

@@ -152,7 +152,7 @@ async fn send_encrypted_udp_request(
     payload: &[u8],
     user: &crate::crypto::UserKey,
 ) -> Result<()> {
-    let mut plaintext = TargetAddr::Socket(target).encode()?;
+    let mut plaintext = TargetAddr::from(target).to_wire_bytes()?;
     plaintext.extend_from_slice(payload);
     let ciphertext = encrypt_udp_packet(user, &plaintext)?;
     client.send_to(&ciphertext, listen_addr).await?;

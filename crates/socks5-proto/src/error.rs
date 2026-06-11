@@ -91,4 +91,19 @@ impl Socks5Error {
     }
 }
 
+impl From<outline_wire::TargetAddrError> for Socks5Error {
+    fn from(err: outline_wire::TargetAddrError) -> Self {
+        use outline_wire::TargetAddrError;
+        match err {
+            TargetAddrError::EmptyBuffer => Socks5Error::EmptyAddressBuffer,
+            TargetAddrError::ShortAddress { kind } => Socks5Error::ShortAddress { kind },
+            TargetAddrError::UnsupportedAddressType(atyp) => {
+                Socks5Error::UnsupportedAddressType(atyp)
+            },
+            TargetAddrError::DomainTooLong => Socks5Error::DomainTooLong,
+            TargetAddrError::DomainNotUtf8 => Socks5Error::DomainNotUtf8,
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Socks5Error>;

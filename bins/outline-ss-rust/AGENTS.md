@@ -33,9 +33,13 @@ Prometheus metrics и локально пропатченные копии `h3` 
   SNI fallback и proxy-protocol plumbing.
 - `src/server/shadowsocks/`: plain Shadowsocks TCP/UDP listeners.
 - `src/crypto/`: Shadowsocks AEAD stream/UDP primitives и логика
-  replay/session cache.
-- `src/protocol/`: target-address helpers для Shadowsocks и parsing/encoding для
-  VLESS/mux.
+  replay/session cache. SS2022-заголовки парсятся общим крейтом
+  `crates/outline-wire`; `ss2022_header.rs` — тонкая обёртка (clock,
+  CryptoError, склейка `target || payload`).
+- `src/protocol/`: реэкспорт wire-кодека (`TargetAddr`, VLESS, mux) из
+  `crates/outline-wire` плюс серверная сущность `VlessUser`/`find_user`.
+  Сами форматы и их тесты живут в `outline-wire` — меняя wire-поведение,
+  правь общий крейт (это затрагивает и клиента).
 - `src/outbound.rs`: upstream connect/bind behavior, включая выбор IPv6 source
   address. Ротация source (`ipv6_prefix`/`ipv6_interface`) тянет новый случайный
   адрес на каждый connect; `ipv6_sticky` закрепляет source per-destination в

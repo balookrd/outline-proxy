@@ -40,7 +40,7 @@ pub(super) async fn open_tcp_sub<Msg>(
 where
     Msg: Send + 'static,
 {
-    let target_display = target.display_host_port();
+    let target_display = target.to_string();
     let stream = match connect_tcp_target(
         server.dns_cache.as_ref(),
         &target,

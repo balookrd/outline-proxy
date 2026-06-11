@@ -107,8 +107,8 @@ fn roundtrip_ss2022_tcp_stream() {
     let psk = "MDEyMzQ1Njc4OWFiY2RlZg==";
     let users = users(CipherKind::Aes128Gcm2022, psk, psk);
     let request_salt = [7_u8; 16];
-    let target = TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 443)));
-    let target_bytes = target.encode().unwrap();
+    let target = TargetAddr::from(SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 443)));
+    let target_bytes = target.to_wire_bytes().unwrap();
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
@@ -162,8 +162,8 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     let psk = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
     let users = users(CipherKind::Chacha20Poly13052022, psk, psk);
     let request_salt = [9_u8; 32];
-    let target = TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(9, 9, 9, 9), 53)));
-    let target_bytes = target.encode().unwrap();
+    let target = TargetAddr::from(SocketAddr::from((Ipv4Addr::new(9, 9, 9, 9), 53)));
+    let target_bytes = target.to_wire_bytes().unwrap();
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
@@ -278,8 +278,8 @@ fn stream_user_hint_hit_on_ss2022() {
     let psk = "MDEyMzQ1Njc4OWFiY2RlZg==";
     let users = users(CipherKind::Aes128Gcm2022, psk, psk);
     let request_salt = [9_u8; 16];
-    let target = TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 443)));
-    let target_bytes = target.encode().unwrap();
+    let target = TargetAddr::from(SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 443)));
+    let target_bytes = target.to_wire_bytes().unwrap();
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 

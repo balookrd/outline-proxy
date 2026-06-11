@@ -163,7 +163,7 @@ where
     Msg: Send + 'static,
 {
     let target = request.target.clone();
-    let target_display = target.display_host_port();
+    let target_display = target.to_string();
     info!(user = user.label(), path = %route.path, target = %target_display, "vless tcp target");
 
     // Resume attempt: re-attach to a parked VLESS-TCP upstream when the

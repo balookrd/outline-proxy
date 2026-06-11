@@ -44,6 +44,7 @@ once_cell = { version = "1.21", optional = true }
 outline-metrics = { path = "../outline-metrics", default-features = false }
 outline-net = { path = "../outline-net" }
 outline-ss2022 = { path = "../outline-ss2022" }
+outline-wire = { path = "../outline-wire" }
 parking_lot = "0.12"
 pin-project-lite = "0.2"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }

@@ -13,6 +13,7 @@ members = [
     "crates/outline-transport",
     "crates/outline-tun",
     "crates/outline-uplink",
+    "crates/outline-wire",
     "crates/shadowsocks-crypto",
     "crates/socks5-proto",
     "vendor/sockudo-ws",
