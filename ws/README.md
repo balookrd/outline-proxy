@@ -1231,6 +1231,8 @@ The descriptor snapshot includes total open FDs plus a breakdown for sockets, pi
 
 `outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}`, and `outline_ws_rust_sticky_routes_total` expose selector configuration and active-uplink state.
 
+`outline_ws_rust_group_bypass_active{group, transport}` reports the live `bypass_when_down` state: `1` while new flows of that transport are being dispatched direct (tunnel bypass) because the group has no healthy uplink, `0` while traffic tunnels normally. The series exists only for groups with `bypass_when_down = true`; the built-in dashboard renders the same signal as a group-header chip (grey `Bypass: armed` / amber `Bypass: DIRECT`), and the Grafana dashboard carries a matching stat + timeline in the Routing Policy section.
+
 Per-uplink open-connection accounting (used to detect connections leaking
 into a non-active uplink after a `Global` / `PerUplink` switchover) is
 exported by:

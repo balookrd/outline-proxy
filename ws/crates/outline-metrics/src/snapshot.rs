@@ -50,6 +50,7 @@ impl Metrics {
         self.sticky_routes_total.reset();
         self.selection_mode_info.reset();
         self.routing_scope_info.reset();
+        self.group_bypass_active.reset();
         self.global_active_uplink_info.reset();
         self.per_uplink_active_uplink_info.reset();
         self.uplink_fingerprint_profile_strategy_info.reset();
@@ -76,6 +77,17 @@ impl Metrics {
         self.routing_scope_info
             .with_label_values(&[group, &snapshot.routing_scope])
             .set(1);
+        // Published only for opted-in groups: a 0/1 pair of series per group
+        // signals "bypass armed, currently tunnelling / diverting direct";
+        // absence of the series means `bypass_when_down` is off entirely.
+        if snapshot.bypass_when_down {
+            self.group_bypass_active
+                .with_label_values(&[group, "tcp"])
+                .set(if snapshot.bypass_active_tcp { 1 } else { 0 });
+            self.group_bypass_active
+                .with_label_values(&[group, "udp"])
+                .set(if snapshot.bypass_active_udp { 1 } else { 0 });
+        }
 
         for uplink in &snapshot.uplinks {
             self.global_active_uplink_info

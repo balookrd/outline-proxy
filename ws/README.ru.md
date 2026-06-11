@@ -1228,6 +1228,8 @@ Snapshot дескрипторов включает общее количеств
 
 `outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}` и `outline_ws_rust_sticky_routes_total` экспортируют конфигурацию селектора и состояние активного uplink.
 
+`outline_ws_rust_group_bypass_active{group, transport}` отражает живое состояние `bypass_when_down`: `1` — новые потоки этого транспорта сейчас диспатчатся direct (байпасс туннеля), потому что в группе нет здорового uplink'а; `0` — трафик туннелируется нормально. Серия существует только для групп с `bypass_when_down = true`; встроенный dashboard показывает тот же сигнал чипом в заголовке группы (серый `Bypass: armed` / янтарный `Bypass: DIRECT`), а Grafana-дашборд — парной stat-панелью и таймлайном в секции Routing Policy.
+
 Учёт открытых соединений по uplink (используется для детекции утекания
 коннектов в неактивный uplink после переключения active в режимах
 `Global` / `PerUplink`) экспортируется через:

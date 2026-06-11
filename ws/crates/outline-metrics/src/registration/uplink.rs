@@ -116,6 +116,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_configured_fallbacks_count: IntGaugeVec,
     pub(super) selection_mode_info: IntGaugeVec,
     pub(super) routing_scope_info: IntGaugeVec,
+    pub(super) group_bypass_active: IntGaugeVec,
     pub(super) global_active_uplink_info: IntGaugeVec,
     pub(super) per_uplink_active_uplink_info: IntGaugeVec,
     pub(super) sticky_routes_total: IntGaugeVec,
@@ -339,6 +340,17 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         "Configured routing scope.",
         ["group", "scope"]
     );
+    let group_bypass_active = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_rust_group_bypass_active",
+        "1 while the group's `bypass_when_down` is diverting new flows of this \
+         transport direct (tunnel bypass) because the group has no healthy uplink, \
+         0 while traffic is tunnelling normally. Published only for groups with \
+         `bypass_when_down = true` — absence of the series means the option is off. \
+         The TUN path bypasses only when both transports read 1.",
+        ["group", "transport"]
+    );
     let global_active_uplink_info = register_labeled!(
         registry,
         IntGaugeVec,
@@ -451,6 +463,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_configured_fallbacks_count,
         selection_mode_info,
         routing_scope_info,
+        group_bypass_active,
         global_active_uplink_info,
         per_uplink_active_uplink_info,
         sticky_routes_total,

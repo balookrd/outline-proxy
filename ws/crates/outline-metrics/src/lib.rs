@@ -195,6 +195,7 @@ struct Metrics {
     uplink_configured_fallbacks_count: IntGaugeVec,
     selection_mode_info: IntGaugeVec,
     routing_scope_info: IntGaugeVec,
+    group_bypass_active: IntGaugeVec,
     global_active_uplink_info: IntGaugeVec,
     per_uplink_active_uplink_info: IntGaugeVec,
     sticky_routes_total: IntGaugeVec,

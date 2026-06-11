@@ -20,6 +20,20 @@ pub struct UplinkManagerSnapshot {
     pub load_balancing_mode: String,
     pub routing_scope: String,
     pub auto_failback: bool,
+    /// `bypass_when_down` group flag: traffic routed to this group is
+    /// dispatched direct (tunnel bypass) while the group has no healthy
+    /// uplink. Configuration surface, not live state — see the
+    /// `bypass_active_*` fields for the current decision.
+    pub bypass_when_down: bool,
+    /// True while the bypass is currently diverting new TCP flows direct:
+    /// `bypass_when_down` is set AND no uplink in the group is
+    /// TCP-healthy (the same `has_any_healthy` signal the dispatch layer
+    /// uses). Always `false` when `bypass_when_down` is off.
+    pub bypass_active_tcp: bool,
+    /// UDP counterpart of [`Self::bypass_active_tcp`]. The TUN path
+    /// bypasses only when *both* transports are down — i.e. when both
+    /// of these fields are `true`.
+    pub bypass_active_udp: bool,
     pub global_active_uplink: Option<String>,
     pub global_active_reason: Option<String>,
     /// Active uplink for TCP in per_uplink routing scope.
