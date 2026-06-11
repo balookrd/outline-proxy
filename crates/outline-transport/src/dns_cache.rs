@@ -186,7 +186,7 @@ fn evict_one(map: &mut HashMap<CacheKey, Entry>) -> bool {
     let now = Instant::now();
     let sample = EVICTION_SAMPLE.min(len);
     let skip = if len > sample {
-        rand::thread_rng().gen_range(0..len - sample + 1)
+        rand::rng().random_range(0..len - sample + 1)
     } else {
         0
     };

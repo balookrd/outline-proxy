@@ -15,7 +15,7 @@ pub(crate) fn seeded_rng(seed: u64) -> StdRng {
 }
 
 pub(crate) fn random_payload(rng: &mut StdRng, max_len: usize) -> Vec<u8> {
-    let mut payload = vec![0u8; rng.gen_range(0..=max_len)];
+    let mut payload = vec![0u8; rng.random_range(0..=max_len)];
     rng.fill(payload.as_mut_slice());
     payload
 }

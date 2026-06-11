@@ -29,7 +29,7 @@ pub(super) fn build_ss2022_request_header(target: &TargetAddr) -> Result<(Vec<u8
     variable.extend_from_slice(&target);
     variable.extend_from_slice(&padding_len.to_be_bytes());
     let mut padding = vec![0u8; usize::from(padding_len)];
-    rand::thread_rng().fill_bytes(&mut padding);
+    rand::rng().fill_bytes(&mut padding);
     variable.extend_from_slice(&padding);
     Ok((fixed, variable))
 }
