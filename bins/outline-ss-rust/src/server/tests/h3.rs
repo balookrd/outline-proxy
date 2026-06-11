@@ -783,7 +783,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
     payload.extend_from_slice(domain);
 
     let mut new_frame = BytesMut::new();
-    let target = TargetAddr::Socket(SocketAddr::from((Ipv4Addr::LOCALHOST, upstream_addr.port())));
+    let target = TargetAddr::from(SocketAddr::from((Ipv4Addr::LOCALHOST, upstream_addr.port())));
     encode_frame(
         &mut new_frame,
         1,

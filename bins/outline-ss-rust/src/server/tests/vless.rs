@@ -368,7 +368,7 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
 
     let mut new_frame = BytesMut::new();
     let target =
-        TargetAddr::Socket(std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, upstream_addr.port())));
+        TargetAddr::from(std::net::SocketAddr::from((Ipv4Addr::LOCALHOST, upstream_addr.port())));
     encode_frame(
         &mut new_frame,
         1,

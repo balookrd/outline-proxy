@@ -27,7 +27,7 @@ outline-proxy/
 ├── bins/
 │   ├── outline-ss-rust/   # серверный бинарь  (+ его README, CHANGELOG, docs/)
 │   └── outline-ws-rust/   # клиентский бинарь  (+ его README, CHANGELOG, docs/)
-├── crates/                # общие крейты (transport, uplink, tun, crypto, routing, …)
+├── crates/                # общие крейты (wire-протокол, transport, uplink, tun, crypto, routing, …)
 ├── vendor/                # пропатченные h3 + sockudo-ws (одна копия, на уровне workspace)
 ├── .cargo/config.toml     # cross-build алиасы (ss-* / ws-*)
 ├── .github/workflows/     # CI: per-binary release / nightly / tag пайплайны

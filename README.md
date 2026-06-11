@@ -26,7 +26,7 @@ outline-proxy/
 ├── bins/
 │   ├── outline-ss-rust/   # server binary  (+ its README, CHANGELOG, docs/)
 │   └── outline-ws-rust/   # client binary  (+ its README, CHANGELOG, docs/)
-├── crates/                # shared crates (transport, uplink, tun, crypto, routing, …)
+├── crates/                # shared crates (wire protocol, transport, uplink, tun, crypto, routing, …)
 ├── vendor/                # patched h3 + sockudo-ws (single copy, workspace-level)
 ├── .cargo/config.toml     # cross-build aliases (ss-* / ws-*)
 ├── .github/workflows/     # CI: per-binary release / nightly / tag pipelines

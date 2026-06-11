@@ -1,29 +1,15 @@
-use base64::Engine;
 use hkdf::Hkdf;
 use sha1::Sha1;
 
 use crate::cipher_kind::CipherKind;
 use crate::error::{CryptoError, Result};
 
+// Master-key derivation (`CipherKind::derive_master_key`, EVP_BytesToKey)
+// lives in `outline-wire` next to the cipher enum itself.
+pub use outline_wire::evp_bytes_to_key;
+
 pub const SHADOWSOCKS_INFO: &[u8] = b"ss-subkey";
 pub const SHADOWSOCKS_2022_INFO: &str = "shadowsocks 2022 session subkey";
-
-impl CipherKind {
-    pub fn derive_master_key(self, password: &str) -> Result<Vec<u8>> {
-        if self.is_ss2022() {
-            let key = base64::engine::general_purpose::STANDARD.decode(password)?;
-            if key.len() != self.key_len() {
-                return Err(CryptoError::Ss2022PskLengthMismatch {
-                    got: key.len(),
-                    expected: self.key_len(),
-                });
-            }
-            Ok(key)
-        } else {
-            Ok(evp_bytes_to_key(password.as_bytes(), self.key_len()))
-        }
-    }
-}
 
 /// Derives a session subkey from `master_key` and `salt`.
 ///
@@ -45,20 +31,4 @@ pub fn derive_subkey(cipher: CipherKind, master_key: &[u8], salt: &[u8]) -> Resu
             .map_err(|_| CryptoError::HkdfExpandFailed)?;
     }
     Ok(subkey)
-}
-
-pub fn evp_bytes_to_key(password: &[u8], key_len: usize) -> Vec<u8> {
-    let mut key = Vec::with_capacity(key_len);
-    let mut prev = Vec::new();
-
-    while key.len() < key_len {
-        let mut input = Vec::with_capacity(prev.len() + password.len());
-        input.extend_from_slice(&prev);
-        input.extend_from_slice(password);
-        prev = md5::compute(input).0.to_vec();
-        key.extend_from_slice(&prev);
-    }
-
-    key.truncate(key_len);
-    key
 }

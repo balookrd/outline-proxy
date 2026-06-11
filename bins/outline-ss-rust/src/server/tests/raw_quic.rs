@@ -244,7 +244,7 @@ async fn ss_raw_quic_tcp_relay_smoke() -> Result<()> {
 
     // Encrypt SS-AEAD: salt + chunk(target_addr || "ping") on a single QUIC
     // stream — exactly what the plain TCP listener consumes.
-    let mut request = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut request = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     request.extend_from_slice(b"ping");
     let mut encryptor = AeadStreamEncryptor::new(&user, None)?;
     let mut buf = BytesMut::new();
@@ -571,7 +571,7 @@ async fn ss_raw_quic_udp_relay_smoke() -> Result<()> {
     let connection = endpoint.connect(addr, "localhost")?.await?;
 
     // Build SS-AEAD UDP packet: target_addr | "ping", then encrypt.
-    let mut plaintext = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut plaintext = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     plaintext.extend_from_slice(b"ping");
     let encrypted = encrypt_udp_packet(&user, &plaintext)?;
     connection.send_datagram(Bytes::from(encrypted))?;
@@ -645,7 +645,7 @@ async fn ss_raw_quic_udp_oversize_relay() -> Result<()> {
     // 1200 B default max_datagram_size, so the server is forced to
     // route the echoed reply through the oversize-record stream.
     let payload: Vec<u8> = (0..2048u32).map(|i| (i & 0xff) as u8).collect();
-    let mut plaintext = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut plaintext = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     plaintext.extend_from_slice(&payload);
     let encrypted = encrypt_udp_packet(&user, &plaintext)?;
 

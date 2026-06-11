@@ -39,7 +39,7 @@ fn encrypts_ss2022_udp_response() {
     let user = UserKey::new("alice", psk, None, CipherKind::Aes128Gcm2022).unwrap();
     let packet = encrypt_udp_packet_for_response(
         &user,
-        &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 53))),
+        &TargetAddr::from(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 53))),
         b"dns",
         &UdpCipherMode::Aes2022 { client_session_id: [1; 8] },
         Some([2; 8]),
@@ -55,7 +55,7 @@ fn encrypts_ss2022_chacha_udp_response() {
     let user = UserKey::new("alice", psk, None, CipherKind::Chacha20Poly13052022).unwrap();
     let packet = encrypt_udp_packet_for_response(
         &user,
-        &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(1, 0, 0, 1), 5353))),
+        &TargetAddr::from(SocketAddr::from((Ipv4Addr::new(1, 0, 0, 1), 5353))),
         b"mdns",
         &UdpCipherMode::Chacha2022 { client_session_id: [3; 8] },
         Some([4; 8]),

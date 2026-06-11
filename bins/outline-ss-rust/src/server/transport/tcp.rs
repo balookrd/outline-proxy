@@ -751,7 +751,7 @@ where
             "tcp shadowsocks user authenticated"
         );
         let user_id = user.id_arc();
-        let target_display: Arc<str> = Arc::from(target.display_host_port());
+        let target_display: Arc<str> = Arc::from(target.to_string());
 
         // Resume attempt: if the client offered a Session ID and the
         // registry has a parked TCP entry for this authenticated user,

@@ -203,7 +203,7 @@ async fn websocket_rfc8441_http2_udp_relay_smoke() -> Result<()> {
     let upgraded = TokioIo::new(upgraded);
     let mut socket = WebSocketStream::from_raw_socket(upgraded, protocol::Role::Client, None).await;
 
-    let mut plaintext = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut plaintext = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     plaintext.extend_from_slice(b"ping");
     let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
     socket.send(WsMessage::Binary(ciphertext.into())).await?;
@@ -216,7 +216,7 @@ async fn websocket_rfc8441_http2_udp_relay_smoke() -> Result<()> {
     let packet = decrypt_udp_packet(std::slice::from_ref(&user), &encrypted_reply)?;
     let (target, consumed) = crate::protocol::parse_target_addr(&packet.payload)?
         .ok_or_else(|| anyhow::anyhow!("missing target in udp response"))?;
-    assert_eq!(target, TargetAddr::Socket(upstream_addr));
+    assert_eq!(target, TargetAddr::from(upstream_addr));
     assert_eq!(&packet.payload[consumed..], b"ping");
     assert_eq!(upstream_task.await??, b"ping");
 
@@ -364,7 +364,7 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
         .map(|route| route.user.clone())
         .ok_or_else(|| anyhow::anyhow!("missing bob user"))?;
     let (mut socket, _) = connect_async(format!("ws://{listen_addr}/alice-tcp")).await?;
-    let mut request = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut request = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     request.extend_from_slice(b"ping");
     let mut encryptor = AeadStreamEncryptor::new(&bob, None)?;
     let mut buf = BytesMut::new();

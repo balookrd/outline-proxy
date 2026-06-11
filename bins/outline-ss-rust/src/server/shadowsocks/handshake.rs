@@ -114,7 +114,7 @@ pub(in crate::server) async fn ss_tcp_handshake<R: AsyncRead + Unpin>(
         debug!(
             peer_addr = ?peer_addr,
             user = user.id(),
-            target = %target.display_host_port(),
+            target = %target.to_string(),
             initial_payload_bytes = plaintext_buffer.len().saturating_sub(consumed),
             "socket tcp parsed target address"
         );

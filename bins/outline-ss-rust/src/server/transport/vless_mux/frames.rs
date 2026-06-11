@@ -106,7 +106,7 @@ where
         path = %route.path,
         session_id,
         ?network,
-        target = %target.display_host_port(),
+        target = %target.to_string(),
         global_id = ?meta.global_id,
         "mux New sub-conn"
     );
@@ -157,7 +157,7 @@ async fn handle_keep(
                 ) {
                     Some(r) => r,
                     None => {
-                        warn!(path = %route.path, addr = %addr.display_host_port(), "mux xudp addr unresolved; dropping");
+                        warn!(path = %route.path, addr = %addr.to_string(), "mux xudp addr unresolved; dropping");
                         return Ok(());
                     },
                 },
