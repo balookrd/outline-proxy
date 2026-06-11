@@ -6,9 +6,10 @@ use tokio::fs;
 use super::args::Args;
 use super::compat::normalize_outline_section;
 use super::migrate::migrate_legacy_config_if_needed;
-use super::schema::{ConfigFile, ControlSection, DashboardSection};
+use super::schema::{ConfigFile, ControlSection, DashboardSection, ReverseListenerSection};
 use super::types::{
     AppConfig, ControlConfig, DashboardConfig, DashboardInstanceConfig, MetricsConfig,
+    ReverseListenerConfig, ReversePeerConfig,
 };
 
 mod auth;
@@ -137,6 +138,9 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         Some(path.with_extension("state.toml"))
     };
 
+    let reverse_listener =
+        load_reverse_listener(file.as_ref().and_then(|f| f.reverse_listener.as_ref()), config_dir)?;
+
     Ok(AppConfig {
         listen,
         socks5_auth,
@@ -154,7 +158,47 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         state_path,
         tcp_timeouts,
         fingerprint_profile,
+        reverse_listener,
     })
+}
+
+/// Resolve `[reverse_listener]` into runtime config. `None` when absent or
+/// `enabled = false`. Cert paths are resolved against the config dir; pin
+/// strings and certs are validated by the listener at bind time. A peer
+/// list is mandatory (the listener requires at least one allowed pin).
+fn load_reverse_listener(
+    section: Option<&ReverseListenerSection>,
+    config_dir: &Path,
+) -> Result<Option<ReverseListenerConfig>> {
+    let Some(section) = section else { return Ok(None) };
+    if section.enabled == Some(false) {
+        return Ok(None);
+    }
+    if section.peers.is_empty() {
+        bail!("[reverse_listener] requires at least one [[reverse_listener.peers]] entry");
+    }
+    let server_cert_path = routing::resolve_config_path(&section.server_cert_path, config_dir)
+        .context("invalid [reverse_listener].server_cert_path")?;
+    let server_key_path = routing::resolve_config_path(&section.server_key_path, config_dir)
+        .context("invalid [reverse_listener].server_key_path")?;
+    let peers = section
+        .peers
+        .iter()
+        .map(|p| ReversePeerConfig {
+            client_cert_pin: p.client_cert_pin.clone(),
+            method: p.method,
+            password: p.password.clone(),
+        })
+        .collect();
+    Ok(Some(ReverseListenerConfig {
+        listen: section.listen,
+        server_cert_path,
+        server_key_path,
+        group: section.group.as_str().into(),
+        mtu: section.mtu.unwrap_or(true),
+        max_peers: section.max_peers.unwrap_or(8).max(1),
+        peers,
+    }))
 }
 
 async fn load_dashboard_config(
