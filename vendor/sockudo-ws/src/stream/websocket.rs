@@ -842,9 +842,20 @@ where
         self.send(Message::Binary(data)).await
     }
 
-    /// Send a close frame
+    /// Send a close frame and shut down the underlying transport write half.
+    ///
+    /// For HTTP/3 WebSocket (RFC 9220) this sends a QUIC FIN via `shutdown()`
+    /// instead of dropping the `SendStream` (which would emit RESET_STREAM and
+    /// make some H3 peers escalate to a connection-level `H3_INTERNAL_ERROR`,
+    /// tearing down every multiplexed stream on the QUIC connection).
     pub async fn close(&mut self, code: u16, reason: &str) -> Result<()> {
-        self.send(Message::Close(Some(CloseReason::new(code, reason)))).await
+        self.send(Message::Close(Some(CloseReason::new(code, reason)))).await?;
+        // Send FIN on the underlying transport (QUIC send stream for H3, TCP
+        // half-close for H1/H2). Errors are ignored: the Close frame is already
+        // delivered and the stream is logically finished.
+        use tokio::io::AsyncWriteExt as _;
+        let _ = self.writer.shutdown().await;
+        Ok(())
     }
 
     /// Check if the connection is closed
@@ -1461,9 +1472,20 @@ where
         self.send(Message::Binary(data)).await
     }
 
-    /// Send a close frame
+    /// Send a close frame and shut down the underlying transport write half.
+    ///
+    /// For HTTP/3 WebSocket (RFC 9220) this sends a QUIC FIN via `shutdown()`
+    /// instead of dropping the `SendStream` (which would emit RESET_STREAM and
+    /// make some H3 peers escalate to a connection-level `H3_INTERNAL_ERROR`,
+    /// tearing down every multiplexed stream on the QUIC connection).
     pub async fn close(&mut self, code: u16, reason: &str) -> Result<()> {
-        self.send(Message::Close(Some(CloseReason::new(code, reason)))).await
+        self.send(Message::Close(Some(CloseReason::new(code, reason)))).await?;
+        // Send FIN on the underlying transport (QUIC send stream for H3, TCP
+        // half-close for H1/H2). Errors are ignored: the Close frame is already
+        // delivered and the stream is logically finished.
+        use tokio::io::AsyncWriteExt as _;
+        let _ = self.writer.shutdown().await;
+        Ok(())
     }
 
     /// Check if the connection is closed
