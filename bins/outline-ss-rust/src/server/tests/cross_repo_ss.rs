@@ -167,7 +167,7 @@ async fn cross_repo_ss_tcp_plain_round_trip() -> Result<()> {
     // Legacy AEAD has no separate header frame: the first chunk
     // carries the SOCKS5-style target address followed by the
     // application payload, all encrypted as one AEAD record.
-    let mut first = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut first = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     first.extend_from_slice(b"ping");
     writer.send_chunk(&first).await?;
 
@@ -229,7 +229,7 @@ async fn cross_repo_ss_tcp_ws_h1_round_trip() -> Result<()> {
     let mut reader =
         TcpShadowsocksReader::new(stream, cipher, &master_key, Arc::clone(&lifetime), ctrl_tx);
 
-    let mut first = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut first = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     first.extend_from_slice(b"ping");
     writer.send_chunk(&first).await?;
 
@@ -334,7 +334,7 @@ async fn cross_repo_ss_tcp_ws_h3_round_trip() -> Result<()> {
     let mut reader =
         TcpShadowsocksReader::new(stream, cipher, &master_key, Arc::clone(&lifetime), ctrl_tx);
 
-    let mut first = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut first = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     first.extend_from_slice(b"ping");
     writer.send_chunk(&first).await?;
 
@@ -395,7 +395,7 @@ async fn cross_repo_ss_tcp_ws_h2_round_trip() -> Result<()> {
     let mut reader =
         TcpShadowsocksReader::new(stream, cipher, &master_key, Arc::clone(&lifetime), ctrl_tx);
 
-    let mut first = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut first = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     first.extend_from_slice(b"ping");
     writer.send_chunk(&first).await?;
 
@@ -549,7 +549,7 @@ async fn cross_repo_ss_tcp_ws_h2_resume_reattaches_parked_upstream() -> Result<(
         ctrl_tx_a.clone(),
     );
 
-    let mut first_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut first_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     first_payload.extend_from_slice(b"ping");
     writer_a.send_chunk(&first_payload).await?;
     let reply_a = reader_a.read_chunk().await?;
@@ -601,7 +601,7 @@ async fn cross_repo_ss_tcp_ws_h2_resume_reattaches_parked_upstream() -> Result<(
     // Target is irrelevant on the resume path; the server uses the
     // parked upstream and never re-resolves. Pick `helo` so the
     // upstream task can distinguish the two reads.
-    let mut second_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut second_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     second_payload.extend_from_slice(b"helo");
     writer_b.send_chunk(&second_payload).await?;
     let reply_b = reader_b.read_chunk().await?;
@@ -706,7 +706,7 @@ async fn cross_repo_ss_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Result<
         ctrl_tx_a.clone(),
     );
 
-    let mut first_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut first_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     first_payload.extend_from_slice(b"ping");
     writer_a.send_chunk(&first_payload).await?;
     let reply_a = reader_a.read_chunk().await?;
@@ -762,7 +762,7 @@ async fn cross_repo_ss_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Result<
     // control frame; the SS reader recurses past it so the next
     // `read_chunk` returns the actual upstream reply ("ackk"), and
     // `upstream_acked_offset()` exposes the parsed offset.
-    let mut second_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut second_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     second_payload.extend_from_slice(b"helo");
     writer_b.send_chunk(&second_payload).await?;
     let reply_b = reader_b.read_chunk().await?;
@@ -893,7 +893,7 @@ async fn cross_repo_ss_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -> R
         ctrl_tx_a.clone(),
     );
 
-    let mut first_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut first_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     first_payload.extend_from_slice(b"ping");
     writer_a.send_chunk(&first_payload).await?;
     let reply_a = reader_a.read_chunk().await?;
@@ -953,7 +953,7 @@ async fn cross_repo_ss_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -> R
     // which point it emits v1 + v2 in order. Without this send, the
     // server has nothing to react to and the consume calls would
     // sit in their timeout waiting forever.
-    let mut second_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut second_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     second_payload.extend_from_slice(b"helo");
     writer_b.send_chunk(&second_payload).await?;
 
@@ -1138,7 +1138,7 @@ async fn cross_repo_ss_tcp_ws_h3_resume_reattaches_parked_upstream() -> Result<(
         ctrl_tx_a.clone(),
     );
 
-    let mut first_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut first_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     first_payload.extend_from_slice(b"ping");
     writer_a.send_chunk(&first_payload).await?;
     let reply_a = reader_a.read_chunk().await?;
@@ -1182,7 +1182,7 @@ async fn cross_repo_ss_tcp_ws_h3_resume_reattaches_parked_upstream() -> Result<(
         ctrl_tx_b.clone(),
     );
 
-    let mut second_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut second_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     second_payload.extend_from_slice(b"helo");
     writer_b.send_chunk(&second_payload).await?;
     let reply_b = reader_b.read_chunk().await?;
@@ -1316,7 +1316,7 @@ async fn cross_repo_ss_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result<()
         ctrl_tx_a.clone(),
     );
 
-    let mut first_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut first_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     first_payload.extend_from_slice(b"ping");
     writer_a.send_chunk(&first_payload).await?;
     let reply_a = reader_a.read_chunk().await?;
@@ -1362,7 +1362,7 @@ async fn cross_repo_ss_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result<()
         ctrl_tx_b.clone(),
     );
 
-    let mut second_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut second_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     second_payload.extend_from_slice(b"helo");
     writer_b.send_chunk(&second_payload).await?;
     let reply_b = reader_b.read_chunk().await?;
@@ -1496,7 +1496,7 @@ async fn cross_repo_ss_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result<()
         ctrl_tx_a.clone(),
     );
 
-    let mut first_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut first_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     first_payload.extend_from_slice(b"ping");
     writer_a.send_chunk(&first_payload).await?;
     let reply_a = reader_a.read_chunk().await?;
@@ -1547,7 +1547,7 @@ async fn cross_repo_ss_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result<()
         ctrl_tx_b.clone(),
     );
 
-    let mut second_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut second_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     second_payload.extend_from_slice(b"helo");
     writer_b.send_chunk(&second_payload).await?;
     let reply_b = reader_b.read_chunk().await?;
@@ -1683,7 +1683,7 @@ async fn cross_repo_ss_tcp_raw_quic_round_trip() -> Result<()> {
     // chunk carries `target_addr || payload`, and `read_chunk()`
     // returns just the upstream bytes (target prefix is consumed by
     // the relay).
-    let mut first_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut first_payload = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     first_payload.extend_from_slice(b"ping");
     writer.send_chunk(&first_payload).await?;
     let reply = reader.read_chunk().await?;

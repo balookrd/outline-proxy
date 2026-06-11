@@ -113,7 +113,7 @@ async fn run_stream(
         );
     };
 
-    let target_display = handshake.target.display_host_port();
+    let target_display = handshake.target.to_string();
     let connect_started = std::time::Instant::now();
     info!(user = handshake.user.id(), target = %target_display, "ss raw-quic upstream connect");
 

@@ -171,7 +171,7 @@ async fn websocket_rfc8441_http2_udp_reuses_nat_entry_after_client_reconnect() -
             WebSocketStream::from_raw_socket(TokioIo::new(upgraded), protocol::Role::Client, None)
                 .await;
 
-        let mut plaintext = TargetAddr::Socket(upstream_addr).encode()?;
+        let mut plaintext = TargetAddr::from(upstream_addr).to_wire_bytes()?;
         plaintext.extend_from_slice(payload);
         socket
             .send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext)?.into()))
@@ -289,7 +289,7 @@ async fn websocket_rfc9220_http3_udp_reuses_nat_entry_after_client_reconnect() -
         let mut socket =
             H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
 
-        let mut plaintext = TargetAddr::Socket(upstream_addr).encode()?;
+        let mut plaintext = TargetAddr::from(upstream_addr).to_wire_bytes()?;
         plaintext.extend_from_slice(payload);
         socket
             .send(H3Message::Binary(Bytes::from(encrypt_udp_packet(&user, &plaintext)?)))

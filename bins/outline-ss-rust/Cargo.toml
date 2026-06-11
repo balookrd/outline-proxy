@@ -29,6 +29,7 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-util = { version = "0.20", default-features = false, features = ["recency"] }
 hashbrown = "0.15"
+outline-wire = { path = "../../crates/outline-wire", features = ["clap"] }
 parking_lot = "0.12"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 ring = "0.17"

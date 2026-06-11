@@ -160,7 +160,7 @@ where
                     continue;
                 }
                 target_to_client.increment(read as u64);
-                let src = TargetAddr::Socket(from);
+                let src = TargetAddr::from(from);
                 // Build the frame on demand so an idle sub-conn holds no
                 // encode buffer either.
                 let mut frame_buf = BytesMut::with_capacity(read + 32);
@@ -214,13 +214,14 @@ pub(super) fn resolve_packet_addr(
     prefer_ipv4_upstream: bool,
 ) -> Option<SocketAddr> {
     match addr {
-        TargetAddr::Socket(sa) => {
+        TargetAddr::Domain(host, port) => dns_cache.lookup_one(host, *port, prefer_ipv4_upstream),
+        ip_target => {
+            let sa = ip_target.socket_addr()?;
             if prefer_ipv4_upstream && sa.is_ipv6() {
                 return None;
             }
-            Some(*sa)
+            Some(sa)
         },
-        TargetAddr::Domain(host, port) => dns_cache.lookup_one(host, *port, prefer_ipv4_upstream),
     }
 }
 

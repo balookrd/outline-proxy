@@ -32,17 +32,25 @@ pub(super) async fn resolve_udp_target(
             }
             let addrs =
                 resolve_via_singleflight(dns_cache, host, *port, prefer_ipv4_upstream).await?;
-            addrs.first().copied().ok_or_else(|| {
-                anyhow!("dns lookup returned no records for {}", target.display_host_port())
-            })
+            addrs
+                .first()
+                .copied()
+                .ok_or_else(|| anyhow!("dns lookup returned no records for {}", target.to_string()))
         },
-        TargetAddr::Socket(addr) => {
-            if prefer_ipv4_upstream && addr.is_ipv6() {
-                return Err(anyhow!("ipv6 upstream disabled by prefer_ipv4_upstream for {}", addr));
-            }
-            Ok(*addr)
+        TargetAddr::IpV4(ip, port) => {
+            literal_ip_addr(SocketAddr::from((*ip, *port)), prefer_ipv4_upstream)
+        },
+        TargetAddr::IpV6(ip, port) => {
+            literal_ip_addr(SocketAddr::from((*ip, *port)), prefer_ipv4_upstream)
         },
     }
+}
+
+fn literal_ip_addr(addr: SocketAddr, prefer_ipv4_upstream: bool) -> Result<SocketAddr> {
+    if prefer_ipv4_upstream && addr.is_ipv6() {
+        return Err(anyhow!("ipv6 upstream disabled by prefer_ipv4_upstream for {addr}"));
+    }
+    Ok(addr)
 }
 
 async fn resolve_target_addrs(
@@ -51,11 +59,13 @@ async fn resolve_target_addrs(
     prefer_ipv4_upstream: bool,
 ) -> Result<Arc<[SocketAddr]>> {
     match target {
-        TargetAddr::Socket(addr) => {
-            if prefer_ipv4_upstream && addr.is_ipv6() {
-                return Err(anyhow!("ipv6 upstream disabled by prefer_ipv4_upstream for {}", addr));
-            }
-            Ok(Arc::from(vec![*addr].into_boxed_slice()))
+        TargetAddr::IpV4(ip, port) => {
+            let addr = literal_ip_addr(SocketAddr::from((*ip, *port)), prefer_ipv4_upstream)?;
+            Ok(Arc::from(vec![addr].into_boxed_slice()))
+        },
+        TargetAddr::IpV6(ip, port) => {
+            let addr = literal_ip_addr(SocketAddr::from((*ip, *port)), prefer_ipv4_upstream)?;
+            Ok(Arc::from(vec![addr].into_boxed_slice()))
         },
         TargetAddr::Domain(host, port) => {
             if let Some(addrs) = dns_cache.lookup_all(host, *port, prefer_ipv4_upstream) {
@@ -123,7 +133,7 @@ pub(super) async fn connect_tcp_target(
     let ordered = sort_addrs_for_happy_eyeballs(&resolved, prefer_ipv4_upstream);
     connect_tcp_addrs(&ordered, fwmark, outbound_ipv6)
         .await
-        .with_context(|| format!("tcp connect failed for {}", target.display_host_port()))
+        .with_context(|| format!("tcp connect failed for {}", target.to_string()))
 }
 
 pub(super) fn sort_addrs_for_happy_eyeballs(

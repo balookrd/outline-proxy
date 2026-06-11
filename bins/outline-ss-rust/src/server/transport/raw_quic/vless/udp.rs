@@ -28,7 +28,7 @@ pub(super) async fn handle_udp(
     conn_state: &Arc<VlessQuicConn>,
 ) -> Result<()> {
     let target = request.target.clone();
-    let target_display = target.display_host_port();
+    let target_display = target.to_string();
     debug!(user = user.label(), target = %target_display, "vless raw-quic udp target");
 
     let resolved =

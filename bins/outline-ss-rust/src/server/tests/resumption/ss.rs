@@ -106,7 +106,7 @@ async fn spawn_ss_two_user_server() -> Result<(ResumptionTestServer, UserKey, Us
 /// every new SS session — including the resume case, where the
 /// server consumes the target bytes but ignores their value.
 fn ss_handshake_frame(user: &UserKey, target: SocketAddr, payload: &[u8]) -> Result<Bytes> {
-    let mut plaintext = TargetAddr::Socket(target).encode()?;
+    let mut plaintext = TargetAddr::from(target).to_wire_bytes()?;
     plaintext.extend_from_slice(payload);
     let mut encryptor = AeadStreamEncryptor::new(user, None)?;
     let mut buf = BytesMut::new();
@@ -514,7 +514,7 @@ async fn ss_udp_resume_across_h1_to_h2_transport_switch() -> Result<()> {
     let (mut h1_socket, h1_issued) = connect_ws_h1(server.listen_addr, "/udp", None, true).await?;
     let session_id =
         h1_issued.ok_or_else(|| anyhow::anyhow!("HTTP/1 SS-UDP server didn't mint Session ID"))?;
-    let mut plaintext = TargetAddr::Socket(target_addr).encode()?;
+    let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
     plaintext.extend_from_slice(b"udp-h1");
     let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
     h1_socket.send(WsMessage::Binary(ciphertext.into())).await?;
@@ -533,7 +533,7 @@ async fn ss_udp_resume_across_h1_to_h2_transport_switch() -> Result<()> {
         "H2 SS-UDP reply must still echo a Session ID even on resume"
     );
 
-    let mut plaintext = TargetAddr::Socket(target_addr).encode()?;
+    let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
     plaintext.extend_from_slice(b"udp-h2");
     let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
     h2_socket.send(WsMessage::Binary(ciphertext.into())).await?;
@@ -572,7 +572,7 @@ async fn ss_udp_resume_hit_reattaches_parked_nat_entry() -> Result<()> {
     let session_id =
         issued.ok_or_else(|| anyhow::anyhow!("ss-udp server didn't mint Session ID"))?;
 
-    let mut plaintext = TargetAddr::Socket(target_addr).encode()?;
+    let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
     plaintext.extend_from_slice(b"udp1");
     let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
     socket.send(WsMessage::Binary(ciphertext.into())).await?;
@@ -590,7 +590,7 @@ async fn ss_udp_resume_hit_reattaches_parked_nat_entry() -> Result<()> {
     //               upstream — so the source port stays the same. ──
     let (mut socket2, _) =
         connect_ws_h1(server.listen_addr, "/udp", Some(session_id), true).await?;
-    let mut plaintext = TargetAddr::Socket(target_addr).encode()?;
+    let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
     plaintext.extend_from_slice(b"udp2");
     let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
     socket2.send(WsMessage::Binary(ciphertext.into())).await?;

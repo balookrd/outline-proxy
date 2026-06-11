@@ -30,7 +30,7 @@ pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String
     users
         .iter()
         .map(|user| {
-            if user.cipher().is_2022() {
+            if user.cipher().is_ss2022() {
                 let salt_len = user.cipher().salt_len();
                 let fixed_len = SS2022_REQUEST_FIXED_HEADER_LEN + TAG_LEN;
                 if buffer.len() < salt_len + fixed_len {
@@ -169,7 +169,7 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                     },
                     Err(_) => format!("{}:{} auth_failed", user.id(), user.cipher().as_str()),
                 }
-            } else if user.cipher().is_2022_aes() {
+            } else if user.cipher().is_ss2022_aes() {
                 if packet.len() < SS2022_UDP_SEPARATE_HEADER_LEN + TAG_LEN {
                     return format!(
                         "{}:{} insufficient_data(packet={}, need={})",

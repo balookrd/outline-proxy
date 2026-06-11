@@ -92,7 +92,7 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
         return Ok(());
     };
 
-    let target_display = handshake.target.display_host_port();
+    let target_display = handshake.target.to_string();
     let connect_started = std::time::Instant::now();
     debug!(
         peer_addr = ?peer_addr,

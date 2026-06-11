@@ -83,7 +83,7 @@ pub(super) async fn nat_reader_task(ctx: NatReaderCtx) {
         let packet_id = next_packet_id.fetch_add(1, Ordering::Relaxed);
         let ciphertext = match encrypt_udp_packet_for_response(
             &user,
-            &TargetAddr::Socket(source),
+            &TargetAddr::from(source),
             &buf[..n],
             &session,
             server_session_id,

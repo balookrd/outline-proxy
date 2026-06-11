@@ -23,7 +23,7 @@ pub(super) fn derive_subkey(
     out: &mut [u8; MAX_SUBKEY_LEN],
 ) -> Result<usize, CryptoError> {
     let key_len = cipher.key_len();
-    if cipher.is_2022() {
+    if cipher.is_ss2022() {
         let mut hasher = blake3::Hasher::new_derive_key(SS2022_SUBKEY_CONTEXT);
         hasher.update(master_key);
         hasher.update(salt);

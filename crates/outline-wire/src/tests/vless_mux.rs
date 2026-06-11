@@ -1,7 +1,11 @@
+use std::net::Ipv4Addr;
+
+use bytes::BufMut;
+
 use super::*;
 
 fn ipv4_target(a: u8, b: u8, c: u8, d: u8, port: u16) -> TargetAddr {
-    TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(a, b, c, d), port)))
+    TargetAddr::IpV4(Ipv4Addr::new(a, b, c, d), port)
 }
 
 #[test]
@@ -35,7 +39,7 @@ fn parses_new_udp_with_global_id() {
     meta.put_u8(SESSION_STATUS_NEW);
     meta.put_u8(OPTION_DATA);
     meta.put_u16(53);
-    meta.put_u8((NETWORK_UDP << 4) | ATYP_IPV4);
+    meta.put_u8((NETWORK_UDP << 4) | crate::vless::ATYP_IPV4);
     meta.extend_from_slice(&[1, 1, 1, 1]);
     meta.extend_from_slice(&[0xAA; GLOBAL_ID_LEN]);
     out.put_u16(meta.len() as u16);

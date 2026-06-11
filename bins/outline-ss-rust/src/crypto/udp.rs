@@ -138,7 +138,7 @@ fn try_decrypt_udp_packet_for_user(
         return Ok(None);
     }
 
-    if user.cipher().is_2022_aes() {
+    if user.cipher().is_ss2022_aes() {
         if packet.len() < SS2022_UDP_SEPARATE_HEADER_LEN + TAG_LEN {
             return Ok(None);
         }
@@ -238,7 +238,7 @@ pub fn encrypt_udp_packet_for_response(
 ) -> Result<Vec<u8>, CryptoError> {
     match session {
         UdpCipherMode::Legacy => {
-            let header = source.encode().map_err(|_| CryptoError::InvalidHeader)?;
+            let header = source.to_wire_bytes().map_err(|_| CryptoError::InvalidHeader)?;
             let salt_len = user.cipher().salt_len();
             let plaintext_len = header.len() + payload.len();
             let mut packet = Vec::with_capacity(salt_len + plaintext_len + TAG_LEN);
@@ -259,7 +259,7 @@ pub fn encrypt_udp_packet_for_response(
         },
         UdpCipherMode::Aes2022 { client_session_id } => {
             let server_session_id = server_session_id.ok_or(CryptoError::InvalidHeader)?;
-            let target = source.encode().map_err(|_| CryptoError::InvalidHeader)?;
+            let target = source.to_wire_bytes().map_err(|_| CryptoError::InvalidHeader)?;
             let body_len = 1 + 8 + 8 + 2 + target.len() + payload.len();
 
             let mut separate_header = [0_u8; SS2022_UDP_SEPARATE_HEADER_LEN];
@@ -292,7 +292,7 @@ pub fn encrypt_udp_packet_for_response(
         },
         UdpCipherMode::Chacha2022 { client_session_id } => {
             let server_session_id = server_session_id.ok_or(CryptoError::InvalidHeader)?;
-            let target = source.encode().map_err(|_| CryptoError::InvalidHeader)?;
+            let target = source.to_wire_bytes().map_err(|_| CryptoError::InvalidHeader)?;
             let body_len = 8 + 8 + 1 + 8 + 8 + 2 + target.len() + payload.len();
 
             let mut nonce = [0_u8; XNONCE_LEN];

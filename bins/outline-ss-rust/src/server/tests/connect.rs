@@ -27,7 +27,7 @@ async fn tcp_ipv6_loopback_smoke() -> Result<()> {
         Result::<_, anyhow::Error>::Ok(buf)
     });
 
-    let target = TargetAddr::Socket(SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port())));
+    let target = TargetAddr::from(SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port())));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let mut client = connect_tcp_target(dns_cache.as_ref(), &target, None, false, None).await?;
     client.write_all(b"ping").await?;

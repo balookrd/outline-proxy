@@ -12,10 +12,8 @@ use crate::error::{CryptoError, Result};
 use super::aead::{SHADOWSOCKS_TAG_LEN, decrypt, encrypt};
 use super::keys::derive_subkey;
 
-pub(crate) const SS2022_UDP_SERVER_PACKET: u8 = 1;
-const SS2022_UDP_CLIENT_PACKET: u8 = 0;
-/// Maximum allowed clock skew for SS2022 timestamp validation (seconds).
-const SS2022_TIMESTAMP_WINDOW_SECS: u64 = 30;
+use outline_wire::ss2022::SS2022_UDP_CLIENT_TYPE as SS2022_UDP_CLIENT_PACKET;
+pub(crate) use outline_wire::ss2022::SS2022_UDP_SERVER_TYPE as SS2022_UDP_SERVER_PACKET;
 
 const CIPHER_XCHACHA: &str = "xchacha20-poly1305";
 const CIPHER_AES_128_SS2022: &str = "aes-128 ss2022";
@@ -46,11 +44,11 @@ fn unix_now_secs() -> Result<u64> {
 /// Timestamps outside ±30 s of the current time are rejected to prevent replay attacks.
 pub fn validate_ss2022_timestamp(timestamp_secs: u64) -> Result<()> {
     let now = unix_now_secs()?;
-    let diff = now.abs_diff(timestamp_secs);
-    if diff > SS2022_TIMESTAMP_WINDOW_SECS {
-        return Err(CryptoError::Ss2022TimestampSkew { skew_secs: diff as i64 });
-    }
-    Ok(())
+    outline_wire::ss2022::validate_timestamp(timestamp_secs, now).map_err(|_| {
+        CryptoError::Ss2022TimestampSkew {
+            skew_secs: now.abs_diff(timestamp_secs) as i64,
+        }
+    })
 }
 
 pub fn encrypt_udp_packet_2022(

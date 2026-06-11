@@ -29,9 +29,6 @@ pub enum CryptoError {
     )]
     NonceOverflow,
 
-    #[error("unsupported cipher: {0}")]
-    UnsupportedCipher(String),
-
     #[error("failed to decode ss2022 PSK as base64")]
     InvalidBase64Psk(#[from] base64::DecodeError),
 
@@ -52,6 +49,18 @@ pub enum CryptoError {
 
     #[error("{0}")]
     Protocol(&'static str),
+}
+
+impl From<outline_wire::MasterKeyError> for CryptoError {
+    fn from(err: outline_wire::MasterKeyError) -> Self {
+        use outline_wire::MasterKeyError;
+        match err {
+            MasterKeyError::InvalidBase64Psk(source) => CryptoError::InvalidBase64Psk(source),
+            MasterKeyError::PskLengthMismatch { got, expected } => {
+                CryptoError::Ss2022PskLengthMismatch { got, expected }
+            },
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, CryptoError>;

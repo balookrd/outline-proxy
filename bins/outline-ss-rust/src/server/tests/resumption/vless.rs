@@ -125,7 +125,7 @@ fn vless_mux_request(uuid: &str) -> Result<Bytes> {
 /// sub-connections inside an established VLESS-mux session.
 fn vless_mux_new_tcp_frame(session_id: u16, target: SocketAddr, payload: &[u8]) -> Bytes {
     let mut buf = BytesMut::new();
-    let target_addr = TargetAddr::Socket(target);
+    let target_addr = TargetAddr::from(target);
     encode_frame(
         &mut buf,
         session_id,

@@ -232,7 +232,7 @@ impl AeadStreamDecryptor {
         user_index: usize,
         active: &mut Option<ActiveStream>,
     ) -> Result<CandidateOutcome, CryptoError> {
-        if user.cipher().is_2022() {
+        if user.cipher().is_ss2022() {
             let salt_len = user.cipher().salt_len();
             if buffer.len() < salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN {
                 return Ok(CandidateOutcome::TooShort);
@@ -350,7 +350,7 @@ impl AeadStreamEncryptor {
         SystemRandom::new().fill(&mut salt).map_err(|_| CryptoError::Random)?;
         let key = build_session_key(user.cipher(), user.master_key(), &salt)?;
 
-        let mode = if user.cipher().is_2022() {
+        let mode = if user.cipher().is_ss2022() {
             let context = response_context.ok_or(CryptoError::MissingResponseContext)?;
             StreamEncryptorMode::Ss2022 {
                 key,

@@ -65,7 +65,7 @@ async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
         );
 
     let mut client = TcpStream::connect(listen_addr).await?;
-    let mut request = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut request = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     request.extend_from_slice(b"ping");
     let mut encryptor = AeadStreamEncryptor::new(&user, None)?;
     let mut buf = BytesMut::new();
@@ -130,7 +130,7 @@ async fn plain_shadowsocks_udp_relay_smoke() -> Result<()> {
         );
 
     let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let mut plaintext = TargetAddr::Socket(upstream_addr).encode()?;
+    let mut plaintext = TargetAddr::from(upstream_addr).to_wire_bytes()?;
     plaintext.extend_from_slice(b"ping");
     let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
     client.send_to(&ciphertext, listen_addr).await?;
@@ -145,7 +145,7 @@ async fn plain_shadowsocks_udp_relay_smoke() -> Result<()> {
     let packet = decrypt_udp_packet(std::slice::from_ref(&user), &encrypted_reply[..read])?;
     let (target, consumed) = crate::protocol::parse_target_addr(&packet.payload)?
         .ok_or_else(|| anyhow::anyhow!("missing target in udp response"))?;
-    assert_eq!(target, TargetAddr::Socket(upstream_addr));
+    assert_eq!(target, TargetAddr::from(upstream_addr));
     assert_eq!(&packet.payload[consumed..], b"ping");
     assert_eq!(upstream_task.await??, b"ping");
 
