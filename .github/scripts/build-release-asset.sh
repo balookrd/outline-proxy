@@ -12,26 +12,26 @@ profile="$2"
 flavor="$3"
 output_dir="$4"
 binary_name="outline-ws-rust"
-version="${VERSION:-$(python3 -c 'import re, pathlib; text = pathlib.Path("Cargo.toml").read_text(); match = re.search(r"^version = \"([^\"]+)\"$", text, flags=re.M); print(match.group(1) if match else (_ for _ in ()).throw(SystemExit("failed to read package version from Cargo.toml")))' )}"
+version="${VERSION:-$(python3 -c 'import re, pathlib; text = pathlib.Path("bins/outline-ws-rust/Cargo.toml").read_text(); match = re.search(r"^version = \"([^\"]+)\"$", text, flags=re.M); print(match.group(1) if match else (_ for _ in ()).throw(SystemExit("failed to read package version from bins/outline-ws-rust/Cargo.toml")))' )}"
 
 case "$flavor" in
   server)
     dest_prefix="$binary_name"
     if [[ "$profile" == "release" ]]; then
-      cargo zigbuild --release --target "$target"
+      cargo zigbuild --release -p outline-ws-rust --target "$target"
     else
-      cargo zigbuild --profile "$profile" --target "$target"
+      cargo zigbuild --profile "$profile" -p outline-ws-rust --target "$target"
     fi
     artifact_dir="$profile"
     ;;
   router)
     dest_prefix="${binary_name}-router"
-    cargo zigbuild --profile "$profile" --no-default-features --features router --target "$target"
+    cargo zigbuild --profile "$profile" --no-default-features --features router -p outline-ws-rust --target "$target"
     artifact_dir="$profile"
     ;;
   router-build-std)
     dest_prefix="${binary_name}-router"
-    cargo zigbuild -Z build-std=std,panic_abort --profile "$profile" --no-default-features --features router --target "$target"
+    cargo zigbuild -Z build-std=std,panic_abort --profile "$profile" --no-default-features --features router -p outline-ws-rust --target "$target"
     artifact_dir="$profile"
     ;;
   *)
