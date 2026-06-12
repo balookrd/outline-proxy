@@ -96,7 +96,7 @@ cargo ws-release-router-musl-armv7 # stripped router build
 
 ## Протокольные guardrails (критично — не регрессировать)
 
-- **H3-keepalive.** На H3-карьере НЕ слать server→client WS `Ping` и не делать
+- **H3-keepalive.** На H3-carrier НЕ слать server→client WS `Ping` и не делать
   pong-deadline reaping: клиентские keepalive проглатываются split-reader'ом,
   живость держит QUIC keep-alive, а reactive Pong доставляется таймерным
   `WsSocket::flush`. Подробности — в `bins/outline-ss-rust/AGENTS.md` и

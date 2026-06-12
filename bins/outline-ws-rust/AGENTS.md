@@ -270,7 +270,7 @@ cargo release-router-musl-armv7
 - Carrier-downgrade opt-out: при `[[outline.uplinks]] carrier_downgrade = false`
   `extend_mode_downgrade` обязан немедленно возвращаться, а
   `wire_is_at_carrier_floor` — всегда репортить «на полу». Это намеренно
-  сворачивает вертикальный карьер каскад в прямую wire→wire ротацию (полезно в
+  сворачивает вертикальный carrier-каскад в прямую wire→wire ротацию (полезно в
   паре с `shuffle_wires` при DPI, который дропает весь upstream независимо от
   HTTP-версии); не вводите обходных путей, восстанавливающих descent при
   выключенном флаге.
@@ -344,7 +344,7 @@ cargo release-router-musl-armv7
   проявляется как баг «видно на TUN, не видно на SOCKS5» (или наоборот). Для
   пер-ingress-специфики используйте существующие развилки (`TunRoute` против
   `Route`), не дублируя routing-решение.
-- SS-UDP-over-WS liveness, H3-aware: на H3-карьере UDP datagram-канал едет по
+- SS-UDP-over-WS liveness, H3-aware: на H3-carrier UDP datagram-канал едет по
   QUIC-стриму, у которого уже есть keep_alive (10 с) и `max_idle_timeout`.
   Поэтому `UdpWsTransport::from_websocket` на H3 (`TransportStream::is_h3()`,
   чистый хелпер `ws_datagram_liveness`) отключает и WS read-idle watchdog
