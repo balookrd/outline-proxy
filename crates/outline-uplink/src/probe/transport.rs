@@ -133,6 +133,9 @@ pub(super) async fn connect_probe_tcp(
             })?;
             let downgraded_from = ws_stream.downgraded_from();
             let shared_conn_info = ws_stream.shared_connection_info();
+            // Capture the authoritative H3 flag before `split()` consumes the
+            // stream; the read-idle watchdog gates on `diag.is_h3`.
+            let is_h3 = ws_stream.is_h3();
             let (ws_sink, ws_stream) = ws_stream.split();
             let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
                 ws_sink,
@@ -145,6 +148,7 @@ pub(super) async fn connect_probe_tcp(
             let diag = outline_transport::WsReadDiag {
                 conn_id: shared_conn_info.map(|(id, _)| id),
                 mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
+                is_h3,
                 uplink: uplink.name.clone(),
                 target: target.to_string(),
             };
@@ -185,6 +189,7 @@ pub(super) async fn connect_probe_tcp(
             let diag = outline_transport::WsReadDiag {
                 conn_id: shared_conn_info.map(|(id, _)| id),
                 mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
+                is_h3: ws_stream.is_h3(),
                 uplink: uplink.name.clone(),
                 target: target.to_string(),
             };
