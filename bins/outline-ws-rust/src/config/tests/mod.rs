@@ -1490,3 +1490,48 @@ async fn cli_fingerprint_profile_applies_when_top_level_key_is_missing() {
     // key — and `stable` is now ProcessStable, not PerHostStable.
     assert_eq!(config.fingerprint_profile, Fp::ProcessStable);
 }
+
+#[tokio::test]
+async fn load_config_rejects_unknown_top_level_key() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    // `tcp_ws_uri` is a typo of `tcp_ws_url` — deny_unknown_fields must
+    // surface it at load time instead of silently dialing nothing.
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_uri = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    assert!(format!("{err:#}").contains("unknown field `tcp_ws_uri`"), "{err:#}");
+}
+
+#[tokio::test]
+async fn load_config_rejects_unknown_key_in_nested_section() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    // `stickiness_ttl_secs` is a typo of `sticky_ttl_secs` inside
+    // `[load_balancing]` — nested sections deny unknown keys too.
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [load_balancing]
+        stickiness_ttl_secs = 60
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    assert!(format!("{err:#}").contains("unknown field `stickiness_ttl_secs`"), "{err:#}");
+}
