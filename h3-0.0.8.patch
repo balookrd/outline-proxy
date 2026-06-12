@@ -1,0 +1,259 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index ebb4967..652ff3d 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -73,65 +73,3 @@ features = ["sync"]
+ [dependencies.tracing]
+ version = "0.1.40"
+ optional = true
+-
+-[dev-dependencies.assert_matches]
+-version = "1.5.0"
+-
+-[dev-dependencies.futures]
+-version = "0.3.28"
+-
+-[dev-dependencies.futures-util]
+-version = "0.3"
+-features = ["io"]
+-default-features = false
+-
+-[dev-dependencies.proptest]
+-version = "1"
+-
+-[dev-dependencies.quinn]
+-version = "0.11"
+-features = [
+-    "runtime-tokio",
+-    "rustls",
+-    "ring",
+-]
+-default-features = false
+-
+-[dev-dependencies.quinn-proto]
+-version = "0.11"
+-default-features = false
+-
+-[dev-dependencies.rcgen]
+-version = "0.13"
+-
+-[dev-dependencies.rustls]
+-version = "0.23"
+-features = [
+-    "logging",
+-    "ring",
+-    "std",
+-]
+-default-features = false
+-
+-[dev-dependencies.tokio]
+-version = "1"
+-features = [
+-    "rt",
+-    "macros",
+-    "io-util",
+-    "io-std",
+-]
+-
+-[dev-dependencies.tokio-util]
+-version = "0.7.9"
+-
+-[dev-dependencies.tracing-subscriber]
+-version = "0.3"
+-features = [
+-    "fmt",
+-    "ansi",
+-    "env-filter",
+-    "time",
+-    "tracing-log",
+-]
+-default-features = false
+diff --git a/src/client/stream.rs b/src/client/stream.rs
+index ef64de7..2f04c72 100644
+--- a/src/client/stream.rs
++++ b/src/client/stream.rs
+@@ -245,6 +245,29 @@ where
+         self.inner.send_data(buf).await
+     }
+ 
++    /// Non-blocking enqueue of `buf`. Drive [`poll_drain`] to completion
++    /// before calling this again.
++    pub fn queue_send(&mut self, buf: B) -> Result<(), StreamError> {
++        self.inner.queue_send(buf)
++    }
++
++    /// Poll until the queued data has been flushed to the QUIC transport.
++    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
++        self.inner.poll_drain(cx)
++    }
++
++    /// Synchronously queue the GREASE frame (if configured). See
++    /// [`crate::connection::RequestStream::queue_grease`].
++    pub fn queue_grease(&mut self) -> Result<(), StreamError> {
++        self.inner.queue_grease()
++    }
++
++    /// Poll until the QUIC stream send-side is fully finished (FIN delivered).
++    /// See [`crate::connection::RequestStream::poll_quic_finish`].
++    pub fn poll_quic_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
++        self.inner.poll_quic_finish(cx)
++    }
++
+     /// Stop a stream with an error code
+     ///
+     /// The code can be [`Code::H3_NO_ERROR`].
+diff --git a/src/connection.rs b/src/connection.rs
+index 275e4c9..430260b 100644
+--- a/src/connection.rs
++++ b/src/connection.rs
+@@ -1048,6 +1048,60 @@ where
+         Ok(())
+     }
+ 
++    /// Synchronously queue `buf` for sending without blocking.
++    ///
++    /// This is the non-async equivalent of the first half of [`send_data`]: it
++    /// encodes the DATA frame header and hands the payload to the QUIC send
++    /// buffer, but does **not** wait for the data to be flushed.  The caller
++    /// must then drive [`poll_drain`] to `Poll::Ready` before calling
++    /// `queue_send` again.
++    ///
++    /// Returns `Err` immediately if the previous `queue_send` has not been
++    /// fully drained yet (i.e. the underlying h3-quinn write buffer is still
++    /// occupied).
++    pub fn queue_send(&mut self, buf: B) -> Result<(), StreamError> {
++        use crate::quic::SendStream as _;
++        self.stream
++            .send_data(Frame::Data(buf))
++            .map_err(|e| self.handle_quic_stream_error(e))
++    }
++
++    /// Poll until all data queued by [`queue_send`] has been flushed to the
++    /// QUIC transport layer.
++    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
++        use crate::quic::SendStream as _;
++        self.stream
++            .poll_ready(cx)
++            .map_err(|e| self.handle_quic_stream_error(e))
++    }
++
++    /// Synchronously queue the GREASE frame (if configured) and clear the flag.
++    ///
++    /// Call this exactly **once** at the start of `poll_shutdown`.  Then drive
++    /// [`poll_drain`] to completion to flush the frame, and finally call
++    /// [`poll_quic_finish`] to send the QUIC FIN.  If no GREASE frame was
++    /// configured this is a cheap no-op.
++    pub fn queue_grease(&mut self) -> Result<(), StreamError> {
++        if self.send_grease_frame {
++            use crate::quic::SendStream as _;
++            self.stream
++                .send_data(Frame::Grease)
++                .map_err(|e| self.handle_quic_stream_error(e))?;
++            self.send_grease_frame = false;
++        }
++        Ok(())
++    }
++
++    /// Poll until the QUIC stream send-side is fully finished (FIN delivered).
++    ///
++    /// Must be called only after [`poll_drain`] has returned `Poll::Ready(Ok(()))`.
++    pub fn poll_quic_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
++        use crate::quic::SendStream as _;
++        self.stream
++            .poll_finish(cx)
++            .map_err(|e| self.handle_quic_stream_error(e))
++    }
++
+     /// Send a set of trailers to end the request.
+     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
+     pub async fn send_trailers(&mut self, trailers: HeaderMap) -> Result<(), StreamError> {
+diff --git a/src/ext.rs b/src/ext.rs
+index 281d573..a30774d 100644
+--- a/src/ext.rs
++++ b/src/ext.rs
+@@ -13,6 +13,8 @@ impl Protocol {
+     pub const WEB_TRANSPORT: Protocol = Protocol(ProtocolInner::WebTransport);
+     /// RFC 9298 protocol
+     pub const CONNECT_UDP: Protocol = Protocol(ProtocolInner::ConnectUdp);
++    /// RFC 9220 WebSocket over HTTP/3 protocol
++    pub const WEBSOCKET: Protocol = Protocol(ProtocolInner::WebSocket);
+ 
+     /// Return a &str representation of the `:protocol` pseudo-header value
+     #[inline]
+@@ -20,6 +22,7 @@ impl Protocol {
+         match self.0 {
+             ProtocolInner::WebTransport => "webtransport",
+             ProtocolInner::ConnectUdp => "connect-udp",
++            ProtocolInner::WebSocket => "websocket",
+         }
+     }
+ }
+@@ -28,6 +31,7 @@ impl Protocol {
+ enum ProtocolInner {
+     WebTransport,
+     ConnectUdp,
++    WebSocket,
+ }
+ 
+ /// Error when parsing the protocol
+@@ -40,6 +44,7 @@ impl FromStr for Protocol {
+         match s {
+             "webtransport" => Ok(Self(ProtocolInner::WebTransport)),
+             "connect-udp" => Ok(Self(ProtocolInner::ConnectUdp)),
++            "websocket" => Ok(Self(ProtocolInner::WebSocket)),
+             _ => Err(InvalidProtocol),
+         }
+     }
+diff --git a/src/lib.rs b/src/lib.rs
+index 726a4d6..17b862c 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,6 +1,7 @@
+ //! HTTP/3 client and server
+ #![deny(missing_docs, clippy::self_named_module_files)]
+ #![allow(clippy::derive_partial_eq_without_eq)]
++#![allow(dead_code, unused_imports, unused_variables, mismatched_lifetime_syntaxes)]
+ 
+ pub mod client;
+ 
+@@ -52,6 +53,4 @@ mod webtransport;
+ #[allow(dead_code)]
+ mod qpack;
+ #[cfg(test)]
+-mod tests;
+-#[cfg(test)]
+ extern crate self as h3;
+diff --git a/src/server/stream.rs b/src/server/stream.rs
+index fa1aecf..4660cb2 100644
+--- a/src/server/stream.rs
++++ b/src/server/stream.rs
+@@ -161,6 +161,29 @@ where
+         self.inner.send_data(buf).await
+     }
+ 
++    /// Non-blocking enqueue of `buf`. Drive [`poll_drain`] to completion
++    /// before calling this again.
++    pub fn queue_send(&mut self, buf: B) -> Result<(), StreamError> {
++        self.inner.queue_send(buf)
++    }
++
++    /// Poll until the queued data has been flushed to the QUIC transport.
++    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
++        self.inner.poll_drain(cx)
++    }
++
++    /// Synchronously queue the GREASE frame (if configured). See
++    /// [`crate::connection::RequestStream::queue_grease`].
++    pub fn queue_grease(&mut self) -> Result<(), StreamError> {
++        self.inner.queue_grease()
++    }
++
++    /// Poll until the QUIC stream send-side is fully finished (FIN delivered).
++    /// See [`crate::connection::RequestStream::poll_quic_finish`].
++    pub fn poll_quic_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
++        self.inner.poll_quic_finish(cx)
++    }
++
+     /// Stop a stream with an error code
+     ///
+     /// The code can be [`Code::H3_NO_ERROR`].
