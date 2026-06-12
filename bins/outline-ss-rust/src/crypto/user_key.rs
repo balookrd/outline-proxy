@@ -6,7 +6,7 @@ use std::{
 use aes::{Aes128, Aes256, cipher::KeyInit};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chacha20poly1305::XChaCha20Poly1305;
-use md5::{Digest as _, Md5};
+use outline_wire::MasterKeyError;
 use subtle::ConstantTimeEq;
 
 use super::error::CryptoError;
@@ -113,7 +113,7 @@ impl UserKey {
             };
             return Ok(self.master_key().ct_eq(&decoded).into());
         }
-        let derived = bytes_to_key(password.as_bytes(), self.cipher.key_len())?;
+        let derived = password_to_master_key(password, self.cipher)?;
         Ok(self.master_key().ct_eq(&derived).into())
     }
 
@@ -123,43 +123,19 @@ impl UserKey {
 }
 
 fn password_to_master_key(password: &str, cipher: CipherKind) -> Result<Vec<u8>, CryptoError> {
-    if cipher.is_ss2022() {
-        let key = STANDARD
-            .decode(password.as_bytes())
-            .map_err(|_| CryptoError::InvalidBase64Key)?;
-        if key.len() != cipher.key_len() {
-            return Err(CryptoError::InvalidPskLength {
-                cipher: cipher.as_str(),
-                expected: cipher.key_len(),
-                actual: key.len(),
-            });
-        }
-        Ok(key)
-    } else {
-        bytes_to_key(password.as_bytes(), cipher.key_len())
-    }
-}
-
-fn bytes_to_key(password: &[u8], key_len: usize) -> Result<Vec<u8>, CryptoError> {
-    if password.is_empty() {
+    // outline-wire's EVP stretch happily derives a key from an empty
+    // password; the server rejects those up front.
+    if !cipher.is_ss2022() && password.is_empty() {
         return Err(CryptoError::EmptyPassword);
     }
-
-    let mut key = Vec::with_capacity(key_len);
-    let mut previous = [0u8; 16];
-    let mut has_previous = false;
-    while key.len() < key_len {
-        let mut hasher = Md5::new();
-        if has_previous {
-            hasher.update(previous);
-        }
-        hasher.update(password);
-        previous = hasher.finalize().into();
-        has_previous = true;
-        key.extend_from_slice(&previous);
-    }
-    key.truncate(key_len);
-    Ok(key)
+    cipher.derive_master_key(password).map_err(|error| match error {
+        MasterKeyError::InvalidBase64Psk(_) => CryptoError::InvalidBase64Key,
+        MasterKeyError::PskLengthMismatch { got, expected } => CryptoError::InvalidPskLength {
+            cipher: cipher.as_str(),
+            expected,
+            actual: got,
+        },
+    })
 }
 
 #[cfg(test)]
