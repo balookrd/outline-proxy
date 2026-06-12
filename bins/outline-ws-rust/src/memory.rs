@@ -118,13 +118,14 @@ fn sample_process_virtual_bytes() -> Option<u64> {
 #[cfg(target_os = "linux")]
 fn read_proc_status_kib(field: &str) -> Option<u64> {
     let status = fs::read_to_string("/proc/self/status").ok()?;
-    for line in status.lines() {
-        let value = line.strip_prefix(field)?.trim();
-        let value = value.strip_prefix(':')?.trim();
-        let number = value.split_whitespace().next()?.parse::<u64>().ok()?;
-        return Some(number);
-    }
-    None
+    // Find the field's line. `?` inside a `for` would bail on the first
+    // non-matching line (e.g. "Name:"), so the field was effectively never
+    // located unless it happened to be the first line of the file.
+    let line = status.lines().find(|line| line.starts_with(field))?;
+    let value = line.strip_prefix(field)?.trim();
+    let value = value.strip_prefix(':')?.trim();
+    let number = value.split_whitespace().next()?.parse::<u64>().ok()?;
+    Some(number)
 }
 
 #[cfg(target_os = "linux")]
@@ -301,13 +302,11 @@ fn sample_process_thread_count() -> Option<u64> {
     }
 
     let status = fs::read_to_string("/proc/self/status").ok()?;
-    for line in status.lines() {
-        let value = line.strip_prefix("Threads")?.trim();
-        let value = value.strip_prefix(':')?.trim();
-        let number = value.split_whitespace().next()?.parse::<u64>().ok()?;
-        return Some(number);
-    }
-    None
+    let line = status.lines().find(|line| line.starts_with("Threads"))?;
+    let value = line.strip_prefix("Threads")?.trim();
+    let value = value.strip_prefix(':')?.trim();
+    let number = value.split_whitespace().next()?.parse::<u64>().ok()?;
+    Some(number)
 }
 
 #[cfg(not(target_os = "linux"))]
