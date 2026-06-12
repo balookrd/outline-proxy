@@ -154,7 +154,7 @@ Prometheus metrics и локально пропатченные копии `h3` 
   timeouts, replay windows и cancellation/shutdown semantics, если задача явно
   не меняет их.
 - UDP-over-WebSocket keepalive, H3-safe: НЕ слать server→client WS `Ping` на
-  H3-карьере. Безусловная запись Ping на h3-стрим гонится с teardown'ом при
+  H3-carrier. Безусловная запись Ping на h3-стрим гонится с teardown'ом при
   `shuffle_timer`-реролле и эскалирует до connection-level `H3_INTERNAL_ERROR`,
   рвущего все мультиплексированные стримы на QUIC-соединении (см. откат в
   истории `run_udp_relay`). Клиент (`outline-ws-rust`) сам шлёт keepalive Ping;
