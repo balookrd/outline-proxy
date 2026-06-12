@@ -8,6 +8,8 @@ use tokio::time::Instant;
 use crate::config::TransportMode;
 use crate::types::TransportKind;
 
+use super::carrier_descent_state::CarrierDescentState;
+
 /// All per-transport runtime state for a single uplink.
 ///
 /// [`UplinkStatus`] holds one instance for TCP and one for UDP, eliminating
@@ -60,97 +62,13 @@ pub(crate) struct PerTransportStatus {
     /// [`LoadBalancingConfig::chunk0_failure_window`] after this timestamp
     /// resets the streak to 1 instead of incrementing.
     pub(crate) last_chunk0_failure_at: Option<Instant>,
-    /// When set, connections must use a lower-rank carrier than the
-    /// configured one until this instant because the configured one
-    /// (H3, raw QUIC, XHTTP-H3, XHTTP-H2) produced repeated transport
-    /// errors. Cleared by a successful explicit H3 re-probe (WS path)
-    /// or by natural TTL expiry (XHTTP path — no recovery probe).
-    /// Always paired with [`Self::mode_downgrade_capped_to`]: either
-    /// both are `Some` or both are `None`.
-    pub(crate) mode_downgrade_until: Option<Instant>,
-    /// Family-aware ceiling for the downgrade window — what
-    /// `effective_*_mode` returns while [`Self::mode_downgrade_until`]
-    /// is in the future. Set alongside the deadline so the
-    /// reader does not need to know which family the configured mode
-    /// belongs to (`WsH3` → `WsH2`, `XhttpH3` → `XhttpH2`,
-    /// `XhttpH2` → `XhttpH1`, `Quic` → `WsH2`). Updates monotonically
-    /// downward inside an active window: a second failure on the
-    /// already-capped carrier (e.g. `XhttpH2` after a previous
-    /// `XhttpH3` → `XhttpH2` cap) lowers the ceiling but never
-    /// raises it, so multi-step downgrades preserve the deepest
-    /// failure observed during the window.
-    pub(crate) mode_downgrade_capped_to: Option<TransportMode>,
-    /// Cooldown deadline after a failed configured-carrier recovery
-    /// re-probe. While this deadline is in the future, `process_probe_ok`
-    /// must NOT enqueue another configured-carrier recovery probe for
-    /// this transport — the configured carrier was just confirmed
-    /// unreachable, and re-running the probe each cycle (every
-    /// `probe.interval`) on a flaky configured carrier produces visible
-    /// `H2 ↔ configured` flapping for traffic. Cleared on a successful
-    /// recovery (which also clears the cap) and on cap-window clear /
-    /// expiry; descent triggers (probe / runtime / silent fallback) do
-    /// not touch this — the descent path is independent of the recovery
-    /// scheduler. `None` means "no recovery cooldown active, recovery
-    /// is eligible the next time the regular probe succeeds at the
-    /// capped carrier and the configured carrier is still above
-    /// effective".
-    pub(crate) recovery_probe_cooldown_until: Option<Instant>,
-    /// Timestamp of the most recent successful configured-carrier
-    /// recovery probe. Used as a post-recovery grace window: while
-    /// `now - last_recovery_success_at < mode_downgrade_duration`,
-    /// the descent path treats a probe-trigger failure with
-    /// `prev_cap = None` like a probe-trigger failure inside an active
-    /// window — i.e. a single probe-fail does NOT immediately install
-    /// a fresh cap; the operator's `min_failures` threshold has to
-    /// stack first. This kills the residual `H2 ↔ configured` flap
-    /// that `recovery_probe_cooldown_until` alone could not fix:
-    /// after a recovery success cleared the cap, the very next
-    /// regular probe at configured could fail (false-positive
-    /// recovery on flaky configured) and re-install the cap on a
-    /// single failure. With grace, that single failure is absorbed
-    /// and only `min_failures` consecutive failures put the cap back.
-    /// Set in `clear_mode_downgrade`; runtime / silent-fallback
-    /// triggers ignore this — only probe triggers consult the grace.
-    pub(crate) last_recovery_success_at: Option<Instant>,
-    /// Counter of descent triggers (probe-fail, silent-fallback,
-    /// runtime-failure) observed inside the post-recovery grace window
-    /// while the cap is currently `None`. The grace gate in
-    /// `extend_mode_downgrade` absorbs the first `min_failures - 1`
-    /// such triggers (cap is **not** re-installed) and releases on
-    /// the `min_failures`-th trigger so the cap can be re-installed.
-    /// Reset to zero on:
-    ///   * a successful recovery / `clear_mode_downgrade` (fresh
-    ///     grace window opens with a clean attempt budget),
-    ///   * cap install (`cap_changed = true`) — once the cap is
-    ///     pinned again the grace path is irrelevant; subsequent
-    ///     descent triggers route through the in-window descent gate
-    ///     using `consecutive_failures`.
-    ///
-    /// Without this separate counter, silent-fallback / runtime-failure
-    /// triggers from the dispatcher (which do NOT increment
-    /// `consecutive_failures`) would bypass the post-recovery grace
-    /// entirely — every new client connection right after a recovery
-    /// clear could re-install the cap on its first silent fall, which
-    /// is the residual `H3 ↔ H2` flap operators were observing.
-    pub(crate) post_recovery_grace_descent_attempts: u32,
-    /// Counter of consecutive successful configured-carrier recovery
-    /// probes. The cap is cleared only when this reaches the
-    /// streak threshold (currently 2) — a single recovery success on
-    /// a flaky configured carrier (handshake passes, real traffic
-    /// streams blow up moments later) is treated as **tentative**;
-    /// a second consecutive success is needed before the cap drops.
-    /// Reset to zero on:
-    ///   * cap install (`cap_changed = true`) — descent ended any
-    ///     pending recovery streak,
-    ///   * `RecoveryReprobeFail` — failed recovery clears the streak,
-    ///   * `clear_mode_downgrade` — cap is gone, streak is moot.
-    ///
-    /// Without this streak, on uplinks where handshake H3 works but
-    /// the data plane is flaky (server-side issue, e.g.
-    /// `xhttp/h3 stream-one downlink ended`), the recovery probe
-    /// handshake-confirms after each cap install and clears the cap
-    /// every cycle — operators see permanent `H3 ↔ H2` flap.
-    pub(crate) recovery_probe_success_streak: u32,
+    /// The carrier-descent slot for the primary wire: the downgrade
+    /// window (deadline + family-aware cap), the recovery-probe
+    /// cooldown, the post-recovery grace budget and the recovery
+    /// success streak, with every transition encapsulated as a method.
+    /// See [`CarrierDescentState`] for the per-field semantics and
+    /// [`super::mode_downgrade`] for the driver that feeds it.
+    pub(crate) descent: CarrierDescentState,
     /// Per-fallback-wire mode-downgrade slots. Indexed by `wire_index - 1`
     /// (i.e. `[0]` corresponds to `fallbacks[0]`); the primary wire's
     /// downgrade lives in the existing `mode_downgrade_until` /

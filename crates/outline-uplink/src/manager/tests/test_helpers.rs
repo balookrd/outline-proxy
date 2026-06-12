@@ -163,8 +163,7 @@ impl UplinkManager {
                 crate::types::TransportKind::Tcp => &mut status.tcp,
                 crate::types::TransportKind::Udp => &mut status.udp,
             };
-            per.mode_downgrade_until = Some(until);
-            per.mode_downgrade_capped_to = Some(cap);
+            per.descent.seed_window(until, cap);
             per.consecutive_failures = 0;
             per.consecutive_successes = 0;
         });
