@@ -12,7 +12,9 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::{
-    config::{CipherKind, Config, UserEntry, access_key::build_access_key_artifacts_for_user},
+    config::{
+        CipherKind, Config, H3Alpn, UserEntry, access_key::build_access_key_artifacts_for_user,
+    },
     crypto::UserKey,
     metrics::Transport,
     protocol::vless::VlessUser,
@@ -53,6 +55,11 @@ pub(in crate::server) struct UserManager {
     allowed_udp_paths: BTreeSet<String>,
     allowed_vless_paths: BTreeSet<String>,
     allowed_xhttp_paths: BTreeSet<String>,
+    /// Whether raw VLESS-over-QUIC is enabled (`"vless"` in `[server.h3].alpn`).
+    /// When true a `vless_id` user needs no ws/xhttp path — the raw-QUIC ALPN is
+    /// itself a transport. Mirrors the startup check in `config::validation` so
+    /// the control API accepts exactly the users a fresh start would.
+    has_raw_quic_vless: bool,
     config_path: Option<PathBuf>,
 }
 
@@ -140,6 +147,7 @@ impl UserManager {
             allowed_udp_paths,
             allowed_vless_paths,
             allowed_xhttp_paths,
+            has_raw_quic_vless: config.h3_alpn.contains(&H3Alpn::Vless),
             config_path: config.config_path.clone(),
         }
     }
@@ -305,8 +313,11 @@ impl UserManager {
                 .xhttp_path_vless
                 .as_deref()
                 .or(self.default_xhttp_path_vless.as_deref());
-            if ws_path.is_none() && xhttp_path.is_none() {
-                bail!("vless_id requires at least one of ws_path_vless or xhttp_path_vless");
+            if ws_path.is_none() && xhttp_path.is_none() && !self.has_raw_quic_vless {
+                bail!(
+                    "vless_id requires at least one transport: ws_path_vless, \
+                     xhttp_path_vless, or raw VLESS-over-QUIC (\"vless\" in [server.h3].alpn)"
+                );
             }
             if let Some(path) = ws_path {
                 if !path.starts_with('/') {
@@ -497,3 +508,7 @@ where
         Option::deserialize(deserializer).map(Self::Set)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/manager.rs"]
+mod tests;
