@@ -373,8 +373,18 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
 
     let client_outcome =
         tokio::time::timeout(std::time::Duration::from_secs(1), socket.next()).await;
+    // The anti-probing sink (`sink_ws`) deliberately holds an invalid-auth
+    // connection open and drains it for up to SS_TCP_HANDSHAKE_TIMEOUT_SECS
+    // (30s) before sending Close, so within this 1s window a timeout
+    // (`Err(_)` — connection held open / sinking) is the expected outcome; a
+    // fast Close / Err / None is also fine. What must NOT happen is a relay
+    // frame echoed back. The isolation invariant proper is asserted by the
+    // upstream check below.
     assert!(
-        matches!(client_outcome, Ok(Some(Ok(WsMessage::Close(_)))) | Ok(Some(Err(_))) | Ok(None)),
+        matches!(
+            client_outcome,
+            Ok(Some(Ok(WsMessage::Close(_)))) | Ok(Some(Err(_))) | Ok(None) | Err(_)
+        ),
         "unexpected websocket outcome: {client_outcome:?}"
     );
     assert!(
