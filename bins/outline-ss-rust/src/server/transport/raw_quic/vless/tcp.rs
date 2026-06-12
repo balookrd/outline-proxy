@@ -8,7 +8,7 @@ use tokio::{
     net::tcp::{OwnedReadHalf, OwnedWriteHalf},
     sync::Notify,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::{
     metrics::{AppProtocol, Protocol},
@@ -189,7 +189,7 @@ async fn try_attach_parked_tcp(
     match server.orphan_registry.take_for_resume(id, user_label) {
         ResumeOutcome::Hit(Parked::Tcp(parked)) => match parked.protocol_context {
             TcpProtocolContext::Vless => {
-                info!(
+                debug!(
                     user = %user_label,
                     target = %parked.target_display,
                     "vless raw-quic upstream resumed from orphan registry"
