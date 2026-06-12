@@ -30,6 +30,25 @@ use crate::writer::SharedTunWriter;
 #[path = "tests/engine.rs"]
 mod tests;
 
+/// Opens the TUN device and spawns the read loop plus the engine-wide
+/// cleanup / maintenance tasks, returning once they are running.
+///
+/// Lifecycle (deliberate, not an oversight): these tasks are
+/// **process-lifetime**. No handle is returned and there is no cooperative
+/// shutdown, because the TUN device and its config are fixed at startup —
+/// the control-plane `/control/apply` path hot-swaps only uplink groups, and
+/// changing `[tun]` (like `listen` / `routing` / `metrics`) requires a full
+/// process restart (see `outline-ws-rust` `http::control::apply`). The engine
+/// is therefore created exactly once per process and the OS tears the fd and
+/// tasks down on exit. The per-engine cleanup/maintenance loops in
+/// `tcp::engine` and `udp` intentionally share this lifetime (unlike the
+/// defragmenter cleanup, which is `Weak`-scoped to the read loop).
+///
+/// If TUN is ever made hot-reloadable (recreating the engine while the
+/// process keeps running), this MUST grow an explicit teardown: return a
+/// shutdown handle and cancel the read loop + cleanup/maintenance tasks
+/// before respawning. Otherwise two read loops race on the same TUN fd and
+/// the previous engine's tasks leak (they hold a strong `engine` clone).
 pub async fn spawn_tun_loop(
     config: TunConfig,
     routing: TunRouting,
