@@ -6,7 +6,7 @@ use tokio::{
     io::AsyncWriteExt,
     sync::{Notify, mpsc},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::{
     metrics::{AppProtocol, Metrics, Protocol, TcpUpstreamGuard},
@@ -164,7 +164,7 @@ where
 {
     let target = request.target.clone();
     let target_display = target.to_string();
-    info!(user = user.label(), path = %route.path, target = %target_display, "vless tcp target");
+    debug!(user = user.label(), path = %route.path, target = %target_display, "vless tcp target");
 
     // Resume attempt: re-attach to a parked VLESS-TCP upstream when the
     // client offered a Session ID that this user owns. The target sent
@@ -186,7 +186,7 @@ where
                 "cross-protocol resume rejected: parked session is not VLESS"
             )));
         };
-        info!(
+        debug!(
             user = user.label(),
             path = %route.path,
             target = %parked.target_display,
