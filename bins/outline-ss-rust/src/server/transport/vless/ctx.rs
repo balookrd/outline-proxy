@@ -19,7 +19,7 @@ use super::super::super::{
     dns_cache::DnsCache,
     resumption::{OrphanRegistry, SessionId},
 };
-use super::super::tcp::ResumeContext;
+use super::super::resume_headers::ResumeContext;
 use super::super::vless_mux::MuxState;
 
 pub(in crate::server::transport) const MAX_VLESS_HEADER_BUFFER: usize = 512;

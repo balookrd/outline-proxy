@@ -32,7 +32,7 @@ use super::super::dns_cache::DnsCache;
 use super::super::resumption::{
     OrphanRegistry, Parked, ParkedSsUdpStream, ResumeOutcome, SessionId,
 };
-use super::tcp::ResumeContext;
+use super::resume_headers::ResumeContext;
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
 

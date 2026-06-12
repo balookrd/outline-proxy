@@ -20,7 +20,7 @@ use crate::{
     server::state::VlessTransportRoute,
 };
 
-use super::super::tcp::{ResumeContext, SESSION_RESPONSE_HEADER};
+use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
 use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::padding::post_response_headers;
@@ -195,11 +195,11 @@ async fn xhttp_h3_get(
         .body(())
         .context("failed to build xhttp/h3 GET response")?;
     apply_response_masquerade(response.headers_mut());
-    if let Some(id) = issued_for_response
-        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
-    {
-        response.headers_mut().insert(SESSION_RESPONSE_HEADER, value);
+    ResumeResponseEcho {
+        session_id: issued_for_response,
+        ..ResumeResponseEcho::default()
     }
+    .apply(response.headers_mut());
     if let Err(error) = stream.send_response(response).await {
         session.detach_get();
         return Err(anyhow!(error)).context("failed to send xhttp/h3 GET response head");
@@ -321,11 +321,11 @@ async fn xhttp_h3_post(
     if let Some((name, value)) = generate_padding_header() {
         resp_headers.insert(name, value);
     }
-    if let Some(id) = session.issued_resume_id
-        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
-    {
-        resp_headers.insert(SESSION_RESPONSE_HEADER, value);
+    ResumeResponseEcho {
+        session_id: session.issued_resume_id,
+        ..ResumeResponseEcho::default()
     }
+    .apply(resp_headers);
     stream
         .send_response(response)
         .await
@@ -388,11 +388,11 @@ async fn xhttp_h3_stream_one(
         .body(())
         .context("failed to build xhttp/h3 stream-one response")?;
     apply_response_masquerade(response.headers_mut());
-    if let Some(id) = session.issued_resume_id
-        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
-    {
-        response.headers_mut().insert(SESSION_RESPONSE_HEADER, value);
+    ResumeResponseEcho {
+        session_id: session.issued_resume_id,
+        ..ResumeResponseEcho::default()
     }
+    .apply(response.headers_mut());
     if let Err(error) = stream.send_response(response).await {
         session.detach_get();
         return Err(anyhow!(error)).context("failed to send xhttp/h3 stream-one response head");

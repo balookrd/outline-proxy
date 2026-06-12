@@ -220,23 +220,10 @@ impl SharedH2Connection {
     async fn open_websocket(
         self: &Arc<Self>,
         target_uri: &str,
-        resume_request: Option<crate::resumption::SessionId>,
-        ack_prefix_requested: bool,
-        symmetric_replay_requested: bool,
-        client_acked_offset: u64,
+        resume: &crate::dial_plan::DialResumeOptions,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<TransportStream> {
-        match self
-            .open_websocket_inner(
-                target_uri,
-                resume_request,
-                ack_prefix_requested,
-                symmetric_replay_requested,
-                client_acked_offset,
-                profile,
-            )
-            .await
-        {
+        match self.open_websocket_inner(target_uri, resume, profile).await {
             Ok(ws) => Ok(ws),
             Err(error) => {
                 // Any failure opening a new CONNECT stream on an already-cached
@@ -255,56 +242,23 @@ impl SharedH2Connection {
     async fn open_websocket_inner(
         self: &Arc<Self>,
         target_uri: &str,
-        resume_request: Option<crate::resumption::SessionId>,
-        ack_prefix_requested: bool,
-        symmetric_replay_requested: bool,
-        client_acked_offset: u64,
+        resume: &crate::dial_plan::DialResumeOptions,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<TransportStream> {
         if !self.is_open() {
             bail!("shared h2 connection is already closed");
         }
 
-        let mut request_builder = Request::builder()
+        let request_builder = Request::builder()
             .method(Method::CONNECT)
             .version(Version::HTTP_2)
             .uri(target_uri)
             .extension(Protocol::from_static("websocket"))
-            .header("sec-websocket-version", "13")
-            // Always advertise resumption support; the server only mints a
-            // Session ID when this header is present and resumption is
-            // enabled in its config. Servers without the feature ignore it.
-            .header(crate::resumption::RESUME_CAPABLE_HEADER, "1");
-        if let Some(id) = resume_request {
-            request_builder =
-                request_builder.header(crate::resumption::RESUME_REQUEST_HEADER, id.to_hex());
-        }
-        if ack_prefix_requested {
-            // Capability advertise for Ack-Prefix Protocol v1. The server
-            // only emits the 14-byte control frame (and only on the SS-WS
-            // path) when it sees this header AND the resume hits AND its
-            // own config enables Ack-Prefix support. Otherwise the header
-            // is a no-op — old servers and the VLESS-WS path ignore it.
-            request_builder = request_builder.header(crate::resumption::ACK_PREFIX_HEADER, "1");
-        }
-        if symmetric_replay_requested {
-            // v2 Symmetric Downlink Replay capability advertise. Spec
-            // gates v2 on v1, so this is only meaningful when
-            // `ack_prefix_requested` is also true; the orchestrator
-            // enforces that invariant before reaching this point.
-            request_builder =
-                request_builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
-        }
-        // v2 client-reported downstream-acked offset. Sent only on
-        // retry redials that also advertise v2 AND when the offset
-        // is non-zero (a fresh session has no prior bytes to claim).
-        if symmetric_replay_requested && client_acked_offset > 0 {
-            request_builder = request_builder
-                .header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
-        }
+            .header("sec-websocket-version", "13");
         let mut request: Request<Empty<Bytes>> = request_builder
             .body(Empty::new())
             .expect("request builder never fails");
+        crate::resumption::apply_resume_request_headers(resume, request.headers_mut());
         if let Some(profile) = profile {
             crate::fingerprint_profile::apply(
                 profile,
@@ -347,11 +301,7 @@ impl SharedH2Connection {
         if !response.status().is_success() {
             bail!("HTTP/2 websocket CONNECT failed with status {}", response.status());
         }
-        let issued_session_id = response
-            .headers()
-            .get(crate::resumption::SESSION_RESPONSE_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(crate::resumption::SessionId::parse_hex);
+        let negotiated = crate::resumption::parse_resume_response_echo(resume, response.headers());
 
         let upgraded = timeout(OPEN_WEBSOCKET_TIMEOUT, hyper::upgrade::on(&mut response))
             .await
@@ -365,36 +315,12 @@ impl SharedH2Connection {
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
         let shared_connection: Arc<dyn SharedConnectionHealth> = self.clone();
         self.streams_opened.fetch_add(1, Ordering::Relaxed);
-        // Negotiation succeeds only when both peers set the header to "1".
-        // Reading the response header without checking `ack_prefix_requested`
-        // would be safe because spec forbids the server from emitting the
-        // control frame unless the request also advertised the capability,
-        // but gating on both makes the client-side semantics auditable
-        // without trusting the server.
-        let ack_prefix_advertised_by_server = ack_prefix_requested
-            && response
-                .headers()
-                .get(crate::resumption::ACK_PREFIX_HEADER)
-                .and_then(|v| v.to_str().ok())
-                == Some("1");
-        // v2 echo gate: server must echo the v2 header AND the v1 echo
-        // must have come back too (per spec, v2 without v1 is undefined
-        // and the server is required to suppress it). The
-        // `ack_prefix_advertised_by_server` check enforces the latter
-        // even if a buggy server echoes v2 alone.
-        let symmetric_replay_advertised_by_server = symmetric_replay_requested
-            && ack_prefix_advertised_by_server
-            && response
-                .headers()
-                .get(crate::resumption::SYMMETRIC_REPLAY_HEADER)
-                .and_then(|v| v.to_str().ok())
-                == Some("1");
         Ok(TransportStream::H2 {
             inner: H2WsStream::new_shared(ws, shared_connection),
-            issued_session_id,
+            issued_session_id: negotiated.issued_session_id,
             downgraded_from: None,
-            ack_prefix_advertised_by_server,
-            symmetric_replay_advertised_by_server,
+            ack_prefix_advertised_by_server: negotiated.ack_prefix_advertised_by_server,
+            symmetric_replay_advertised_by_server: negotiated.symmetric_replay_advertised_by_server,
         })
     }
 }
@@ -441,31 +367,15 @@ fn h2_registry() -> &'static SharedConnectionRegistry<H2ConnectionKey, SharedH2C
 
 struct H2Dialer {
     use_tls: bool,
-    /// Session ID the caller wants to resume on this open. Captured at
+    /// Resume negotiation the caller wants on this open. Captured at
     /// dialer construction so the trait `open_on` method can stay
     /// signature-stable while threading the request through to
     /// `SharedH2Connection::open_websocket`.
-    resume_request: Option<crate::resumption::SessionId>,
-    /// Whether to advertise the Ack-Prefix Protocol v1 capability on
-    /// this open. Threaded alongside `resume_request` so the trait
-    /// signature stays unchanged; the inner builder gates header emission
-    /// on this flag and the response-side echo gates the
-    /// `TransportStream::ack_prefix_advertised_by_server` slot.
-    ack_prefix_requested: bool,
-    /// Whether to advertise the v2 Symmetric Downlink Replay capability
-    /// on this open. Spec gates v2 on v1; the dialer does not enforce
-    /// the invariant locally — the orchestrator above this layer
-    /// already requires `ack_prefix_requested` to be true whenever
-    /// this flag is true.
-    symmetric_replay_requested: bool,
-    /// v2 client-reported downstream-acked offset. Becomes the
-    /// `X-Outline-Resume-Down-Acked` request header when non-zero
-    /// AND v2 is being advertised.
-    client_acked_offset: u64,
+    resume: crate::dial_plan::DialResumeOptions,
     /// Browser identity to mix into the CONNECT request headers,
     /// or `None` when fingerprint diversification is disabled. Same
-    /// rationale as `resume_request` above — captured at dialer
-    /// construction so `open_on`'s trait signature is unaffected.
+    /// rationale as `resume` above — captured at dialer construction
+    /// so `open_on`'s trait signature is unaffected.
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 }
 
@@ -522,15 +432,7 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         let path = if path.is_empty() { "/" } else { path };
         let target_uri =
             format!("{scheme}://{}{path}", format_authority(server_name, Some(server_port)),);
-        conn.open_websocket(
-            &target_uri,
-            self.resume_request,
-            self.ack_prefix_requested,
-            self.symmetric_replay_requested,
-            self.client_acked_offset,
-            self.profile,
-        )
-        .await
+        conn.open_websocket(&target_uri, &self.resume, self.profile).await
     }
 }
 
@@ -542,10 +444,7 @@ pub(crate) async fn connect_websocket_h2(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
-    resume_request: Option<crate::resumption::SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
+    resume: crate::dial_plan::DialResumeOptions,
 ) -> Result<TransportStream> {
     let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let port = url
@@ -558,14 +457,7 @@ pub(crate) async fn connect_websocket_h2(
     };
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
-    let dialer = H2Dialer {
-        use_tls,
-        resume_request,
-        ack_prefix_requested,
-        symmetric_replay_requested,
-        client_acked_offset,
-        profile,
-    };
+    let dialer = H2Dialer { use_tls, resume, profile };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused

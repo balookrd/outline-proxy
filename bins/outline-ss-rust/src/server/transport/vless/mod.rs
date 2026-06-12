@@ -18,8 +18,8 @@ use super::super::{
     },
     resumption::{Parked, ResumeOutcome, SessionId},
 };
+use super::resume_headers::ResumeContext;
 use super::sink;
-use super::tcp::ResumeContext;
 use super::vless_mux::{self, MuxRouteCtx, MuxServerCtx, MuxState};
 use super::vless_udp::{self, forward_vless_udp_client_frames};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
