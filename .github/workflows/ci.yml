@@ -28,6 +28,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # .cargo/config.toml forces AR/RANLIB to `zig ar`/`zig ranlib` for every
+      # build (not just the zigbuild cross aliases), so ring's build script
+      # needs zig on PATH even for a native host check.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
       - uses: Swatinem/rust-cache@v2
 
       # `cargo fmt --all` would also reformat the vendored `sockudo-ws`
@@ -57,6 +63,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      # zig is required because .cargo/config.toml forces AR/RANLIB to zig for
+      # every build (see the lint job for details).
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
         run: cargo test --workspace --exclude sockudo-ws
@@ -67,6 +78,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+      # zig is required because .cargo/config.toml forces AR/RANLIB to zig for
+      # every build (see the lint job for details).
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
       - uses: Swatinem/rust-cache@v2
 
       - name: check default workspace
