@@ -3,10 +3,10 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{Result, anyhow};
 use axum::extract::ws::WebSocket;
 use bytes::Bytes;
-use sockudo_ws::{Http3 as H3Transport, Stream as H3Stream, WebSocketStream as H3WebSocketStream};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
+use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::{
     metrics::{AppProtocol, Transport},
     protocol::vless::{self, VlessCommand, VlessUser, mask_uuid},

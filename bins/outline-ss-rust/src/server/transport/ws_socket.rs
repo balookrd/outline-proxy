@@ -8,15 +8,14 @@ use futures_util::{
     future::BoxFuture,
     stream::{SplitSink, SplitStream},
 };
-use sockudo_ws::{
-    Http3 as H3Transport, Message as H3Message, SplitReader as H3SplitReader,
-    SplitWriter as H3SplitWriter, Stream as H3Stream, WebSocketStream as H3WebSocketStream,
-    error::CloseReason,
-};
 use tokio::sync::mpsc;
 
 use crate::{
     metrics::Protocol,
+    server::h3::vendored::{
+        H3CloseReason, H3Message, H3SplitReader, H3SplitWriter, H3Stream, H3Transport,
+        H3WebSocketStream,
+    },
     server::nat::{ResponseSender, UdpResponseSender},
 };
 
@@ -241,7 +240,7 @@ impl WsSocket for H3Ws {
         H3Message::Close(None)
     }
     fn close_try_again_msg() -> H3Message {
-        H3Message::Close(Some(CloseReason::new(1013, "")))
+        H3Message::Close(Some(H3CloseReason::new(1013, "")))
     }
     fn ping_msg() -> H3Message {
         H3Message::Ping(Bytes::new())

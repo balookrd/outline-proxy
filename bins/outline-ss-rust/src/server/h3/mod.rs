@@ -1,11 +1,10 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
-use sockudo_ws::{
-    Config as H3WebSocketConfig, Http3 as H3Transport, WebSocketServer as H3WebSocketServer,
-};
 use tokio::{sync::Semaphore, time::Duration};
 use tracing::{debug, warn};
+
+use vendored::{H3Transport, H3WebSocketConfig, H3WebSocketServer};
 
 use crate::{
     config::{Config, H3Alpn, TuningProfile},
@@ -29,6 +28,7 @@ use super::{
 mod http;
 mod raw_ss;
 mod raw_vless;
+pub(in crate::server) mod vendored;
 
 // Re-exported so the reverse-tunnel dialer can drive the same raw-SS accept
 // loop on an outbound-dialed carrier (topology A) — the handler is agnostic
@@ -60,7 +60,7 @@ pub(in crate::server) async fn build_h3_server(
     // Hand back a clone of the endpoint so the cert reloader can call
     // `set_server_config` on it; `Endpoint` is a cheap `Arc` handle and
     // the server keeps the other clone.
-    let server = H3WebSocketServer::<H3Transport>::from_endpoint(endpoint.clone(), ws_config);
+    let server = vendored::h3_ws_server_from_endpoint(endpoint.clone(), ws_config);
     Ok((server, endpoint))
 }
 
@@ -266,7 +266,7 @@ pub(in crate::server) async fn serve_h3_server(
     let xhttp_vless = Arc::clone(&initial.xhttp_vless);
     drop(initial);
     let xhttp_registry = Arc::clone(&services.xhttp_registry);
-    let (endpoint, ws_config) = server.into_parts();
+    let (endpoint, ws_config) = vendored::h3_ws_server_into_parts(server);
     let tcp_server = Arc::clone(&services.tcp_server);
     let udp_server = Arc::clone(&services.udp_server);
     let vless_server = Arc::clone(&services.vless_server);

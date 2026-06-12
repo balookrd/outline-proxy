@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::WebSocket;
 use bytes::Bytes;
-use sockudo_ws::{Http3 as H3Transport, Stream as H3Stream, WebSocketStream as H3WebSocketStream};
 use std::time::Duration;
 
 use tokio::{
@@ -37,6 +36,7 @@ impl From<anyhow::Error> for FrameError {
     }
 }
 
+use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::{
     crypto::{
         AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, UserKey, diagnose_stream_handshake,

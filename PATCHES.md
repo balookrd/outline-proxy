@@ -22,6 +22,24 @@ Regenerated against:
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | all `vendor/h3` deviations from upstream `h3 0.0.8` |
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | all `vendor/sockudo-ws/src` deviations (the one-line `Cargo.toml` change is documented below, not in the patch) |
 
+## Gate modules
+
+All production code reaches the patched API surface through two gate
+modules, one per side:
+
+- [`crates/outline-transport/src/h3/vendored.rs`](crates/outline-transport/src/h3/vendored.rs) — client
+  (`Protocol::WEBSOCKET` on Extended CONNECT, `Stream::from_h3_client` +
+  `WebSocketStream::from_raw`).
+- [`bins/outline-ss-rust/src/server/h3/vendored.rs`](bins/outline-ss-rust/src/server/h3/vendored.rs) — server
+  (the `h3::ext::Protocol` request extension, `Stream::from_h3_server` +
+  `WebSocketStream::from_raw`, the restored `WebSocketServer::into_parts`,
+  plus re-exports of the sockudo-ws types the server uses).
+
+When rebasing the vendored crates onto a new upstream, start (and ideally
+end) at these two files. CI enforces that `sockudo_ws` is referenced only
+from the gate modules; test modules are exempt because they impersonate the
+client side on purpose.
+
 ## h3 (0.0.8)
 
 Logical changes carried by `h3-0.0.8.patch`:

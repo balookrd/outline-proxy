@@ -4,11 +4,6 @@ use anyhow::{Context, Result, anyhow};
 use axum::http::{self, Method, StatusCode};
 use bytes::Bytes;
 use h3::server::Connection as H3Connection;
-use sockudo_ws::{
-    ExtendedConnectRequest as H3ExtendedConnectRequest, Http3 as H3Transport, Role as H3Role,
-    Stream as H3Stream, WebSocketStream as H3WebSocketStream, build_extended_connect_error,
-    build_extended_connect_response,
-};
 use tracing::{debug, warn};
 
 use super::super::{
@@ -27,6 +22,9 @@ use super::super::{
     },
 };
 use super::H3ConnectionCtx;
+use super::vendored::{
+    self, H3ExtendedConnectRequest, build_extended_connect_error, build_extended_connect_response,
+};
 use crate::crypto::UserKey;
 use crate::metrics::{AppProtocol, Protocol, Transport};
 
@@ -158,10 +156,7 @@ async fn handle_h3_request(
         return Ok(());
     }
 
-    let protocol_header = request
-        .extensions()
-        .get::<h3::ext::Protocol>()
-        .map(|protocol: &h3::ext::Protocol| protocol.as_str().to_owned());
+    let protocol_header = vendored::request_websocket_protocol(&request);
 
     let mut ws_req = H3ExtendedConnectRequest::from_request(&request)
         .ok_or_else(|| anyhow!("invalid HTTP/3 CONNECT request"))?;
@@ -212,8 +207,7 @@ async fn handle_h3_request(
         .await
         .context("failed to send HTTP/3 websocket response")?;
 
-    let h3_stream = H3Stream::<H3Transport>::from_h3_server(stream);
-    let socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Server, ctx.ws_config.clone());
+    let socket = vendored::server_ws_stream(stream, ctx.ws_config.clone());
 
     if ctx.tcp_paths.contains(ws_req.path.as_str()) {
         let routes_snap = ctx.routes.load();
