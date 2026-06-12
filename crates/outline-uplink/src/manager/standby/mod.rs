@@ -30,11 +30,10 @@ fn capped_or_configured(
     status: &PerTransportStatus,
     configured: crate::config::TransportMode,
 ) -> crate::config::TransportMode {
-    let now = tokio::time::Instant::now();
-    match (status.mode_downgrade_until, status.mode_downgrade_capped_to) {
-        (Some(until), Some(cap)) if until > now => cap,
-        _ => configured,
-    }
+    status
+        .descent
+        .active_cap(tokio::time::Instant::now())
+        .unwrap_or(configured)
 }
 
 use crate::types::{TransportKind, UplinkCandidate, UplinkManager};

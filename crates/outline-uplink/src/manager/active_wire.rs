@@ -419,10 +419,7 @@ impl UplinkManager {
                 // Wipe any in-flight mode-downgrade cap left over from
                 // the previous wire — the new wire's carrier stack is
                 // independent and starts at the configured rank.
-                st.mode_downgrade_until = None;
-                st.mode_downgrade_capped_to = None;
-                st.recovery_probe_success_streak = 0;
-                st.recovery_probe_cooldown_until = None;
+                st.descent.reset_window_for_wire_change();
             };
             apply(&mut status.tcp, tcp_wire);
             apply(&mut status.udp, udp_wire);

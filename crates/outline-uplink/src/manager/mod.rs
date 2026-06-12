@@ -1,6 +1,7 @@
 pub(crate) mod active_wire;
 pub(crate) mod candidates;
 mod carrier_descent;
+pub(crate) mod carrier_descent_state;
 mod cert_check;
 mod failures;
 pub(crate) mod mode_downgrade;

@@ -351,16 +351,18 @@ impl UplinkManager {
                 udp_consecutive_failures: status.udp.consecutive_failures,
                 h3_tcp_downgrade_until_ms: status
                     .tcp
-                    .mode_downgrade_until
+                    .descent
+                    .until()
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
                 h3_udp_downgrade_until_ms: status
                     .udp
-                    .mode_downgrade_until
+                    .descent
+                    .until()
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
-                tcp_mode_capped_to: status.tcp.mode_downgrade_capped_to.map(|m| m.to_string()),
-                udp_mode_capped_to: status.udp.mode_downgrade_capped_to.map(|m| m.to_string()),
+                tcp_mode_capped_to: status.tcp.descent.capped_to().map(|m| m.to_string()),
+                udp_mode_capped_to: status.udp.descent.capped_to().map(|m| m.to_string()),
                 tcp_xhttp_submode,
                 udp_xhttp_submode,
                 tcp_xhttp_submode_block_remaining_ms,
