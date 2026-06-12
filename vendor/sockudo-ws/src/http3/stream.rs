@@ -132,7 +132,7 @@ impl AsyncRead for Http3Stream {
                     *this.recv_finished = true;
                 }
                 Poll::Ready(Err(io::Error::other(e)))
-            },
+            }
             Poll::Pending => Poll::Pending,
         }
     }
@@ -247,11 +247,11 @@ impl AsyncRead for Http3ServerStream {
                     }
                 }
                 Poll::Ready(Ok(()))
-            },
+            }
             Poll::Ready(Ok(None)) => {
                 // Stream finished
                 Poll::Ready(Ok(()))
-            },
+            }
             Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
             Poll::Pending => Poll::Pending,
         }
@@ -383,11 +383,11 @@ impl AsyncRead for Http3ClientStream {
                     }
                 }
                 Poll::Ready(Ok(()))
-            },
+            }
             Poll::Ready(Ok(None)) => {
                 // Stream finished
                 Poll::Ready(Ok(()))
-            },
+            }
             Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
             Poll::Pending => Poll::Pending,
         }

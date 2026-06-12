@@ -254,7 +254,12 @@ impl RegisteredBuffer {
     /// * `data` - The buffer data
     /// * `len` - Number of valid bytes in the buffer
     pub fn from_vec(index: usize, data: Vec<u8>, len: usize) -> Self {
-        Self { index, data, len, pos: 0 }
+        Self {
+            index,
+            data,
+            len,
+            pos: 0,
+        }
     }
 }
 

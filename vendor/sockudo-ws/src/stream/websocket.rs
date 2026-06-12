@@ -223,7 +223,8 @@ where
         }
 
         let close = Message::Close(Some(CloseReason::new(code, reason)));
-        self.protocol.encode_message(&close, self.write_buf.buffer_mut())?;
+        self.protocol
+            .encode_message(&close, self.write_buf.buffer_mut())?;
         self.state = StreamState::CloseSent;
 
         // Flush the close frame
@@ -278,20 +279,24 @@ where
                 unsafe {
                     this.read_buf.set_len(buf_len + n);
                 }
-                if n == 0 { Poll::Ready(Ok(0)) } else { Poll::Ready(Ok(n)) }
-            },
+                if n == 0 {
+                    Poll::Ready(Ok(0))
+                } else {
+                    Poll::Ready(Ok(n))
+                }
+            }
             Poll::Ready(Err(e)) => {
                 unsafe {
                     this.read_buf.set_len(buf_len);
                 }
                 Poll::Ready(Err(e))
-            },
+            }
             Poll::Pending => {
                 unsafe {
                     this.read_buf.set_len(buf_len);
                 }
                 Poll::Pending
-            },
+            }
         }
     }
 
@@ -351,17 +356,18 @@ where
                         // Queue pong response
                         let this = self.as_mut().get_mut();
                         this.protocol.encode_pong(data, this.write_buf.buffer_mut());
-                    },
+                    }
                     Message::Close(reason) => {
                         let this = self.as_mut().get_mut();
                         if this.state == StreamState::Open {
                             // Send close response
-                            this.protocol.encode_close_response(this.write_buf.buffer_mut());
+                            this.protocol
+                                .encode_close_response(this.write_buf.buffer_mut());
                             this.state = StreamState::Closed;
                         }
                         return Poll::Ready(Some(Ok(Message::Close(reason.clone()))));
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
 
                 return Poll::Ready(Some(Ok(msg)));
@@ -373,21 +379,21 @@ where
                     // EOF - connection closed
                     self.as_mut().get_mut().state = StreamState::Closed;
                     return Poll::Ready(None);
-                },
+                }
                 Poll::Ready(Ok(_n)) => {
                     // Process the new data
                     match self.as_mut().get_mut().process_read_buf() {
                         Ok(()) => continue, // Loop to check for messages
                         Err(e) => return Poll::Ready(Some(Err(e))),
                     }
-                },
+                }
                 Poll::Ready(Err(e)) => {
                     return Poll::Ready(Some(Err(e.into())));
-                },
+                }
                 Poll::Pending => {
                     // No more data available right now
                     return Poll::Pending;
-                },
+                }
             }
         }
     }
@@ -419,7 +425,8 @@ where
         }
 
         // Encode message into write buffer
-        this.protocol.encode_message(&item, this.write_buf.buffer_mut())?;
+        this.protocol
+            .encode_message(&item, this.write_buf.buffer_mut())?;
         Ok(())
     }
 
@@ -436,16 +443,16 @@ where
             match Pin::new(&mut this.inner).poll_write_vectored(cx, &slices) {
                 Poll::Ready(Ok(0)) => {
                     return Poll::Ready(Err(Error::ConnectionClosed));
-                },
+                }
                 Poll::Ready(Ok(n)) => {
                     this.write_buf.consume(n);
-                },
+                }
                 Poll::Ready(Err(e)) => {
                     return Poll::Ready(Err(e.into()));
-                },
+                }
                 Poll::Pending => {
                     return Poll::Pending;
-                },
+                }
             }
         }
 
@@ -468,7 +475,7 @@ where
 
         // Flush pending data
         match self.as_mut().poll_flush(cx) {
-            Poll::Ready(Ok(())) => {},
+            Poll::Ready(Ok(())) => {}
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending => return Poll::Pending,
         }
@@ -478,7 +485,7 @@ where
             Poll::Ready(Ok(())) => {
                 self.as_mut().get_mut().state = StreamState::Closed;
                 Poll::Ready(Ok(()))
-            },
+            }
             Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
             Poll::Pending => Poll::Pending,
         }
@@ -722,7 +729,7 @@ where
                         let _ = self.control_tx.send(ControlRequest::Pong(data.clone()));
                         // Continue to next message (user doesn't see Ping)
                         continue;
-                    },
+                    }
                     Message::Close(reason) => {
                         if !self.closed {
                             // Request writer to send close response
@@ -730,12 +737,12 @@ where
                             self.closed = true;
                         }
                         return Some(Ok(Message::Close(reason.clone())));
-                    },
+                    }
                     Message::Pong(_) => {
                         // User doesn't typically need to see Pong
                         continue;
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
 
                 return Some(Ok(msg));
@@ -752,7 +759,7 @@ where
                     // EOF - connection closed
                     self.closed = true;
                     return None;
-                },
+                }
                 Ok(_n) => {
                     // Process the new data
                     match self.protocol.process(&mut self.read_buf) {
@@ -761,14 +768,14 @@ where
                                 self.pending_messages = messages;
                                 self.pending_index = 0;
                             }
-                        },
+                        }
                         Err(e) => return Some(Err(e)),
                     }
                     // Continue loop to check for messages
-                },
+                }
                 Err(e) => {
                     return Some(Err(e.into()));
-                },
+                }
             }
         }
     }
@@ -817,11 +824,11 @@ where
             match req {
                 ControlRequest::Pong(data) => {
                     self.protocol.encode_pong(&data, &mut self.write_buf);
-                },
+                }
                 ControlRequest::CloseResponse => {
                     self.protocol.encode_close_response(&mut self.write_buf);
                     self.closed = true;
-                },
+                }
             }
 
             if !self.write_buf.is_empty() {
@@ -842,20 +849,10 @@ where
         self.send(Message::Binary(data)).await
     }
 
-    /// Send a close frame and shut down the underlying transport write half.
-    ///
-    /// For HTTP/3 WebSocket (RFC 9220) this sends a QUIC FIN via `shutdown()`
-    /// instead of dropping the `SendStream` (which would emit RESET_STREAM and
-    /// make some H3 peers escalate to a connection-level `H3_INTERNAL_ERROR`,
-    /// tearing down every multiplexed stream on the QUIC connection).
+    /// Send a close frame
     pub async fn close(&mut self, code: u16, reason: &str) -> Result<()> {
-        self.send(Message::Close(Some(CloseReason::new(code, reason)))).await?;
-        // Send FIN on the underlying transport (QUIC send stream for H3, TCP
-        // half-close for H1/H2). Errors are ignored: the Close frame is already
-        // delivered and the stream is logically finished.
-        use tokio::io::AsyncWriteExt as _;
-        let _ = self.writer.shutdown().await;
-        Ok(())
+        self.send(Message::Close(Some(CloseReason::new(code, reason))))
+            .await
     }
 
     /// Check if the connection is closed
@@ -969,7 +966,8 @@ where
         }
 
         let close = Message::Close(Some(CloseReason::new(code, reason)));
-        self.protocol.encode_message(&close, self.write_buf.buffer_mut())?;
+        self.protocol
+            .encode_message(&close, self.write_buf.buffer_mut())?;
         self.state = StreamState::CloseSent;
 
         self.flush_write_buf().await?;
@@ -1020,20 +1018,24 @@ where
                 unsafe {
                     this.read_buf.set_len(buf_len + n);
                 }
-                if n == 0 { Poll::Ready(Ok(0)) } else { Poll::Ready(Ok(n)) }
-            },
+                if n == 0 {
+                    Poll::Ready(Ok(0))
+                } else {
+                    Poll::Ready(Ok(n))
+                }
+            }
             Poll::Ready(Err(e)) => {
                 unsafe {
                     this.read_buf.set_len(buf_len);
                 }
                 Poll::Ready(Err(e))
-            },
+            }
             Poll::Pending => {
                 unsafe {
                     this.read_buf.set_len(buf_len);
                 }
                 Poll::Pending
-            },
+            }
         }
     }
 
@@ -1089,16 +1091,17 @@ where
                     Message::Ping(data) => {
                         let this = self.as_mut().get_mut();
                         this.protocol.encode_pong(data, this.write_buf.buffer_mut());
-                    },
+                    }
                     Message::Close(reason) => {
                         let this = self.as_mut().get_mut();
                         if this.state == StreamState::Open {
-                            this.protocol.encode_close_response(this.write_buf.buffer_mut());
+                            this.protocol
+                                .encode_close_response(this.write_buf.buffer_mut());
                             this.state = StreamState::Closed;
                         }
                         return Poll::Ready(Some(Ok(Message::Close(reason.clone()))));
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
 
                 return Poll::Ready(Some(Ok(msg)));
@@ -1108,17 +1111,17 @@ where
                 Poll::Ready(Ok(0)) => {
                     self.as_mut().get_mut().state = StreamState::Closed;
                     return Poll::Ready(None);
-                },
+                }
                 Poll::Ready(Ok(_n)) => match self.as_mut().get_mut().process_read_buf() {
                     Ok(()) => continue,
                     Err(e) => return Poll::Ready(Some(Err(e))),
                 },
                 Poll::Ready(Err(e)) => {
                     return Poll::Ready(Some(Err(e.into())));
-                },
+                }
                 Poll::Pending => {
                     return Poll::Pending;
-                },
+                }
             }
         }
     }
@@ -1149,7 +1152,8 @@ where
             this.state = StreamState::CloseSent;
         }
 
-        this.protocol.encode_message(&item, this.write_buf.buffer_mut())?;
+        this.protocol
+            .encode_message(&item, this.write_buf.buffer_mut())?;
         Ok(())
     }
 
@@ -1165,16 +1169,16 @@ where
             match Pin::new(&mut this.inner).poll_write_vectored(cx, &slices) {
                 Poll::Ready(Ok(0)) => {
                     return Poll::Ready(Err(Error::ConnectionClosed));
-                },
+                }
                 Poll::Ready(Ok(n)) => {
                     this.write_buf.consume(n);
-                },
+                }
                 Poll::Ready(Err(e)) => {
                     return Poll::Ready(Err(e.into()));
-                },
+                }
                 Poll::Pending => {
                     return Poll::Pending;
-                },
+                }
             }
         }
 
@@ -1194,7 +1198,7 @@ where
         }
 
         match self.as_mut().poll_flush(cx) {
-            Poll::Ready(Ok(())) => {},
+            Poll::Ready(Ok(())) => {}
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending => return Poll::Pending,
         }
@@ -1203,7 +1207,7 @@ where
             Poll::Ready(Ok(())) => {
                 self.as_mut().get_mut().state = StreamState::Closed;
                 Poll::Ready(Ok(()))
-            },
+            }
             Poll::Ready(Err(e)) => Poll::Ready(Err(e.into())),
             Poll::Pending => Poll::Pending,
         }
@@ -1351,7 +1355,7 @@ where
                         let _ = self.control_tx.send(ControlRequest::Pong(data.clone()));
                         // Continue to next message (user doesn't see Ping)
                         continue;
-                    },
+                    }
                     Message::Close(reason) => {
                         if !self.closed {
                             // Request writer to send close response
@@ -1359,12 +1363,12 @@ where
                             self.closed = true;
                         }
                         return Some(Ok(Message::Close(reason.clone())));
-                    },
+                    }
                     Message::Pong(_) => {
                         // User doesn't typically need to see Pong
                         continue;
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
 
                 return Some(Ok(msg));
@@ -1381,7 +1385,7 @@ where
                     // EOF - connection closed
                     self.closed = true;
                     return None;
-                },
+                }
                 Ok(_n) => {
                     // Process the new data
                     match self.protocol.process(&mut self.read_buf) {
@@ -1390,14 +1394,14 @@ where
                                 self.pending_messages = messages;
                                 self.pending_index = 0;
                             }
-                        },
+                        }
                         Err(e) => return Some(Err(e)),
                     }
                     // Continue loop to check for messages
-                },
+                }
                 Err(e) => {
                     return Some(Err(e.into()));
-                },
+                }
             }
         }
     }
@@ -1447,11 +1451,11 @@ where
             match req {
                 ControlRequest::Pong(data) => {
                     self.protocol.encode_pong(&data, &mut self.write_buf);
-                },
+                }
                 ControlRequest::CloseResponse => {
                     self.protocol.encode_close_response(&mut self.write_buf);
                     self.closed = true;
-                },
+                }
             }
 
             if !self.write_buf.is_empty() {
@@ -1472,20 +1476,10 @@ where
         self.send(Message::Binary(data)).await
     }
 
-    /// Send a close frame and shut down the underlying transport write half.
-    ///
-    /// For HTTP/3 WebSocket (RFC 9220) this sends a QUIC FIN via `shutdown()`
-    /// instead of dropping the `SendStream` (which would emit RESET_STREAM and
-    /// make some H3 peers escalate to a connection-level `H3_INTERNAL_ERROR`,
-    /// tearing down every multiplexed stream on the QUIC connection).
+    /// Send a close frame
     pub async fn close(&mut self, code: u16, reason: &str) -> Result<()> {
-        self.send(Message::Close(Some(CloseReason::new(code, reason)))).await?;
-        // Send FIN on the underlying transport (QUIC send stream for H3, TCP
-        // half-close for H1/H2). Errors are ignored: the Close frame is already
-        // delivered and the stream is logically finished.
-        use tokio::io::AsyncWriteExt as _;
-        let _ = self.writer.shutdown().await;
-        Ok(())
+        self.send(Message::Close(Some(CloseReason::new(code, reason))))
+            .await
     }
 
     /// Check if the connection is closed

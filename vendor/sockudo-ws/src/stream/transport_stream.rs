@@ -253,12 +253,12 @@ impl AsyncRead for Stream<Http2> {
                 }
 
                 Poll::Ready(Ok(()))
-            },
+            }
             Poll::Ready(Some(Err(e))) => Poll::Ready(Err(io::Error::other(e))),
             Poll::Ready(None) => {
                 inner.recv_eof = true;
                 Poll::Ready(Ok(()))
-            },
+            }
             Poll::Pending => Poll::Pending,
         }
     }
@@ -292,19 +292,23 @@ impl AsyncWrite for Stream<Http2> {
                 let to_send = std::cmp::min(capacity, buf.len());
                 let data = Bytes::copy_from_slice(&buf[..to_send]);
 
-                inner.send.send_data(data, false).map_err(io::Error::other)?;
+                inner
+                    .send
+                    .send_data(data, false)
+                    .map_err(io::Error::other)?;
 
                 inner.capacity_needed = 0;
                 Poll::Ready(Ok(to_send))
-            },
+            }
             Poll::Ready(Some(Err(e))) => Poll::Ready(Err(io::Error::other(e))),
-            Poll::Ready(None) => {
-                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "HTTP/2 stream closed")))
-            },
+            Poll::Ready(None) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "HTTP/2 stream closed",
+            ))),
             Poll::Pending => {
                 inner.capacity_needed = buf.len();
                 Poll::Pending
-            },
+            }
         }
     }
 
@@ -320,7 +324,10 @@ impl AsyncWrite for Stream<Http2> {
         };
 
         // Send empty DATA frame with END_STREAM flag
-        inner.send.send_data(Bytes::new(), true).map_err(io::Error::other)?;
+        inner
+            .send
+            .send_data(Bytes::new(), true)
+            .map_err(io::Error::other)?;
         Poll::Ready(Ok(()))
     }
 }
@@ -451,7 +458,12 @@ impl AsyncRead for Stream<Http3> {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         match &mut self.inner {
-            StreamInner::Http3(Http3StreamInner::Raw { recv, recv_buf, recv_finished, .. }) => {
+            StreamInner::Http3(Http3StreamInner::Raw {
+                recv,
+                recv_buf,
+                recv_finished,
+                ..
+            }) => {
                 // First drain buffered data
                 if !recv_buf.is_empty() {
                     let to_copy = std::cmp::min(buf.remaining(), recv_buf.len());
@@ -471,7 +483,7 @@ impl AsyncRead for Stream<Http3> {
                             *recv_finished = true;
                         }
                         Poll::Ready(Err(io::Error::other(e)))
-                    },
+                    }
                     Poll::Pending => Poll::Pending,
                 }
             },
@@ -501,7 +513,7 @@ impl AsyncRead for Stream<Http3> {
                             }
                         }
                         Poll::Ready(Ok(()))
-                    },
+                    }
                     Poll::Ready(Ok(None)) => Poll::Ready(Ok(())),
                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                     Poll::Pending => Poll::Pending,
@@ -533,12 +545,12 @@ impl AsyncRead for Stream<Http3> {
                             }
                         }
                         Poll::Ready(Ok(()))
-                    },
+                    }
                     Poll::Ready(Ok(None)) => Poll::Ready(Ok(())),
                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                     Poll::Pending => Poll::Pending,
                 }
-            },
+            }
             _ => unreachable!(),
         }
     }
@@ -681,7 +693,11 @@ impl AsyncWrite for Stream<Http3> {
 impl fmt::Debug for Stream<Http3> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            StreamInner::Http3(Http3StreamInner::Raw { recv_buf, recv_finished, .. }) => f
+            StreamInner::Http3(Http3StreamInner::Raw {
+                recv_buf,
+                recv_finished,
+                ..
+            }) => f
                 .debug_struct("Stream<Http3>")
                 .field("variant", &"Raw")
                 .field("recv_buf_len", &recv_buf.len())
