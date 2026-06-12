@@ -1,11 +1,13 @@
 //! Session-resumption wire vocabulary shared by the server and the client.
 //!
 //! Owns the `X-Outline-*` header names negotiated on every WS upgrade /
-//! CONNECT / XHTTP request and the byte layout of the Ack-Prefix Protocol
-//! v1 control frame, so the two sides of the wire cannot drift. The
-//! protocol-level contract lives in `docs/SESSION-RESUMPTION.md`; the
-//! server's negotiation gates and the client's dial plumbing stay in
-//! their respective crates — only the format-level vocabulary is here.
+//! CONNECT / XHTTP request and the byte layouts of the Ack-Prefix Protocol
+//! control frames — v1 (`"ORSM"`, this module) and v2 Symmetric Downlink
+//! Replay (`"ORDR"`, the [`downlink_replay`] submodule) — so the two sides
+//! of the wire cannot drift. The protocol-level contract lives in
+//! `docs/SESSION-RESUMPTION.md`; the server's negotiation gates and the
+//! client's dial plumbing stay in their respective crates — only the
+//! format-level vocabulary is here.
 
 /// Lower-cased name of the request header carrying the Session ID a
 /// client wishes to resume.
@@ -136,6 +138,123 @@ pub fn parse_v1(buf: &[u8]) -> ParseResult {
     let up_acked =
         u64::from_be_bytes(buf[6..14].try_into().expect("FRAME_LEN_V1 guarantees 8 bytes here"));
     ParseResult::Valid { up_acked }
+}
+
+/// Wire vocabulary of the Ack-Prefix Protocol v2 (Symmetric Downlink
+/// Replay) control frame.
+///
+/// On a resume hit where both sides negotiated v2 (see
+/// [`SYMMETRIC_REPLAY_HEADER`](super::SYMMETRIC_REPLAY_HEADER)), the
+/// server emits this frame immediately after the v1 `"ORSM"` frame: a
+/// [`FRAME_HEADER_LEN_V1`]-byte header followed by `replay_len` payload
+/// bytes — the downstream slice `[client_acked_offset, total_sent)` the
+/// client must flush to its local consumer BEFORE any fresh upstream
+/// bytes. The server builds the header with [`build_v1_header`]; the
+/// client validates it with [`parse_v1`]. See
+/// `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2).
+pub mod downlink_replay {
+    /// ASCII magic identifying the v2 control frame. Distinguishes it
+    /// from the v1 `"ORSM"` frame and from accidental upstream bytes.
+    pub const MAGIC: [u8; 4] = *b"ORDR";
+
+    /// Wire-format version. Receivers that see a higher byte MUST drop
+    /// the session.
+    pub const VERSION_V1: u8 = 0x01;
+
+    /// Empty flags bitfield — the happy-path value when the replay
+    /// slice was fully reconstructed from the server's downlink ring.
+    pub const FLAGS_NONE: u8 = 0x00;
+
+    /// `flags` bit 0: the server's downlink ring rolled past the
+    /// client-reported offset and the requested replay slice cannot be
+    /// reconstructed. When set, `replay_len` MUST be `0` and the client
+    /// observes an irrecoverable downstream gap (handled per
+    /// `tcp_mid_session_retry_overflow_policy`).
+    pub const FLAG_REPLAY_TRUNCATED: u8 = 0x01;
+
+    /// All flag bits this version of the parser knows about. A non-zero
+    /// bit outside this mask indicates a future protocol extension and
+    /// MUST cause the session to be dropped.
+    pub const FLAG_KNOWN_MASK: u8 = FLAG_REPLAY_TRUNCATED;
+
+    /// Total wire size of the v2 control-frame header, in bytes. Payload
+    /// of `replay_len` bytes follows immediately after. Layout:
+    ///
+    /// ```text
+    ///   +0  : magic        "ORDR"      4 bytes  ASCII
+    ///   +4  : version      0x01        1 byte
+    ///   +5  : flags        bitfield    1 byte   bit 0 = REPLAY_TRUNCATED
+    ///   +6  : replay_len   u64 BE      8 bytes  payload bytes that follow
+    ///   +14 : (header end)
+    /// ```
+    pub const FRAME_HEADER_LEN_V1: usize = 14;
+
+    /// Serialise the v2 control-frame header (server side).
+    ///
+    /// The caller appends the `replay_len`-byte payload immediately
+    /// after and feeds the concatenation through the session's normal
+    /// transport chain (AEAD encryption + WS framing on SS, plaintext
+    /// WS Binary / XHTTP chunk on VLESS) — identical to any other data
+    /// chunk. `flags` must be a subset of [`FLAG_KNOWN_MASK`], and
+    /// [`FLAG_REPLAY_TRUNCATED`] requires `replay_len == 0` per spec;
+    /// both are the emitter's contract, not enforced here.
+    pub fn build_v1_header(flags: u8, replay_len: u64) -> [u8; FRAME_HEADER_LEN_V1] {
+        let mut buf = [0u8; FRAME_HEADER_LEN_V1];
+        buf[0..4].copy_from_slice(&MAGIC);
+        buf[4] = VERSION_V1;
+        buf[5] = flags;
+        buf[6..14].copy_from_slice(&replay_len.to_be_bytes());
+        buf
+    }
+
+    /// Outcome of a [`parse_v1`] attempt on the
+    /// [`FRAME_HEADER_LEN_V1`]-byte header.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ParseResult {
+        /// The header is a valid v2 control frame. Carries the parsed
+        /// `flags` byte (so callers can inspect
+        /// [`FLAG_REPLAY_TRUNCATED`]) and the `replay_len` declared by
+        /// the server.
+        Valid { flags: u8, replay_len: u64 },
+        /// Buffer is shorter than [`FRAME_HEADER_LEN_V1`].
+        TooShort,
+        /// Magic does not match `"ORDR"` — drop session.
+        BadMagic,
+        /// Unrecognised version — drop session.
+        UnsupportedVersion(u8),
+        /// Reserved flag bits (outside [`FLAG_KNOWN_MASK`]) were set —
+        /// drop session.
+        ReservedFlagsSet(u8),
+    }
+
+    /// Parse the first [`FRAME_HEADER_LEN_V1`] bytes of the v2 frame
+    /// (client side).
+    ///
+    /// On `Valid` the caller continues to read exactly `replay_len`
+    /// bytes from the transport; those bytes are the server's
+    /// downstream replay payload. On any error variant the session MUST
+    /// be dropped per spec.
+    pub fn parse_v1(buf: &[u8]) -> ParseResult {
+        if buf.len() < FRAME_HEADER_LEN_V1 {
+            return ParseResult::TooShort;
+        }
+        if buf[0..4] != MAGIC {
+            return ParseResult::BadMagic;
+        }
+        if buf[4] != VERSION_V1 {
+            return ParseResult::UnsupportedVersion(buf[4]);
+        }
+        let flags = buf[5];
+        if flags & !FLAG_KNOWN_MASK != 0 {
+            return ParseResult::ReservedFlagsSet(flags);
+        }
+        let replay_len = u64::from_be_bytes(
+            buf[6..14]
+                .try_into()
+                .expect("FRAME_HEADER_LEN_V1 guarantees 8 bytes here"),
+        );
+        ParseResult::Valid { flags, replay_len }
+    }
 }
 
 #[cfg(test)]
