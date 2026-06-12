@@ -7,7 +7,7 @@ use super::header::{
     VLESS_ATYP_DOMAIN, VLESS_ATYP_IPV4, VLESS_CMD_TCP, VLESS_CMD_UDP, build_request_header,
 };
 use super::parse_uuid;
-use super::udp_mux::{VlessUdpSessionSlot, evict_lru_populated_session};
+use super::udp_mux_core::{VlessUdpMuxSessionSlot, evict_lru_populated_session};
 
 #[test]
 fn parse_uuid_roundtrip() {
@@ -50,7 +50,7 @@ fn vless_udp_session_slot_empty_uses_created_for_lru() {
     // ordered key — otherwise `min_by_key` would compare an
     // `Option<Instant>` and skip empty slots, but the predicate
     // for the janitor must still expire stuck dials.
-    let slot = VlessUdpSessionSlot::new();
+    let slot = VlessUdpMuxSessionSlot::<()>::new();
     assert!(slot.entry().is_none(), "freshly built slot is empty");
     assert_eq!(
         slot.last_use(),
@@ -65,9 +65,9 @@ fn evict_lru_populated_session_skips_in_flight_slots() {
     // an in-flight dial would cancel the shared OnceCell future
     // and force every blocked `session_for` waiter to restart.
     // The eviction scan must filter `entry().is_some()` first.
-    let mut map: HashMap<TargetAddr, Arc<VlessUdpSessionSlot>> = HashMap::new();
+    let mut map: HashMap<TargetAddr, Arc<VlessUdpMuxSessionSlot<()>>> = HashMap::new();
     let target = TargetAddr::IpV4(std::net::Ipv4Addr::new(1, 2, 3, 4), 443);
-    map.insert(target.clone(), Arc::new(VlessUdpSessionSlot::new()));
+    map.insert(target.clone(), Arc::new(VlessUdpMuxSessionSlot::new()));
 
     let evicted = evict_lru_populated_session(&mut map);
     assert!(evicted.is_none(), "in-flight slot must not be evicted");
