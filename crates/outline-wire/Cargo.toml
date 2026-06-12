@@ -12,6 +12,7 @@ clap = ["dep:clap"]
 
 [dependencies]
 base64 = "0.22"
+blake3 = "1.8"
 bytes = "1.10"
 clap = { version = "4.5", optional = true, default-features = false, features = ["derive", "std"] }
 md5 = "0.7"
