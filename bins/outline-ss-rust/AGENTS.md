@@ -187,6 +187,10 @@ patch documentation/artifacts в том же изменении.
 Не поднимай upstream versions и не удаляй `[patch.crates-io]` без явной причины:
 HTTP/3 WebSocket path зависит от этих патчей.
 
+Прямые обращения к vendored API в production-коде сервера идут только через
+модуль-врата `src/server/h3/vendored.rs` (CI это проверяет; тесты —
+исключение). Новые обращения добавляй во врата, а не в потребителей.
+
 ## Команды сборки и тестов
 
 Используй самую маленькую команду, которая дает уверенность для затронутой
@@ -203,15 +207,14 @@ HTTP/3 WebSocket path зависит от этих патчей.
 
 Заметки:
 
-- В `Cargo.toml` есть dev-dependency на
-  `../outline-ws-rust/crates/outline-transport`. Для `cargo test` и
-  `cargo check --tests` нужен соседний checkout.
-- Cross-build aliases определены в `.cargo/config.toml` и требуют
-  `cargo-zigbuild` плюс `zig`: `cargo build-musl-x86_64`,
-  `cargo release-musl-x86_64`, `cargo build-musl-aarch64`,
-  `cargo release-musl-aarch64`, `cargo build-musl-arm`,
-  `cargo release-musl-arm`, `cargo build-musl-armv7`,
-  `cargo release-musl-armv7`.
+- Dev-dependency `outline-transport` лежит in-workspace
+  (`crates/outline-transport`) — соседний checkout больше не нужен.
+- Cross-build aliases определены в корневом `.cargo/config.toml` и требуют
+  `cargo-zigbuild` плюс `zig`; серверные алиасы имеют префикс `ss-`:
+  `cargo ss-build-musl-x86_64`, `cargo ss-release-musl-x86_64`,
+  `cargo ss-build-musl-aarch64`, `cargo ss-release-musl-aarch64`,
+  `cargo ss-build-musl-arm`, `cargo ss-release-musl-arm`,
+  `cargo ss-build-musl-armv7`, `cargo ss-release-musl-armv7`.
 - Некоторые тесты биндинят локальные TCP/UDP sockets и используют async
   timeouts. Предпочитай ephemeral ports и существующие test helpers в
   `src/server/tests/mod.rs`.
@@ -234,7 +237,7 @@ HTTP/3 WebSocket path зависит от этих патчей.
 
 - `target/` является generated и ignored.
 - `grafana/outline-ss-rust-dashboard.json`, `systemd/outline-ss-rust.service`,
-  `install.sh` и `config.toml` являются user-facing deployment artifacts; держи
-  их согласованными с runtime behavior.
+  `config.toml` и корневой `install-server.sh` являются user-facing deployment
+  artifacts; держи их согласованными с runtime behavior.
 - Не добавляй в репозиторий local secrets, generated access-key YAML files,
   certificates или private keys.
