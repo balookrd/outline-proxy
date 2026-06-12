@@ -23,7 +23,6 @@ http-body-util = "0.1"
 libc = "0.2"
 libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"] }
 lru = "0.18"
-md-5 = "0.10"
 mimalloc = { version = "0.1", default-features = false }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }

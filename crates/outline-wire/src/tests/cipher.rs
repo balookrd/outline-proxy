@@ -77,3 +77,40 @@ fn serde_accepts_legacy_aliases() {
     let parsed: CipherKind = serde_json::from_str("\"aes256-gcm\"").unwrap();
     assert_eq!(parsed, CipherKind::Aes256Gcm);
 }
+
+// Reference vectors computed independently with Python's hashlib
+// (EVP_BytesToKey, MD5, no salt, one hash round).
+#[test]
+fn evp_bytes_to_key_matches_reference_vectors() {
+    let key16 = evp_bytes_to_key(b"foobar", 16);
+    assert_eq!(hex(&key16), "3858f62230ac3c915f300c664312c63f");
+    let key32 = evp_bytes_to_key(b"foobar", 32);
+    assert_eq!(hex(&key32), "3858f62230ac3c915f300c664312c63f568378529614d22ddb49237d2f60bfdf");
+}
+
+#[test]
+fn derive_master_key_stretches_classic_passwords() {
+    let key = CipherKind::Aes256Gcm.derive_master_key("foobar").unwrap();
+    assert_eq!(hex(&key), "3858f62230ac3c915f300c664312c63f568378529614d22ddb49237d2f60bfdf");
+}
+
+#[test]
+fn derive_master_key_decodes_ss2022_psk() {
+    use base64::Engine;
+    let psk = [7u8; 32];
+    let encoded = base64::engine::general_purpose::STANDARD.encode(psk);
+    let key = CipherKind::Aes256Gcm2022.derive_master_key(&encoded).unwrap();
+    assert_eq!(key, psk);
+
+    let err = CipherKind::Aes256Gcm2022
+        .derive_master_key("not base64!")
+        .unwrap_err();
+    assert!(matches!(err, MasterKeyError::InvalidBase64Psk(_)));
+
+    let err = CipherKind::Aes256Gcm2022.derive_master_key("c2hvcnQ=").unwrap_err();
+    assert!(matches!(err, MasterKeyError::PskLengthMismatch { got: 5, expected: 32 }));
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
