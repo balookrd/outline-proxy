@@ -1,3 +1,30 @@
+//! In-memory DNS cache shared by the client transport stack and the
+//! server's upstream-connect path.
+//!
+//! Entries map `(port, addr_pref, host)` to a ready-to-use
+//! `Arc<[SocketAddr]>` slice. The `addr_pref` bit is opaque to the
+//! cache — it is simply part of the key, encoding the caller's
+//! address-ordering preference (`ipv6_first` on the client,
+//! `prefer_ipv4_upstream` on the server) so differently-ordered
+//! resolutions never alias.
+//!
+//! `get` / `get_stale` use the hashbrown raw-entry API to probe with a
+//! borrowed `&str` — one hash computation, one table probe, no heap
+//! allocation on the hot path. Expired entries are kept in memory so
+//! `get_stale` can serve them as a last-ditch fallback when the
+//! upstream resolver fails; fresh data overwrites them in place.
+//!
+//! Two bounding strategies, picked by constructor:
+//! - [`DnsCache::with_capacity`] — approximate LRU à la Redis
+//!   `allkeys-lru`: when full, `insert` reaps an expired sample or
+//!   evicts the least-recently-accessed of a random sample. Used by
+//!   the client, where direct-target DNS would otherwise grow the map
+//!   for the lifetime of the process.
+//! - [`DnsCache::new`] — unbounded; pair it with a periodic
+//!   [`DnsCache::sweep_expired`] tick. Used by the server, which keeps
+//!   stale entries around for resolver-outage fallback and purges them
+//!   on a janitor schedule instead of at insert time.
+
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
@@ -30,7 +57,7 @@ type CacheKey = (u16, bool, Box<str>);
 
 #[derive(Debug)]
 struct Entry {
-    /// Already sorted according to the `ipv6_first` bit in the key —
+    /// Already sorted according to the `addr_pref` bit in the key —
     /// callers receive a ready-to-use ordered slice without re-sorting on
     /// each hit.
     addrs: Arc<[SocketAddr]>,
@@ -41,19 +68,8 @@ struct Entry {
     last_access: AtomicU64,
 }
 
-/// In-memory cache of resolved `(port, ipv6_first, host) → Arc<[SocketAddr]>`
-/// mappings.
-///
-/// Flat `HashMap<(u16, bool, Box<str>), Entry>` keyed by a single compound
-/// hash.  `get` / `get_stale` use the raw-entry API to probe with `&str`
-/// directly — one hash computation, one table probe, no heap allocation.
-/// `insert` takes a write lock once and updates in-place on a hit.
-///
-/// Optionally bounded by `capacity`. When full, `insert` first reaps any
-/// expired entry it samples; otherwise it picks the oldest of
-/// [`EVICTION_SAMPLE`] random entries (approximate LRU). Direct-target DNS
-/// is the dominant source of new entries, so an unbounded cache would grow
-/// for the lifetime of the process — the bound caps that growth.
+/// In-memory cache of resolved `(port, addr_pref, host) → Arc<[SocketAddr]>`
+/// mappings. See the module docs for the two bounding strategies.
 #[derive(Debug)]
 pub struct DnsCache {
     inner: RwLock<HashMap<CacheKey, Entry>>,
@@ -63,23 +79,23 @@ pub struct DnsCache {
 }
 
 #[inline]
-fn make_hash(bh: &impl BuildHasher, port: u16, ipv6_first: bool, host: &str) -> u64 {
+fn make_hash(bh: &impl BuildHasher, port: u16, addr_pref: bool, host: &str) -> u64 {
     let mut h = bh.build_hasher();
     port.hash(&mut h);
-    ipv6_first.hash(&mut h);
+    addr_pref.hash(&mut h);
     host.hash(&mut h);
     h.finish()
 }
 
 #[inline]
-fn key_eq(k: &CacheKey, port: u16, ipv6_first: bool, host: &str) -> bool {
-    k.0 == port && k.1 == ipv6_first && k.2.as_ref() == host
+fn key_eq(k: &CacheKey, port: u16, addr_pref: bool, host: &str) -> bool {
+    k.0 == port && k.1 == addr_pref && k.2.as_ref() == host
 }
 
 impl DnsCache {
-    /// Unbounded cache with the given TTL. Prefer
-    /// [`DnsCache::with_capacity`] for production paths that resolve
-    /// untrusted hosts.
+    /// Unbounded cache with the given TTL. Pair with a periodic
+    /// [`DnsCache::sweep_expired`] tick, or prefer
+    /// [`DnsCache::with_capacity`] for paths that resolve untrusted hosts.
     pub fn new(ttl: Duration) -> Self {
         Self {
             inner: RwLock::new(HashMap::new()),
@@ -106,12 +122,13 @@ impl DnsCache {
         self.tick.fetch_add(1, Ordering::Relaxed)
     }
 
-    pub fn get(&self, host: &str, port: u16, ipv6_first: bool) -> Option<Arc<[SocketAddr]>> {
+    /// Returns the cached addresses when the entry is still fresh.
+    pub fn get(&self, host: &str, port: u16, addr_pref: bool) -> Option<Arc<[SocketAddr]>> {
         let map = self.inner.read();
-        let hash = make_hash(map.hasher(), port, ipv6_first, host);
+        let hash = make_hash(map.hasher(), port, addr_pref, host);
         let (_, entry) = map
             .raw_entry()
-            .from_hash(hash, |k| key_eq(k, port, ipv6_first, host))?;
+            .from_hash(hash, |k| key_eq(k, port, addr_pref, host))?;
         if Instant::now() < entry.expires_at {
             entry.last_access.store(self.next_tick(), Ordering::Relaxed);
             Some(Arc::clone(&entry.addrs))
@@ -120,22 +137,28 @@ impl DnsCache {
         }
     }
 
-    pub fn get_stale(&self, host: &str, port: u16, ipv6_first: bool) -> Option<Arc<[SocketAddr]>> {
+    /// Returns cached addresses regardless of expiry. Intended as a
+    /// last-ditch fallback when the upstream resolver fails — prefer
+    /// [`DnsCache::get`] for the hot path.
+    pub fn get_stale(&self, host: &str, port: u16, addr_pref: bool) -> Option<Arc<[SocketAddr]>> {
         let map = self.inner.read();
-        let hash = make_hash(map.hasher(), port, ipv6_first, host);
+        let hash = make_hash(map.hasher(), port, addr_pref, host);
         let (_, entry) = map
             .raw_entry()
-            .from_hash(hash, |k| key_eq(k, port, ipv6_first, host))?;
+            .from_hash(hash, |k| key_eq(k, port, addr_pref, host))?;
         entry.last_access.store(self.next_tick(), Ordering::Relaxed);
         Some(Arc::clone(&entry.addrs))
     }
 
-    pub fn insert(&self, host: &str, port: u16, ipv6_first: bool, addrs: Arc<[SocketAddr]>) {
+    /// Upserts the resolution for the key, stamping `now + ttl` as expiry.
+    /// On a bounded cache, evicts past-capacity entries (expired first,
+    /// then approximate-LRU).
+    pub fn insert(&self, host: &str, port: u16, addr_pref: bool, addrs: Arc<[SocketAddr]>) {
         let mut map = self.inner.write();
-        // Clone the BuildHasher before the mutable borrow so we can reuse it
-        // inside `insert_with_hasher` without a second borrow of `map`.
-        let bh = map.hasher().clone();
-        let hash = make_hash(&bh, port, ipv6_first, host);
+        // Copy the BuildHasher out before the mutable borrow so we can reuse
+        // it inside `insert_with_hasher` without a second borrow of `map`.
+        let bh = *map.hasher();
+        let hash = make_hash(&bh, port, addr_pref, host);
         let tick = self.next_tick();
         let new_entry = Entry {
             addrs,
@@ -144,14 +167,14 @@ impl DnsCache {
         };
         match map
             .raw_entry_mut()
-            .from_hash(hash, |k| key_eq(k, port, ipv6_first, host))
+            .from_hash(hash, |k| key_eq(k, port, addr_pref, host))
         {
             RawEntryMut::Occupied(mut o) => {
                 *o.get_mut() = new_entry;
                 return;
             },
             RawEntryMut::Vacant(v) => {
-                v.insert_with_hasher(hash, (port, ipv6_first, host.into()), new_entry, |k| {
+                v.insert_with_hasher(hash, (port, addr_pref, host.into()), new_entry, |k| {
                     make_hash(&bh, k.0, k.1, &k.2)
                 });
             },
@@ -164,6 +187,26 @@ impl DnsCache {
                 }
             }
         }
+    }
+
+    /// Removes entries whose expiry is older than `stale_grace` — callers
+    /// that keep stale entries around for fallback pass a grace period
+    /// longer than the cache TTL. Returns the number of purged entries.
+    /// This is the janitor companion to the unbounded constructor; bounded
+    /// caches usually rely on insert-time eviction instead.
+    pub fn sweep_expired(&self, stale_grace: Duration) -> usize {
+        let Some(cutoff) = Instant::now().checked_sub(stale_grace) else {
+            return 0;
+        };
+        let mut purged = 0usize;
+        self.inner.write().retain(|_, entry| {
+            let keep = entry.expires_at > cutoff;
+            if !keep {
+                purged += 1;
+            }
+            keep
+        });
+        purged
     }
 
     #[cfg(test)]
@@ -194,7 +237,7 @@ fn evict_one(map: &mut HashMap<CacheKey, Entry>) -> bool {
     let mut victim_hash: Option<u64> = None;
     let mut victim_key: Option<CacheKey> = None;
     let mut oldest_tick = u64::MAX;
-    let bh = map.hasher().clone();
+    let bh = *map.hasher();
 
     for (k, e) in map.iter().skip(skip).take(sample) {
         if e.expires_at <= now {

@@ -1,10 +1,13 @@
 //! Pure-OS socket helpers shared across outline crates.
 //!
 //! This crate owns low-level plumbing that is protocol-agnostic: TCP connect
-//! with fwmark/keepalive, UDP bind with buffer sizing, and inbound-socket
-//! tuning. It has no knowledge of Shadowsocks, WebSocket, or any transport
-//! protocol — callers layer their own context (e.g. `TransportOperation`)
-//! on top of the returned `anyhow::Error`.
+//! with fwmark/keepalive, UDP bind with buffer sizing, inbound-socket
+//! tuning, and the [`dns_cache`] resolution cache. It has no knowledge of
+//! Shadowsocks, WebSocket, or any transport protocol — callers layer their
+//! own context (e.g. `TransportOperation`) on top of the returned
+//! `anyhow::Error`.
+
+pub mod dns_cache;
 
 #[cfg(not(target_os = "linux"))]
 use anyhow::bail;
