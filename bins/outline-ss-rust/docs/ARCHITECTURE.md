@@ -263,7 +263,7 @@ Uses RFC 9220 Extended CONNECT over QUIC. This requires:
 - UDP reachability
 - HTTP/3-capable clients
 
-The repository currently vendors and patches upstream crates to make this path practical. See [PATCHES.md](PATCHES.md).
+The repository currently vendors and patches upstream crates to make this path practical. See [PATCHES.md](../../../PATCHES.md) ([Русский](../../../PATCHES.ru.md)).
 
 ### Raw VLESS / Shadowsocks over QUIC
 

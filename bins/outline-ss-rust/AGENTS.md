@@ -179,9 +179,10 @@ Prometheus metrics и локально пропатченные копии `h3` 
 - `vendor/h3`
 - `vendor/sockudo-ws`
 
-Корневые patch files и `PATCHES.md` / `PATCHES.ru.md` объясняют, чем эти копии
-отличаются от upstream. Если меняешь поведение vendored crate, обновляй vendored
-source и patch documentation/artifacts в том же изменении.
+Корневые `PATCHES.md` / `PATCHES.ru.md` (единый источник истины по всему
+workspace) объясняют, чем эти копии отличаются от upstream. Если меняешь
+поведение vendored crate, обновляй vendored source и корневые
+patch documentation/artifacts в том же изменении.
 
 Не поднимай upstream versions и не удаляй `[patch.crates-io]` без явной причины:
 HTTP/3 WebSocket path зависит от этих патчей.

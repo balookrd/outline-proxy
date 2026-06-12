@@ -110,7 +110,9 @@ cargo ws-release-router-musl-armv7 # stripped router build
 
 ## Vendored patches
 
-Корневые patch-файлы и `PATCHES.md` в `bins/*` документируют отличия vendored
-копий от upstream. Меняешь поведение vendored — обнови vendored source и
-patch-документацию в том же изменении. HTTP/3 WebSocket path зависит от этих
-патчей; не удаляй `[patch.crates-io]`.
+Корневые [`PATCHES.md`](PATCHES.md) / [`PATCHES.ru.md`](PATCHES.ru.md) и
+patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`) — единый источник
+истины по отличиям vendored копий от upstream (per-bin `PATCHES.md` —
+указатели на корневой). Меняешь поведение vendored — обнови vendored source и
+корневую patch-документацию в том же изменении. HTTP/3 WebSocket path зависит
+от этих патчей; не удаляй `[patch.crates-io]`.

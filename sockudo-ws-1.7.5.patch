@@ -1,140 +1,7 @@
-diff --git a/vendor/h3/src/client/stream.rs b/vendor/h3/src/client/stream.rs
-index ef64de7..2f04c72 100644
---- a/vendor/h3/src/client/stream.rs
-+++ b/vendor/h3/src/client/stream.rs
-@@ -245,6 +245,29 @@ where
-         self.inner.send_data(buf).await
-     }
- 
-+    /// Non-blocking enqueue of `buf`. Drive [`poll_drain`] to completion
-+    /// before calling this again.
-+    pub fn queue_send(&mut self, buf: B) -> Result<(), StreamError> {
-+        self.inner.queue_send(buf)
-+    }
-+
-+    /// Poll until the queued data has been flushed to the QUIC transport.
-+    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
-+        self.inner.poll_drain(cx)
-+    }
-+
-+    /// Synchronously queue the GREASE frame (if configured). See
-+    /// [`crate::connection::RequestStream::queue_grease`].
-+    pub fn queue_grease(&mut self) -> Result<(), StreamError> {
-+        self.inner.queue_grease()
-+    }
-+
-+    /// Poll until the QUIC stream send-side is fully finished (FIN delivered).
-+    /// See [`crate::connection::RequestStream::poll_quic_finish`].
-+    pub fn poll_quic_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
-+        self.inner.poll_quic_finish(cx)
-+    }
-+
-     /// Stop a stream with an error code
-     ///
-     /// The code can be [`Code::H3_NO_ERROR`].
-diff --git a/vendor/h3/src/connection.rs b/vendor/h3/src/connection.rs
-index 275e4c9..430260b 100644
---- a/vendor/h3/src/connection.rs
-+++ b/vendor/h3/src/connection.rs
-@@ -1048,6 +1048,60 @@ where
-         Ok(())
-     }
- 
-+    /// Synchronously queue `buf` for sending without blocking.
-+    ///
-+    /// This is the non-async equivalent of the first half of [`send_data`]: it
-+    /// encodes the DATA frame header and hands the payload to the QUIC send
-+    /// buffer, but does **not** wait for the data to be flushed.  The caller
-+    /// must then drive [`poll_drain`] to `Poll::Ready` before calling
-+    /// `queue_send` again.
-+    ///
-+    /// Returns `Err` immediately if the previous `queue_send` has not been
-+    /// fully drained yet (i.e. the underlying h3-quinn write buffer is still
-+    /// occupied).
-+    pub fn queue_send(&mut self, buf: B) -> Result<(), StreamError> {
-+        use crate::quic::SendStream as _;
-+        self.stream
-+            .send_data(Frame::Data(buf))
-+            .map_err(|e| self.handle_quic_stream_error(e))
-+    }
-+
-+    /// Poll until all data queued by [`queue_send`] has been flushed to the
-+    /// QUIC transport layer.
-+    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
-+        use crate::quic::SendStream as _;
-+        self.stream
-+            .poll_ready(cx)
-+            .map_err(|e| self.handle_quic_stream_error(e))
-+    }
-+
-+    /// Synchronously queue the GREASE frame (if configured) and clear the flag.
-+    ///
-+    /// Call this exactly **once** at the start of `poll_shutdown`.  Then drive
-+    /// [`poll_drain`] to completion to flush the frame, and finally call
-+    /// [`poll_quic_finish`] to send the QUIC FIN.  If no GREASE frame was
-+    /// configured this is a cheap no-op.
-+    pub fn queue_grease(&mut self) -> Result<(), StreamError> {
-+        if self.send_grease_frame {
-+            use crate::quic::SendStream as _;
-+            self.stream
-+                .send_data(Frame::Grease)
-+                .map_err(|e| self.handle_quic_stream_error(e))?;
-+            self.send_grease_frame = false;
-+        }
-+        Ok(())
-+    }
-+
-+    /// Poll until the QUIC stream send-side is fully finished (FIN delivered).
-+    ///
-+    /// Must be called only after [`poll_drain`] has returned `Poll::Ready(Ok(()))`.
-+    pub fn poll_quic_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
-+        use crate::quic::SendStream as _;
-+        self.stream
-+            .poll_finish(cx)
-+            .map_err(|e| self.handle_quic_stream_error(e))
-+    }
-+
-     /// Send a set of trailers to end the request.
-     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
-     pub async fn send_trailers(&mut self, trailers: HeaderMap) -> Result<(), StreamError> {
-diff --git a/vendor/h3/src/server/stream.rs b/vendor/h3/src/server/stream.rs
-index fa1aecf..4660cb2 100644
---- a/vendor/h3/src/server/stream.rs
-+++ b/vendor/h3/src/server/stream.rs
-@@ -161,6 +161,29 @@ where
-         self.inner.send_data(buf).await
-     }
- 
-+    /// Non-blocking enqueue of `buf`. Drive [`poll_drain`] to completion
-+    /// before calling this again.
-+    pub fn queue_send(&mut self, buf: B) -> Result<(), StreamError> {
-+        self.inner.queue_send(buf)
-+    }
-+
-+    /// Poll until the queued data has been flushed to the QUIC transport.
-+    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
-+        self.inner.poll_drain(cx)
-+    }
-+
-+    /// Synchronously queue the GREASE frame (if configured). See
-+    /// [`crate::connection::RequestStream::queue_grease`].
-+    pub fn queue_grease(&mut self) -> Result<(), StreamError> {
-+        self.inner.queue_grease()
-+    }
-+
-+    /// Poll until the QUIC stream send-side is fully finished (FIN delivered).
-+    /// See [`crate::connection::RequestStream::poll_quic_finish`].
-+    pub fn poll_quic_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
-+        self.inner.poll_quic_finish(cx)
-+    }
-+
-     /// Stop a stream with an error code
-     ///
-     /// The code can be [`Code::H3_NO_ERROR`].
-diff --git a/vendor/sockudo-ws/src/http3/stream.rs b/vendor/sockudo-ws/src/http3/stream.rs
+diff --git a/src/http3/stream.rs b/src/http3/stream.rs
 index eccf3ab..7820b22 100644
---- a/vendor/sockudo-ws/src/http3/stream.rs
-+++ b/vendor/sockudo-ws/src/http3/stream.rs
+--- a/src/http3/stream.rs
++++ b/src/http3/stream.rs
 @@ -194,6 +194,8 @@ impl std::fmt::Debug for Http3Stream {
  pub struct Http3ServerStream {
      stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
@@ -274,10 +141,179 @@ index eccf3ab..7820b22 100644
              Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
              Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
              Poll::Pending => Poll::Pending,
-diff --git a/vendor/sockudo-ws/src/stream/transport_stream.rs b/vendor/sockudo-ws/src/stream/transport_stream.rs
+diff --git a/src/pubsub.rs b/src/pubsub.rs
+index d52211d..4f38b67 100644
+--- a/src/pubsub.rs
++++ b/src/pubsub.rs
+@@ -65,14 +65,40 @@
+ //! pubsub.remove_subscriber_by_socket_id(socket_id);
+ //! ```
+ 
+-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+ use std::sync::Arc;
++#[cfg(not(target_has_atomic = "64"))]
++use std::sync::Mutex;
++use std::sync::atomic::{AtomicUsize, Ordering};
+ 
+ use dashmap::{DashMap, DashSet};
+ use tokio::sync::mpsc::UnboundedSender;
+ 
+ use crate::protocol::Message;
+ 
++#[cfg(target_has_atomic = "64")]
++type CounterU64 = std::sync::atomic::AtomicU64;
++
++#[cfg(not(target_has_atomic = "64"))]
++struct CounterU64(Mutex<u64>);
++
++#[cfg(not(target_has_atomic = "64"))]
++impl CounterU64 {
++    fn new(value: u64) -> Self {
++        Self(Mutex::new(value))
++    }
++
++    fn fetch_add(&self, value: u64, _ordering: Ordering) -> u64 {
++        let mut guard = self.0.lock().expect("counter mutex poisoned");
++        let previous = *guard;
++        *guard = previous.wrapping_add(value);
++        previous
++    }
++
++    fn load(&self, _ordering: Ordering) -> u64 {
++        *self.0.lock().expect("counter mutex poisoned")
++    }
++}
++
+ /// Unique identifier for a subscriber
+ ///
+ /// Subscribers are identified by a dense, atomically-allocated ID.
+@@ -158,11 +184,11 @@ pub struct PubSub {
+     /// Socket ID to SubscriberId mapping (for Pusher-style IDs)
+     socket_id_map: DashMap<String, SubscriberId>,
+     /// Next subscriber ID (atomic counter)
+-    next_subscriber_id: AtomicU64,
++    next_subscriber_id: CounterU64,
+     /// Total number of active subscribers
+     subscriber_count: AtomicUsize,
+     /// Total messages published (for stats)
+-    messages_published: AtomicU64,
++    messages_published: CounterU64,
+ }
+ 
+ /// Type alias for backward compatibility
+@@ -175,9 +201,9 @@ impl PubSub {
+             topics: DashMap::new(),
+             subscribers: DashMap::new(),
+             socket_id_map: DashMap::new(),
+-            next_subscriber_id: AtomicU64::new(1),
++            next_subscriber_id: CounterU64::new(1),
+             subscriber_count: AtomicUsize::new(0),
+-            messages_published: AtomicU64::new(0),
++            messages_published: CounterU64::new(0),
+         }
+     }
+ 
+diff --git a/src/server.rs b/src/server.rs
+index 5083c88..f481641 100644
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -53,7 +53,7 @@ use bytes::Bytes;
+ 
+ #[cfg(any(feature = "http2", feature = "http3"))]
+ use crate::extended_connect::{
+-    build_extended_connect_error, build_extended_connect_response, ExtendedConnectRequest,
++    ExtendedConnectRequest, build_extended_connect_error, build_extended_connect_response,
+ };
+ 
+ // ============================================================================
+@@ -580,6 +580,19 @@ impl WebSocketServer<Http3> {
+         }
+     }
+ 
++    /// Decompose the server back into its QUIC endpoint and WebSocket config.
++    ///
++    /// Used by callers that drive their own QUIC accept loop instead of
++    /// `serve()` (outline-ss-rust owns the H3 accept loop). Present in the
++    /// vendored 1.7.4 copy; restored here on top of upstream 1.7.5.
++    pub fn into_parts(self) -> (Endpoint, Config) {
++        let config = self.config;
++        match self.inner {
++            ServerInner::Http3 { endpoint } => (endpoint, config),
++            _ => unreachable!(),
++        }
++    }
++
+     /// Get the local address the server is bound to
+     pub fn local_addr(&self) -> Result<SocketAddr> {
+         match &self.inner {
+@@ -622,7 +635,9 @@ impl WebSocketServer<Http3> {
+ 
+             tokio::spawn(async move {
+                 if let Err(e) = handle_http3_connection(incoming, handler, config).await {
+-                    eprintln!("HTTP/3 connection error: {}", e);
++                    if !is_normal_h3_shutdown(&e) {
++                        eprintln!("HTTP/3 connection error: {}", e);
++                    }
+                 }
+             });
+         }
+@@ -660,7 +675,9 @@ impl WebSocketServer<Http3> {
+                 if let Err(e) =
+                     handle_http3_connection_filtered(incoming, filter, handler, config).await
+                 {
+-                    eprintln!("HTTP/3 connection error: {}", e);
++                    if !is_normal_h3_shutdown(&e) {
++                        eprintln!("HTTP/3 connection error: {}", e);
++                    }
+                 }
+             });
+         }
+@@ -720,7 +737,9 @@ where
+             },
+             Ok(None) => break,
+             Err(e) => {
+-                eprintln!("HTTP/3 accept error: {}", e);
++                if !is_normal_h3_shutdown(&e) {
++                    eprintln!("HTTP/3 accept error: {}", e);
++                }
+                 break;
+             },
+         }
+@@ -774,7 +793,9 @@ where
+             },
+             Ok(None) => break,
+             Err(e) => {
+-                eprintln!("HTTP/3 accept error: {}", e);
++                if !is_normal_h3_shutdown(&e) {
++                    eprintln!("HTTP/3 accept error: {}", e);
++                }
+                 break;
+             },
+         }
+@@ -837,6 +858,19 @@ where
+     Ok(())
+ }
+ 
++#[cfg(feature = "http3")]
++fn is_normal_h3_shutdown(error: &dyn std::error::Error) -> bool {
++    let message = error.to_string();
++    message.contains("ApplicationClose: H3_NO_ERROR")
++        || message.contains("Remote error: ApplicationClose: H3_NO_ERROR")
++        || message.contains("ApplicationClose: 0x0")
++        || message.contains(
++            "InternalError in the quic trait implementation: internal error in the http stack",
++        )
++        || message.contains("Connection error: Timeout")
++        || message.contains("Timeout")
++}
++
+ #[cfg(feature = "http3")]
+ async fn handle_http3_request_filtered<F, Fut, Filter>(
+     request: http::Request<()>,
+diff --git a/src/stream/transport_stream.rs b/src/stream/transport_stream.rs
 index d4a3624..228a91a 100644
---- a/vendor/sockudo-ws/src/stream/transport_stream.rs
-+++ b/vendor/sockudo-ws/src/stream/transport_stream.rs
+--- a/src/stream/transport_stream.rs
++++ b/src/stream/transport_stream.rs
 @@ -356,11 +356,25 @@ enum Http3StreamInner {
      Server {
          stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
