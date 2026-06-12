@@ -159,6 +159,10 @@ async fn xhttp_h3_get(
     let protocol = protocol_from_h3_version(version);
     let resume_for_create =
         ResumeContext::from_request_headers(&request_headers, &vless_server.orphan_registry);
+    // Captured before `resume_for_create` moves into spawn_relay; echoed in
+    // the response like the h1/h2 XHTTP handlers do.
+    let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
+    let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
     let (session, created) =
         registry.get_or_create(&session_id, resume_for_create.issued_session_id);
 
@@ -197,7 +201,8 @@ async fn xhttp_h3_get(
     apply_response_masquerade(response.headers_mut());
     ResumeResponseEcho {
         session_id: issued_for_response,
-        ..ResumeResponseEcho::default()
+        ack_prefix: ack_prefix_for_response,
+        symmetric_replay: symmetric_replay_for_response,
     }
     .apply(response.headers_mut());
     if let Err(error) = stream.send_response(response).await {
@@ -235,6 +240,10 @@ async fn xhttp_h3_post(
 
     let resume_for_create =
         ResumeContext::from_request_headers(&headers, &vless_server.orphan_registry);
+    // Captured before `resume_for_create` moves on; echoed in the response
+    // like the h1/h2 XHTTP handlers do.
+    let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
+    let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
     let (session, created) = if seq == 0 {
         registry.get_or_create(&session_id, resume_for_create.issued_session_id)
     } else {
@@ -323,7 +332,8 @@ async fn xhttp_h3_post(
     }
     ResumeResponseEcho {
         session_id: session.issued_resume_id,
-        ..ResumeResponseEcho::default()
+        ack_prefix: ack_prefix_for_response,
+        symmetric_replay: symmetric_replay_for_response,
     }
     .apply(resp_headers);
     stream
@@ -353,6 +363,10 @@ async fn xhttp_h3_stream_one(
     let protocol = protocol_from_h3_version(version);
     let resume_for_create =
         ResumeContext::from_request_headers(&headers, &vless_server.orphan_registry);
+    // Captured before `resume_for_create` moves on; echoed in the response
+    // like the h1/h2 XHTTP handlers do.
+    let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
+    let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
     let (session, created) =
         registry.get_or_create(&session_id, resume_for_create.issued_session_id);
     if session.is_closed() {
@@ -390,7 +404,8 @@ async fn xhttp_h3_stream_one(
     apply_response_masquerade(response.headers_mut());
     ResumeResponseEcho {
         session_id: session.issued_resume_id,
-        ..ResumeResponseEcho::default()
+        ack_prefix: ack_prefix_for_response,
+        symmetric_replay: symmetric_replay_for_response,
     }
     .apply(response.headers_mut());
     if let Err(error) = stream.send_response(response).await {
