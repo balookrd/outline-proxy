@@ -399,18 +399,24 @@ install_binary() {
   log "Устанавливаю бинарь в ${INSTALL_BIN_PATH}"
   install -m 0755 "$tmp_bin" "${INSTALL_BIN_PATH}.tmp"
   mv -f "${INSTALL_BIN_PATH}.tmp" "$INSTALL_BIN_PATH"
-  prune_old_backups
+  prune_old_backups "$INSTALL_BIN_PATH"
   save_release_commit
 }
 
+# Оставляет 3 последних backup-файла бинарника (по timestamp в имени),
+# остальные удаляет. Имя формата <bin_path>.bak.YYYYMMDDHHMMSS —
+# лексикографическая сортировка совпадает с хронологической.
 prune_old_backups() {
+  local bin_path="$1"
   local keep=3
-  local -a backups=()
+  local dir base
+  dir="$(dirname "$bin_path")"
+  base="$(basename "$bin_path")"
 
+  local -a backups=()
   while IFS= read -r -d '' f; do
     backups+=("$f")
-  done < <(find "$INSTALL_BIN_DIR" -maxdepth 1 -type f \
-    -name "$(basename "$INSTALL_BIN_PATH").bak.*" -print0 \
+  done < <(find "$dir" -maxdepth 1 -type f -name "${base}.bak.*" -print0 2>/dev/null \
     | sort -z)
 
   local total="${#backups[@]}"
@@ -427,13 +433,14 @@ prune_old_backups() {
 }
 
 get_installed_version() {
-  if [[ -x "$INSTALL_BIN_PATH" ]]; then
-    "$INSTALL_BIN_PATH" --version 2>/dev/null | awk '{print $2}' || true
+  local bin_path="$1"
+  if [[ -x "$bin_path" ]]; then
+    "$bin_path" --version 2>/dev/null | awk '{print $2}' || true
   fi
 }
 
 check_up_to_date() {
-  INSTALLED_VERSION="$(get_installed_version)"
+  INSTALLED_VERSION="$(get_installed_version "$INSTALL_BIN_PATH")"
 
   if [[ -z "$INSTALLED_VERSION" ]]; then
     log "Бинарь не установлен, выполняю первичную установку"

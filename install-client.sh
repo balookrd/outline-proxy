@@ -4,6 +4,7 @@ set -Eeuo pipefail
 REPO_OWNER="${REPO_OWNER:-balookrd}"
 REPO_NAME="${REPO_NAME:-outline-proxy}"
 REPO_REF="${REPO_REF:-main}"
+REPO="${REPO_OWNER}/${REPO_NAME}"
 TAG_PREFIX="ws-"
 
 BINARY_NAME="${BINARY_NAME:-outline-ws-rust}"
@@ -126,6 +127,11 @@ github_api_get() {
   fi
 }
 
+github_api_url() {
+  local path="$1"
+  printf '%s/repos/%s/%s' "$GITHUB_API" "$REPO" "$path"
+}
+
 map_arch_to_target() {
   local arch
   arch="$(uname -m)"
@@ -178,7 +184,7 @@ select_release_json() {
         # Monorepo: /releases/latest may point at the server binary's
         # release, so list releases and pick the newest ${TAG_PREFIX}v* tag.
         local releases_json stable_tag
-        releases_json="$(github_api_get "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/releases?per_page=30")" \
+        releases_json="$(github_api_get "$(github_api_url "releases?per_page=30")")" \
           || die "Не удалось получить список релизов из GitHub API"
         stable_tag="$(printf '%s' "$releases_json" \
           | grep -oE "\"tag_name\":[[:space:]]*\"${TAG_PREFIX}v[^\"]*\"" \
@@ -196,12 +202,12 @@ select_release_json() {
     esac
   fi
 
-  github_api_get "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/${api_path}"
+  github_api_get "$(github_api_url "$api_path")"
 }
 
+# Извлекает значение строкового поля из JSON-ответа GitHub API.
 release_field() {
   local field="$1"
-
   grep -oE "\"${field}\":[[:space:]]*\"([^\"\\\\]|\\\\.)*\"" \
     | head -n1 \
     | sed -E "s/^\"${field}\":[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\"$/\\1/"
@@ -233,8 +239,7 @@ get_nightly_commit_sha() {
   fi
 
   # target_commitish — имя ветки; резолвим через refs API
-  ref_json="$(github_api_get \
-    "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/tags/${TAG_PREFIX}nightly" 2>/dev/null || true)"
+  ref_json="$(github_api_get "$(github_api_url "git/ref/tags/${TAG_PREFIX}nightly")" 2>/dev/null || true)"
 
   [[ -n "$ref_json" ]] || { echo ""; return; }
 
@@ -247,8 +252,7 @@ get_nightly_commit_sha() {
 
   if [[ "$type" == "tag" ]]; then
     # Annotated tag — разыменовываем до commit-объекта
-    tag_json="$(github_api_get \
-      "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/git/tags/${sha}" 2>/dev/null || true)"
+    tag_json="$(github_api_get "$(github_api_url "git/tags/${sha}")" 2>/dev/null || true)"
     sha="$(printf '%s' "$tag_json" \
       | grep -oE '"sha":[[:space:]]*"[^"]+"' | tail -n1 \
       | sed -E 's/^"sha":[[:space:]]*"([^"]+)"$/\1/')"
@@ -260,6 +264,7 @@ get_nightly_commit_sha() {
 install_binary() {
   local archive="$1"
   local workdir="$2"
+  local backup_path=""
 
   rm -rf "$workdir"
   mkdir -p "$workdir"
@@ -276,36 +281,36 @@ install_binary() {
     backup_path="${INSTALL_PATH}.bak.$(date +%Y%m%d%H%M%S)"
     log "Делаю backup старого бинаря: ${backup_path}"
     cp -a "$INSTALL_PATH" "$backup_path"
-    prune_old_backups
+    prune_old_backups "$INSTALL_PATH"
   fi
 
   install -m 0755 "$extracted" "$INSTALL_PATH"
 }
 
 # Оставляет 3 последних backup-файла бинарника (по timestamp в имени),
-# остальные удаляет. Имя формата ${INSTALL_PATH}.bak.YYYYMMDDHHMMSS —
+# остальные удаляет. Имя формата <bin_path>.bak.YYYYMMDDHHMMSS —
 # лексикографическая сортировка совпадает с хронологической.
 prune_old_backups() {
+  local bin_path="$1"
   local keep=3
-  local dir base pattern
-  dir="$(dirname "$INSTALL_PATH")"
-  base="$(basename "$INSTALL_PATH")"
-  pattern="${base}.bak.*"
+  local dir base
+  dir="$(dirname "$bin_path")"
+  base="$(basename "$bin_path")"
 
   local -a backups=()
   while IFS= read -r -d '' f; do
     backups+=("$f")
-  done < <(find "$dir" -maxdepth 1 -type f -name "$pattern" -print0 2>/dev/null \
-            | sort -z)
+  done < <(find "$dir" -maxdepth 1 -type f -name "${base}.bak.*" -print0 2>/dev/null \
+    | sort -z)
 
-  local total=${#backups[@]}
+  local total="${#backups[@]}"
   if (( total <= keep )); then
     return
   fi
 
-  local remove=$(( total - keep ))
+  local remove_count=$((total - keep))
   local i
-  for (( i = 0; i < remove; i++ )); do
+  for ((i = 0; i < remove_count; i++)); do
     log "Удаляю старый backup: ${backups[i]}"
     rm -f "${backups[i]}"
   done
@@ -375,8 +380,9 @@ download_instance_example_if_missing() {
 }
 
 get_installed_version() {
-  if [[ -x "$INSTALL_PATH" ]]; then
-    "$INSTALL_PATH" --version 2>/dev/null | awk '{print $2}' || true
+  local bin_path="$1"
+  if [[ -x "$bin_path" ]]; then
+    "$bin_path" --version 2>/dev/null | awk '{print $2}' || true
   fi
 }
 
@@ -448,7 +454,7 @@ main() {
     case "$CHANNEL" in
       stable)
         local installed_ver release_ver
-        installed_ver="$(get_installed_version)"
+        installed_ver="$(get_installed_version "$INSTALL_PATH")"
         release_ver="$(strip_v "$release_tag")"
         if [[ -n "$installed_ver" && "$installed_ver" == "$release_ver" ]]; then
           log "Уже установлена актуальная версия: ${installed_ver} — обновление не требуется"

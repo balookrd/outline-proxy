@@ -93,7 +93,7 @@ find_binary() {
     for f in "$1"/* "$1"/*/*; do
         [ -f "$f" ] || continue
         case "$(basename "$f")" in
-            ${APP_NAME}|${APP_NAME}-*)
+            "${APP_NAME}"|"${APP_NAME}"-*)
                 echo "$f"
                 return 0
                 ;;
