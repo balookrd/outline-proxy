@@ -86,7 +86,10 @@ pub mod collections;
 mod config;
 mod dial_plan;
 mod dns;
-mod dns_cache;
+// The DNS cache core moved to `outline-net` (shared with the server's
+// upstream-connect path); the module alias keeps the historical
+// `crate::dns_cache::…` paths working for in-crate consumers.
+pub(crate) use outline_net::dns_cache;
 pub mod downlink_replay;
 mod error_classify;
 pub mod fingerprint_profile;

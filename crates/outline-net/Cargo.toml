@@ -8,6 +8,9 @@ workspace = true
 
 [dependencies]
 anyhow = "1.0"
+hashbrown = "0.15"
 libc = "0.2"
+parking_lot = "0.12"
+rand = "0.9"
 socket2 = "0.6"
 tokio = { version = "1.44", features = ["net", "rt"] }

@@ -30,7 +30,7 @@ mimalloc = { version = "0.1", default-features = false }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 metrics-util = { version = "0.20", default-features = false, features = ["recency"] }
-hashbrown = "0.15"
+outline-net = { path = "../../crates/outline-net" }
 outline-wire = { path = "../../crates/outline-wire", features = ["clap"] }
 parking_lot = "0.12"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
