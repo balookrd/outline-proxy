@@ -111,6 +111,155 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
 }
 
 #[tokio::test]
+async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
+    use super::super::resumption::{OrphanRegistry, ResumptionConfig};
+    use super::super::setup::{build_transport_route_map, user_keys};
+    use crate::metrics::Transport;
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let mut config = sample_config(addr);
+    config.session_resumption.enabled = true;
+    config.session_resumption.downlink_buffer_bytes = 64 * 1024;
+    let user_routes = build_user_routes(&config)?;
+    let users = super::super::state::UserKeySlice(user_keys(user_routes.as_ref()));
+    let metrics = Metrics::new(&config);
+    let orphan_registry = std::sync::Arc::new(OrphanRegistry::new(
+        ResumptionConfig::from(&config.session_resumption),
+        std::sync::Arc::clone(&metrics),
+    ));
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let routes = std::sync::Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: std::sync::Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp)),
+        udp: std::sync::Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp)),
+        vless: std::sync::Arc::new(build_vless_transport_route_map(&[])),
+        xhttp_vless: std::sync::Arc::new(BTreeMap::new()),
+    }));
+    let services = std::sync::Arc::new(Services::new(
+        std::sync::Arc::clone(&metrics),
+        dns_cache,
+        false,
+        None,
+        UdpServices {
+            nat_table,
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
+            relay_semaphore: None,
+        },
+        Some(orphan_registry),
+        16,
+    ));
+    let auth = std::sync::Arc::new(AuthPolicy {
+        users: std::sync::Arc::new(ArcSwap::from_pointee(users)),
+        http_root_auth: false,
+        http_root_realm: "Authorization required".into(),
+    });
+
+    let server = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(
+                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+            ),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let connect = |path: &str| {
+        Request::builder()
+            .method(Method::CONNECT)
+            .uri(format!("https://localhost:{}{path}", addr.port()))
+            .version(Version::HTTP_3)
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .header("x-outline-resume-capable", "1")
+            .header("x-outline-resume-ack-prefix", "1")
+            .header("x-outline-resume-symmetric-replay", "1")
+            .extension(H3Protocol::WEBSOCKET)
+            .body(())
+    };
+
+    // SS-WS TCP path: full echo, mirroring the h1/h2 upgrade responses —
+    // the client arms its ORSM/ORDR consumption off these headers.
+    let mut stream = send_request.send_request(connect("/tcp")?).await?;
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().get("x-outline-session").is_some(),
+        "tcp path must issue a session id"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-outline-resume-ack-prefix")
+            .and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "tcp path must confirm the v1 capability"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-outline-resume-symmetric-replay")
+            .and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "tcp path must confirm the v2 capability"
+    );
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+    socket.send(H3Message::Close(None)).await?;
+
+    // UDP path: Session-ID-only echo — the v1/v2 replay protocols are
+    // TCP-stream features, same as on the h1/h2 upgrade path.
+    let mut stream = send_request.send_request(connect("/udp")?).await?;
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers().get("x-outline-session").is_some(),
+        "udp path must issue a session id"
+    );
+    assert!(
+        response.headers().get("x-outline-resume-ack-prefix").is_none(),
+        "udp path must not confirm v1"
+    );
+    assert!(
+        response.headers().get("x-outline-resume-symmetric-replay").is_none(),
+        "udp path must not confirm v2"
+    );
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+    socket.send(H3Message::Close(None)).await?;
+
+    driver.abort();
+    server.abort();
+    let _ = driver.await;
+    let _ = server.await;
+    Ok(())
+}
+
+#[tokio::test]
 async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
     let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let upstream_addr = upstream.local_addr()?;

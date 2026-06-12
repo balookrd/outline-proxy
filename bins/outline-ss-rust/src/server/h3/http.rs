@@ -200,7 +200,17 @@ async fn handle_h3_request(
         ResumeContext::default()
     };
     let mut response = build_extended_connect_response(None, None);
-    resume.session_echo().apply(response.headers_mut());
+    // Mirror the h1/h2 upgrade paths: SS-WS and VLESS-WS confirm the v1/v2
+    // capabilities so the client arms its ORSM/ORDR frame consumption (the
+    // relay already emits them on a resume hit regardless of carrier — an
+    // unconfirmed client would misread the control frames as payload). The
+    // UDP datagram path echoes only the Session ID, as on h1/h2.
+    let echo = if ctx.udp_paths.contains(ws_req.path.as_str()) {
+        resume.session_echo()
+    } else {
+        resume.response_echo()
+    };
+    echo.apply(response.headers_mut());
 
     stream
         .send_response(response)
