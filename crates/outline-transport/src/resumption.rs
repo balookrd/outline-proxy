@@ -135,6 +135,89 @@ pub const SYMMETRIC_REPLAY_HEADER: &str = "x-outline-resume-symmetric-replay";
 /// also carry [`ACK_PREFIX_HEADER`] AND [`SYMMETRIC_REPLAY_HEADER`].
 pub const DOWN_ACKED_HEADER: &str = "x-outline-resume-down-acked";
 
+/// Writes the request-side resume negotiation headers. One
+/// implementation shared by the h1 upgrade, h2 CONNECT and h3 Extended
+/// CONNECT dial paths so the header set cannot drift between carriers:
+/// `Resume-Capable` is always advertised; the Session ID, v1/v2
+/// capability bits and the v2 down-acked offset follow the gating the
+/// orchestrator already applied to
+/// [`DialResumeOptions`](crate::dial_plan::DialResumeOptions).
+pub(crate) fn apply_resume_request_headers(
+    resume: &crate::dial_plan::DialResumeOptions,
+    headers: &mut http::HeaderMap,
+) {
+    headers.insert(RESUME_CAPABLE_HEADER, http::HeaderValue::from_static("1"));
+    if let Some(id) = resume.resume_request {
+        headers.insert(
+            RESUME_REQUEST_HEADER,
+            id.to_hex().parse().expect("hex Session ID is a valid header value"),
+        );
+    }
+    if resume.ack_prefix_requested {
+        // Capability advertise for Ack-Prefix Protocol v1. The server
+        // only emits the 14-byte control frame when it sees this header
+        // AND the resume hits; old servers ignore it.
+        headers.insert(ACK_PREFIX_HEADER, http::HeaderValue::from_static("1"));
+    }
+    if resume.symmetric_replay_requested {
+        // v2 Symmetric Downlink Replay capability advertise. Spec gates
+        // v2 on v1; the orchestrator enforces that invariant before the
+        // options reach a dial path.
+        headers.insert(SYMMETRIC_REPLAY_HEADER, http::HeaderValue::from_static("1"));
+    }
+    // v2 client-reported downstream-acked offset. Sent only on retry
+    // redials that also advertise v2 AND when the offset is non-zero
+    // (a fresh session has no prior bytes to claim).
+    if resume.symmetric_replay_requested && resume.client_acked_offset > 0 {
+        headers.insert(
+            DOWN_ACKED_HEADER,
+            resume
+                .client_acked_offset
+                .to_string()
+                .parse()
+                .expect("decimal u64 is a valid header value"),
+        );
+    }
+}
+
+/// Server's response-side echo of the resume negotiation, parsed with
+/// identical gating on every dial path.
+pub(crate) struct NegotiatedResume {
+    /// Session ID the server minted for this session, if any.
+    pub(crate) issued_session_id: Option<SessionId>,
+    /// v1 negotiation result: we advertised AND the server echoed `1`.
+    /// A spurious echo without a matching request is reported as
+    /// `false` so the receiver never looks for a control frame the
+    /// spec forbids the server from sending.
+    pub(crate) ack_prefix_advertised_by_server: bool,
+    /// v2 negotiation result: requested, echoed, AND v1 also came back
+    /// on — the v2-on-v1 invariant is enforced locally even if a buggy
+    /// server echoes v2 alone.
+    pub(crate) symmetric_replay_advertised_by_server: bool,
+}
+
+/// Parses the `X-Outline-*` response headers against what the request
+/// advertised.
+pub(crate) fn parse_resume_response_echo(
+    resume: &crate::dial_plan::DialResumeOptions,
+    headers: &http::HeaderMap,
+) -> NegotiatedResume {
+    let issued_session_id = headers
+        .get(SESSION_RESPONSE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(SessionId::parse_hex);
+    let ack_prefix_advertised_by_server = resume.ack_prefix_requested
+        && headers.get(ACK_PREFIX_HEADER).and_then(|v| v.to_str().ok()) == Some("1");
+    let symmetric_replay_advertised_by_server = resume.symmetric_replay_requested
+        && ack_prefix_advertised_by_server
+        && headers.get(SYMMETRIC_REPLAY_HEADER).and_then(|v| v.to_str().ok()) == Some("1");
+    NegotiatedResume {
+        issued_session_id,
+        ack_prefix_advertised_by_server,
+        symmetric_replay_advertised_by_server,
+    }
+}
+
 /// Process-wide cache of the last server-issued [`SessionId`] for each
 /// logical uplink. Callers (the warm-standby refill, fresh dials in
 /// `connect_tcp_ws_fresh`, the probe path that wants to opt-in) read

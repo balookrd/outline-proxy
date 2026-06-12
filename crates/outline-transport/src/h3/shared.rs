@@ -25,6 +25,8 @@ use crate::shared_cache::{
 };
 use crate::{AbortOnDrop, DnsCache, TransportStream, bind_addr_for, bind_udp_socket};
 
+use crate::resumption::NegotiatedResume;
+
 use super::vendored::{self, H3RequestStreamHandle, H3SendRequestHandle};
 use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri, websocket_path};
 
@@ -93,23 +95,11 @@ impl SharedH3Connection {
         server_name: &str,
         server_port: u16,
         path: &str,
-        resume_request: Option<crate::resumption::SessionId>,
-        ack_prefix_requested: bool,
-        symmetric_replay_requested: bool,
-        client_acked_offset: u64,
+        resume: &crate::dial_plan::DialResumeOptions,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
-    ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>, bool, bool)> {
+    ) -> Result<(H3WsStream, NegotiatedResume)> {
         match self
-            .open_websocket_inner(
-                server_name,
-                server_port,
-                path,
-                resume_request,
-                ack_prefix_requested,
-                symmetric_replay_requested,
-                client_acked_offset,
-                profile,
-            )
+            .open_websocket_inner(server_name, server_port, path, resume, profile)
             .await
         {
             Ok(ws) => Ok(ws),
@@ -131,46 +121,21 @@ impl SharedH3Connection {
         server_name: &str,
         server_port: u16,
         path: &str,
-        resume_request: Option<crate::resumption::SessionId>,
-        ack_prefix_requested: bool,
-        symmetric_replay_requested: bool,
-        client_acked_offset: u64,
+        resume: &crate::dial_plan::DialResumeOptions,
         profile: Option<&'static crate::fingerprint_profile::Profile>,
-    ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>, bool, bool)> {
+    ) -> Result<(H3WsStream, NegotiatedResume)> {
         if !self.is_open() {
             bail!("shared h3 connection is already closed");
         }
 
-        let mut request_builder = Request::builder()
+        let request_builder = Request::builder()
             .method(Method::CONNECT)
             .uri(websocket_h3_target_uri(server_name, server_port, path)?)
             .extension(vendored::websocket_protocol())
-            .header("sec-websocket-version", "13")
-            .header(crate::resumption::RESUME_CAPABLE_HEADER, "1");
-        if let Some(id) = resume_request {
-            request_builder =
-                request_builder.header(crate::resumption::RESUME_REQUEST_HEADER, id.to_hex());
-        }
-        if ack_prefix_requested {
-            // Capability advertise for Ack-Prefix Protocol v1; mirrors the
-            // h2 path. Server emits the 14-byte control frame (SS-WS path
-            // only, in v1) when it sees this header AND the resume hits.
-            request_builder = request_builder.header(crate::resumption::ACK_PREFIX_HEADER, "1");
-        }
-        if symmetric_replay_requested {
-            // v2 Symmetric Downlink Replay capability advertise. Mirror
-            // of the h2 site; spec gates v2 on v1, enforced by the
-            // orchestrator above this layer.
-            request_builder =
-                request_builder.header(crate::resumption::SYMMETRIC_REPLAY_HEADER, "1");
-        }
-        // v2 client-reported downstream-acked offset header.
-        if symmetric_replay_requested && client_acked_offset > 0 {
-            request_builder = request_builder
-                .header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
-        }
+            .header("sec-websocket-version", "13");
         let mut request: Request<()> =
             request_builder.body(()).expect("request builder never fails");
+        crate::resumption::apply_resume_request_headers(resume, request.headers_mut());
         if let Some(profile) = profile {
             crate::fingerprint_profile::apply(
                 profile,
@@ -206,30 +171,7 @@ impl SharedH3Connection {
         if !response.status().is_success() {
             bail!("HTTP/3 websocket CONNECT failed with status {}", response.status());
         }
-        let issued_session_id = response
-            .headers()
-            .get(crate::resumption::SESSION_RESPONSE_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(crate::resumption::SessionId::parse_hex);
-        // Same gating rationale as the h2 path: trust both sides of the
-        // negotiation; a server that emits the echo without us asking would
-        // still leave us without the control frame in the byte stream.
-        let ack_prefix_advertised_by_server = ack_prefix_requested
-            && response
-                .headers()
-                .get(crate::resumption::ACK_PREFIX_HEADER)
-                .and_then(|v| v.to_str().ok())
-                == Some("1");
-        // v2 echo: server must echo v2 AND v1 must already be on. The
-        // `ack_prefix_advertised_by_server` check enforces the v2-on-v1
-        // invariant locally even if a buggy server echoes v2 alone.
-        let symmetric_replay_advertised_by_server = symmetric_replay_requested
-            && ack_prefix_advertised_by_server
-            && response
-                .headers()
-                .get(crate::resumption::SYMMETRIC_REPLAY_HEADER)
-                .and_then(|v| v.to_str().ok())
-                == Some("1");
+        let negotiated = crate::resumption::parse_resume_response_echo(resume, response.headers());
 
         self.streams_opened.fetch_add(1, Ordering::Relaxed);
         Ok((
@@ -237,9 +179,7 @@ impl SharedH3Connection {
                 inner: vendored::client_ws_stream(stream, 90_000),
                 _shared_connection: Arc::clone(self),
             },
-            issued_session_id,
-            ack_prefix_advertised_by_server,
-            symmetric_replay_advertised_by_server,
+            negotiated,
         ))
     }
 }
@@ -367,24 +307,14 @@ fn h3_registry() -> &'static SharedConnectionRegistry<H3ConnectionKey, SharedH3C
 // ── H3Dialer ──────────────────────────────────────────────────────────────────
 
 struct H3Dialer {
-    /// Session ID the caller wants to resume on this open. Captured at
+    /// Resume negotiation the caller wants on this open. Captured at
     /// dialer construction so the trait `open_on` method can stay
     /// signature-stable while threading the request through.
-    resume_request: Option<crate::resumption::SessionId>,
-    /// Whether to advertise the Ack-Prefix Protocol v1 capability on
-    /// this open. Same threading rationale as `resume_request`.
-    ack_prefix_requested: bool,
-    /// Whether to advertise the v2 Symmetric Downlink Replay capability.
-    /// Spec gates v2 on v1; the orchestrator above this layer enforces
-    /// the invariant.
-    symmetric_replay_requested: bool,
-    /// v2 client-reported downstream-acked offset for the
-    /// `X-Outline-Resume-Down-Acked` request header.
-    client_acked_offset: u64,
+    resume: crate::dial_plan::DialResumeOptions,
     /// Browser identity to mix into the CONNECT request headers, or
     /// `None` when fingerprint diversification is disabled. Threaded
-    /// alongside `resume_request` for the same reason — the trait
-    /// signature stays unchanged.
+    /// alongside `resume` for the same reason — the trait signature
+    /// stays unchanged.
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 }
 
@@ -430,29 +360,15 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         server_port: u16,
         path: &str,
     ) -> Result<TransportStream> {
-        let (
-            ws,
-            issued_session_id,
-            ack_prefix_advertised_by_server,
-            symmetric_replay_advertised_by_server,
-        ) = conn
-            .open_websocket(
-                server_name,
-                server_port,
-                path,
-                self.resume_request,
-                self.ack_prefix_requested,
-                self.symmetric_replay_requested,
-                self.client_acked_offset,
-                self.profile,
-            )
+        let (ws, negotiated) = conn
+            .open_websocket(server_name, server_port, path, &self.resume, self.profile)
             .await?;
         Ok(TransportStream::H3 {
             inner: ws,
-            issued_session_id,
+            issued_session_id: negotiated.issued_session_id,
             downgraded_from: None,
-            ack_prefix_advertised_by_server,
-            symmetric_replay_advertised_by_server,
+            ack_prefix_advertised_by_server: negotiated.ack_prefix_advertised_by_server,
+            symmetric_replay_advertised_by_server: negotiated.symmetric_replay_advertised_by_server,
         })
     }
 }
@@ -465,10 +381,7 @@ pub(crate) async fn connect_websocket_h3(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
-    resume_request: Option<crate::resumption::SessionId>,
-    ack_prefix_requested: bool,
-    symmetric_replay_requested: bool,
-    client_acked_offset: u64,
+    resume: crate::dial_plan::DialResumeOptions,
 ) -> Result<TransportStream> {
     if url.scheme() != "wss" {
         bail!("h3 websocket transport currently requires wss:// URLs");
@@ -480,13 +393,7 @@ pub(crate) async fn connect_websocket_h3(
         .ok_or_else(|| anyhow!("URL is missing port"))?;
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
-    let dialer = H3Dialer {
-        resume_request,
-        ack_prefix_requested,
-        symmetric_replay_requested,
-        client_acked_offset,
-        profile,
-    };
+    let dialer = H3Dialer { resume, profile };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused

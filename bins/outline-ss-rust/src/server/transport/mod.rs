@@ -26,6 +26,7 @@ use super::state::{AppState, empty_transport_route, empty_vless_transport_route}
 mod fallback;
 mod proxy_protocol;
 mod raw_quic;
+mod resume_headers;
 pub(in crate::server) mod sink;
 pub(in crate::server) mod sni_fallback;
 mod tcp;
@@ -46,10 +47,9 @@ pub(in crate::server) use raw_quic::{
     handle_raw_vless_quic_stream_with_prefix, serve_raw_ss_oversize_records,
     serve_raw_ss_quic_datagrams, serve_raw_vless_oversize_records, serve_raw_vless_quic_datagrams,
 };
+pub(in crate::server) use resume_headers::ResumeContext;
 pub(in crate::server) use sink::is_handshake_rejected;
-pub(in crate::server) use tcp::{
-    ResumeContext, WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection,
-};
+pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
 pub(in crate::server) use vless::{VlessWsRouteCtx, VlessWsServerCtx, handle_vless_h3_connection};
 pub(in crate::server) use xhttp::{
@@ -87,26 +87,13 @@ pub(super) async fn tcp_websocket_upgrade(
             .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Shadowsocks);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
     let ConnectInfo(peer_addr) = connect_info;
-    // The `Option<SessionId>` is `Copy`, so save the issued ID by value
-    // before moving `resume` into the upgrade closure. This MUST be the
-    // same ID the relay later parks under — re-parsing the headers
-    // would mint a different ID and silently desynchronise the
-    // wire-side response from the server-side park lookup.
-    let issued_for_response = resume.issued_session_id;
-    // Capability advertisements are also captured by-value before the
-    // upgrade closure consumes `resume`. Echoing
-    // `X-Outline-Resume-Ack-Prefix: 1` confirms to the client that we
-    // recognise the protocol and will emit the on-resume-hit control
-    // frame; the actual emit is gated on a successful orphan-take in
-    // the relay, but the response header lets the client decide
-    // whether to expect the prefix on its first decoded WS frame.
-    let ack_prefix_for_response = resume.ack_prefix_requested;
-    // v2 Symmetric Downlink Replay capability echo. The parsing layer
-    // already gated this on (a) `ack_prefix_requested == true` and
-    // (b) the registry having `downlink_buffer_bytes > 0`, so a true
-    // value here means the response header is safe to emit and the
-    // client can rely on the v2 frame appearing on resume hits.
-    let symmetric_replay_for_response = resume.symmetric_replay_requested;
+    // Captured by value before `resume` moves into the upgrade closure.
+    // The echoed Session ID MUST be the one the relay later parks under —
+    // re-parsing the headers would mint a different ID and silently
+    // desynchronise the wire-side response from the server-side park
+    // lookup. The v1/v2 capability echoes were already gated at parse
+    // time; the actual control-frame emits gate on the resume hit.
+    let echo = resume.response_echo();
     let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
@@ -119,21 +106,7 @@ pub(super) async fn tcp_websocket_upgrade(
             tcp::handle_tcp_connection(socket, server, route_ctx, resume, Some(peer_addr)).await;
         finish_ws_session(session, result, "tcp");
     });
-    if let Some(id) = issued_for_response
-        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
-    {
-        response.headers_mut().insert(tcp::SESSION_RESPONSE_HEADER, value);
-    }
-    if ack_prefix_for_response {
-        response
-            .headers_mut()
-            .insert(tcp::ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
-    }
-    if symmetric_replay_for_response {
-        response
-            .headers_mut()
-            .insert(tcp::SYMMETRIC_REPLAY_HEADER, axum::http::HeaderValue::from_static("1"));
-    }
+    echo.apply(response.headers_mut());
     response
 }
 
@@ -165,24 +138,10 @@ pub(super) async fn vless_websocket_upgrade(
             .metrics
             .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Vless);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
-    // Save the minted ID by value (`Copy`) so we can attach the
-    // `X-Outline-Session` response header without re-parsing headers
-    // and minting a fresh, mismatched ID. See the matching note in
-    // `tcp_websocket_upgrade`.
-    let issued_for_response = resume.issued_session_id;
-    // v1.1: VLESS-WS now echoes the Ack-Prefix capability and emits
-    // the on-resume-hit control frame, mirroring the SS-WS path.
-    // `state.ack_prefix_requested` (initialised from this `resume`)
-    // gates the actual emit inside `establish_vless_tcp_upstream`
-    // so the response header here matches what the relay will
-    // produce on the wire.
-    let ack_prefix_for_response = resume.ack_prefix_requested;
-    // v2 Symmetric Downlink Replay capability echo. The parsing layer
-    // already gated this on (a) `ack_prefix_requested == true` and
-    // (b) the registry having `downlink_buffer_bytes > 0`, so a true
-    // value here means the response header is safe to emit and the
-    // client can rely on the v2 frame appearing on resume hits.
-    let symmetric_replay_for_response = resume.symmetric_replay_requested;
+    // Captured by value before `resume` moves into the closure — see the
+    // matching note in `tcp_websocket_upgrade`. VLESS-WS echoes the same
+    // v1/v2 capabilities as the SS-WS path (v1.1).
+    let echo = resume.response_echo();
     let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),
@@ -193,21 +152,7 @@ pub(super) async fn vless_websocket_upgrade(
         let result = vless::handle_vless_connection(socket, server, route_ctx, resume).await;
         finish_ws_session(session, result, "vless");
     });
-    if let Some(id) = issued_for_response
-        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
-    {
-        response.headers_mut().insert(tcp::SESSION_RESPONSE_HEADER, value);
-    }
-    if ack_prefix_for_response {
-        response
-            .headers_mut()
-            .insert(tcp::ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
-    }
-    if symmetric_replay_for_response {
-        response
-            .headers_mut()
-            .insert(tcp::SYMMETRIC_REPLAY_HEADER, axum::http::HeaderValue::from_static("1"));
-    }
+    echo.apply(response.headers_mut());
     response
 }
 
@@ -291,7 +236,9 @@ pub(super) async fn udp_websocket_upgrade(
             .metrics
             .open_websocket_session(Transport::Udp, protocol, AppProtocol::Shadowsocks);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
-    let issued_for_response = resume.issued_session_id;
+    // UDP-WS only echoes the Session ID — the v1/v2 replay protocols are
+    // TCP-stream features and are not confirmed on datagram paths.
+    let echo = resume.session_echo();
     let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = Arc::new(UdpRouteCtx {
             users: Arc::clone(&route.users),
@@ -302,11 +249,7 @@ pub(super) async fn udp_websocket_upgrade(
         let result = udp::handle_udp_connection(socket, server, route_ctx, resume).await;
         finish_ws_session(session, result, "udp");
     });
-    if let Some(id) = issued_for_response
-        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
-    {
-        response.headers_mut().insert(tcp::SESSION_RESPONSE_HEADER, value);
-    }
+    echo.apply(response.headers_mut());
     response
 }
 
