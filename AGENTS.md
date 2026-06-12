@@ -116,3 +116,9 @@ patch-артефакты (`h3-0.0.8.patch`, `sockudo-ws-1.7.5.patch`) — еди
 указатели на корневой). Меняешь поведение vendored — обнови vendored source и
 корневую patch-документацию в том же изменении. HTTP/3 WebSocket path зависит
 от этих патчей; не удаляй `[patch.crates-io]`.
+
+Production-код не обращается к `h3`-патч-API и `sockudo_ws` напрямую — только
+через модули-врата `crates/outline-transport/src/h3/vendored.rs` (клиент) и
+`bins/outline-ss-rust/src/server/h3/vendored.rs` (сервер); CI это проверяет
+(тесты — исключение). Новые обращения к vendored-API добавляй во врата, а не
+в потребителей.

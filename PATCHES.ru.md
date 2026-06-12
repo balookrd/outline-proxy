@@ -22,6 +22,24 @@ vendored-копии.
 | [`h3-0.0.8.patch`](h3-0.0.8.patch) | все отличия `vendor/h3` от upstream `h3 0.0.8` |
 | [`sockudo-ws-1.7.5.patch`](sockudo-ws-1.7.5.patch) | все отличия `vendor/sockudo-ws/src` (однострочное изменение `Cargo.toml` описано ниже, в патч не входит) |
 
+## Модули-врата
+
+Весь production-код обращается к пропатченной поверхности API через два
+модуля-врата, по одному на сторону:
+
+- [`crates/outline-transport/src/h3/vendored.rs`](crates/outline-transport/src/h3/vendored.rs) — клиент
+  (`Protocol::WEBSOCKET` на Extended CONNECT, `Stream::from_h3_client` +
+  `WebSocketStream::from_raw`).
+- [`bins/outline-ss-rust/src/server/h3/vendored.rs`](bins/outline-ss-rust/src/server/h3/vendored.rs) — сервер
+  (request-extension `h3::ext::Protocol`, `Stream::from_h3_server` +
+  `WebSocketStream::from_raw`, восстановленный `WebSocketServer::into_parts`,
+  плюс реэкспорты sockudo-ws-типов, используемых сервером).
+
+Ребейз vendored-крейтов на новый upstream начинай (и в идеале заканчивай) в
+этих двух файлах. CI следит, чтобы `sockudo_ws` упоминался только в
+модулях-вратах; тестовые модули — исключение: они намеренно изображают
+клиентскую сторону.
+
 ## h3 (0.0.8)
 
 Логические изменения в `h3-0.0.8.patch`:

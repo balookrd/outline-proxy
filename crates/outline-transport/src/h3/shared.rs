@@ -12,15 +12,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use bytes::Bytes;
-use h3::client::{RequestStream as H3RequestStream, SendRequest as H3SendRequest};
 use http::{Method, Request};
 use once_cell::sync::OnceCell;
 use rustls::ClientConfig;
-use sockudo_ws::{
-    Config as SockudoConfig, Http3 as SockudoHttp3, Stream as SockudoTransportStream,
-    WebSocketStream as SockudoWebSocketStream,
-};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tracing::info;
@@ -31,10 +25,8 @@ use crate::shared_cache::{
 };
 use crate::{AbortOnDrop, DnsCache, TransportStream, bind_addr_for, bind_udp_socket};
 
+use super::vendored::{self, H3RequestStreamHandle, H3SendRequestHandle};
 use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri, websocket_path};
-
-type H3RequestStreamHandle = H3RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
-type H3SendRequestHandle = H3SendRequest<h3_quinn::OpenStreams, Bytes>;
 
 // Upper bound for opening a new H3 WebSocket stream on top of an already
 // established QUIC connection.  Without this bound, a silently-broken shared
@@ -152,7 +144,7 @@ impl SharedH3Connection {
         let mut request_builder = Request::builder()
             .method(Method::CONNECT)
             .uri(websocket_h3_target_uri(server_name, server_port, path)?)
-            .extension(h3::ext::Protocol::WEBSOCKET)
+            .extension(vendored::websocket_protocol())
             .header("sec-websocket-version", "13")
             .header(crate::resumption::RESUME_CAPABLE_HEADER, "1");
         if let Some(id) = resume_request {
@@ -239,15 +231,10 @@ impl SharedH3Connection {
                 .and_then(|v| v.to_str().ok())
                 == Some("1");
 
-        let h3_stream = SockudoTransportStream::<SockudoHttp3>::from_h3_client(stream);
         self.streams_opened.fetch_add(1, Ordering::Relaxed);
         Ok((
             H3WsStream {
-                inner: SockudoWebSocketStream::from_raw(
-                    h3_stream,
-                    sockudo_ws::Role::Client,
-                    SockudoConfig::builder().http3_idle_timeout(90_000).build(),
-                ),
+                inner: vendored::client_ws_stream(stream, 90_000),
                 _shared_connection: Arc::clone(self),
             },
             issued_session_id,

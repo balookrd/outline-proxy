@@ -105,6 +105,23 @@ jobs:
           fi
           echo "ok: aws-lc-rs is absent"
 
+      # Monorepo invariant: every direct sockudo-ws reference in production
+      # code stays behind the two vendored-gate modules, so rebasing the
+      # vendored crates touches one file per side (see PATCHES.md). Test
+      # modules are exempt — they impersonate the client on purpose.
+      - name: invariant — vendored sockudo-ws API only behind gate modules
+        run: |
+          leaked=$(grep -rn 'sockudo_ws' bins/*/src crates/*/src --include='*.rs' \
+            | grep -v '/tests/' \
+            | grep -v '^crates/outline-transport/src/h3/vendored\.rs:' \
+            | grep -v '^bins/outline-ss-rust/src/server/h3/vendored\.rs:' || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::sockudo_ws referenced outside the vendored gate modules:"
+            echo "$leaked"
+            exit 1
+          fi
+          echo "ok: sockudo-ws stays behind the gate modules"
+
       # Monorepo invariant: the router build must not pull the heavy server /
       # metrics / H3-QUIC / aws-lc-rs dependencies.
       - name: invariant — router build stays isolated
