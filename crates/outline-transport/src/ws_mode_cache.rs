@@ -136,7 +136,8 @@ pub(crate) async fn gc() {
     let snapshot: Vec<String> = {
         let map = cache().read().await;
         map.iter()
-            .filter_map(|(k, e)| (now >= e.expires_at).then(|| k.clone()))
+            .filter(|(_, e)| now >= e.expires_at)
+            .map(|(k, _)| k.clone())
             .collect()
     };
     if snapshot.is_empty() {
@@ -144,10 +145,10 @@ pub(crate) async fn gc() {
     }
     let mut map = cache().write().await;
     for key in snapshot {
-        if let Some(e) = map.get(&key) {
-            if now >= e.expires_at {
-                map.remove(&key);
-            }
+        if let Some(e) = map.get(&key)
+            && now >= e.expires_at
+        {
+            map.remove(&key);
         }
     }
 }

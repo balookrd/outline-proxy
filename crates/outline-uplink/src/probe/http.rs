@@ -266,14 +266,14 @@ async fn exchange_http_probe(
     let mut explicit_close = false;
     let mut explicit_keepalive = false;
     for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("connection") {
-                let v = value.trim();
-                if v.eq_ignore_ascii_case("close") {
-                    explicit_close = true;
-                } else if v.eq_ignore_ascii_case("keep-alive") {
-                    explicit_keepalive = true;
-                }
+        if let Some((name, value)) = line.split_once(':')
+            && name.trim().eq_ignore_ascii_case("connection")
+        {
+            let v = value.trim();
+            if v.eq_ignore_ascii_case("close") {
+                explicit_close = true;
+            } else if v.eq_ignore_ascii_case("keep-alive") {
+                explicit_keepalive = true;
             }
         }
     }

@@ -183,10 +183,7 @@ pub(crate) async fn activate_from_json(body: &[u8], uplinks: UplinkRegistry) -> 
     if payload.group.trim().is_empty() || payload.uplink.trim().is_empty() {
         return json_error(StatusCode::BAD_REQUEST, "\"group\" and \"uplink\" are required");
     }
-    let transport = payload
-        .transport
-        .map(ActivateTransport::into_registry_transport)
-        .flatten();
+    let transport = payload.transport.and_then(ActivateTransport::into_registry_transport);
     match uplinks
         .set_active_uplink_by_name(Some(payload.group.trim()), payload.uplink.trim(), transport)
         .await

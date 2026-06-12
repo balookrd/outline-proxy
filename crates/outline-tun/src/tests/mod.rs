@@ -211,11 +211,9 @@ fn build_ipv6_tcp_packet_with_extension_header(next_header: u8, terminal_header:
     packet[8..24].copy_from_slice(&Ipv6Addr::LOCALHOST.octets());
     packet[24..40].copy_from_slice(&Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2).octets());
     packet[IPV6_HEADER_LEN] = terminal_header;
-    if next_header == 44 {
-        packet[IPV6_HEADER_LEN + 1] = 0;
-    } else {
-        packet[IPV6_HEADER_LEN + 1] = 0;
-    }
+    // Second byte is 0 for both shapes: the fragment header's (44) reserved
+    // byte and the other extension headers' Hdr-Ext-Len (8-byte header).
+    packet[IPV6_HEADER_LEN + 1] = 0;
     packet[IPV6_HEADER_LEN + extension_len + 12] = 0x50;
     packet[IPV6_HEADER_LEN + extension_len + 13] = 0x10;
     packet

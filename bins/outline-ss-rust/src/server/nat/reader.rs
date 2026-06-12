@@ -57,7 +57,7 @@ pub(super) async fn nat_reader_task(ctx: NatReaderCtx) {
         // NAT session holds no per-session receive buffer; the buffer returns
         // to the pool before the next park.
         let mut buf = UdpRecvBuf::take();
-        let (n, source) = match socket.try_recv_from(&mut *buf) {
+        let (n, source) = match socket.try_recv_from(&mut buf) {
             Ok(v) => v,
             Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
             Err(error) => {

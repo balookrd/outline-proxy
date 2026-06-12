@@ -93,12 +93,11 @@ pub(super) fn build_upstream_parts(
         dest_headers
             .insert(HeaderName::from_static("x-forwarded-proto"), HeaderValue::from_static(proto));
     }
-    if ctx.config.add_x_forwarded_host {
-        if let Some(host) = original_host.as_deref()
-            && let Ok(value) = HeaderValue::from_str(host)
-        {
-            dest_headers.insert(HeaderName::from_static("x-forwarded-host"), value);
-        }
+    if ctx.config.add_x_forwarded_host
+        && let Some(host) = original_host.as_deref()
+        && let Ok(value) = HeaderValue::from_str(host)
+    {
+        dest_headers.insert(HeaderName::from_static("x-forwarded-host"), value);
     }
 
     let request = req.body(()).context("failed to assemble upstream request parts")?;

@@ -58,14 +58,15 @@ jobs:
           -p outline-uplink -p outline-wire -p shadowsocks-crypto -p socks5-proto
 
       # `--no-deps` keeps clippy off the vendored members (they are linted as
-      # dependencies otherwise). The lint policy denies compiler warnings and
-      # the clippy correctness/suspicious groups, but does not yet enforce the
-      # style/complexity groups — the existing code carries a backlog of those
-      # (too_many_arguments, collapsible_if, …) that is tracked separately.
-      - name: clippy (deny warnings + correctness/suspicious)
+      # dependencies otherwise). The style/complexity backlog was cleared, so
+      # the gate denies everything clippy emits at its default lint levels.
+      # The two deliberate allows (too_many_arguments, type_complexity) live
+      # in `[workspace.lints.clippy]` in the root Cargo.toml until the
+      # god-object refactors land.
+      - name: clippy (deny all default-level warnings)
         run: >
           cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps --
-          -D warnings -A clippy::all -D clippy::correctness -D clippy::suspicious
+          -D warnings
 
   test:
     name: test

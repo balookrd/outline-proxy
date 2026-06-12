@@ -100,25 +100,26 @@ impl VlessShareLink {
         let params = QueryParams::from_url(&url);
 
         // Reject the bits we cannot honour rather than silently dropping them.
-        if let Some(encryption) = params.first("encryption") {
-            if !encryption.eq_ignore_ascii_case("none") {
-                bail!("vless link encryption={encryption} is not supported (only `none`)");
-            }
+        if let Some(encryption) = params.first("encryption")
+            && !encryption.eq_ignore_ascii_case("none")
+        {
+            bail!("vless link encryption={encryption} is not supported (only `none`)");
         }
-        if let Some(flow) = params.first("flow") {
-            if !flow.is_empty() {
-                bail!("vless link flow={flow} is not supported (xtls flows have no client impl)");
-            }
+        if let Some(flow) = params.first("flow")
+            && !flow.is_empty()
+        {
+            bail!("vless link flow={flow} is not supported (xtls flows have no client impl)");
         }
         for (key, value) in [("sni", params.first("sni")), ("host", params.first("host"))] {
-            if let Some(v) = value {
-                if !v.is_empty() && !v.eq_ignore_ascii_case(&host) {
-                    bail!(
-                        "vless link {key}={v} differs from authority host {host}; \
+            if let Some(v) = value
+                && !v.is_empty()
+                && !v.eq_ignore_ascii_case(&host)
+            {
+                bail!(
+                    "vless link {key}={v} differs from authority host {host}; \
                          the current transport stack reuses the URL host for both \
                          SNI and HTTP Host"
-                    );
-                }
+                );
             }
         }
 
@@ -157,10 +158,10 @@ impl VlessShareLink {
         }
         // XHTTP submode is encoded via `?mode=` on the dial URL — see
         // docs/UPLINK-CONFIGURATIONS.md "Submode: packet-up vs stream-one".
-        if matches!(target, UrlTarget::Xhttp) {
-            if let Some(submode) = params.first("mode") {
-                composed.query_pairs_mut().append_pair("mode", submode);
-            }
+        if matches!(target, UrlTarget::Xhttp)
+            && let Some(submode) = params.first("mode")
+        {
+            composed.query_pairs_mut().append_pair("mode", submode);
         }
 
         let (vless_ws_url, vless_xhttp_url) = match target {

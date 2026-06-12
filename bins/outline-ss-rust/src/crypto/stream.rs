@@ -124,11 +124,7 @@ impl AeadStreamDecryptor {
     pub fn drain_plaintext(&mut self, output: &mut Vec<u8>) -> Result<(), CryptoError> {
         self.ensure_session_key()?;
 
-        loop {
-            let Some(active) = &mut self.active else {
-                break;
-            };
-
+        while let Some(active) = &mut self.active {
             match &mut active.mode {
                 ActiveStreamMode::Legacy { pending_chunk_len } => {
                     if !drain_payload(

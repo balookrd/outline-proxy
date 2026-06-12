@@ -113,7 +113,7 @@ pub(super) async fn connect_xhttp_h2(
         let target = Arc::new(XhttpTarget {
             scheme: scheme.into(),
             authority,
-            base_path: base_path.into(),
+            base_path,
             session_id: session_id.clone(),
         });
 
@@ -436,7 +436,7 @@ async fn h2_handshake(
             .connect(server_name, tcp)
             .await
             .context("TLS handshake for xhttp failed")?;
-        spawn_h2(TokioIo::new(BoxedIo::Tls(tls))).await
+        spawn_h2(TokioIo::new(BoxedIo::Tls(Box::new(tls)))).await
     } else {
         // Plain h2 over TCP — used by tests and trusted-network
         // deployments. Production callers should run TLS.

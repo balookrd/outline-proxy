@@ -94,7 +94,7 @@ pub(super) async fn handle_udp(
             // session holds no per-session receive buffer; the buffer returns
             // to the pool before the next park.
             let mut buf = UdpRecvBuf::take();
-            let n = match socket_for_reader.try_recv(&mut *buf) {
+            let n = match socket_for_reader.try_recv(&mut buf) {
                 Ok(n) => n,
                 Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                 Err(error) => {

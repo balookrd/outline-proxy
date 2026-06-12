@@ -9,6 +9,9 @@ edition = "2024"
 # router:  stripped build for memory-constrained devices
 #          disables H3/QUIC, Prometheus metrics, and built-in dashboard
 #          build with: cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
+[lints]
+workspace = true
+
 [features]
 default = ["h3", "metrics", "control", "dashboard", "env-filter", "multi-thread", "mimalloc", "tun"]
 tun = ["dep:outline-tun", "outline-tun/metrics", "outline-metrics/tun"]   # TUN device support (transparent proxy)

@@ -28,16 +28,16 @@ pub(super) async fn handle_list(state: Arc<ControlState>, query: Option<&str>) -
     let snapshots = state.uplinks.snapshots().await;
     let mut entries = Vec::new();
     for snap in &snapshots {
-        if let Some(g) = &filter_group {
-            if snap.group != *g {
-                continue;
-            }
+        if let Some(g) = &filter_group
+            && snap.group != *g
+        {
+            continue;
         }
         for uplink in &snap.uplinks {
-            if let Some(n) = &filter_name {
-                if uplink.name != *n {
-                    continue;
-                }
+            if let Some(n) = &filter_name
+                && uplink.name != *n
+            {
+                continue;
             }
             entries.push(UplinkListEntry {
                 group: snap.group.clone(),
@@ -52,19 +52,17 @@ pub(super) async fn handle_list(state: Arc<ControlState>, query: Option<&str>) -
     // each uplink's full TOML table as a JSON object so editors can pre-fill
     // forms. We swallow read/parse errors — the entries still carry the
     // identifying triple (group, name, index).
-    if let Some(path) = &state.config_path {
-        if let Ok(raw) = fs::read_to_string(path).await {
-            if let Ok(mut doc) = raw.parse::<DocumentMut>() {
-                let arr = get_or_init_outline_uplinks(&mut doc);
-                for entry in entries.iter_mut() {
-                    let Some(idx) = find_outline_uplink_index(arr, &entry.group, &entry.name)
-                    else {
-                        continue;
-                    };
-                    if let Some(tbl) = arr.get(idx) {
-                        entry.config = table_to_json(tbl);
-                    }
-                }
+    if let Some(path) = &state.config_path
+        && let Ok(raw) = fs::read_to_string(path).await
+        && let Ok(mut doc) = raw.parse::<DocumentMut>()
+    {
+        let arr = get_or_init_outline_uplinks(&mut doc);
+        for entry in entries.iter_mut() {
+            let Some(idx) = find_outline_uplink_index(arr, &entry.group, &entry.name) else {
+                continue;
+            };
+            if let Some(tbl) = arr.get(idx) {
+                entry.config = table_to_json(tbl);
             }
         }
     }

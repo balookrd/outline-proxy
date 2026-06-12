@@ -140,7 +140,7 @@ where
                 // sub-conn holds no per-direction relay buffer; the buffer
                 // returns to the pool before the next park.
                 let mut buf = TcpRelayBuf::take();
-                let read = match reader.try_read(&mut *buf) {
+                let read = match reader.try_read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => n,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,

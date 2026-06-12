@@ -314,7 +314,7 @@ async fn run_upload(
 ) -> Result<UploadOutcome> {
     let mut buf = TcpRelayBuf::take();
     loop {
-        match recv.read(&mut *buf).await {
+        match recv.read(&mut buf).await {
             Ok(Some(0)) => continue,
             Ok(Some(n)) => {
                 client_to_target.increment(n as u64);
@@ -365,7 +365,7 @@ async fn run_download(
                 // session holds no per-direction relay buffer; the buffer
                 // returns to the pool before the next park.
                 let mut buf = TcpRelayBuf::take();
-                let n = match up_reader.try_read(&mut *buf) {
+                let n = match up_reader.try_read(&mut buf) {
                     Ok(n) => n,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => return Err(error).context("failed to read upstream tcp"),
