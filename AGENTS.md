@@ -29,9 +29,11 @@ raw QUIC), поэтому живут в одном дереве с общими 
 - `bins/outline-ws-rust/` — клиентский бинарь: SOCKS5/TUN ingress, uplink LB,
   routing, dial. Edition 2024, имеет router-сборку для MIPS/armv7.
 - `crates/` — общие крейты. Truly-shared (обе стороны): `outline-wire` —
-  wire-protocol примитивы (`CipherKind` + master-key KDF, `TargetAddr`,
-  SS2022-заголовки, VLESS/mux-кодек; чистая логика, без tokio и без
-  AEAD-backend'ов). Ныне в основном client-side: `outline-transport`,
+  wire-protocol примитивы (`CipherKind` + master-key/subkey KDF, `TargetAddr`,
+  SS2022-заголовки и UDP-раскладки обеих половин, VLESS/mux-кодек; чистая
+  логика, без tokio и без AEAD-backend'ов — AEAD seal/open остаётся по
+  сторонам: `ring` на сервере, RustCrypto на клиенте). Ныне в основном
+  client-side: `outline-transport`,
   `outline-uplink`, `outline-tun`, `outline-metrics`, `outline-net`,
   `outline-routing`, `shadowsocks-crypto`, `socks5-proto`.
 - `vendor/h3`, `vendor/sockudo-ws` — пропатченные крейты, подключены через

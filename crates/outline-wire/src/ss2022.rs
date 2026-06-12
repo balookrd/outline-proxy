@@ -35,6 +35,8 @@ pub enum Ss2022HeaderError {
     InvalidResponseType(u8),
     #[error("ss2022 response header request salt mismatch")]
     RequestSaltMismatch,
+    #[error("ss2022 UDP client session id mismatch")]
+    ClientSessionMismatch,
     #[error(transparent)]
     Target(#[from] TargetAddrError),
 }
@@ -257,14 +259,168 @@ pub fn parse_chacha_udp_request_body(
 /// Extracts the 12-byte AEAD nonce from an AES-path UDP separate header
 /// (bytes 4..16: the low half of the session id plus the packet id).
 pub fn udp_nonce_from_separate_header(
-    separate_header: &[u8],
-) -> Result<[u8; SS2022_UDP_NONCE_LEN], Ss2022HeaderError> {
-    if separate_header.len() != SS2022_UDP_SEPARATE_HEADER_LEN {
-        return Err(Ss2022HeaderError::Invalid);
-    }
+    separate_header: &[u8; SS2022_UDP_SEPARATE_HEADER_LEN],
+) -> [u8; SS2022_UDP_NONCE_LEN] {
     let mut nonce = [0_u8; SS2022_UDP_NONCE_LEN];
     nonce.copy_from_slice(&separate_header[4..16]);
-    Ok(nonce)
+    nonce
+}
+
+/// Encodes the AES-path UDP separate header (`session_id | packet_id`),
+/// ready for the one-block AES encryption. The client's request header and
+/// the server's response header share the layout — only whose session id
+/// goes in differs.
+pub fn encode_udp_separate_header(
+    session_id: &[u8; 8],
+    packet_id: u64,
+) -> [u8; SS2022_UDP_SEPARATE_HEADER_LEN] {
+    let mut header = [0_u8; SS2022_UDP_SEPARATE_HEADER_LEN];
+    header[..8].copy_from_slice(session_id);
+    header[8..].copy_from_slice(&packet_id.to_be_bytes());
+    header
+}
+
+/// Client half: builds the plaintext UDP request body. AES path:
+/// `type | timestamp | padding_len | target | payload` (the ids ride in the
+/// separate header); the ChaCha path prepends `session_id | packet_id`.
+/// `addressed_payload` is the already-encoded `SOCKS5 address || payload`
+/// byte string. Padding is fixed at zero — neither end pads datagrams.
+pub fn build_udp_request_body(
+    chacha_session: Option<(&[u8; 8], u64)>,
+    now_unix_secs: u64,
+    addressed_payload: &[u8],
+) -> Vec<u8> {
+    let mut body = Vec::with_capacity(8 + 8 + 1 + 8 + 2 + addressed_payload.len());
+    if let Some((session_id, packet_id)) = chacha_session {
+        body.extend_from_slice(session_id);
+        body.extend_from_slice(&packet_id.to_be_bytes());
+    }
+    body.push(SS2022_UDP_CLIENT_TYPE);
+    body.extend_from_slice(&now_unix_secs.to_be_bytes());
+    body.extend_from_slice(&0_u16.to_be_bytes());
+    body.extend_from_slice(addressed_payload);
+    body
+}
+
+/// Server half: appends the plaintext AES-path UDP response body
+/// (`type | timestamp | client_session_id | padding_len | target | payload`)
+/// to `out`; the server session/packet ids ride in the separate header.
+/// Appending (rather than returning a fresh buffer) lets the server build
+/// the datagram in place right after the encrypted separate header.
+pub fn write_udp_response_body(
+    out: &mut Vec<u8>,
+    now_unix_secs: u64,
+    client_session_id: &[u8; 8],
+    target_wire: &[u8],
+    payload: &[u8],
+) {
+    out.reserve(1 + 8 + 8 + 2 + target_wire.len() + payload.len());
+    out.push(SS2022_UDP_SERVER_TYPE);
+    out.extend_from_slice(&now_unix_secs.to_be_bytes());
+    out.extend_from_slice(client_session_id);
+    out.extend_from_slice(&0_u16.to_be_bytes());
+    out.extend_from_slice(target_wire);
+    out.extend_from_slice(payload);
+}
+
+/// Server half: appends the plaintext ChaCha-path UDP response body — the
+/// AES-path body with `server_session_id | packet_id` leading the plaintext
+/// (the ChaCha path has no separate header).
+pub fn write_chacha_udp_response_body(
+    out: &mut Vec<u8>,
+    server_session_id: &[u8; 8],
+    packet_id: u64,
+    now_unix_secs: u64,
+    client_session_id: &[u8; 8],
+    target_wire: &[u8],
+    payload: &[u8],
+) {
+    out.reserve(8 + 8);
+    out.extend_from_slice(server_session_id);
+    out.extend_from_slice(&packet_id.to_be_bytes());
+    write_udp_response_body(out, now_unix_secs, client_session_id, target_wire, payload);
+}
+
+/// Client half: parses a decrypted AES-path UDP response body and returns
+/// the `target || payload` tail (the caller decodes the address; the server
+/// session/packet ids live in the separate header). Passing
+/// `expected_client_session_id = None` skips the session check — used while
+/// the client has not pinned its own id yet.
+pub fn parse_udp_response_body<'a>(
+    body: &'a [u8],
+    expected_client_session_id: Option<&[u8; 8]>,
+    now_unix_secs: u64,
+) -> Result<&'a [u8], Ss2022HeaderError> {
+    if body.len() < 1 + 8 + 8 + 2 {
+        return Err(Ss2022HeaderError::Invalid);
+    }
+    if body[0] != SS2022_UDP_SERVER_TYPE {
+        return Err(Ss2022HeaderError::InvalidResponseType(body[0]));
+    }
+    let timestamp =
+        u64::from_be_bytes(body[1..9].try_into().map_err(|_| Ss2022HeaderError::Invalid)?);
+    validate_timestamp(timestamp, now_unix_secs)?;
+    let client_session_id: &[u8; 8] =
+        body[9..17].try_into().map_err(|_| Ss2022HeaderError::Invalid)?;
+    if let Some(expected) = expected_client_session_id
+        && client_session_id != expected
+    {
+        return Err(Ss2022HeaderError::ClientSessionMismatch);
+    }
+    let padding_len = u16::from_be_bytes([body[17], body[18]]) as usize;
+    let rest = &body[19..];
+    if rest.len() < padding_len {
+        return Err(Ss2022HeaderError::Invalid);
+    }
+    Ok(&rest[padding_len..])
+}
+
+/// Decoded ChaCha-path UDP response: ids ride in the plaintext, not in a
+/// separate header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ss2022ChachaUdpResponse<'a> {
+    pub server_session_id: [u8; 8],
+    pub packet_id: u64,
+    pub addressed_payload: &'a [u8],
+}
+
+/// Client half: parses a decrypted ChaCha-path UDP response body
+/// (`server_session_id | packet_id | type | timestamp | client_session_id |
+/// padding_len | padding | target | payload`).
+pub fn parse_chacha_udp_response_body<'a>(
+    body: &'a [u8],
+    expected_client_session_id: Option<&[u8; 8]>,
+    now_unix_secs: u64,
+) -> Result<Ss2022ChachaUdpResponse<'a>, Ss2022HeaderError> {
+    if body.len() < 8 + 8 {
+        return Err(Ss2022HeaderError::Invalid);
+    }
+    let server_session_id: [u8; 8] =
+        body[..8].try_into().map_err(|_| Ss2022HeaderError::Invalid)?;
+    let packet_id =
+        u64::from_be_bytes(body[8..16].try_into().map_err(|_| Ss2022HeaderError::Invalid)?);
+    let addressed_payload =
+        parse_udp_response_body(&body[16..], expected_client_session_id, now_unix_secs)?;
+    Ok(Ss2022ChachaUdpResponse {
+        server_session_id,
+        packet_id,
+        addressed_payload,
+    })
+}
+
+/// SS2022 BLAKE3 `derive_key` context string for per-session subkeys. The
+/// exact bytes are wire-compatibility-critical: both ends must derive the
+/// same session key from `master_key || salt` under this context.
+pub const SS2022_SUBKEY_CONTEXT: &str = "shadowsocks 2022 session subkey";
+
+/// Derives the SS2022 per-session subkey (BLAKE3 `derive_key` over
+/// `master_key || salt`) into `out`, whose length selects the key size
+/// (the cipher's `key_len()`).
+pub fn ss2022_session_subkey_into(master_key: &[u8], salt: &[u8], out: &mut [u8]) {
+    let mut hasher = blake3::Hasher::new_derive_key(SS2022_SUBKEY_CONTEXT);
+    hasher.update(master_key);
+    hasher.update(salt);
+    hasher.finalize_xof().fill(out);
 }
 
 #[cfg(test)]

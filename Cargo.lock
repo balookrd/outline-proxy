@@ -1914,6 +1914,7 @@ name = "outline-wire"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "blake3",
  "bytes",
  "clap",
  "md5",

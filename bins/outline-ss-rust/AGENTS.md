@@ -40,9 +40,10 @@ Prometheus metrics и локально пропатченные копии `h3` 
   `docs/REVERSE-TUNNEL.md`. Меняя raw-SS accept-путь, помни оба источника
   `quinn::Connection` (forward accept и reverse dial) — handler агностичен.
 - `src/crypto/`: Shadowsocks AEAD stream/UDP primitives и логика
-  replay/session cache. SS2022-заголовки парсятся общим крейтом
-  `crates/outline-wire`; `ss2022_header.rs` — тонкая обёртка (clock,
-  CryptoError, склейка `target || payload`).
+  replay/session cache. SS2022-заголовки, UDP-раскладки (обе половины) и
+  session-subkey KDF живут в общем крейте `crates/outline-wire`;
+  `ss2022_header.rs` — тонкая обёртка (clock, CryptoError, склейка
+  `target || payload`), AEAD seal/open — `ring` здесь, RustCrypto на клиенте.
 - `src/protocol/`: реэкспорт wire-кодека (`TargetAddr`, VLESS, mux) из
   `crates/outline-wire` плюс серверная сущность `VlessUser`/`find_user`.
   Сами форматы и их тесты живут в `outline-wire` — меняя wire-поведение,
