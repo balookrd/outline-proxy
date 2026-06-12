@@ -198,6 +198,19 @@ pub(super) fn spawn_maintenance(
 /// Spawns a maintenance task whose panic is caught, logged, counted, and
 /// converted into a graceful shutdown. Dropping the `JoinHandle` is intentional:
 /// supervision happens inside the wrapper, not via `.await` on the handle.
+///
+/// Interaction with `[profile.release] panic = "abort"` (deliberate): under
+/// abort a panic terminates the process immediately, *before* `catch_unwind`
+/// can run. So in release a maintenance-task panic aborts the process — itself
+/// a hard "stop on panic" that relies on the service manager (systemd) to
+/// restart — and neither the graceful-shutdown path nor the
+/// `outline_ss_maintenance_task_panics_total` metric is reached. The
+/// catch-and-graceful-shutdown path (plus that metric) is exercised under
+/// `panic = "unwind"`, i.e. debug and test builds. This is intentional:
+/// aborting is an acceptable stop-the-world for a proxy, and the wrapper still
+/// yields clean shutdown + diagnostics wherever unwinding is enabled. Do not
+/// "fix" this by switching the release profile to unwind without weighing the
+/// workspace-wide binary-size / unwind-table cost against the benefit.
 fn spawn_supervised<F>(
     task: &'static str,
     metrics: Arc<Metrics>,
