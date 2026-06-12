@@ -9,6 +9,7 @@ use outline_uplink::{LoadBalancingMode, RoutingScope, UplinkTransport};
 use shadowsocks_crypto::CipherKind;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ConfigFile {
     pub(super) socks5: Option<Socks5Section>,
     pub(super) transport: Option<UplinkTransport>,
@@ -42,6 +43,12 @@ pub(crate) struct ConfigFile {
     pub(super) dashboard: Option<DashboardSection>,
     #[cfg(feature = "tun")]
     pub(super) tun: Option<TunSection>,
+    /// Accepted-and-ignored in builds without the `tun` feature (router):
+    /// keeps the `[tun]` key "known" to `deny_unknown_fields`, so one
+    /// config file keeps loading across full and router builds.
+    #[cfg(not(feature = "tun"))]
+    #[allow(dead_code)]
+    pub(super) tun: Option<toml::Value>,
     pub(super) h2: Option<H2Section>,
     pub(super) udp_recv_buf_bytes: Option<usize>,
     pub(super) udp_send_buf_bytes: Option<usize>,
@@ -109,6 +116,7 @@ pub(super) struct ReversePeerSection {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct TcpTimeoutsSection {
     pub(super) post_client_eof_downstream_secs: Option<u64>,
     pub(super) upstream_response_secs: Option<u64>,
@@ -117,6 +125,7 @@ pub(super) struct TcpTimeoutsSection {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Socks5Section {
     pub(super) listen: Option<SocketAddr>,
     pub(super) username: Option<String>,
@@ -125,12 +134,14 @@ pub(super) struct Socks5Section {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Socks5UserSection {
     pub(super) username: Option<String>,
     pub(super) password: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct OutlineSection {
     pub(super) transport: Option<UplinkTransport>,
     pub(super) tcp_ws_url: Option<Url>,
@@ -158,11 +169,13 @@ pub(crate) struct OutlineSection {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct MetricsSection {
     pub(super) listen: Option<SocketAddr>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ControlSection {
     pub(super) listen: Option<SocketAddr>,
     pub(super) token: Option<String>,
@@ -170,6 +183,7 @@ pub(super) struct ControlSection {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct DashboardSection {
     /// Presence of [dashboard] enables the dashboard by default. Set
     /// `enabled = false` to keep the config block around without binding.
@@ -181,6 +195,7 @@ pub(super) struct DashboardSection {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct DashboardInstanceSection {
     pub(super) name: Option<String>,
     pub(super) control_url: Option<Url>,
@@ -190,6 +205,7 @@ pub(super) struct DashboardInstanceSection {
 
 #[cfg(feature = "tun")]
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct TunSection {
     pub(super) path: Option<PathBuf>,
     pub(super) name: Option<String>,
@@ -215,6 +231,7 @@ pub(super) struct TunSection {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct H2Section {
     pub(super) initial_stream_window_size: Option<u32>,
     pub(super) initial_connection_window_size: Option<u32>,
@@ -222,6 +239,7 @@ pub(super) struct H2Section {
 
 #[cfg(feature = "tun")]
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct TunTcpSection {
     pub(super) connect_timeout_secs: Option<u64>,
     pub(super) handshake_timeout_secs: Option<u64>,
@@ -239,6 +257,7 @@ pub(super) struct TunTcpSection {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct UplinkSection {
     pub(crate) name: Option<String>,
     pub(crate) transport: Option<UplinkTransport>,
@@ -348,6 +367,7 @@ pub(crate) struct UplinkSection {
 /// `cipher` / `password` / `fwmark` / `ipv6_first` / `fingerprint_profile`
 /// are optional and inherited from the parent uplink at validation time.
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct FallbackSection {
     pub(crate) transport: UplinkTransport,
     pub(crate) tcp_ws_url: Option<Url>,
@@ -372,6 +392,7 @@ pub(crate) struct FallbackSection {
 /// Top-level `[probe]` acts as a template; unspecified fields in
 /// `[uplink_group.probe]` are inherited from it.
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(super) struct UplinkGroupSection {
     pub(super) name: Option<String>,
     pub(super) mode: Option<LoadBalancingMode>,
@@ -475,6 +496,7 @@ pub(super) struct UplinkGroupSection {
 /// Prefix sources are merged: inline `prefixes`, a single `file`, and any
 /// additional paths in `files` all contribute to the same CIDR set.
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(super) struct RouteSection {
     pub(super) prefixes: Option<Vec<String>>,
     pub(super) file: Option<PathBuf>,
@@ -491,6 +513,7 @@ pub(super) struct RouteSection {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ProbeSection {
     pub(super) interval_secs: Option<u64>,
     pub(super) timeout_secs: Option<u64>,
@@ -514,11 +537,13 @@ pub(super) struct ProbeSection {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(super) struct WsProbeSection {
     pub(super) enabled: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(super) struct HttpProbeSection {
     /// Single URL form (legacy / convenience). Either `url` or `urls` must
     /// be set; if both are set, `urls` wins.
@@ -530,6 +555,7 @@ pub(super) struct HttpProbeSection {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(super) struct DnsProbeSection {
     pub(super) server: String,
     pub(super) port: Option<u16>,
@@ -537,12 +563,14 @@ pub(super) struct DnsProbeSection {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(super) struct TcpProbeSection {
     pub(super) host: String,
     pub(super) port: Option<u16>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(super) struct TlsProbeSection {
     /// Single target form (legacy / convenience). Either `target` or
     /// `targets` must be set; if both are set, `targets` wins.
@@ -555,6 +583,7 @@ pub(super) struct TlsProbeSection {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub(super) struct LoadBalancingSection {
     pub(super) mode: Option<LoadBalancingMode>,
     pub(super) routing_scope: Option<RoutingScope>,
