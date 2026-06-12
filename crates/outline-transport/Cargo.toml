@@ -3,6 +3,9 @@ name = "outline-transport"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 # Raw QUIC transport (no HTTP/3 framing). Required by `h3` since both share

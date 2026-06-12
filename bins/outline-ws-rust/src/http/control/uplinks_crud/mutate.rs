@@ -279,12 +279,8 @@ async fn write_document_atomic(path: &Path, doc: &DocumentMut) -> anyhow::Result
 /// Find `[[uplink_group]]` table where `name == group`.
 pub(crate) fn find_group_mut<'a>(doc: &'a mut DocumentMut, group: &str) -> Option<&'a mut Table> {
     let aot = doc.get_mut("uplink_group")?.as_array_of_tables_mut()?;
-    for tbl in aot.iter_mut() {
-        if tbl.get("name").and_then(|v| v.as_str()) == Some(group) {
-            return Some(tbl);
-        }
-    }
-    None
+    aot.iter_mut()
+        .find(|tbl| tbl.get("name").and_then(|v| v.as_str()) == Some(group))
 }
 
 /// Get or init the canonical `[[outline.uplinks]]` array-of-tables. The

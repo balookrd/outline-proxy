@@ -169,7 +169,7 @@ fn ack_options(state: &TcpFlowState) -> TcpOptions {
         return options;
     }
 
-    ranges.sort_by(|(left_a, _), (left_b, _)| left_a.cmp(left_b));
+    ranges.sort_by_key(|(left_a, _)| *left_a);
     let mut merged = Vec::new();
     for (left, right) in ranges {
         match merged.last_mut() {

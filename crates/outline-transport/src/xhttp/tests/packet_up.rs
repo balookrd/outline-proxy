@@ -302,15 +302,15 @@ async fn handle(
                         Ok(f) => f,
                         Err(_) => break,
                     };
-                    if let Ok(data) = frame.into_data() {
-                        if !data.is_empty() {
-                            // Tag stream-one chunks with seq=u64::MAX
-                            // so the test can tell the carrier mode
-                            // apart from packet-up (which numbers
-                            // them 0, 1, …).
-                            captured_for_drain.lock().seqs.push(u64::MAX);
-                            captured_for_drain.lock().bodies.push(data);
-                        }
+                    if let Ok(data) = frame.into_data()
+                        && !data.is_empty()
+                    {
+                        // Tag stream-one chunks with seq=u64::MAX
+                        // so the test can tell the carrier mode
+                        // apart from packet-up (which numbers
+                        // them 0, 1, …).
+                        captured_for_drain.lock().seqs.push(u64::MAX);
+                        captured_for_drain.lock().bodies.push(data);
                     }
                 }
             });

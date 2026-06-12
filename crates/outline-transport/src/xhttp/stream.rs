@@ -174,7 +174,10 @@ pub(super) async fn drain_hyper_body(
 // reuse the same wrapper for their own handshakes.
 pub(super) enum BoxedIo {
     Plain(TcpStream),
-    Tls(tokio_rustls::client::TlsStream<TcpStream>),
+    // Boxed: the TLS state machine is an order of magnitude larger than a
+    // plain TcpStream, and one connection-scoped allocation is cheaper than
+    // carrying that size in every enum value.
+    Tls(Box<tokio_rustls::client::TlsStream<TcpStream>>),
 }
 
 impl AsyncRead for BoxedIo {

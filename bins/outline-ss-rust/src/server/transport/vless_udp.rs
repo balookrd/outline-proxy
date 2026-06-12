@@ -346,7 +346,7 @@ where
                 // idle UDP relay holds no per-session receive buffer; the
                 // buffer returns to the pool before the next park.
                 let mut buffer = UdpRecvBuf::take();
-                let read = match socket.try_recv(&mut *buffer) {
+                let read = match socket.try_recv(&mut buffer) {
                     Ok(n) => n,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => {

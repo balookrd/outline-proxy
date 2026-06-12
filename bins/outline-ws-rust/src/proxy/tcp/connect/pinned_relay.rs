@@ -588,10 +588,10 @@ async fn watch_active_uplink_switch(
     loop {
         let snapshot = *rx.borrow_and_update();
         let active = if strict_global { snapshot.global } else { snapshot.tcp };
-        if let Some(idx) = active {
-            if idx != pinned_index {
-                return "global_switch";
-            }
+        if let Some(idx) = active
+            && idx != pinned_index
+        {
+            return "global_switch";
         }
         if rx.changed().await.is_err() {
             // Manager dropped (shutdown / config reload). The data tasks
@@ -773,11 +773,11 @@ async fn try_mid_session_retry(
         },
     };
 
-    if !replay_bytes.is_empty() {
-        if let Err(e) = send_replay_through_writer(&mut connected.writer, &replay_bytes).await {
-            metrics::record_mid_session_retry("tcp", group_name, active_name, "failed_replay");
-            return Err(e.context("mid-session retry: replay send failed"));
-        }
+    if !replay_bytes.is_empty()
+        && let Err(e) = send_replay_through_writer(&mut connected.writer, &replay_bytes).await
+    {
+        metrics::record_mid_session_retry("tcp", group_name, active_name, "failed_replay");
+        return Err(e.context("mid-session retry: replay send failed"));
     }
 
     // v2 Symmetric Downlink Replay: when the server echoed v2 on the

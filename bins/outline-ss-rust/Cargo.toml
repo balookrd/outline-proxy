@@ -3,6 +3,9 @@ name = "outline-ss-rust"
 version = "1.4.2"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 aes = "0.8"
 anyhow = "1.0"

@@ -157,10 +157,8 @@ fn parse_vless_raw_quic_tcp_response(buf: &[u8]) -> Result<(ParsedVlessResponse,
                     response.session_id = Some(SessionId::from_bytes(arr));
                 }
             },
-            ADDON_TAG_RESUME_RESULT => {
-                if value.len() == 1 {
-                    response.resume_result = Some(value[0]);
-                }
+            ADDON_TAG_RESUME_RESULT if value.len() == 1 => {
+                response.resume_result = Some(value[0]);
             },
             _ => {},
         }

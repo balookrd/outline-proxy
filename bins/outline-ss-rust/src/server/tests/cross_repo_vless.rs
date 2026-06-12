@@ -468,7 +468,7 @@ async fn cross_repo_vless_tcp_raw_quic_round_trip() -> Result<()> {
     // ignored. ALPN `vless` is what the dialer sends. The scheme
     // must be `https://` because raw QUIC is TLS-only.
     let url = Url::parse(&format!("https://localhost:{}/", listen_addr.port()))?;
-    let uuid_bytes: [u8; 16] = parse_uuid(TEST_UUID)?.try_into().expect("UUID parses to 16 bytes");
+    let uuid_bytes: [u8; 16] = parse_uuid(TEST_UUID)?;
     let target = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
     let lifetime = UpstreamTransportGuard::new("cross-repo-vless-quic", "vless");
 
@@ -1125,7 +1125,7 @@ async fn cross_repo_vless_tcp_raw_quic_resume_reattaches_parked_upstream() -> Re
     let (listen_addr, server) = setup_vless_raw_quic_server_with_resumption().await?;
     let cache = ClientDnsCache::new(Duration::from_secs(30));
     let url = Url::parse(&format!("https://localhost:{}/", listen_addr.port()))?;
-    let uuid_bytes: [u8; 16] = parse_uuid(TEST_UUID)?.try_into().expect("UUID parses to 16 bytes");
+    let uuid_bytes: [u8; 16] = parse_uuid(TEST_UUID)?;
     let target = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
     let lifetime_a = UpstreamTransportGuard::new("cross-repo-vless-quic-resume-a", "vless");
 

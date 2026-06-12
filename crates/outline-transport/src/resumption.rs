@@ -184,6 +184,12 @@ impl ResumeCache {
         self.inner.lock().remove(key);
     }
 
+    /// Test/diagnostic accessor. Companion to [`Self::len`].
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().is_empty()
+    }
+
     /// Test/diagnostic accessor. Returns the number of cached entries.
     #[cfg(test)]
     pub fn len(&self) -> usize {

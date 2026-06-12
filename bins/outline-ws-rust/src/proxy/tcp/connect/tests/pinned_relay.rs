@@ -262,14 +262,9 @@ async fn run_relay_attempts_redial_on_mid_session_runtime_failure() {
     let redial_accepts = Arc::new(AtomicUsize::new(0));
     let redial_accepts_for_task = Arc::clone(&redial_accepts);
     let redial_task = tokio::spawn(async move {
-        loop {
-            match redial_listener.accept().await {
-                Ok((stream, _)) => {
-                    redial_accepts_for_task.fetch_add(1, AtomicOrdering::SeqCst);
-                    drop(stream);
-                },
-                Err(_) => break,
-            }
+        while let Ok((stream, _)) = redial_listener.accept().await {
+            redial_accepts_for_task.fetch_add(1, AtomicOrdering::SeqCst);
+            drop(stream);
         }
     });
 

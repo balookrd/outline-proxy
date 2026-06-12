@@ -160,10 +160,10 @@ async fn cached_render(uplinks: &UplinkRegistry, cache: &SharedCache) -> Result<
     // Hold the lock across the rebuild so that concurrent scrapes coalesce
     // onto a single snapshot+render instead of each doing their own.
     let mut guard = cache.lock().await;
-    if let Some((stored_at, body)) = guard.entry.as_ref() {
-        if stored_at.elapsed() < METRICS_CACHE_TTL {
-            return Ok(body.clone());
-        }
+    if let Some((stored_at, body)) = guard.entry.as_ref()
+        && stored_at.elapsed() < METRICS_CACHE_TTL
+    {
+        return Ok(body.clone());
     }
     let snapshots = uplinks.snapshots().await;
     let rendered = render_prometheus(&snapshots)?;

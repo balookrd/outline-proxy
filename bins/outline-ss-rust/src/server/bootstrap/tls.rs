@@ -244,13 +244,13 @@ impl MultiCertResolver {
             }
 
             for name in usable {
-                if let Some(prev) = by_sni.insert(name.clone(), Arc::clone(&ck)) {
-                    if !Arc::ptr_eq(&prev, &ck) {
-                        bail!(
-                            "{label}.certs[{idx}] SNI {name:?} is already claimed by an \
+                if let Some(prev) = by_sni.insert(name.clone(), Arc::clone(&ck))
+                    && !Arc::ptr_eq(&prev, &ck)
+                {
+                    bail!(
+                        "{label}.certs[{idx}] SNI {name:?} is already claimed by an \
                              earlier entry"
-                        );
-                    }
+                    );
                 }
             }
         }

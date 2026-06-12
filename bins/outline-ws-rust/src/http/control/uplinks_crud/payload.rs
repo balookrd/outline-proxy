@@ -316,10 +316,10 @@ pub(super) fn payload_to_section(
     fallback_group: Option<&str>,
 ) -> Result<UplinkSection, String> {
     let mut tbl = payload_to_table(payload);
-    if !tbl.contains_key("group") {
-        if let Some(g) = fallback_group {
-            tbl.insert("group", Item::Value(Value::from(g)));
-        }
+    if !tbl.contains_key("group")
+        && let Some(g) = fallback_group
+    {
+        tbl.insert("group", Item::Value(Value::from(g)));
     }
     table_to_section(&tbl)
 }

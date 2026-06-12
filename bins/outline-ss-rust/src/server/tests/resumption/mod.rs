@@ -72,14 +72,9 @@ async fn spawn_echo_udp_target()
     let sources_clone = Arc::clone(&sources);
     tokio::spawn(async move {
         let mut buf = vec![0u8; 4096];
-        loop {
-            match socket.recv_from(&mut buf).await {
-                Ok((n, src)) => {
-                    sources_clone.lock().await.insert(src);
-                    let _ = socket.send_to(&buf[..n], src).await;
-                },
-                Err(_) => break,
-            }
+        while let Ok((n, src)) = socket.recv_from(&mut buf).await {
+            sources_clone.lock().await.insert(src);
+            let _ = socket.send_to(&buf[..n], src).await;
         }
     });
     Ok((addr, sources))
