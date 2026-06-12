@@ -11,7 +11,7 @@ use tokio::{
     io::AsyncWriteExt,
     sync::{Notify, mpsc},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Failure modes returned by [`handle_tcp_binary_frame`]. [`run_tcp_relay`]
 /// matches on this to decide whether to send the client a "try again" close
@@ -618,7 +618,7 @@ where
                     "cross-protocol resume rejected: parked session is not SS"
                 )));
             };
-            info!(
+            debug!(
                 user = user.id(),
                 path = %route.path,
                 target = %parked.target_display,

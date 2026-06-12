@@ -6,7 +6,7 @@ use tokio::{
     net::UdpSocket,
     sync::{Notify, mpsc},
 };
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::{
     fwmark::apply_fwmark_if_needed,
@@ -57,7 +57,7 @@ where
     {
         match parked_kind {
             Parked::VlessUdpSingle(parked) => {
-                info!(
+                debug!(
                     user = user.label(),
                     path = %route.path,
                     target = %parked.target_display,
@@ -137,7 +137,7 @@ where
         }
     }
 
-    info!(user = user.label(), path = %route.path, target = %target_display, "vless udp target");
+    debug!(user = user.label(), path = %route.path, target = %target_display, "vless udp target");
 
     let resolved =
         match resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream)

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::{
     crypto::{AeadStreamEncryptor, UserKey},
@@ -136,7 +136,7 @@ async fn run_stream(
 
     let target_display = handshake.target.to_string();
     let connect_started = std::time::Instant::now();
-    info!(user = handshake.user.id(), target = %target_display, "ss raw-quic upstream connect");
+    debug!(user = handshake.user.id(), target = %target_display, "ss raw-quic upstream connect");
 
     let upstream_stream = match connect_tcp_target(
         ctx.services.tcp_server.dns_cache.as_ref(),
