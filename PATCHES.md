@@ -43,11 +43,13 @@ Logical changes carried by `h3-0.0.8.patch`:
 ## sockudo-ws (1.7.5)
 
 > **Note — crate yanked.** `sockudo-ws 1.7.5` was yanked from crates.io
-> (download returns `403 AccessDenied`), so the patch is regenerated against
-> the GitHub tag `v1.7.5` after rustfmt-normalising it to the crate's
-> published formatting — the git tree otherwise differs only in whitespace /
-> import order and in stripped `[[bin]]` / bench targets. The vendored copy
-> `vendor/sockudo-ws` remains the authoritative source.
+> (download returns `403 AccessDenied`), so the baseline is the GitHub tag
+> `v1.7.5`. The vendored `src/` is kept in the **upstream git formatting**
+> (not the crates.io-published reformatting), so `sockudo-ws-1.7.5.patch`
+> applies directly to a clean `git clone` of that tag — no rustfmt step. The
+> library `Cargo.toml` still drops the upstream `[[bin]]` / bench targets, as
+> a published library crate would; `rustfmt.toml` has `ignore = ["vendor"]`
+> so the tree no longer drifts to the project format.
 
 Logical changes carried by `sockudo-ws-1.7.5.patch`:
 
@@ -79,9 +81,8 @@ To rebuild the patch artifacts after changing vendored source:
   diff against a fresh `h3 0.0.8` from crates.io, e.g. via a throwaway git
   baseline, then `git diff vendor/h3` over the changed files.
   ```
-- **sockudo-ws** — rustfmt-normalise a clean `v1.7.5` GitHub checkout with the
-  workspace `rustfmt.toml`, then diff its `src/` against
-  `vendor/sockudo-ws/src`.
+- **sockudo-ws** — diff `vendor/sockudo-ws/src` against a clean `v1.7.5`
+  GitHub checkout's `src/` (both already in raw upstream formatting).
 
 Do not raise the upstream versions or drop `[patch.crates-io]` without a
 deliberate reason: the HTTP/3 WebSocket path depends on these patches.

@@ -57,7 +57,10 @@ pub fn validate_utf8(data: &[u8]) -> bool {
     }
 
     // For PowerPC with nightly, use custom SIMD implementation
-    #[cfg(all(any(target_arch = "powerpc", target_arch = "powerpc64"), feature = "nightly"))]
+    #[cfg(all(
+        any(target_arch = "powerpc", target_arch = "powerpc64"),
+        feature = "nightly"
+    ))]
     {
         return validate_utf8_powerpc(data);
     }
@@ -76,7 +79,10 @@ pub fn validate_utf8(data: &[u8]) -> bool {
         all(target_arch = "arm", target_feature = "neon"),
         target_arch = "wasm32",
         all(target_arch = "loongarch64", feature = "nightly"),
-        all(any(target_arch = "powerpc", target_arch = "powerpc64"), feature = "nightly"),
+        all(
+            any(target_arch = "powerpc", target_arch = "powerpc64"),
+            feature = "nightly"
+        ),
         all(target_arch = "s390x", feature = "nightly"),
     )))]
     {
@@ -248,7 +254,11 @@ fn validate_utf8_loongarch(data: &[u8]) -> bool {
     validate_utf8_scalar(data)
 }
 
-#[cfg(all(target_arch = "loongarch64", feature = "nightly", target_feature = "lsx"))]
+#[cfg(all(
+    target_arch = "loongarch64",
+    feature = "nightly",
+    target_feature = "lsx"
+))]
 #[target_feature(enable = "lsx")]
 unsafe fn validate_utf8_lsx(data: &[u8]) -> bool {
     use std::arch::loongarch64::*;
@@ -289,7 +299,11 @@ unsafe fn validate_utf8_lsx(data: &[u8]) -> bool {
     true
 }
 
-#[cfg(all(target_arch = "loongarch64", feature = "nightly", target_feature = "lasx"))]
+#[cfg(all(
+    target_arch = "loongarch64",
+    feature = "nightly",
+    target_feature = "lasx"
+))]
 #[target_feature(enable = "lasx")]
 unsafe fn validate_utf8_lasx(data: &[u8]) -> bool {
     // LASX processes 32 bytes at a time
@@ -328,7 +342,10 @@ unsafe fn validate_utf8_lasx(data: &[u8]) -> bool {
 // PowerPC AltiVec Implementation
 // ============================================================================
 
-#[cfg(all(any(target_arch = "powerpc", target_arch = "powerpc64"), feature = "nightly"))]
+#[cfg(all(
+    any(target_arch = "powerpc", target_arch = "powerpc64"),
+    feature = "nightly"
+))]
 fn validate_utf8_powerpc(data: &[u8]) -> bool {
     // For short inputs, use scalar validation
     if data.len() < 16 {
@@ -338,7 +355,10 @@ fn validate_utf8_powerpc(data: &[u8]) -> bool {
     unsafe { validate_utf8_altivec(data) }
 }
 
-#[cfg(all(any(target_arch = "powerpc", target_arch = "powerpc64"), feature = "nightly"))]
+#[cfg(all(
+    any(target_arch = "powerpc", target_arch = "powerpc64"),
+    feature = "nightly"
+))]
 #[target_feature(enable = "altivec")]
 unsafe fn validate_utf8_altivec(data: &[u8]) -> bool {
     #[cfg(target_arch = "powerpc")]
@@ -672,14 +692,22 @@ mod tests {
         // Test various lengths around SIMD boundaries (16, 32, 64 bytes)
         for len in [15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129] {
             let ascii = "a".repeat(len);
-            assert!(validate_utf8(ascii.as_bytes()), "Failed for ASCII length {}", len);
+            assert!(
+                validate_utf8(ascii.as_bytes()),
+                "Failed for ASCII length {}",
+                len
+            );
 
             // Mixed content
             if len >= 9 {
                 let prefix_len = (len - 9) / 2;
                 let suffix_len = len - 9 - prefix_len;
                 let mixed = format!("{}日本語{}", "a".repeat(prefix_len), "b".repeat(suffix_len));
-                assert!(validate_utf8(mixed.as_bytes()), "Failed for mixed length {}", len);
+                assert!(
+                    validate_utf8(mixed.as_bytes()),
+                    "Failed for mixed length {}",
+                    len
+                );
             }
         }
     }

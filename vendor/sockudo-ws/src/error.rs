@@ -105,7 +105,10 @@ impl CloseReason {
 
     /// Create a new close reason
     pub fn new(code: u16, reason: impl Into<String>) -> Self {
-        Self { code, reason: reason.into() }
+        Self {
+            code,
+            reason: reason.into(),
+        }
     }
 
     /// Check if the close code is valid per RFC 6455
@@ -301,7 +304,7 @@ impl fmt::Display for Error {
                 } else {
                     write!(f, "Connection closed")
                 }
-            },
+            }
             Error::InvalidCloseCode(code) => write!(f, "Invalid close code: {}", code),
             Error::Capacity(msg) => write!(f, "Capacity exceeded: {}", msg),
             Error::Compression(msg) => write!(f, "Compression error: {}", msg),
@@ -315,7 +318,7 @@ impl fmt::Display for Error {
             Error::QuicWrite(e) => write!(f, "QUIC write error: {}", e),
             Error::ExtendedConnectNotSupported => {
                 write!(f, "Extended CONNECT protocol not supported by server")
-            },
+            }
             Error::StreamReset => write!(f, "Stream was reset by peer"),
         }
     }
@@ -355,10 +358,10 @@ impl From<Error> for io::Error {
             Error::WouldBlock => io::Error::new(io::ErrorKind::WouldBlock, "would block"),
             Error::ConnectionReset => {
                 io::Error::new(io::ErrorKind::ConnectionReset, "connection reset")
-            },
+            }
             Error::ConnectionClosed => {
                 io::Error::new(io::ErrorKind::BrokenPipe, "connection closed")
-            },
+            }
             other => io::Error::other(other.to_string()),
         }
     }

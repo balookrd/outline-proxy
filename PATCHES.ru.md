@@ -43,11 +43,13 @@ vendored-копии.
 ## sockudo-ws (1.7.5)
 
 > **Примечание — crate yanked.** `sockudo-ws 1.7.5` снят (yanked) с crates.io
-> (скачивание возвращает `403 AccessDenied`), поэтому патч регенерирован
-> против GitHub-тега `v1.7.5` после нормализации rustfmt'ом к формату
-> публикации крейта — git-дерево отличается лишь whitespace / порядком
-> импортов и вырезанными `[[bin]]` / bench-таргетами. Источником истины
-> остаётся сама vendored-копия `vendor/sockudo-ws`.
+> (скачивание возвращает `403 AccessDenied`), поэтому baseline — GitHub-тег
+> `v1.7.5`. Vendored `src/` хранится в **upstream-форматировании git** (не в
+> переформатировании crates.io-publish), поэтому `sockudo-ws-1.7.5.patch`
+> применяется напрямую к чистому `git clone` этого тега — без шага rustfmt.
+> Library-`Cargo.toml` по-прежнему отбрасывает upstream `[[bin]]` /
+> bench-таргеты, как и опубликованный library-крейт; в `rustfmt.toml` стоит
+> `ignore = ["vendor"]`, так что дерево больше не дрейфует к проектному формату.
 
 Логические изменения в `sockudo-ws-1.7.5.patch`:
 
@@ -77,9 +79,8 @@ vendored-копии.
 - **h3** — сравнить vendored-копию с чистым upstream-checkout'ом: взять
   свежий `h3 0.0.8` с crates.io (например через одноразовый git-baseline) и
   сделать `git diff vendor/h3` по изменённым файлам.
-- **sockudo-ws** — нормализовать чистый GitHub-checkout `v1.7.5` rustfmt'ом с
-  workspace-овским `rustfmt.toml`, затем сделать diff его `src/` против
-  `vendor/sockudo-ws/src`.
+- **sockudo-ws** — сделать diff `vendor/sockudo-ws/src` против `src/` чистого
+  GitHub-checkout'а `v1.7.5` (оба уже в raw upstream-форматировании).
 
 Не поднимай upstream-версии и не убирай `[patch.crates-io]` без явной
 причины: HTTP/3 WebSocket-путь зависит от этих патчей.

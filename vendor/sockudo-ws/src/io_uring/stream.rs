@@ -115,7 +115,10 @@ impl UringStream {
                 read_pos: 0,
                 pending_read: None,
             },
-            write_state: WriteState { pending_write: None, bytes_written: 0 },
+            write_state: WriteState {
+                pending_write: None,
+                bytes_written: 0,
+            },
         }
     }
 
@@ -166,10 +169,16 @@ impl AsyncRead for UringStream {
         this.read_state.data_len = 0;
 
         // Take the buffer for the read operation
-        let read_buf = this.read_state.buffer.take().unwrap_or_else(|| vec![0u8; 64 * 1024]);
+        let read_buf = this
+            .read_state
+            .buffer
+            .take()
+            .unwrap_or_else(|| vec![0u8; 64 * 1024]);
 
         // Store waker for when operation completes
-        this.read_state.pending_read = Some(PendingOp { waker: Some(cx.waker().clone()) });
+        this.read_state.pending_read = Some(PendingOp {
+            waker: Some(cx.waker().clone()),
+        });
 
         let _stream = Rc::clone(&this.inner);
 
@@ -202,7 +211,9 @@ impl AsyncWrite for UringStream {
         }
 
         // Store waker
-        this.write_state.pending_write = Some(PendingOp { waker: Some(cx.waker().clone()) });
+        this.write_state.pending_write = Some(PendingOp {
+            waker: Some(cx.waker().clone()),
+        });
 
         // Similar to read - in practice, use tokio-uring's native methods
         Poll::Pending

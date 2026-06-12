@@ -101,7 +101,10 @@ impl Message {
     /// Check if this is a control message
     #[inline]
     pub fn is_control(&self) -> bool {
-        matches!(self, Message::Ping(_) | Message::Pong(_) | Message::Close(_))
+        matches!(
+            self,
+            Message::Ping(_) | Message::Pong(_) | Message::Close(_)
+        )
     }
 
     /// Get message as text (returns None for non-text messages)
@@ -114,7 +117,7 @@ impl Message {
             Message::Text(b) => {
                 // SAFETY: Text messages are UTF-8 validated during parsing
                 Some(unsafe { std::str::from_utf8_unchecked(b) })
-            },
+            }
             _ => None,
         }
     }
@@ -139,7 +142,7 @@ impl Message {
             Message::Text(b) => {
                 // SAFETY: Text messages are UTF-8 validated during parsing
                 Some(unsafe { String::from_utf8_unchecked(b.to_vec()) })
-            },
+            }
             _ => None,
         }
     }
@@ -282,7 +285,7 @@ impl Protocol {
                     if let Some(msg) = self.handle_frame(frame)? {
                         messages.push(msg);
                     }
-                },
+                }
                 None => break,
             }
         }
@@ -400,7 +403,7 @@ impl Protocol {
                 }
                 // Zero-copy: just return the Bytes directly (already UTF-8 validated)
                 Ok(Some(Message::Text(data)))
-            },
+            }
             OpCode::Binary => Ok(Some(Message::Binary(data))),
             _ => Err(Error::Protocol("invalid fragment opcode")),
         }
@@ -438,11 +441,11 @@ impl Protocol {
             State::Open => {
                 self.state = State::CloseReceived;
                 self.pending_close = reason.clone();
-            },
+            }
             State::CloseSent => {
                 self.state = State::Closed;
-            },
-            _ => {},
+            }
+            _ => {}
         }
 
         Ok(Some(Message::Close(reason)))
@@ -469,16 +472,16 @@ impl Protocol {
         match msg {
             Message::Text(b) => {
                 encode_frame(buf, OpCode::Text, b, true, mask);
-            },
+            }
             Message::Binary(b) => {
                 encode_frame(buf, OpCode::Binary, b, true, mask);
-            },
+            }
             Message::Ping(b) => {
                 encode_frame(buf, OpCode::Ping, b, true, mask);
-            },
+            }
             Message::Pong(b) => {
                 encode_frame(buf, OpCode::Pong, b, true, mask);
-            },
+            }
             Message::Close(reason) => {
                 if self.state == State::Open {
                     self.state = State::CloseSent;
@@ -494,7 +497,7 @@ impl Protocol {
                 };
 
                 encode_frame(buf, OpCode::Close, &payload, true, mask);
-            },
+            }
         }
 
         Ok(())
@@ -624,13 +627,13 @@ impl CompressedProtocol {
                     } else if DEBUG {
                         eprintln!("[PROTOCOL] No message from handle_frame (fragment or control)");
                     }
-                },
+                }
                 None => {
                     if DEBUG {
                         eprintln!("[PROTOCOL] Parser returned None, breaking loop");
                     }
                     break;
-                },
+                }
             }
         }
 
@@ -673,7 +676,8 @@ impl CompressedProtocol {
                 );
             }
             let payload = if compressed {
-                self.deflate.decompress(&frame.payload, self.inner.max_message_size)?
+                self.deflate
+                    .decompress(&frame.payload, self.inner.max_message_size)?
             } else {
                 frame.payload
             };
@@ -716,7 +720,8 @@ impl CompressedProtocol {
         if frame.header.fin {
             // Complete message in one frame
             let payload = if compressed {
-                self.deflate.decompress(&frame.payload, self.inner.max_message_size)?
+                self.deflate
+                    .decompress(&frame.payload, self.inner.max_message_size)?
             } else {
                 frame.payload
             };
@@ -773,7 +778,7 @@ impl CompressedProtocol {
                 }
                 // Zero-copy: just return the Bytes directly (already UTF-8 validated)
                 Ok(Some(Message::Text(data)))
-            },
+            }
             OpCode::Binary => Ok(Some(Message::Binary(data))),
             _ => Err(Error::Protocol("invalid fragment opcode")),
         }
@@ -795,7 +800,7 @@ impl CompressedProtocol {
                 } else {
                     encode_frame(buf, OpCode::Text, b, true, mask);
                 }
-            },
+            }
             Message::Binary(b) => {
                 // Try to compress
                 if let Some(compressed) = self.deflate.compress(b)? {
@@ -803,17 +808,17 @@ impl CompressedProtocol {
                 } else {
                     encode_frame(buf, OpCode::Binary, b, true, mask);
                 }
-            },
+            }
             Message::Ping(b) => {
                 // Control frames are never compressed
                 encode_frame(buf, OpCode::Ping, b, true, mask);
-            },
+            }
             Message::Pong(b) => {
                 encode_frame(buf, OpCode::Pong, b, true, mask);
-            },
+            }
             Message::Close(_) => {
                 self.inner.encode_message(msg, buf)?;
-            },
+            }
         }
 
         Ok(())
@@ -852,7 +857,10 @@ impl CompressedProtocol {
         };
 
         // Create fresh writer protocol (encoder state)
-        let writer = CompressedWriterProtocol { role, encoder: self.deflate.encoder };
+        let writer = CompressedWriterProtocol {
+            role,
+            encoder: self.deflate.encoder,
+        };
 
         (reader, writer)
     }
@@ -933,7 +941,7 @@ impl CompressedReaderProtocol {
                     if let Some(msg) = self.handle_frame(frame)? {
                         messages.push(msg);
                     }
-                },
+                }
                 None => break,
             }
         }
@@ -963,7 +971,8 @@ impl CompressedReaderProtocol {
 
         if frame.header.fin {
             let payload = if compressed {
-                self.decoder.decompress(&frame.payload, self.max_message_size)?
+                self.decoder
+                    .decompress(&frame.payload, self.max_message_size)?
             } else {
                 frame.payload
             };
@@ -987,7 +996,8 @@ impl CompressedReaderProtocol {
 
         if frame.header.fin {
             let payload = if compressed {
-                self.decoder.decompress(&frame.payload, self.max_message_size)?
+                self.decoder
+                    .decompress(&frame.payload, self.max_message_size)?
             } else {
                 frame.payload
             };
@@ -1038,7 +1048,8 @@ impl CompressedReaderProtocol {
 
         let data = if self.fragment_compressed {
             self.fragment_compressed = false;
-            self.decoder.decompress(&compressed_data, self.max_message_size)?
+            self.decoder
+                .decompress(&compressed_data, self.max_message_size)?
         } else {
             compressed_data
         };
@@ -1049,7 +1060,7 @@ impl CompressedReaderProtocol {
                     return Err(Error::InvalidUtf8);
                 }
                 Ok(Some(Message::Text(data)))
-            },
+            }
             OpCode::Binary => Ok(Some(Message::Binary(data))),
             _ => Err(Error::Protocol("invalid fragment opcode")),
         }
@@ -1139,20 +1150,20 @@ impl CompressedWriterProtocol {
                 } else {
                     encode_frame(buf, OpCode::Text, b, true, mask);
                 }
-            },
+            }
             Message::Binary(b) => {
                 if let Some(compressed) = self.encoder.compress(b)? {
                     encode_frame_with_rsv(buf, OpCode::Binary, &compressed, true, mask, true);
                 } else {
                     encode_frame(buf, OpCode::Binary, b, true, mask);
                 }
-            },
+            }
             Message::Ping(b) => {
                 encode_frame(buf, OpCode::Ping, b, true, mask);
-            },
+            }
             Message::Pong(b) => {
                 encode_frame(buf, OpCode::Pong, b, true, mask);
-            },
+            }
             Message::Close(reason) => {
                 let payload = if let Some(r) = reason {
                     let mut p = BytesMut::with_capacity(2 + r.reason.len());
@@ -1163,7 +1174,7 @@ impl CompressedWriterProtocol {
                     Bytes::new()
                 };
                 encode_frame(buf, OpCode::Close, &payload, true, mask);
-            },
+            }
         }
 
         Ok(())
@@ -1251,7 +1262,9 @@ mod tests {
         let mut protocol = Protocol::new(Role::Server, 1024 * 1024, 64 * 1024 * 1024);
         let mut buf = BytesMut::new();
 
-        protocol.encode_message(&Message::text("test"), &mut buf).unwrap();
+        protocol
+            .encode_message(&Message::text("test"), &mut buf)
+            .unwrap();
 
         assert_eq!(buf[0], 0x81); // FIN + Text
         assert_eq!(buf[1], 0x04); // Length 4 (no mask for server)

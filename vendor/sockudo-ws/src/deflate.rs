@@ -88,7 +88,7 @@ impl DeflateConfig {
                         ));
                     }
                     config.server_no_context_takeover = true;
-                },
+                }
                 "client_no_context_takeover" => {
                     if value.is_some() {
                         return Err(Error::HandshakeFailed(
@@ -99,7 +99,7 @@ impl DeflateConfig {
                     // When client uses no_context_takeover, server should too
                     // to ensure decompression works correctly on client side
                     config.server_no_context_takeover = true;
-                },
+                }
                 "server_max_window_bits" => {
                     if let Some(v) = value {
                         let bits: u8 = v.parse().map_err(|_| {
@@ -112,7 +112,7 @@ impl DeflateConfig {
                         }
                         config.server_max_window_bits = bits;
                     }
-                },
+                }
                 "client_max_window_bits" => {
                     if let Some(v) = value {
                         let bits: u8 = v.parse().map_err(|_| {
@@ -126,10 +126,12 @@ impl DeflateConfig {
                         config.client_max_window_bits = bits;
                     }
                     // If no value, client just indicates support
-                },
+                }
                 _ => {
-                    return Err(Error::HandshakeFailed("unknown permessage-deflate parameter"));
-                },
+                    return Err(Error::HandshakeFailed(
+                        "unknown permessage-deflate parameter",
+                    ));
+                }
             }
         }
 
@@ -147,10 +149,16 @@ impl DeflateConfig {
             parts.push("client_no_context_takeover".to_string());
         }
         if self.server_max_window_bits < MAX_WINDOW_BITS {
-            parts.push(format!("server_max_window_bits={}", self.server_max_window_bits));
+            parts.push(format!(
+                "server_max_window_bits={}",
+                self.server_max_window_bits
+            ));
         }
         if self.client_max_window_bits < MAX_WINDOW_BITS {
-            parts.push(format!("client_max_window_bits={}", self.client_max_window_bits));
+            parts.push(format!(
+                "client_max_window_bits={}",
+                self.client_max_window_bits
+            ));
         }
 
         parts.join("; ")
@@ -210,7 +218,9 @@ impl DeflateEncoder {
         loop {
             iterations += 1;
             if iterations > 100_000 {
-                return Err(Error::Compression("compression took too many iterations".into()));
+                return Err(Error::Compression(
+                    "compression took too many iterations".into(),
+                ));
             }
 
             // Ensure we have space in output buffer
@@ -256,7 +266,7 @@ impl DeflateEncoder {
                     if total_in >= data.len() {
                         break;
                     }
-                },
+                }
                 Status::StreamEnd => break,
             }
         }
@@ -323,7 +333,9 @@ impl DeflateDecoder {
             iterations += 1;
             // Safety check to prevent infinite loops
             if iterations > 100_000 {
-                return Err(Error::Compression("decompression took too many iterations".into()));
+                return Err(Error::Compression(
+                    "decompression took too many iterations".into(),
+                ));
             }
 
             // Check size limit
@@ -377,11 +389,11 @@ impl DeflateDecoder {
                     if total_in >= input.len() {
                         break;
                     }
-                },
+                }
                 Status::StreamEnd => break,
                 Status::BufError => {
                     // Need more output space - will be handled at top of loop
-                },
+                }
             }
         }
 
@@ -413,10 +425,16 @@ impl DeflateContext {
             config.compression_level,
             config.compression_threshold,
         );
-        let decoder =
-            DeflateDecoder::new(config.client_max_window_bits, config.client_no_context_takeover);
+        let decoder = DeflateDecoder::new(
+            config.client_max_window_bits,
+            config.client_no_context_takeover,
+        );
 
-        Self { encoder, decoder, config }
+        Self {
+            encoder,
+            decoder,
+            config,
+        }
     }
 
     /// Create context for client role
@@ -427,10 +445,16 @@ impl DeflateContext {
             config.compression_level,
             config.compression_threshold,
         );
-        let decoder =
-            DeflateDecoder::new(config.server_max_window_bits, config.server_no_context_takeover);
+        let decoder = DeflateDecoder::new(
+            config.server_max_window_bits,
+            config.server_no_context_takeover,
+        );
 
-        Self { encoder, decoder, config }
+        Self {
+            encoder,
+            decoder,
+            config,
+        }
     }
 
     /// Compress a message if beneficial
@@ -580,8 +604,10 @@ mod tests {
 
     #[test]
     fn test_config_from_params() {
-        let params =
-            vec![("server_no_context_takeover", None), ("client_max_window_bits", Some("12"))];
+        let params = vec![
+            ("server_no_context_takeover", None),
+            ("client_max_window_bits", Some("12")),
+        ];
 
         let config = DeflateConfig::from_params(&params).unwrap();
         assert!(config.server_no_context_takeover);
