@@ -672,13 +672,14 @@ where
             // See `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2).
             if state.symmetric_replay_requested {
                 use crate::server::resumption::downlink_ring::ReplayOutcome;
+                use outline_wire::resume::downlink_replay;
                 let (flags, payload, ring_diag) = match parked.downlink_ring.as_ref() {
                     None => {
                         // The session was parked from a path that did
                         // not run the v2 ring (e.g. operator enabled
                         // v2 mid-session or the prior carrier did not
                         // capture). Honest answer is TRUNCATED.
-                        (0x01u8, Vec::new(), None)
+                        (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), None)
                     },
                     Some(ring) => {
                         let guard = ring.lock();
@@ -686,8 +687,12 @@ where
                         let outcome = guard.replay_from(state.client_acked_offset_request);
                         drop(guard);
                         match outcome {
-                            ReplayOutcome::Available(bytes) => (0x00u8, bytes, Some(diag)),
-                            ReplayOutcome::Truncated => (0x01u8, Vec::new(), Some(diag)),
+                            ReplayOutcome::Available(bytes) => {
+                                (downlink_replay::FLAGS_NONE, bytes, Some(diag))
+                            },
+                            ReplayOutcome::Truncated => {
+                                (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), Some(diag))
+                            },
                             ReplayOutcome::OffsetAhead => {
                                 warn!(
                                     user = user.id(),
@@ -696,22 +701,20 @@ where
                                     "v2 client claims more downstream bytes than server emitted; \
                                      treating as truncated"
                                 );
-                                (0x01u8, Vec::new(), Some(diag))
+                                (downlink_replay::FLAG_REPLAY_TRUNCATED, Vec::new(), Some(diag))
                             },
                         }
                     },
                 };
                 let payload_len = payload.len() as u64;
-                let truncated = (flags & 0x01) != 0;
+                let truncated = (flags & downlink_replay::FLAG_REPLAY_TRUNCATED) != 0;
                 server.metrics.record_orphan_downlink_replay_bytes("tcp", payload_len);
                 if truncated {
                     server.metrics.record_orphan_downlink_replay_truncated("tcp");
                 }
-                let mut frame = Vec::with_capacity(14 + payload.len());
-                frame.extend_from_slice(b"ORDR");
-                frame.push(0x01); // version
-                frame.push(flags);
-                frame.extend_from_slice(&payload_len.to_be_bytes());
+                let mut frame =
+                    Vec::with_capacity(downlink_replay::FRAME_HEADER_LEN_V1 + payload.len());
+                frame.extend_from_slice(&downlink_replay::build_v1_header(flags, payload_len));
                 frame.extend_from_slice(&payload);
                 let mut out = bytes::BytesMut::new();
                 encryptor
