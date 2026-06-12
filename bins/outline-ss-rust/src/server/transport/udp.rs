@@ -9,10 +9,10 @@ use axum::extract::ws::WebSocket;
 use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use parking_lot::Mutex;
-use sockudo_ws::{Http3 as H3Transport, Stream as H3Stream, WebSocketStream as H3WebSocketStream};
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, info, warn};
 
+use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::{
     crypto::{
         CryptoError, SessionKeyCache, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet,

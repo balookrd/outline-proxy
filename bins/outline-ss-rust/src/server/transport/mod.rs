@@ -19,6 +19,7 @@ use tracing::{debug, warn};
 
 use crate::metrics::{AppProtocol, DisconnectReason, Metrics, Transport, WebSocketSessionGuard};
 
+use super::h3::vendored::H3WsError;
 use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
 
@@ -370,7 +371,7 @@ fn classify_cause(cause: &(dyn std::error::Error + 'static)) -> Option<BenignClo
         return classify_h3_stream(h3);
     }
 
-    if let Some(sw) = cause.downcast_ref::<sockudo_ws::Error>() {
+    if let Some(sw) = cause.downcast_ref::<H3WsError>() {
         return classify_sockudo(sw);
     }
     None
@@ -446,12 +447,10 @@ fn classify_h3_stream(err: &h3::error::StreamError) -> Option<BenignClose> {
 // display string. Every other sockudo-ws variant carries a typed source that
 // `classify_cause` will have already visited via the anyhow cause chain, so we
 // only handle the stringy h3 case here.
-fn classify_sockudo(err: &sockudo_ws::Error) -> Option<BenignClose> {
+fn classify_sockudo(err: &H3WsError) -> Option<BenignClose> {
     match err {
-        sockudo_ws::Error::ConnectionClosed | sockudo_ws::Error::ConnectionReset => {
-            Some(BenignClose::PeerAbort)
-        },
-        sockudo_ws::Error::Http3(msg) => classify_stringified_h3(msg),
+        H3WsError::ConnectionClosed | H3WsError::ConnectionReset => Some(BenignClose::PeerAbort),
+        H3WsError::Http3(msg) => classify_stringified_h3(msg),
         _ => None,
     }
 }

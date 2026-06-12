@@ -3,12 +3,15 @@
 // is free of scattered #[cfg(feature = "h3")] annotations.
 //
 // Layout:
-//   mod.rs  — stream adapter types (`H3WsStream`, `H3ConnectionGuard`),
+//   mod.rs   — stream adapter types (`H3WsStream`, `H3ConnectionGuard`),
 //              message-format conversion helpers, URI builder.
-//   shared  — connection infrastructure: QUIC/TLS configs, shared endpoints,
+//   shared   — connection infrastructure: QUIC/TLS configs, shared endpoints,
 //              per-key connect locks, shared-connection cache, connect / gc fns.
+//   vendored — gate over the patched `h3` / `sockudo-ws` API surface; every
+//              direct sockudo-ws reference lives there (CI-enforced).
 
 mod shared;
+mod vendored;
 
 pub(crate) use shared::{connect_websocket_h3, gc_shared_h3_connections};
 
@@ -19,16 +22,11 @@ use bytes::Bytes;
 use futures_util::{Sink, Stream};
 use http::Uri;
 use pin_project_lite::pin_project;
-use sockudo_ws::{
-    Http3 as SockudoHttp3, Message as SockudoMessage, Stream as SockudoTransportStream,
-    WebSocketStream as SockudoWebSocketStream, error::CloseReason as SockudoCloseReason,
-};
 use tokio_tungstenite::tungstenite::protocol::frame::{CloseFrame, Utf8Bytes, coding::CloseCode};
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 
 use shared::SharedH3Connection;
-
-type RawH3WsStream = SockudoWebSocketStream<SockudoTransportStream<SockudoHttp3>>;
+use vendored::{RawH3WsStream, SockudoCloseReason, SockudoError, SockudoMessage};
 
 // ── H3WsStream ────────────────────────────────────────────────────────────────
 
@@ -53,7 +51,7 @@ impl H3WsStream {
 }
 
 impl Stream for H3WsStream {
-    type Item = Result<SockudoMessage, sockudo_ws::Error>;
+    type Item = Result<SockudoMessage, SockudoError>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -64,7 +62,7 @@ impl Stream for H3WsStream {
 }
 
 impl Sink<SockudoMessage> for H3WsStream {
-    type Error = sockudo_ws::Error;
+    type Error = SockudoError;
 
     fn poll_ready(
         self: std::pin::Pin<&mut Self>,
@@ -148,7 +146,7 @@ pub(crate) fn tungstenite_to_sockudo_message(message: Message) -> Result<Sockudo
     }
 }
 
-pub(crate) fn sockudo_to_ws_error(error: sockudo_ws::Error) -> WsError {
+pub(crate) fn sockudo_to_ws_error(error: SockudoError) -> WsError {
     WsError::Io(std::io::Error::other(error.to_string()))
 }
 

@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use sockudo_ws::{Http3 as H3Transport, WebSocketServer as H3WebSocketServer};
 use tokio::net::{TcpListener, UdpSocket};
 
 use crate::config::Config;
 
 use super::h3::build_h3_server;
+use super::h3::vendored::{H3Transport, H3WebSocketServer};
 
 pub(super) struct Bound {
     pub(super) listener: Option<TcpListener>,
