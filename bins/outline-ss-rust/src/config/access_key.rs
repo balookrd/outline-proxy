@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
+use outline_wire::xhttp::XhttpSubmode;
 
 use super::{AccessKeyConfig, Config, UserEntry};
 
@@ -80,58 +81,38 @@ fn push_vless_artifacts(
             ak,
             user,
             public_host,
-            XhttpMode::PacketUp,
+            XhttpSubmode::PacketUp,
         )?);
         artifacts.push(build_vless_xhttp_user_artifact(
             config,
             ak,
             user,
             public_host,
-            XhttpMode::StreamOne,
+            XhttpSubmode::StreamOne,
         )?);
     }
     Ok(())
 }
 
-/// Wire-mode selector for the XHTTP carrier. Picked client-side via
-/// `?mode=...` in the URL; the generator emits one artifact per
-/// variant so the user gets both URIs out of the box.
-#[derive(Debug, Clone, Copy)]
-enum XhttpMode {
-    PacketUp,
-    StreamOne,
+/// Suffix appended to the per-user filename and URI fragment.
+/// Empty for `packet-up` so existing access-key URLs keep working
+/// after the upgrade — only the new `stream-one` artifact gets a
+/// disambiguating tag.
+fn xhttp_artifact_suffix(mode: XhttpSubmode) -> &'static str {
+    match mode {
+        XhttpSubmode::PacketUp => "",
+        XhttpSubmode::StreamOne => "-stream-one",
+    }
 }
 
-impl XhttpMode {
-    /// Wire-form `mode=` query value. Matches what the server's
-    /// `XhttpSubmode::parse` accepts on the request URL.
-    fn query_value(self) -> &'static str {
-        match self {
-            Self::PacketUp => "packet-up",
-            Self::StreamOne => "stream-one",
-        }
-    }
-
-    /// Suffix appended to the per-user filename and URI fragment.
-    /// Empty for `packet-up` so existing access-key URLs keep working
-    /// after the upgrade — only the new `stream-one` artifact gets a
-    /// disambiguating tag.
-    fn artifact_suffix(self) -> &'static str {
-        match self {
-            Self::PacketUp => "",
-            Self::StreamOne => "-stream-one",
-        }
-    }
-
-    /// ALPN-list flavour to advertise on this mode's URI. Per-mode
-    /// because `packet-up` works on h1 (each packet is its own
-    /// request/response — no full-duplex needed) while `stream-one`
-    /// returns 505 on h1, so the two modes pin different trailers.
-    fn alpn_carrier(self) -> AlpnCarrier {
-        match self {
-            Self::PacketUp => AlpnCarrier::XhttpPacketUp,
-            Self::StreamOne => AlpnCarrier::XhttpStreamOne,
-        }
+/// ALPN-list flavour to advertise on this mode's URI. Per-mode
+/// because `packet-up` works on h1 (each packet is its own
+/// request/response — no full-duplex needed) while `stream-one`
+/// returns 505 on h1, so the two modes pin different trailers.
+fn xhttp_alpn_carrier(mode: XhttpSubmode) -> AlpnCarrier {
+    match mode {
+        XhttpSubmode::PacketUp => AlpnCarrier::XhttpPacketUp,
+        XhttpSubmode::StreamOne => AlpnCarrier::XhttpStreamOne,
     }
 }
 
@@ -307,7 +288,7 @@ fn build_vless_xhttp_user_artifact(
     ak: &AccessKeyConfig,
     user: &UserEntry,
     public_host: &str,
-    mode: XhttpMode,
+    mode: XhttpSubmode,
 ) -> Result<AccessKeyArtifact> {
     let vless_id = user.vless_id.as_deref().expect("checked by caller");
     let xhttp_path = user
@@ -316,7 +297,7 @@ fn build_vless_xhttp_user_artifact(
     let config_filename = format!(
         "{}-vless-xhttp{}{}",
         sanitize_filename(&user.id),
-        mode.artifact_suffix(),
+        xhttp_artifact_suffix(mode),
         ak.access_key_file_extension,
     );
     let config_url = ak
@@ -324,7 +305,7 @@ fn build_vless_xhttp_user_artifact(
         .as_deref()
         .map(|base| join_url(base, &config_filename))
         .transpose()?;
-    let alpn = preferred_alpn_list(config, &ak.public_scheme, mode.alpn_carrier());
+    let alpn = preferred_alpn_list(config, &ak.public_scheme, xhttp_alpn_carrier(mode));
     let vless_url = vless_xhttp_uri(
         vless_id,
         public_host,
@@ -470,7 +451,7 @@ fn vless_xhttp_uri(
     scheme: &str,
     path: &str,
     label: &str,
-    mode: XhttpMode,
+    mode: XhttpSubmode,
     alpn: Option<&str>,
 ) -> String {
     // XHTTP requires TLS when carried over h2; mirror the WS URI's
@@ -479,7 +460,8 @@ fn vless_xhttp_uri(
     // `vless://...` shape that survives copy/paste.
     let security = if scheme == "wss" { "tls" } else { "none" };
     let default_port = if scheme == "wss" { 443 } else { 80 };
-    let fragment = format!("{}:{label}-xhttp{}", host_short_label(host), mode.artifact_suffix());
+    let fragment =
+        format!("{}:{label}-xhttp{}", host_short_label(host), xhttp_artifact_suffix(mode));
     let alpn_segment = alpn
         .map(|value| format!("&alpn={}", percent_encode_query_value(value)))
         .unwrap_or_default();
@@ -487,7 +469,7 @@ fn vless_xhttp_uri(
         "vless://{}@{}?type=xhttp&mode={}&security={security}{alpn_segment}&path={}&encryption=none#{}",
         id,
         vless_authority(host, default_port),
-        mode.query_value(),
+        mode.as_wire_str(),
         percent_encode_query_value(&normalize_path(path)),
         percent_encode_fragment(&fragment),
     )

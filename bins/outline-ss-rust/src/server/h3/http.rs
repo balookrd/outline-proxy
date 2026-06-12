@@ -15,7 +15,7 @@ use super::super::{
     },
     state::{empty_transport_route, empty_vless_transport_route},
     transport::{
-        ResumeContext, UdpRouteCtx, VlessWsRouteCtx, WsTcpRouteCtx, finish_ws_session,
+        ResumeContext, UdpRouteCtx, VlessWsRouteCtx, WsTcpRouteCtx, XhttpH3Ctx, finish_ws_session,
         generate_anonymous_xhttp_session_id, h3_fallback_handle, handle_tcp_h3_connection,
         handle_udp_h3_connection, handle_vless_h3_connection, handle_xhttp_h3_request,
         is_normal_h3_shutdown,
@@ -113,16 +113,14 @@ async fn handle_h3_request(
             // mirrors what `xhttp_handler_no_session` does on the
             // axum side.
             let session_id = session_id.unwrap_or_else(generate_anonymous_xhttp_session_id);
-            return handle_xhttp_h3_request(
-                request,
-                stream,
-                Arc::clone(&ctx.xhttp_registry),
-                Arc::clone(&ctx.vless_server),
+            let xhttp_ctx = XhttpH3Ctx {
+                registry: Arc::clone(&ctx.xhttp_registry),
+                vless_server: Arc::clone(&ctx.vless_server),
                 route,
-                base,
-                session_id,
-                path_seq,
-                peer_addr,
+                base_path: base,
+            };
+            return handle_xhttp_h3_request(
+                request, stream, xhttp_ctx, session_id, path_seq, peer_addr,
             )
             .await;
         }

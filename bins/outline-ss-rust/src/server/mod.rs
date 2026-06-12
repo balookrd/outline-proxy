@@ -63,7 +63,7 @@ use self::{
         build_app, build_metrics_app, ensure_rustls_provider_installed, serve_metrics_listener,
         serve_tcp_listener,
     },
-    h3::{serve_h3_server, spawn_h3_cert_reloader},
+    h3::{H3ServeCtx, serve_h3_server, spawn_h3_cert_reloader},
     setup::{describe_user_routes, describe_vless_user_routes, describe_vless_xhttp_user_routes},
     shadowsocks::{SsTcpCtx, SsUdpCtx, serve_ss_tcp_listener, serve_ss_udp_socket},
     shutdown::{shutdown_channel, wait_for_shutdown_signal},
@@ -192,14 +192,16 @@ pub async fn run(config: Config) -> Result<()> {
         tasks.spawn(async move {
             serve_h3_server(
                 h3_server,
-                routes,
-                services,
-                auth,
-                alpn,
-                raw_vless_users,
-                raw_vless_candidates,
-                raw_ss_users,
-                h3_fallback,
+                H3ServeCtx {
+                    routes,
+                    services,
+                    auth,
+                    alpn,
+                    raw_vless_users,
+                    raw_vless_candidates,
+                    raw_ss_users,
+                    http_fallback: h3_fallback,
+                },
                 shutdown,
             )
             .await

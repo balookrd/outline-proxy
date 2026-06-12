@@ -1,41 +1,19 @@
-//! `X-Outline-*` session-resumption header vocabulary: request-side
-//! negotiation parsing ([`ResumeContext`]) and the response-side echo
+//! `X-Outline-*` session-resumption negotiation: request-side parsing
+//! ([`ResumeContext`]) and the response-side echo
 //! ([`ResumeResponseEcho`]). Shared by every transport that negotiates
 //! resumption — WS upgrades (h1/h2), Extended CONNECT (h3), and the
-//! XHTTP handlers — so the header names and the negotiation gates live
-//! in exactly one place.
+//! XHTTP handlers — so the negotiation gates live in exactly one
+//! place. The header names themselves are wire vocabulary shared with
+//! the client and live in `outline_wire::resume`.
 
 use tracing::debug;
 
-use super::super::resumption::{OrphanRegistry, SessionId};
+pub(in crate::server) use outline_wire::resume::{
+    ACK_PREFIX_HEADER, DOWN_ACKED_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
+    SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER,
+};
 
-/// Lower-cased name of the request header carrying the Session ID a
-/// client wishes to resume.
-pub(in crate::server) const RESUME_REQUEST_HEADER: &str = "x-outline-resume";
-/// Lower-cased name of the request header advertising client support for
-/// session resumption.
-pub(in crate::server) const RESUME_CAPABLE_HEADER: &str = "x-outline-resume-capable";
-/// Lower-cased name of the response header carrying the Session ID the
-/// server has assigned to the just-established session.
-pub(in crate::server) const SESSION_RESPONSE_HEADER: &str = "x-outline-session";
-/// Lower-cased name of the request **and** response header used to
-/// negotiate the Ack-Prefix Protocol (v1). Client sets `1` to advertise
-/// support; server echoes `1` to confirm support. See
-/// `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1).
-pub(in crate::server) const ACK_PREFIX_HEADER: &str = "x-outline-resume-ack-prefix";
-/// Lower-cased name of the request **and** response header used to
-/// negotiate the Symmetric Downlink Replay (v2) capability. Client
-/// sets `1` to advertise support; server echoes `1` to confirm — but
-/// only when v1 was also negotiated AND server-side
-/// `downlink_buffer_bytes > 0`. See `docs/SESSION-RESUMPTION.md`
-/// § Symmetric Downlink Replay (v2).
-pub(in crate::server) const SYMMETRIC_REPLAY_HEADER: &str = "x-outline-resume-symmetric-replay";
-/// Lower-cased name of the request-only header carrying the client's
-/// last-acked downstream offset for v2 resume hits. Decimal `u64`,
-/// max `2^63 − 1`; absent or malformed values are treated as `0` per
-/// spec. See `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay
-/// (v2).
-pub(in crate::server) const DOWN_ACKED_HEADER: &str = "x-outline-resume-down-acked";
+use super::super::resumption::{OrphanRegistry, SessionId};
 
 /// Per-request resumption negotiation state, parsed once at WS Upgrade
 /// time from `X-Outline-*` headers and threaded into the relay loop.

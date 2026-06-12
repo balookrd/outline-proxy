@@ -20,11 +20,11 @@ members = [
 
 # Shared lint policy for our own packages (each opts in via
 # `[lints] workspace = true`; the vendored sockudo-ws deliberately does not).
-# The two allows are deliberate: wide protocol-path functions and verbose
-# generic types are tracked as god-object refactor work, not lint noise —
-# everything else from clippy's default set is expected to stay at zero.
+# The remaining allow is deliberate: the verbose generic types around the
+# WsSocket carrier abstraction are tracked as refactor work, not lint noise.
+# `too_many_arguments` is enforced at the default threshold — the few
+# remaining wide constructors carry targeted `#[allow]`s at the definition.
 [workspace.lints.clippy]
-too_many_arguments = "allow"
 type_complexity = "allow"
 
 # Shared release profile. lto="fat" + single codegen unit + panic=abort match

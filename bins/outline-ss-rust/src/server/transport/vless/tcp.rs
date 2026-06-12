@@ -217,7 +217,7 @@ where
         // frame and continue treating the next bytes as application
         // payload.
         if state.ack_prefix_requested {
-            let payload = crate::server::resumption::ack_prefix::build_v1_payload(
+            let payload = outline_wire::resume::build_v1_payload(
                 state.upstream_bytes_acked.load(std::sync::atomic::Ordering::Relaxed),
             );
             let make_binary = outbound.make_binary;
@@ -514,6 +514,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn relay_vless_upstream_to_client<Msg>(
     mut upstream_reader: tokio::net::tcp::OwnedReadHalf,
     tx: mpsc::Sender<Msg>,

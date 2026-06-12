@@ -80,7 +80,6 @@ use tokio::net::{TcpStream, UdpSocket};
 // without taking a direct dependency on the inner module path.
 pub use resumption::{ResumeCache, SessionId, global_resume_cache};
 
-pub mod ack_prefix;
 #[cfg(feature = "cert-check")]
 pub mod cert_check;
 pub mod collections;
@@ -150,7 +149,7 @@ pub(crate) async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) ->
 // Config data types reused by callers that construct transport parameters
 // (uplink config loader, CLI args, main-binary schema).
 pub use config::{ServerAddr, TransportMode};
-pub use xhttp::XhttpSubmode;
+pub use xhttp::{XhttpSubmode, submode_from_url};
 
 // Test-only TLS knob: cross-repo integration tests in `outline-ss-rust`
 // (which spin up an in-process self-signed server) call this before

@@ -12,10 +12,12 @@
 //! callers control the clock source.
 
 pub mod cipher;
+pub mod resume;
 pub mod ss2022;
 pub mod target;
 pub mod vless;
 pub mod vless_mux;
+pub mod xhttp;
 
 pub use cipher::{
     CipherKind, MasterKeyError, SS_SUBKEY_INFO, UnknownCipherError, evp_bytes_to_key,

@@ -27,8 +27,8 @@ use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
 use super::super::{
-    DnsCache, Services, SsUdpCtx, UdpServices, build_app, build_user_routes, build_users,
-    serve_h3_server, serve_ss_udp_socket,
+    DnsCache, H3ServeCtx, Services, SsUdpCtx, UdpServices, build_app, build_user_routes,
+    build_users, serve_h3_server, serve_ss_udp_socket,
 };
 use super::{
     build_test_state, recv_decrypted_udp_response, sample_config, send_encrypted_udp_request,
@@ -247,16 +247,22 @@ async fn websocket_rfc9220_http3_udp_reuses_nat_entry_after_client_reconnect() -
     let server = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(
-                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-            ),
-            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: std::sync::Arc::from(
+                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+                ),
+                raw_vless_candidates: std::sync::Arc::from(
+                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
+                ),
+                raw_ss_users: std::sync::Arc::from(
+                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+                ),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await

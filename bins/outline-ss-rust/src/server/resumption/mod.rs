@@ -10,7 +10,6 @@
 //! See `docs/SESSION-RESUMPTION.md` for the wire format and the lifecycle
 //! contract.
 
-pub(crate) mod ack_prefix;
 mod config;
 pub(crate) mod downlink_ring;
 mod parked;

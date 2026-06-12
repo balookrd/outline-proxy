@@ -61,82 +61,36 @@ mod tests_sink_backpressure;
 // after the file split — h1 still does `use super::{XhttpStream, …}`.
 pub(crate) use stream::XhttpStream;
 
-/// Cross-transport session resumption: client → server. Mirrors the
-/// header used by the WS-upgrade path so a single token works for
-/// any resumption-aware client/server pair.
-pub(super) const RESUME_REQUEST_HEADER: &str = "x-outline-resume";
+// Resume negotiation and XHTTP submode literals are wire vocabulary
+// shared with the server; the single definition lives in
+// `outline_wire::{resume, xhttp}`.
+pub(super) use outline_wire::resume::{
+    ACK_PREFIX_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER,
+};
+pub use outline_wire::xhttp::XhttpSubmode;
 
-/// Cross-transport session resumption: client capability flag. The
-/// server only mints a fresh token when this is `1` (or when
-/// `RESUME_REQUEST_HEADER` is present), so non-resumption clients
-/// pay nothing.
-pub(super) const RESUME_CAPABLE_HEADER: &str = "x-outline-resume-capable";
-
-/// Cross-transport session resumption: server → client.
-pub(super) const SESSION_RESPONSE_HEADER: &str = "x-outline-session";
-
-/// Ack-Prefix Protocol v1.2 capability negotiation header. Identical
-/// name to the WS-upgrade path's `crate::resumption::ACK_PREFIX_HEADER`
-/// — kept in sync as a private constant here so the XHTTP carrier
-/// does not have to depend on the WS module just for the literal.
-pub(super) const ACK_PREFIX_HEADER: &str = "x-outline-resume-ack-prefix";
-
-/// Submode selector. Picked from the dial URL's query string
-/// (`?mode=stream-one` selects stream-one; anything else, including
-/// no query, means packet-up). The mode is not threaded through
-/// the dial-dispatcher signature — instead `connect_xhttp` reads it
-/// off the URL each call, which keeps the caller config minimal:
-/// you write the URL you want and the carrier follows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum XhttpSubmode {
-    #[default]
-    PacketUp,
-    StreamOne,
+/// Extracts the submode from a `?mode=...` query parameter on the
+/// dial URL. The mode is not threaded through the dial-dispatcher
+/// signature — instead `connect_xhttp` reads it off the URL each
+/// call, which keeps the caller config minimal: you write the URL
+/// you want and the carrier follows.
+pub fn submode_from_url(url: &Url) -> XhttpSubmode {
+    XhttpSubmode::parse_query(url.query())
 }
 
-impl std::fmt::Display for XhttpSubmode {
-    /// Renders the dashed spelling the server's `?mode=` query
-    /// expects, so the same string can be echoed back on dashboards
-    /// and logs without re-mapping. Stable wire shape, do not change.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::PacketUp => "packet-up",
-            Self::StreamOne => "stream-one",
-        })
-    }
-}
-
-impl XhttpSubmode {
-    /// Extracts the submode from a `?mode=...` query parameter on
-    /// the dial URL. Accepts both dashed (`stream-one`) and
-    /// underscored (`stream_one`) spellings to match what the server
-    /// accepts. Anything else (or absence) → packet-up.
-    pub fn from_url(url: &Url) -> Self {
-        let Some(query) = url.query() else {
-            return Self::PacketUp;
-        };
-        for pair in query.split('&') {
-            if let Some(value) = pair.strip_prefix("mode=") {
-                return match value {
-                    "stream-one" | "stream_one" => Self::StreamOne,
-                    _ => Self::PacketUp,
-                };
+/// Appends the `mode=` selector for the non-default carrier to a
+/// request URI. Packet-up stays bare (the server defaults to it when
+/// the query is absent or unrecognised).
+fn append_submode_to_query(submode: XhttpSubmode, base: &str) -> String {
+    match submode {
+        XhttpSubmode::PacketUp => base.to_owned(),
+        XhttpSubmode::StreamOne => {
+            if base.contains('?') {
+                format!("{base}&mode={}", submode.as_wire_str())
+            } else {
+                format!("{base}?mode={}", submode.as_wire_str())
             }
-        }
-        Self::PacketUp
-    }
-
-    fn append_to_query(&self, base: &str) -> String {
-        match self {
-            Self::PacketUp => base.to_owned(),
-            Self::StreamOne => {
-                if base.contains('?') {
-                    format!("{base}&mode=stream-one")
-                } else {
-                    format!("{base}?mode=stream-one")
-                }
-            },
-        }
+        },
     }
 }
 
@@ -155,7 +109,7 @@ impl XhttpSubmode {
 ///      path between the client and server cannot carry stream-one
 ///      (CDN buffering, middlebox idle-timeout, etc.).
 pub(super) async fn resolve_effective_submode(url: &Url, mode: TransportMode) -> XhttpSubmode {
-    let mut submode = XhttpSubmode::from_url(url);
+    let mut submode = submode_from_url(url);
     if matches!(mode, TransportMode::XhttpH1) {
         submode = XhttpSubmode::PacketUp;
     }
@@ -203,6 +157,7 @@ pub(super) const OUTBOUND_CHANNEL_CAPACITY: usize = 256;
 /// server registers `<base>/<id>` and we generate `<id>` randomly.
 /// This is the dispatcher: each `TransportMode::Xhttp*` arm hands
 /// off to the corresponding carrier submodule.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_xhttp(
     cache: &DnsCache,
     url: &Url,
@@ -330,17 +285,17 @@ impl XhttpTarget {
     /// the bare URI (the server defaults to packet-up when the
     /// query is absent or unrecognised).
     pub(super) fn full_uri_with_submode(&self, submode: XhttpSubmode) -> String {
-        submode.append_to_query(&self.full_uri())
+        append_submode_to_query(submode, &self.full_uri())
     }
 }
 
 pub(super) fn generate_session_id() -> Result<String> {
+    use outline_wire::xhttp::SESSION_ID_ALPHABET as ALPHABET;
     let mut raw = [0_u8; SESSION_ID_BYTES];
     rand::rng().fill_bytes(&mut raw);
-    // URL-safe alphanumeric. Bias from `% 62` is negligible at
-    // these lengths and gives a strict subset of `is_valid_session_id`
-    // on the server side.
-    const ALPHABET: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    // URL-safe alphanumeric. Bias from `% 62` is negligible at these
+    // lengths and stays a strict subset of what the server-side
+    // `outline_wire::xhttp::is_valid_session_id` accepts.
     let id: String = raw
         .iter()
         .map(|byte| char::from(ALPHABET[(*byte as usize) % ALPHABET.len()]))

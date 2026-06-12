@@ -72,6 +72,7 @@ pub(in crate::server) trait UpstreamSink: Send {
     fn on_chunk_encrypted(&mut self, _plaintext: usize, _ciphertext: usize) {}
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::server) async fn relay_upstream_to_client<S>(
     mut upstream_reader: OwnedReadHalf,
     mut sink: S,
@@ -193,6 +194,7 @@ where
 /// Writes `initial_payload` first (already-decrypted bytes left over from the
 /// handshake), then loops: read ciphertext from the client, decrypt, write
 /// plaintext to upstream.  Shuts down the upstream writer on clean client EOF.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::server) async fn relay_client_to_upstream<R, W>(
     mut client_reader: R,
     mut decryptor: AeadStreamDecryptor,
