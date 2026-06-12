@@ -1,0 +1,103 @@
+name: CI
+
+# Quality gate for pull requests and pushes to main. The release workflows
+# (`*-release*.yml`) only build artifacts; this is the only workflow that runs
+# fmt / clippy / tests / the monorepo invariants, so it is the merge gate.
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: rustfmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # `cargo fmt --all` would also reformat the vendored `sockudo-ws`
+      # workspace member, which we keep in upstream style — so the check lists
+      # our own packages explicitly instead of `--all`.
+      - name: rustfmt (our crates only; vendored kept in upstream style)
+        run: >
+          cargo fmt --check
+          -p outline-ss-rust -p outline-ws-rust
+          -p outline-metrics -p outline-net -p outline-routing
+          -p outline-ss2022 -p outline-transport -p outline-tun
+          -p outline-uplink -p outline-wire -p shadowsocks-crypto -p socks5-proto
+
+      # `--no-deps` keeps clippy off the vendored members (they are linted as
+      # dependencies otherwise). The lint policy denies compiler warnings and
+      # the clippy correctness/suspicious groups, but does not yet enforce the
+      # style/complexity groups — the existing code carries a backlog of those
+      # (too_many_arguments, collapsible_if, …) that is tracked separately.
+      - name: clippy (deny warnings + correctness/suspicious)
+        run: >
+          cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps --
+          -D warnings -A clippy::all -D clippy::correctness -D clippy::suspicious
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test --workspace --exclude sockudo-ws
+
+  features-and-invariants:
+    name: feature matrix + monorepo invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: check default workspace
+        run: cargo check --workspace --exclude sockudo-ws
+
+      - name: check server without default features (control gated off)
+        run: cargo check -p outline-ss-rust --no-default-features
+
+      - name: check router build (memory-constrained client)
+        run: cargo check -p outline-ws-rust --no-default-features --features router
+
+      # Monorepo invariant: rustls must stay on a single CryptoProvider (ring).
+      # Two providers panic at runtime ("exactly one of aws-lc-rs and ring").
+      - name: invariant — ring only, no aws-lc-rs in the graph
+        run: |
+          if cargo tree -i aws-lc-rs >/dev/null 2>&1; then
+            echo "::error::aws-lc-rs is in the dependency graph; rustls must stay on ring only"
+            cargo tree -i aws-lc-rs
+            exit 1
+          fi
+          echo "ok: aws-lc-rs is absent"
+
+      # Monorepo invariant: the router build must not pull the heavy server /
+      # metrics / H3-QUIC / aws-lc-rs dependencies.
+      - name: invariant — router build stays isolated
+        run: |
+          leaked=$(cargo tree -e features -p outline-ws-rust --no-default-features --features router \
+            | grep -iE 'mimalloc|prometheus|aws-lc-rs|quinn|h3-quinn|outline-ss-rust' || true)
+          if [ -n "$leaked" ]; then
+            echo "::error::router build leaks heavy dependencies:"
+            echo "$leaked"
+            exit 1
+          fi
+          echo "ok: router build is isolated"
