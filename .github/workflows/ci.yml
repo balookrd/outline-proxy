@@ -31,6 +31,16 @@ jobs:
       # .cargo/config.toml forces AR/RANLIB to `zig ar`/`zig ranlib` for every
       # build (not just the zigbuild cross aliases), so ring's build script
       # needs zig on PATH even for a native host check.
+      #
+      # The runner's "node20 deprecated" annotation on this step is known and
+      # safe: setup-zig v2.2.1 (latest release; what @v2 resolves to) still
+      # declares node20, and upstream keeps it that way on purpose for ZSF's
+      # Debian-stable self-hosted runners (Codeberg mlugg/setup-zig PR #55;
+      # the GitHub repo is a read-only mirror). Verified 2026-06-12: the
+      # v2.2.1 JS runs the full fetch/extract/tool-cache/zig cycle cleanly
+      # under Node 24, so GitHub's 2026-06-16 forced-Node-24 switch is a
+      # no-op here. Keep @v2 — it will pick up the eventual node24 release
+      # automatically.
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.1
