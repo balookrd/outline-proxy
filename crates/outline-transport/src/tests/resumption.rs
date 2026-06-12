@@ -70,3 +70,49 @@ fn store_if_issued_skips_none() {
     cache.store_if_issued("uplink-z", Some(SessionId::from_bytes([9; 16])));
     assert_eq!(cache.len(), 1);
 }
+
+#[test]
+fn resume_cache_evicts_oldest_inserted_at_capacity() {
+    let cache = ResumeCache::new_uninit();
+    let id = SessionId::from_bytes([1; 16]);
+    for i in 0..RESUME_CACHE_CAPACITY {
+        cache.store(format!("uplink-{i}#tcp"), id);
+    }
+    assert_eq!(cache.len(), RESUME_CACHE_CAPACITY);
+    cache.store("overflow#tcp", id);
+    assert_eq!(cache.len(), RESUME_CACHE_CAPACITY);
+    assert!(cache.get("uplink-0#tcp").is_none(), "oldest entry must be evicted");
+    assert_eq!(cache.get("overflow#tcp"), Some(id));
+    assert_eq!(cache.get("uplink-1#tcp"), Some(id));
+}
+
+#[test]
+fn resume_cache_overwrite_at_capacity_does_not_evict() {
+    let cache = ResumeCache::new_uninit();
+    let a = SessionId::from_bytes([1; 16]);
+    let b = SessionId::from_bytes([2; 16]);
+    for i in 0..RESUME_CACHE_CAPACITY {
+        cache.store(format!("uplink-{i}#tcp"), a);
+    }
+    cache.store("uplink-0#tcp", b);
+    assert_eq!(cache.len(), RESUME_CACHE_CAPACITY);
+    assert_eq!(cache.get("uplink-0#tcp"), Some(b));
+    assert_eq!(cache.get(&format!("uplink-{}#tcp", RESUME_CACHE_CAPACITY - 1)), Some(a));
+}
+
+#[test]
+fn resume_cache_forget_then_reinsert_treats_key_as_newest() {
+    let cache = ResumeCache::new_uninit();
+    let id = SessionId::from_bytes([3; 16]);
+    for i in 0..RESUME_CACHE_CAPACITY {
+        cache.store(format!("uplink-{i}#tcp"), id);
+    }
+    cache.forget("uplink-0#tcp");
+    cache.store("uplink-0#tcp", id);
+    assert_eq!(cache.len(), RESUME_CACHE_CAPACITY);
+    // The re-inserted key is now the newest; the next eviction must
+    // take uplink-1, not the re-inserted uplink-0.
+    cache.store("overflow#tcp", id);
+    assert!(cache.get("uplink-1#tcp").is_none());
+    assert_eq!(cache.get("uplink-0#tcp"), Some(id));
+}

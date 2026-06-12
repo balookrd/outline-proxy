@@ -18,7 +18,7 @@
 //! `Resume: <hex>` (resume request); negotiation of the response side
 //! is read straight off the upgrade response.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -234,22 +234,53 @@ pub(crate) fn parse_resume_response_echo(
 /// without breaking this API.
 #[derive(Default)]
 pub struct ResumeCache {
-    inner: Mutex<HashMap<String, SessionId>>,
+    inner: Mutex<ResumeCacheInner>,
+}
+
+/// Hard cap on cached resume entries. Keys are `<uplink>#<transport>`,
+/// so the live population is two entries per configured uplink — far
+/// below this cap in practice. The cap is a safety valve keeping the
+/// process-wide cache bounded if keys ever become more dynamic; on
+/// overflow the oldest-inserted entry is evicted (resume is
+/// best-effort, so an evicted entry only costs a missed resume).
+const RESUME_CACHE_CAPACITY: usize = 1_024;
+
+/// Live entries plus their first-insertion order. The two collections
+/// always hold the same key set (`forget` removes from both), so
+/// eviction can pop the queue front without staleness checks.
+#[derive(Default)]
+struct ResumeCacheInner {
+    entries: HashMap<String, SessionId>,
+    insertion_order: VecDeque<String>,
 }
 
 impl ResumeCache {
     pub fn new_uninit() -> Self {
-        Self { inner: Mutex::new(HashMap::new()) }
+        Self {
+            inner: Mutex::new(ResumeCacheInner::default()),
+        }
     }
 
     /// Returns the last cached Session ID for `key`, if any.
     pub fn get(&self, key: &str) -> Option<SessionId> {
-        self.inner.lock().get(key).copied()
+        self.inner.lock().entries.get(key).copied()
     }
 
-    /// Stores `id` under `key`. Overwrites any previous value.
+    /// Stores `id` under `key`. Overwrites any previous value. At
+    /// capacity, the oldest-inserted key is evicted to make room.
     pub fn store(&self, key: impl Into<String>, id: SessionId) {
-        self.inner.lock().insert(key.into(), id);
+        let key = key.into();
+        let inner = &mut *self.inner.lock();
+        if !inner.entries.contains_key(&key) {
+            while inner.entries.len() >= RESUME_CACHE_CAPACITY {
+                let Some(oldest) = inner.insertion_order.pop_front() else {
+                    break;
+                };
+                inner.entries.remove(&oldest);
+            }
+            inner.insertion_order.push_back(key.clone());
+        }
+        inner.entries.insert(key, id);
     }
 
     /// Convenience: stores the issued ID when present, no-op otherwise.
@@ -264,19 +295,22 @@ impl ResumeCache {
     /// the parked session is gone (e.g. server returned a fresh ID
     /// after we presented a now-expired one).
     pub fn forget(&self, key: &str) {
-        self.inner.lock().remove(key);
+        let inner = &mut *self.inner.lock();
+        if inner.entries.remove(key).is_some() {
+            inner.insertion_order.retain(|k| k != key);
+        }
     }
 
     /// Test/diagnostic accessor. Companion to [`Self::len`].
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().is_empty()
+        self.inner.lock().entries.is_empty()
     }
 
     /// Test/diagnostic accessor. Returns the number of cached entries.
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.inner.lock().len()
+        self.inner.lock().entries.len()
     }
 }
 
