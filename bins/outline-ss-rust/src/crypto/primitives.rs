@@ -11,8 +11,9 @@ pub(super) const NONCE_LEN: usize = 12;
 pub(super) const XNONCE_LEN: usize = 24;
 pub(super) const LEGACY_MAX_CHUNK_SIZE: usize = 0x3fff;
 pub const MAX_CHUNK_SIZE: usize = 0xffff;
-pub(super) const SS_SUBKEY_INFO: &[u8] = b"ss-subkey";
-pub(super) const SS2022_SUBKEY_CONTEXT: &str = "shadowsocks 2022 session subkey";
+// Subkey-derivation constants live in `outline-wire` so the client derives
+// byte-identical session keys; only the HKDF backend differs per side.
+pub(super) use outline_wire::SS_SUBKEY_INFO;
 
 pub(super) const MAX_SUBKEY_LEN: usize = 32;
 
@@ -24,11 +25,7 @@ pub(super) fn derive_subkey(
 ) -> Result<usize, CryptoError> {
     let key_len = cipher.key_len();
     if cipher.is_ss2022() {
-        let mut hasher = blake3::Hasher::new_derive_key(SS2022_SUBKEY_CONTEXT);
-        hasher.update(master_key);
-        hasher.update(salt);
-        let mut reader = hasher.finalize_xof();
-        reader.fill(&mut out[..key_len]);
+        outline_wire::ss2022::ss2022_session_subkey_into(master_key, salt, &mut out[..key_len]);
     } else {
         let salt = hkdf::Salt::new(hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY, salt);
         let prk = salt.extract(master_key);

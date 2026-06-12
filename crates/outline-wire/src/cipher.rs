@@ -104,6 +104,11 @@ impl CipherKind {
     }
 }
 
+/// HKDF-SHA1 `info` string for classic (pre-2022) Shadowsocks AEAD session
+/// subkeys. The exact bytes are wire-compatibility-critical; both ends feed
+/// this to their respective HKDF backends.
+pub const SS_SUBKEY_INFO: &[u8] = b"ss-subkey";
+
 /// OpenSSL's EVP_BytesToKey (MD5, no salt): the classic Shadowsocks
 /// password-to-key stretch.
 pub fn evp_bytes_to_key(password: &[u8], key_len: usize) -> Vec<u8> {

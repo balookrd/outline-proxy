@@ -201,7 +201,7 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                 };
                 let mut candidate = ciphertext.to_vec();
                 match less_safe.open_in_place(
-                    ss2022_udp_nonce(&separate_header).unwrap_or_else(|_| nonce_zero()),
+                    ss2022_udp_nonce(&separate_header),
                     Aad::empty(),
                     &mut candidate,
                 ) {

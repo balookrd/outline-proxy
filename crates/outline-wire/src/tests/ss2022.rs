@@ -163,8 +163,102 @@ fn udp_nonce_is_low_twelve_bytes_of_separate_header() {
     for (i, byte) in header.iter_mut().enumerate() {
         *byte = i as u8;
     }
-    let nonce = udp_nonce_from_separate_header(&header).unwrap();
+    let nonce = udp_nonce_from_separate_header(&header);
     assert_eq!(nonce, [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+}
 
-    assert!(udp_nonce_from_separate_header(&header[..15]).is_err());
+#[test]
+fn udp_separate_header_encodes_ids_in_order() {
+    let header = encode_udp_separate_header(&[0xAA; 8], 0x0102_0304_0506_0708);
+    assert_eq!(&header[..8], &[0xAA; 8]);
+    assert_eq!(&header[8..], &0x0102_0304_0506_0708_u64.to_be_bytes());
+}
+
+#[test]
+fn udp_request_builder_roundtrips_through_server_parser() {
+    let mut addressed = target().to_wire_bytes().unwrap();
+    addressed.extend_from_slice(b"dns query");
+
+    let body = build_udp_request_body(None, NOW, &addressed);
+    let parsed = parse_udp_request_body(&body, NOW).unwrap();
+    assert_eq!(parsed.target, target());
+    assert_eq!(parsed.payload, b"dns query");
+
+    let chacha = build_udp_request_body(Some((&[0x11; 8], 7)), NOW, &addressed);
+    let parsed = parse_chacha_udp_request_body(&chacha, NOW).unwrap();
+    assert_eq!(parsed.target, target());
+    assert_eq!(parsed.payload, b"dns query");
+    assert_eq!(parsed.client_session_id, [0x11; 8]);
+    assert_eq!(parsed.packet_id, 7);
+}
+
+#[test]
+fn udp_response_builder_roundtrips_through_client_parser() {
+    let target_wire = target().to_wire_bytes().unwrap();
+    let mut body = Vec::new();
+    write_udp_response_body(&mut body, NOW, &[0x22; 8], &target_wire, b"reply");
+
+    let mut expected_tail = target_wire.clone();
+    expected_tail.extend_from_slice(b"reply");
+    assert_eq!(parse_udp_response_body(&body, Some(&[0x22; 8]), NOW).unwrap(), expected_tail);
+    assert_eq!(parse_udp_response_body(&body, None, NOW).unwrap(), expected_tail);
+
+    assert_eq!(
+        parse_udp_response_body(&body, Some(&[0x23; 8]), NOW),
+        Err(Ss2022HeaderError::ClientSessionMismatch)
+    );
+    let mut wrong_type = body.clone();
+    wrong_type[0] = SS2022_UDP_CLIENT_TYPE;
+    assert_eq!(
+        parse_udp_response_body(&wrong_type, None, NOW),
+        Err(Ss2022HeaderError::InvalidResponseType(SS2022_UDP_CLIENT_TYPE))
+    );
+    assert!(matches!(
+        parse_udp_response_body(&body, None, NOW + SS2022_MAX_TIME_DIFF_SECS + 1),
+        Err(Ss2022HeaderError::TimestampSkew { .. })
+    ));
+}
+
+#[test]
+fn chacha_udp_response_builder_roundtrips_through_client_parser() {
+    let target_wire = target().to_wire_bytes().unwrap();
+    let mut body = Vec::new();
+    write_chacha_udp_response_body(
+        &mut body,
+        &[0x33; 8],
+        42,
+        NOW,
+        &[0x22; 8],
+        &target_wire,
+        b"reply",
+    );
+
+    let parsed = parse_chacha_udp_response_body(&body, Some(&[0x22; 8]), NOW).unwrap();
+    assert_eq!(parsed.server_session_id, [0x33; 8]);
+    assert_eq!(parsed.packet_id, 42);
+    let mut expected_tail = target_wire.clone();
+    expected_tail.extend_from_slice(b"reply");
+    assert_eq!(parsed.addressed_payload, expected_tail);
+}
+
+#[test]
+fn session_subkey_matches_one_shot_derive_key() {
+    // The server historically derived via a streaming hasher and the client
+    // via one-shot `blake3::derive_key` over `master_key || salt`; the shared
+    // helper must equal both formulations.
+    let master_key = [0x42_u8; 32];
+    let salt = [0x07_u8; 8];
+
+    let mut streamed = [0_u8; 32];
+    ss2022_session_subkey_into(&master_key, &salt, &mut streamed);
+
+    let mut concatenated = Vec::new();
+    concatenated.extend_from_slice(&master_key);
+    concatenated.extend_from_slice(&salt);
+    let one_shot = blake3::derive_key(SS2022_SUBKEY_CONTEXT, &concatenated);
+    assert_eq!(streamed, one_shot);
+
+    let mut sixteen = [0_u8; 16];
+    ss2022_session_subkey_into(&master_key, &salt, &mut sixteen);
+    assert_eq!(sixteen, one_shot[..16]);
 }

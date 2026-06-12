@@ -6,13 +6,18 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce as XChaNonce};
 use rand::rand_core::RngCore;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use outline_wire::ss2022::{
+    Ss2022HeaderError, build_udp_request_body, encode_udp_separate_header,
+    parse_chacha_udp_response_body, parse_udp_response_body, udp_nonce_from_separate_header,
+};
+
 use crate::cipher_kind::CipherKind;
 use crate::error::{CryptoError, Result};
 
 use super::aead::{SHADOWSOCKS_TAG_LEN, decrypt, encrypt};
 use super::keys::derive_subkey;
 
-use outline_wire::ss2022::SS2022_UDP_CLIENT_TYPE as SS2022_UDP_CLIENT_PACKET;
+#[cfg(test)]
 pub(crate) use outline_wire::ss2022::SS2022_UDP_SERVER_TYPE as SS2022_UDP_SERVER_PACKET;
 
 const CIPHER_XCHACHA: &str = "xchacha20-poly1305";
@@ -23,21 +28,32 @@ const ERR_REQUIRES_2022: &str = "ss2022 UDP framing requires a 2022 cipher";
 const ERR_REQUIRES_2022_CHACHA: &str = "ss2022 chacha UDP framing requires a 2022 chacha cipher";
 const ERR_SEPARATE_HEADER_AES_ONLY: &str =
     "UDP separate header is only defined for ss2022 AES methods";
-const ERR_SS2022_PAYLOAD_SHORT: &str = "ss2022 UDP payload is too short";
+const ERR_SS2022_INVALID_BODY: &str = "invalid ss2022 UDP server packet body";
 const ERR_SS2022_INVALID_SERVER_TYPE: &str = "invalid ss2022 UDP server packet type";
 const ERR_SS2022_CLIENT_SESSION_MISMATCH: &str = "ss2022 UDP client session id mismatch";
-const ERR_SS2022_PADDING: &str = "ss2022 UDP padding exceeds payload length";
-const ERR_SS2022_CHACHA_PAYLOAD_SHORT: &str = "ss2022 chacha UDP payload is too short";
-const ERR_SS2022_CHACHA_INVALID_SERVER_TYPE: &str = "invalid ss2022 chacha UDP server packet type";
-const ERR_SS2022_CHACHA_CLIENT_SESSION_MISMATCH: &str =
-    "ss2022 chacha UDP client session id mismatch";
-const ERR_SS2022_CHACHA_PADDING: &str = "ss2022 chacha UDP padding exceeds payload length";
 
 fn unix_now_secs() -> Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .map_err(|_| CryptoError::ClockBeforeEpoch)
+}
+
+/// Collapses wire-layer response-body errors into [`CryptoError`], keeping
+/// the timestamp-skew and session-mismatch cases distinguishable.
+fn map_response_body_err(err: Ss2022HeaderError) -> CryptoError {
+    match err {
+        Ss2022HeaderError::TimestampSkew { skew_secs } => {
+            CryptoError::Ss2022TimestampSkew { skew_secs: skew_secs as i64 }
+        },
+        Ss2022HeaderError::InvalidResponseType(_) => {
+            CryptoError::Protocol(ERR_SS2022_INVALID_SERVER_TYPE)
+        },
+        Ss2022HeaderError::ClientSessionMismatch => {
+            CryptoError::Protocol(ERR_SS2022_CLIENT_SESSION_MISMATCH)
+        },
+        _ => CryptoError::Protocol(ERR_SS2022_INVALID_BODY),
+    }
 }
 
 /// Validates that an SS2022 timestamp is within the acceptable clock-skew window.
@@ -62,7 +78,9 @@ pub fn encrypt_udp_packet_2022(
         return Err(CryptoError::Protocol(ERR_REQUIRES_2022));
     }
 
-    let plaintext = build_ss2022_udp_client_plaintext(cipher, session_id, packet_id, payload)?;
+    let session_id_bytes = session_id.to_be_bytes();
+    let chacha_session = cipher.is_ss2022_chacha().then_some((&session_id_bytes, packet_id));
+    let plaintext = build_udp_request_body(chacha_session, unix_now_secs()?, payload);
     if cipher.is_ss2022_chacha() {
         return encrypt_udp_packet_2022_chacha(cipher, master_key, &plaintext);
     }
@@ -76,12 +94,8 @@ pub(crate) fn encrypt_udp_packet_2022_aes(
     packet_id: u64,
     plaintext: &[u8],
 ) -> Result<Vec<u8>> {
-    let mut separate_header = [0u8; 16];
-    separate_header[..8].copy_from_slice(&session_id.to_be_bytes());
-    separate_header[8..].copy_from_slice(&packet_id.to_be_bytes());
-
-    let mut nonce = [0u8; 12];
-    nonce.copy_from_slice(&separate_header[4..16]);
+    let separate_header = encode_udp_separate_header(&session_id.to_be_bytes(), packet_id);
+    let nonce = udp_nonce_from_separate_header(&separate_header);
 
     let key = derive_subkey(cipher, master_key, &separate_header[..8])?;
     let encrypted_body = encrypt(cipher, &key[..cipher.key_len()], &nonce, plaintext)?;
@@ -113,6 +127,12 @@ pub fn decrypt_udp_packet_2022(
     decrypt_udp_packet_2022_aes(cipher, master_key, expected_client_session_id, packet)
 }
 
+/// `0` historically means "do not check the echoed client session id";
+/// the wire-layer parsers express the same with `None`.
+fn expected_session_bytes(expected_client_session_id: u64) -> Option<[u8; 8]> {
+    (expected_client_session_id != 0).then(|| expected_client_session_id.to_be_bytes())
+}
+
 fn decrypt_udp_packet_2022_aes(
     cipher: CipherKind,
     master_key: &[u8],
@@ -127,8 +147,7 @@ fn decrypt_udp_packet_2022_aes(
     encrypted_header.copy_from_slice(&packet[..16]);
     let separate_header = decrypt_udp_separate_header(cipher, master_key, &encrypted_header)?;
 
-    let mut nonce = [0u8; 12];
-    nonce.copy_from_slice(&separate_header[4..16]);
+    let nonce = udp_nonce_from_separate_header(&separate_header);
     let key = derive_subkey(cipher, master_key, &separate_header[..8])?;
     let plaintext = decrypt(cipher, &key[..cipher.key_len()], &nonce, &packet[16..])?;
 
@@ -140,8 +159,10 @@ fn decrypt_udp_packet_2022_aes(
     packet_id_bytes.copy_from_slice(&separate_header[8..]);
     let packet_id = u64::from_be_bytes(packet_id_bytes);
 
-    let payload = parse_ss2022_udp_server_plaintext(expected_client_session_id, &plaintext)?;
-    Ok((session_id, packet_id, payload))
+    let expected = expected_session_bytes(expected_client_session_id);
+    let payload = parse_udp_response_body(&plaintext, expected.as_ref(), unix_now_secs()?)
+        .map_err(map_response_body_err)?;
+    Ok((session_id, packet_id, payload.to_vec()))
 }
 
 pub fn encrypt_udp_separate_header(
@@ -238,102 +259,12 @@ fn decrypt_udp_packet_2022_chacha(
         )
         .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_XCHACHA })?;
 
-    parse_ss2022_udp_server_chacha_plaintext(expected_client_session_id, &buffer)
-}
-
-fn build_ss2022_udp_client_plaintext(
-    cipher: CipherKind,
-    session_id: u64,
-    packet_id: u64,
-    payload: &[u8],
-) -> Result<Vec<u8>> {
-    let timestamp = unix_now_secs()?;
-    let mut plaintext = Vec::with_capacity(payload.len() + 32);
-    if cipher.is_ss2022_chacha() {
-        plaintext.extend_from_slice(&session_id.to_be_bytes());
-        plaintext.extend_from_slice(&packet_id.to_be_bytes());
-    }
-    plaintext.push(SS2022_UDP_CLIENT_PACKET);
-    plaintext.extend_from_slice(&timestamp.to_be_bytes());
-    plaintext.extend_from_slice(&0u16.to_be_bytes());
-    plaintext.extend_from_slice(payload);
-    Ok(plaintext)
-}
-
-fn parse_ss2022_udp_server_plaintext(
-    expected_client_session_id: u64,
-    plaintext: &[u8],
-) -> Result<Vec<u8>> {
-    let min_len = 1 + 8 + 8 + 2;
-    if plaintext.len() < min_len {
-        return Err(CryptoError::Protocol(ERR_SS2022_PAYLOAD_SHORT));
-    }
-    if plaintext[0] != SS2022_UDP_SERVER_PACKET {
-        return Err(CryptoError::Protocol(ERR_SS2022_INVALID_SERVER_TYPE));
-    }
-    let mut timestamp_bytes = [0u8; 8];
-    timestamp_bytes.copy_from_slice(&plaintext[1..9]);
-    validate_ss2022_timestamp(u64::from_be_bytes(timestamp_bytes))?;
-
-    let client_session_offset = 9;
-    let client_session_end = client_session_offset + 8;
-    let mut session_bytes = [0u8; 8];
-    session_bytes.copy_from_slice(&plaintext[client_session_offset..client_session_end]);
-    let client_session_id = u64::from_be_bytes(session_bytes);
-
-    if expected_client_session_id != 0 && client_session_id != expected_client_session_id {
-        return Err(CryptoError::Protocol(ERR_SS2022_CLIENT_SESSION_MISMATCH));
-    }
-    let padding_len_offset = client_session_end;
-    let padding_len =
-        u16::from_be_bytes([plaintext[padding_len_offset], plaintext[padding_len_offset + 1]])
-            as usize;
-    let payload_offset = padding_len_offset + 2 + padding_len;
-    if plaintext.len() < payload_offset {
-        return Err(CryptoError::Protocol(ERR_SS2022_PADDING));
-    }
-    Ok(plaintext[payload_offset..].to_vec())
-}
-
-fn parse_ss2022_udp_server_chacha_plaintext(
-    expected_client_session_id: u64,
-    plaintext: &[u8],
-) -> Result<(u64, u64, Vec<u8>)> {
-    let min_len = 8 + 8 + 1 + 8 + 8 + 2;
-    if plaintext.len() < min_len {
-        return Err(CryptoError::Protocol(ERR_SS2022_CHACHA_PAYLOAD_SHORT));
-    }
-    let mut session_bytes = [0u8; 8];
-    session_bytes.copy_from_slice(&plaintext[..8]);
-    let server_session_id = u64::from_be_bytes(session_bytes);
-
-    let mut packet_id_bytes = [0u8; 8];
-    packet_id_bytes.copy_from_slice(&plaintext[8..16]);
-    let server_packet_id = u64::from_be_bytes(packet_id_bytes);
-
-    if plaintext[16] != SS2022_UDP_SERVER_PACKET {
-        return Err(CryptoError::Protocol(ERR_SS2022_CHACHA_INVALID_SERVER_TYPE));
-    }
-    let mut timestamp_bytes = [0u8; 8];
-    timestamp_bytes.copy_from_slice(&plaintext[17..25]);
-    validate_ss2022_timestamp(u64::from_be_bytes(timestamp_bytes))?;
-
-    let client_session_offset = 25;
-    let client_session_end = client_session_offset + 8;
-    let mut client_session_bytes = [0u8; 8];
-    client_session_bytes.copy_from_slice(&plaintext[client_session_offset..client_session_end]);
-    let client_session_id = u64::from_be_bytes(client_session_bytes);
-
-    if expected_client_session_id != 0 && client_session_id != expected_client_session_id {
-        return Err(CryptoError::Protocol(ERR_SS2022_CHACHA_CLIENT_SESSION_MISMATCH));
-    }
-    let padding_len_offset = client_session_end;
-    let padding_len =
-        u16::from_be_bytes([plaintext[padding_len_offset], plaintext[padding_len_offset + 1]])
-            as usize;
-    let payload_offset = padding_len_offset + 2 + padding_len;
-    if plaintext.len() < payload_offset {
-        return Err(CryptoError::Protocol(ERR_SS2022_CHACHA_PADDING));
-    }
-    Ok((server_session_id, server_packet_id, plaintext[payload_offset..].to_vec()))
+    let expected = expected_session_bytes(expected_client_session_id);
+    let response = parse_chacha_udp_response_body(&buffer, expected.as_ref(), unix_now_secs()?)
+        .map_err(map_response_body_err)?;
+    Ok((
+        u64::from_be_bytes(response.server_session_id),
+        response.packet_id,
+        response.addressed_payload.to_vec(),
+    ))
 }
