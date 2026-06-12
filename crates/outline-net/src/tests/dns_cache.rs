@@ -98,3 +98,32 @@ fn insert_overwrites_existing_entry_in_place() {
     let got = cache.get("h", 80, false).unwrap();
     assert_eq!(got[0].ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)));
 }
+
+#[test]
+fn addr_pref_bit_is_part_of_the_key() {
+    let cache = DnsCache::new(Duration::from_secs(60));
+    cache.insert("h", 80, false, addr(1));
+    cache.insert("h", 80, true, addr(2));
+    assert_eq!(cache.len(), 2);
+    assert_eq!(cache.get("h", 80, false).unwrap()[0].ip(), Ipv4Addr::new(127, 0, 0, 1));
+    assert_eq!(cache.get("h", 80, true).unwrap()[0].ip(), Ipv4Addr::new(127, 0, 0, 2));
+}
+
+#[test]
+fn sweep_expired_purges_only_past_grace() {
+    // Entries expire instantly (1 ns TTL); a sweep with a generous grace
+    // keeps them around for stale fallback, a zero grace purges them.
+    let cache = DnsCache::new(Duration::from_nanos(1));
+    cache.insert("a", 80, false, addr(1));
+    cache.insert("b", 80, false, addr(2));
+    std::thread::sleep(Duration::from_millis(5));
+    assert!(cache.get("a", 80, false).is_none());
+    assert!(cache.get_stale("a", 80, false).is_some());
+
+    assert_eq!(cache.sweep_expired(Duration::from_secs(3600)), 0);
+    assert!(cache.get_stale("a", 80, false).is_some());
+
+    assert_eq!(cache.sweep_expired(Duration::ZERO), 2);
+    assert!(cache.get_stale("a", 80, false).is_none());
+    assert_eq!(cache.len(), 0);
+}

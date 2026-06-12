@@ -1745,7 +1745,10 @@ name = "outline-net"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hashbrown 0.15.5",
  "libc",
+ "parking_lot",
+ "rand",
  "socket2 0.6.4",
  "tokio",
 ]
@@ -1777,7 +1780,6 @@ dependencies = [
  "futures-util",
  "h3",
  "h3-quinn",
- "hashbrown 0.15.5",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1788,6 +1790,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "metrics-util",
  "mimalloc",
+ "outline-net",
  "outline-transport",
  "outline-wire",
  "parking_lot",
