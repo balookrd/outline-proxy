@@ -235,3 +235,88 @@ async fn deduplicates_concurrent_nat_entry_creation() -> Result<()> {
     assert!(rendered.contains("outline_ss_udp_nat_active_entries 1"));
     Ok(())
 }
+
+#[tokio::test]
+async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
+    let config = Config {
+        listen: Some("127.0.0.1:3000".parse().unwrap()),
+        ss_listen: None,
+        tls_cert_path: None,
+        tls_key_path: None,
+        tls_certs: Vec::new(),
+        h3_listen: None,
+        h3_cert_path: None,
+        h3_key_path: None,
+        h3_certs: Vec::new(),
+        h3_alpn: vec![crate::config::H3Alpn::H3],
+        metrics_listen: None,
+        metrics_path: "/metrics".into(),
+        prefer_ipv4_upstream: false,
+        outbound_ipv6_prefix: None,
+        outbound_ipv6_interface: None,
+        outbound_ipv6_refresh_secs: 30,
+        outbound_ipv6_sticky: false,
+        outbound_ipv6_sticky_ttl_secs: 1800,
+        ws_path_tcp: "/tcp".into(),
+        ws_path_udp: "/udp".into(),
+        ws_path_vless: None,
+        xhttp_path_vless: None,
+        http_root_auth: false,
+        http_root_realm: "Authorization required".into(),
+        users: vec![],
+        method: CipherKind::Chacha20IetfPoly1305,
+        access_key: Default::default(),
+        tuning: Default::default(),
+        session_resumption: Default::default(),
+        http_fallback: None,
+        sni_fallback: None,
+        reverse_tunnel: None,
+        config_path: None,
+        control: None,
+        dashboard: None,
+    };
+    let metrics = Metrics::new(&config);
+    // Cap of 2 live entries; `0` would disable the cap.
+    let nat_table = NatTable::with_outbound_ipv6(Duration::from_secs(300), 2, None);
+    let user = UserKey::new("cap", "secret-c", None, CipherKind::Chacha20IetfPoly1305)?;
+
+    // Two distinct targets fill the table to capacity.
+    for port in [6001u16, 6002] {
+        let key = NatKey {
+            user_id: user.id_arc(),
+            fwmark: None,
+            target: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        };
+        nat_table
+            .get_or_create(key, &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+            .await?;
+    }
+    assert_eq!(nat_table.len(), 2);
+
+    // A third *new* target is rejected while the table is at capacity.
+    let overflow_key = NatKey {
+        user_id: user.id_arc(),
+        fwmark: None,
+        target: SocketAddr::from((Ipv4Addr::LOCALHOST, 6003)),
+    };
+    let rejected = nat_table
+        .get_or_create(overflow_key, &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .await;
+    assert!(rejected.is_err(), "a new target must be rejected at capacity");
+    assert_eq!(nat_table.len(), 2, "a rejected datagram must not add an entry");
+
+    // An already-live target still resolves to its existing entry, even when full.
+    let live_key = NatKey {
+        user_id: user.id_arc(),
+        fwmark: None,
+        target: SocketAddr::from((Ipv4Addr::LOCALHOST, 6001)),
+    };
+    nat_table
+        .get_or_create(live_key, &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .await?;
+    assert_eq!(nat_table.len(), 2);
+
+    let rendered = metrics.render_prometheus();
+    assert!(rendered.contains("outline_ss_udp_nat_capacity_dropped_total 1"));
+    Ok(())
+}

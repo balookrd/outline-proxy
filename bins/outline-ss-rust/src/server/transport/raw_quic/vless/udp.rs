@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 
 use crate::{
     fwmark::apply_fwmark_if_needed,
-    metrics::{AppProtocol, Protocol},
+    metrics::{AppProtocol, Protocol, Transport},
     protocol::vless::{self, VlessUser},
 };
 
@@ -268,7 +268,7 @@ pub(in crate::server) async fn serve_raw_vless_oversize_records(
 pub(in crate::server) async fn serve_raw_vless_quic_datagrams(
     connection: Arc<quinn::Connection>,
     conn_state: Arc<VlessQuicConn>,
-    _server: Arc<VlessWsServerCtx>,
+    server: Arc<VlessWsServerCtx>,
 ) -> Result<()> {
     debug!(remote = %connection.remote_address(), "raw VLESS QUIC datagram pump started");
     loop {
@@ -298,6 +298,22 @@ pub(in crate::server) async fn serve_raw_vless_quic_datagrams(
             warn!(session_id, len = payload_len, "vless raw-quic datagram exceeds max payload");
             continue;
         }
+        // Per-connection admission: bound the in-flight upstream-send tasks a
+        // single carrier can spawn from its datagram pump, so a datagram flood
+        // cannot accumulate unbounded tasks.
+        let relay_permit = match Arc::clone(&conn_state.relay_slots).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                server.metrics.record_udp_relay_drop(
+                    Transport::Udp,
+                    Protocol::QuicRaw,
+                    AppProtocol::Vless,
+                    "concurrency_limit",
+                );
+                warn!(session_id, "vless raw-quic per-connection relay limit reached, dropping");
+                continue;
+            },
+        };
         let counter = session.udp_in.clone();
         let socket = Arc::clone(&session.socket);
         tokio::spawn(async move {
@@ -306,6 +322,8 @@ pub(in crate::server) async fn serve_raw_vless_quic_datagrams(
                 return;
             }
             counter.increment(payload_len as u64);
+            // Release the admission slot once the send completes.
+            drop(relay_permit);
         });
     }
 }

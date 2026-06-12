@@ -90,6 +90,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     let outbound_ipv6 = outbound_ipv6.and_then(probe_or_disable);
     let nat_table = NatTable::with_outbound_ipv6(
         Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs),
+        config.tuning.udp_nat_max_entries,
         outbound_ipv6.clone(),
     );
     // Replay TTL is intentionally tied to NAT idle timeout: both bound the window of
