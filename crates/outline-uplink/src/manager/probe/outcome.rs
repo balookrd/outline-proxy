@@ -254,13 +254,7 @@ fn record_transport_success(
     // A pure-fail streak — neither probe success nor recovery
     // success arriving — lets the deadline genuinely expire and
     // descent triggers re-install the cap.
-    if status
-        .last_recovery_success_at
-        .is_some_and(|t| now.duration_since(t) < grace_window)
-    {
-        status.post_recovery_grace_descent_attempts = 0;
-        status.last_recovery_success_at = Some(now);
-    }
+    status.descent.renew_grace_if_active(now, grace_window);
 
     // Early failback: if the active wire on this transport is currently
     // pinned to a fallback (because primary failed enough recent dials)
@@ -305,7 +299,7 @@ fn record_transport_success(
 /// * VLESS+XHTTP configured at `XhttpH2` — capped to `XhttpH1`; recovery
 ///   probes `XhttpH2`.
 ///
-/// Returns `false` while [`PerTransportStatus::recovery_probe_cooldown_until`]
+/// Returns `false` while the slot's recovery-probe cooldown
 /// is active — the configured carrier just failed a recovery attempt
 /// and re-running it on the next probe cycle would oscillate the cap
 /// between cleared and re-installed states (each clear lets the next
@@ -326,10 +320,10 @@ fn needs_carrier_recovery(
     uplink_configured_mode: TransportMode,
     now: Instant,
 ) -> bool {
-    if status.mode_downgrade_until.is_none_or(|t| t <= now) {
+    if !status.descent.window_active(now) {
         return false;
     }
-    if status.recovery_probe_cooldown_until.is_some_and(|t| t > now) {
+    if status.descent.recovery_cooldown_active(now) {
         return false;
     }
     match (uplink_transport, uplink_configured_mode) {

@@ -194,7 +194,7 @@ pub(crate) fn effective_latency(
     // the EWMA and the failure penalty decays, causing flows to shift back to
     // primary.  Once mode_downgrade_until expires, those flows then try H3,
     // encounter the same failure, and the whole cycle repeats.
-    if ts.mode_downgrade_until.is_some_and(|t| t > now) {
+    if ts.descent.window_active(now) {
         let extra = config.failure_penalty_max;
         penalty = Some(penalty.unwrap_or_default().saturating_add(extra));
     }

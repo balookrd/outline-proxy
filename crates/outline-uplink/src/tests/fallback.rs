@@ -659,7 +659,7 @@ fn probe_failure_walks_xhttp_downgrade_chain_h3_h2_h1() {
 
     // Cycle 1: probe of XHTTP/H3 fails. Cap should land at XHTTP/H2.
     manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("h3 unreachable"));
-    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    let cap = manager.read_status_for_test(0).tcp.descent.capped_to();
     assert_eq!(cap, Some(TransportMode::XhttpH2), "first failure caps H3 → H2");
 
     // Cycle 2: probe of XHTTP/H2 (the now-effective carrier) fails. Cap
@@ -686,7 +686,7 @@ fn probe_failure_walks_xhttp_downgrade_chain_h3_h2_h1() {
         &mut tcp_recovery,
         &mut udp_recovery,
     );
-    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    let cap = manager.read_status_for_test(0).tcp.descent.capped_to();
     assert_eq!(cap, Some(TransportMode::XhttpH1), "second failure caps H2 → H1");
 }
 
@@ -732,7 +732,7 @@ fn xhttp_step_down_gated_by_min_failures() {
     // descent gate doesn't apply — the initial entry into the window is
     // always one rank below configured.
     manager.test_apply_probe_err_for_test(0, anyhow::anyhow!("h3 unreachable"));
-    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    let cap = manager.read_status_for_test(0).tcp.descent.capped_to();
     assert_eq!(cap, Some(TransportMode::XhttpH2), "first failure caps H3 → H2");
 
     let make_failed_outcome = || ProbeOutcome {
@@ -760,7 +760,7 @@ fn xhttp_step_down_gated_by_min_failures() {
         &mut tcp_recovery,
         &mut udp_recovery,
     );
-    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    let cap = manager.read_status_for_test(0).tcp.descent.capped_to();
     assert_eq!(
         cap,
         Some(TransportMode::XhttpH2),
@@ -777,7 +777,7 @@ fn xhttp_step_down_gated_by_min_failures() {
         &mut tcp_recovery,
         &mut udp_recovery,
     );
-    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    let cap = manager.read_status_for_test(0).tcp.descent.capped_to();
     assert_eq!(
         cap,
         Some(TransportMode::XhttpH1),
@@ -822,7 +822,7 @@ fn xhttp_walk_up_after_consecutive_successes_on_capped_carrier() {
         &mut tcp_recovery,
         &mut udp_recovery,
     );
-    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    let cap = manager.read_status_for_test(0).tcp.descent.capped_to();
     assert_eq!(
         cap,
         Some(TransportMode::XhttpH2),
@@ -844,7 +844,7 @@ fn xhttp_walk_up_after_consecutive_successes_on_capped_carrier() {
         &mut tcp_recovery,
         &mut udp_recovery,
     );
-    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    let cap = manager.read_status_for_test(0).tcp.descent.capped_to();
     assert_eq!(
         cap,
         Some(TransportMode::XhttpH2),
@@ -886,7 +886,7 @@ fn xhttp_walk_up_holds_below_min_failures() {
         &mut udp_recovery,
     );
 
-    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    let cap = manager.read_status_for_test(0).tcp.descent.capped_to();
     assert_eq!(
         cap,
         Some(TransportMode::XhttpH1),
@@ -935,7 +935,7 @@ fn xhttp_walk_up_holds_at_one_below_configured() {
             &mut udp_recovery,
         );
         assert_eq!(
-            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+            manager.read_status_for_test(0).tcp.descent.capped_to(),
             Some(TransportMode::XhttpH2),
             "cap at one-below-configured stays sticky across probe-success streaks",
         );
@@ -982,7 +982,7 @@ fn xhttp_recovery_push_for_vless_when_walk_up_does_not_clear_cap() {
         1,
         "VLESS+XHTTP cap with insufficient successes for walk-up must queue a configured-carrier recovery probe",
     );
-    let cap = manager.read_status_for_test(0).tcp.mode_downgrade_capped_to;
+    let cap = manager.read_status_for_test(0).tcp.descent.capped_to();
     assert_eq!(
         cap,
         Some(TransportMode::XhttpH1),
@@ -1013,7 +1013,8 @@ fn xhttp_recovery_cooldown_blocks_recovery_push_until_expiry() {
         manager
             .read_status_for_test(0)
             .tcp
-            .recovery_probe_cooldown_until
+            .descent
+            .recovery_probe_cooldown_until()
             .is_some(),
         "RecoveryReprobeFail must arm the recovery-probe cooldown so the next probe cycle does not re-run recovery",
     );
@@ -1047,7 +1048,7 @@ fn xhttp_recovery_cooldown_blocks_recovery_push_until_expiry() {
         "while recovery cooldown is active the regular probe success must NOT queue another recovery probe",
     );
     assert_eq!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        manager.read_status_for_test(0).tcp.descent.capped_to(),
         Some(TransportMode::XhttpH2),
         "cap stays sticky at the deepest stable rank while recovery cooldown is active",
     );
@@ -1069,8 +1070,8 @@ fn xhttp_post_recovery_grace_absorbs_consecutive_probe_fails_until_min_failures(
     manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
     manager.clear_mode_downgrade(0, TransportKind::Tcp);
     let s = manager.read_status_for_test(0);
-    assert!(s.tcp.mode_downgrade_capped_to.is_none());
-    assert!(s.tcp.last_recovery_success_at.is_some());
+    assert!(s.tcp.descent.capped_to().is_none());
+    assert!(s.tcp.descent.last_recovery_success_at().is_some());
 
     let make_failed = || ProbeOutcome {
         tcp_ok: false,
@@ -1097,7 +1098,7 @@ fn xhttp_post_recovery_grace_absorbs_consecutive_probe_fails_until_min_failures(
             &mut udp_recovery,
         );
         assert!(
-            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+            manager.read_status_for_test(0).tcp.descent.capped_to().is_none(),
             "probe-fail #{} inside grace must be absorbed (counter < min_failures)",
             i + 1,
         );
@@ -1114,7 +1115,7 @@ fn xhttp_post_recovery_grace_absorbs_consecutive_probe_fails_until_min_failures(
         &mut udp_recovery,
     );
     assert_eq!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        manager.read_status_for_test(0).tcp.descent.capped_to(),
         Some(TransportMode::XhttpH2),
         "after `min_failures` absorbed fails the grace releases on the next descent",
     );
@@ -1169,7 +1170,7 @@ fn xhttp_post_recovery_grace_counter_reset_by_probe_success_between_fails() {
             &mut udp_recovery,
         );
         assert!(
-            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+            manager.read_status_for_test(0).tcp.descent.capped_to().is_none(),
             "cycle {}: lone fail with intervening successes must stay absorbed",
             cycle,
         );
@@ -1183,10 +1184,7 @@ fn xhttp_post_recovery_grace_counter_reset_by_probe_success_between_fails() {
             &mut udp_recovery,
         );
         assert_eq!(
-            manager
-                .read_status_for_test(0)
-                .tcp
-                .post_recovery_grace_descent_attempts,
+            manager.read_status_for_test(0).tcp.descent.grace_attempts(),
             0,
             "probe success in grace must reset the absorbed-attempts counter",
         );
@@ -1194,7 +1192,7 @@ fn xhttp_post_recovery_grace_counter_reset_by_probe_success_between_fails() {
 
     // Final assertion: cap is still cleared after the mixed pattern.
     assert!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+        manager.read_status_for_test(0).tcp.descent.capped_to().is_none(),
         "isolated fails with successes between are absorbed forever — no cap re-install",
     );
 }
@@ -1217,7 +1215,7 @@ fn xhttp_post_recovery_grace_absorbs_silent_fallback_from_dispatcher() {
     for i in 0..2 {
         manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
         assert!(
-            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+            manager.read_status_for_test(0).tcp.descent.capped_to().is_none(),
             "silent fallback #{} inside post-recovery grace must be absorbed",
             i + 1,
         );
@@ -1226,7 +1224,7 @@ fn xhttp_post_recovery_grace_absorbs_silent_fallback_from_dispatcher() {
     // Third silent fallback releases the gate (counter == min_failures).
     manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
     assert_eq!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        manager.read_status_for_test(0).tcp.descent.capped_to(),
         Some(TransportMode::XhttpH2),
         "third silent fallback releases the gate and re-installs the cap",
     );
@@ -1248,7 +1246,7 @@ fn xhttp_post_recovery_grace_absorbs_runtime_failure_after_recovery() {
         let err = anyhow::anyhow!("h3 stream reset by peer ({})", i);
         manager.note_advanced_mode_dial_failure(0, TransportKind::Tcp, &err);
         assert!(
-            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+            manager.read_status_for_test(0).tcp.descent.capped_to().is_none(),
             "runtime failure #{} inside post-recovery grace must be absorbed",
             i + 1,
         );
@@ -1258,7 +1256,7 @@ fn xhttp_post_recovery_grace_absorbs_runtime_failure_after_recovery() {
     let err = anyhow::anyhow!("h3 stream reset by peer (final)");
     manager.note_advanced_mode_dial_failure(0, TransportKind::Tcp, &err);
     assert_eq!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        manager.read_status_for_test(0).tcp.descent.capped_to(),
         Some(TransportMode::XhttpH2),
         "third runtime failure releases the grace gate",
     );
@@ -1280,10 +1278,7 @@ fn xhttp_post_recovery_grace_attempts_reset_on_cap_install() {
         manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
     }
     assert_eq!(
-        manager
-            .read_status_for_test(0)
-            .tcp
-            .post_recovery_grace_descent_attempts,
+        manager.read_status_for_test(0).tcp.descent.grace_attempts(),
         3,
         "three absorbed silent fallbacks counted toward the grace budget",
     );
@@ -1293,12 +1288,13 @@ fn xhttp_post_recovery_grace_attempts_reset_on_cap_install() {
     manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
     let s = manager.read_status_for_test(0);
     assert_eq!(
-        s.tcp.mode_downgrade_capped_to,
+        s.tcp.descent.capped_to(),
         Some(TransportMode::XhttpH2),
         "fourth silent fallback released the gate (min_failures=3 → 3 absorbs + release on 4th)",
     );
     assert_eq!(
-        s.tcp.post_recovery_grace_descent_attempts, 0,
+        s.tcp.descent.grace_attempts(),
+        0,
         "cap install resets the grace attempt counter",
     );
 }
@@ -1318,12 +1314,13 @@ fn xhttp_recovery_streak_requires_two_successes_to_clear_cap() {
     manager.note_recovery_probe_success(0, TransportKind::Tcp);
     let s = manager.read_status_for_test(0);
     assert_eq!(
-        s.tcp.mode_downgrade_capped_to,
+        s.tcp.descent.capped_to(),
         Some(TransportMode::XhttpH2),
         "first recovery success is tentative — cap must NOT clear on a single confirmation",
     );
     assert_eq!(
-        s.tcp.recovery_probe_success_streak, 1,
+        s.tcp.descent.recovery_streak(),
+        1,
         "streak counter advances to 1 on the first tentative success",
     );
 
@@ -1331,11 +1328,12 @@ fn xhttp_recovery_streak_requires_two_successes_to_clear_cap() {
     manager.note_recovery_probe_success(0, TransportKind::Tcp);
     let s = manager.read_status_for_test(0);
     assert!(
-        s.tcp.mode_downgrade_capped_to.is_none(),
+        s.tcp.descent.capped_to().is_none(),
         "second consecutive recovery success meets the streak threshold and clears the cap",
     );
     assert_eq!(
-        s.tcp.recovery_probe_success_streak, 0,
+        s.tcp.descent.recovery_streak(),
+        0,
         "clearing the cap also resets the recovery streak counter",
     );
 }
@@ -1352,13 +1350,13 @@ fn xhttp_recovery_streak_reset_on_descent() {
     manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
     // One tentative recovery success.
     manager.note_recovery_probe_success(0, TransportKind::Tcp);
-    assert_eq!(manager.read_status_for_test(0).tcp.recovery_probe_success_streak, 1,);
+    assert_eq!(manager.read_status_for_test(0).tcp.descent.recovery_streak(), 1,);
 
     // A failed recovery probe in the same cap window must reset
     // the streak — the previous tentative success was unlucky.
     manager.extend_mode_downgrade(0, TransportKind::Tcp, ModeDowngradeTrigger::RecoveryReprobeFail);
     assert_eq!(
-        manager.read_status_for_test(0).tcp.recovery_probe_success_streak,
+        manager.read_status_for_test(0).tcp.descent.recovery_streak(),
         0,
         "RecoveryReprobeFail resets the recovery streak so the next clear requires a fresh streak",
     );
@@ -1380,7 +1378,7 @@ fn xhttp_recovery_streak_reset_when_cap_changes_via_descent() {
     // is NOT armed and the descent path runs straight through.
     manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::XhttpH2);
     manager.note_recovery_probe_success(0, TransportKind::Tcp);
-    assert_eq!(manager.read_status_for_test(0).tcp.recovery_probe_success_streak, 1,);
+    assert_eq!(manager.read_status_for_test(0).tcp.descent.recovery_streak(), 1,);
 
     // Drive a probe failure at the capped carrier (H2). With
     // min_failures=1 the in-window descent gate is satisfied
@@ -1408,12 +1406,13 @@ fn xhttp_recovery_streak_reset_when_cap_changes_via_descent() {
     );
     let s = manager.read_status_for_test(0);
     assert_eq!(
-        s.tcp.mode_downgrade_capped_to,
+        s.tcp.descent.capped_to(),
         Some(TransportMode::XhttpH1),
         "descent moved the cap H2 → H1 (cap_changed = true)",
     );
     assert_eq!(
-        s.tcp.recovery_probe_success_streak, 0,
+        s.tcp.descent.recovery_streak(),
+        0,
         "cap_changed resets the recovery streak — prior tentative successes are stale",
     );
 }
@@ -1484,7 +1483,7 @@ fn ws_walk_up_holds_at_one_below_configured() {
             &mut udp_recovery,
         );
         assert_eq!(
-            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+            manager.read_status_for_test(0).tcp.descent.capped_to(),
             Some(TransportMode::WsH2),
             "WS walk-up holds at H2 (one rank below configured H3) — last hop is recovery's job",
         );
@@ -1503,20 +1502,20 @@ fn ws_recovery_streak_requires_two_successes_to_clear_cap() {
     manager.note_recovery_probe_success(0, TransportKind::Tcp);
     let s = manager.read_status_for_test(0);
     assert_eq!(
-        s.tcp.mode_downgrade_capped_to,
+        s.tcp.descent.capped_to(),
         Some(TransportMode::WsH2),
         "WS first recovery success is tentative (streak threshold = 2)",
     );
-    assert_eq!(s.tcp.recovery_probe_success_streak, 1);
+    assert_eq!(s.tcp.descent.recovery_streak(), 1);
 
     // Second consecutive recovery success clears the cap.
     manager.note_recovery_probe_success(0, TransportKind::Tcp);
     let s = manager.read_status_for_test(0);
     assert!(
-        s.tcp.mode_downgrade_capped_to.is_none(),
+        s.tcp.descent.capped_to().is_none(),
         "WS second consecutive recovery success clears the cap",
     );
-    assert_eq!(s.tcp.recovery_probe_success_streak, 0);
+    assert_eq!(s.tcp.descent.recovery_streak(), 0);
 }
 
 #[test]
@@ -1533,7 +1532,7 @@ fn ws_post_recovery_grace_absorbs_runtime_failure_after_recovery() {
         let err = anyhow::anyhow!("ws runtime fail ({})", i);
         manager.note_advanced_mode_dial_failure(0, TransportKind::Tcp, &err);
         assert!(
-            manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+            manager.read_status_for_test(0).tcp.descent.capped_to().is_none(),
             "WS runtime failure #{} inside post-recovery grace must be absorbed",
             i + 1,
         );
@@ -1543,7 +1542,7 @@ fn ws_post_recovery_grace_absorbs_runtime_failure_after_recovery() {
     let err = anyhow::anyhow!("ws runtime fail (final)");
     manager.note_advanced_mode_dial_failure(0, TransportKind::Tcp, &err);
     assert_eq!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        manager.read_status_for_test(0).tcp.descent.capped_to(),
         Some(TransportMode::WsH2),
         "WS third runtime failure releases the grace gate (counter == min_failures)",
     );
@@ -1608,7 +1607,7 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
         &mut udp_recovery,
     );
     assert_eq!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        manager.read_status_for_test(0).tcp.descent.capped_to(),
         Some(TransportMode::WsH2),
         "WS chain: first probe failure on configured H3 caps to H2",
     );
@@ -1626,7 +1625,7 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
         &mut udp_recovery,
     );
     assert_eq!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        manager.read_status_for_test(0).tcp.descent.capped_to(),
         Some(TransportMode::WsH1),
         "WS chain: second probe failure on H2 caps to H1 (H3 → H2 → H1 walk)",
     );
@@ -1643,7 +1642,7 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
         &mut udp_recovery,
     );
     assert_eq!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to,
+        manager.read_status_for_test(0).tcp.descent.capped_to(),
         Some(TransportMode::WsH1),
         "WS chain: H1 is the deepest rank; further failures don't move the cap",
     );
@@ -1682,7 +1681,8 @@ fn xhttp_post_recovery_grace_renewed_by_probe_success_across_wide_gap() {
     let initial = manager
         .read_status_for_test(0)
         .tcp
-        .last_recovery_success_at
+        .descent
+        .last_recovery_success_at()
         .expect("grace timestamp set by clear");
 
     // Run a couple of probe cycles' worth of successes.
@@ -1701,7 +1701,8 @@ fn xhttp_post_recovery_grace_renewed_by_probe_success_across_wide_gap() {
     let renewed = manager
         .read_status_for_test(0)
         .tcp
-        .last_recovery_success_at
+        .descent
+        .last_recovery_success_at()
         .expect("grace timestamp still set");
     assert!(
         renewed >= initial,
@@ -1715,7 +1716,7 @@ fn xhttp_post_recovery_grace_renewed_by_probe_success_across_wide_gap() {
     let err = anyhow::anyhow!("ws upstream read idle for 300s on datagram channel");
     manager.note_advanced_mode_dial_failure(0, TransportKind::Tcp, &err);
     assert!(
-        manager.read_status_for_test(0).tcp.mode_downgrade_capped_to.is_none(),
+        manager.read_status_for_test(0).tcp.descent.capped_to().is_none(),
         "runtime error long after recovery clear is still absorbed because probe successes kept the grace alive",
     );
 }
@@ -1735,7 +1736,8 @@ fn xhttp_recovery_cooldown_cleared_by_clear_mode_downgrade() {
         manager
             .read_status_for_test(0)
             .tcp
-            .recovery_probe_cooldown_until
+            .descent
+            .recovery_probe_cooldown_until()
             .is_some(),
         "cooldown armed by RecoveryReprobeFail",
     );
@@ -1744,9 +1746,9 @@ fn xhttp_recovery_cooldown_cleared_by_clear_mode_downgrade() {
 
     let s = manager.read_status_for_test(0);
     assert!(
-        s.tcp.mode_downgrade_until.is_none()
-            && s.tcp.mode_downgrade_capped_to.is_none()
-            && s.tcp.recovery_probe_cooldown_until.is_none(),
+        s.tcp.descent.until().is_none()
+            && s.tcp.descent.capped_to().is_none()
+            && s.tcp.descent.recovery_probe_cooldown_until().is_none(),
         "clear_mode_downgrade resets cap, deadline, AND recovery cooldown together",
     );
 }
@@ -2164,11 +2166,8 @@ async fn fallback_wire_downgrade_caps_only_its_own_wire() {
         "primary's mode must stay at XhttpH3 — fallback wire downgrade does not pollute it",
     );
     let snap = manager.read_status_for_test(0);
-    assert!(
-        snap.tcp.mode_downgrade_until.is_none(),
-        "primary's downgrade slot must remain unset",
-    );
-    assert!(snap.tcp.mode_downgrade_capped_to.is_none(), "primary's cap must remain unset",);
+    assert!(snap.tcp.descent.until().is_none(), "primary's downgrade slot must remain unset",);
+    assert!(snap.tcp.descent.capped_to().is_none(), "primary's cap must remain unset",);
 }
 
 #[tokio::test]
@@ -2390,11 +2389,11 @@ fn primary_probe_err_skipped_when_active_fallback_recently_alive() {
     );
     assert_eq!(status.udp.consecutive_failures, 0, "udp side is gated identically",);
     assert!(
-        status.tcp.mode_downgrade_until.is_none(),
+        status.tcp.descent.until().is_none(),
         "primary probe failure must not re-arm the TCP mode-downgrade window in this state",
     );
     assert!(
-        status.udp.mode_downgrade_until.is_none(),
+        status.udp.descent.until().is_none(),
         "primary probe failure must not re-arm the UDP mode-downgrade window in this state",
     );
     assert_eq!(status.tcp.active_wire, 1, "active_wire must stay on the verified fallback",);
@@ -2849,9 +2848,10 @@ async fn shuffle_wires_holds_wire_advance_until_carrier_floor() {
     let manager = manager_with_strict_global_uplink(cfg, 1);
     {
         manager.inner.with_status_mut(0, |status| {
-            status.udp.mode_downgrade_capped_to = Some(TransportMode::XhttpH2);
-            status.udp.mode_downgrade_until =
-                Some(tokio::time::Instant::now() + std::time::Duration::from_secs(60));
+            status.udp.descent.seed_window(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+                TransportMode::XhttpH2,
+            );
         });
     }
     // Sanity: wire 0 should report "not at floor".
@@ -2892,7 +2892,10 @@ async fn shuffle_wires_holds_wire_advance_until_carrier_floor() {
     // Now simulate the cap walking all the way to xhttp_h1 (floor).
     {
         manager.inner.with_status_mut(0, |status| {
-            status.udp.mode_downgrade_capped_to = Some(TransportMode::XhttpH1);
+            status.udp.descent.seed_window(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(60),
+                TransportMode::XhttpH1,
+            );
         });
     }
     let snap = manager.read_status_for_test(0);
@@ -2967,10 +2970,10 @@ fn shuffle_timer_rotate_active_wire_resets_per_wire_state() {
     assert_eq!(snap.udp.active_wire_streak, 0);
     assert_eq!(snap.udp.wires_failed_in_round, 0);
     assert_eq!(snap.udp.consecutive_failures, 0);
-    assert!(snap.tcp.mode_downgrade_capped_to.is_none());
-    assert!(snap.tcp.mode_downgrade_until.is_none());
-    assert!(snap.udp.mode_downgrade_capped_to.is_none());
-    assert!(snap.udp.mode_downgrade_until.is_none());
+    assert!(snap.tcp.descent.capped_to().is_none());
+    assert!(snap.tcp.descent.until().is_none());
+    assert!(snap.udp.descent.capped_to().is_none());
+    assert!(snap.udp.descent.until().is_none());
     // Pin only when we left primary.
     if tcp_wire == 0 {
         assert!(snap.tcp.active_wire_pinned_until.is_none());
@@ -3140,7 +3143,7 @@ async fn carrier_downgrade_off_advances_wire_immediately() {
     );
     let snap = manager.read_status_for_test(0);
     assert!(
-        snap.udp.mode_downgrade_capped_to.is_none(),
+        snap.udp.descent.capped_to().is_none(),
         "extend_mode_downgrade is a no-op with carrier_downgrade = false",
     );
     assert_eq!(snap.udp.wires_failed_in_round, 1);
