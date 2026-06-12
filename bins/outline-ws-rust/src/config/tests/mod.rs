@@ -334,6 +334,7 @@ async fn load_config_enables_tun_when_configured() {
         password = "Secret0"
 
         [tun]
+        name = "tun0"
         path = "/dev/tun0"
         mtu = 1500
         max_flows = 512
@@ -800,6 +801,7 @@ async fn load_config_allows_tun_without_socks5_listener() {
         password = "Secret0"
 
         [tun]
+        name = "tun0"
         path = "/dev/tun0"
         mtu = 1500
         max_flows = 512
