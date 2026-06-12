@@ -74,8 +74,8 @@ feature gates для router-сборок частью публичного по�
   metrics.
 - `crates/outline-routing/`: CIDR routing table и routing config primitives.
 - `crates/socks5-proto/`: SOCKS5 handshake, target, UDP и reassembly helpers.
-- `crates/shadowsocks-crypto/` и `crates/outline-ss2022/`: Shadowsocks crypto и
-  helpers для 2022 framing.
+- `crates/shadowsocks-crypto/`: Shadowsocks AEAD crypto helpers (SS2022-типы
+  фреймирования живут в `crates/outline-wire`).
 - `crates/outline-wire/`: общий с сервером wire-кодек (`CipherKind`,
   `TargetAddr`, SS2022-заголовки, VLESS/mux). `socks5-proto`,
   `shadowsocks-crypto` и `outline-transport` реэкспортируют его типы —

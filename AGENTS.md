@@ -33,7 +33,7 @@ raw QUIC), поэтому живут в одном дереве с общими 
   SS2022-заголовки, VLESS/mux-кодек; чистая логика, без tokio и без
   AEAD-backend'ов). Ныне в основном client-side: `outline-transport`,
   `outline-uplink`, `outline-tun`, `outline-metrics`, `outline-net`,
-  `outline-routing`, `outline-ss2022`, `shadowsocks-crypto`, `socks5-proto`.
+  `outline-routing`, `shadowsocks-crypto`, `socks5-proto`.
 - `vendor/h3`, `vendor/sockudo-ws` — пропатченные крейты, подключены через
   корневой `[patch.crates-io]`. ОДНА копия каждого на весь workspace.
 

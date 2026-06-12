@@ -58,7 +58,7 @@ impl std::error::Error for TransportOperation {}
 ///    are found by `anyhow::Error::downcast_ref::<T>()` but NOT by walking
 ///    `chain()` (the std `Error::source()` iterator does not expose
 ///    context values).
-/// 2. Typed root/source errors (e.g. `bail!(outline_ss2022::Ss2022Error::…)`, `Error::new(T)`)
+/// 2. Typed root/source errors (e.g. `bail!(outline_wire::ss2022::Ss2022Error::…)`, `Error::new(T)`)
 ///    — found by either `downcast_ref` or `chain().find_map()`.
 ///
 /// Many call-sites use form 1 (`.with_context(|| TransportOperation::…)`), so

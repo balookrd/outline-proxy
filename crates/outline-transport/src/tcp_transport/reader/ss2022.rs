@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use outline_ss2022::Ss2022Error;
+use outline_wire::ss2022::Ss2022Error;
 use outline_wire::ss2022::Ss2022HeaderError;
 use shadowsocks_crypto::CipherKind;
 

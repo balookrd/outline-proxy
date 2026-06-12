@@ -1,7 +1,7 @@
 use crate::TransportOperation;
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
-use outline_ss2022::Ss2022Error;
+use outline_wire::ss2022::Ss2022Error;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;

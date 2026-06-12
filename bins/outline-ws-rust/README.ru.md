@@ -215,7 +215,6 @@ tun2udp + tun2tcp"]
 - [`crates/outline-uplink/`](crates/outline-uplink) — выбор аплинка, пробы, failover и standby-логика
 - [`crates/outline-transport/`](crates/outline-transport) — WebSocket / HTTP-2 / HTTP-3 / raw-QUIC / VLESS / direct-Shadowsocks транспорты + кросс-транспортный `ResumeCache`
 - [`crates/outline-net/`](crates/outline-net) — DNS-cache и общий net-обвес, вынесенный из `outline-transport`
-- [`crates/outline-ss2022/`](crates/outline-ss2022) — хелперы фреймирования Shadowsocks 2022
 - [`crates/outline-tun/`](crates/outline-tun) — stateful TUN relay engines
 - [`crates/outline-metrics/`](crates/outline-metrics) — регистрация Prometheus-метрик и session/transport snapshots
 - [`crates/outline-routing/`](crates/outline-routing) — CIDR-таблица роутинга
