@@ -184,7 +184,7 @@ fn primary_to_fallback_shape(uplink: &UplinkConfig) -> FallbackTransport {
         password: uplink.password.clone(),
         fwmark: uplink.fwmark,
         ipv6_first: uplink.ipv6_first,
-        fingerprint_profile: uplink.fingerprint_profile.clone(),
+        fingerprint_profile: uplink.fingerprint_profile,
     }
 }
 

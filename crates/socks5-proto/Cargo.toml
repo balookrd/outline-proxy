@@ -3,6 +3,9 @@ name = "socks5-proto"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 outline-wire = { path = "../outline-wire" }
 thiserror = "2.0"

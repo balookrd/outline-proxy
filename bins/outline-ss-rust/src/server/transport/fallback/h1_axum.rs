@@ -165,6 +165,6 @@ async fn proxy_to_backend(
         }
         resp_headers.append(name.clone(), value.clone());
     }
-    let body = Body::new(resp_body.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+    let body = Body::new(resp_body.map_err(std::io::Error::other));
     builder.body(body).context("failed to assemble fallback response")
 }

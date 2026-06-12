@@ -3,6 +3,9 @@ name = "outline-uplink"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 default = ["metrics"]
 metrics = ["outline-metrics/prometheus", "cert-check"]

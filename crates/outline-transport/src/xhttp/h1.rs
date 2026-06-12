@@ -127,7 +127,7 @@ pub(super) async fn connect_xhttp_h1(
         let target = Arc::new(XhttpTarget {
             scheme: scheme.into(),
             authority,
-            base_path: base_path.into(),
+            base_path,
             session_id: session_id.clone(),
         });
 
@@ -193,7 +193,7 @@ async fn h1_handshake(
             .connect(server_name, tcp)
             .await
             .context("TLS handshake for xhttp/h1 failed")?;
-        spawn_h1(TokioIo::new(BoxedIo::Tls(tls))).await
+        spawn_h1(TokioIo::new(BoxedIo::Tls(Box::new(tls)))).await
     } else {
         spawn_h1(TokioIo::new(BoxedIo::Plain(tcp))).await
     }

@@ -54,8 +54,8 @@ async fn spawn_vless_resumption_server() -> Result<(ResumptionTestServer, VlessU
 
 // ── VLESS request encoding ───────────────────────────────────────────────────
 
-/// Builds a VLESS TCP request: VERSION + UUID + opt_len(0) + cmd(TCP)
-/// + port(BE16) + atype(0x01 IPv4) + IPv4 + payload. Mirrors
+/// Builds a VLESS TCP request: VERSION + UUID + opt_len(0) + cmd(TCP) +
+/// port(BE16) + atype(0x01 IPv4) + IPv4 + payload. Mirrors
 /// `vless_websocket_tcp_relay_smoke` in `tests/vless.rs`.
 fn vless_tcp_request(uuid: &str, target: SocketAddr, payload: &[u8]) -> Result<Bytes> {
     let mut request = Vec::with_capacity(32 + payload.len());
@@ -73,9 +73,9 @@ fn vless_tcp_request(uuid: &str, target: SocketAddr, payload: &[u8]) -> Result<B
     Ok(Bytes::from(request))
 }
 
-/// Builds a VLESS UDP request: VERSION + UUID + opt_len(0) + cmd(UDP)
-/// + port(BE16) + atype(0x01 IPv4) + IPv4. The first datagram payload
-/// is appended length-prefixed (`len:u16 + bytes`) — same wire format
+/// Builds a VLESS UDP request: VERSION + UUID + opt_len(0) + cmd(UDP) +
+/// port(BE16) + atype(0x01 IPv4) + IPv4. The first datagram payload is
+/// appended length-prefixed (`len:u16 + bytes`) — same wire format
 /// the server expects for subsequent datagrams.
 fn vless_udp_request(uuid: &str, target: SocketAddr, payload: &[u8]) -> Result<Bytes> {
     let mut request = BytesMut::with_capacity(32 + payload.len());

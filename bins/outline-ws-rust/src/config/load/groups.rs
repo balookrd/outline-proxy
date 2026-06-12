@@ -123,7 +123,7 @@ pub(super) fn load_groups(
 
     // Build each UplinkGroupConfig with merged probe + LB.
     let mut groups = Vec::with_capacity(sections.len());
-    for ((section, name), bucket) in sections.iter().zip(names.iter()).zip(buckets.into_iter()) {
+    for ((section, name), bucket) in sections.iter().zip(names.iter()).zip(buckets) {
         let merged_probe = merge_probe_section(probe_template.as_ref(), section.probe.as_ref());
         let probe = load_probe_config(merged_probe.as_ref())?;
         let load_balancing = load_balancing_config_from_group(section)?;

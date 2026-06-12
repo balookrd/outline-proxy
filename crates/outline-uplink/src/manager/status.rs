@@ -125,6 +125,7 @@ pub(crate) struct PerTransportStatus {
     ///     pinned again the grace path is irrelevant; subsequent
     ///     descent triggers route through the in-window descent gate
     ///     using `consecutive_failures`.
+    ///
     /// Without this separate counter, silent-fallback / runtime-failure
     /// triggers from the dispatcher (which do NOT increment
     /// `consecutive_failures`) would bypass the post-recovery grace
@@ -143,6 +144,7 @@ pub(crate) struct PerTransportStatus {
     ///     pending recovery streak,
     ///   * `RecoveryReprobeFail` — failed recovery clears the streak,
     ///   * `clear_mode_downgrade` — cap is gone, streak is moot.
+    ///
     /// Without this streak, on uplinks where handshake H3 works but
     /// the data plane is flaky (server-side issue, e.g.
     /// `xhttp/h3 stream-one downlink ended`), the recovery probe

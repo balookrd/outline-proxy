@@ -19,6 +19,15 @@ members = [
     "vendor/sockudo-ws",
 ]
 
+# Shared lint policy for our own packages (each opts in via
+# `[lints] workspace = true`; the vendored sockudo-ws deliberately does not).
+# The two allows are deliberate: wide protocol-path functions and verbose
+# generic types are tracked as god-object refactor work, not lint noise —
+# everything else from clippy's default set is expected to stay at zero.
+[workspace.lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+
 # Shared release profile. lto="fat" + single codegen unit + panic=abort match
 # the previous per-repo release builds (ws used lto=true, which is "fat").
 [profile.release]

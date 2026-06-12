@@ -339,7 +339,7 @@ impl UplinkConfig {
             fwmark: fb.fwmark,
             ipv6_first: fb.ipv6_first,
             vless_id: fb.vless_id,
-            fingerprint_profile: fb.fingerprint_profile.clone(),
+            fingerprint_profile: fb.fingerprint_profile,
             fallbacks: Vec::new(),
             // wire_view materialises a synthetic single-wire uplink for
             // probe walks — round-rotation semantics are meaningless on a

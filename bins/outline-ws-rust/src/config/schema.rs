@@ -296,6 +296,7 @@ pub(crate) struct UplinkSection {
     ///     stabilising on any wire restarts the round, and rotation
     ///     continues forward from the wire that just worked on the next
     ///     failure.
+    ///
     /// Default `false` preserves the legacy operator-ordered chain and
     /// the existing sticky / wrap-forever wire state machine.
     pub(crate) shuffle_wires: Option<bool>,

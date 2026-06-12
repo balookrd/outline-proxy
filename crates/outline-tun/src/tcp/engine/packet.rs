@@ -246,31 +246,31 @@ impl TunTcpEngine {
             return Ok(());
         }
 
-        if !outcome.pending_payload.is_empty() {
-            if let Some(upstream_writer) = upstream_writer.clone() {
-                let send_result = {
-                    let mut upstream_writer = upstream_writer.lock().await;
-                    upstream_writer.send_chunk(&outcome.pending_payload).await
-                };
-                if let Err(error) = send_result {
-                    self.report_tcp_runtime_failure_and_abort(
-                        &key,
-                        &flow_manager,
-                        uplink_index,
-                        &error,
-                        "send_error",
-                    )
-                    .await;
-                    return Ok(());
-                }
-                metrics::add_bytes(
-                    "tcp",
-                    "client_to_upstream",
-                    flow_manager.group_name(),
-                    &uplink_name,
-                    outcome.pending_payload.len(),
-                );
+        if !outcome.pending_payload.is_empty()
+            && let Some(upstream_writer) = upstream_writer.clone()
+        {
+            let send_result = {
+                let mut upstream_writer = upstream_writer.lock().await;
+                upstream_writer.send_chunk(&outcome.pending_payload).await
+            };
+            if let Err(error) = send_result {
+                self.report_tcp_runtime_failure_and_abort(
+                    &key,
+                    &flow_manager,
+                    uplink_index,
+                    &error,
+                    "send_error",
+                )
+                .await;
+                return Ok(());
             }
+            metrics::add_bytes(
+                "tcp",
+                "client_to_upstream",
+                flow_manager.group_name(),
+                &uplink_name,
+                outcome.pending_payload.len(),
+            );
         }
 
         if let Some(ack) = outcome.pending_ack {

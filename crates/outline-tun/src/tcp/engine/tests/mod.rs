@@ -1384,12 +1384,12 @@ impl TunCapture {
             let data = tokio::fs::read(&self.path).await.unwrap_or_default();
             if data.len() > self.offset {
                 let remaining = &data[self.offset..];
-                if let Some(packet_len) = packet_length(remaining) {
-                    if remaining.len() >= packet_len {
-                        let packet = remaining[..packet_len].to_vec();
-                        self.offset += packet_len;
-                        return packet;
-                    }
+                if let Some(packet_len) = packet_length(remaining)
+                    && remaining.len() >= packet_len
+                {
+                    let packet = remaining[..packet_len].to_vec();
+                    self.offset += packet_len;
+                    return packet;
                 }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;

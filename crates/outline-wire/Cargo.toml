@@ -3,6 +3,9 @@ name = "outline-wire"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [features]
 # Derives clap::ValueEnum on CipherKind for CLI parsing (server binary).
 clap = ["dep:clap"]

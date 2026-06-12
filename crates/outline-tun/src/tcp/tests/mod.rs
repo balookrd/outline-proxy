@@ -1600,7 +1600,7 @@ fn build_client_ipv6_packet_with_options(
 }
 
 fn tcp_option_pad(mut options: Vec<u8>) -> Vec<u8> {
-    while options.len() % 4 != 0 {
+    while !options.len().is_multiple_of(4) {
         options.push(1);
     }
     options

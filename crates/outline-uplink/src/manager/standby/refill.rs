@@ -148,7 +148,7 @@ impl<'a> StandbyCtx<'a> {
             }
 
             let ws = crate::dial::dial_in_uplink_scope(
-                &self.uplink,
+                self.uplink,
                 connect_transport(
                     TransportDialOptions::new(cache, url, self.mode, self.refill_source)
                         .with_network(DialNetworkOptions {

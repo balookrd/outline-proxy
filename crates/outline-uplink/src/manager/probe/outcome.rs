@@ -159,11 +159,11 @@ fn advance_active_wire_on_probe_failure(
     // `record_transport_success`'s early-failback block, which fires
     // when probe genuinely confirms primary recovered — not on a
     // wall-clock timer.
-    if let Some(until) = status.active_wire_pinned_until {
-        if until <= now {
-            status.active_wire_pinned_until = None;
-            status.active_wire_streak = 0;
-        }
+    if let Some(until) = status.active_wire_pinned_until
+        && until <= now
+    {
+        status.active_wire_pinned_until = None;
+        status.active_wire_streak = 0;
     }
     if status.active_wire != 0 {
         return false;

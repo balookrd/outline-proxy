@@ -35,7 +35,7 @@ pub(super) async fn resolve_udp_target(
             addrs
                 .first()
                 .copied()
-                .ok_or_else(|| anyhow!("dns lookup returned no records for {}", target.to_string()))
+                .ok_or_else(|| anyhow!("dns lookup returned no records for {}", target))
         },
         TargetAddr::IpV4(ip, port) => {
             literal_ip_addr(SocketAddr::from((*ip, *port)), prefer_ipv4_upstream)
@@ -133,7 +133,7 @@ pub(super) async fn connect_tcp_target(
     let ordered = sort_addrs_for_happy_eyeballs(&resolved, prefer_ipv4_upstream);
     connect_tcp_addrs(&ordered, fwmark, outbound_ipv6)
         .await
-        .with_context(|| format!("tcp connect failed for {}", target.to_string()))
+        .with_context(|| format!("tcp connect failed for {}", target))
 }
 
 pub(super) fn sort_addrs_for_happy_eyeballs(

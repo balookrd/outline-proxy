@@ -103,11 +103,11 @@ impl UplinkManager {
                 TransportKind::Tcp => &mut status.tcp,
                 TransportKind::Udp => &mut status.udp,
             };
-            if let Some(until) = st.active_wire_pinned_until {
-                if until <= now {
-                    st.active_wire_pinned_until = None;
-                    st.active_wire_streak = 0;
-                }
+            if let Some(until) = st.active_wire_pinned_until
+                && until <= now
+            {
+                st.active_wire_pinned_until = None;
+                st.active_wire_streak = 0;
             }
             st.active_wire
         })

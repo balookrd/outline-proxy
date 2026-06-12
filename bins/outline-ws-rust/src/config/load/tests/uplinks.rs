@@ -534,7 +534,7 @@ fn shuffle_wires_per_group_avoids_collisions_in_the_same_group() {
     };
 
     for _ in 0..64 {
-        let sections = vec![make_section("alpha"), make_section("beta"), make_section("gamma")];
+        let sections = [make_section("alpha"), make_section("beta"), make_section("gamma")];
         let group_labels: Vec<Option<String>> = sections.iter().map(|s| s.group.clone()).collect();
         let mut resolved: Vec<UplinkConfig> = sections
             .iter()
@@ -596,7 +596,7 @@ fn shuffle_wires_per_group_isolates_groups() {
     // Concretely: run with one uplink per group and confirm both ran
     // through the shuffle without panicking (the seen-set lookup must
     // use the group key, not a single global one).
-    let sections = vec![make_section("alpha", "group-a"), make_section("beta", "group-b")];
+    let sections = [make_section("alpha", "group-a"), make_section("beta", "group-b")];
     let group_labels: Vec<Option<String>> = sections.iter().map(|s| s.group.clone()).collect();
     let mut resolved: Vec<UplinkConfig> = sections
         .iter()

@@ -560,7 +560,7 @@ where
                 // VLESS session holds no per-direction relay buffer; the
                 // buffer returns to the pool before the next park.
                 let mut buffer = TcpRelayBuf::take();
-                let read = match upstream_reader.try_read(&mut *buffer) {
+                let read = match upstream_reader.try_read(&mut buffer) {
                     Ok(read) => read,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => return Err(error).context("failed to read from vless upstream"),
