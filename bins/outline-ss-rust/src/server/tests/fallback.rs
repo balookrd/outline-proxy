@@ -35,7 +35,7 @@ use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
 use super::super::transport::HttpFallbackContext;
-use super::super::{DnsCache, build_app, build_user_routes, serve_h3_server};
+use super::super::{DnsCache, H3ServeCtx, build_app, build_user_routes, serve_h3_server};
 use super::{build_test_state, sample_config, test_h3_client_config, test_h3_server_tls};
 use crate::config::{BackendProto, H3Alpn, HttpFallbackConfig, ProxyProtocolVersion};
 use crate::metrics::Metrics;
@@ -639,16 +639,22 @@ async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            std::sync::Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(
-                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-            ),
-            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
-            Some(h3_fallback),
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: std::sync::Arc::from(
+                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+                ),
+                raw_vless_candidates: std::sync::Arc::from(
+                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
+                ),
+                raw_ss_users: std::sync::Arc::from(
+                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+                ),
+                http_fallback: Some(h3_fallback),
+            },
             ShutdownSignal::never(),
         )
         .await

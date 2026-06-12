@@ -285,6 +285,7 @@ pub(super) fn cross_repo_install_test_tls_root_on_client() {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn connect_websocket_with_resume(
     cache: &outline_transport::DnsCache,
     url: &url::Url,

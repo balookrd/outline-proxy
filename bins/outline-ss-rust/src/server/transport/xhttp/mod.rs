@@ -46,56 +46,17 @@ mod padding;
 
 pub(in crate::server) use duplex::XhttpDuplex;
 pub(in crate::server) use generate_anonymous_session_id as generate_anonymous_xhttp_session_id;
-pub(in crate::server) use h3::handle_xhttp_h3_request;
+pub(in crate::server) use h3::{XhttpH3Ctx, handle_xhttp_h3_request};
 pub(in crate::server) use handlers::{
     XhttpAxumState, xhttp_handler, xhttp_handler_no_session, xhttp_handler_with_path_seq,
 };
 pub(in crate::server) use padding::{generate_padding_header, masquerade_response_headers};
 
-/// HTTP request header carrying the in-order seq number for an
-/// uplink POST. Lower-cased to match hyper's normalised headers.
-pub(in crate::server) const SEQ_HEADER: &str = "x-xhttp-seq";
-
-/// Submode selector. Picked from the request URL's query string
-/// via `?mode=...`. Absent / unknown values fall back to packet-up,
-/// keeping pre-existing clients on the working path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::server) enum XhttpSubmode {
-    /// Default. Long-lived GET (downlink) + sequenced POSTs (uplink).
-    PacketUp,
-    /// Single bidirectional request: request body = uplink, response
-    /// body = downlink. Requires h2 or h3 (h1 cannot full-duplex).
-    StreamOne,
-}
-
-impl XhttpSubmode {
-    /// Parses `?mode=...` out of the URL query string. Accepts both
-    /// dashed (`stream-one`) and underscored (`stream_one`) spellings
-    /// because xray uses the dashed form on the wire while sing-box
-    /// configs sometimes carry the underscored one.
-    pub(in crate::server) fn parse(query: Option<&str>) -> Self {
-        let Some(q) = query else {
-            return Self::PacketUp;
-        };
-        for pair in q.split('&') {
-            if let Some(value) = pair.strip_prefix("mode=") {
-                return match value {
-                    "stream-one" | "stream_one" => Self::StreamOne,
-                    _ => Self::PacketUp,
-                };
-            }
-        }
-        Self::PacketUp
-    }
-}
-/// HTTP request/response header for a `Sec-WebSocket-Key`-style
-/// random padding. Server emits one with each response, server
-/// accepts and ignores any client-emitted value.
-pub(in crate::server) const PADDING_HEADER: &str = "x-padding";
-/// Hint header sent on the final POST of a session so the server
-/// can collapse the uplink without waiting for an idle timeout.
-/// Optional — its absence does not change correctness.
-pub(in crate::server) const FIN_HEADER: &str = "x-xhttp-fin";
+// XHTTP wire vocabulary (header names, `?mode=` submode selector) is
+// shared with the client and lives in `outline_wire::xhttp`.
+pub(in crate::server) use outline_wire::xhttp::{
+    FIN_HEADER, PADDING_HEADER, SEQ_HEADER, XhttpSubmode,
+};
 
 /// Soft cap on the bytes the per-session downlink ring may hold.
 /// The relay's `push_downlink` parks (awaits) once the ring sits
@@ -518,16 +479,10 @@ pub(in crate::server) enum DownlinkPushError {
 
 /// URL-captured `{id}` sanity check shared between the axum
 /// (h1/h2) and h3 entry points. Path captures already reject
-/// `/`, `?`, `#`; we further bound the length and restrict to
-/// URL-safe alphanumeric so that a hostile blob cannot evade
-/// log redaction. The id is opaque to the server otherwise.
-pub(in crate::server) fn is_valid_session_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 128
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
-}
+/// `/`, `?`, `#`; the shared rule further bounds the length and
+/// restricts to URL-safe alphanumeric so that a hostile blob cannot
+/// evade log redaction. The id is opaque to the server otherwise.
+pub(in crate::server) use outline_wire::xhttp::is_valid_session_id;
 
 /// 16-byte URL-safe alphanumeric session id, generated server-side
 /// for xray-style stream-one carriers that hit `<base>` (or
@@ -538,8 +493,8 @@ pub(in crate::server) fn is_valid_session_id(id: &str) -> bool {
 /// same order as the client-supplied ids, so log redaction patterns
 /// keep working uniformly.
 pub(in crate::server) fn generate_anonymous_session_id() -> String {
+    use outline_wire::xhttp::SESSION_ID_ALPHABET as ALPHABET;
     use ring::rand::{SecureRandom, SystemRandom};
-    const ALPHABET: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut raw = [0_u8; 16];
     // Best-effort RNG: if the platform RNG fails (extremely unlikely
     // outside of test mocks) we still need a non-empty, unique-ish

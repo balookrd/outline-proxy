@@ -23,7 +23,7 @@ use tokio::{
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
-use super::super::{DnsCache, serve_h3_server};
+use super::super::{DnsCache, H3ServeCtx, serve_h3_server};
 use crate::config::H3Alpn;
 use crate::crypto::{AeadStreamDecryptor, AeadStreamEncryptor, UserKey};
 use crate::crypto::{decrypt_udp_packet, encrypt_udp_packet};
@@ -148,14 +148,16 @@ async fn vless_raw_quic_tcp_relay_smoke() -> Result<()> {
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            Arc::from(vec![H3Alpn::Vless].into_boxed_slice()),
-            raw_vless_users,
-            raw_vless_candidates,
-            Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![H3Alpn::Vless].into_boxed_slice()),
+                raw_vless_users,
+                raw_vless_candidates,
+                raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -224,14 +226,16 @@ async fn ss_raw_quic_tcp_relay_smoke() -> Result<()> {
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            Arc::from(vec![H3Alpn::Ss].into_boxed_slice()),
-            Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
-            Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
-            users,
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![H3Alpn::Ss].into_boxed_slice()),
+                raw_vless_users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+                raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+                raw_ss_users: users,
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -338,14 +342,16 @@ async fn vless_raw_quic_udp_relay_smoke() -> Result<()> {
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            Arc::from(vec![H3Alpn::Vless].into_boxed_slice()),
-            raw_vless_users,
-            raw_vless_candidates,
-            Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![H3Alpn::Vless].into_boxed_slice()),
+                raw_vless_users,
+                raw_vless_candidates,
+                raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -436,14 +442,16 @@ async fn vless_raw_quic_udp_oversize_relay() -> Result<()> {
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            Arc::from(vec![H3Alpn::Vless].into_boxed_slice()),
-            raw_vless_users,
-            raw_vless_candidates,
-            Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![H3Alpn::Vless].into_boxed_slice()),
+                raw_vless_users,
+                raw_vless_candidates,
+                raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -553,14 +561,16 @@ async fn ss_raw_quic_udp_relay_smoke() -> Result<()> {
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            Arc::from(vec![H3Alpn::Ss].into_boxed_slice()),
-            Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
-            Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
-            users,
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![H3Alpn::Ss].into_boxed_slice()),
+                raw_vless_users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+                raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+                raw_ss_users: users,
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -622,14 +632,16 @@ async fn ss_raw_quic_udp_oversize_relay() -> Result<()> {
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            Arc::from(vec![H3Alpn::Ss].into_boxed_slice()),
-            Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
-            Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
-            users,
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![H3Alpn::Ss].into_boxed_slice()),
+                raw_vless_users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+                raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+                raw_ss_users: users,
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await

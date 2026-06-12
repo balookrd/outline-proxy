@@ -46,6 +46,7 @@ use crate::{DnsCache, TransportOperation, UpstreamTransportGuard};
 
 /// Open a VLESS TCP session: dial / reuse a `vless`-ALPN QUIC connection
 /// and open a fresh bidi stream for the target.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_vless_tcp_quic(
     cache: &DnsCache,
     url: &Url,
@@ -152,6 +153,7 @@ pub async fn connect_vless_udp_session_quic(
 
 /// Open an SS TCP session: dial / reuse an `ss`-ALPN QUIC connection
 /// and open a fresh bidi stream wrapped in the AEAD codec.
+#[allow(clippy::too_many_arguments)]
 pub async fn connect_ss_tcp_quic(
     cache: &DnsCache,
     url: &Url,

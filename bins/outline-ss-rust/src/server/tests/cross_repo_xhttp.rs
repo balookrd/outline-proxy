@@ -57,7 +57,7 @@ use super::super::setup::{VlessXhttpUserRoute, build_xhttp_vless_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
 use super::super::transport::XhttpRegistry;
-use super::super::{DnsCache, build_app, serve_h3_server};
+use super::super::{DnsCache, H3ServeCtx, build_app, serve_h3_server};
 use super::connect_websocket_with_resume;
 use super::sample_config;
 use super::xhttp::{
@@ -645,14 +645,16 @@ async fn setup_xhttp_h3_server(
     let handle = tokio::spawn(async move {
         serve_h3_server(
             h3_server,
-            routes,
-            services,
-            auth,
-            Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
-            Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
-            Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
-            Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+                raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+                raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await

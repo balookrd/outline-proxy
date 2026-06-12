@@ -306,6 +306,7 @@ pub(super) async fn forward_vless_udp_client_frames(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn relay_vless_udp_upstream_to_client<Msg>(
     socket: Arc<UdpSocket>,
     tx: mpsc::Sender<Msg>,

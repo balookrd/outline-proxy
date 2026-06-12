@@ -1,17 +1,17 @@
 //! Cross-transport session resumption — client side.
 //!
-//! Mirrors the server-side spec at `docs/SESSION-RESUMPTION.md` in the
-//! outline-ss-rust repository. The client mints nothing on its own —
-//! Session IDs are **server-issued**: the server returns one in the
-//! `X-Outline-Session` response header on a successful WebSocket
-//! Upgrade, the client stores it, and on the next reconnect (possibly
-//! over a different transport) presents it back via `X-Outline-Resume`.
-//! On a hit the upstream `TcpStream` is reattached without reopening
-//! the connection to the destination.
+//! Follows the spec at `docs/SESSION-RESUMPTION.md`. The client mints
+//! nothing on its own — Session IDs are **server-issued**: the server
+//! returns one in the `X-Outline-Session` response header on a
+//! successful WebSocket Upgrade, the client stores it, and on the next
+//! reconnect (possibly over a different transport) presents it back
+//! via `X-Outline-Resume`. On a hit the upstream `TcpStream` is
+//! reattached without reopening the connection to the destination.
 //!
-//! This module is intentionally kept small: only the `SessionId`
-//! newtype and the wire constants. Higher-level plumbing (per-uplink
-//! cache, retry semantics) lives in `outline-uplink`.
+//! This module is intentionally kept small: the `SessionId` newtype,
+//! the resume cache, and re-exports of the wire vocabulary shared with
+//! the server through `outline_wire::resume`. Higher-level plumbing
+//! (per-uplink cache, retry semantics) lives in `outline-uplink`.
 //!
 //! See also the lifecycle table in the server spec — this client only
 //! ever surfaces `Resume-Capable: 1` (no ID yet) or
@@ -94,46 +94,12 @@ impl fmt::Display for SessionId {
     }
 }
 
-/// Lower-cased name of the request header carrying the Session ID a
-/// client wishes to resume.
-pub const RESUME_REQUEST_HEADER: &str = "x-outline-resume";
-
-/// Lower-cased name of the request header advertising client support
-/// for session resumption. Sent on every connect for as long as the
-/// client wishes to receive future Session IDs.
-pub const RESUME_CAPABLE_HEADER: &str = "x-outline-resume-capable";
-
-/// Lower-cased name of the response header carrying the Session ID
-/// the server has assigned to the just-established session.
-pub const SESSION_RESPONSE_HEADER: &str = "x-outline-session";
-
-/// Lower-cased name of the request **and** response header used to
-/// negotiate the Ack-Prefix Protocol (v1).
-///
-/// Client sets `1` on the upgrade request to advertise it understands
-/// the on-resume-hit control frame; server echoes `1` in the response
-/// to confirm support. When **both** sides set the header AND the
-/// resume hits AND owner-check passes, the server emits a 14-byte
-/// plaintext control frame ahead of the upstream→client relay.
-///
-/// See `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1) for the
-/// wire format and full negotiation rules.
-pub const ACK_PREFIX_HEADER: &str = "x-outline-resume-ack-prefix";
-
-/// Lower-cased name of the request **and** response header used to
-/// negotiate the v2 Symmetric Downlink Replay capability (`1` to
-/// advertise / confirm). Per spec the server MUST suppress this
-/// echo when the client did not also advertise [`ACK_PREFIX_HEADER`]
-/// or when the server's own ring is disabled (`downlink_buffer_bytes
-/// == 0`). See `docs/SESSION-RESUMPTION.md` § Symmetric Downlink
-/// Replay (v2) for the wire format and gating rules.
-pub const SYMMETRIC_REPLAY_HEADER: &str = "x-outline-resume-symmetric-replay";
-
-/// Lower-cased name of the request-only header carrying the client's
-/// last-acked downstream offset on a v2 resume request. Decimal
-/// `u64`, max value `2^63 − 1`. Sent only on retry redials that
-/// also carry [`ACK_PREFIX_HEADER`] AND [`SYMMETRIC_REPLAY_HEADER`].
-pub const DOWN_ACKED_HEADER: &str = "x-outline-resume-down-acked";
+// The `X-Outline-*` header names are wire vocabulary shared with the
+// server; the single definition lives in `outline_wire::resume`.
+pub use outline_wire::resume::{
+    ACK_PREFIX_HEADER, DOWN_ACKED_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
+    SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER,
+};
 
 /// Writes the request-side resume negotiation headers. One
 /// implementation shared by the h1 upgrade, h2 CONNECT and h3 Extended

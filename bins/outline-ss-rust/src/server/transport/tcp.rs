@@ -52,8 +52,10 @@ use super::super::constants::{
 };
 use super::super::dns_cache::DnsCache;
 use super::super::relay::UpstreamRelayOutcome;
+use outline_wire::resume::build_v1_payload;
+
 use super::super::resumption::{
-    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext, ack_prefix,
+    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext,
 };
 use super::super::scratch::ScratchBuf;
 use super::resume_headers::ResumeContext;
@@ -639,9 +641,7 @@ where
             // produces. See `docs/SESSION-RESUMPTION.md` § Ack-Prefix
             // Protocol (v1).
             if state.ack_prefix_requested {
-                let payload = ack_prefix::build_v1_payload(
-                    parked.upstream_bytes_acked.load(Ordering::Relaxed),
-                );
+                let payload = build_v1_payload(parked.upstream_bytes_acked.load(Ordering::Relaxed));
                 let mut out = bytes::BytesMut::new();
                 encryptor
                     .encrypt_chunk(&payload, &mut out)

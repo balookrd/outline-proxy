@@ -8,11 +8,11 @@ use bytes::Bytes;
 use socks5_proto::TargetAddr;
 use tokio::sync::oneshot;
 
-use crate::ack_prefix::{FRAME_LEN_V1, ParseResult, parse_v1};
 use crate::{
     TransportStream, UpstreamTransportGuard, WsClosed, frame_io_ws::carrier_liveness,
     resumption::SessionId,
 };
+use outline_wire::resume::{FRAME_LEN_V1, ParseResult, parse_v1};
 
 use super::header::{
     VLESS_CMD_TCP, VLESS_VERSION, build_request_header, build_vless_tcp_request_header_with_resume,
@@ -119,8 +119,9 @@ pub struct VlessTcpReader {
     /// Ack-Prefix Protocol on the VLESS-WS path (server echoed
     /// `X-Outline-Resume-Ack-Prefix: 1`). When `true`, the very
     /// first 14 bytes received AFTER the VLESS response header are
-    /// treated as the v1 control frame defined in the SS-RUST repo's
-    /// `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol; the
+    /// treated as the v1 control frame defined in
+    /// `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md` § Ack-Prefix
+    /// Protocol; the
     /// reader transparently consumes them, parks the offset on
     /// [`Self::up_acked`], and returns the next real payload chunk.
     expect_ack_prefix: bool,

@@ -65,6 +65,7 @@ fn h1_tls_config() -> Arc<rustls::ClientConfig> {
     Arc::clone(XHTTP_H1_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"http/1.1"])))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn connect_xhttp_h1(
     cache: &DnsCache,
     url: &Url,

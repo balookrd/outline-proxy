@@ -1518,6 +1518,7 @@ pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
         keepalive_max_probes: 6,
     }
 }
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_client_packet(
     client_ip: Ipv4Addr,
     remote_ip: Ipv4Addr,
@@ -1543,6 +1544,7 @@ pub(super) fn build_client_packet(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_client_packet_with_options(
     client_ip: Ipv4Addr,
     remote_ip: Ipv4Addr,
@@ -1571,6 +1573,7 @@ pub(super) fn build_client_packet_with_options(
     .unwrap()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_client_ipv6_packet_with_options(
     client_ip: Ipv6Addr,
     remote_ip: Ipv6Addr,
@@ -1606,6 +1609,7 @@ fn tcp_option_pad(mut options: Vec<u8>) -> Vec<u8> {
     options
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_client_ipv6_packet_with_extension_headers(
     client_ip: Ipv6Addr,
     remote_ip: Ipv6Addr,

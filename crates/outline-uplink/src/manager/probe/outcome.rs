@@ -134,6 +134,7 @@ fn should_skip_primary_probe_escalation(
 /// the pool today only ever holds primary-wire sockets, and once we've
 /// declared primary failed enough to flip active away, those sockets
 /// are stale-suspect.
+#[allow(clippy::too_many_arguments)]
 fn advance_active_wire_on_probe_failure(
     status: &mut PerTransportStatus,
     total_wires: usize,

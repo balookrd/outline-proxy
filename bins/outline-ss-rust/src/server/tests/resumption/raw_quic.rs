@@ -232,14 +232,16 @@ async fn spawn_raw_quic_vless_resumption_server()
     let task = tokio::spawn(async move {
         super::super::super::serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            Arc::from(vec![H3Alpn::Vless].into_boxed_slice()),
-            raw_vless_users,
-            raw_vless_candidates,
-            Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
-            None,
+            super::super::super::H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![H3Alpn::Vless].into_boxed_slice()),
+                raw_vless_users,
+                raw_vless_candidates,
+                raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await

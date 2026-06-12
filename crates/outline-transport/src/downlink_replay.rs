@@ -1,15 +1,15 @@
 //! Wire-format parser for the Ack-Prefix Protocol v2 (Symmetric
 //! Downlink Replay) control frame.
 //!
-//! Mirror of the server-side `outline-ss-rust`'s relay-side emit logic
-//! in `server::resumption::downlink_ring` and the WS upgrade response
-//! header `X-Outline-Resume-Symmetric-Replay`. The byte layout is
-//! shared between the two repos and lives in
-//! `docs/SESSION-RESUMPTION.md` § Symmetric Downlink Replay (v2) of
-//! the server repo.
+//! Mirror of the serializer in `outline-ss-rust`'s
+//! `server::resumption::downlink_ring` (relay-side emit) and the WS
+//! upgrade response header `X-Outline-Resume-Symmetric-Replay`. The
+//! byte layout is specified in
+//! `bins/outline-ss-rust/docs/SESSION-RESUMPTION.md` § Symmetric
+//! Downlink Replay (v2).
 //!
 //! Used by the SOCKS-side mid-session retry path: after the v1
-//! 14-byte `"ORSM"` frame is consumed (see [`crate::ack_prefix`]),
+//! 14-byte `"ORSM"` frame is consumed (see `outline_wire::resume`),
 //! and when both sides advertised the v2 capability, the next bytes
 //! on the wire form the v2 `"ORDR"` frame — a 14-byte header
 //! followed by `replay_len` payload bytes that the client must flush
