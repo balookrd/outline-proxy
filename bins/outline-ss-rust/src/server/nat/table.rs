@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use tokio::{net::UdpSocket, sync::OnceCell};
@@ -92,22 +92,28 @@ pub(crate) fn bind_nat_udp_socket(
 pub(crate) struct NatTable {
     entries: DashMap<NatKey, Arc<OnceCell<Arc<NatEntry>>>>,
     idle_timeout: Duration,
+    /// Upper bound on live entries; `0` disables the cap. See
+    /// `TuningProfile::udp_nat_max_entries`.
+    max_entries: usize,
     outbound_ipv6: Option<Arc<OutboundIpv6>>,
 }
 
 impl NatTable {
     #[cfg(test)]
     pub(crate) fn new(idle_timeout: Duration) -> Arc<Self> {
-        Self::with_outbound_ipv6(idle_timeout, None)
+        // Tests default to an unbounded table; the cap has dedicated coverage.
+        Self::with_outbound_ipv6(idle_timeout, 0, None)
     }
 
     pub(crate) fn with_outbound_ipv6(
         idle_timeout: Duration,
+        max_entries: usize,
         outbound_ipv6: Option<Arc<OutboundIpv6>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             entries: DashMap::new(),
             idle_timeout,
+            max_entries,
             outbound_ipv6,
         })
     }
@@ -138,6 +144,16 @@ impl NatTable {
         let cell = if let Some(existing) = self.entries.get(&key) {
             Arc::clone(existing.value())
         } else {
+            // New key: enforce the entry cap before allocating a socket + reader
+            // task. `entries.len()` counts live plus in-flight (uninitialised)
+            // cells, so this is an approximate ceiling — a small overshoot under
+            // a concurrent-creation race is harmless for a protective cap, and
+            // `0` disables it. Existing entries are never evicted here, so a
+            // full table only drops datagrams to *new* targets.
+            if self.max_entries > 0 && self.entries.len() >= self.max_entries {
+                metrics.record_udp_nat_capacity_dropped();
+                bail!("UDP NAT table at capacity ({} entries)", self.max_entries);
+            }
             Arc::clone(
                 self.entries
                     .entry(key.clone())

@@ -52,6 +52,13 @@ pub struct TuningProfile {
     pub client_active_ttl_secs: u64,
     /// How long a UDP NAT entry is kept alive after the last outbound datagram.
     pub udp_nat_idle_timeout_secs: u64,
+    /// Process-wide ceiling on the number of live UDP NAT entries (one per
+    /// distinct authenticated `(user, fwmark, target)`). Each entry pins an
+    /// upstream UDP socket and a reader task until idle-evicted, so this bounds
+    /// the file-descriptor / task footprint an authenticated client can force
+    /// by fanning out to many destinations. When full, datagrams to *new*
+    /// targets are dropped while existing entries keep flowing. `0` disables it.
+    pub udp_nat_max_entries: usize,
     /// Process-wide ceiling on in-flight UDP relay tasks across all WebSocket
     /// sessions. `0` disables the global cap.
     pub udp_max_concurrent_relay_tasks: usize,
@@ -89,6 +96,7 @@ impl TuningProfile {
         h3_udp_socket_buffer_bytes: 4 * 1024 * 1024,
         client_active_ttl_secs: 180,
         udp_nat_idle_timeout_secs: 120,
+        udp_nat_max_entries: 4_096,
         udp_max_concurrent_relay_tasks: 1_024,
         udp_replay_max_sessions: 16_384,
         // Memory-conscious deployments keep this small at the cost of a
@@ -111,6 +119,7 @@ impl TuningProfile {
         h3_udp_socket_buffer_bytes: 8 * 1024 * 1024,
         client_active_ttl_secs: 300,
         udp_nat_idle_timeout_secs: 240,
+        udp_nat_max_entries: 16_384,
         udp_max_concurrent_relay_tasks: 2_048,
         udp_replay_max_sessions: 65_536,
         // 64 chunks × 16 KiB ≈ 1 MiB worst-case per-session in-flight.
@@ -133,6 +142,7 @@ impl TuningProfile {
         h3_udp_socket_buffer_bytes: 32 * 1024 * 1024,
         client_active_ttl_secs: 300,
         udp_nat_idle_timeout_secs: 300,
+        udp_nat_max_entries: 65_536,
         udp_max_concurrent_relay_tasks: 4_096,
         udp_replay_max_sessions: 262_144,
         // 128 chunks × 16 KiB ≈ 2 MiB worst-case per-session in-flight.
@@ -219,6 +229,7 @@ impl TuningProfile {
         }
         // `udp_max_concurrent_relay_tasks == 0` is a valid opt-out.
         // `udp_replay_max_sessions == 0` is a valid opt-out.
+        // `udp_nat_max_entries == 0` is a valid opt-out.
 
         if self.ws_data_channel_capacity == 0 {
             bail!("tuning.ws_data_channel_capacity must be > 0");
@@ -263,6 +274,9 @@ impl TuningProfile {
         }
         if let Some(v) = o.udp_nat_idle_timeout_secs {
             self.udp_nat_idle_timeout_secs = v;
+        }
+        if let Some(v) = o.udp_nat_max_entries {
+            self.udp_nat_max_entries = v;
         }
         if let Some(v) = o.udp_max_concurrent_relay_tasks {
             self.udp_max_concurrent_relay_tasks = v;
@@ -312,6 +326,8 @@ pub struct TuningOverrides {
     pub client_active_ttl_secs: Option<u64>,
     #[serde(default)]
     pub udp_nat_idle_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub udp_nat_max_entries: Option<usize>,
     #[serde(default)]
     pub udp_max_concurrent_relay_tasks: Option<usize>,
     #[serde(default)]

@@ -193,8 +193,15 @@ pub(super) fn register_descriptions() {
         "UDP upstream responses dropped because no WebSocket session was registered."
     );
     describe_counter!(
+        "outline_ss_udp_nat_capacity_dropped_total",
+        "UDP datagrams to new targets dropped because the NAT table was at \
+         udp_nat_max_entries capacity."
+    );
+    describe_counter!(
         "outline_ss_maintenance_task_panics_total",
-        "Background maintenance tasks that panicked and triggered server shutdown."
+        "Background maintenance tasks that panicked and triggered a graceful \
+         shutdown. Only reachable under panic=unwind (debug/test); the release \
+         profile uses panic=abort, where such a panic aborts the process."
     );
     describe_counter!(
         "outline_ss_orphan_park_total",
