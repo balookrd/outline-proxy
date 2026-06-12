@@ -2054,7 +2054,7 @@ async fn drain_standby_pool_clears_deque_for_specified_transport() {
     // length accounting.
     {
         let pool = &manager.inner.standby_pools[0];
-        let mut tcp_guard = pool.tcp.lock().await;
+        let tcp_guard = pool.tcp.lock().await;
         // We can't construct a TransportStream from scratch here without
         // network setup; instead verify the drain on an *empty* pool is a
         // no-op and the API contract holds (length stays 0).

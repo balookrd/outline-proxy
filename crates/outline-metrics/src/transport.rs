@@ -195,6 +195,7 @@ pub fn record_socks_tcp_strict_abort(group: &str, uplink: &str, reason: &'static
 /// - `downlink_truncated` — v2 was engaged and the server's `ORDR`
 ///   frame carried `REPLAY_TRUNCATED`; honoured under the same
 ///   overflow policy.
+///
 /// Passing other values is technically allowed (Prometheus does not
 /// validate label cardinality at insert time) but defeats the
 /// dashboard's pre-built panels.
