@@ -113,6 +113,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_udp_reader<Msg>(
     session_id: u16,
     socket: Arc<UdpSocket>,

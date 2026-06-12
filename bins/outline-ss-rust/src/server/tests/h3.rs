@@ -24,7 +24,7 @@ use super::super::nat::NatTable;
 use super::super::setup::{VlessUserRoute, build_vless_transport_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
-use super::super::{DnsCache, build_user_routes, serve_h3_server};
+use super::super::{DnsCache, H3ServeCtx, build_user_routes, serve_h3_server};
 use super::{build_test_state, sample_config, test_h3_client_config, test_h3_server_tls};
 use crate::metrics::Metrics;
 use crate::protocol::TargetAddr;
@@ -61,16 +61,22 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
     let server = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(
-                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-            ),
-            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: std::sync::Arc::from(
+                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+                ),
+                raw_vless_candidates: std::sync::Arc::from(
+                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
+                ),
+                raw_ss_users: std::sync::Arc::from(
+                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+                ),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -166,16 +172,22 @@ async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
     let server = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(
-                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-            ),
-            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: std::sync::Arc::from(
+                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+                ),
+                raw_vless_candidates: std::sync::Arc::from(
+                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
+                ),
+                raw_ss_users: std::sync::Arc::from(
+                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+                ),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -321,16 +333,22 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(
-                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-            ),
-            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: std::sync::Arc::from(
+                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+                ),
+                raw_vless_candidates: std::sync::Arc::from(
+                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
+                ),
+                raw_ss_users: std::sync::Arc::from(
+                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+                ),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -421,16 +439,22 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
     let server = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(
-                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-            ),
-            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: std::sync::Arc::from(
+                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+                ),
+                raw_vless_candidates: std::sync::Arc::from(
+                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
+                ),
+                raw_ss_users: std::sync::Arc::from(
+                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+                ),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -499,16 +523,22 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
     let server = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(
-                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-            ),
-            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: std::sync::Arc::from(
+                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+                ),
+                raw_vless_candidates: std::sync::Arc::from(
+                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
+                ),
+                raw_ss_users: std::sync::Arc::from(
+                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+                ),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -608,16 +638,22 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(
-                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-            ),
-            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: std::sync::Arc::from(
+                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+                ),
+                raw_vless_candidates: std::sync::Arc::from(
+                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
+                ),
+                raw_ss_users: std::sync::Arc::from(
+                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+                ),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -748,16 +784,22 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(
-                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-            ),
-            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: std::sync::Arc::from(
+                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+                ),
+                raw_vless_candidates: std::sync::Arc::from(
+                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
+                ),
+                raw_ss_users: std::sync::Arc::from(
+                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+                ),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -882,16 +924,22 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
     let server_task = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-            std::sync::Arc::from(
-                Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-            ),
-            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
-            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: std::sync::Arc::from(
+                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
+                ),
+                raw_vless_candidates: std::sync::Arc::from(
+                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
+                ),
+                raw_ss_users: std::sync::Arc::from(
+                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+                ),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await

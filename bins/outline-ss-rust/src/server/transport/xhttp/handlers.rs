@@ -51,11 +51,23 @@ pub(in crate::server) struct XhttpAxumState {
     pub(in crate::server) parent: AppState,
 }
 
+/// axum-extracted pieces of a single XHTTP request, bundled so the
+/// method/submode dispatcher below stays within a readable arity.
+struct XhttpHttpRequest {
+    uri: Uri,
+    method: Method,
+    version: Version,
+    headers: HeaderMap,
+    peer_addr: SocketAddr,
+    body: Body,
+}
+
 /// ANY-method handler for the `<base>/<session-id>` route shape.
 /// Used by every XHTTP request that does not carry an upload-side
 /// sequence number in the URL path — that is: every GET, every
 /// stream-one POST, and packet-up POSTs from clients that put `seq`
 /// into the `X-Xhttp-Seq` header instead of the URL.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::server) async fn xhttp_handler(
     State(state): State<XhttpAxumState>,
     Path(session_id): Path<String>,
@@ -66,7 +78,15 @@ pub(in crate::server) async fn xhttp_handler(
     ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     body: Body,
 ) -> Response {
-    dispatch_xhttp(state, session_id, None, uri, method, version, headers, peer_addr, body).await
+    let request = XhttpHttpRequest {
+        uri,
+        method,
+        version,
+        headers,
+        peer_addr,
+        body,
+    };
+    dispatch_xhttp(state, session_id, None, request).await
 }
 
 /// ANY-method handler for the bare-`<base>` route shape — the
@@ -95,7 +115,15 @@ pub(in crate::server) async fn xhttp_handler_no_session(
         return short_status(StatusCode::METHOD_NOT_ALLOWED);
     }
     let session_id = generate_anonymous_session_id();
-    dispatch_xhttp(state, session_id, None, uri, method, version, headers, peer_addr, body).await
+    let request = XhttpHttpRequest {
+        uri,
+        method,
+        version,
+        headers,
+        peer_addr,
+        body,
+    };
+    dispatch_xhttp(state, session_id, None, request).await
 }
 
 /// ANY-method handler for the `<base>/<session-id>/<seq>` route
@@ -103,6 +131,7 @@ pub(in crate::server) async fn xhttp_handler_no_session(
 /// `seq` is taken from the URL path; the `X-Xhttp-Seq` header is
 /// ignored on this route. GET / stream-one on this shape is
 /// malformed and returns 400.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::server) async fn xhttp_handler_with_path_seq(
     State(state): State<XhttpAxumState>,
     Path((session_id, seq)): Path<(String, u64)>,
@@ -113,22 +142,31 @@ pub(in crate::server) async fn xhttp_handler_with_path_seq(
     ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     body: Body,
 ) -> Response {
-    dispatch_xhttp(state, session_id, Some(seq), uri, method, version, headers, peer_addr, body)
-        .await
+    let request = XhttpHttpRequest {
+        uri,
+        method,
+        version,
+        headers,
+        peer_addr,
+        body,
+    };
+    dispatch_xhttp(state, session_id, Some(seq), request).await
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn dispatch_xhttp(
     state: XhttpAxumState,
     session_id: String,
     path_seq: Option<u64>,
-    uri: Uri,
-    method: Method,
-    version: Version,
-    headers: HeaderMap,
-    peer_addr: SocketAddr,
-    body: Body,
+    request: XhttpHttpRequest,
 ) -> Response {
+    let XhttpHttpRequest {
+        uri,
+        method,
+        version,
+        headers,
+        peer_addr,
+        body,
+    } = request;
     if !is_valid_session_id(&session_id) {
         return short_status(StatusCode::BAD_REQUEST);
     }
@@ -142,7 +180,7 @@ async fn dispatch_xhttp(
     // when it is absent we fall back to the "seq presence picks the
     // carrier" rule — that is what every xray-family client actually
     // produces.
-    let submode = XhttpSubmode::parse(uri.query());
+    let submode = XhttpSubmode::parse_query(uri.query());
     match method {
         Method::GET => {
             // `<base>/<id>/<seq>` is uplink-only; a GET on this

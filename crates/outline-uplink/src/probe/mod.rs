@@ -45,6 +45,7 @@ pub(crate) fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
     crate::error_classify::is_expected_standby_probe_failure(error)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn probe_uplink(
     cache: &DnsCache,
     group: &str,

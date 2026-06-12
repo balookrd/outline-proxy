@@ -86,6 +86,7 @@ async fn await_readable_or_keepalive(
 /// buffer_overflow}`. The downlink direction is intentionally NOT
 /// replayed — v1 narrows zero-loss replay to the uplink only, so SSH-
 /// style sessions still observe downlink byte gaps on retry.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_relay(
     uplinks: UplinkManager,
     active: ActiveTcpUplink,
@@ -646,6 +647,7 @@ fn force_client_rst(
 /// log messages. The success counter is recorded by the caller after
 /// this function returns `Ok` so that the metric only fires when the
 /// next iteration is actually about to start.
+#[allow(clippy::too_many_arguments)]
 async fn try_mid_session_retry(
     uplinks: &UplinkManager,
     active_name: &Arc<str>,

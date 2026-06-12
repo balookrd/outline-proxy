@@ -57,6 +57,7 @@ fn h2_tls_config() -> Arc<rustls::ClientConfig> {
     Arc::clone(XHTTP_H2_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"h2"])))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn connect_xhttp_h2(
     cache: &DnsCache,
     url: &Url,

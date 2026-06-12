@@ -59,8 +59,8 @@ use super::super::resumption::{OrphanRegistry, ResumptionConfig};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, UserKeySlice};
 use super::super::{
-    DnsCache, Services, SsTcpCtx, UdpServices, build_app, build_user_routes, build_users,
-    serve_h3_server, serve_ss_tcp_listener,
+    DnsCache, H3ServeCtx, Services, SsTcpCtx, UdpServices, build_app, build_user_routes,
+    build_users, serve_h3_server, serve_ss_tcp_listener,
 };
 use super::connect_websocket_with_resume;
 use super::sample_config;
@@ -275,14 +275,16 @@ async fn setup_ss_ws_h3_server() -> Result<(SocketAddr, JoinHandle<Result<()>>)>
     let handle = tokio::spawn(async move {
         serve_h3_server(
             h3_server,
-            routes,
-            services,
-            auth,
-            Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
-            Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
-            Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
-            Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+                raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+                raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -1070,14 +1072,16 @@ async fn setup_ss_ws_h3_server_with_resumption() -> Result<(SocketAddr, JoinHand
     let handle = tokio::spawn(async move {
         serve_h3_server(
             h3_server,
-            routes,
-            services,
-            auth,
-            Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
-            Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
-            Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
-            Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
+                raw_vless_users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+                raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+                raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await
@@ -1626,14 +1630,16 @@ async fn setup_ss_raw_quic_server() -> Result<(SocketAddr, JoinHandle<Result<()>
     let handle = tokio::spawn(async move {
         serve_h3_server(
             server,
-            routes,
-            services,
-            auth,
-            Arc::from(vec![H3Alpn::Ss].into_boxed_slice()),
-            Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
-            Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
-            users,
-            None,
+            H3ServeCtx {
+                routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![H3Alpn::Ss].into_boxed_slice()),
+                raw_vless_users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+                raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+                raw_ss_users: users,
+                http_fallback: None,
+            },
             ShutdownSignal::never(),
         )
         .await

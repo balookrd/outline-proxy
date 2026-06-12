@@ -1,7 +1,7 @@
 use super::*;
 
-use crate::ack_prefix::{FRAME_LEN_V1, MAGIC, VERSION_V1};
 use crate::tcp_transport::{SocketTcpWriter, TcpShadowsocksWriter};
+use outline_wire::resume::{FRAME_LEN_V1, MAGIC, VERSION_V1};
 use shadowsocks_crypto::CipherKind;
 use tokio::net::{TcpListener, TcpStream};
 

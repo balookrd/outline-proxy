@@ -99,7 +99,7 @@ async fn wire_xhttp_submode(
     if !matches!(transport, UplinkTransport::Vless) {
         return (None, None);
     }
-    let configured = outline_transport::XhttpSubmode::from_url(url).to_string();
+    let configured = outline_transport::submode_from_url(url).to_string();
     let remaining = outline_transport::xhttp_stream_one_block_remaining(url)
         .await
         .map(|d| d.as_millis());
@@ -114,7 +114,7 @@ async fn xhttp_submode_view(
     if !matches!(transport, UplinkTransport::Vless) {
         return (None, None);
     }
-    let configured = outline_transport::XhttpSubmode::from_url(url).to_string();
+    let configured = outline_transport::submode_from_url(url).to_string();
     let remaining = outline_transport::xhttp_stream_one_block_remaining(url)
         .await
         .map(|d| d.as_millis());

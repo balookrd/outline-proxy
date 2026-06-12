@@ -73,6 +73,7 @@ fn h3_quic_client_config() -> quinn::ClientConfig {
     config
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn connect_xhttp_h3(
     cache: &DnsCache,
     url: &Url,

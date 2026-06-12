@@ -61,6 +61,7 @@ pub(crate) trait WsDialer: 'static {
 // ── Public entry points ───────────────────────────────────────────────────────
 
 /// Reuse-or-dial path for non-probe connections.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_ws_reused<D: WsDialer>(
     dialer: &D,
     cache: &DnsCache,
@@ -102,6 +103,7 @@ pub(crate) async fn connect_ws_reused<D: WsDialer>(
 }
 
 /// Fresh-connection (probe) path — bypasses the shared-connection cache.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn connect_ws_probe<D: WsDialer>(
     dialer: &D,
     cache: &DnsCache,
@@ -132,6 +134,7 @@ pub(crate) async fn connect_ws_probe<D: WsDialer>(
 /// Resolve DNS then dial one or all addresses depending on
 /// `dialer.multi_address_failover_enabled()`.  Returns the first successful
 /// `(connection, stream)` pair or a `TransportOperation::Connect` error.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_and_dial<D: WsDialer>(
     dialer: &D,
     cache: &DnsCache,

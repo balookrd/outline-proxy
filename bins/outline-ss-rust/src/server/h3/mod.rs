@@ -242,18 +242,36 @@ fn negotiated_alpn(connection: &quinn::Connection) -> Option<H3Alpn> {
     H3Alpn::parse(std::str::from_utf8(&bytes).ok()?)
 }
 
+/// Everything the HTTP/3 accept loop needs besides the endpoint
+/// itself: the shared route/auth state plus the raw-QUIC user sets
+/// served next to HTTP/3 on the same listener. Bundled so
+/// [`serve_h3_server`] keeps a flat three-argument signature.
+pub(in crate::server) struct H3ServeCtx {
+    pub(in crate::server) routes: RoutesSnapshot,
+    pub(in crate::server) services: Arc<Services>,
+    pub(in crate::server) auth: Arc<AuthPolicy>,
+    pub(in crate::server) alpn: Arc<[H3Alpn]>,
+    pub(in crate::server) raw_vless_users: Arc<[VlessUser]>,
+    pub(in crate::server) raw_vless_candidates: Arc<[Arc<str>]>,
+    pub(in crate::server) raw_ss_users: Arc<[UserKey]>,
+    pub(in crate::server) http_fallback: Option<Arc<HttpFallbackContext>>,
+}
+
 pub(in crate::server) async fn serve_h3_server(
     server: H3WebSocketServer<H3Transport>,
-    routes: RoutesSnapshot,
-    services: Arc<Services>,
-    auth: Arc<AuthPolicy>,
-    alpn: Arc<[H3Alpn]>,
-    raw_vless_users: Arc<[VlessUser]>,
-    raw_vless_candidates: Arc<[Arc<str>]>,
-    raw_ss_users: Arc<[UserKey]>,
-    http_fallback: Option<Arc<HttpFallbackContext>>,
+    ctx: H3ServeCtx,
     mut shutdown: super::shutdown::ShutdownSignal,
 ) -> Result<()> {
+    let H3ServeCtx {
+        routes,
+        services,
+        auth,
+        alpn,
+        raw_vless_users,
+        raw_vless_candidates,
+        raw_ss_users,
+        http_fallback,
+    } = ctx;
     let initial = routes.load();
     let tcp_paths: Arc<BTreeSet<String>> =
         Arc::new(initial.tcp.keys().cloned().collect::<BTreeSet<_>>());
