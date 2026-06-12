@@ -31,7 +31,7 @@ use crate::{
 };
 
 use super::udp::VlessUdpWsTransport;
-#[cfg(test)]
+#[cfg(all(test, feature = "metrics"))]
 use super::udp_mux_core::VlessUdpMuxSessionEntry;
 use super::udp_mux_core::{
     VlessUdpMuxCore, VlessUdpMuxDial, VlessUdpMuxLimits, VlessUdpMuxSession,
@@ -273,7 +273,12 @@ impl VlessUdpSessionMux {
         self.core.dial.downgrade_reported.store(false, Ordering::Release);
     }
 
-    #[cfg(test)]
+    /// Test-only delegate: the downgrade-latch tests drive per-target
+    /// dials directly, without the SOCKS5 framing `send_packet` needs.
+    /// Gated like its only callers (`vless_udp_mux_*` in the crate test
+    /// module are `feature = "metrics"`), so a default-feature clippy
+    /// pass does not see it as dead code.
+    #[cfg(all(test, feature = "metrics"))]
     pub(crate) async fn session_for(
         &self,
         target: &TargetAddr,
