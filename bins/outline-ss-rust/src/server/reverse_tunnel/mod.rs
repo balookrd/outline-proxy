@@ -14,7 +14,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::config::Config;
-use crate::server::constants::H3_MAX_CONCURRENT_STREAMS;
+use crate::server::constants::REVERSE_TUNNEL_MAX_CONCURRENT_SESSIONS;
 use crate::server::services::Built;
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::transport::{RawQuicSsCtx, RawSsConnectionCtx};
@@ -44,7 +44,7 @@ pub(in crate::server) fn spawn_reverse_tunnels(
         users: Arc::clone(&built.users),
         services: Arc::clone(&built.services),
     });
-    let stream_semaphore = Arc::new(Semaphore::new(H3_MAX_CONCURRENT_STREAMS));
+    let stream_semaphore = Arc::new(Semaphore::new(REVERSE_TUNNEL_MAX_CONCURRENT_SESSIONS));
     let ctx = Arc::new(RawSsConnectionCtx { raw_ss_ctx, stream_semaphore });
 
     for endpoint in &reverse.endpoints {
