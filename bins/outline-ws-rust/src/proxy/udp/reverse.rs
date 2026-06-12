@@ -14,6 +14,7 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use outline_metrics as metrics;
 use outline_transport::{UdpWsTransport, ss_udp_over_connection};
 use socks5_proto::TargetAddr;
 
@@ -21,11 +22,13 @@ use super::group::UdpResponse;
 use crate::reverse::ReversePeer;
 
 /// Per-association SS-UDP transport bound to one reverse peer. Holds the
-/// datagram transport for the send path; the downlink task is owned by the
-/// caller's `JoinSet`.
+/// datagram transport for the send path plus the group/peer labels for the
+/// `client_to_upstream` counters; the downlink task is owned by the caller's
+/// `JoinSet`.
 pub(super) struct ReverseUdpAssoc {
     transport: Arc<UdpWsTransport>,
     group_name: Arc<str>,
+    peer_label: Arc<str>,
 }
 
 impl ReverseUdpAssoc {
@@ -72,15 +75,27 @@ impl ReverseUdpAssoc {
             }
         });
 
-        Ok(Self { transport, group_name })
+        Ok(Self {
+            transport,
+            group_name,
+            peer_label: Arc::clone(&peer.label),
+        })
     }
 
-    pub(super) fn group_name(&self) -> &Arc<str> {
-        &self.group_name
-    }
-
-    /// Send one `target_wire || payload` datagram to the peer.
+    /// Send one `target_wire || payload` datagram to the peer. Counted like
+    /// the group path (`GroupUdpContext::send_packet`): only after a
+    /// successful send, with the peer label in the uplink slot — the same
+    /// labels the downlink pump stamps on `UdpResponse`.
     pub(super) async fn send_packet(&self, payload: &[u8]) -> Result<()> {
-        self.transport.send_packet(payload).await
+        self.transport.send_packet(payload).await?;
+        metrics::add_udp_datagram("client_to_upstream", &self.group_name, &self.peer_label);
+        metrics::add_bytes(
+            "udp",
+            "client_to_upstream",
+            &self.group_name,
+            &self.peer_label,
+            payload.len(),
+        );
+        Ok(())
     }
 }
