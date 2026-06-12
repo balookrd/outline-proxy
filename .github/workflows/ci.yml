@@ -145,3 +145,11 @@ jobs:
             exit 1
           fi
           echo "ok: router build is isolated"
+
+      # Install-script invariants: syntax + shellcheck for the three root
+      # installers, and byte-identity of the helpers deliberately duplicated
+      # between install-server.sh and install-client.sh (single-file
+      # curl|bash delivery rules out a sourced library; this gate replaces
+      # it). shellcheck is preinstalled on ubuntu runners.
+      - name: invariant — install scripts (syntax, shellcheck, shared helpers)
+        run: .github/scripts/check-install-scripts.sh
