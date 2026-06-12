@@ -5,7 +5,7 @@ use std::sync::{
 
 use dashmap::DashMap;
 use metrics::Counter;
-use tokio::net::UdpSocket;
+use tokio::{net::UdpSocket, sync::Semaphore};
 
 use crate::protocol::vless::VlessUser;
 
@@ -22,6 +22,10 @@ pub(in crate::server) struct VlessQuicConn {
     /// (no MTU-aware fallback) or when no oversized packet has flowed
     /// yet on this connection.
     pub(in crate::server) oversize_slot: super::super::OversizeStreamSlot,
+    /// Per-connection bound on concurrent in-flight raw-VLESS-UDP upstream-send
+    /// tasks spawned off this connection's datagram pump. Without it a datagram
+    /// flood could spawn an unbounded number of send tasks.
+    pub(super) relay_slots: Arc<Semaphore>,
 }
 
 pub(super) struct VlessUdpSession {
@@ -39,6 +43,9 @@ impl VlessQuicConn {
             next_session: AtomicU32::new(1),
             sessions: DashMap::new(),
             oversize_slot: super::super::OversizeStreamSlot::new(),
+            relay_slots: Arc::new(Semaphore::new(
+                crate::server::constants::UDP_MAX_CONCURRENT_RELAY_TASKS,
+            )),
         }
     }
 

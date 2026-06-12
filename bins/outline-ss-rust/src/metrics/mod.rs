@@ -488,6 +488,16 @@ impl Metrics {
         });
     }
 
+    /// A datagram to a *new* `(user, fwmark, target)` was dropped because the
+    /// NAT table already held `udp_nat_max_entries` live entries. Existing
+    /// entries are never evicted by this path, so the drop protects the
+    /// file-descriptor / task budget without disturbing live sessions.
+    pub fn record_udp_nat_capacity_dropped(&self) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_udp_nat_capacity_dropped_total").increment(1);
+        });
+    }
+
     // ── Session-resumption metrics ─────────────────────────────────────────────
 
     /// Counts a session that was just moved into the orphan registry. The

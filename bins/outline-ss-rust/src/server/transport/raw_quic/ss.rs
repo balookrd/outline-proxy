@@ -16,11 +16,12 @@ use tracing::{debug, info, warn};
 
 use crate::{
     crypto::{AeadStreamEncryptor, UserKey},
-    metrics::Protocol,
+    metrics::{AppProtocol, Protocol, Transport},
 };
 
 use super::super::super::{
     connect::connect_tcp_target,
+    constants::UDP_MAX_CONCURRENT_RELAY_TASKS,
     nat::{ResponseSender, UdpResponseSender},
     relay::{UpstreamSink, relay_client_to_upstream, relay_upstream_to_client},
     shadowsocks::{SsUdpClientId, SsUdpCtx, handle_ss_udp_packet, ss_tcp_handshake},
@@ -50,12 +51,20 @@ pub(in crate::server) struct RawSsConnectionCtx {
 /// can fall back to it instead of being dropped.
 pub(in crate::server) struct SsQuicConn {
     pub(in crate::server) oversize_slot: super::OversizeStreamSlot,
+    /// Per-connection bound on concurrent in-flight SS-UDP relay tasks spawned
+    /// off this carrier's datagram / oversize-record pumps. Mirrors the
+    /// per-session `UDP_MAX_CONCURRENT_RELAY_TASKS` guard the plain UDP and
+    /// WS-UDP relays apply; without it a single QUIC connection (forward or
+    /// reverse-tunnel carrier) could spawn an unbounded number of NAT-creating
+    /// tasks from a datagram flood.
+    pub(in crate::server) relay_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl SsQuicConn {
     pub(in crate::server) fn new() -> Self {
         Self {
             oversize_slot: super::OversizeStreamSlot::new(),
+            relay_slots: Arc::new(tokio::sync::Semaphore::new(UDP_MAX_CONCURRENT_RELAY_TASKS)),
         }
     }
 }
@@ -296,6 +305,45 @@ fn spawn_handle_ss_packet(
     conn_state: &Arc<SsQuicConn>,
     remote: std::net::SocketAddr,
 ) {
+    // Per-connection admission: bound the in-flight SS-UDP relay tasks a single
+    // carrier can spawn off its datagram / oversize pumps, mirroring the
+    // per-session `UDP_MAX_CONCURRENT_RELAY_TASKS` guard on the plain UDP path.
+    // Without it one QUIC connection could spawn unbounded NAT-creating tasks.
+    let conn_permit = match Arc::clone(&conn_state.relay_slots).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            ctx.services.udp_server.metrics.record_udp_relay_drop(
+                Transport::Udp,
+                Protocol::QuicRaw,
+                AppProtocol::Shadowsocks,
+                "concurrency_limit",
+            );
+            warn!("ss raw-quic per-connection relay limit reached, dropping datagram");
+            return;
+        },
+    };
+    // Process-wide admission shared with the other UDP relay paths.
+    let global_permit = match ctx
+        .services
+        .udp_server
+        .relay_semaphore
+        .as_ref()
+        .map(|sem| Arc::clone(sem).try_acquire_owned())
+    {
+        Some(Ok(permit)) => Some(permit),
+        Some(Err(_)) => {
+            ctx.services.udp_server.metrics.record_udp_relay_drop(
+                Transport::Udp,
+                Protocol::QuicRaw,
+                AppProtocol::Shadowsocks,
+                "global_concurrency_limit",
+            );
+            warn!("ss raw-quic global relay limit reached, dropping datagram");
+            return;
+        },
+        None => None,
+    };
+
     let conn_for_sender = Arc::clone(connection);
     let conn_state_for_sender = Arc::clone(conn_state);
     let ss_ctx = SsUdpCtx {
@@ -319,6 +367,10 @@ fn spawn_handle_ss_packet(
         {
             warn!(?error, "ss raw-quic datagram handling failed");
         }
+        // Release admission slots only after the relay completes, so the
+        // semaphores reflect actual in-flight work.
+        drop(global_permit);
+        drop(conn_permit);
     });
 }
 
