@@ -88,6 +88,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # node20 deprecation warning on this step: known and safe — see the
+      # note on the setup-zig step in ci.yml (lint job).
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.1
