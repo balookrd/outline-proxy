@@ -2,11 +2,11 @@ use std::fmt;
 use std::io::ErrorKind;
 
 use anyhow::Error;
-use outline_ss2022::Ss2022Error;
 use outline_transport::{
     OversizedUdpDatagram, TransportOperation, WsClosed, contains_any, find_io_error_kind,
     find_typed, is_transport_level_disconnect, lower_error,
 };
+use outline_wire::ss2022::Ss2022Error;
 use shadowsocks_crypto::CryptoError;
 
 /// Typed marker placed in the error chain by the warm-standby maintenance

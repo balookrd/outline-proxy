@@ -1817,10 +1817,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "outline-ss2022"
-version = "0.1.0"
-
-[[package]]
 name = "outline-transport"
 version = "0.1.0"
 dependencies = [
@@ -1840,7 +1836,6 @@ dependencies = [
  "once_cell",
  "outline-metrics",
  "outline-net",
- "outline-ss2022",
  "outline-wire",
  "parking_lot",
  "pin-project-lite",
@@ -1898,8 +1893,8 @@ dependencies = [
  "bytes",
  "futures-util",
  "outline-metrics",
- "outline-ss2022",
  "outline-transport",
+ "outline-wire",
  "parking_lot",
  "percent-encoding",
  "rand",

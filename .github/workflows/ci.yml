@@ -54,7 +54,7 @@ jobs:
           cargo fmt --check
           -p outline-ss-rust -p outline-ws-rust
           -p outline-metrics -p outline-net -p outline-routing
-          -p outline-ss2022 -p outline-transport -p outline-tun
+          -p outline-transport -p outline-tun
           -p outline-uplink -p outline-wire -p shadowsocks-crypto -p socks5-proto
 
       # `--no-deps` keeps clippy off the vendored members (they are linted as
