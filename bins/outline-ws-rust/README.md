@@ -218,7 +218,6 @@ The project is intentionally practical, but there are still boundaries:
 - [`crates/outline-uplink/`](crates/outline-uplink) - uplink selection, probing, failover, and standby management
 - [`crates/outline-transport/`](crates/outline-transport) - WebSocket / HTTP-2 / HTTP-3 / raw-QUIC / VLESS / direct-Shadowsocks transports + the cross-transport `ResumeCache`
 - [`crates/outline-net/`](crates/outline-net) - DNS cache and shared net plumbing extracted from `outline-transport`
-- [`crates/outline-ss2022/`](crates/outline-ss2022) - Shadowsocks 2022 framing helpers
 - [`crates/outline-tun/`](crates/outline-tun) - stateful TUN relay engines (TCP and UDP)
 - [`crates/shadowsocks-crypto/`](crates/shadowsocks-crypto) - AEAD crypto helpers for Shadowsocks
 - [`crates/outline-metrics/`](crates/outline-metrics) - Prometheus metrics registration and session/transport snapshots

@@ -39,6 +39,28 @@ pub enum Ss2022HeaderError {
     Target(#[from] TargetAddrError),
 }
 
+/// Typed marker for client-side Shadowsocks-2022 framing and replay errors.
+/// Placed in the `anyhow` error chain (as a `bail!` value or `.context`
+/// layer) so that classifiers can match by variant via `downcast_ref`
+/// instead of grepping formatted strings. The codec that produces these
+/// lives in `outline-transport` (tightly coupled to the WS/socket reader
+/// wrappers); `outline-uplink` classifies them for failure metrics.
+#[derive(Debug, Error)]
+pub enum Ss2022Error {
+    #[error("invalid ss2022 response header length: {0}")]
+    InvalidResponseHeaderLength(usize),
+    #[error("invalid ss2022 response header type: {0}")]
+    InvalidResponseHeaderType(u8),
+    #[error("ss2022 response header request salt mismatch")]
+    RequestSaltMismatch,
+    #[error("invalid ss2022 initial target header")]
+    InvalidInitialTargetHeader,
+    #[error("duplicate or out-of-order ss2022 UDP packet")]
+    DuplicateOrOutOfOrderUdpPacket,
+    #[error("oversized UDP packet dropped before uplink send")]
+    OversizedUdpUplink,
+}
+
 /// Rejects timestamps outside ±[`SS2022_MAX_TIME_DIFF_SECS`] of `now` to
 /// bound replay windows.
 pub fn validate_timestamp(timestamp: u64, now_unix_secs: u64) -> Result<(), Ss2022HeaderError> {

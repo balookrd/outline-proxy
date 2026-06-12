@@ -3,7 +3,7 @@ mod transport;
 
 use crate::UpstreamTransportGuard;
 use anyhow::{Context, Result};
-use outline_ss2022::Ss2022Error;
+use outline_wire::ss2022::Ss2022Error;
 use rand::RngCore;
 use shadowsocks_crypto::{
     AeadCipher, CipherKind, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce,
