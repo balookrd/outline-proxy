@@ -101,6 +101,11 @@ fn test_override_roots() -> Option<Arc<RootCertStore>> {
 /// to the current `#[tokio::test]` runtime and will not survive the
 /// next test, so callers must skip the cache and bind a fresh
 /// endpoint each dial.
+///
+/// Gated behind `quic`: every caller lives in the QUIC/H3 modules
+/// (`h3` implies `quic`), so non-QUIC builds (router) would
+/// otherwise carry dead code.
+#[cfg(feature = "quic")]
 pub(crate) fn test_mode_active() -> bool {
     TEST_TLS_OVERRIDE_ROOTS
         .read()
