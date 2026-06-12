@@ -24,9 +24,7 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, Protocol, Transport};
 
 use super::super::super::state::AppState;
-use super::super::tcp::{
-    ACK_PREFIX_HEADER, ResumeContext, SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER,
-};
+use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
 use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::padding::post_response_headers;
@@ -257,25 +255,15 @@ async fn xhttp_get(
         "xhttp downlink attached"
     );
 
-    let issued_for_response = session.issued_resume_id;
+    let echo = ResumeResponseEcho {
+        session_id: session.issued_resume_id,
+        ack_prefix: ack_prefix_for_response,
+        symmetric_replay: symmetric_replay_for_response,
+    };
     let body = build_downlink_body(Arc::clone(&session));
     let mut response = (StatusCode::OK, body).into_response();
     apply_response_masquerade(response.headers_mut());
-    if let Some(id) = issued_for_response
-        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
-    {
-        response.headers_mut().insert(SESSION_RESPONSE_HEADER, value);
-    }
-    if ack_prefix_for_response {
-        response
-            .headers_mut()
-            .insert(ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
-    }
-    if symmetric_replay_for_response {
-        response
-            .headers_mut()
-            .insert(SYMMETRIC_REPLAY_HEADER, axum::http::HeaderValue::from_static("1"));
-    }
+    echo.apply(response.headers_mut());
     response
 }
 
@@ -397,17 +385,12 @@ async fn xhttp_post(
     if let Some((name, value)) = generate_padding_header() {
         resp_headers.insert(name, value);
     }
-    if let Some(id) = session.issued_resume_id
-        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
-    {
-        resp_headers.insert(SESSION_RESPONSE_HEADER, value);
+    ResumeResponseEcho {
+        session_id: session.issued_resume_id,
+        ack_prefix: ack_prefix_for_response,
+        symmetric_replay: symmetric_replay_for_response,
     }
-    if ack_prefix_for_response {
-        resp_headers.insert(ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
-    }
-    if symmetric_replay_for_response {
-        resp_headers.insert(SYMMETRIC_REPLAY_HEADER, axum::http::HeaderValue::from_static("1"));
-    }
+    .apply(resp_headers);
     response
 }
 
@@ -514,25 +497,15 @@ async fn xhttp_stream_one(
         session_for_uplink.close_uplink();
     });
 
-    let issued_for_response = session.issued_resume_id;
+    let echo = ResumeResponseEcho {
+        session_id: session.issued_resume_id,
+        ack_prefix: ack_prefix_for_response,
+        symmetric_replay: symmetric_replay_for_response,
+    };
     let body = build_downlink_body(Arc::clone(&session));
     let mut response = (StatusCode::OK, body).into_response();
     apply_response_masquerade(response.headers_mut());
-    if let Some(id) = issued_for_response
-        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
-    {
-        response.headers_mut().insert(SESSION_RESPONSE_HEADER, value);
-    }
-    if ack_prefix_for_response {
-        response
-            .headers_mut()
-            .insert(ACK_PREFIX_HEADER, axum::http::HeaderValue::from_static("1"));
-    }
-    if symmetric_replay_for_response {
-        response
-            .headers_mut()
-            .insert(SYMMETRIC_REPLAY_HEADER, axum::http::HeaderValue::from_static("1"));
-    }
+    echo.apply(response.headers_mut());
     response
 }
 

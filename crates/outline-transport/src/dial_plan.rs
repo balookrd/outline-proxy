@@ -153,10 +153,7 @@ impl DialPlan {
             options.network.fwmark,
             options.network.ipv6_first,
             options.source,
-            options.resume.resume_request,
-            options.resume.ack_prefix_requested,
-            options.resume.symmetric_replay_requested,
-            options.resume.client_acked_offset,
+            options.resume,
         )
         .await
         {
@@ -195,10 +192,7 @@ impl DialPlan {
             options.network.fwmark,
             options.network.ipv6_first,
             options.source,
-            options.resume.resume_request,
-            options.resume.ack_prefix_requested,
-            options.resume.symmetric_replay_requested,
-            options.resume.client_acked_offset,
+            options.resume,
         )
         .await
         {
@@ -221,10 +215,7 @@ impl DialPlan {
                     options.network.fwmark,
                     options.network.ipv6_first,
                     options.source,
-                    options.resume.resume_request,
-                    options.resume.ack_prefix_requested,
-                    options.resume.symmetric_replay_requested,
-                    options.resume.client_acked_offset,
+                    options.resume,
                 )
                 .await
                 {
@@ -269,10 +260,7 @@ impl DialPlan {
             options.network.fwmark,
             options.network.ipv6_first,
             options.source,
-            options.resume.resume_request,
-            options.resume.ack_prefix_requested,
-            options.resume.symmetric_replay_requested,
-            options.resume.client_acked_offset,
+            options.resume,
         )
         .await
         {
@@ -493,67 +481,18 @@ async fn connect_websocket_http1(
                 crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
             );
         }
-        headers.insert(
-            crate::resumption::RESUME_CAPABLE_HEADER,
-            "1".parse().expect("static header value"),
-        );
-        if let Some(id) = options.resume.resume_request {
-            headers.insert(
-                crate::resumption::RESUME_REQUEST_HEADER,
-                id.to_hex().parse().expect("hex Session ID is a valid header value"),
-            );
-        }
-        if options.resume.ack_prefix_requested {
-            headers.insert(
-                crate::resumption::ACK_PREFIX_HEADER,
-                "1".parse().expect("static header value"),
-            );
-        }
-        if options.resume.symmetric_replay_requested {
-            headers.insert(
-                crate::resumption::SYMMETRIC_REPLAY_HEADER,
-                "1".parse().expect("static header value"),
-            );
-        }
-        // v2 client-reported downstream-acked offset header. Only sent
-        // on retry redials that also advertise v2 AND when the offset
-        // is non-zero (a fresh session has no prior bytes to claim).
-        if options.resume.symmetric_replay_requested && options.resume.client_acked_offset > 0 {
-            let offset_str = options.resume.client_acked_offset.to_string();
-            headers.insert(
-                crate::resumption::DOWN_ACKED_HEADER,
-                offset_str.parse().expect("decimal u64 is a valid header value"),
-            );
-        }
+        crate::resumption::apply_resume_request_headers(&options.resume, headers);
         let (ws_stream, response) = client_async_tls(request, tcp)
             .await
             .context("HTTP/1 websocket handshake failed")?;
-        let issued = response
-            .headers()
-            .get(crate::resumption::SESSION_RESPONSE_HEADER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(SessionId::parse_hex);
-        // Echo gating mirrors the h2/h3 paths: only report a positive
-        // negotiation when the request advertised the capability AND the
-        // server echoed `1`. A spurious echo without a matching request
-        // is treated as `false` and the receiver will not look for the
-        // Ack-Prefix control frame in the byte stream.
-        let ack_prefix_echoed = options.resume.ack_prefix_requested
-            && response
-                .headers()
-                .get(crate::resumption::ACK_PREFIX_HEADER)
-                .and_then(|v| v.to_str().ok())
-                == Some("1");
-        // v2 echo gate: server must echo v2 AND v1 must already be on
-        // (per spec, v2 without v1 is undefined wire shape).
-        let symmetric_replay_echoed = options.resume.symmetric_replay_requested
-            && ack_prefix_echoed
-            && response
-                .headers()
-                .get(crate::resumption::SYMMETRIC_REPLAY_HEADER)
-                .and_then(|v| v.to_str().ok())
-                == Some("1");
-        Ok::<_, anyhow::Error>((ws_stream, issued, ack_prefix_echoed, symmetric_replay_echoed))
+        let negotiated =
+            crate::resumption::parse_resume_response_echo(&options.resume, response.headers());
+        Ok::<_, anyhow::Error>((
+            ws_stream,
+            negotiated.issued_session_id,
+            negotiated.ack_prefix_advertised_by_server,
+            negotiated.symmetric_replay_advertised_by_server,
+        ))
     })
     .await
     .map_err(|_| {

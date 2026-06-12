@@ -200,7 +200,7 @@ async fn handle_h3_request(
         ResumeContext::default()
     };
     let mut response = build_extended_connect_response(None, None);
-    resume.issue_session_header(response.headers_mut());
+    resume.session_echo().apply(response.headers_mut());
 
     stream
         .send_response(response)
