@@ -762,6 +762,7 @@ async fn do_tcp_ss_setup(
     let diag = outline_transport::WsReadDiag {
         conn_id: shared_conn_info.map(|(id, _)| id),
         mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
+        is_h3: ws_stream.is_h3(),
         uplink: setup.name.to_string(),
         target: target.to_string(),
     };

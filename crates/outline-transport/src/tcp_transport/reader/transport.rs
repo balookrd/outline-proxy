@@ -54,7 +54,16 @@ pub trait ReadTransport: Send + 'static {
 #[derive(Clone, Debug, Default)]
 pub struct WsReadDiag {
     pub conn_id: Option<u64>,
+    /// Human-readable carrier mode (`h1`/`h2`/`h3`/…) for EOF / idle-timeout
+    /// logs only. Do not gate behaviour on this string — use `is_h3` below.
     pub mode: &'static str,
+    /// Authoritative H3 flag, taken from `TransportStream::is_h3()` at
+    /// construction (before the stream is split). The read-idle watchdog gates
+    /// on THIS, not on the `mode` string, so a mislabelled / empty `mode`
+    /// cannot accidentally arm the 300 s watchdog on a healthy-but-quiet H3
+    /// stream — on H3 the QUIC layer owns liveness and a server response can
+    /// legitimately be silent for minutes.
+    pub is_h3: bool,
     pub uplink: String,
     pub target: String,
 }
@@ -79,7 +88,7 @@ impl ReadTransport for WsReadTransport {
             // last-resort watchdog on h1/h2, which have no multiplexer
             // liveness underneath. Mirrors the server, which sends no keepalive
             // Ping on H3 (it would risk H3_INTERNAL_ERROR).
-            let watchdog = (self.diag.mode != "h3").then_some(WS_READ_IDLE_TIMEOUT);
+            let watchdog = (!self.diag.is_h3).then_some(WS_READ_IDLE_TIMEOUT);
             let item = match watchdog {
                 Some(timeout_dur) => match timeout(timeout_dur, self.stream.next()).await {
                     Err(_elapsed) => {
