@@ -6,6 +6,12 @@
 //! runtime, so this lives *outside* the index-keyed `UplinkManager` (whose
 //! per-index arrays are fixed at construction) — the reverse path is a
 //! separate `Route::Reverse`, not an extra `UplinkCandidate`.
+//!
+//! Items here are nominally `pub` while the `reverse` module itself stays
+//! crate-private: the registry leaks through the public
+//! `ProxyConfig::reverse` field, and anything narrower trips the
+//! `private_interfaces`/`private_bounds` lints. Nothing is nameable
+//! outside the crate.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,14 +23,14 @@ use shadowsocks_crypto::CipherKind;
 
 /// Liveness of a pooled peer. Abstracted so the pool logic (insert/evict/
 /// round-robin) is unit-testable without standing up a real QUIC carrier.
-pub(crate) trait Live {
+pub trait Live {
     fn is_live(&self) -> bool;
 }
 
 /// One live reverse peer: the accepted QUIC carrier plus the SS credentials
 /// this listener uses to frame the SS2022 header on each stream it opens to
 /// the peer. `master_key` is pre-derived from the configured `password`.
-pub(crate) struct ReversePeer {
+pub struct ReversePeer {
     pub(crate) conn: Arc<SharedQuicConnection>,
     pub(crate) cipher: CipherKind,
     pub(crate) master_key: Vec<u8>,
@@ -46,7 +52,7 @@ impl Live for ReversePeer {
 /// Bounded pool of peers for one reverse group. Insert on accept,
 /// drop-dead-and-round-robin on pick. Cheap `parking_lot::RwLock<Vec<_>>` —
 /// peer churn is rare and the list is tiny.
-pub(crate) struct PeerPool<T: Live> {
+pub struct PeerPool<T: Live> {
     group: Arc<str>,
     max_peers: usize,
     peers: RwLock<Vec<Arc<T>>>,
