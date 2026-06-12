@@ -308,9 +308,11 @@ async fn handle(
                         // Tag stream-one chunks with seq=u64::MAX
                         // so the test can tell the carrier mode
                         // apart from packet-up (which numbers
-                        // them 0, 1, …).
-                        captured_for_drain.lock().seqs.push(u64::MAX);
-                        captured_for_drain.lock().bodies.push(data);
+                        // them 0, 1, …). Single lock acquisition
+                        // keeps the (seq, body) pair atomic.
+                        let mut guard = captured_for_drain.lock();
+                        guard.seqs.push(u64::MAX);
+                        guard.bodies.push(data);
                     }
                 }
             });
@@ -341,8 +343,15 @@ async fn handle(
                 Ok(collected) => collected.to_bytes(),
                 Err(_) => Bytes::new(),
             };
-            captured.lock().seqs.push(seq);
-            captured.lock().bodies.push(body_bytes);
+            // Push the (seq, body) pair under ONE lock acquisition:
+            // pipelined h2 POSTs run these handlers concurrently, and
+            // split pushes can interleave (seq A, seq B, body B, body A),
+            // mispairing the zip in the assertion phase.
+            {
+                let mut guard = captured.lock();
+                guard.seqs.push(seq);
+                guard.bodies.push(body_bytes);
+            }
             Ok(Response::builder().status(StatusCode::OK).body(empty_body()).unwrap())
         },
         _ => Ok(Response::builder()

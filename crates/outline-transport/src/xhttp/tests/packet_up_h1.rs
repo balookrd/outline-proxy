@@ -255,8 +255,14 @@ async fn handle(
                 Ok(collected) => collected.to_bytes(),
                 Err(_) => Bytes::new(),
             };
-            captured.lock().seqs.push(seq);
-            captured.lock().bodies.push(body_bytes);
+            // Push the (seq, body) pair under ONE lock acquisition so
+            // concurrent handlers cannot interleave the two vecs and
+            // mispair the zip in the assertion phase.
+            {
+                let mut guard = captured.lock();
+                guard.seqs.push(seq);
+                guard.bodies.push(body_bytes);
+            }
             Ok(Response::builder().status(StatusCode::OK).body(empty_body()).unwrap())
         },
         _ => Ok(Response::builder()
