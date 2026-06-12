@@ -122,12 +122,12 @@ impl WebSocketUpgrade {
                 let negotiated = self.extensions.as_deref().and_then(|ext| {
                     crate::deflate::parse_deflate_offer(ext).and_then(|params| {
                         // Parse and validate deflate parameters from the client's offer
-                        crate::deflate::DeflateConfig::from_params(&params).ok().map(
-                            |_client_config| {
+                        crate::deflate::DeflateConfig::from_params(&params)
+                            .ok()
+                            .map(|_client_config| {
                                 // Use server's config but respect client's constraints
                                 server_config.clone()
-                            },
-                        )
+                            })
                     })
                 });
 
@@ -287,14 +287,18 @@ impl IntoResponse for WebSocketUpgradeRejection {
             Self::MissingSecWebSocketKey => (StatusCode::BAD_REQUEST, "Missing Sec-WebSocket-Key"),
             Self::MissingSecWebSocketVersion => {
                 (StatusCode::BAD_REQUEST, "Missing Sec-WebSocket-Version")
-            },
+            }
             Self::UnsupportedVersion => (StatusCode::BAD_REQUEST, "Unsupported WebSocket version"),
-            Self::MissingUpgrade => {
-                (StatusCode::BAD_REQUEST, "Missing upgrade in request extensions")
-            },
+            Self::MissingUpgrade => (
+                StatusCode::BAD_REQUEST,
+                "Missing upgrade in request extensions",
+            ),
         };
 
-        Response::builder().status(status).body(Body::from(message)).unwrap()
+        Response::builder()
+            .status(status)
+            .body(Body::from(message))
+            .unwrap()
     }
 }
 
@@ -338,12 +342,14 @@ impl IntoResponse for WebSocketUpgradeResponse {
                 Ok(upgraded) => {
                     // Wrap the upgraded connection with TokioIo for compatibility
                     let io = TokioIo::new(upgraded);
-                    let stream = UpgradedStream { inner: Box::new(io) };
+                    let stream = UpgradedStream {
+                        inner: Box::new(io),
+                    };
                     handler(stream).await;
-                },
+                }
                 Err(e) => {
                     eprintln!("WebSocket upgrade error: {}", e);
-                },
+                }
             }
         });
 
@@ -439,7 +445,9 @@ impl WebSocket {
 
     /// Create from a raw TCP stream (for standalone usage)
     pub fn from_tcp(stream: tokio::net::TcpStream, config: Config) -> Self {
-        let upgraded = UpgradedStream { inner: Box::new(stream) };
+        let upgraded = UpgradedStream {
+            inner: Box::new(stream),
+        };
         Self::new(upgraded, config)
     }
 
@@ -511,7 +519,7 @@ impl WebSocket {
                         inner: WebSocketWriterInner::Plain(writer),
                     },
                 )
-            },
+            }
             #[cfg(feature = "permessage-deflate")]
             WebSocketInner::Compressed(ws) => {
                 let (reader, writer) = ws.split();
@@ -523,7 +531,7 @@ impl WebSocket {
                         inner: WebSocketWriterInner::Compressed(writer),
                     },
                 )
-            },
+            }
         }
     }
 }
@@ -598,7 +606,8 @@ impl WebSocketWriter {
 
     /// Send a close frame
     pub async fn close(&mut self, code: u16, reason: &str) -> Result<()> {
-        self.send(Message::Close(Some(CloseReason::new(code, reason)))).await
+        self.send(Message::Close(Some(CloseReason::new(code, reason))))
+            .await
     }
 
     /// Check if the connection is closed

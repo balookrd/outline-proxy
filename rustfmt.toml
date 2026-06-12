@@ -1,5 +1,13 @@
 edition = "2021"
 
+# Do NOT reformat the vendored crates — keep `vendor/*` byte-identical to the
+# upstream sources (plus our explicit patches) so the patch artifacts stay a
+# minimal, reviewable diff. rustfmt's `ignore` key is nightly-only, so on the
+# project's stable toolchain this is a convention, not enforcement: CI runs
+# `cargo fmt` per workspace package (never `--all`), and a local
+# `cargo fmt --all` *will* touch `vendor/` — revert that diff. On a nightly
+# toolchain you can enforce it with `ignore = ["vendor"]`.
+
 max_width = 100
 use_small_heuristics = "Max"
 
