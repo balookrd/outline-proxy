@@ -28,6 +28,7 @@ mod header;
 mod tcp;
 mod udp;
 mod udp_mux;
+pub(crate) mod udp_mux_core;
 mod uuid;
 
 pub use header::{
@@ -36,7 +37,8 @@ pub use header::{
 };
 pub use tcp::{VlessTcpReader, VlessTcpWriter, vless_tcp_pair_from_ws};
 pub use udp::{VlessUdpTransport, VlessUdpWsTransport};
-pub use udp_mux::{VlessUdpDowngradeNotifier, VlessUdpMuxLimits, VlessUdpSessionMux};
+pub use udp_mux::{VlessUdpDowngradeNotifier, VlessUdpSessionMux};
+pub use udp_mux_core::VlessUdpMuxLimits;
 pub use uuid::parse_uuid;
 
 #[cfg(test)]
