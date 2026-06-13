@@ -15,46 +15,85 @@
 //! production webpki list. The override is consulted on each call,
 //! so adding a new ALPN-aware caller doesn't need bespoke wiring.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
+use hashbrown::HashMap;
+use parking_lot::Mutex;
 #[cfg(any(test, feature = "test-tls"))]
 use rustls::pki_types::CertificateDer;
 use rustls::{ClientConfig, RootCertStore};
 use webpki_roots::TLS_SERVER_ROOTS;
 
-/// Build a rustls `ClientConfig` with no client auth and the given
-/// ALPN protocol list (order = preference). Roots come from the
-/// process-wide test override if [`install_test_tls_root`] has
+use crate::fingerprint_profile::TlsFingerprint;
+
+/// Cache of built client configs keyed by `(tls fingerprint, ALPN list)`.
+/// The fingerprint is the dial-scoped value set by
+/// [`crate::fingerprint_profile::with_dial_fingerprint`]; `None` (no active
+/// scope — probes, raw-QUIC, tests) reproduces the pre-fingerprint default
+/// provider and the exact wire shape builds had before this knob landed.
+/// Builds are rare (one per distinct key, ever), so a single mutex is fine.
+type ClientConfigKey = (Option<TlsFingerprint>, Vec<Vec<u8>>);
+static CLIENT_CONFIG_CACHE: OnceLock<Mutex<HashMap<ClientConfigKey, Arc<ClientConfig>>>> =
+    OnceLock::new();
+
+/// Build (or return a cached) rustls `ClientConfig` with no client auth and
+/// the given ALPN protocol list (order = preference). When a dial-scoped
+/// [`TlsFingerprint`] is in effect the ClientHello cipher / kx order is
+/// swapped to mimic that browser family (see [`crate::tls_fingerprint`]);
+/// otherwise rustls's default provider is used, byte-for-byte as before.
+/// Roots come from the process-wide test override if [`install_test_tls_root`]
 /// populated it, otherwise from the system webpki bundle.
 pub(crate) fn build_client_config(alpn_protocols: &[&[u8]]) -> Arc<ClientConfig> {
-    if let Some(override_roots) = test_override_roots() {
-        return build_client_config_with_roots((*override_roots).clone(), alpn_protocols);
+    let fp = crate::fingerprint_profile::current_dial_fingerprint();
+    let cache = CLIENT_CONFIG_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key: ClientConfigKey = (fp, alpn_protocols.iter().map(|p| p.to_vec()).collect());
+    let mut guard = cache.lock();
+    if let Some(existing) = guard.get(&key) {
+        return Arc::clone(existing);
     }
-    let mut roots = RootCertStore::empty();
-    roots.extend(TLS_SERVER_ROOTS.iter().cloned());
-    build_client_config_with_roots(roots, alpn_protocols)
+    let config = build_client_config_uncached(fp, alpn_protocols);
+    guard.insert(key, Arc::clone(&config));
+    config
 }
 
 /// Public wrapper over [`build_client_config`] used by the HTTPS data-path
 /// probe. Sibling to the existing transport callers, with the same root
 /// store and test-override behaviour — separated only because probe code
 /// lives outside this crate and would otherwise reach into a `pub(crate)`
-/// helper. ALPN list controls what the probe handshake advertises (typical
-/// caller passes `[b"h2", b"http/1.1"]` to mimic a browser).
+/// helper. Probes run outside any dial scope, so the fingerprint is `None`
+/// and the default provider is used. ALPN list controls what the probe
+/// handshake advertises (typical caller passes `[b"h2", b"http/1.1"]`).
 pub fn build_https_probe_client_config(alpn_protocols: &[&[u8]]) -> Arc<ClientConfig> {
     build_client_config(alpn_protocols)
 }
 
-/// Same as [`build_client_config`] but with a caller-supplied root store.
-/// Used by the test override path so cross-repo integration tests can
-/// pin a self-signed root without touching the global webpki list.
-fn build_client_config_with_roots(
-    roots: RootCertStore,
+/// Builds a fresh `ClientConfig` for `(fp, alpn)`, bypassing the cache.
+/// `fp = Some(_)` selects the family-specific cipher / kx provider via
+/// [`crate::tls_fingerprint::provider_for`]; `None` keeps rustls's default
+/// provider (the exact builder used before the fingerprint knob). Roots are
+/// the test override when installed, else the system webpki list.
+fn build_client_config_uncached(
+    fp: Option<TlsFingerprint>,
     alpn_protocols: &[&[u8]],
 ) -> Arc<ClientConfig> {
-    let mut config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let roots = match test_override_roots() {
+        Some(override_roots) => (*override_roots).clone(),
+        None => {
+            let mut roots = RootCertStore::empty();
+            roots.extend(TLS_SERVER_ROOTS.iter().cloned());
+            roots
+        },
+    };
+    let mut config = match fp {
+        Some(fp) => ClientConfig::builder_with_provider(crate::tls_fingerprint::provider_for(fp))
+            .with_safe_default_protocol_versions()
+            .expect("ring provider supports TLS 1.2 + 1.3")
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+        None => ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    };
     config.alpn_protocols = alpn_protocols.iter().map(|p| p.to_vec()).collect();
     Arc::new(config)
 }
@@ -77,9 +116,9 @@ static TEST_TLS_OVERRIDE_ROOTS: RwLock<Option<Arc<RootCertStore>>> = RwLock::new
 /// fall back to the system webpki list.
 ///
 /// Calls are idempotent and last-writer-wins; the override applies
-/// to all subsequent dials in the current process. ALPN-cached
-/// configs (e.g. `XHTTP_H3_TLS_CONFIG`) capture the override on
-/// their first build, so install before the first dial.
+/// to all subsequent dials in the current process. The
+/// `(fingerprint, ALPN)` config cache captures the override on its
+/// first build per key, so install before the first dial.
 #[cfg(any(test, feature = "test-tls"))]
 pub fn install_test_tls_root(cert_der: CertificateDer<'static>) {
     let mut roots = RootCertStore::empty();

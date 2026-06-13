@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use tokio::time::timeout;
-use tokio_tungstenite::client_async_tls;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::{Connector, client_async_tls_with_config};
 use tracing::{debug, warn};
 use url::Url;
 
@@ -110,26 +110,43 @@ impl DialPlan {
     }
 
     async fn connect(self, options: TransportDialOptions<'_>) -> Result<TransportStream> {
-        match self.selected {
-            TransportMode::WsH1 => self.connect_ws_h1(options).await,
-            TransportMode::WsH2 => self.connect_ws_h2_with_h1_fallback(options).await,
-            #[cfg(feature = "h3")]
-            TransportMode::WsH3 => self.connect_ws_h3_with_fallback(options).await,
-            #[cfg(not(feature = "h3"))]
-            TransportMode::WsH3 => self.connect_ws_h3_without_feature(options).await,
-            TransportMode::Quic => {
-                // Raw QUIC bypasses the WebSocket layer entirely; callers must
-                // dispatch to `crate::quic::connect_quic_uplink` before reaching
-                // this function. Reaching here means a config-routing bug.
-                anyhow::bail!(
-                    "TransportMode::Quic does not produce a WebSocket stream; \
-                     caller must dispatch to the raw-QUIC dial path"
-                );
-            },
-            TransportMode::XhttpH3 => self.connect_xhttp_h3_with_fallback(options).await,
-            TransportMode::XhttpH2 => self.connect_xhttp_h2_with_h1_fallback(options, true).await,
-            TransportMode::XhttpH1 => self.connect_xhttp_h1(options).await,
-        }
+        // Pick the dial's TLS fingerprint once and scope it here so every
+        // carrier's TLS-config build below mimics the same browser family the
+        // HTTP headers advertise. One scope at the dispatch root covers all
+        // modes (h1/h2/h3/xhttp), so the per-carrier connect functions need no
+        // wrapper of their own. `Box::pin` the inner future: this `match`
+        // inlines every carrier's connect future (each with its own fallback
+        // chain), so leaving the scope wrapper un-boxed would grow an
+        // already-large state machine past tokio's 2 MiB test-thread stack.
+        let fp = crate::fingerprint_profile::select(options.url).map(|p| p.tls);
+        crate::fingerprint_profile::with_dial_fingerprint(
+            fp,
+            Box::pin(async move {
+                match self.selected {
+                    TransportMode::WsH1 => self.connect_ws_h1(options).await,
+                    TransportMode::WsH2 => self.connect_ws_h2_with_h1_fallback(options).await,
+                    #[cfg(feature = "h3")]
+                    TransportMode::WsH3 => self.connect_ws_h3_with_fallback(options).await,
+                    #[cfg(not(feature = "h3"))]
+                    TransportMode::WsH3 => self.connect_ws_h3_without_feature(options).await,
+                    TransportMode::Quic => {
+                        // Raw QUIC bypasses the WebSocket layer entirely; callers must
+                        // dispatch to `crate::quic::connect_quic_uplink` before reaching
+                        // this function. Reaching here means a config-routing bug.
+                        anyhow::bail!(
+                            "TransportMode::Quic does not produce a WebSocket stream; \
+                             caller must dispatch to the raw-QUIC dial path"
+                        );
+                    },
+                    TransportMode::XhttpH3 => self.connect_xhttp_h3_with_fallback(options).await,
+                    TransportMode::XhttpH2 => {
+                        self.connect_xhttp_h2_with_h1_fallback(options, true).await
+                    },
+                    TransportMode::XhttpH1 => self.connect_xhttp_h1(options).await,
+                }
+            }),
+        )
+        .await
     }
 
     async fn connect_ws_h1(self, options: TransportDialOptions<'_>) -> Result<TransportStream> {
@@ -482,9 +499,22 @@ async fn connect_websocket_http1(
             );
         }
         crate::resumption::apply_resume_request_headers(&options.resume, headers);
-        let (ws_stream, response) = client_async_tls(request, tcp)
-            .await
-            .context("HTTP/1 websocket handshake failed")?;
+        // Use our fingerprint-aware TLS config instead of tungstenite's
+        // built-in default rustls connector, so the dial-scoped browser
+        // family set by `DialPlan::connect` flows into the ClientHello via
+        // `build_client_config`. The connector is consulted only for `wss://`;
+        // `ws://` stays plain. ALPN is `http/1.1` only — this carrier speaks
+        // HTTP/1 WebSocket upgrade, so offering `h2` would let the server pick
+        // a protocol this dial cannot drive.
+        let connector = if options.url.scheme() == "wss" {
+            Connector::Rustls(crate::tls::build_client_config(&[b"http/1.1"]))
+        } else {
+            Connector::Plain
+        };
+        let (ws_stream, response) =
+            client_async_tls_with_config(request, tcp, None, Some(connector))
+                .await
+                .context("HTTP/1 websocket handshake failed")?;
         let negotiated =
             crate::resumption::parse_resume_response_echo(&options.resume, response.headers());
         Ok::<_, anyhow::Error>((
