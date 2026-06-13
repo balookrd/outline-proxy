@@ -22,7 +22,7 @@
 //! silently downgrading the carrier shape.
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -58,11 +58,10 @@ use super::{
 /// uniform across carriers.
 const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Cached TLS config with `http/1.1` ALPN. Built once per process.
-static XHTTP_H1_TLS_CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
-
 fn h1_tls_config() -> Arc<rustls::ClientConfig> {
-    Arc::clone(XHTTP_H1_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"http/1.1"])))
+    // Cache + per-dial fingerprint selection live in `build_client_config`
+    // (keyed by `(fingerprint, ALPN)`); thin ALPN-pinning wrapper.
+    crate::tls::build_client_config(&[b"http/1.1"])
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -169,6 +168,8 @@ pub(super) async fn connect_xhttp_h1(
         ))
     };
 
+    // The dial-scoped TLS fingerprint is set once by `DialPlan::connect`;
+    // the TLS handshake inside `dial` reads it through `build_client_config`.
     timeout(FRESH_CONNECT_TIMEOUT, dial)
         .await
         .with_context(|| format!("xhttp/h1 dial to {url} timed out"))?

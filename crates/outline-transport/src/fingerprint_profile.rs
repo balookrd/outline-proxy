@@ -130,6 +130,30 @@ impl<'de> serde::Deserialize<'de> for Strategy {
     }
 }
 
+/// TLS-layer browser family a [`Profile`] mimics. Selects the
+/// ClientHello cipher-suite (and kx-group) ordering offered by the dial
+/// path so the JA3 surface lines up with the HTTP-layer identity the
+/// same profile advertises — a Chrome `User-Agent` paired with rustls's
+/// default cipher order is itself a mismatch a fingerprinting DPI can
+/// key on.
+///
+/// Scope on stock rustls is deliberately narrow (see [`crate::tls_fingerprint`]):
+/// only cipher / kx *ordering* is reachable. GREASE, the extension set,
+/// and extension ordering are not exposed by the public rustls API and
+/// would need a vendored rustls; this enum is the seam such a fork plugs
+/// into without touching callers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TlsFingerprint {
+    /// Chromium family — Chrome, Edge, and other Blink/BoringSSL clients.
+    /// TLS 1.3 order is AES-128-GCM, AES-256-GCM, then ChaCha20.
+    Chromium,
+    /// Gecko (Firefox). TLS 1.3 order is AES-128-GCM, ChaCha20, then
+    /// AES-256-GCM; in TLS 1.2 ECDHE-ChaCha20 sits ahead of ECDHE-AES-256.
+    Firefox,
+    /// WebKit (Safari) — Apple's SecureTransport preference list.
+    Safari,
+}
+
 /// A single browser identity. Values are `&'static` so the whole
 /// pool is a single `const` table — selection is a hash-and-index,
 /// no allocation, no string copies.
@@ -146,6 +170,10 @@ pub struct Profile {
     pub sec_ch_ua: Option<&'static str>,
     pub sec_ch_ua_mobile: Option<&'static str>,
     pub sec_ch_ua_platform: Option<&'static str>,
+    /// TLS-layer family whose ClientHello cipher / kx ordering this
+    /// profile's dials should mimic, kept consistent with the HTTP
+    /// identity above (Chrome UA ⇒ Chromium TLS order, etc.).
+    pub tls: TlsFingerprint,
 }
 
 /// UNIX seconds-since-epoch when [`PROFILES`] was last reviewed
@@ -176,6 +204,7 @@ pub const REFRESH_PERIOD_SECS: u64 = 180 * 24 * 60 * 60;
 pub const PROFILES: &[Profile] = &[
     Profile {
         name: "chrome-142-windows",
+        tls: TlsFingerprint::Chromium,
         user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
@@ -188,6 +217,7 @@ pub const PROFILES: &[Profile] = &[
     },
     Profile {
         name: "chrome-142-macos",
+        tls: TlsFingerprint::Chromium,
         // Chrome on macOS still pins `10_15_7` (Catalina) in the UA
         // string — Google froze that in 2021 to stop User-Agent
         // leaking the real macOS version. Recent Chrome stable still
@@ -206,6 +236,7 @@ pub const PROFILES: &[Profile] = &[
     },
     Profile {
         name: "firefox-150-windows",
+        tls: TlsFingerprint::Firefox,
         user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         accept_language: "en-US,en;q=0.5",
@@ -216,6 +247,7 @@ pub const PROFILES: &[Profile] = &[
     },
     Profile {
         name: "firefox-150-macos",
+        tls: TlsFingerprint::Firefox,
         // Firefox uses the actual macOS major in its UA (unlike
         // Chrome's frozen `10_15_7`). macOS 16 (Tahoe) is current
         // stable as of 2026-05; Firefox follows via
@@ -236,6 +268,7 @@ pub const PROFILES: &[Profile] = &[
         // Safari 19 (Tahoe, 2025). Patch 19.4 is the May-2026
         // stable; the UA still pins `10_15_7` like Chrome does.
         name: "safari-19-macos",
+        tls: TlsFingerprint::Safari,
         user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/19.4 Safari/605.1.15",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         accept_language: "en-US,en;q=0.9",
@@ -250,6 +283,7 @@ pub const PROFILES: &[Profile] = &[
     },
     Profile {
         name: "edge-142-windows",
+        tls: TlsFingerprint::Chromium,
         user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
@@ -319,6 +353,36 @@ fn current_effective_strategy() -> Strategy {
     STRATEGY_OVERRIDE
         .try_with(|s| *s)
         .unwrap_or_else(|_| current_strategy())
+}
+
+tokio::task_local! {
+    /// TLS fingerprint family for the current dial, set by
+    /// [`with_dial_fingerprint`]. The dial path picks one [`Profile`] per
+    /// connection and pushes `profile.tls` here so the TLS-config builder
+    /// ([`crate::tls::build_client_config`]) mimics the same browser family
+    /// the HTTP headers advertise — without threading the value through
+    /// every transport signature. Same propagation as [`STRATEGY_OVERRIDE`]:
+    /// it follows awaited futures but not freshly-spawned tasks, which is
+    /// exactly the dial → TLS-handshake path (the handshake is awaited
+    /// inline; post-handshake POST tasks reuse the already-built config).
+    static DIAL_TLS_FINGERPRINT: Option<TlsFingerprint>;
+}
+
+/// Run `f` with `fp` as the dial-scoped TLS fingerprint that
+/// [`crate::tls::build_client_config`] reads. Wrap the whole dial future
+/// (TCP + TLS + handshake) so the config built inside picks up `fp`. `None`
+/// reproduces the pre-fingerprint default provider and exact wire shape.
+pub(crate) async fn with_dial_fingerprint<F>(fp: Option<TlsFingerprint>, f: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    DIAL_TLS_FINGERPRINT.scope(fp, f).await
+}
+
+/// The dial-scoped TLS fingerprint, or `None` outside any
+/// [`with_dial_fingerprint`] scope (probes, raw-QUIC, tests).
+pub(crate) fn current_dial_fingerprint() -> Option<TlsFingerprint> {
+    DIAL_TLS_FINGERPRINT.try_with(|fp| *fp).unwrap_or(None)
 }
 
 /// Returns the profile selected for `url` under the active strategy,

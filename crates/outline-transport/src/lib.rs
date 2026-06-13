@@ -110,6 +110,7 @@ mod shared_cache;
 mod shared_dial;
 mod tcp_transport;
 mod tls;
+mod tls_fingerprint;
 #[cfg(feature = "quic")]
 pub mod tls_reverse;
 mod udp_transport;

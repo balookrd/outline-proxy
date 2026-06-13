@@ -7,7 +7,7 @@
 
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -46,15 +46,12 @@ use super::{
 /// in `h2/shared.rs` for parity with manager-level retry windows.
 const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// TLS config (h2 ALPN) cached lazily — built once per process.
-static XHTTP_H2_TLS_CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
-
 fn h2_tls_config() -> Arc<rustls::ClientConfig> {
-    // `build_client_config` consults the test override slot itself, so
-    // a `OnceLock` here is fine: the first call captures whichever
-    // root store is current, and tests that need the override install
-    // it before the first dial.
-    Arc::clone(XHTTP_H2_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"h2"])))
+    // Offer `[h2, http/1.1]` like a browser does — a lone `h2` ALPN is a
+    // fingerprint no real browser produces. The server picks h2 by its own
+    // preference order, so the negotiated protocol is unchanged. Cache +
+    // per-dial fingerprint live in `build_client_config`.
+    crate::tls::build_client_config(&[b"h2", b"http/1.1"])
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -232,6 +229,8 @@ pub(super) async fn connect_xhttp_h2(
         ))
     };
 
+    // The dial-scoped TLS fingerprint is set once by `DialPlan::connect`;
+    // the TLS handshake inside `dial` reads it through `build_client_config`.
     timeout(FRESH_CONNECT_TIMEOUT, dial)
         .await
         .with_context(|| format!("xhttp dial to {url} timed out"))?
