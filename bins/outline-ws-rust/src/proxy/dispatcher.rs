@@ -34,19 +34,18 @@ pub(crate) enum Route {
     Reverse { peer: Arc<crate::reverse::ReversePeer> },
 }
 
-/// If `route` lands on the reverse group and a peer is live, swap it for a
-/// `Route::Reverse`. Falls through to the original route otherwise (e.g. no
-/// peer connected yet) so the group's configured uplinks — if any — still
-/// serve. Applied after `resolve_dispatch` so the routing table is unaware
-/// of the reverse path.
+/// If `route` lands on a reverse group and a peer is live, swap it for a
+/// `Route::Reverse`. Falls through to the original route otherwise (group is
+/// not a reverse group, or no peer connected yet) so its configured uplinks
+/// — if any — still serve. Applied after `resolve_dispatch` so the routing
+/// table is unaware of the reverse path.
 #[cfg(feature = "h3")]
 pub(crate) fn apply_reverse(config: &ProxyConfig, route: Route) -> Route {
     let Some(registry) = config.reverse.as_ref() else {
         return route;
     };
     if let Route::Group { ref name, .. } = route
-        && registry.group() == name.as_ref()
-        && let Some(peer) = registry.pick_live()
+        && let Some(peer) = registry.pick_live(name.as_ref())
     {
         return Route::Reverse { peer };
     }

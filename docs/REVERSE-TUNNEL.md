@@ -50,7 +50,8 @@ by **SHA-256 fingerprint**, and the listener requires a client certificate
 
 A peer's client-cert fingerprint also selects *which* configured peer
 connected, and therefore which Shadowsocks credentials (`method` /
-`password`) the listener uses to frame that peer's streams.
+`password`) the listener uses to frame that peer's streams — and which
+egress `group` it joins.
 
 ## Setup
 
@@ -90,32 +91,48 @@ listen = "0.0.0.0:8443"
 # Certificate this listener presents to dialing peers.
 server_cert_path = "/etc/outline-ws/ws-server.crt"
 server_key_path  = "/etc/outline-ws/ws-server.key"
-# Uplink group reverse peers are pooled under. Route traffic here via [[route]].
+# Default uplink group reverse peers are pooled under (per-peer `group`
+# overrides this). Route traffic here via [[route]].
 group = "reverse"
 # true (default) offers ss-mtu then ss (enables the oversize-record fallback).
 mtu = true
-# Upper bound on concurrently-registered peers (default 8).
+# Upper bound on concurrently-registered peers, applied per group (default 8).
 max_peers = 8
 
 # One entry per expected ss peer. `client_cert_pin` authenticates the
 # carrier (mTLS); method/password are the SS credentials used to frame
-# the streams opened to that peer (they must match an ss user).
+# the streams opened to that peer (they must match an ss user). `group`
+# is optional — omit it to join the listener-level `group`, or set it to
+# pool distinct peers under distinct egress groups served by distinct routes.
 [[reverse_listener.peers]]
 client_cert_pin = "aa:bb:cc:..."          # SHA-256 of ss-client.crt (DER)
 method   = "2022-blake3-aes-256-gcm"
 password = "<base64-psk-or-password>"
+# group omitted → joins the listener default ("reverse").
+
+[[reverse_listener.peers]]
+client_cert_pin = "11:22:33:..."          # a second ss peer, separate egress
+method   = "2022-blake3-aes-256-gcm"
+password = "<base64-psk-or-password>"
+group    = "reverse-eu"                    # pooled and routed separately
 ```
 
-Point routing at the reverse group like any other:
+Route each reverse group like any other uplink group:
 
 ```toml
 [[route]]
+# Specific destinations egress through the second peer.
+prefixes = ["203.0.113.0/24"]
+via = "reverse-eu"
+
+[[route]]
+# Everything else egresses through the default peer.
 default = true
 via = "reverse"
 ```
 
-When no peer is connected the group falls through to its configured uplinks
-(if any) or fails the session — it never silently drops.
+When no peer is connected for a group, it falls through to that group's
+configured uplinks (if any) or fails the session — it never silently drops.
 
 ### 3. Configure the `ss` dialer (behind NAT)
 
@@ -135,7 +152,8 @@ client_cert_path = "/etc/outline-ss/ss-client.crt"
 client_key_path  = "/etc/outline-ss/ss-client.key"
 # true (default) offers [ss-mtu, ss]; false offers only [ss].
 mtu = true
-# Reconnect backoff floor / ceiling in seconds (default 1 / 60).
+# Reconnect backoff floor / ceiling in seconds for transient failures
+# (default 1 / 60).
 backoff_min_secs = 1
 backoff_max_secs = 60
 ```
@@ -147,6 +165,18 @@ handshake authenticates — mTLS identity and SS user are independent layers.
 Each endpoint runs its own reconnect loop with bounded, jittered backoff. A
 malformed pin or unreadable certificate disables only that one endpoint
 (logged at startup) without aborting the server.
+
+The loop distinguishes **transient failures** (the `ws` host is down, a
+timeout, a network blip) from **authentication failures** (a pin/cert
+mismatch — whether `ss` rejects the `ws` server cert or `ws` rejects the
+`ss` client cert). Transient failures retry on the exponential
+`backoff_min_secs`→`backoff_max_secs` schedule; an authentication failure
+will not fix itself on retry, so the loop backs off a long, fixed interval
+(5 minutes) and logs a warning to check the pins/certs, rather than
+hammering the peer with TLS handshakes. It keeps probing at that interval,
+so once the certificate problem is corrected (which on `ss` means a
+restart, as the reverse config is not hot-reloaded) the carrier re-forms on
+its own.
 
 ## Observability
 
@@ -165,7 +195,10 @@ or exported.
   and HTTP/3-WebSocket are not carried in reverse mode.
 - **No CDN fronting** — the carrier is a direct QUIC connection authenticated
   by pinned certificates, not a CDN-frontable HTTPS request.
-- Peers are pooled into a **single group** with round-robin balancing across
-  live peers; a peer whose carrier drops is evicted on the next selection.
+- Peers are pooled **per egress group** (a peer's `group`, defaulting to the
+  listener-level `group`) with round-robin balancing across the live peers in
+  that group; a peer whose carrier drops is evicted on the next selection. One
+  listener — a single bound port, server cert and pin allow-list — fans out to
+  as many groups as the peers declare.
 - QUIC keep-alive (10 s) on both ends keeps the NAT mapping alive from the
   `ss` side — the case the feature exists for.

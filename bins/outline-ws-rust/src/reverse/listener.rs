@@ -19,15 +19,18 @@ use outline_transport::tls_reverse::{
 use shadowsocks_crypto::CipherKind;
 
 use crate::config::ReverseListenerConfig;
-use crate::reverse::peer_registry::{ReversePeer, ReversePeerRegistry};
+use crate::reverse::peer_registry::{ReversePeer, ReverseRegistry};
 
 /// Per-peer SS credentials resolved from config, keyed by the peer's pinned
-/// client-cert SHA-256 fingerprint.
+/// client-cert SHA-256 fingerprint. `group` is the resolved egress group the
+/// peer is pooled under.
+#[derive(Clone)]
 struct PeerCreds {
     cipher: CipherKind,
     master_key: Vec<u8>,
     password: Arc<str>,
     label: Arc<str>,
+    group: Arc<str>,
 }
 
 /// Build the QUIC server endpoint and run the accept loop until shutdown.
@@ -35,7 +38,7 @@ struct PeerCreds {
 /// errors per-connection are logged and skipped.
 pub(crate) async fn run_reverse_listener(
     cfg: ReverseListenerConfig,
-    registry: Arc<ReversePeerRegistry>,
+    registry: Arc<ReverseRegistry>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
     // Resolve pins + per-peer SS credentials. A bad pin / cipher / password
@@ -58,6 +61,7 @@ pub(crate) async fn run_reverse_listener(
                 master_key,
                 password: Arc::from(peer.password.as_str()),
                 label: Arc::from(format!("reverse-{idx}").as_str()),
+                group: Arc::clone(&peer.group),
             },
         );
     }
@@ -71,7 +75,7 @@ pub(crate) async fn run_reverse_listener(
 
     let endpoint = quinn::Endpoint::server(server_config, cfg.listen)
         .with_context(|| format!("failed to bind reverse listener on {}", cfg.listen))?;
-    info!(listen = %cfg.listen, group = %registry.group(), "reverse-tunnel listener bound");
+    info!(listen = %cfg.listen, peers = cfg.peers.len(), "reverse-tunnel listener bound");
 
     loop {
         let incoming = tokio::select! {
@@ -91,17 +95,9 @@ pub(crate) async fn run_reverse_listener(
 
         let registry = Arc::clone(&registry);
         let endpoint = endpoint.clone();
-        // Resolve creds once the handshake completes (the client cert is
-        // available only then). Clone the small creds map per accept task.
-        let creds: HashMap<[u8; 32], (CipherKind, Vec<u8>, Arc<str>, Arc<str>)> = creds
-            .iter()
-            .map(|(k, v)| {
-                (
-                    *k,
-                    (v.cipher, v.master_key.clone(), Arc::clone(&v.password), Arc::clone(&v.label)),
-                )
-            })
-            .collect();
+        // Clone the small creds map per accept task (the client cert — and
+        // thus the peer identity — is available only after the handshake).
+        let creds = creds.clone();
         tokio::spawn(async move {
             if let Err(error) = accept_peer(incoming, endpoint, &registry, &creds).await {
                 debug!(?error, "reverse-tunnel peer rejected");
@@ -113,34 +109,42 @@ pub(crate) async fn run_reverse_listener(
 async fn accept_peer(
     incoming: quinn::Incoming,
     endpoint: quinn::Endpoint,
-    registry: &Arc<ReversePeerRegistry>,
-    creds: &HashMap<[u8; 32], (CipherKind, Vec<u8>, Arc<str>, Arc<str>)>,
+    registry: &Arc<ReverseRegistry>,
+    creds: &HashMap<[u8; 32], PeerCreds>,
 ) -> Result<()> {
     let connection = incoming.await.context("reverse: QUIC handshake failed")?;
 
     // mTLS already gated the carrier to the allowed pin set; now resolve
-    // *which* peer connected to pick its SS credentials. The client cert is
-    // in the rustls peer identity.
+    // *which* peer connected to pick its SS credentials and egress group.
+    // The client cert is in the rustls peer identity.
     let fingerprint = client_cert_fingerprint(&connection)
         .ok_or_else(|| anyhow!("reverse: accepted carrier has no client certificate"))?;
-    let (cipher, master_key, password, label) = creds
+    let creds = creds
         .get(&fingerprint)
         .ok_or_else(|| anyhow!("reverse: client cert not in configured peer set"))?;
+
+    // Every peer's group has a pool (built from this same peer list), so a
+    // miss is a logic error — drop the carrier rather than panic.
+    let pool = registry
+        .pool(&creds.group)
+        .ok_or_else(|| anyhow!("reverse: no pool for peer group {}", creds.group))?;
 
     let shared = shared_connection_from_accepted(endpoint, connection);
     let peer = Arc::new(ReversePeer {
         conn: shared,
-        cipher: *cipher,
-        master_key: master_key.clone(),
-        password: Arc::clone(password),
-        label: Arc::clone(label),
+        cipher: creds.cipher,
+        master_key: creds.master_key.clone(),
+        password: Arc::clone(&creds.password),
+        label: Arc::clone(&creds.label),
     });
-    if registry.try_insert(Arc::clone(&peer)) {
-        info!(peer = %label, live = registry.live_count(), "reverse-tunnel peer registered");
+    if pool.try_insert(Arc::clone(&peer)) {
+        info!(peer = %creds.label, group = %creds.group, live = pool.live_count(),
+            "reverse-tunnel peer registered");
     } else {
         // Dropping `peer` here drops the SharedQuicConnection, whose Drop
         // sends CONNECTION_CLOSE — the rejected carrier is torn down cleanly.
-        warn!(peer = %label, "reverse-tunnel pool at capacity; dropping peer");
+        warn!(peer = %creds.label, group = %creds.group,
+            "reverse-tunnel pool at capacity; dropping peer");
     }
     Ok(())
 }

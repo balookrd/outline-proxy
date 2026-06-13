@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::{Live, PeerPool};
+use super::{Live, PeerPool, ReverseRegistry};
 
 struct MockPeer {
     live: AtomicBool,
@@ -83,4 +83,49 @@ fn capacity_rejects_excess_but_reclaims_dead_slots() {
     a.kill();
     assert!(p.try_insert(MockPeer::new(4)));
     assert_eq!(p.live_count(), 2);
+}
+
+fn registry(groups: &[&str], max: usize) -> Arc<ReverseRegistry<MockPeer>> {
+    ReverseRegistry::new(groups.iter().map(|g| Arc::from(*g)), max)
+}
+
+#[test]
+fn registry_routes_peers_by_group() {
+    let reg = registry(&["a", "b"], 8);
+    reg.pool("a").unwrap().try_insert(MockPeer::new(1));
+    reg.pool("b").unwrap().try_insert(MockPeer::new(2));
+    assert_eq!(reg.pick_live("a").unwrap().id, 1);
+    assert_eq!(reg.pick_live("b").unwrap().id, 2);
+}
+
+#[test]
+fn registry_unknown_group_is_none() {
+    let reg = registry(&["a"], 8);
+    assert!(reg.pick_live("nope").is_none());
+    assert!(reg.pool("nope").is_none());
+}
+
+#[test]
+fn registry_isolates_groups() {
+    // A peer registered in group "a" is never picked for group "b".
+    let reg = registry(&["a", "b"], 8);
+    reg.pool("a").unwrap().try_insert(MockPeer::new(1));
+    assert!(reg.pick_live("b").is_none());
+}
+
+#[test]
+fn registry_duplicate_groups_collapse_to_one_pool() {
+    let reg = registry(&["a", "a", "b"], 8);
+    assert_eq!(reg.live_counts().len(), 2);
+}
+
+#[test]
+fn registry_live_counts_reports_per_group() {
+    let reg = registry(&["a", "b"], 8);
+    reg.pool("a").unwrap().try_insert(MockPeer::new(1));
+    reg.pool("a").unwrap().try_insert(MockPeer::new(2));
+    reg.pool("b").unwrap().try_insert(MockPeer::new(3));
+    let mut counts = reg.live_counts();
+    counts.sort();
+    assert_eq!(counts, vec![("a".to_string(), 2), ("b".to_string(), 1)]);
 }
