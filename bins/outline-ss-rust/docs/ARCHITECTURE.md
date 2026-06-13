@@ -271,7 +271,7 @@ Configurable via `[server.h3].alpn` (defaults to `["h3"]`). When the list also i
 
 - `h3` — existing HTTP/3 + WebSocket-over-HTTP/3 path.
 - `vless` — raw VLESS framing on QUIC bidi streams, plus QUIC datagrams for UDP. The per-connection UDP session table maps a server-allocated `session_id` (4-byte big-endian, prefixed on every datagram) to the upstream UDP socket; the originating bidi stream's recv side is the session's lifetime anchor and closing it tears the session down. The `mux.cool` command is rejected — every additional target opens its own bidi stream, letting QUIC's native multiplexing handle head-of-line isolation.
-- `ss` — raw Shadowsocks AEAD on QUIC. A bidi stream carries one SS-AEAD TCP session; the handshake parser is identical to the plain `ss_listen` listener (auth by trial decrypt of the first chunk), so user identity, fwmark, NAT entries and metric labels behave the same. UDP is delivered as one QUIC datagram per SS-AEAD packet through the shared `handle_ss_udp_packet` helper, so the NAT table and replay store are reused unchanged.
+- `ss` — raw Shadowsocks AEAD on QUIC. A bidi stream carries one SS-AEAD TCP session; the handshake parser is the shared SS-AEAD primitive (auth by trial decrypt of the first chunk), so user identity, fwmark, NAT entries and metric labels behave the same. UDP is delivered as one QUIC datagram per SS-AEAD packet through the shared `handle_ss_udp_packet` helper, so the NAT table and replay store are reused unchanged.
 
 The same `H3_MAX_CONCURRENT_CONNECTIONS` and `H3_MAX_CONCURRENT_STREAMS` semaphores bound the raw-QUIC paths. Datagram queues are sized off `tuning.h3_*` knobs.
 

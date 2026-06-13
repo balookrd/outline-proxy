@@ -116,15 +116,7 @@ pub(super) struct ServerSection {
     #[serde(default)]
     pub certs: Option<Vec<TlsCertSection>>,
     #[serde(default)]
-    pub ss: Option<ServerSsSection>,
-    #[serde(default)]
     pub h3: Option<ServerH3Section>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ServerSsSection {
-    pub listen: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

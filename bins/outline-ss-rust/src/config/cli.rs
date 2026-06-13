@@ -23,9 +23,6 @@ pub(super) struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_LISTEN")]
     pub listen: Option<SocketAddr>,
 
-    #[arg(long, env = "OUTLINE_SS_SS_LISTEN")]
-    pub ss_listen: Option<SocketAddr>,
-
     #[arg(long, env = "OUTLINE_SS_TLS_CERT_PATH")]
     pub tls_cert_path: Option<PathBuf>,
 

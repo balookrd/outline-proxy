@@ -46,9 +46,6 @@ listen = "0.0.0.0:3000"
 tls_cert_path = "./cert.pem"
 tls_key_path = "./key.pem"
 
-[server.ss]
-listen = "0.0.0.0:8388"
-
 [server.h3]
 listen = "0.0.0.0:3000"
 cert_path = "./cert.pem"
@@ -59,7 +56,6 @@ key_path = "./key.pem"
 
     let server = config.server.unwrap();
     assert_eq!(server.listen.unwrap().to_string(), "0.0.0.0:3000");
-    assert_eq!(server.ss.unwrap().listen.unwrap().to_string(), "0.0.0.0:8388");
     let h3 = server.h3.unwrap();
     assert_eq!(h3.listen.unwrap().to_string(), "0.0.0.0:3000");
     assert!(h3.cert_path.is_some());

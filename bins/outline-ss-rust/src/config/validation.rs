@@ -10,7 +10,7 @@ use super::{AccessKeyConfig, Config, H3Alpn, ReverseProtocol};
 impl Config {
     pub fn validate(&self) -> Result<()> {
         if !self.data_plane_listener_enabled() {
-            bail!("configure at least one data-plane listener: listen, h3_listen, or ss_listen");
+            bail!("configure at least one data-plane listener: listen or h3_listen");
         }
         Self::validate_cert_pair(&self.tls_cert_path, &self.tls_key_path, "tls")?;
         Self::validate_cert_pair(&self.h3_cert_path, &self.h3_key_path, "h3")?;
@@ -30,24 +30,12 @@ impl Config {
         if !self.metrics_path.starts_with('/') {
             bail!("metrics_path must start with '/'");
         }
-        if self.listen.is_some() && self.listen == self.ss_listen {
-            bail!("ss_listen must differ from listen");
-        }
-        if self.ss_listen.is_some() && self.ss_listen == self.metrics_listen {
-            bail!("ss_listen must differ from metrics_listen");
-        }
-        if self.ss_listen.is_some() && self.ss_listen == self.effective_h3_listen() {
-            bail!("ss_listen must differ from h3_listen");
-        }
         if self.listen.is_some() && self.listen == self.metrics_listen {
             bail!("listen must differ from metrics_listen");
         }
         if let Some(dashboard) = &self.dashboard {
             if self.listen.is_some_and(|listen| listen == dashboard.listen) {
                 bail!("dashboard.listen must differ from listen");
-            }
-            if self.ss_listen.is_some_and(|listen| listen == dashboard.listen) {
-                bail!("dashboard.listen must differ from ss_listen");
             }
             if self.metrics_listen.is_some_and(|listen| listen == dashboard.listen) {
                 bail!("dashboard.listen must differ from metrics_listen");

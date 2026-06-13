@@ -84,17 +84,12 @@ pub(super) const WS_CONTROL_FLUSH_INTERVAL_SECS: u64 = 30;
 pub(super) const TCP_HAPPY_EYEBALLS_DELAY_MS: u64 = 250;
 
 pub(super) const UDP_MAX_CONCURRENT_RELAY_TASKS: usize = 256;
-pub(super) const SS_MAX_CONCURRENT_TCP_CONNECTIONS: usize = 4_096;
 pub(super) const UDP_DNS_CACHE_TTL_SECS: u64 = 30;
 // Keep expired entries around for this long so that stale-fallback can serve
 // them if the upstream resolver temporarily fails.
 pub(super) const DNS_CACHE_STALE_GRACE_SECS: u64 = 3_600;
 // How often the background task sweeps entries that exceeded the stale grace.
 pub(super) const DNS_CACHE_SWEEP_INTERVAL_SECS: u64 = 300;
-// Theoretical upper bound of a UDP datagram including headers (2^16 − 1).
-// Used to size the receive buffer where the kernel may hand us the full
-// datagram before we trim to the header-less payload.
-pub(super) const MAX_UDP_DATAGRAM_SIZE: usize = 65_535;
 // RFC 768: max UDP payload over IPv4 = 65 535 − 20 (IP) − 8 (UDP).
 pub(super) const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 pub(super) const UDP_CACHED_USER_INDEX_EMPTY: usize = usize::MAX;

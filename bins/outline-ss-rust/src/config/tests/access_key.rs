@@ -8,7 +8,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 fn sample_config() -> Config {
     Config {
         listen: Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3000)),
-        ss_listen: None,
         tls_cert_path: None,
         tls_key_path: None,
         tls_certs: Vec::new(),

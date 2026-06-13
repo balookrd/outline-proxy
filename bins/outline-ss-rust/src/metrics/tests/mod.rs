@@ -7,7 +7,6 @@ use super::{AppProtocol, DisconnectReason, Metrics, Protocol, Transport};
 fn test_config() -> Config {
     Config {
         listen: Some("127.0.0.1:3000".parse().unwrap()),
-        ss_listen: None,
         tls_cert_path: None,
         tls_key_path: None,
         tls_certs: Vec::new(),
