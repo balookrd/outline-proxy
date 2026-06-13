@@ -12,8 +12,8 @@ maintenance artifacts; actual builds use the vendored copies.
 Regenerated against:
 
 - **h3** — crates.io `h3 0.0.8`.
-- **sockudo-ws** — GitHub tag `v1.7.5`, rustfmt-normalised to the crate's
-  published formatting (see the note below).
+- **sockudo-ws** — GitHub tag `v1.7.5` (commit `7819745`), in raw upstream
+  git formatting (see the note below).
 
 ## Patch artifacts
 
@@ -89,6 +89,44 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
 `default-features = false, features = ["ring", "tls12"]` so the
 `release-router` build does not pull `aws-lc-sys` — this keeps the whole
 workspace on `ring` (see the ring-only invariant in the root `AGENTS.md`).
+
+## Maintenance strategy (sockudo-ws)
+
+`sockudo-ws` is yanked from crates.io (download returns `403`) and `v1.7.5`
+is the last version available to pin against, so the vendored copy is
+treated as a **de-facto fork we own**, not a temporary pin waiting on an
+upstream fix. The practical consequences:
+
+- **Fixes land here.** Bugs and security issues are fixed in
+  `vendor/sockudo-ws/src` directly; the same change updates
+  `sockudo-ws-1.7.5.patch` and both `PATCHES*.md`. We do not block a fix on
+  a hypothetical upstream release.
+- **Provenance is pinned to a commit, not just a tag.** The baseline is
+  GitHub tag `v1.7.5` at commit `7819745`; record the commit hash so the
+  vendored tree can be re-verified even if the tag is moved or the
+  repository disappears — that tag is the only public baseline left now that
+  crates.io serves `403`.
+- **The blast radius is already small.** Production reaches the crate only
+  through the two gate modules above, and CI enforces it, so a rebase or an
+  audit only has to understand the patched files plus the gate modules — not
+  the whole crate.
+- **Keep the diff minimal; do not prune unused modules — yet.** The crate
+  carries code the HTTP/3 WebSocket path never exercises (`io_uring`,
+  `compression` / `deflate`, `simd`, `multiplex`, most of `pubsub`).
+  Deleting it would shrink the audit surface but balloon the diff against
+  the `v1.7.5` tag and make every re-verify harder, so the tree stays
+  byte-aligned with upstream instead. Pruning becomes an option only if we
+  decide to stop tracking upstream entirely (a hard fork + rename); record
+  that decision here if it is ever taken.
+
+**Revisit / exit triggers** — reconsider the dependency when one of these
+holds, not on a schedule:
+
+- upstream `h3` gains native RFC 9220 WebSocket-over-HTTP/3 support, which
+  would retire the WebSocket-stream layer and part of the patch set;
+- a maintained WebSocket-over-HTTP/3 alternative appears;
+- an unfixable security issue surfaces in a module we do not use, where
+  excising it is cheaper than carrying it.
 
 ## Regenerating
 
