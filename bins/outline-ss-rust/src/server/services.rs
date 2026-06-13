@@ -19,9 +19,10 @@ use super::{
     replay::ReplayStore,
     resumption::{OrphanRegistry, ResumptionConfig},
     setup::{
-        UserRoute, VlessUserRoute, VlessXhttpUserRoute, build_transport_route_map,
-        build_user_routes, build_vless_transport_route_map, build_vless_user_routes,
-        build_vless_xhttp_user_routes, build_xhttp_vless_route_map, user_keys,
+        UserRoute, VlessUserRoute, VlessXhttpUserRoute, build_raw_vless_users,
+        build_transport_route_map, build_user_routes, build_vless_transport_route_map,
+        build_vless_user_routes, build_vless_xhttp_user_routes, build_xhttp_vless_route_map,
+        user_keys,
     },
     state::{
         AuthPolicy, AuthUsersSnapshot, RouteRegistry, RoutesSnapshot, Services, TransportRoute,
@@ -35,6 +36,9 @@ pub(super) struct Built {
     pub(super) users: Arc<[UserKey]>,
     pub(super) user_routes: Arc<[UserRoute]>,
     pub(super) vless_user_routes: Arc<[VlessUserRoute]>,
+    /// VLESS auth set for raw-QUIC (forward H3 + reverse-tunnel), including
+    /// users with no WS path. See [`build_raw_vless_users`].
+    pub(super) raw_vless_users: Arc<[crate::protocol::vless::VlessUser]>,
     pub(super) vless_xhttp_user_routes: Arc<[VlessXhttpUserRoute]>,
     pub(super) tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
@@ -58,6 +62,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     metrics.start_process_memory_sampler();
     let user_routes = build_user_routes(config)?;
     let vless_user_routes = build_vless_user_routes(config)?;
+    let raw_vless_users = build_raw_vless_users(config)?;
     let vless_xhttp_user_routes = build_vless_xhttp_user_routes(config)?;
     let users = user_keys(user_routes.as_ref());
     let tcp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
@@ -156,6 +161,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         users,
         user_routes,
         vless_user_routes,
+        raw_vless_users,
         vless_xhttp_user_routes,
         tcp_routes,
         udp_routes,

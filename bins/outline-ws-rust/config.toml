@@ -635,3 +635,10 @@ via = "main"
 # client_cert_pin = "11:22:33:..."
 # vless_id = "b831381d-6324-4d53-ad4f-8cda48b30811"
 # group = "reverse-eu"
+#
+# A reverse group is a first-class route target — no [[uplink_group]] needed.
+# Just route to it; declare a same-named [[uplink_group]] only if you want a
+# fallback while no peer is connected.
+# [[route]]
+# default = true
+# via = "reverse"

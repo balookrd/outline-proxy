@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Result, bail};
 
-use super::{AccessKeyConfig, Config, H3Alpn};
+use super::{AccessKeyConfig, Config, H3Alpn, ReverseProtocol};
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
@@ -86,6 +86,13 @@ impl Config {
         if self.ws_path_vless.is_some() && self.users.iter().all(|user| user.vless_id.is_none()) {
             bail!("ws_path_vless requires at least one [[users]] entry with vless_id");
         }
+        // A reverse-tunnel endpoint dialing out with protocol = "vless" carries
+        // VLESS over raw QUIC, so it counts as a transport for vless_id users —
+        // no ws/xhttp path needed on a reverse-only server.
+        let has_reverse_vless = self
+            .reverse_tunnel
+            .as_ref()
+            .is_some_and(|rt| rt.endpoints.iter().any(|e| e.protocol == ReverseProtocol::Vless));
         for user in &self.users {
             if let Some(path) = user.ws_path_vless.as_deref()
                 && !path.starts_with('/')
@@ -102,11 +109,13 @@ impl Config {
                 if let Some(path) = ws_path {
                     vless_paths.insert(path.to_owned());
                 }
-                if ws_path.is_none() && xhttp_path.is_none() && !has_raw_quic {
+                if ws_path.is_none() && xhttp_path.is_none() && !has_raw_quic && !has_reverse_vless
+                {
                     bail!(
                         "user {} vless_id requires at least one transport: \
-                         ws_path_vless, xhttp_path_vless, or raw VLESS-over-QUIC \
-                         (\"vless\" in [server.h3].alpn)",
+                         ws_path_vless, xhttp_path_vless, raw VLESS-over-QUIC \
+                         (\"vless\" in [server.h3].alpn), or a [reverse_tunnel] \
+                         endpoint with protocol = \"vless\"",
                         user.id
                     );
                 }

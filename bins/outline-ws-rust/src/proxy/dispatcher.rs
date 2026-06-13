@@ -34,22 +34,63 @@ pub(crate) enum Route {
     Reverse { peer: Arc<crate::reverse::ReversePeer> },
 }
 
-/// If `route` lands on a reverse group and a peer is live, swap it for a
-/// `Route::Reverse`. Falls through to the original route otherwise (group is
-/// not a reverse group, or no peer connected yet) so its configured uplinks
-/// — if any — still serve. Applied after `resolve_dispatch` so the routing
-/// table is unaware of the reverse path.
-#[cfg(feature = "h3")]
-pub(crate) fn apply_reverse(config: &ProxyConfig, route: Route) -> Route {
-    let Some(registry) = config.reverse.as_ref() else {
-        return route;
-    };
-    if let Route::Group { ref name, .. } = route
-        && let Some(peer) = registry.pick_live(name.as_ref())
-    {
-        return Route::Reverse { peer };
+/// Materialize a terminal [`RouteTarget`] into a [`Route`]. Shared by the
+/// primary-route path and the reverse no-peer fallback so a substituted
+/// target is built the same way in both.
+fn materialize_target(
+    config: &ProxyConfig,
+    registry: &UplinkRegistry,
+    target: RouteTarget,
+) -> Route {
+    match target {
+        RouteTarget::Direct => Route::Direct { fwmark: config.direct_fwmark },
+        RouteTarget::Drop => Route::Drop,
+        RouteTarget::Group(name) => {
+            let manager = registry
+                .group_by_name(&name)
+                .unwrap_or_else(|| registry.default_group());
+            Route::Group { name, manager }
+        },
     }
-    route
+}
+
+/// Reverse-group resolution, run *before* uplink fallback so a reverse group
+/// is a first-class route target without needing a same-named
+/// `[[uplink_group]]`. Returns:
+/// - `None` — `name` is not a reverse group (or reverse is off), so the
+///   caller proceeds on the normal uplink path. Also returned when the group
+///   has no live peer *but* a same-named uplink group exists, so the normal
+///   path serves that group's uplinks (the operator's explicit fallback).
+/// - `Some(Route::Reverse)` — a live peer is serving the group.
+/// - `Some(..)` — reverse group with no live peer and no uplink fallback:
+///   honor the route's declared `fallback` (one level), else `Drop`. Never
+///   leaks to the default group.
+#[cfg(feature = "h3")]
+fn resolve_reverse_route(
+    config: &ProxyConfig,
+    registry: &UplinkRegistry,
+    name: &str,
+    fallback: Option<&RouteTarget>,
+) -> Option<Route> {
+    let reverse = config.reverse.as_ref()?;
+    if !reverse.is_reverse_group(name) {
+        return None;
+    }
+    if let Some(peer) = reverse.pick_live(name) {
+        return Some(Route::Reverse { peer });
+    }
+    if registry.group_by_name(name).is_some() {
+        // No live peer, but a same-named uplink group is configured — let the
+        // normal path serve it as the operator's fallback.
+        return None;
+    }
+    // Reverse group, no peer, no uplink fallback: honor the route fallback,
+    // else drop. A `Group` fallback is materialized one level deep (its own
+    // reverse-ness is not re-resolved — matching the no-chaining rule).
+    Some(match fallback {
+        Some(target) => materialize_target(config, registry, target.clone()),
+        None => Route::Drop,
+    })
 }
 
 /// Hard cap on how long a client may take to complete the SOCKS5 method
@@ -80,8 +121,6 @@ pub async fn serve_socks5_client(
     match request {
         SocksRequest::Connect(target) => {
             let dispatch = resolve_dispatch(&config, &registry, &target, TransportKind::Tcp).await;
-            #[cfg(feature = "h3")]
-            let dispatch = apply_reverse(&config, dispatch);
             super::tcp::serve_tcp_connect(
                 client,
                 dispatch,
@@ -117,6 +156,14 @@ async fn resolve_dispatch(
     transport: TransportKind,
 ) -> Route {
     let Some(router) = config.router.as_ref() else {
+        // No routing table: everything goes to the default group. That group
+        // may itself be a reverse group (declared only by the listener).
+        #[cfg(feature = "h3")]
+        if let Some(route) =
+            resolve_reverse_route(config, registry, &registry.default_group_name(), None)
+        {
+            return route;
+        }
         let manager = registry.default_group();
         if group_bypasses_when_down(&manager, transport).await {
             debug!(
@@ -131,16 +178,17 @@ async fn resolve_dispatch(
         };
     };
     let decision = router.resolve(target).await;
-    let direct_fwmark = config.direct_fwmark;
-    apply_fallback_strategy(registry, decision.primary, decision.fallback, transport, |t| match t {
-        RouteTarget::Direct => Route::Direct { fwmark: direct_fwmark },
-        RouteTarget::Drop => Route::Drop,
-        RouteTarget::Group(name) => {
-            let manager = registry
-                .group_by_name(&name)
-                .unwrap_or_else(|| registry.default_group());
-            Route::Group { name, manager }
-        },
+    // Reverse short-circuit before uplink fallback: a reverse group is a
+    // first-class target, no `[[uplink_group]]` required.
+    #[cfg(feature = "h3")]
+    if let RouteTarget::Group(ref name) = decision.primary
+        && let Some(route) =
+            resolve_reverse_route(config, registry, name, decision.fallback.as_ref())
+    {
+        return route;
+    }
+    apply_fallback_strategy(registry, decision.primary, decision.fallback, transport, |t| {
+        materialize_target(config, registry, t)
     })
     .await
 }

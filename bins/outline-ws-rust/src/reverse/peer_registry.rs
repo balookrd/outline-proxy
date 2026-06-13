@@ -109,6 +109,13 @@ impl<T: Live> ReverseRegistry<T> {
         self.groups.get(group)
     }
 
+    /// Whether `group` is a reverse group (declared by the listener), live
+    /// peer or not. Lets the dispatcher treat reverse groups as first-class
+    /// route targets without requiring a same-named `[[uplink_group]]`.
+    pub(crate) fn is_reverse_group(&self, group: &str) -> bool {
+        self.groups.contains_key(group)
+    }
+
     /// Pick a live peer for `group` round-robin. `None` when the group is not
     /// a reverse group or has no peer currently connected (caller falls back).
     pub(crate) fn pick_live(&self, group: &str) -> Option<Arc<T>> {

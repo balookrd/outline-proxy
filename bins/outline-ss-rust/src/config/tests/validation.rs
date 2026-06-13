@@ -107,6 +107,44 @@ fn rejects_http_root_auth_on_root_ws_path() {
 }
 
 #[test]
+fn allows_vless_reverse_user_without_ws_path() {
+    use super::super::resolved::ReverseTunnelConfig;
+    use super::super::{ReverseProtocol, ReverseTunnelEndpoint};
+    // A reverse-only server carrying VLESS: vless_id user with no ws/xhttp
+    // path, transport provided by a protocol = "vless" reverse endpoint.
+    let endpoint = ReverseTunnelEndpoint {
+        addr: "ws.example.com:8443".into(),
+        server_name: "reverse".into(),
+        server_cert_pin: "aa".repeat(32),
+        client_cert_path: "/etc/ss-client.crt".into(),
+        client_key_path: "/etc/ss-client.key".into(),
+        protocol: ReverseProtocol::Vless,
+        mtu: true,
+        backoff_min: std::time::Duration::from_secs(1),
+        backoff_max: std::time::Duration::from_secs(60),
+    };
+    Config {
+        ws_path_vless: None,
+        users: vec![super::super::UserEntry {
+            id: "rev-vless".into(),
+            password: None,
+            fwmark: None,
+            method: None,
+            ws_path_tcp: None,
+            ws_path_udp: None,
+            vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+            ws_path_vless: None,
+            xhttp_path_vless: None,
+            enabled: None,
+        }],
+        reverse_tunnel: Some(ReverseTunnelConfig { endpoints: vec![endpoint] }),
+        ..base_config()
+    }
+    .validate()
+    .unwrap();
+}
+
+#[test]
 fn allows_vless_only_users() {
     Config {
         ws_path_vless: Some("/vless".into()),
