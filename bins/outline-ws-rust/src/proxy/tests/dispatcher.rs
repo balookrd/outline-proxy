@@ -142,6 +142,30 @@ fn route_kind(route: &Route) -> &'static str {
     }
 }
 
+#[cfg(feature = "h3")]
+#[test]
+fn apply_reverse_without_live_peer_keeps_group() {
+    use crate::reverse::ReverseRegistry;
+    let mut config = no_router_config();
+    // The registry knows the "reverse" group but no peer is connected yet.
+    config.reverse = Some(ReverseRegistry::new([Arc::from("reverse")], 8));
+
+    // A reverse-group route with no live peer falls through to its own
+    // uplinks (never silently dropped)...
+    let route = Route::Group {
+        name: Arc::from("reverse"),
+        manager: manager("reverse", false),
+    };
+    assert_eq!(route_kind(&apply_reverse(&config, route)), "Group");
+
+    // ...and a group that is not a reverse group is untouched.
+    let route = Route::Group {
+        name: Arc::from("other"),
+        manager: manager("other", false),
+    };
+    assert_eq!(route_kind(&apply_reverse(&config, route)), "Group");
+}
+
 #[tokio::test]
 async fn no_router_bypass_group_down_dispatches_direct() {
     let registry = UplinkRegistry::from_single_manager(manager("main", true));

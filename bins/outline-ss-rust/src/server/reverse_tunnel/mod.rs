@@ -22,6 +22,11 @@ use crate::server::transport::{RawQuicSsCtx, RawSsConnectionCtx};
 mod dial_loop;
 mod endpoint;
 
+/// Classifier exposed for the server's reverse-tunnel e2e tests, which live
+/// outside this module and assert a real mTLS rejection is treated as auth.
+#[cfg(test)]
+pub(in crate::server) use endpoint::is_auth_failure;
+
 /// Spawn one reconnect loop per configured reverse-tunnel endpoint into the
 /// server's task set. No-op when `[reverse_tunnel]` is absent/disabled.
 pub(in crate::server) fn spawn_reverse_tunnels(

@@ -17,16 +17,19 @@ mod listener;
 mod peer_registry;
 mod relay;
 
-pub(crate) use peer_registry::{ReversePeer, ReversePeerRegistry};
+pub(crate) use peer_registry::{ReversePeer, ReverseRegistry};
 pub(crate) use relay::serve_reverse_tcp;
 
 /// Build the reverse-peer registry and spawn the listener task. Returns the
-/// registry so the dispatcher can route the reverse group to a live peer.
+/// registry so the dispatcher can route each reverse group to a live peer.
 pub(crate) fn spawn_reverse_listener(
     cfg: &ReverseListenerConfig,
     shutdown: tokio::sync::watch::Receiver<bool>,
-) -> Arc<ReversePeerRegistry> {
-    let registry = ReversePeerRegistry::new(Arc::clone(&cfg.group), cfg.max_peers);
+) -> Arc<ReverseRegistry> {
+    // One pool per distinct resolved peer group (the listener default is
+    // already folded into each peer's `group` at config load).
+    let groups = cfg.peers.iter().map(|peer| Arc::clone(&peer.group));
+    let registry = ReverseRegistry::new(groups, cfg.max_peers);
     let cfg = cfg.clone();
     let reg = Arc::clone(&registry);
     tokio::spawn(async move {

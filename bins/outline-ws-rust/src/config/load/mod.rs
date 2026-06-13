@@ -188,6 +188,9 @@ fn load_reverse_listener(
             client_cert_pin: p.client_cert_pin.clone(),
             method: p.method,
             password: p.password.clone(),
+            // Per-peer `group` wins; otherwise fall back to the listener
+            // default so existing single-group configs keep working.
+            group: p.group.as_deref().unwrap_or(&section.group).into(),
         })
         .collect();
     Ok(Some(ReverseListenerConfig {

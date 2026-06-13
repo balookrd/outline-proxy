@@ -193,8 +193,7 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     let reverse_peers_fn: Option<crate::http::control::ReversePeersFn> =
         reverse.as_ref().map(|registry| {
             let registry = Arc::clone(registry);
-            Arc::new(move || vec![(registry.group().to_string(), registry.live_count())])
-                as crate::http::control::ReversePeersFn
+            Arc::new(move || registry.live_counts()) as crate::http::control::ReversePeersFn
         });
     #[cfg(all(feature = "control", not(feature = "h3")))]
     let reverse_peers_fn: Option<crate::http::control::ReversePeersFn> = None;

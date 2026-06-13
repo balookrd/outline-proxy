@@ -83,6 +83,10 @@ pub struct ReversePeerConfig {
     pub client_cert_pin: String,
     pub method: shadowsocks_crypto::CipherKind,
     pub password: String,
+    /// Egress group this peer is pooled under, already resolved (per-peer
+    /// `group` or the listener-level default). Distinct peers may map to
+    /// distinct groups so they serve distinct routes.
+    pub group: std::sync::Arc<str>,
 }
 
 /// HTTP/2 flow-control window sizes for WebSocket transports.

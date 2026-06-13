@@ -113,6 +113,10 @@ pub(super) struct ReversePeerSection {
     pub(super) client_cert_pin: String,
     pub(super) method: CipherKind,
     pub(super) password: String,
+    /// Egress group this peer is pooled under. Omit to fall back to the
+    /// listener-level `group`. Lets distinct peers serve distinct routes.
+    #[serde(default)]
+    pub(super) group: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

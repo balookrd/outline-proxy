@@ -155,3 +155,35 @@ fn resolve_config_path_joins_relative_with_config_dir() {
     let p = resolve_config_path(Path::new("lists/ru.lst"), Path::new("/etc/outline")).unwrap();
     assert_eq!(p, PathBuf::from("/etc/outline/lists/ru.lst"));
 }
+
+// ── reverse_listener peer group resolution ────────────────────────────────
+
+#[test]
+fn reverse_peer_group_resolves_explicit_or_listener_default() {
+    use super::super::schema::{ReverseListenerSection, ReversePeerSection};
+
+    let peer = |pin: &str, group: Option<&str>| ReversePeerSection {
+        client_cert_pin: pin.to_string(),
+        method: shadowsocks_crypto::CipherKind::Aes128Gcm,
+        password: "secret".to_string(),
+        group: group.map(str::to_string),
+    };
+    let section = ReverseListenerSection {
+        enabled: Some(true),
+        listen: "0.0.0.0:8443".parse().unwrap(),
+        server_cert_path: PathBuf::from("/srv.crt"),
+        server_key_path: PathBuf::from("/srv.key"),
+        group: "default-rev".to_string(),
+        mtu: None,
+        max_peers: None,
+        peers: vec![peer("aa", None), peer("bb", Some("special"))],
+    };
+
+    let cfg = super::load_reverse_listener(Some(&section), Path::new("/etc/outline"))
+        .unwrap()
+        .unwrap();
+    // No per-peer group → inherits the listener default.
+    assert_eq!(&*cfg.peers[0].group, "default-rev");
+    // Explicit per-peer group wins.
+    assert_eq!(&*cfg.peers[1].group, "special");
+}

@@ -35,6 +35,7 @@ use super::super::bootstrap::build_reverse_client_quic_config;
 use super::super::h3::handle_raw_ss_connection;
 use super::super::nat::NatTable;
 use super::super::replay::ReplayStore;
+use super::super::reverse_tunnel::is_auth_failure;
 use super::super::transport::{RawQuicSsCtx, RawSsConnectionCtx};
 use super::super::{DnsCache, Services, UdpServices, build_users};
 use super::sample_config;
@@ -222,13 +223,46 @@ async fn reverse_tunnel_rejects_wrong_client_pin() -> Result<()> {
     // In QUIC/TLS 1.3 the client may consider the handshake complete before
     // the server's mTLS rejection (sent after the client Finished) arrives,
     // so `connect_with` can return `Ok`. Either way the carrier must not be
-    // usable: a rejected client cert makes the connection close promptly.
-    let rejected = match dial {
-        Err(_) => true,
-        Ok(connection) => tokio::time::timeout(Duration::from_secs(3), connection.closed())
-            .await
-            .is_ok(),
+    // usable, and the close must classify as an auth failure (crypto-range)
+    // so the dial loop applies the long backoff instead of hammering `ws`.
+    let auth_rejected = match dial {
+        Err(error) => is_auth_failure(&error),
+        Ok(connection) => {
+            tokio::time::timeout(Duration::from_secs(3), connection.closed())
+                .await
+                .is_ok()
+                && connection.close_reason().is_some_and(|e| is_auth_failure(&e))
+        },
     };
-    assert!(rejected, "untrusted client cert must not yield a usable reverse carrier");
+    assert!(auth_rejected, "untrusted client cert must be classified as an auth failure");
+    Ok(())
+}
+
+#[tokio::test]
+async fn reverse_tunnel_rejects_wrong_server_pin() -> Result<()> {
+    let (ws_chain, ws_key, _ws_pin) = gen_cert("ws-reverse");
+    let (ss_chain, ss_key, ss_pin) = gen_cert("ss-reverse");
+    // ss pins a DIFFERENT server cert than ws actually presents.
+    let (_other_chain, _other_key, wrong_server_pin) = gen_cert("other-ws");
+    let alpn: &[&[u8]] = &[b"ss-mtu", b"ss"];
+
+    let server_config = build_reverse_server_quic_config(ws_chain, ws_key, vec![ss_pin], alpn)?;
+    let ws_endpoint =
+        quinn::Endpoint::server(server_config, SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    let ws_addr = ws_endpoint.local_addr()?;
+    tokio::spawn(async move {
+        if let Some(incoming) = ws_endpoint.accept().await {
+            let _ = incoming.await;
+        }
+    });
+
+    let client_config = build_reverse_client_quic_config(ss_chain, ss_key, wrong_server_pin, alpn)?;
+    let ss_endpoint = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?;
+    let dial = ss_endpoint.connect_with(client_config, ws_addr, "localhost")?.await;
+
+    // A server-cert pin mismatch is rejected by our own verifier during the
+    // handshake, so the dial fails locally with a crypto-range close.
+    let error = dial.expect_err("server cert pin mismatch must fail the dial");
+    assert!(is_auth_failure(&error), "server pin mismatch must classify as an auth failure");
     Ok(())
 }

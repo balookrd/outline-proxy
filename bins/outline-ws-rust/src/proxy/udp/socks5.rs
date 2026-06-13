@@ -161,8 +161,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                 // when no peer is connected.
                 #[cfg(feature = "h3")]
                 if let Some(registry) = config_uplink.reverse.as_ref()
-                    && registry.group() == group_name.as_ref()
-                    && let Some(peer) = registry.pick_live()
+                    && let Some(peer) = registry.pick_live(group_name.as_ref())
                 {
                     let assoc = reverse_udp_uplink
                         .get_or_try_init(|| async {
