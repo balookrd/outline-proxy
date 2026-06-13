@@ -5,7 +5,6 @@ fn migrates_flat_keys_into_sections() {
     let input = r#"
 # top comment
 listen = "0.0.0.0:3000"
-ss_listen = "0.0.0.0:8388"
 # metrics comment
 metrics_path = "/metrics"
 ws_path_tcp = "/tcp"
@@ -17,7 +16,6 @@ method = "chacha20-ietf-poly1305"
     assert!(changed);
     assert!(out.contains("[server]"));
     assert!(out.contains("listen = \"0.0.0.0:3000\""));
-    assert!(out.contains("[server.ss]"));
     assert!(out.contains("[metrics]"));
     assert!(out.contains("path = \"/metrics\""));
     assert!(out.contains("[websocket]"));

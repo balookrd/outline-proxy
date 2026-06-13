@@ -4,7 +4,6 @@ use anyhow::{Context, Result};
 use axum::http::header;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use tokio::net::UdpSocket;
 
 use super::nat::NatTable;
 use super::setup::{UserRoute, build_vless_transport_route_map};
@@ -14,14 +13,11 @@ use super::{
     user_keys,
 };
 use crate::config::{CipherKind, Config, UserEntry};
-use crate::crypto::{decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::{Metrics, Transport};
-use crate::protocol::TargetAddr;
 use arc_swap::ArcSwap;
 
 mod auth;
 mod connect;
-mod cross_repo_ss;
 mod cross_repo_vless;
 mod cross_repo_xhttp;
 mod dns_cache;
@@ -31,7 +27,6 @@ mod nat;
 mod raw_quic;
 mod resumption;
 mod reverse_tunnel;
-mod shadowsocks;
 mod sni_fallback;
 mod vless;
 mod websocket;
@@ -94,7 +89,6 @@ pub(in crate::server) fn sample_config(listen: SocketAddr) -> Config {
 fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config {
     Config {
         listen: Some(listen),
-        ss_listen: None,
         tls_cert_path: None,
         tls_key_path: None,
         tls_certs: Vec::new(),
@@ -145,37 +139,6 @@ fn set_cookie_pair<T>(response: &axum::http::Response<T>) -> Result<String> {
         .next()
         .context("invalid set-cookie header")?
         .to_owned())
-}
-
-async fn send_encrypted_udp_request(
-    client: &UdpSocket,
-    listen_addr: SocketAddr,
-    target: SocketAddr,
-    payload: &[u8],
-    user: &crate::crypto::UserKey,
-) -> Result<()> {
-    let mut plaintext = TargetAddr::from(target).to_wire_bytes()?;
-    plaintext.extend_from_slice(payload);
-    let ciphertext = encrypt_udp_packet(user, &plaintext)?;
-    client.send_to(&ciphertext, listen_addr).await?;
-    Ok(())
-}
-
-async fn recv_decrypted_udp_response(
-    client: &UdpSocket,
-    user: &crate::crypto::UserKey,
-) -> Result<Vec<u8>> {
-    let mut encrypted_reply = [0_u8; 65_535];
-    let (read, _) = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        client.recv_from(&mut encrypted_reply),
-    )
-    .await??;
-
-    let packet = decrypt_udp_packet(std::slice::from_ref(user), &encrypted_reply[..read])?;
-    let (_, consumed) = crate::protocol::parse_target_addr(&packet.payload)?
-        .ok_or_else(|| anyhow::anyhow!("missing target in udp response"))?;
-    Ok(packet.payload[consumed..].to_vec())
 }
 
 fn test_h3_server_tls() -> Result<(rustls::ServerConfig, CertificateDer<'static>)> {

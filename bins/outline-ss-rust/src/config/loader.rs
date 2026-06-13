@@ -62,7 +62,6 @@ impl AppMode {
         let dashboard = resolve_dashboard_config(&file, config_dir)?;
 
         let server = file.server.unwrap_or_default();
-        let server_ss = server.ss.unwrap_or_default();
         let server_h3 = server.h3.unwrap_or_default();
         let metrics = file.metrics.unwrap_or_default();
         let outbound = file.outbound.unwrap_or_default();
@@ -112,7 +111,6 @@ impl AppMode {
             control,
             dashboard,
             listen: args.listen.or(server.listen),
-            ss_listen: args.ss_listen.or(server_ss.listen),
             tls_cert_path,
             tls_key_path,
             tls_certs,

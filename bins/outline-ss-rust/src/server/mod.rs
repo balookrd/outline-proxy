@@ -65,7 +65,6 @@ use self::{
     },
     h3::{H3ServeCtx, serve_h3_server, spawn_h3_cert_reloader},
     setup::{describe_user_routes, describe_vless_user_routes, describe_vless_xhttp_user_routes},
-    shadowsocks::{SsTcpCtx, SsUdpCtx, serve_ss_tcp_listener, serve_ss_udp_socket},
     shutdown::{shutdown_channel, wait_for_shutdown_signal},
 };
 
@@ -129,7 +128,6 @@ pub async fn run(config: Config) -> Result<()> {
         describe_vless_xhttp_user_routes(built.vless_xhttp_user_routes.as_ref());
     info!(
         listen = ?config.listen,
-        ss_listen = ?config.ss_listen,
         tcp_tls = config.tcp_tls_enabled(),
         h3_listen = ?config.effective_h3_listen(),
         metrics_listen = ?config.metrics_listen,
@@ -213,23 +211,6 @@ pub async fn run(config: Config) -> Result<()> {
             serve_metrics_listener(metrics_listener, metrics_app, shutdown).await
         });
     }
-    if let Some(listener) = bound.ss_tcp_listener {
-        let ctx = SsTcpCtx {
-            users: built.users.clone(),
-            services: Arc::clone(&built.services),
-        };
-        let shutdown = shutdown_signal.clone();
-        tasks.spawn(async move { serve_ss_tcp_listener(listener, ctx, shutdown).await });
-    }
-    if let Some(socket) = bound.ss_udp_socket {
-        let ctx = SsUdpCtx {
-            users: built.users.clone(),
-            services: Arc::clone(&built.services),
-        };
-        let shutdown = shutdown_signal.clone();
-        tasks.spawn(async move { serve_ss_udp_socket(socket, ctx, shutdown).await });
-    }
-
     // Reverse-tunnel dialers (topology A): outbound QUIC carriers to public
     // `ws` listeners, each serving raw SS on the streams the peer opens.
     reverse_tunnel::spawn_reverse_tunnels(&config, &built, &mut tasks, &shutdown_signal);

@@ -196,7 +196,7 @@ cargo run -- --config ./config.toml
 
 A ready-to-edit example is available in [config.toml](config.toml).
 
-Listener configuration is explicit: if none of `listen`, `h3_listen`, or `ss_listen` is configured, the server exits with a configuration error. Only the listeners you set are started.
+Listener configuration is explicit: if neither `listen` nor `h3_listen` is configured, the server exits with a configuration error. Only the listeners you set are started.
 
 ## Build Shortcuts
 
@@ -224,7 +224,6 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | Key | Purpose |
 | --- | --- |
 | `listen` | Optional main TCP listener for HTTP/1.1 and HTTP/2 |
-| `ss_listen` | Optional plain Shadowsocks TCP+UDP listener for classic `ss://` clients |
 | `[server].cert_path` / `[server].key_path` | Optional built-in TLS for the main listener (default cert when no SNI matches). The legacy keys `tls_cert_path` / `tls_key_path` still parse as aliases for backward compat |
 | `[[server.certs]]` | Optional list of additional cert/key pairs selected by SNI on the main listener. Each entry: `cert_path`, `key_path`, optional `sni = [...]`. When `sni` is omitted, names are derived from the certificate's SAN (and Subject CN as a last-resort fallback). Wildcards in SAN are skipped (the resolver matches SNIs exactly) — list each hostname explicitly when needed |
 | `h3_listen` | Optional QUIC listener address for HTTP/3 (and, when ALPN list extends, raw VLESS/SS over QUIC); must be set explicitly when HTTP/3 is enabled |
@@ -410,7 +409,6 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/user
 Limitations (v1):
 
 - Per-user `ws_path_tcp` / `ws_path_udp` / `ws_path_vless` values must already exist in the startup config — the Axum/H3 routers only register paths known at boot. Introducing a brand-new path still requires a restart.
-- The plain Shadowsocks listener (`ss_listen`) uses a startup snapshot of user keys and is not updated at runtime. WebSocket transports (TCP/UDP/VLESS) are.
 - The implicit user synthesized from the top-level `password` field is not manageable here; add an explicit `[[users]]` entry instead.
 
 When `http_root_auth = true`, a normal `GET /` responds with an HTTP Basic auth challenge. The username is ignored and the password is matched against the configured Shadowsocks users. `http_root_realm` controls the text shown in that password prompt. After three failed password attempts in the same browser session, the server returns `403 Forbidden`. Ordinary HTTP requests to any non-root path still return `404 Not Found`.
@@ -419,7 +417,6 @@ When `http_root_auth = true`, a normal `GET /` responds with an HTTP Basic auth 
 
 - `OUTLINE_SS_CONFIG`
 - `OUTLINE_SS_LISTEN`
-- `OUTLINE_SS_SS_LISTEN`
 - `OUTLINE_SS_TLS_CERT_PATH`
 - `OUTLINE_SS_TLS_KEY_PATH`
 - `OUTLINE_SS_H3_LISTEN`
@@ -457,8 +454,6 @@ OUTLINE_SS_USERS=alice=secret1,bob=secret2
 ```
 
 Per-user `method`, `fwmark`, `ws_path_tcp`, and `ws_path_udp` are configured in TOML rather than inside `OUTLINE_SS_USERS`.
-
-If `ss_listen` is set, the server also exposes a classic Shadowsocks service on that address. It binds both TCP and UDP on the same port and reuses the same users, ciphers, `fwmark`, and UDP NAT behavior as the WebSocket transports.
 
 ## Deployment Modes
 
@@ -512,19 +507,7 @@ The same shape applies to the QUIC listener via `[[server.h3.certs]]`. When the 
 
 **Automatic certificate reload.** Every configured cert/key file — the default pair and each `[[server.certs]]` / `[[server.h3.certs]]` entry — is watched on disk and reloaded in place when its contents change, with no restart or signal required. New connections pick up the renewed certificate within a few minutes (the files are polled every 5 minutes); connections already established keep the certificate they negotiated. This works out of the box with ACME renewals (certbot, lego, acme.sh, Caddy): the atomic rename / symlink swap those tools perform is detected automatically. If a reload fails — for example a certificate was rewritten before its matching key — the previously loaded certificate keeps serving and the error is logged, then the next consistent write is retried automatically.
 
-### 3. Plain Shadowsocks Socket Service
-
-```toml
-listen = "0.0.0.0:3000"
-ss_listen = "0.0.0.0:8388"
-ws_path_tcp = "/tcp"
-ws_path_udp = "/udp"
-method = "chacha20-ietf-poly1305"
-```
-
-This keeps the existing WebSocket ingress and additionally exposes a native Shadowsocks TCP+UDP port for non-Outline clients.
-
-### 4. Built-In HTTP/3
+### 3. Built-In HTTP/3
 
 ```toml
 [server]
@@ -541,7 +524,7 @@ listen = "0.0.0.0:5443"
 
 HTTP/3 always requires TLS and UDP reachability on the selected port.
 
-### 5. HTTP Fallback to an External Web Server (Camouflage)
+### 4. HTTP Fallback to an External Web Server (Camouflage)
 
 By default the server responds with `404 Not Found` to every request that does not hit a configured WebSocket / XHTTP / metrics path. Probes can spot this and tell the listener apart from an ordinary web service. The `[http_fallback]` block makes those unmatched requests look perfectly normal: they are reverse-proxied to an upstream backend (haproxy, nginx, caddy, …), so a casual `curl https://your-host/` or a TLS scanner sees whatever that backend serves.
 
@@ -573,7 +556,7 @@ Limitations:
 - Backend URL is `http://host:port` only. HTTPS upstreams and Unix-domain sockets can be added on demand.
 - Under high request volume the fallback opens one upstream TCP connection per inbound request (no pooling). Camouflage traffic is rare-path, so this is fine in practice; if you intend to use the fallback as a real load balancer, terminate at the upstream instead.
 
-### 6. SNI Routing for Foreign TLS Domains (L4 Camouflage)
+### 5. SNI Routing for Foreign TLS Domains (L4 Camouflage)
 
 The HTTP fallback above kicks in *after* TLS terminates on us — useful when the SNI is ours but the path/Host doesn't match a route. The `[sni_fallback]` block adds the layer below: peek the ClientHello *before* handshake and, when the SNI doesn't belong to us, splice the raw TCP stream (including the captured ClientHello) to a backend that handles foreign SNIs with its own cert. From a passive observer the listener now looks like an SNI-routed haproxy frontend.
 
@@ -661,7 +644,7 @@ Limitations:
 - Wildcard matching in `match_sni` is one-label-left only (nginx-style). No mid-segment wildcards, no full regex. (The §7 cert resolver matches SNIs exactly — wildcard SAN entries are skipped there.)
 - The HTTP/3 listener is not affected — h3 SNI is parsed by quinn before our code sees it; routing it would need separate plumbing.
 
-### 7. Multiple Certificates per Listener (SNI-Based Cert Selection)
+### 6. Multiple Certificates per Listener (SNI-Based Cert Selection)
 
 `[sni_fallback]` decides whether a connection is *ours* or belongs to a foreign backend. A complementary problem is hosting **several of our own domains** on a single listener — for example `vpn.example.com` and `api.example.com` on the same `:443` socket, each presenting its own Let's Encrypt cert. The `[[server.certs]]` and `[[server.h3.certs]]` arrays cover this case directly, with the same shape on both transports:
 

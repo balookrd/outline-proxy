@@ -55,7 +55,6 @@ pub struct Config {
     #[cfg_attr(not(feature = "control"), allow(dead_code))]
     pub dashboard: Option<DashboardConfig>,
     pub listen: Option<SocketAddr>,
-    pub ss_listen: Option<SocketAddr>,
     /// Default TLS cert/key for the TCP listener, used when no entry in
     /// [`Self::tls_certs`] matches the inbound SNI (or the client did
     /// not send one). Either both are set or neither.
@@ -321,6 +320,6 @@ impl Config {
     }
 
     pub fn data_plane_listener_enabled(&self) -> bool {
-        self.listen.is_some() || self.h3_enabled() || self.ss_listen.is_some()
+        self.listen.is_some() || self.h3_enabled()
     }
 }

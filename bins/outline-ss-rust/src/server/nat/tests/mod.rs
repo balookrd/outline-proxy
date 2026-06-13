@@ -45,7 +45,6 @@ fn test_sender(protocol: Protocol) -> UdpResponseSender {
 async fn drops_oversized_socket_udp_response_and_records_metric() -> Result<()> {
     let config = Config {
         listen: Some("127.0.0.1:3000".parse().unwrap()),
-        ss_listen: None,
         tls_cert_path: None,
         tls_key_path: None,
         tls_certs: Vec::new(),
@@ -103,7 +102,6 @@ async fn drops_oversized_socket_udp_response_and_records_metric() -> Result<()> 
 fn ignores_non_socket_or_in_range_udp_response_sizes() -> Result<()> {
     let config = Config {
         listen: Some("127.0.0.1:3000".parse().unwrap()),
-        ss_listen: None,
         tls_cert_path: None,
         tls_key_path: None,
         tls_certs: Vec::new(),
@@ -163,7 +161,6 @@ fn ignores_non_socket_or_in_range_udp_response_sizes() -> Result<()> {
 async fn deduplicates_concurrent_nat_entry_creation() -> Result<()> {
     let config = Config {
         listen: Some("127.0.0.1:3000".parse().unwrap()),
-        ss_listen: None,
         tls_cert_path: None,
         tls_key_path: None,
         tls_certs: Vec::new(),
@@ -240,7 +237,6 @@ async fn deduplicates_concurrent_nat_entry_creation() -> Result<()> {
 async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
     let config = Config {
         listen: Some("127.0.0.1:3000".parse().unwrap()),
-        ss_listen: None,
         tls_cert_path: None,
         tls_key_path: None,
         tls_certs: Vec::new(),

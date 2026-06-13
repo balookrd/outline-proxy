@@ -1,7 +1,4 @@
-use std::{
-    net::{Ipv4Addr, SocketAddr},
-    sync::Arc,
-};
+use std::net::{Ipv4Addr, SocketAddr};
 
 use anyhow::Result;
 use axum::http::{Method, Request, StatusCode, Version, header};
@@ -26,86 +23,11 @@ use tokio_tungstenite::{
 use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
-use super::super::{
-    DnsCache, H3ServeCtx, Services, SsUdpCtx, UdpServices, build_app, build_user_routes,
-    build_users, serve_h3_server, serve_ss_udp_socket,
-};
-use super::{
-    build_test_state, recv_decrypted_udp_response, sample_config, send_encrypted_udp_request,
-    test_h3_client_config, test_h3_server_tls,
-};
+use super::super::{DnsCache, H3ServeCtx, build_app, build_user_routes, serve_h3_server};
+use super::{build_test_state, sample_config, test_h3_client_config, test_h3_server_tls};
 use crate::crypto::{decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::Metrics;
 use crate::protocol::TargetAddr;
-
-#[tokio::test]
-async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Result<()> {
-    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let upstream_addr = upstream.local_addr()?;
-    let upstream_task = tokio::spawn(async move {
-        let mut peers = Vec::new();
-        let mut buf = [0_u8; 64];
-        for expected in [b"ping-1".as_slice(), b"ping-2".as_slice()] {
-            let (read, peer) = upstream.recv_from(&mut buf).await?;
-            peers.push(peer);
-            assert_eq!(&buf[..read], expected);
-            let reply = if expected == b"ping-1" {
-                b"pong-1".as_slice()
-            } else {
-                b"pong-2".as_slice()
-            };
-            upstream.send_to(reply, peer).await?;
-        }
-        Result::<_, anyhow::Error>::Ok(peers)
-    });
-
-    let listener = Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?);
-    let listen_addr = listener.local_addr()?;
-    let config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000)));
-    let users = build_users(&config)?;
-    let user = users[0].clone();
-    let metrics = Metrics::new(&config);
-    let services = Arc::new(Services::new(
-        metrics,
-        DnsCache::new(std::time::Duration::from_secs(30)),
-        false,
-        None,
-        UdpServices {
-            nat_table: NatTable::new(std::time::Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(
-                std::time::Duration::from_secs(300),
-                0,
-            ),
-            relay_semaphore: None,
-        },
-        None,
-        16,
-    ));
-    let ctx = SsUdpCtx { users, services };
-    let server =
-        tokio::spawn(
-            async move { serve_ss_udp_socket(listener, ctx, ShutdownSignal::never()).await },
-        );
-
-    let client1 = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    send_encrypted_udp_request(&client1, listen_addr, upstream_addr, b"ping-1", &user).await?;
-    let response1 = recv_decrypted_udp_response(&client1, &user).await?;
-    assert_eq!(response1, b"pong-1");
-    drop(client1);
-
-    let client2 = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    send_encrypted_udp_request(&client2, listen_addr, upstream_addr, b"ping-2", &user).await?;
-    let response2 = recv_decrypted_udp_response(&client2, &user).await?;
-    assert_eq!(response2, b"pong-2");
-
-    let peers = upstream_task.await??;
-    assert_eq!(peers.len(), 2);
-    assert_eq!(peers[0], peers[1], "NAT socket source port should stay stable across reconnect");
-
-    server.abort();
-    let _ = server.await;
-    Ok(())
-}
 
 #[tokio::test]
 async fn websocket_rfc8441_http2_udp_reuses_nat_entry_after_client_reconnect() -> Result<()> {

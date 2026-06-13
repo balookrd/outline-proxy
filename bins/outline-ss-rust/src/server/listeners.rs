@@ -1,9 +1,7 @@
 //! Binds all network sockets and builds the HTTP/3 endpoint.
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::TcpListener;
 
 use crate::config::Config;
 
@@ -12,8 +10,6 @@ use super::h3::vendored::{H3Transport, H3WebSocketServer};
 
 pub(super) struct Bound {
     pub(super) listener: Option<TcpListener>,
-    pub(super) ss_tcp_listener: Option<TcpListener>,
-    pub(super) ss_udp_socket: Option<Arc<UdpSocket>>,
     pub(super) metrics_listener: Option<TcpListener>,
     pub(super) h3_server: Option<H3WebSocketServer<H3Transport>>,
     /// Clone of the QUIC endpoint behind `h3_server`, kept so the cert
@@ -29,21 +25,6 @@ pub(super) async fn bind(config: &Config) -> Result<Bound> {
                 .await
                 .with_context(|| format!("failed to bind {}", listen))?,
         )
-    } else {
-        None
-    };
-    let ss_tcp_listener =
-        if let Some(ss_listen) = config.ss_listen {
-            Some(TcpListener::bind(ss_listen).await.with_context(|| {
-                format!("failed to bind shadowsocks tcp listener {}", ss_listen)
-            })?)
-        } else {
-            None
-        };
-    let ss_udp_socket = if let Some(ss_listen) = config.ss_listen {
-        Some(Arc::new(UdpSocket::bind(ss_listen).await.with_context(|| {
-            format!("failed to bind shadowsocks udp socket {}", ss_listen)
-        })?))
     } else {
         None
     };
@@ -65,8 +46,6 @@ pub(super) async fn bind(config: &Config) -> Result<Bound> {
     };
     Ok(Bound {
         listener,
-        ss_tcp_listener,
-        ss_udp_socket,
         metrics_listener,
         h3_server,
         h3_endpoint,
