@@ -27,17 +27,11 @@ pub enum AppMode {
         print: bool,
         write_dir: Option<PathBuf>,
     },
-    MigrateConfig {
-        path: PathBuf,
-    },
 }
 
 impl AppMode {
     pub fn load() -> Result<Self> {
         let args = ConfigArgs::parse();
-        if let Some(path) = args.migrate_config.clone() {
-            return Ok(AppMode::MigrateConfig { path });
-        }
         let config_path = args.config.clone().or_else(default_config_path_if_exists);
         let file = if let Some(path) = &config_path {
             load_file_config(path)?
