@@ -64,10 +64,13 @@ fn h2_connection_window_size() -> u32 {
 
 // ── TLS config ────────────────────────────────────────────────────────────────
 
-static H2_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
-
 fn h2_client_tls_config() -> Arc<ClientConfig> {
-    Arc::clone(H2_CLIENT_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"h2"])))
+    // Offer `[h2, http/1.1]` like a browser does — a lone `h2` ALPN is itself
+    // a fingerprint (no real browser omits http/1.1 from the list). The
+    // server's own preference order picks h2 first, so the negotiated
+    // protocol is unchanged. Cache + per-dial fingerprint live in
+    // `build_client_config` (keyed by `(fingerprint, ALPN)`).
+    crate::tls::build_client_config(&[b"h2", b"http/1.1"])
 }
 
 async fn connect_tls_h2(
@@ -459,6 +462,10 @@ pub(crate) async fn connect_websocket_h2(
     let profile = crate::fingerprint_profile::select(url);
     let dialer = H2Dialer { use_tls, resume, profile };
 
+    // The dial-scoped TLS fingerprint is set once by `DialPlan::connect`
+    // above this call, so the TLS handshake inside `establish` already
+    // builds its config under the right browser family — no per-carrier
+    // wrapper needed here.
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.

@@ -291,6 +291,51 @@ fn note_first_use_treats_distinct_hosts_as_distinct_entries() {
     assert!(!crate::fingerprint_profile::note_first_use(&url2, profile));
 }
 
+#[tokio::test]
+async fn dial_fingerprint_scope_sets_and_clears() {
+    use crate::fingerprint_profile::{
+        TlsFingerprint, current_dial_fingerprint, with_dial_fingerprint,
+    };
+    // Outside any scope the dial path sees no fingerprint (default provider).
+    assert_eq!(current_dial_fingerprint(), None);
+    // Inside the scope it reads exactly what was pushed...
+    with_dial_fingerprint(Some(TlsFingerprint::Firefox), async {
+        assert_eq!(current_dial_fingerprint(), Some(TlsFingerprint::Firefox));
+    })
+    .await;
+    // ...and the scope does not leak past the awaited future.
+    assert_eq!(current_dial_fingerprint(), None);
+}
+
+#[tokio::test]
+async fn client_config_cached_per_fingerprint() {
+    use std::sync::Arc;
+
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+    use crate::tls::build_client_config;
+    // Same (fingerprint, ALPN) returns the cached Arc; a different family
+    // builds a distinct config (different ClientHello cipher order). Uses the
+    // `Some(_)` path only, which goes through `builder_with_provider` and so
+    // needs no process-default crypto provider installed.
+    let chromium_a = with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
+        build_client_config(&[b"h2"])
+    })
+    .await;
+    let chromium_b = with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
+        build_client_config(&[b"h2"])
+    })
+    .await;
+    let firefox = with_dial_fingerprint(Some(TlsFingerprint::Firefox), async {
+        build_client_config(&[b"h2"])
+    })
+    .await;
+    assert!(Arc::ptr_eq(&chromium_a, &chromium_b), "same fingerprint+ALPN must be cached");
+    assert!(
+        !Arc::ptr_eq(&chromium_a, &firefox),
+        "different fingerprint must build a distinct config"
+    );
+}
+
 #[test]
 fn profile_pool_must_be_refreshed_at_least_every_refresh_period() {
     // The pool's UA / Sec-CH-UA strings encode specific browser-major
