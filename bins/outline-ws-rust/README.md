@@ -1297,6 +1297,8 @@ sudo ./install-client.sh
 sudo ./install-client.sh --force
 sudo CHANNEL=nightly ./install-client.sh
 sudo VERSION=v1.2.3 ./install-client.sh
+sudo ./install-client.sh --remove
+sudo ./install-client.sh --purge
 ```
 
 What the script does:
@@ -1335,6 +1337,16 @@ Useful overrides:
 - `GITHUB_TOKEN=...`: GitHub token to avoid API rate limits
 
 `VERSION` and `CHANNEL=nightly` are mutually exclusive.
+
+Removal:
+
+```bash
+sudo ./install-client.sh --remove   # stop+disable every unit, drop unit files, binary and backups
+sudo ./install-client.sh --purge    # also delete config, state dir and the service user/group
+```
+
+- `--remove` (alias `--uninstall`): stops and disables the main `outline-ws-rust.service` **and every** `outline-ws-rust@NAME.service` instance, removes both unit files (plain + template, followed by `daemon-reload`), the binary and its `.bak.*` backups. Keeps `/etc/outline-ws-rust` (including `instances/`), `/var/lib/outline-ws-rust` and the `outline-ws` user/group, so a later reinstall reuses the existing config.
+- `--purge`: everything `--remove` does, plus deletes `/etc/outline-ws-rust`, `/var/lib/outline-ws-rust` and the `outline-ws` user/group — a complete uninstall. Both modes are idempotent: missing artifacts are skipped, not treated as errors.
 
 #### Installing through an HTTP(S) proxy
 
