@@ -28,20 +28,31 @@ pub trait Live {
     fn is_live(&self) -> bool;
 }
 
-/// One live reverse peer: the accepted QUIC carrier plus the SS credentials
-/// this listener uses to frame the SS2022 header on each stream it opens to
-/// the peer. `master_key` is pre-derived from the configured `password`.
+/// One live reverse peer: the accepted QUIC carrier plus the protocol-specific
+/// credentials this listener uses to frame each stream it opens to the peer.
 pub struct ReversePeer {
     pub(crate) conn: Arc<SharedQuicConnection>,
-    pub(crate) cipher: CipherKind,
-    pub(crate) master_key: Vec<u8>,
-    /// The configured SS password. Kept alongside the pre-derived
-    /// `master_key` because the SS-UDP transport derives its own key from
-    /// the password string (`UdpWsTransport::from_channel`), whereas the
-    /// SS-TCP writer takes the master key directly.
-    pub(crate) password: Arc<str>,
+    pub(crate) creds: ReversePeerCreds,
     /// Short, non-reversible label for logs/metrics (never the fingerprint).
     pub(crate) label: Arc<str>,
+}
+
+/// Framing credentials for streams opened to a reverse peer, matching the
+/// carrier's negotiated protocol (chosen by the dialing `ss`).
+#[derive(Clone)]
+pub enum ReversePeerCreds {
+    /// Raw Shadowsocks: SS2022 framing. `master_key` is pre-derived from the
+    /// configured `password`; the password is kept alongside it because the
+    /// SS-UDP transport derives its own key from the string
+    /// (`UdpWsTransport::from_channel`), whereas the SS-TCP writer takes the
+    /// master key directly.
+    Ss {
+        cipher: CipherKind,
+        master_key: Vec<u8>,
+        password: Arc<str>,
+    },
+    /// VLESS: the request header carries this UUID.
+    Vless { uuid: [u8; 16] },
 }
 
 impl Live for ReversePeer {

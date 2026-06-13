@@ -31,10 +31,14 @@ bidirectional streams regardless of who dialed the connection:
 | `ws` | QUIC client (`connect`) | QUIC **server** (`accept`), opens `bi` per session |
 | TLS  | `ss` presents server cert | inverted: `ws` presents server cert, `ss` presents client cert (mTLS) |
 
-Each user session is one QUIC bidi stream carrying raw Shadowsocks
-(SS-AEAD / SS-2022), exactly like the forward `ss`-ALPN raw-QUIC transport.
-UDP rides QUIC datagrams. The `ss` server reuses its existing raw-SS accept
-loop unchanged — it does not care that the carrier was dialed outbound.
+Each user session is one QUIC bidi stream carrying either raw Shadowsocks
+(SS-AEAD / SS-2022) or VLESS, exactly like the forward raw-QUIC transport —
+the wire protocol is chosen **per peer** and negotiated by the carrier's
+ALPN (`ss`/`ss-mtu` vs `vless`/`vless-mtu`), so one listener can serve a mix
+of SS and VLESS peers. UDP rides QUIC datagrams (VLESS muxes per-target
+sessions by id). The `ss` server reuses its existing raw-SS / raw-VLESS
+accept loops unchanged — they do not care that the carrier was dialed
+outbound.
 
 ### Authentication: mTLS + pinned certificates
 
@@ -49,9 +53,9 @@ by **SHA-256 fingerprint**, and the listener requires a client certificate
   if that cert's fingerprint matches the pin it was configured with.
 
 A peer's client-cert fingerprint also selects *which* configured peer
-connected, and therefore which Shadowsocks credentials (`method` /
-`password`) the listener uses to frame that peer's streams — and which
-egress `group` it joins.
+connected, and therefore which framing credentials the listener uses for
+that peer's streams — Shadowsocks `method` / `password` for an SS peer, or
+the `vless_id` UUID for a VLESS peer — and which egress `group` it joins.
 
 ## Setup
 
@@ -99,23 +103,27 @@ mtu = true
 # Upper bound on concurrently-registered peers, applied per group (default 8).
 max_peers = 8
 
-# One entry per expected ss peer. `client_cert_pin` authenticates the
-# carrier (mTLS); method/password are the SS credentials used to frame
-# the streams opened to that peer (they must match an ss user). `group`
+# One entry per expected peer. `client_cert_pin` authenticates the carrier
+# (mTLS). The peer's protocol is per-peer: an SS peer gives `method` +
+# `password` (must match an ss user); a VLESS peer gives `vless_id` (a UUID,
+# must match an ss `[vless]` user) — exactly one of the two forms. `group`
 # is optional — omit it to join the listener-level `group`, or set it to
 # pool distinct peers under distinct egress groups served by distinct routes.
 [[reverse_listener.peers]]
 client_cert_pin = "aa:bb:cc:..."          # SHA-256 of ss-client.crt (DER)
-method   = "2022-blake3-aes-256-gcm"
+method   = "2022-blake3-aes-256-gcm"      # SS peer
 password = "<base64-psk-or-password>"
 # group omitted → joins the listener default ("reverse").
 
 [[reverse_listener.peers]]
-client_cert_pin = "11:22:33:..."          # a second ss peer, separate egress
-method   = "2022-blake3-aes-256-gcm"
-password = "<base64-psk-or-password>"
+client_cert_pin = "11:22:33:..."          # a second peer, VLESS, separate egress
+vless_id = "b831381d-6324-4d53-ad4f-8cda48b30811"   # must match an ss [vless] user
 group    = "reverse-eu"                    # pooled and routed separately
 ```
+
+The VLESS peer above dials in with the `vless`/`vless-mtu` ALPN; the SS peer
+with `ss`/`ss-mtu`. The single listener advertises both and routes each
+carrier to its protocol's accept loop.
 
 Route each reverse group like any other uplink group:
 
@@ -150,7 +158,11 @@ server_cert_pin = "dd:ee:ff:..."
 # Client certificate presented for mTLS (its pin is allow-listed on ws).
 client_cert_path = "/etc/outline-ss/ss-client.crt"
 client_key_path  = "/etc/outline-ss/ss-client.key"
-# true (default) offers [ss-mtu, ss]; false offers only [ss].
+# Wire protocol carried over this carrier: "ss" (default) or "vless". Must
+# match the protocol of the matching peer entry on the ws listener; selects
+# the ALPN offered (ss/ss-mtu vs vless/vless-mtu) and the accept loop run.
+protocol = "ss"
+# true (default) offers the -mtu ALPN sibling first; false offers only the base.
 mtu = true
 # Reconnect backoff floor / ceiling in seconds for transient failures
 # (default 1 / 60).
@@ -158,9 +170,10 @@ backoff_min_secs = 1
 backoff_max_secs = 60
 ```
 
-The Shadowsocks user that frames traffic (`method` / `password` on the `ws`
-peer entry) must exist in the `ss` server's `[[users]]` so the AEAD
-handshake authenticates — mTLS identity and SS user are independent layers.
+The user that frames traffic (the `ws` peer entry's `method` / `password`,
+or `vless_id`) must exist in the `ss` server's `[[users]]` (SS) or `[vless]`
+users (VLESS) so the handshake authenticates — mTLS identity and the SS/VLESS
+user are independent layers.
 
 Each endpoint runs its own reconnect loop with bounded, jittered backoff. A
 malformed pin or unreadable certificate disables only that one endpoint
@@ -191,8 +204,8 @@ or exported.
 
 ## Limitations
 
-- **Raw Shadowsocks only** on the reverse carrier (SS-TCP and SS-UDP). VLESS
-  and HTTP/3-WebSocket are not carried in reverse mode.
+- **Raw Shadowsocks and VLESS** are carried on the reverse carrier (both
+  TCP and UDP). HTTP/3-WebSocket is not carried in reverse mode.
 - **No CDN fronting** — the carrier is a direct QUIC connection authenticated
   by pinned certificates, not a CDN-frontable HTTPS request.
 - Peers are pooled **per egress group** (a peer's `group`, defaulting to the

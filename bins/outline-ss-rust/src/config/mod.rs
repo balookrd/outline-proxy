@@ -20,7 +20,8 @@ pub use loader::AppMode;
 pub use loader::default_http_root_realm;
 pub use migrate::migrate_config_in_place;
 pub use resolved::{
-    AccessKeyConfig, Config, H3Alpn, ReverseTunnelEndpoint, SessionResumptionConfig,
+    AccessKeyConfig, Config, H3Alpn, ReverseProtocol, ReverseTunnelEndpoint,
+    SessionResumptionConfig,
 };
 pub use sni::{SniBackend, SniFallbackConfig, SniMatcher, TlsCertEntry};
 pub use tuning::{TuningOverrides, TuningPreset, TuningProfile};

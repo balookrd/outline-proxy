@@ -103,16 +103,24 @@ pub(super) struct ReverseListenerSection {
 }
 
 /// One expected `ss` peer. The pinned client-cert fingerprint authenticates
-/// the carrier (mTLS); `method`/`password` are the SS credentials this
-/// listener uses to frame the SS2022 header on each opened stream.
+/// the carrier (mTLS). The peer's protocol is chosen per-peer: an SS peer
+/// gives `method` + `password` (SS2022 framing), a VLESS peer gives
+/// `vless_id` (a UUID) — exactly one of the two forms, validated at load.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ReversePeerSection {
     /// SHA-256 fingerprint of the peer's client cert: 64 hex chars
     /// (optionally colon-separated) or base64 of 32 bytes.
     pub(super) client_cert_pin: String,
-    pub(super) method: CipherKind,
-    pub(super) password: String,
+    /// SS peer: cipher method. Mutually exclusive with `vless_id`.
+    #[serde(default)]
+    pub(super) method: Option<CipherKind>,
+    /// SS peer: password / base64 PSK. Mutually exclusive with `vless_id`.
+    #[serde(default)]
+    pub(super) password: Option<String>,
+    /// VLESS peer: UUID (hex/dashed). Mutually exclusive with `method`/`password`.
+    #[serde(default)]
+    pub(super) vless_id: Option<String>,
     /// Egress group this peer is pooled under. Omit to fall back to the
     /// listener-level `group`. Lets distinct peers serve distinct routes.
     #[serde(default)]

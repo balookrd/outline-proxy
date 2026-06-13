@@ -60,7 +60,21 @@ pub async fn connect_vless_tcp_quic(
     let conn = connect_quic_uplink(cache, url, fwmark, ipv6_first, source, ALPN_VLESS)
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
-    let (sink, source_io) = open_quic_frame_pair(&conn).await?;
+    vless_tcp_over_connection(&conn, uuid, target, lifetime).await
+}
+
+/// Open one VLESS-TCP bidi stream on an already-established `vless`-ALPN QUIC
+/// connection. The connection-establishing half of [`connect_vless_tcp_quic`],
+/// factored out so the reverse-tunnel listener — which *accepts* the carrier
+/// instead of dialing it — can open per-session streams through the same
+/// VLESS writer/reader pipeline (mirrors [`ss_tcp_over_connection`]).
+pub async fn vless_tcp_over_connection(
+    conn: &Arc<crate::quic::SharedQuicConnection>,
+    uuid: &[u8; 16],
+    target: &TargetAddr,
+    lifetime: Arc<UpstreamTransportGuard>,
+) -> Result<(VlessTcpWriter, VlessTcpReader)> {
+    let (sink, source_io) = open_quic_frame_pair(conn).await?;
     let writer = VlessTcpWriter::with_sink(Box::new(sink), uuid, target, Arc::clone(&lifetime));
     let reader = VlessTcpReader::with_source(Box::new(source_io), lifetime);
     Ok((writer, reader))
@@ -146,6 +160,19 @@ pub async fn connect_vless_udp_session_quic(
     let conn = connect_quic_uplink(cache, url, fwmark, ipv6_first, source, ALPN_VLESS)
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+    vless_udp_over_connection(conn, uuid, target).await
+}
+
+/// Open one VLESS-UDP session on an already-established `vless`-ALPN QUIC
+/// connection — the connection half of [`connect_vless_udp_session_quic`],
+/// factored out so the reverse-tunnel listener can carry VLESS-UDP over an
+/// accepted carrier (mirrors [`ss_udp_over_connection`]). The connection-level
+/// demuxer is lazy-spawned on first call.
+pub async fn vless_udp_over_connection(
+    conn: Arc<crate::quic::SharedQuicConnection>,
+    uuid: &[u8; 16],
+    target: &TargetAddr,
+) -> Result<VlessUdpQuicSession> {
     VlessUdpQuicSession::open(conn, uuid, target).await
 }
 

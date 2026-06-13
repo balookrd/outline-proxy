@@ -12,8 +12,8 @@ use super::{
         load_file_config,
     },
     resolved::{
-        AccessKeyConfig, Config, H3Alpn, ReverseTunnelConfig, ReverseTunnelEndpoint,
-        SessionResumptionConfig,
+        AccessKeyConfig, Config, H3Alpn, ReverseProtocol, ReverseTunnelConfig,
+        ReverseTunnelEndpoint, SessionResumptionConfig,
     },
     sni::{SniFallbackConfig, TlsCertEntry},
     user_entry::CipherKind,
@@ -255,6 +255,13 @@ fn resolve_reverse_tunnel(
         // SNI defaults to the host part of `addr` (strip a trailing
         // `:port`, handling bracketed IPv6 literals).
         let server_name = ep.server_name.clone().unwrap_or_else(|| host_of(&ep.addr));
+        let protocol = match ep.protocol.as_deref() {
+            None | Some("ss") => ReverseProtocol::Ss,
+            Some("vless") => ReverseProtocol::Vless,
+            Some(other) => anyhow::bail!(
+                "reverse_tunnel.endpoints[{idx}].protocol must be \"ss\" or \"vless\", got {other:?}"
+            ),
+        };
         let backoff_min = Duration::from_secs(ep.backoff_min_secs.unwrap_or(1).max(1));
         let backoff_max =
             Duration::from_secs(ep.backoff_max_secs.unwrap_or(60).max(backoff_min.as_secs()));
@@ -264,6 +271,7 @@ fn resolve_reverse_tunnel(
             server_cert_pin: ep.server_cert_pin,
             client_cert_path: ep.client_cert_path,
             client_key_path: ep.client_key_path,
+            protocol,
             mtu: ep.mtu.unwrap_or(true),
             backoff_min,
             backoff_max,
