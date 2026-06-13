@@ -6,6 +6,7 @@ TAG_PREFIX="ws-"
 APP_NAME="outline-ws-rust"
 CHANNEL="${CHANNEL:-stable}"
 VERSION="${VERSION:-}"
+ACTION="${ACTION:-install}"   # install | remove | purge
 
 INSTALL_DIR="/opt/bin"
 BIN_PATH="${INSTALL_DIR}/${APP_NAME}"
@@ -205,7 +206,90 @@ select_release_tag() {
     esac
 }
 
+usage() {
+    cat <<EOF
+Usage:
+  $0 [--help]
+  $0 --remove | --uninstall
+  $0 --purge
+
+Installs, updates or removes ${APP_NAME} (router/Entware build) under /opt.
+
+Install modes (env vars):
+  CHANNEL=stable    install latest stable release (default)
+  CHANNEL=nightly   install rolling nightly prerelease
+  VERSION=1.2.3     install a specific stable tag
+
+Remove modes:
+  --remove          stop the service, remove the init script ${INIT_SCRIPT}
+  (--uninstall)     and the binary ${BIN_PATH}; keep config dir ${CONFIG_DIR}
+  --purge           everything --remove does, plus removal of ${CONFIG_DIR}
+                    (config.toml and the installed-release marker)
+EOF
+}
+
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --remove|--uninstall)
+                ACTION=remove
+                ;;
+            --purge)
+                ACTION=purge
+                ;;
+            *)
+                die "unknown argument: $1 (use --help)"
+                ;;
+        esac
+        shift
+    done
+}
+
+do_remove() {
+    if [ -f "$INIT_SCRIPT" ]; then
+        log "stopping service via init script"
+        "$INIT_SCRIPT" stop 2>/dev/null || true
+        rm -f "$INIT_SCRIPT"
+        log "removed init script: $INIT_SCRIPT"
+    else
+        log "init script not found, skipping: $INIT_SCRIPT"
+    fi
+
+    if [ -e "$BIN_PATH" ]; then
+        rm -f "$BIN_PATH"
+        log "removed binary: $BIN_PATH"
+    else
+        log "binary not found, skipping: $BIN_PATH"
+    fi
+
+    if [ "$ACTION" = "purge" ]; then
+        if [ -d "$CONFIG_DIR" ]; then
+            rm -rf "$CONFIG_DIR"
+            log "removed config dir: $CONFIG_DIR"
+        fi
+        log "purge complete: binary, init script and config removed"
+    else
+        log "kept config dir: $CONFIG_DIR"
+        log "to also remove the config run: $0 --purge"
+    fi
+
+    log "done"
+}
+
 main() {
+    parse_args "$@"
+
+    case "$ACTION" in
+        remove|purge)
+            do_remove
+            exit 0
+            ;;
+    esac
+
     need_cmd jq
     need_cmd tar
     need_cmd uname

@@ -1294,6 +1294,8 @@ sudo ./install-client.sh
 sudo ./install-client.sh --force
 sudo CHANNEL=nightly ./install-client.sh
 sudo VERSION=v1.2.3 ./install-client.sh
+sudo ./install-client.sh --remove
+sudo ./install-client.sh --purge
 ```
 
 Что делает скрипт:
@@ -1332,6 +1334,16 @@ sudo VERSION=v1.2.3 ./install-client.sh
 - `GITHUB_TOKEN=...`: GitHub-токен для обхода rate limit API
 
 `VERSION` и `CHANNEL=nightly` одновременно использовать нельзя.
+
+Удаление:
+
+```bash
+sudo ./install-client.sh --remove   # остановить+отключить все unit'ы, снять unit-файлы, бинарь и backup'ы
+sudo ./install-client.sh --purge    # дополнительно удалить конфиг, state-каталог и сервис-юзера/группу
+```
+
+- `--remove` (синоним `--uninstall`): останавливает и отключает основной `outline-ws-rust.service` **и все** инстансы `outline-ws-rust@NAME.service`, удаляет оба unit-файла (обычный + шаблонный, с последующим `daemon-reload`), бинарь и его backup'ы `.bak.*`. Сохраняет `/etc/outline-ws-rust` (включая `instances/`), `/var/lib/outline-ws-rust` и пользователя/группу `outline-ws`, поэтому повторная установка переиспользует существующий конфиг.
+- `--purge`: всё, что делает `--remove`, плюс удаление `/etc/outline-ws-rust`, `/var/lib/outline-ws-rust` и пользователя/группы `outline-ws` — полное удаление. Оба режима идемпотентны: отсутствующие артефакты пропускаются, а не считаются ошибкой.
 
 #### Установка через HTTP(S) прокси
 

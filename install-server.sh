@@ -8,6 +8,7 @@ SERVICE_NAME="${SERVICE_NAME:-outline-ss-rust.service}"
 CHANNEL="${CHANNEL:-stable}"
 VERSION="${VERSION:-}"
 FORCE="${FORCE:-}"
+ACTION="${ACTION:-install}"   # install | remove | purge
 GITHUB_API="${GITHUB_API:-https://api.github.com}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
@@ -48,21 +49,32 @@ die() {
 show_usage() {
   cat <<EOF
 Usage:
-  ./install.sh [--help]
+  ./install.sh [--help] [--force]
+  ./install.sh --remove | --uninstall
+  ./install.sh --purge
 
-Устанавливает или обновляет ${BINARY_NAME} на Linux.
-Саму установку нужно запускать от root, но справку можно посмотреть без root.
+Устанавливает, обновляет или удаляет ${BINARY_NAME} на Linux.
+Саму установку/удаление нужно запускать от root, но справку можно посмотреть без root.
 
 Режимы установки:
   CHANNEL=stable    установить последний stable release (по умолчанию)
   CHANNEL=nightly   установить rolling nightly prerelease
   VERSION=v1.2.3    установить конкретный stable tag
 
+Режимы удаления:
+  --remove          остановить и отключить сервис, удалить unit, бинарь и
+  (--uninstall)     его backup'ы; конфиг, state-каталог и сервис-юзер
+                    остаются на месте
+  --purge           всё, что делает --remove, плюс удаление ${CONFIG_DIR},
+                    ${STATE_DIR} и сервис-юзера/группы — полное удаление
+
 Примеры:
   ./install.sh --help
   sudo ./install.sh
   sudo CHANNEL=nightly ./install.sh
   sudo VERSION=v1.2.3 ./install.sh
+  sudo ./install.sh --remove
+  sudo ./install.sh --purge
 
 Дополнительные переменные окружения:
   REPO=${REPO}
@@ -120,6 +132,12 @@ parse_args() {
         ;;
       -f|--force)
         FORCE=1
+        ;;
+      --remove|--uninstall)
+        ACTION=remove
+        ;;
+      --purge)
+        ACTION=purge
         ;;
       *)
         die "Неизвестный аргумент: $1. Используй --help для справки."
@@ -551,9 +569,116 @@ show_summary() {
   echo "  journalctl -u ${SERVICE_NAME} -e --no-pager"
 }
 
+require_remove_tools() {
+  have_cmd systemctl || die "Не найден systemctl"
+  if [[ "$ACTION" == "purge" ]]; then
+    have_cmd getent || warn "Не найден getent — сервис-юзер/группа не будут удалены"
+    have_cmd userdel || warn "Не найден userdel — сервис-юзер не будет удалён"
+    have_cmd groupdel || warn "Не найден groupdel — сервис-группа не будет удалена"
+  fi
+}
+
+stop_disable_service() {
+  if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    log "Останавливаю сервис ${SERVICE_NAME}"
+    systemctl stop "$SERVICE_NAME" || warn "Не удалось остановить ${SERVICE_NAME}"
+  fi
+
+  if systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
+    log "Отключаю автозапуск ${SERVICE_NAME}"
+    systemctl disable "$SERVICE_NAME" || warn "Не удалось отключить ${SERVICE_NAME}"
+  fi
+}
+
+remove_service_unit() {
+  if [[ -f "$SERVICE_PATH" ]]; then
+    log "Удаляю systemd unit ${SERVICE_PATH}"
+    rm -f "$SERVICE_PATH"
+    systemctl daemon-reload
+    systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
+  else
+    log "systemd unit ${SERVICE_PATH} не найден — пропускаю"
+  fi
+}
+
+remove_binary() {
+  if [[ -e "$INSTALL_BIN_PATH" ]]; then
+    log "Удаляю бинарь ${INSTALL_BIN_PATH}"
+    rm -f "$INSTALL_BIN_PATH"
+  else
+    log "Бинарь ${INSTALL_BIN_PATH} не найден — пропускаю"
+  fi
+
+  rm -f "${INSTALL_BIN_PATH}.tmp"
+
+  local f
+  for f in "${INSTALL_BIN_PATH}".bak.*; do
+    [[ -e "$f" ]] || continue
+    log "Удаляю backup ${f}"
+    rm -f "$f"
+  done
+}
+
+purge_data() {
+  if [[ -d "$CONFIG_DIR" ]]; then
+    log "Удаляю каталог конфигурации ${CONFIG_DIR}"
+    rm -rf "$CONFIG_DIR"
+  fi
+
+  if [[ -d "$STATE_DIR" ]]; then
+    log "Удаляю state-каталог ${STATE_DIR}"
+    rm -rf "$STATE_DIR"
+  fi
+
+  if have_cmd userdel && id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    log "Удаляю пользователя ${SERVICE_USER}"
+    userdel "$SERVICE_USER" 2>/dev/null || warn "Не удалось удалить пользователя ${SERVICE_USER}"
+  fi
+
+  if have_cmd groupdel && getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
+    log "Удаляю группу ${SERVICE_GROUP}"
+    groupdel "$SERVICE_GROUP" 2>/dev/null || warn "Не удалось удалить группу ${SERVICE_GROUP}"
+  fi
+}
+
+show_remove_summary() {
+  echo
+  echo "Готово."
+  if [[ "$ACTION" == "purge" ]]; then
+    echo "${BINARY_NAME} удалён полностью (purge): бинарь, unit, конфиг, state, сервис-юзер."
+  else
+    echo "${BINARY_NAME} удалён: бинарь и unit сняты, сервис остановлен."
+    echo "Сохранены: ${CONFIG_DIR}, ${STATE_DIR}, сервис-юзер ${SERVICE_USER}."
+    echo "Для полного удаления вместе с конфигом и state запусти: sudo $0 --purge"
+  fi
+}
+
+do_remove() {
+  require_remove_tools
+  if [[ "$ACTION" == "purge" ]]; then
+    log "Полное удаление (purge) ${BINARY_NAME}"
+  else
+    log "Удаление ${BINARY_NAME} (конфиг и state сохраняются)"
+  fi
+
+  stop_disable_service
+  remove_service_unit
+  remove_binary
+  if [[ "$ACTION" == "purge" ]]; then
+    purge_data
+  fi
+  show_remove_summary
+}
+
 main() {
   parse_args "$@"
   need_root
+
+  if [[ "$ACTION" == "remove" || "$ACTION" == "purge" ]]; then
+    do_remove
+    exit 0
+  fi
+
   prepare_tmp_dir
   require_tools
   detect_arch
