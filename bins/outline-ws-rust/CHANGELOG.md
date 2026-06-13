@@ -97,6 +97,10 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 - **`gethostname(2)` seeds ProcessStable**, not `$HOSTNAME` env — the latter is a shell-internal variable that systemd / docker / cron daemons never inherit, so the previous read produced `rand::random` fallback for every typical deployment (no in-process stability across restarts on the same machine).
 
+### Removed
+
+- **Legacy top-level config migration removed (`--migrate-config` + auto-migrate).** The one-shot `--migrate-config` CLI flag and the on-load auto-migration that rewrote the pre-`[outline]` flat layout (top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]`) into the `[outline]` section (`config/migrate.rs`) are gone. Runtime backwards-compatibility is unchanged: the flat layout is still accepted in memory via the compat shim and logs a deprecation warning — only the file-rewriting migration path was removed. Convert the config to `[outline]` once (the deprecation warning names the fields) to drop the warning.
+
 ## [1.4.4] - 2026-05-07
 
 ### Added

@@ -4,7 +4,6 @@ mod dashboard;
 mod fallback;
 mod file;
 mod loader;
-mod migrate;
 mod resolved;
 mod sni;
 mod tuning;
@@ -18,7 +17,6 @@ pub use fallback::{BackendProto, HttpFallbackConfig, ProxyProtocolVersion};
 pub use loader::AppMode;
 #[cfg(test)]
 pub use loader::default_http_root_realm;
-pub use migrate::migrate_config_in_place;
 pub use resolved::{
     AccessKeyConfig, Config, H3Alpn, ReverseProtocol, ReverseTunnelEndpoint,
     SessionResumptionConfig,

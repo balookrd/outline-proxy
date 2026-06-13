@@ -14,12 +14,6 @@ pub(super) struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_CONFIG")]
     pub config: Option<PathBuf>,
 
-    /// Migrate a legacy flat-key config file to the sectioned layout in-place
-    /// (writes a `.bak` alongside) and exit. Temporary flag; will be removed
-    /// once all deployments are on the new layout.
-    #[arg(long, value_name = "PATH")]
-    pub migrate_config: Option<PathBuf>,
-
     #[arg(long, env = "OUTLINE_SS_LISTEN")]
     pub listen: Option<SocketAddr>,
 
