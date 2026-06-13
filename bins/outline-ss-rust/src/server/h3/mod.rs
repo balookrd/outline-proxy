@@ -30,10 +30,11 @@ mod raw_ss;
 mod raw_vless;
 pub(in crate::server) mod vendored;
 
-// Re-exported so the reverse-tunnel dialer can drive the same raw-SS accept
-// loop on an outbound-dialed carrier (topology A) — the handler is agnostic
-// to how the `quinn::Connection` was obtained.
+// Re-exported so the reverse-tunnel dialer can drive the same raw-SS / raw-VLESS
+// accept loop on an outbound-dialed carrier (topology A) — both handlers are
+// agnostic to how the `quinn::Connection` was obtained.
 pub(in crate::server) use raw_ss::handle_raw_ss_connection;
+pub(in crate::server) use raw_vless::handle_raw_vless_connection;
 
 pub(in crate::server) async fn build_h3_server(
     config: &Config,
@@ -378,7 +379,12 @@ async fn handle_quic_connection(
             http::handle_h3_connection(connection, ctx).await
         },
         Some(H3Alpn::Vless) if ctx.alpn.contains(&H3Alpn::Vless) => {
-            raw_vless::handle_raw_vless_connection(connection, ctx).await
+            let raw_vless_ctx = Arc::new(crate::server::transport::RawVlessConnectionCtx {
+                vless_server: Arc::clone(&ctx.vless_server),
+                raw_vless_route: Arc::clone(&ctx.raw_vless_route),
+                stream_semaphore: Arc::clone(&ctx.stream_semaphore),
+            });
+            raw_vless::handle_raw_vless_connection(connection, raw_vless_ctx).await
         },
         Some(H3Alpn::Ss) if ctx.alpn.contains(&H3Alpn::Ss) => {
             let raw_ss_ctx = Arc::new(crate::server::transport::RawSsConnectionCtx {

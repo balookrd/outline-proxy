@@ -158,17 +158,21 @@ fn resolve_config_path_joins_relative_with_config_dir() {
 
 // ── reverse_listener peer group resolution ────────────────────────────────
 
-#[test]
-fn reverse_peer_group_resolves_explicit_or_listener_default() {
-    use super::super::schema::{ReverseListenerSection, ReversePeerSection};
+use super::super::schema::{ReverseListenerSection, ReversePeerSection};
+use super::super::types::ReversePeerKind;
 
-    let peer = |pin: &str, group: Option<&str>| ReversePeerSection {
+fn ss_peer(pin: &str, group: Option<&str>) -> ReversePeerSection {
+    ReversePeerSection {
         client_cert_pin: pin.to_string(),
-        method: shadowsocks_crypto::CipherKind::Aes128Gcm,
-        password: "secret".to_string(),
+        method: Some(shadowsocks_crypto::CipherKind::Aes128Gcm),
+        password: Some("secret".to_string()),
+        vless_id: None,
         group: group.map(str::to_string),
-    };
-    let section = ReverseListenerSection {
+    }
+}
+
+fn reverse_section(peers: Vec<ReversePeerSection>) -> ReverseListenerSection {
+    ReverseListenerSection {
         enabled: Some(true),
         listen: "0.0.0.0:8443".parse().unwrap(),
         server_cert_path: PathBuf::from("/srv.crt"),
@@ -176,9 +180,13 @@ fn reverse_peer_group_resolves_explicit_or_listener_default() {
         group: "default-rev".to_string(),
         mtu: None,
         max_peers: None,
-        peers: vec![peer("aa", None), peer("bb", Some("special"))],
-    };
+        peers,
+    }
+}
 
+#[test]
+fn reverse_peer_group_resolves_explicit_or_listener_default() {
+    let section = reverse_section(vec![ss_peer("aa", None), ss_peer("bb", Some("special"))]);
     let cfg = super::load_reverse_listener(Some(&section), Path::new("/etc/outline"))
         .unwrap()
         .unwrap();
@@ -186,4 +194,42 @@ fn reverse_peer_group_resolves_explicit_or_listener_default() {
     assert_eq!(&*cfg.peers[0].group, "default-rev");
     // Explicit per-peer group wins.
     assert_eq!(&*cfg.peers[1].group, "special");
+}
+
+#[test]
+fn reverse_peer_vless_id_resolves_to_vless_kind() {
+    let mut peer = ss_peer("aa", None);
+    peer.method = None;
+    peer.password = None;
+    peer.vless_id = Some("00112233-4455-6677-8899-aabbccddeeff".to_string());
+    let section = reverse_section(vec![peer]);
+    let cfg = super::load_reverse_listener(Some(&section), Path::new("/etc/outline"))
+        .unwrap()
+        .unwrap();
+    match &cfg.peers[0].kind {
+        ReversePeerKind::Vless { uuid } => assert_eq!(uuid[0], 0x00),
+        other => panic!("expected Vless, got {other:?}"),
+    }
+}
+
+#[test]
+fn reverse_peer_rejects_mixed_or_empty_protocol() {
+    // Both SS creds and vless_id set → reject.
+    let mut both = ss_peer("aa", None);
+    both.vless_id = Some("00112233-4455-6677-8899-aabbccddeeff".to_string());
+    assert!(
+        super::load_reverse_listener(Some(&reverse_section(vec![both])), Path::new("/x")).is_err()
+    );
+
+    // Neither set → reject.
+    let empty = ReversePeerSection {
+        client_cert_pin: "aa".to_string(),
+        method: None,
+        password: None,
+        vless_id: None,
+        group: None,
+    };
+    assert!(
+        super::load_reverse_listener(Some(&reverse_section(vec![empty])), Path::new("/x")).is_err()
+    );
 }

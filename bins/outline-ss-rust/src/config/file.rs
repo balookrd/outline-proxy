@@ -81,8 +81,15 @@ pub(super) struct ReverseTunnelEndpointSection {
     /// cert's fingerprint to authenticate this server.
     pub client_cert_path: PathBuf,
     pub client_key_path: PathBuf,
-    /// `true` (default) offers `ss-mtu` then `ss` so the oversize-record
-    /// stream fallback is available; `false` offers only `ss`.
+    /// Wire protocol carried over this reverse carrier: `"ss"` (default) or
+    /// `"vless"`. Selects the QUIC ALPN offered (`ss`/`ss-mtu` vs
+    /// `vless`/`vless-mtu`) and which raw-QUIC accept loop runs. The `ws`
+    /// peer entry must declare the matching protocol.
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// `true` (default) offers the `-mtu` ALPN sibling first so the
+    /// oversize-record stream fallback is available; `false` offers only
+    /// the base ALPN.
     #[serde(default)]
     pub mtu: Option<bool>,
     /// Reconnect backoff floor / ceiling in seconds. Defaults 1 / 60.

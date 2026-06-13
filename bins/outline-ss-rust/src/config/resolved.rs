@@ -157,6 +157,14 @@ pub struct ReverseTunnelConfig {
 /// three are parsed/loaded by the dialer at startup (mirrors how the H3
 /// listener keeps `h3_cert_path` as a path). A malformed pin or unreadable
 /// cert fails that one endpoint's dial loop without aborting the server.
+/// Wire protocol carried over a reverse-tunnel carrier. Selects the QUIC
+/// ALPN offered and which raw-QUIC accept loop the dialer drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReverseProtocol {
+    Ss,
+    Vless,
+}
+
 #[derive(Debug, Clone)]
 pub struct ReverseTunnelEndpoint {
     pub addr: String,
@@ -164,7 +172,9 @@ pub struct ReverseTunnelEndpoint {
     pub server_cert_pin: String,
     pub client_cert_path: PathBuf,
     pub client_key_path: PathBuf,
-    /// `true` offers `[ss-mtu, ss]`; `false` offers `[ss]`.
+    /// Wire protocol carried over this carrier (selects ALPN + accept loop).
+    pub protocol: ReverseProtocol,
+    /// `true` offers the `-mtu` ALPN sibling first; `false` only the base.
     pub mtu: bool,
     pub backoff_min: std::time::Duration,
     pub backoff_max: std::time::Duration,
@@ -173,7 +183,12 @@ pub struct ReverseTunnelEndpoint {
 impl ReverseTunnelEndpoint {
     /// ALPN list to offer, MTU-aware sibling first when enabled.
     pub fn advertised_alpns(&self) -> &'static [&'static [u8]] {
-        if self.mtu { &[b"ss-mtu", b"ss"] } else { &[b"ss"] }
+        match (self.protocol, self.mtu) {
+            (ReverseProtocol::Ss, true) => &[b"ss-mtu", b"ss"],
+            (ReverseProtocol::Ss, false) => &[b"ss"],
+            (ReverseProtocol::Vless, true) => &[b"vless-mtu", b"vless"],
+            (ReverseProtocol::Vless, false) => &[b"vless"],
+        }
     }
 }
 

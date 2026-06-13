@@ -180,10 +180,12 @@ pub use dial_plan::{
     DialNetworkOptions, DialResumeOptions, TransportDialOptions, connect_transport,
 };
 #[cfg(feature = "quic")]
+pub use quic::vless_udp::VlessUdpQuicSession;
+#[cfg(feature = "quic")]
 pub use quic_connect::{
     connect_ss_tcp_quic, connect_ss_udp_quic, connect_vless_tcp_quic,
     connect_vless_tcp_quic_with_resume, connect_vless_udp_session_quic, ss_tcp_over_connection,
-    ss_udp_over_connection,
+    ss_udp_over_connection, vless_tcp_over_connection, vless_udp_over_connection,
 };
 pub use udp_transport::{
     OversizedUdpDatagram, UdpSessionTransport, UdpWsTransport, is_dropped_oversized_udp_error,

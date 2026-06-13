@@ -4,15 +4,19 @@ use anyhow::{Result, anyhow};
 use tracing::{debug, warn};
 
 use super::super::transport::{
-    OversizeStream, StreamKind, VlessQuicConn, classify_accept_bi,
+    OversizeStream, RawVlessConnectionCtx, StreamKind, VlessQuicConn, classify_accept_bi,
     handle_raw_vless_quic_stream_with_prefix, is_handshake_rejected, is_normal_h3_shutdown,
     serve_raw_vless_oversize_records, serve_raw_vless_quic_datagrams,
 };
-use super::H3ConnectionCtx;
 
-pub(super) async fn handle_raw_vless_connection(
+/// Drives one raw-VLESS-over-QUIC carrier: spawns the VLESS-UDP datagram pump
+/// and loops on `accept_bi()`, peeking each stream to split the
+/// oversize-record stream from fresh VLESS requests. Agnostic to how
+/// `connection` was obtained — the forward H3 path `accept`s it, the
+/// reverse-tunnel dialer dials it outbound; both hand it here unchanged.
+pub(in crate::server) async fn handle_raw_vless_connection(
     connection: quinn::Connection,
-    ctx: Arc<H3ConnectionCtx>,
+    ctx: Arc<RawVlessConnectionCtx>,
 ) -> Result<()> {
     debug!(remote = %connection.remote_address(), "raw VLESS QUIC connection accepted");
     let mtu_aware = connection

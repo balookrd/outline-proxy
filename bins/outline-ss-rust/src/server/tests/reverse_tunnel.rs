@@ -29,18 +29,22 @@ use outline_transport::quic::{SharedQuicConnection, shared_connection_from_accep
 use outline_transport::tls_reverse::{build_reverse_server_quic_config, cert_fingerprint};
 use outline_transport::{
     CipherKind, UpstreamTransportGuard, ss_tcp_over_connection, ss_udp_over_connection,
+    vless_tcp_over_connection, vless_udp_over_connection,
 };
 
 use super::super::bootstrap::build_reverse_client_quic_config;
-use super::super::h3::handle_raw_ss_connection;
+use super::super::h3::{handle_raw_ss_connection, handle_raw_vless_connection};
 use super::super::nat::NatTable;
 use super::super::replay::ReplayStore;
 use super::super::reverse_tunnel::is_auth_failure;
-use super::super::transport::{RawQuicSsCtx, RawSsConnectionCtx};
+use super::super::transport::{
+    RawQuicSsCtx, RawQuicVlessRouteCtx, RawSsConnectionCtx, RawVlessConnectionCtx,
+};
 use super::super::{DnsCache, Services, UdpServices, build_users};
 use super::sample_config;
 use crate::metrics::Metrics;
 use crate::protocol::TargetAddr;
+use crate::protocol::vless::VlessUser;
 
 const SS_PASSWORD: &str = "secret-b";
 
@@ -264,5 +268,138 @@ async fn reverse_tunnel_rejects_wrong_server_pin() -> Result<()> {
     // handshake, so the dial fails locally with a crypto-range close.
     let error = dial.expect_err("server cert pin mismatch must fail the dial");
     assert!(is_auth_failure(&error), "server pin mismatch must classify as an auth failure");
+    Ok(())
+}
+
+/// Build the raw-VLESS accept context the dialer hands to
+/// `handle_raw_vless_connection`, authorising exactly `uuid_str`.
+fn raw_vless_ctx(uuid_str: &str) -> Result<Arc<RawVlessConnectionCtx>> {
+    let config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
+    let services = Arc::new(Services::new(
+        Metrics::new(&config),
+        DnsCache::new(Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(Duration::from_secs(300)),
+            replay_store: ReplayStore::new(Duration::from_secs(300), 0),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+    ));
+    let user = VlessUser::new(uuid_str.to_string(), Arc::from("test-vless"), None)?;
+    Ok(Arc::new(RawVlessConnectionCtx {
+        vless_server: Arc::clone(&services.vless_server),
+        raw_vless_route: Arc::new(RawQuicVlessRouteCtx {
+            users: Arc::from([user]),
+            candidate_users: Arc::from([Arc::from("test-vless") as Arc<str>]),
+        }),
+        stream_semaphore: Arc::new(Semaphore::new(64)),
+    }))
+}
+
+/// Stand up both reverse roles for a VLESS carrier: `ws` accepts and hands
+/// back the [`SharedQuicConnection`]; `ss` dials out and runs the production
+/// raw-VLESS accept loop. Mirrors [`setup_reverse_carrier`] but with the
+/// `vless` ALPN and `handle_raw_vless_connection`.
+async fn setup_reverse_vless_carrier(
+    uuid_str: &str,
+) -> Result<(Arc<SharedQuicConnection>, quinn::Endpoint, JoinHandle<Result<()>>)> {
+    let (ws_chain, ws_key, ws_pin) = gen_cert("ws-reverse");
+    let (ss_chain, ss_key, ss_pin) = gen_cert("ss-reverse");
+    let alpn: &[&[u8]] = &[b"vless-mtu", b"vless"];
+
+    let server_config = build_reverse_server_quic_config(ws_chain, ws_key, vec![ss_pin], alpn)?;
+    let ws_endpoint =
+        quinn::Endpoint::server(server_config, SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    let ws_addr = ws_endpoint.local_addr()?;
+    let (peer_tx, peer_rx) = oneshot::channel();
+    let ws_accept_endpoint = ws_endpoint.clone();
+    tokio::spawn(async move {
+        let incoming = ws_endpoint.accept().await.expect("ws accept");
+        let connection = incoming.await.expect("ws handshake");
+        let shared = shared_connection_from_accepted(ws_accept_endpoint, connection);
+        let _ = peer_tx.send(shared);
+    });
+
+    let ctx = raw_vless_ctx(uuid_str)?;
+    let client_config = build_reverse_client_quic_config(ss_chain, ss_key, ws_pin, alpn)?;
+    let ss_endpoint = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?;
+    let ss_conn = ss_endpoint.connect_with(client_config, ws_addr, "localhost")?.await?;
+    let ss_handler = tokio::spawn(handle_raw_vless_connection(ss_conn, ctx));
+
+    let shared = peer_rx.await.expect("ws received reverse peer");
+    Ok((shared, ss_endpoint, ss_handler))
+}
+
+#[tokio::test]
+async fn reverse_tunnel_vless_tcp_round_trip() -> Result<()> {
+    // Upstream echo: read "ping", reply "pong".
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    let uuid_str = "00112233-4455-6677-8899-aabbccddeeff";
+    let (shared, ss_endpoint, ss_handler) = setup_reverse_vless_carrier(uuid_str).await?;
+    let uuid = outline_transport::vless::parse_uuid(uuid_str).expect("valid uuid");
+
+    // Open a VLESS session stream from the ws side (server-initiated bidi) →
+    // ss accept_bi → handle_raw_vless → connect echo → round-trip.
+    let lifetime = UpstreamTransportGuard::new("reverse-e2e", "vless-tcp");
+    let (mut writer, mut reader) =
+        vless_tcp_over_connection(&shared, &uuid, &TargetAddr::from(upstream_addr), lifetime)
+            .await?;
+    writer.send_chunk(b"ping").await?;
+
+    let reply = tokio::time::timeout(Duration::from_secs(5), reader.read_chunk()).await??;
+    assert_eq!(&reply, b"pong", "reverse VLESS-TCP echo round-trips");
+
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&upstream_bytes, b"ping", "VLESS echo upstream saw the payload");
+
+    drop(reader);
+    drop(writer);
+    ss_handler.abort();
+    let _ = ss_endpoint; // keep the VLESS client endpoint alive until here
+    Ok(())
+}
+
+#[tokio::test]
+async fn reverse_tunnel_vless_udp_round_trip() -> Result<()> {
+    // UDP echo upstream: bounce whatever it receives back to the sender.
+    let echo = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let echo_addr = echo.local_addr()?;
+    tokio::spawn(async move {
+        let mut buf = [0_u8; 64];
+        let (n, from) = echo.recv_from(&mut buf).await?;
+        echo.send_to(&buf[..n], from).await?;
+        Result::<_, anyhow::Error>::Ok(())
+    });
+
+    let uuid_str = "00112233-4455-6677-8899-aabbccddeeff";
+    let (shared, ss_endpoint, ss_handler) = setup_reverse_vless_carrier(uuid_str).await?;
+    let uuid = outline_transport::vless::parse_uuid(uuid_str).expect("valid uuid");
+
+    // One VLESS-UDP session over the reverse carrier: ws opens the session
+    // (control bidi → session id) → ss handle_raw_vless UDP handler → echo →
+    // back over the carrier's datagram channel. The session payload carries no
+    // target — it is bound to the session.
+    let session =
+        vless_udp_over_connection(Arc::clone(&shared), &uuid, &TargetAddr::from(echo_addr)).await?;
+    session.send_packet(b"ping").await?;
+
+    let reply = tokio::time::timeout(Duration::from_secs(5), session.read_packet()).await??;
+    assert_eq!(&reply[..], b"ping", "reverse VLESS-UDP datagram round-trips");
+
+    session.close().await.ok();
+    ss_handler.abort();
+    let _ = ss_endpoint;
     Ok(())
 }

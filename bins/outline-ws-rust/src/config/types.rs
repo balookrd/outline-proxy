@@ -76,17 +76,31 @@ pub struct ReverseListenerConfig {
     pub peers: Vec<ReversePeerConfig>,
 }
 
-/// One expected reverse `ss` peer: its pinned client-cert fingerprint plus
-/// the SS credentials used to frame streams opened to it.
+/// One expected reverse `ss` peer: its pinned client-cert fingerprint, the
+/// protocol-specific credentials used to frame streams opened to it, and the
+/// resolved egress group.
 #[derive(Debug, Clone)]
 pub struct ReversePeerConfig {
     pub client_cert_pin: String,
-    pub method: shadowsocks_crypto::CipherKind,
-    pub password: String,
+    pub kind: ReversePeerKind,
     /// Egress group this peer is pooled under, already resolved (per-peer
     /// `group` or the listener-level default). Distinct peers may map to
     /// distinct groups so they serve distinct routes.
     pub group: std::sync::Arc<str>,
+}
+
+/// Per-peer protocol on the reverse carrier. The carrier ALPN is chosen by
+/// the dialing `ss` per its own config; this is the matching listener-side
+/// framing credential.
+#[derive(Debug, Clone)]
+pub enum ReversePeerKind {
+    /// Raw Shadowsocks: SS2022 framing with this cipher + password.
+    Ss {
+        method: shadowsocks_crypto::CipherKind,
+        password: String,
+    },
+    /// VLESS: request header carries this UUID.
+    Vless { uuid: [u8; 16] },
 }
 
 /// HTTP/2 flow-control window sizes for WebSocket transports.

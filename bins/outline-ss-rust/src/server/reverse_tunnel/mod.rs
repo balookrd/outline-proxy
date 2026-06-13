@@ -13,11 +13,15 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::config::Config;
+use crate::config::{Config, ReverseProtocol};
 use crate::server::constants::REVERSE_TUNNEL_MAX_CONCURRENT_SESSIONS;
 use crate::server::services::Built;
 use crate::server::shutdown::ShutdownSignal;
-use crate::server::transport::{RawQuicSsCtx, RawSsConnectionCtx};
+use crate::server::transport::{
+    RawQuicSsCtx, RawQuicVlessRouteCtx, RawSsConnectionCtx, RawVlessConnectionCtx,
+};
+
+use dial_loop::ReverseAcceptCtx;
 
 mod dial_loop;
 mod endpoint;
@@ -42,19 +46,33 @@ pub(in crate::server) fn spawn_reverse_tunnels(
         return;
     }
 
-    // One shared accept-side context for every reverse carrier: the same
-    // user keys + services the forward H3 raw-SS path uses, plus a stream
-    // admission semaphore bounding concurrent sessions across all peers.
-    let raw_ss_ctx = Arc::new(RawQuicSsCtx {
-        users: Arc::clone(&built.users),
-        services: Arc::clone(&built.services),
-    });
+    // Shared accept-side contexts reusing the same users / services / routes
+    // the forward H3 raw-SS and raw-VLESS paths use, plus one stream-admission
+    // semaphore bounding concurrent sessions across all peers and protocols.
+    // Each endpoint picks the context matching its configured protocol.
     let stream_semaphore = Arc::new(Semaphore::new(REVERSE_TUNNEL_MAX_CONCURRENT_SESSIONS));
-    let ctx = Arc::new(RawSsConnectionCtx { raw_ss_ctx, stream_semaphore });
+    let ss_ctx = Arc::new(RawSsConnectionCtx {
+        raw_ss_ctx: Arc::new(RawQuicSsCtx {
+            users: Arc::clone(&built.users),
+            services: Arc::clone(&built.services),
+        }),
+        stream_semaphore: Arc::clone(&stream_semaphore),
+    });
+    let vless_ctx = Arc::new(RawVlessConnectionCtx {
+        vless_server: Arc::clone(&built.services.vless_server),
+        raw_vless_route: Arc::new(RawQuicVlessRouteCtx {
+            users: built.vless_user_routes.iter().map(|r| r.user.clone()).collect(),
+            candidate_users: built.vless_user_routes.iter().map(|r| r.user.label_arc()).collect(),
+        }),
+        stream_semaphore: Arc::clone(&stream_semaphore),
+    });
 
     for endpoint in &reverse.endpoints {
         let endpoint = endpoint.clone();
-        let ctx = Arc::clone(&ctx);
+        let ctx = match endpoint.protocol {
+            ReverseProtocol::Ss => ReverseAcceptCtx::Ss(Arc::clone(&ss_ctx)),
+            ReverseProtocol::Vless => ReverseAcceptCtx::Vless(Arc::clone(&vless_ctx)),
+        };
         let shutdown = shutdown.clone();
         tasks.spawn(async move {
             dial_loop::run_dial_loop(endpoint, ctx, shutdown).await;

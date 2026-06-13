@@ -19,7 +19,7 @@ mod stream;
 mod tcp;
 mod udp;
 
-pub(in crate::server) use ctx::{RawQuicVlessRouteCtx, VlessQuicConn};
+pub(in crate::server) use ctx::{RawQuicVlessRouteCtx, RawVlessConnectionCtx, VlessQuicConn};
 pub(in crate::server) use udp::{serve_raw_vless_oversize_records, serve_raw_vless_quic_datagrams};
 
 /// Handles a raw VLESS-over-QUIC stream, accepting a `prefix` of bytes
