@@ -17,6 +17,7 @@ pub(in crate::server) use ss::{
     serve_raw_ss_oversize_records, serve_raw_ss_quic_datagrams,
 };
 pub(in crate::server) use vless::{
-    RawQuicVlessRouteCtx, VlessQuicConn, handle_raw_vless_quic_stream_with_prefix,
-    serve_raw_vless_oversize_records, serve_raw_vless_quic_datagrams,
+    RawQuicVlessRouteCtx, RawVlessConnectionCtx, VlessQuicConn,
+    handle_raw_vless_quic_stream_with_prefix, serve_raw_vless_oversize_records,
+    serve_raw_vless_quic_datagrams,
 };

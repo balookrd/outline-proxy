@@ -17,7 +17,7 @@ mod listener;
 mod peer_registry;
 mod relay;
 
-pub(crate) use peer_registry::{ReversePeer, ReverseRegistry};
+pub(crate) use peer_registry::{ReversePeer, ReversePeerCreds, ReverseRegistry};
 pub(crate) use relay::serve_reverse_tcp;
 
 /// Build the reverse-peer registry and spawn the listener task. Returns the

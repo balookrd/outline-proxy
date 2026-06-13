@@ -292,7 +292,8 @@ ws_path_udp = "/dave/udp"
 # server_cert_pin = "dd:ee:ff:..."      # SHA-256 of the ws server cert (DER)
 # client_cert_path = "/etc/outline-ss/ss-client.crt"  # mTLS client cert
 # client_key_path  = "/etc/outline-ss/ss-client.key"
-# mtu = true                            # offer [ss-mtu, ss] (default true)
+# protocol = "ss"                       # "ss" (default) or "vless"; must match the ws peer entry
+# mtu = true                            # offer the -mtu ALPN sibling (default true)
 # backoff_min_secs = 1                  # transient-failure backoff floor (default 1)
 # backoff_max_secs = 60                 # transient-failure backoff ceiling (default 60)
 # Note: a pin/cert (auth) failure is not retried on this schedule — the loop

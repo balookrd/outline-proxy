@@ -72,3 +72,14 @@ pub(in crate::server) struct RawQuicVlessRouteCtx {
     pub(in crate::server) users: Arc<[VlessUser]>,
     pub(in crate::server) candidate_users: Arc<[Arc<str>]>,
 }
+
+/// Slice of the H3 connection context needed to drive a raw-VLESS carrier,
+/// mirroring [`super::super::RawSsConnectionCtx`]. The forward path builds it
+/// from `H3ConnectionCtx`; the reverse-tunnel dialer builds it from `Built`,
+/// so the same accept loop runs on an outbound-dialed carrier without the
+/// full `H3ConnectionCtx`.
+pub(in crate::server) struct RawVlessConnectionCtx {
+    pub(in crate::server) vless_server: Arc<crate::server::transport::VlessWsServerCtx>,
+    pub(in crate::server) raw_vless_route: Arc<RawQuicVlessRouteCtx>,
+    pub(in crate::server) stream_semaphore: Arc<Semaphore>,
+}

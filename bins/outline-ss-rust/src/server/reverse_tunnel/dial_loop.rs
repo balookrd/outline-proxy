@@ -14,9 +14,17 @@ use tracing::{info, warn};
 
 use super::endpoint::{DialError, ReverseDialer, is_auth_failure};
 use crate::config::ReverseTunnelEndpoint;
-use crate::server::h3::handle_raw_ss_connection;
+use crate::server::h3::{handle_raw_ss_connection, handle_raw_vless_connection};
 use crate::server::shutdown::ShutdownSignal;
-use crate::server::transport::{RawSsConnectionCtx, is_normal_h3_shutdown};
+use crate::server::transport::{RawSsConnectionCtx, RawVlessConnectionCtx, is_normal_h3_shutdown};
+
+/// Accept-side context for a reverse carrier, selected by the endpoint's
+/// configured protocol. Both handlers are agnostic to how the carrier was
+/// obtained, so the dialer drives the same loops the forward H3 path uses.
+pub(super) enum ReverseAcceptCtx {
+    Ss(Arc<RawSsConnectionCtx>),
+    Vless(Arc<RawVlessConnectionCtx>),
+}
 
 /// Backoff after an authentication failure (pin/cert mismatch). Such a
 /// failure does not resolve on retry with the same config — the operator
@@ -46,7 +54,7 @@ enum Outcome {
 /// (bad pin / unreadable cert) disables just this loop with a logged error.
 pub(super) async fn run_dial_loop(
     ep: ReverseTunnelEndpoint,
-    ctx: Arc<RawSsConnectionCtx>,
+    ctx: ReverseAcceptCtx,
     mut shutdown: ShutdownSignal,
 ) {
     let dialer = match ReverseDialer::new(&ep) {
@@ -109,7 +117,7 @@ pub(super) async fn run_dial_loop(
 async fn serve_carrier(
     addr: &str,
     connection: quinn::Connection,
-    ctx: &Arc<RawSsConnectionCtx>,
+    ctx: &ReverseAcceptCtx,
 ) -> Outcome {
     info!(%addr, "reverse tunnel carrier established");
     metrics::counter!("outline_ss_reverse_tunnel_connects_total", "result" => "success")
@@ -117,10 +125,15 @@ async fn serve_carrier(
     metrics::gauge!("outline_ss_reverse_tunnel_active_connections").increment(1.0);
 
     // Clone the carrier handle (an Arc) so its close reason stays readable
-    // after `handle_raw_ss_connection` consumes the connection.
+    // after the accept loop consumes the connection.
     let probe = connection.clone();
     let started = Instant::now();
-    let carrier = handle_raw_ss_connection(connection, Arc::clone(ctx)).await;
+    let carrier = match ctx {
+        ReverseAcceptCtx::Ss(ctx) => handle_raw_ss_connection(connection, Arc::clone(ctx)).await,
+        ReverseAcceptCtx::Vless(ctx) => {
+            handle_raw_vless_connection(connection, Arc::clone(ctx)).await
+        },
+    };
     metrics::gauge!("outline_ss_reverse_tunnel_active_connections").decrement(1.0);
 
     if let Some(reason) = probe.close_reason()

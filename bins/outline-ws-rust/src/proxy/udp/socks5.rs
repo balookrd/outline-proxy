@@ -173,7 +173,10 @@ pub(in crate::proxy) async fn serve_udp_associate(
                             )
                         })
                         .await?;
-                    assoc.send_packet(&payload).await?;
+                    // Pass the target and application payload separately: SS
+                    // framing prepends the target wire form, VLESS routes to
+                    // the target's session.
+                    assoc.send_packet(&packet.target, &packet.payload).await?;
                     continue;
                 }
 

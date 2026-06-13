@@ -10,7 +10,7 @@ pub use load::load_config;
 pub use migrate::migrate_config_file;
 pub use types::{
     AppConfig, ControlConfig, DashboardConfig, DashboardInstanceConfig, H2Config, MetricsConfig,
-    ReverseListenerConfig, ReversePeerConfig,
+    ReverseListenerConfig, ReversePeerConfig, ReversePeerKind,
 };
 
 #[cfg(test)]

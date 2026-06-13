@@ -9,7 +9,7 @@ use super::migrate::migrate_legacy_config_if_needed;
 use super::schema::{ConfigFile, ControlSection, DashboardSection, ReverseListenerSection};
 use super::types::{
     AppConfig, ControlConfig, DashboardConfig, DashboardInstanceConfig, MetricsConfig,
-    ReverseListenerConfig, ReversePeerConfig,
+    ReverseListenerConfig, ReversePeerConfig, ReversePeerKind,
 };
 
 mod auth;
@@ -184,15 +184,9 @@ fn load_reverse_listener(
     let peers = section
         .peers
         .iter()
-        .map(|p| ReversePeerConfig {
-            client_cert_pin: p.client_cert_pin.clone(),
-            method: p.method,
-            password: p.password.clone(),
-            // Per-peer `group` wins; otherwise fall back to the listener
-            // default so existing single-group configs keep working.
-            group: p.group.as_deref().unwrap_or(&section.group).into(),
-        })
-        .collect();
+        .enumerate()
+        .map(|(idx, p)| resolve_reverse_peer(idx, p, &section.group))
+        .collect::<Result<Vec<_>>>()?;
     Ok(Some(ReverseListenerConfig {
         listen: section.listen,
         server_cert_path,
@@ -202,6 +196,39 @@ fn load_reverse_listener(
         max_peers: section.max_peers.unwrap_or(8).max(1),
         peers,
     }))
+}
+
+/// Resolve one reverse peer: pick the per-peer (or listener-default) group and
+/// the protocol-specific credentials. Exactly one of `method` + `password`
+/// (an SS peer) or `vless_id` (a VLESS peer) must be set.
+fn resolve_reverse_peer(
+    idx: usize,
+    peer: &super::schema::ReversePeerSection,
+    default_group: &str,
+) -> Result<ReversePeerConfig> {
+    // Per-peer `group` wins; otherwise fall back to the listener default so
+    // existing single-group configs keep working.
+    let group = peer.group.as_deref().unwrap_or(default_group).into();
+    let kind = match (peer.method, peer.password.as_deref(), peer.vless_id.as_deref()) {
+        (Some(method), Some(password), None) => {
+            ReversePeerKind::Ss { method, password: password.to_string() }
+        },
+        (None, None, Some(vless_id)) => {
+            let uuid = outline_transport::vless::parse_uuid(vless_id).with_context(|| {
+                format!("[reverse_listener].peers[{idx}].vless_id is not a valid UUID")
+            })?;
+            ReversePeerKind::Vless { uuid }
+        },
+        _ => bail!(
+            "[reverse_listener].peers[{idx}] must set exactly one of (method + password) \
+             for an SS peer or vless_id for a VLESS peer"
+        ),
+    };
+    Ok(ReversePeerConfig {
+        client_cert_pin: peer.client_cert_pin.clone(),
+        kind,
+        group,
+    })
 }
 
 async fn load_dashboard_config(
