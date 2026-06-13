@@ -135,13 +135,6 @@ pub struct Args {
     #[arg(long, env = "STATE_PATH")]
     pub state_path: Option<PathBuf>,
 
-    /// Migrate the config file in place from the legacy top-level uplink
-    /// shape to the current `[outline]`-grouped shape, then exit. Intended to
-    /// be run from a writable context when the service itself cannot persist
-    /// the migration (e.g. `ProtectSystem=strict` with a read-only /etc).
-    #[arg(long)]
-    pub migrate_config: bool,
-
     /// Browser fingerprint diversification strategy. Overrides the
     /// top-level `fingerprint_profile` config key. Per-uplink
     /// `[[outline.uplinks]].fingerprint_profile` overrides still win
