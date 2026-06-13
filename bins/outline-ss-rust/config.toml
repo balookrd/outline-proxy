@@ -28,12 +28,6 @@ listen = "0.0.0.0:3000"
 # key_path  = "./shop.key"
 # # `sni` omitted → derive from SAN/CN
 
-# Optional plain Shadowsocks listener.
-# This starts a separate TCP+UDP service on the same address for classic `ss://` clients.
-# It must differ from [server] listen, [server.h3] listen, and [metrics] listen.
-# [server.ss]
-# listen = "0.0.0.0:8388"
-
 # Optional HTTP/3 / QUIC listener for RFC 9220.
 # `listen` may reuse the same ip:port as [server] listen, because H3 binds UDP
 # while [server] listen binds TCP.

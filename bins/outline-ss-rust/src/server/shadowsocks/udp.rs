@@ -1,39 +1,33 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
-use bytes::{Bytes, BytesMut};
-use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
-use tokio::net::UdpSocket;
+use bytes::Bytes;
 use tracing::{debug, warn};
 
 use crate::{
     crypto::{CryptoError, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet},
-    metrics::{AppProtocol, Protocol, Transport},
+    metrics::{AppProtocol, Protocol},
     protocol::parse_target_addr,
 };
 
 use super::super::{
     connect::resolve_udp_target,
-    constants::{MAX_UDP_DATAGRAM_SIZE, MAX_UDP_PAYLOAD_SIZE, UDP_MAX_CONCURRENT_RELAY_TASKS},
-    nat::{NatKey, ResponseSender, UdpResponseSender},
+    constants::MAX_UDP_PAYLOAD_SIZE,
+    nat::{NatKey, UdpResponseSender},
     replay::{self, ReplayCheck},
-    shutdown::ShutdownSignal,
     state::Services,
 };
 
 /// Identifies the client end of an SS-UDP relay for log/metrics purposes.
-/// Plain UDP listeners use the source `SocketAddr`; raw-QUIC listeners use
-/// the QUIC connection's remote address.
+/// Raw-QUIC carriers use the QUIC connection's remote address.
 #[derive(Clone)]
 pub(in super::super) enum SsUdpClientId {
-    Datagram(SocketAddr),
     QuicConnection(SocketAddr),
 }
 
 impl std::fmt::Display for SsUdpClientId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Datagram(addr) => write!(f, "{addr}"),
             Self::QuicConnection(addr) => write!(f, "quic://{addr}"),
         }
     }
@@ -42,100 +36,6 @@ impl std::fmt::Display for SsUdpClientId {
 pub(in crate::server) struct SsUdpCtx {
     pub(in crate::server) users: Arc<[UserKey]>,
     pub(in crate::server) services: Arc<Services>,
-}
-
-struct DatagramResponseSender {
-    socket: Arc<UdpSocket>,
-    client_addr: SocketAddr,
-}
-
-impl ResponseSender for DatagramResponseSender {
-    fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
-        Box::pin(async move { self.socket.send_to(&data, self.client_addr).await.is_ok() })
-    }
-
-    fn protocol(&self) -> Protocol {
-        Protocol::Socket
-    }
-
-    fn app_protocol(&self) -> crate::metrics::AppProtocol {
-        crate::metrics::AppProtocol::Shadowsocks
-    }
-}
-
-pub(in super::super) async fn serve_ss_udp_socket(
-    socket: Arc<UdpSocket>,
-    ctx: SsUdpCtx,
-    mut shutdown: ShutdownSignal,
-) -> Result<()> {
-    let ctx = Arc::new(ctx);
-    let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
-    let mut buffer = BytesMut::with_capacity(MAX_UDP_DATAGRAM_SIZE);
-    loop {
-        buffer.reserve(MAX_UDP_DATAGRAM_SIZE);
-        tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {
-                debug!("shadowsocks udp listener stopping on shutdown signal");
-                return Ok(());
-            }
-            Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
-            recv = socket.recv_buf_from(&mut buffer) => {
-                let (read, client_addr) = match recv {
-                    Ok(v) => v,
-                    Err(error) => {
-                        warn!(?error, "failed to receive shadowsocks udp packet");
-                        continue;
-                    }
-                };
-                debug!(
-                    client_addr = %client_addr,
-                    encrypted_bytes = read,
-                    "socket udp received encrypted datagram"
-                );
-                if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
-                    ctx.services.udp_server.metrics.record_udp_relay_drop(
-                        Transport::Udp,
-                        Protocol::Socket,
-                        AppProtocol::Shadowsocks,
-                        "concurrency_limit",
-                    );
-                    warn!(%client_addr, "socket udp concurrent relay limit reached, dropping datagram");
-                    buffer.clear();
-                    continue;
-                }
-                let data = buffer.split_to(read).freeze();
-                let ctx = Arc::clone(&ctx);
-                let socket = Arc::clone(&socket);
-                in_flight.push(async move {
-                    if let Err(error) = handle_ss_udp_datagram(&ctx, data, client_addr, socket).await {
-                        warn!(%client_addr, ?error, "socket udp datagram relay failed");
-                    }
-                }.boxed());
-            }
-        }
-    }
-}
-
-async fn handle_ss_udp_datagram(
-    ctx: &SsUdpCtx,
-    data: Bytes,
-    client_addr: SocketAddr,
-    outbound_socket: Arc<UdpSocket>,
-) -> Result<()> {
-    handle_ss_udp_packet(
-        ctx,
-        data,
-        SsUdpClientId::Datagram(client_addr),
-        Protocol::Socket,
-        move || {
-            UdpResponseSender::new(Arc::new(DatagramResponseSender {
-                socket: Arc::clone(&outbound_socket),
-                client_addr,
-            }))
-        },
-    )
-    .await
 }
 
 /// Process one SS-AEAD UDP datagram regardless of where it came from (raw

@@ -79,7 +79,6 @@ const MAPPINGS: &[(&str, &[&str])] = &[
     ("listen", &["server", "listen"]),
     ("tls_cert_path", &["server", "tls_cert_path"]),
     ("tls_key_path", &["server", "tls_key_path"]),
-    ("ss_listen", &["server", "ss", "listen"]),
     ("h3_listen", &["server", "h3", "listen"]),
     ("h3_cert_path", &["server", "h3", "cert_path"]),
     ("h3_key_path", &["server", "h3", "key_path"]),
