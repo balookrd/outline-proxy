@@ -125,7 +125,10 @@ The VLESS peer above dials in with the `vless`/`vless-mtu` ALPN; the SS peer
 with `ss`/`ss-mtu`. The single listener advertises both and routes each
 carrier to its protocol's accept loop.
 
-Route each reverse group like any other uplink group:
+A reverse group is a **first-class route target**: declaring it on the
+`[reverse_listener]` (its `group`, plus any per-peer `group`) is enough to
+route to it — no matching `[[uplink_group]]` is required. Just point a
+`[[route]]` at it:
 
 ```toml
 [[route]]
@@ -139,8 +142,17 @@ default = true
 via = "reverse"
 ```
 
-When no peer is connected for a group, it falls through to that group's
-configured uplinks (if any) or fails the session — it never silently drops.
+When no peer is connected for a reverse group, resolution is, in order: a
+same-named `[[uplink_group]]` if you declared one (an explicit fallback to
+ordinary uplinks while the peer is offline); else the route's own
+`fallback_via` / `fallback_direct` / `fallback_drop`; else the session is
+dropped. It never silently leaks to the default group.
+
+> **Note:** `ws` must declare at least one ordinary uplink group
+> (`[[uplink_group]]` + `[[outline.uplinks]]`) even when reverse peers are
+> your only intended egress — the proxy will not start on a `[reverse_listener]`
+> alone. A plain forward group (its uplinks unused while traffic routes to the
+> reverse group) satisfies this; a future change may relax it.
 
 ### 3. Configure the `ss` dialer (behind NAT)
 

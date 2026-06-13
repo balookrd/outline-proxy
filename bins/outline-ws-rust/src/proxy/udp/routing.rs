@@ -47,6 +47,13 @@ pub(super) async fn resolve_udp_packet_route(
     target: &TargetAddr,
 ) -> UdpPacketRoute {
     let Some(router) = config.router.as_ref() else {
+        // No routing table: default group, which may itself be a reverse group.
+        #[cfg(feature = "h3")]
+        if let Some(route) =
+            resolve_reverse_udp(config, registry, &registry.default_group_name(), None)
+        {
+            return route;
+        }
         if group_bypasses_when_down(&registry.default_group(), TransportKind::Udp).await {
             return UdpPacketRoute::Direct;
         }
@@ -66,7 +73,45 @@ pub(super) async fn resolve_udp_packet_route(
         cache.put(target.clone(), (decision.clone(), resolve_version));
         decision
     };
+    // Reverse short-circuit before uplink fallback — a reverse group needs no
+    // `[[uplink_group]]`. The SOCKS5/TUN UDP loop turns `Tunnel(reverse-group)`
+    // into a reverse association via `pick_live`.
+    #[cfg(feature = "h3")]
+    if let RouteTarget::Group(ref name) = decision.primary
+        && let Some(route) = resolve_reverse_udp(config, registry, name, decision.fallback.as_ref())
+    {
+        return route;
+    }
     classify_decision(registry, decision.primary, decision.fallback).await
+}
+
+/// UDP analogue of [`crate::proxy::dispatcher::resolve_reverse_route`]. Returns
+/// `None` when `name` is not a reverse group, or has no live peer but a
+/// same-named uplink group exists (normal path serves it). `Tunnel(name)` for
+/// a live reverse group (the UDP loop resolves the peer). For a reverse group
+/// with no peer and no uplink fallback, honors the route fallback, else `Drop`.
+#[cfg(feature = "h3")]
+fn resolve_reverse_udp(
+    config: &ProxyConfig,
+    registry: &UplinkRegistry,
+    name: &str,
+    fallback: Option<&RouteTarget>,
+) -> Option<UdpPacketRoute> {
+    let reverse = config.reverse.as_ref()?;
+    if !reverse.is_reverse_group(name) {
+        return None;
+    }
+    if reverse.pick_live(name).is_some() {
+        return Some(UdpPacketRoute::Tunnel(name.into()));
+    }
+    if registry.group_by_name(name).is_some() {
+        return None;
+    }
+    Some(match fallback {
+        Some(RouteTarget::Direct) => UdpPacketRoute::Direct,
+        Some(RouteTarget::Group(fb)) => UdpPacketRoute::Tunnel(fb.clone()),
+        Some(RouteTarget::Drop) | None => UdpPacketRoute::Drop,
+    })
 }
 
 pub(super) async fn classify_decision(

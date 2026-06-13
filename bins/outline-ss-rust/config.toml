@@ -298,3 +298,10 @@ ws_path_udp = "/dave/udp"
 # backoff_max_secs = 60                 # transient-failure backoff ceiling (default 60)
 # Note: a pin/cert (auth) failure is not retried on this schedule — the loop
 # backs off a fixed 5 min and warns, since a retry cannot fix it.
+#
+# With protocol = "vless", the matching [[users]] entry only needs `vless_id`
+# (no ws_path_vless / xhttp_path_vless): the reverse endpoint itself is the
+# VLESS transport. A plain VLESS reverse-only user:
+# [[users]]
+# id = "rev-vless"
+# vless_id = "b831381d-6324-4d53-ad4f-8cda48b30811"

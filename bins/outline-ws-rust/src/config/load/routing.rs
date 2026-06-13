@@ -39,7 +39,24 @@ pub(super) fn load_routing_config(
         );
     }
 
-    let group_names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
+    // Reverse groups are first-class route targets even without a matching
+    // `[[uplink_group]]`: a `[reverse_listener]` declares its `group` (and any
+    // per-peer `group`), and `[[route]] via = "<that group>"` must validate.
+    // Skip when the listener is explicitly disabled.
+    let reverse_group_names: Vec<String> = file
+        .and_then(|f| f.reverse_listener.as_ref())
+        .filter(|rl| rl.enabled != Some(false))
+        .map(|rl| {
+            std::iter::once(rl.group.clone())
+                .chain(rl.peers.iter().filter_map(|p| p.group.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let group_names: Vec<&str> = groups
+        .iter()
+        .map(|g| g.name.as_str())
+        .chain(reverse_group_names.iter().map(String::as_str))
+        .collect();
 
     let mut rules: Vec<RouteRule> = Vec::new();
     let mut default_target: Option<RouteTarget> = None;
@@ -166,6 +183,10 @@ fn parse_route_fallback(
     }
     Ok(None)
 }
+
+#[cfg(test)]
+#[path = "tests/routing.rs"]
+mod tests;
 
 fn route_target_from_name(name: &str, group_names: &[&str], context: &str) -> Result<RouteTarget> {
     if name.eq_ignore_ascii_case(super::DIRECT_TARGET) {
