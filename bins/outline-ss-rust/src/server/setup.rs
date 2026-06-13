@@ -152,6 +152,27 @@ pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
     ))
 }
 
+/// All VLESS users (by `vless_id`), regardless of any WS path. This is the
+/// authentication set for the raw-QUIC `vless` ALPN — both the forward H3
+/// listener and the reverse-tunnel dialer match an incoming UUID against it.
+/// Unlike [`build_vless_user_routes`], it does NOT require a `ws_path_vless`:
+/// a raw-QUIC-only or reverse-only VLESS user has no WS path, and config
+/// validation already accepts that when raw VLESS-over-QUIC (or a vless
+/// reverse endpoint) is configured.
+pub(super) fn build_raw_vless_users(config: &Config) -> Result<Arc<[VlessUser]>> {
+    Ok(Arc::from(
+        config
+            .users
+            .iter()
+            .filter_map(|entry| entry.vless_id.as_ref().map(|vless_id| (entry, vless_id)))
+            .map(|(entry, vless_id)| {
+                VlessUser::new(vless_id.clone(), Arc::from(entry.id.as_str()), entry.fwmark)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice(),
+    ))
+}
+
 pub(super) fn build_vless_user_routes(config: &Config) -> Result<Arc<[VlessUserRoute]>> {
     Ok(Arc::from(
         config

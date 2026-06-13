@@ -142,28 +142,47 @@ fn route_kind(route: &Route) -> &'static str {
     }
 }
 
+// `resolve_reverse_route` is the first-class reverse path: a reverse group
+// needs no `[[uplink_group]]`. Live-peer hits are covered end-to-end (smoke +
+// in-process e2e, which need a real QUIC peer); here we cover the no-peer
+// branches with an empty registry.
 #[cfg(feature = "h3")]
 #[test]
-fn apply_reverse_without_live_peer_keeps_group() {
+fn reverse_no_peer_no_uplink_honors_fallback_else_drops() {
     use crate::reverse::ReverseRegistry;
     let mut config = no_router_config();
-    // The registry knows the "reverse" group but no peer is connected yet.
     config.reverse = Some(ReverseRegistry::new([Arc::from("reverse")], 8));
+    // Registry without a same-named "reverse" uplink group.
+    let registry = UplinkRegistry::from_single_manager(manager("main", false));
 
-    // A reverse-group route with no live peer falls through to its own
-    // uplinks (never silently dropped)...
-    let route = Route::Group {
-        name: Arc::from("reverse"),
-        manager: manager("reverse", false),
-    };
-    assert_eq!(route_kind(&apply_reverse(&config, route)), "Group");
+    // Reverse group, no peer, no uplink fallback, no route fallback → Drop
+    // (never leaks to the default group).
+    assert_eq!(
+        route_kind(&resolve_reverse_route(&config, &registry, "reverse", None).expect("reverse")),
+        "Drop"
+    );
+    // With a declared route fallback, honor it.
+    let fb = RouteTarget::Direct;
+    assert_eq!(
+        route_kind(
+            &resolve_reverse_route(&config, &registry, "reverse", Some(&fb)).expect("reverse")
+        ),
+        "Direct"
+    );
+    // A group that is not a reverse group → None (normal uplink path).
+    assert!(resolve_reverse_route(&config, &registry, "other", None).is_none());
+}
 
-    // ...and a group that is not a reverse group is untouched.
-    let route = Route::Group {
-        name: Arc::from("other"),
-        manager: manager("other", false),
-    };
-    assert_eq!(route_kind(&apply_reverse(&config, route)), "Group");
+#[cfg(feature = "h3")]
+#[test]
+fn reverse_no_peer_with_same_named_uplink_falls_through() {
+    use crate::reverse::ReverseRegistry;
+    let mut config = no_router_config();
+    config.reverse = Some(ReverseRegistry::new([Arc::from("reverse")], 8));
+    // A same-named "reverse" uplink group exists → no peer falls through to it
+    // (operator's explicit fallback), so resolve_reverse_route yields None.
+    let registry = UplinkRegistry::from_single_manager(manager("reverse", false));
+    assert!(resolve_reverse_route(&config, &registry, "reverse", None).is_none());
 }
 
 #[tokio::test]

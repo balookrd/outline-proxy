@@ -61,8 +61,8 @@ pub(in crate::server) fn spawn_reverse_tunnels(
     let vless_ctx = Arc::new(RawVlessConnectionCtx {
         vless_server: Arc::clone(&built.services.vless_server),
         raw_vless_route: Arc::new(RawQuicVlessRouteCtx {
-            users: built.vless_user_routes.iter().map(|r| r.user.clone()).collect(),
-            candidate_users: built.vless_user_routes.iter().map(|r| r.user.label_arc()).collect(),
+            users: Arc::clone(&built.raw_vless_users),
+            candidate_users: built.raw_vless_users.iter().map(|u| u.label_arc()).collect(),
         }),
         stream_semaphore: Arc::clone(&stream_semaphore),
     });
