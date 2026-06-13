@@ -18,6 +18,7 @@ TMP_DIR="${TMP_DIR:-/tmp/${BINARY_NAME}-install}"
 CHANNEL="${CHANNEL:-stable}"   # stable | nightly
 VERSION="${VERSION:-}"         # stable: 1.0.0 or v1.0.0 ; nightly: nightly
 FORCE="${FORCE:-}"             # непусто — пропустить проверку текущей версии
+ACTION="${ACTION:-install}"    # install | remove | purge
 NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${CONFIG_DIR}/nightly-commit}"
 GITHUB_API="${GITHUB_API:-https://api.github.com}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
@@ -42,6 +43,10 @@ log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
 }
 
+warn() {
+  printf 'WARN: %s\n' "$*" >&2
+}
+
 die() {
   printf 'ERROR: %s\n' "$*" >&2
   exit 1
@@ -49,6 +54,10 @@ die() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Не найдена команда: $1"
+}
+
+have_cmd() {
+  command -v "$1" >/dev/null 2>&1
 }
 
 require_root() {
@@ -64,6 +73,8 @@ usage() {
   sudo CHANNEL=nightly ./install.sh
   sudo VERSION=v1.2.3 ./install.sh
   sudo ./install.sh --force
+  sudo ./install.sh --remove | --uninstall
+  sudo ./install.sh --purge
   ./install.sh --help
 
 Что делает скрипт:
@@ -74,6 +85,14 @@ usage() {
   - создаёт ${CONFIG_DIR} и ${STATE_DIR}, выставляет владельца/права
   - скачивает config.toml и example instance, если их ещё нет
   - перезапускает только уже активные outline-ws-rust unit'ы
+
+Режимы удаления:
+  --remove / --uninstall    останавливает и отключает основной сервис и все
+                            инстансы outline-ws-rust@NAME, удаляет оба unit'а,
+                            бинарник и его backup'ы; ${CONFIG_DIR},
+                            ${STATE_DIR} и сервис-юзер остаются
+  --purge                   всё, что делает --remove, плюс удаление
+                            ${CONFIG_DIR}, ${STATE_DIR} и сервис-юзера/группы
 
 Основные переменные окружения:
   CHANNEL=stable|nightly    Канал релизов, по умолчанию stable
@@ -101,6 +120,12 @@ parse_args() {
         ;;
       -f|--force)
         FORCE=1
+        ;;
+      --remove|--uninstall)
+        ACTION=remove
+        ;;
+      --purge)
+        ACTION=purge
         ;;
       *)
         usage >&2
@@ -411,9 +436,138 @@ restart_previously_active_units() {
   fi
 }
 
+require_remove_tools() {
+  need_cmd systemctl
+  if [[ "$ACTION" == "purge" ]]; then
+    have_cmd getent || warn "Не найден getent — сервис-юзер/группа не будут удалены"
+    have_cmd userdel || warn "Не найден userdel — сервис-юзер не будет удалён"
+    have_cmd groupdel || warn "Не найден groupdel — сервис-группа не будет удалена"
+  fi
+}
+
+# Перечисляет основной unit и все инстансы outline-ws-rust@NAME (active или
+# enabled), но не голый шаблонный unit. Источники — list-units --all и
+# list-unit-files, объединённые и дедуплицированные.
+list_known_units() {
+  {
+    systemctl list-units --all --type=service --no-legend --no-pager 2>/dev/null \
+      | awk '{print $1}'
+    systemctl list-unit-files --type=service --no-legend --no-pager 2>/dev/null \
+      | awk '{print $1}'
+  } | grep -E '^outline-ws-rust(\.service|@.+\.service)$' | sort -u || true
+}
+
+stop_disable_units() {
+  local unit had=0
+
+  while IFS= read -r unit; do
+    [[ -n "$unit" ]] || continue
+    had=1
+    if systemctl is-active --quiet "$unit" 2>/dev/null; then
+      log "Останавливаю ${unit}"
+      systemctl stop "$unit" || warn "Не удалось остановить ${unit}"
+    fi
+    if systemctl is-enabled --quiet "$unit" 2>/dev/null; then
+      log "Отключаю ${unit}"
+      systemctl disable "$unit" || warn "Не удалось отключить ${unit}"
+    fi
+  done < <(list_known_units)
+
+  [[ "$had" -eq 1 ]] || log "Активных/enabled outline-ws-rust unit'ов не найдено"
+}
+
+remove_unit_files() {
+  local removed=0 f
+  for f in "${SYSTEMD_DIR}/${SERVICE_NAME}" "${SYSTEMD_DIR}/${TEMPLATE_NAME}"; do
+    if [[ -f "$f" ]]; then
+      log "Удаляю unit ${f}"
+      rm -f "$f"
+      removed=1
+    fi
+  done
+
+  if [[ "$removed" -eq 1 ]]; then
+    systemctl daemon-reload
+  else
+    log "Unit-файлы outline-ws-rust не найдены — пропускаю"
+  fi
+}
+
+remove_binary() {
+  if [[ -e "$INSTALL_PATH" ]]; then
+    log "Удаляю бинарь ${INSTALL_PATH}"
+    rm -f "$INSTALL_PATH"
+  else
+    log "Бинарь ${INSTALL_PATH} не найден — пропускаю"
+  fi
+
+  local f
+  for f in "${INSTALL_PATH}".bak.*; do
+    [[ -e "$f" ]] || continue
+    log "Удаляю backup ${f}"
+    rm -f "$f"
+  done
+}
+
+purge_data() {
+  if [[ -d "$CONFIG_DIR" ]]; then
+    log "Удаляю каталог конфигурации ${CONFIG_DIR}"
+    rm -rf "$CONFIG_DIR"
+  fi
+
+  if [[ -d "$STATE_DIR" ]]; then
+    log "Удаляю state-каталог ${STATE_DIR}"
+    rm -rf "$STATE_DIR"
+  fi
+
+  if have_cmd userdel && id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    log "Удаляю пользователя ${SERVICE_USER}"
+    userdel "$SERVICE_USER" 2>/dev/null || warn "Не удалось удалить пользователя ${SERVICE_USER}"
+  fi
+
+  if have_cmd groupdel && getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
+    log "Удаляю группу ${SERVICE_GROUP}"
+    groupdel "$SERVICE_GROUP" 2>/dev/null || warn "Не удалось удалить группу ${SERVICE_GROUP}"
+  fi
+}
+
+show_remove_summary() {
+  log "Готово"
+  if [[ "$ACTION" == "purge" ]]; then
+    log "${BINARY_NAME} удалён полностью (purge): бинарь, unit'ы, конфиг, state, сервис-юзер"
+  else
+    log "${BINARY_NAME} удалён: бинарь и unit'ы сняты, сервисы остановлены"
+    log "Сохранены: ${CONFIG_DIR}, ${STATE_DIR}, сервис-юзер ${SERVICE_USER}"
+    log "Для полного удаления вместе с конфигом и state: sudo $0 --purge"
+  fi
+}
+
+do_remove() {
+  require_remove_tools
+  if [[ "$ACTION" == "purge" ]]; then
+    log "Полное удаление (purge) ${BINARY_NAME}"
+  else
+    log "Удаление ${BINARY_NAME} (конфиг и state сохраняются)"
+  fi
+
+  stop_disable_units
+  remove_unit_files
+  remove_binary
+  if [[ "$ACTION" == "purge" ]]; then
+    purge_data
+  fi
+  show_remove_summary
+}
+
 main() {
   parse_args "$@"
   require_root
+
+  if [[ "$ACTION" == "remove" || "$ACTION" == "purge" ]]; then
+    do_remove
+    exit 0
+  fi
+
   need_cmd curl
   need_cmd tar
   need_cmd install

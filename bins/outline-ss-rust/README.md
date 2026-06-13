@@ -887,6 +887,8 @@ Examples:
 sudo ./install-server.sh
 sudo CHANNEL=nightly ./install-server.sh
 sudo VERSION=v1.2.3 ./install-server.sh
+sudo ./install-server.sh --remove
+sudo ./install-server.sh --purge
 ```
 
 What the script does:
@@ -923,6 +925,16 @@ Useful overrides:
 - `SERVICE_USER=name` and `SERVICE_GROUP=name`: run the service under a different account
 
 `VERSION` and `CHANNEL=nightly` are mutually exclusive.
+
+Removal:
+
+```bash
+sudo ./install-server.sh --remove   # stop+disable the service, drop the unit, binary and backups
+sudo ./install-server.sh --purge    # also delete config, state dir and the service user/group
+```
+
+- `--remove` (alias `--uninstall`): stops and disables `outline-ss-rust.service`, removes the systemd unit (followed by `daemon-reload`), the binary and its `.bak.*` backups. Keeps `/etc/outline-ss-rust`, `/var/lib/outline-ss-rust` and the `outline-ss-rust` user/group, so a later reinstall reuses the existing config.
+- `--purge`: everything `--remove` does, plus deletes `/etc/outline-ss-rust`, `/var/lib/outline-ss-rust` and the `outline-ss-rust` user/group — a complete uninstall. Both modes are idempotent: missing artifacts are skipped, not treated as errors.
 
 ### systemd
 

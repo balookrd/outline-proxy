@@ -889,6 +889,8 @@ sudo ./install-server.sh
 sudo ./install-server.sh
 sudo CHANNEL=nightly ./install-server.sh
 sudo VERSION=v1.2.3 ./install-server.sh
+sudo ./install-server.sh --remove
+sudo ./install-server.sh --purge
 ```
 
 Что делает скрипт:
@@ -925,6 +927,16 @@ sudo VERSION=v1.2.3 ./install-server.sh
 - `SERVICE_USER=name` и `SERVICE_GROUP=name`: запускать сервис от другого пользователя
 
 `VERSION` и `CHANNEL=nightly` одновременно использовать нельзя.
+
+Удаление:
+
+```bash
+sudo ./install-server.sh --remove   # остановить+отключить сервис, снять unit, бинарь и backup'ы
+sudo ./install-server.sh --purge    # дополнительно удалить конфиг, state-каталог и сервис-юзера/группу
+```
+
+- `--remove` (синоним `--uninstall`): останавливает и отключает `outline-ss-rust.service`, удаляет systemd unit (с последующим `daemon-reload`), бинарь и его backup'ы `.bak.*`. Сохраняет `/etc/outline-ss-rust`, `/var/lib/outline-ss-rust` и пользователя/группу `outline-ss-rust`, поэтому повторная установка переиспользует существующий конфиг.
+- `--purge`: всё, что делает `--remove`, плюс удаление `/etc/outline-ss-rust`, `/var/lib/outline-ss-rust` и пользователя/группы `outline-ss-rust` — полное удаление. Оба режима идемпотентны: отсутствующие артефакты пропускаются, а не считаются ошибкой.
 
 ### systemd
 
