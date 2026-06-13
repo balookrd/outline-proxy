@@ -13,6 +13,7 @@
 //! `private_interfaces`/`private_bounds` lints. Nothing is nameable
 //! outside the crate.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -60,8 +61,58 @@ pub struct PeerPool<T: Live> {
     cursor: AtomicUsize,
 }
 
-/// The concrete reverse-peer pool used by the listener and relay.
-pub(crate) type ReversePeerRegistry = PeerPool<ReversePeer>;
+/// Runtime registry of reverse peers, partitioned into one [`PeerPool`] per
+/// egress group. Groups are fixed at construction from config (a peer's
+/// resolved `group`); peers churn within their pool. A peer is steered to a
+/// pool by the group its pinned cert maps to, and the dispatcher/UDP path
+/// pick a live peer by the route's group name.
+///
+/// Generic over the peer type (defaulting to [`ReversePeer`]) only so the
+/// group routing is unit-testable with a mock peer; production always uses
+/// `ReverseRegistry` (i.e. `ReverseRegistry<ReversePeer>`).
+pub struct ReverseRegistry<T: Live = ReversePeer> {
+    groups: HashMap<Arc<str>, Arc<PeerPool<T>>>,
+}
+
+impl<T: Live> std::fmt::Debug for ReverseRegistry<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReverseRegistry")
+            .field("groups", &self.groups.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Live> ReverseRegistry<T> {
+    /// Build one pool per distinct group, each bounded by `max_peers`.
+    /// Duplicate groups in the iterator collapse to a single pool.
+    pub(crate) fn new(groups: impl IntoIterator<Item = Arc<str>>, max_peers: usize) -> Arc<Self> {
+        let groups = groups
+            .into_iter()
+            .map(|group| (Arc::clone(&group), PeerPool::new(group, max_peers)))
+            .collect();
+        Arc::new(Self { groups })
+    }
+
+    /// The pool for `group`, or `None` when `group` is not a reverse group.
+    pub(crate) fn pool(&self, group: &str) -> Option<&Arc<PeerPool<T>>> {
+        self.groups.get(group)
+    }
+
+    /// Pick a live peer for `group` round-robin. `None` when the group is not
+    /// a reverse group or has no peer currently connected (caller falls back).
+    pub(crate) fn pick_live(&self, group: &str) -> Option<Arc<T>> {
+        self.groups.get(group).and_then(|pool| pool.pick_live())
+    }
+
+    /// Live peer count per group, for the dashboard topology chip. Order is
+    /// unspecified (callers sort if they need stability).
+    pub(crate) fn live_counts(&self) -> Vec<(String, usize)> {
+        self.groups
+            .values()
+            .map(|pool| (pool.group().to_string(), pool.live_count()))
+            .collect()
+    }
+}
 
 impl<T: Live> std::fmt::Debug for PeerPool<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

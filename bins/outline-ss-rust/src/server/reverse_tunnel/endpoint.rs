@@ -7,7 +7,7 @@
 
 use std::net::SocketAddr;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use tokio::net::lookup_host;
 
 use crate::config::ReverseTunnelEndpoint;
@@ -22,6 +22,35 @@ pub(super) struct ReverseDialer {
     addr: String,
     server_name: String,
     client_config: quinn::ClientConfig,
+}
+
+/// Why a dial attempt ended, so the reconnect loop can back off accordingly.
+pub(super) enum DialError {
+    /// TLS/mTLS/pin failure at the handshake — a retry with the same config
+    /// cannot fix it (persistent). Drives the long auth backoff.
+    Auth(anyhow::Error),
+    /// Resolve/bind/network/timeout/capability failure — retry with the
+    /// normal exponential backoff.
+    Transient(anyhow::Error),
+}
+
+/// QUIC carries TLS alerts as transport error codes in `0x0100..0x0200`
+/// (RFC 9001 §4.8). A connection that closed with a code in that range — be
+/// it generated locally (we rejected the `ws` server cert) or sent by the
+/// peer (`ws` rejected our client cert) — is a pin/cert authentication
+/// failure. Pure, so it is unit-tested directly.
+pub(super) fn is_crypto_code(code: u64) -> bool {
+    (0x0100..0x0200).contains(&code)
+}
+
+/// Classify a [`quinn::ConnectionError`] as an authentication failure (a
+/// crypto-range close) versus a transient transport/network condition.
+pub(in crate::server) fn is_auth_failure(err: &quinn::ConnectionError) -> bool {
+    match err {
+        quinn::ConnectionError::TransportError(te) => is_crypto_code(u64::from(te.code)),
+        quinn::ConnectionError::ConnectionClosed(cc) => is_crypto_code(u64::from(cc.error_code)),
+        _ => false,
+    }
 }
 
 impl ReverseDialer {
@@ -50,25 +79,40 @@ impl ReverseDialer {
     /// Resolve, bind a fresh client endpoint and complete the QUIC
     /// handshake. A fresh endpoint per attempt keeps the socket lifetime
     /// tied to the connection (dropped on return), avoiding a leaked
-    /// half-open endpoint after a failed dial.
-    pub(super) async fn dial(&self) -> Result<quinn::Connection> {
-        let server_addr = self.resolve().await?;
+    /// half-open endpoint after a failed dial. The error variant tells the
+    /// reconnect loop whether to retry soon (transient) or back off long
+    /// (auth/pin failure).
+    pub(super) async fn dial(&self) -> std::result::Result<quinn::Connection, DialError> {
+        let server_addr = self.resolve().await.map_err(DialError::Transient)?;
         let bind_addr: SocketAddr = if server_addr.is_ipv6() {
             "[::]:0".parse().expect("valid v6 wildcard")
         } else {
             "0.0.0.0:0".parse().expect("valid v4 wildcard")
         };
         let endpoint = quinn::Endpoint::client(bind_addr)
-            .with_context(|| format!("failed to bind reverse client endpoint on {bind_addr}"))?;
+            .with_context(|| format!("failed to bind reverse client endpoint on {bind_addr}"))
+            .map_err(DialError::Transient)?;
         let connection = endpoint
             .connect_with(self.client_config.clone(), server_addr, &self.server_name)
-            .with_context(|| format!("failed to initiate reverse QUIC dial to {server_addr}"))?
+            .with_context(|| format!("failed to initiate reverse QUIC dial to {server_addr}"))
+            .map_err(DialError::Transient)?
             .await
-            .with_context(|| format!("reverse QUIC handshake failed for {server_addr}"))?;
+            .map_err(|error| {
+                let auth = is_auth_failure(&error);
+                let error = anyhow::Error::new(error)
+                    .context(format!("reverse QUIC handshake failed for {server_addr}"));
+                if auth {
+                    DialError::Auth(error)
+                } else {
+                    DialError::Transient(error)
+                }
+            })?;
         // Datagram support is required for SS-UDP over the reverse carrier.
         if connection.max_datagram_size().is_none() {
             connection.close(0u32.into(), b"datagrams unsupported");
-            bail!("reverse peer {server_addr} did not negotiate QUIC datagram support");
+            return Err(DialError::Transient(anyhow!(
+                "reverse peer {server_addr} did not negotiate QUIC datagram support"
+            )));
         }
         Ok(connection)
     }
@@ -81,3 +125,7 @@ impl ReverseDialer {
             .ok_or_else(|| anyhow!("no addresses resolved for reverse endpoint {}", self.addr))
     }
 }
+
+#[cfg(test)]
+#[path = "tests/endpoint.rs"]
+mod tests;

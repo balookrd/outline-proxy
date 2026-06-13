@@ -7,16 +7,40 @@
 //! listeners.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rand::Rng;
 use tracing::{info, warn};
 
-use super::endpoint::ReverseDialer;
+use super::endpoint::{DialError, ReverseDialer, is_auth_failure};
 use crate::config::ReverseTunnelEndpoint;
 use crate::server::h3::handle_raw_ss_connection;
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::transport::{RawSsConnectionCtx, is_normal_h3_shutdown};
+
+/// Backoff after an authentication failure (pin/cert mismatch). Such a
+/// failure does not resolve on retry with the same config — the operator
+/// must fix certs/pins (and on `ss` that means a restart, as the reverse
+/// config is not hot-reloaded). We still probe occasionally rather than
+/// giving up, so a transient peer-side cert problem self-heals once fixed,
+/// without hammering the peer with TLS handshakes in the meantime.
+const AUTH_BACKOFF: Duration = Duration::from_secs(300);
+
+/// A carrier must stay up at least this long to count as healthy and reset
+/// the exponential backoff. A carrier that dies sooner keeps the backoff
+/// growing, so an instantly-rejected or flapping peer is not retried in a
+/// tight loop.
+const STABLE_CARRIER_THRESHOLD: Duration = Duration::from_secs(30);
+
+/// How the last attempt ended — selects the next backoff.
+enum Outcome {
+    /// Pin/cert authentication failure: long, fixed backoff.
+    Auth,
+    /// Carrier stayed up long enough to be healthy: reset to the floor.
+    Stable,
+    /// Network failure or short-lived carrier: keep the exponential backoff.
+    Transient,
+}
 
 /// Drive one reverse endpoint forever (until shutdown). Setup failure
 /// (bad pin / unreadable cert) disables just this loop with a logged error.
@@ -35,44 +59,86 @@ pub(super) async fn run_dial_loop(
 
     let mut backoff = ep.backoff_min;
     loop {
-        tokio::select! {
+        let outcome = tokio::select! {
             biased;
             _ = shutdown.cancelled() => return,
             result = dialer.dial() => match result {
-                Ok(connection) => {
-                    info!(addr = %dialer.addr(), "reverse tunnel carrier established");
-                    metrics::counter!("outline_ss_reverse_tunnel_connects_total", "result" => "success")
+                Ok(connection) => serve_carrier(dialer.addr(), connection, &ctx).await,
+                Err(DialError::Auth(error)) => {
+                    metrics::counter!("outline_ss_reverse_tunnel_connects_total", "result" => "failure")
                         .increment(1);
-                    metrics::gauge!("outline_ss_reverse_tunnel_active_connections").increment(1.0);
-                    // A clean, long-lived carrier resets the backoff so the
-                    // next reconnect is prompt; a carrier that dies almost
-                    // immediately still re-enters the bounded backoff below.
-                    backoff = ep.backoff_min;
-                    let carrier = handle_raw_ss_connection(connection, Arc::clone(&ctx)).await;
-                    metrics::gauge!("outline_ss_reverse_tunnel_active_connections").decrement(1.0);
-                    if let Err(error) = carrier
-                        && !is_normal_h3_shutdown(&error)
-                    {
-                        warn!(?error, addr = %dialer.addr(), "reverse tunnel carrier ended with error");
-                    }
+                    warn!(?error, addr = %dialer.addr(),
+                        "reverse tunnel auth failed (check pins/certs); backing off");
+                    Outcome::Auth
                 },
-                Err(error) => {
+                Err(DialError::Transient(error)) => {
                     metrics::counter!("outline_ss_reverse_tunnel_connects_total", "result" => "failure")
                         .increment(1);
                     warn!(?error, addr = %dialer.addr(), "reverse tunnel dial failed");
+                    Outcome::Transient
                 },
             },
-        }
+        };
 
         // Bounded, jittered backoff before the next attempt — survive a
         // down `ws` or a reconnect storm without a tight loop.
-        let nap = jitter(backoff);
+        let nap = match outcome {
+            Outcome::Auth => jitter(AUTH_BACKOFF),
+            Outcome::Stable => {
+                backoff = ep.backoff_min;
+                jitter(backoff)
+            },
+            Outcome::Transient => jitter(backoff),
+        };
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => return,
             _ = tokio::time::sleep(nap) => {},
         }
-        backoff = (backoff * 2).min(ep.backoff_max);
+        if matches!(outcome, Outcome::Transient) {
+            backoff = (backoff * 2).min(ep.backoff_max);
+        }
+    }
+}
+
+/// Serve one established carrier to completion and classify how it ended.
+/// A peer-side mTLS rejection (`ws` does not trust our client cert) surfaces
+/// *here*, not on `dial`: in QUIC/TLS 1.3 the dial completes before the
+/// rejection arrives, so the carrier comes up and dies almost immediately
+/// with a crypto-range close — detected via the carrier's `close_reason`.
+async fn serve_carrier(
+    addr: &str,
+    connection: quinn::Connection,
+    ctx: &Arc<RawSsConnectionCtx>,
+) -> Outcome {
+    info!(%addr, "reverse tunnel carrier established");
+    metrics::counter!("outline_ss_reverse_tunnel_connects_total", "result" => "success")
+        .increment(1);
+    metrics::gauge!("outline_ss_reverse_tunnel_active_connections").increment(1.0);
+
+    // Clone the carrier handle (an Arc) so its close reason stays readable
+    // after `handle_raw_ss_connection` consumes the connection.
+    let probe = connection.clone();
+    let started = Instant::now();
+    let carrier = handle_raw_ss_connection(connection, Arc::clone(ctx)).await;
+    metrics::gauge!("outline_ss_reverse_tunnel_active_connections").decrement(1.0);
+
+    if let Some(reason) = probe.close_reason()
+        && is_auth_failure(&reason)
+    {
+        warn!(%addr,
+            "reverse tunnel carrier rejected by peer mTLS (check pins/certs); backing off");
+        return Outcome::Auth;
+    }
+    if let Err(error) = carrier
+        && !is_normal_h3_shutdown(&error)
+    {
+        warn!(?error, %addr, "reverse tunnel carrier ended with error");
+    }
+    if started.elapsed() >= STABLE_CARRIER_THRESHOLD {
+        Outcome::Stable
+    } else {
+        Outcome::Transient
     }
 }
 
