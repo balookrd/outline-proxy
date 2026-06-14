@@ -193,15 +193,29 @@ pub struct ProxyProcess {
 
 impl ProxyProcess {
     pub fn start(config_path: &Path, log_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::start_with_env(config_path, log_path, &[])
+    }
+
+    /// Like [`Self::start`] but sets extra environment variables on the child —
+    /// e.g. `OUTLINE_WS_TEST_TLS_CA_DER` so a `test-tls` client binary trusts
+    /// the harness CA.
+    pub fn start_with_env(
+        config_path: &Path,
+        log_path: &Path,
+        env: &[(&str, &str)],
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let binary = env!("CARGO_BIN_EXE_outline-ws-rust");
         let stdout = fs::OpenOptions::new().create(true).append(true).open(log_path)?;
         let stderr = fs::OpenOptions::new().create(true).append(true).open(log_path)?;
-        let child = Command::new(binary)
-            .arg("--config")
+        let mut cmd = Command::new(binary);
+        cmd.arg("--config")
             .arg(config_path)
             .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            .spawn()?;
+            .stderr(Stdio::from(stderr));
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let child = cmd.spawn()?;
         Ok(Self { child, log_path: log_path.to_path_buf() })
     }
 
