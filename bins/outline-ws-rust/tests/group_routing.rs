@@ -80,6 +80,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         name: name.to_string(),
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse(url).unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: Some(Url::parse(&format!("{url}/udp")).unwrap()),
         udp_mode: TransportMode::WsH1,

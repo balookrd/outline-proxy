@@ -26,6 +26,7 @@ fn base_config() -> Config {
         ws_path_udp: "/udp".into(),
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         http_root_auth: false,
         http_root_realm: default_http_root_realm(),
         users: vec![super::super::UserEntry {
@@ -38,6 +39,7 @@ fn base_config() -> Config {
             vless_id: None,
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_ss: None,
             enabled: None,
         }],
         method: CipherKind::Chacha20IetfPoly1305,
@@ -106,6 +108,52 @@ fn rejects_http_root_auth_on_root_ws_path() {
 }
 
 #[test]
+fn accepts_xhttp_path_ss_with_password_user() {
+    // base_config has a password user, so an SS-over-XHTTP base path is valid.
+    Config {
+        xhttp_path_ss: Some("/ss".into()),
+        ..base_config()
+    }
+    .validate()
+    .unwrap();
+}
+
+#[test]
+fn rejects_xhttp_path_ss_without_leading_slash() {
+    let error = Config {
+        xhttp_path_ss: Some("ss".into()),
+        ..base_config()
+    }
+    .validate()
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("xhttp_path_ss must start with '/'"), "got: {error}");
+}
+
+#[test]
+fn rejects_xhttp_path_ss_without_password_user() {
+    // A vless-only user (no password) cannot back an SS-over-XHTTP path.
+    let mut cfg = base_config();
+    cfg.h3_alpn.push(crate::config::H3Alpn::Vless);
+    cfg.users[0].password = None;
+    cfg.users[0].vless_id = Some("00000000-0000-0000-0000-000000000001".into());
+    cfg.xhttp_path_ss = Some("/ss".into());
+    let error = cfg.validate().unwrap_err().to_string();
+    assert!(error.contains("xhttp_path_ss requires"), "got: {error}");
+}
+
+#[test]
+fn rejects_xhttp_path_ss_equal_to_xhttp_path_vless() {
+    // One base path serves one protocol — a shared base is rejected.
+    let mut cfg = base_config();
+    cfg.xhttp_path_vless = Some("/x".into());
+    cfg.xhttp_path_ss = Some("/x".into());
+    cfg.users[0].vless_id = Some("00000000-0000-0000-0000-000000000001".into());
+    let error = cfg.validate().unwrap_err().to_string();
+    assert!(error.contains("ss-xhttp"), "got: {error}");
+}
+
+#[test]
 fn allows_vless_reverse_user_without_ws_path() {
     use super::super::resolved::ReverseTunnelConfig;
     use super::super::{ReverseProtocol, ReverseTunnelEndpoint};
@@ -134,6 +182,7 @@ fn allows_vless_reverse_user_without_ws_path() {
             vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_ss: None,
             enabled: None,
         }],
         reverse_tunnel: Some(ReverseTunnelConfig { endpoints: vec![endpoint] }),
@@ -148,6 +197,7 @@ fn allows_vless_only_users() {
     Config {
         ws_path_vless: Some("/vless".into()),
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         users: vec![super::super::UserEntry {
             id: "550e8400-e29b-41d4-a716-446655440000".into(),
             password: None,
@@ -158,6 +208,7 @@ fn allows_vless_only_users() {
             vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_ss: None,
             enabled: None,
         }],
         ..base_config()
@@ -171,6 +222,7 @@ fn rejects_vless_path_conflict_with_tcp_path() {
     let error = Config {
         ws_path_vless: Some("/tcp".into()),
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         users: vec![
             super::super::UserEntry {
                 id: "alice".into(),
@@ -182,6 +234,7 @@ fn rejects_vless_path_conflict_with_tcp_path() {
                 vless_id: None,
                 ws_path_vless: None,
                 xhttp_path_vless: None,
+                xhttp_path_ss: None,
                 enabled: None,
             },
             super::super::UserEntry {
@@ -194,6 +247,7 @@ fn rejects_vless_path_conflict_with_tcp_path() {
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
                 ws_path_vless: None,
                 xhttp_path_vless: None,
+                xhttp_path_ss: None,
                 enabled: None,
             },
         ],
@@ -211,6 +265,7 @@ fn allows_per_user_vless_path_without_global_default() {
     Config {
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         users: vec![super::super::UserEntry {
             id: "alice".into(),
             password: None,
@@ -221,6 +276,7 @@ fn allows_per_user_vless_path_without_global_default() {
             vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ws_path_vless: Some("/alice-vless".into()),
             xhttp_path_vless: None,
+            xhttp_path_ss: None,
             enabled: None,
         }],
         ..base_config()
@@ -234,6 +290,7 @@ fn allows_vless_id_without_path_when_raw_quic_alpn_enabled() {
     Config {
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         h3_alpn: vec![crate::config::H3Alpn::H3, crate::config::H3Alpn::Vless],
         users: vec![super::super::UserEntry {
             id: "alice".into(),
@@ -245,6 +302,7 @@ fn allows_vless_id_without_path_when_raw_quic_alpn_enabled() {
             vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_ss: None,
             enabled: None,
         }],
         ..base_config()
@@ -258,6 +316,7 @@ fn rejects_vless_id_without_any_path() {
     let error = Config {
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         users: vec![super::super::UserEntry {
             id: "alice".into(),
             password: None,
@@ -268,6 +327,7 @@ fn rejects_vless_id_without_any_path() {
             vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_ss: None,
             enabled: None,
         }],
         ..base_config()

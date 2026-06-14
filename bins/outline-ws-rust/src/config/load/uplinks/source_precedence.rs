@@ -12,6 +12,7 @@ pub(in crate::config::load) struct ResolvedUplinkInput {
     pub(super) name: String,
     pub(super) transport: Option<UplinkTransport>,
     pub(super) tcp_ws_url: Option<Url>,
+    pub(super) tcp_xhttp_url: Option<Url>,
     pub(super) tcp_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
     pub(super) udp_mode: Option<TransportMode>,
@@ -64,6 +65,10 @@ impl ResolvedUplinkInput {
                 .tcp_ws_url
                 .clone()
                 .or_else(|| outline.and_then(|section| section.tcp_ws_url.clone())),
+            tcp_xhttp_url: args
+                .tcp_xhttp_url
+                .clone()
+                .or_else(|| outline.and_then(|section| section.tcp_xhttp_url.clone())),
             tcp_mode: args.tcp_mode.or_else(|| outline.and_then(|section| section.tcp_mode)),
             udp_ws_url: args
                 .udp_ws_url
@@ -119,6 +124,7 @@ impl ResolvedUplinkInput {
             name: uplink.name.clone().unwrap_or_else(|| format!("uplink-{}", index + 1)),
             transport: uplink.transport,
             tcp_ws_url: uplink.tcp_ws_url.clone(),
+            tcp_xhttp_url: uplink.tcp_xhttp_url.clone(),
             tcp_mode: uplink.tcp_mode,
             udp_ws_url: uplink.udp_ws_url.clone(),
             udp_mode: uplink.udp_mode,
@@ -143,6 +149,7 @@ impl ResolvedUplinkInput {
 
 pub(in crate::config::load) fn cli_uplink_override_requested(args: &Args) -> bool {
     args.tcp_ws_url.is_some()
+        || args.tcp_xhttp_url.is_some()
         || args.transport.is_some()
         || args.tcp_mode.is_some()
         || args.udp_ws_url.is_some()

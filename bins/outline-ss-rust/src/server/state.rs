@@ -32,6 +32,10 @@ pub(super) struct RouteRegistry {
     /// the same `VlessTransportRoute` used for ws-vless because
     /// the auth surface is identical — only the carrier differs.
     pub(super) xhttp_vless: Arc<BTreeMap<String, Arc<VlessTransportRoute>>>,
+    /// XHTTP-Shadowsocks routes, keyed by base path. Uses the same
+    /// `TransportRoute` as SS-over-WS — the SS AEAD auth surface is
+    /// identical, only the carrier differs.
+    pub(super) xhttp_ss: Arc<BTreeMap<String, Arc<TransportRoute>>>,
 }
 
 /// Snapshot of live routing state that control-plane mutations swap atomically.

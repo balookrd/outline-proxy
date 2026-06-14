@@ -15,6 +15,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
         name: "edge".to_string(),
         transport: UplinkTransport::Vless,
         tcp_ws_url: None,
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
         udp_mode: TransportMode::WsH1,
@@ -43,6 +44,7 @@ fn ws_tcp_only_primary() -> UplinkConfig {
         name: "edge".to_string(),
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None, // <-- no UDP on primary
         udp_mode: TransportMode::WsH1,
@@ -67,6 +69,7 @@ fn ws_fallback(udp: bool) -> FallbackTransport {
     FallbackTransport {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH2,
         udp_ws_url: if udp {
             Some(Url::parse("wss://ws.example.com/udp").unwrap())
@@ -101,6 +104,7 @@ fn ws_floor_primary(udp: bool) -> UplinkConfig {
         name: "edge".to_string(),
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://floor.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: if udp {
             Some(Url::parse("wss://floor.example.com/udp").unwrap())
@@ -135,6 +139,7 @@ fn ws_alt_floor_fallback(udp: bool) -> FallbackTransport {
     FallbackTransport {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://alt-floor.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: if udp {
             Some(Url::parse("wss://alt-floor.example.com/udp").unwrap())
@@ -161,6 +166,7 @@ fn ws_floor_fallback(udp: bool) -> FallbackTransport {
     FallbackTransport {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://floor.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: if udp {
             Some(Url::parse("wss://floor.example.com/udp").unwrap())
@@ -1411,6 +1417,7 @@ fn ws_h3_primary() -> UplinkConfig {
         name: "ws-edge".to_string(),
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH3,
         udp_ws_url: Some(Url::parse("wss://ws.example.com/udp").unwrap()),
         udp_mode: TransportMode::WsH3,
@@ -1541,6 +1548,7 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
         name: "ws-edge".to_string(),
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH3,
         udp_ws_url: Some(Url::parse("wss://ws.example.com/udp").unwrap()),
         udp_mode: TransportMode::WsH3,
@@ -2269,6 +2277,7 @@ async fn fallback_wire_downgrade_is_monotonic_within_window() {
     let mut vless_xhttp_fb = FallbackTransport {
         transport: UplinkTransport::Vless,
         tcp_ws_url: None,
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
         udp_mode: TransportMode::WsH1,

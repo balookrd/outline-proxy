@@ -204,6 +204,7 @@ async fn spawn_raw_quic_vless_resumption_server()
         udp: Arc::new(std::collections::BTreeMap::new()),
         vless: Arc::new(std::collections::BTreeMap::new()),
         xhttp_vless: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         Arc::clone(&metrics),

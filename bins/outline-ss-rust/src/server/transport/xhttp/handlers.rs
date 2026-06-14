@@ -23,9 +23,10 @@ use tracing::{debug, warn};
 
 use crate::metrics::{AppProtocol, Protocol, Transport};
 
-use super::super::super::state::AppState;
+use super::super::super::state::{AppState, Services, TransportRoute, VlessTransportRoute};
 use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
-use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
+use super::super::tcp::{WsTcpRouteCtx, run_tcp_relay};
+use super::super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::padding::post_response_headers;
 use super::{
@@ -40,15 +41,37 @@ use super::{
 /// overhead stays small at typical chunk sizes.
 const MAX_POST_BYTES: usize = 256 * 1024;
 
-/// State threaded into every XHTTP axum handler. The triple of
-/// `registry` + `vless_server` + `routes` is enough to spawn a
-/// relay task on first contact and to look up the per-path
-/// authentication context.
+/// Which application protocol a given XHTTP base path carries. Fixed at
+/// route-registration time — one base path serves exactly one protocol —
+/// and threaded into every handler so `resolve_route` / `spawn_relay`
+/// pick the matching route table and relay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::server) enum XhttpAppProtocol {
+    Vless,
+    Ss,
+}
+
+/// State threaded into every XHTTP axum handler. `registry` + `parent`
+/// (which carries the per-path route tables and the VLESS/SS server
+/// contexts) plus `protocol` are enough to spawn a relay task on first
+/// contact and to look up the per-path authentication context.
 #[derive(Clone)]
 pub(in crate::server) struct XhttpAxumState {
     pub(in crate::server) base_path: Arc<str>,
+    pub(in crate::server) protocol: XhttpAppProtocol,
     pub(in crate::server) registry: Arc<XhttpRegistry>,
     pub(in crate::server) parent: AppState,
+}
+
+/// A resolved XHTTP route, typed by the protocol the base path carries.
+/// Unifies the lookup so the early-404 check stays protocol-agnostic
+/// while `spawn_relay` still gets the concrete route record it needs.
+/// Shared with the h3 entry point, which builds it from its own
+/// per-connection route tables.
+#[derive(Clone)]
+pub(in crate::server) enum XhttpRoute {
+    Vless(Arc<VlessTransportRoute>),
+    Ss(Arc<TransportRoute>),
 }
 
 /// axum-extracted pieces of a single XHTTP request, bundled so the
@@ -269,14 +292,12 @@ async fn xhttp_get(
     if created {
         spawn_relay(
             Arc::clone(&session),
-            Arc::clone(&state.parent.services.vless_server),
+            &state.parent.services,
             Arc::clone(&state.registry),
-            VlessWsRouteCtx {
-                users: Arc::clone(&route.users),
-                protocol,
-                path: Arc::clone(&state.base_path),
-                candidate_users: Arc::clone(&route.candidate_users),
-            },
+            route,
+            Arc::clone(&state.base_path),
+            protocol,
+            peer_addr,
             resume_for_create,
         );
     }
@@ -371,14 +392,12 @@ async fn xhttp_post(
     if created {
         spawn_relay(
             Arc::clone(&session),
-            Arc::clone(&state.parent.services.vless_server),
+            &state.parent.services,
             Arc::clone(&state.registry),
-            VlessWsRouteCtx {
-                users: Arc::clone(&route.users),
-                protocol,
-                path: Arc::clone(&state.base_path),
-                candidate_users: Arc::clone(&route.candidate_users),
-            },
+            route,
+            Arc::clone(&state.base_path),
+            protocol,
+            peer_addr,
             resume_for_create,
         );
     }
@@ -481,14 +500,12 @@ async fn xhttp_stream_one(
     if created {
         spawn_relay(
             Arc::clone(&session),
-            Arc::clone(&state.parent.services.vless_server),
+            &state.parent.services,
             Arc::clone(&state.registry),
-            VlessWsRouteCtx {
-                users: Arc::clone(&route.users),
-                protocol,
-                path: Arc::clone(&state.base_path),
-                candidate_users: Arc::clone(&route.candidate_users),
-            },
+            route,
+            Arc::clone(&state.base_path),
+            protocol,
+            peer_addr,
             resume_for_create,
         );
     }
@@ -611,48 +628,112 @@ impl Drop for DownlinkStreamState {
     }
 }
 
-fn spawn_relay(
+/// Spawn the per-session relay task for whichever protocol this base
+/// path carries. VLESS rides `run_vless_relay`; SS rides the same
+/// `run_tcp_relay` the WS path uses — both are generic over the
+/// frame-oriented [`XhttpDuplex`] socket, so only the route context and
+/// the metrics `AppProtocol` label differ.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::server::transport::xhttp) fn spawn_relay(
     session: Arc<XhttpSession>,
-    server: Arc<VlessWsServerCtx>,
+    services: &Arc<Services>,
     registry: Arc<XhttpRegistry>,
-    route_ctx: VlessWsRouteCtx,
+    route: XhttpRoute,
+    base_path: Arc<str>,
+    protocol: Protocol,
+    peer_addr: SocketAddr,
     resume: ResumeContext,
 ) {
     let session_for_task = Arc::clone(&session);
     let session_id = Arc::clone(&session.id);
-    let metrics_session = server.metrics.open_websocket_session(
-        Transport::Tcp,
-        route_ctx.protocol,
-        AppProtocol::Vless,
-    );
-    tokio::spawn(async move {
-        let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
-        let result = run_vless_relay::<XhttpDuplex>(socket, &server, &route_ctx, resume).await;
-        // Always drop the registry slot: even on a clean exit the
-        // session id should not be reused for a fresh handshake.
-        session_for_task.close();
-        registry.remove(&session_id);
-        // Demote benign h3-shutdown / probe-rejection through the
-        // same classifier the WS path uses, so dashboards stay
-        // consistent across transports.
-        let mapped: anyhow::Result<()> = match result {
-            Ok(()) => Ok(()),
-            Err(error) if is_normal_h3_shutdown(&error) || sink::is_handshake_rejected(&error) => {
-                Err(error)
-            },
-            Err(error) => Err(error),
-        };
-        finish_ws_session(metrics_session, mapped, "vless");
-    });
+    match route {
+        XhttpRoute::Vless(route) => {
+            let server = Arc::clone(&services.vless_server);
+            let route_ctx = VlessWsRouteCtx {
+                users: Arc::clone(&route.users),
+                protocol,
+                path: base_path,
+                candidate_users: Arc::clone(&route.candidate_users),
+            };
+            let metrics_session =
+                server
+                    .metrics
+                    .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Vless);
+            tokio::spawn(async move {
+                let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
+                let result =
+                    run_vless_relay::<XhttpDuplex>(socket, &server, &route_ctx, resume).await;
+                // Always drop the registry slot: even on a clean exit
+                // the session id should not be reused for a fresh
+                // handshake.
+                session_for_task.close();
+                registry.remove(&session_id);
+                finish_ws_session(metrics_session, classify_relay_result(result), "vless");
+            });
+        },
+        XhttpRoute::Ss(route) => {
+            let server = Arc::clone(&services.tcp_server);
+            let route_ctx = WsTcpRouteCtx {
+                users: Arc::clone(&route.users),
+                protocol,
+                path: base_path,
+                candidate_users: Arc::clone(&route.candidate_users),
+                peer_user_cache: Arc::clone(&route.peer_user_cache),
+            };
+            let metrics_session = server.metrics.open_websocket_session(
+                Transport::Tcp,
+                protocol,
+                AppProtocol::Shadowsocks,
+            );
+            tokio::spawn(async move {
+                let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
+                let result = run_tcp_relay::<XhttpDuplex>(
+                    socket,
+                    &server,
+                    &route_ctx,
+                    resume,
+                    Some(peer_addr),
+                )
+                .await;
+                session_for_task.close();
+                registry.remove(&session_id);
+                finish_ws_session(metrics_session, classify_relay_result(result), "ss");
+            });
+        },
+    }
+}
+
+/// Demote benign h3-shutdown / probe-rejection so dashboards stay
+/// consistent across transports. A no-op mapping today (both `Err`
+/// arms return the error) but keeps the hooks wired for both relays.
+fn classify_relay_result(result: anyhow::Result<()>) -> anyhow::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if is_normal_h3_shutdown(&error) || sink::is_handshake_rejected(&error) => {
+            Err(error)
+        },
+        Err(error) => Err(error),
+    }
 }
 
 fn parse_seq(headers: &HeaderMap) -> Option<u64> {
     headers.get(SEQ_HEADER)?.to_str().ok()?.trim().parse::<u64>().ok()
 }
 
-fn resolve_route(state: &XhttpAxumState) -> Option<Arc<crate::server::state::VlessTransportRoute>> {
+fn resolve_route(state: &XhttpAxumState) -> Option<XhttpRoute> {
     let routes_snap = state.parent.routes.load();
-    let route = routes_snap.xhttp_vless.get(state.base_path.as_ref()).cloned();
+    let route = match state.protocol {
+        XhttpAppProtocol::Vless => routes_snap
+            .xhttp_vless
+            .get(state.base_path.as_ref())
+            .cloned()
+            .map(XhttpRoute::Vless),
+        XhttpAppProtocol::Ss => routes_snap
+            .xhttp_ss
+            .get(state.base_path.as_ref())
+            .cloned()
+            .map(XhttpRoute::Ss),
+    };
     drop(routes_snap);
     route
 }

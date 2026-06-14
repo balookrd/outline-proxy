@@ -51,6 +51,8 @@ pub(super) struct CreateRequest {
     #[serde(default)]
     pub xhttp_path_vless: Option<String>,
     #[serde(default)]
+    pub xhttp_path_ss: Option<String>,
+    #[serde(default)]
     pub enabled: Option<bool>,
 }
 
@@ -66,6 +68,7 @@ impl From<CreateRequest> for UserEntry {
             vless_id: req.vless_id,
             ws_path_vless: req.ws_path_vless,
             xhttp_path_vless: req.xhttp_path_vless,
+            xhttp_path_ss: req.xhttp_path_ss,
             enabled: req.enabled,
         }
     }
@@ -90,6 +93,8 @@ pub(super) struct UpdateRequest {
     #[serde(default)]
     pub xhttp_path_vless: FieldPatch<String>,
     #[serde(default)]
+    pub xhttp_path_ss: FieldPatch<String>,
+    #[serde(default)]
     pub enabled: Option<bool>,
 }
 
@@ -104,6 +109,7 @@ impl From<UpdateRequest> for UserPatch {
             ws_path_udp: req.ws_path_udp,
             ws_path_vless: req.ws_path_vless,
             xhttp_path_vless: req.xhttp_path_vless,
+            xhttp_path_ss: req.xhttp_path_ss,
             enabled: req.enabled,
         }
     }

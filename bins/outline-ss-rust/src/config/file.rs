@@ -186,6 +186,10 @@ pub(super) struct WebsocketSection {
     /// opaque per-session token chosen by the client. Absent (the
     /// default) disables XHTTP.
     pub xhttp_path_vless: Option<String>,
+    /// Base path for Shadowsocks-over-XHTTP. Same `<base>/{id}` route
+    /// shape as `xhttp_path_vless`, but carries the SS AEAD stream
+    /// instead of VLESS. Absent (the default) disables SS-over-XHTTP.
+    pub xhttp_path_ss: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

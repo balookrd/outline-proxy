@@ -93,6 +93,9 @@ pub struct UplinkGroupConfig {
 pub struct FallbackTransport {
     pub transport: UplinkTransport,
     pub tcp_ws_url: Option<Url>,
+    /// `transport = "ss"` only. Base URL for SS-over-XHTTP; selected
+    /// instead of `tcp_ws_url` when `tcp_mode` is an XHTTP variant.
+    pub tcp_xhttp_url: Option<Url>,
     pub tcp_mode: TransportMode,
     pub udp_ws_url: Option<Url>,
     pub udp_mode: TransportMode,
@@ -121,6 +124,7 @@ impl FallbackTransport {
     pub fn tcp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
+            UplinkTransport::Ss if self.tcp_mode.is_xhttp() => self.tcp_xhttp_url.as_ref(),
             UplinkTransport::Ss => self.tcp_ws_url.as_ref(),
         }
     }
@@ -162,9 +166,15 @@ impl FallbackTransport {
 pub struct UplinkConfig {
     pub name: String,
     pub transport: UplinkTransport,
-    /// `transport = "ws"` only. None for vless.
+    /// `transport = "ss"` only. None for vless. Used when `tcp_mode` is
+    /// a WS variant; for XHTTP variants `tcp_xhttp_url` is dialed instead.
     pub tcp_ws_url: Option<Url>,
-    /// `transport = "ws"` only. Meaningless for vless.
+    /// `transport = "ss"` only. Base URL for SS-over-XHTTP packet-up /
+    /// stream-one; selected instead of `tcp_ws_url` when `tcp_mode` is
+    /// `XhttpH1` / `XhttpH2` / `XhttpH3`. Session id is appended at dial
+    /// time, exactly like `vless_xhttp_url`.
+    pub tcp_xhttp_url: Option<Url>,
+    /// `transport = "ss"` only. Meaningless for vless.
     pub tcp_mode: TransportMode,
     /// `transport = "ws"` only. None for vless.
     pub udp_ws_url: Option<Url>,
@@ -255,6 +265,7 @@ impl UplinkConfig {
     pub fn tcp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
+            UplinkTransport::Ss if self.tcp_mode.is_xhttp() => self.tcp_xhttp_url.as_ref(),
             UplinkTransport::Ss => self.tcp_ws_url.as_ref(),
         }
     }
@@ -323,6 +334,7 @@ impl UplinkConfig {
             name: self.name.clone(),
             transport: fb.transport,
             tcp_ws_url: fb.tcp_ws_url.clone(),
+            tcp_xhttp_url: fb.tcp_xhttp_url.clone(),
             tcp_mode: fb.tcp_mode,
             udp_ws_url: fb.udp_ws_url.clone(),
             udp_mode: fb.udp_mode,

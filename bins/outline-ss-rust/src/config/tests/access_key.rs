@@ -28,6 +28,7 @@ fn sample_config() -> Config {
         ws_path_udp: "/udp".into(),
         ws_path_vless: Some("/vless path".into()),
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
         users: vec![
@@ -41,6 +42,7 @@ fn sample_config() -> Config {
                 vless_id: None,
                 ws_path_vless: None,
                 xhttp_path_vless: None,
+                xhttp_path_ss: None,
                 enabled: None,
             },
             UserEntry {
@@ -53,6 +55,7 @@ fn sample_config() -> Config {
                 vless_id: None,
                 ws_path_vless: None,
                 xhttp_path_vless: None,
+                xhttp_path_ss: None,
                 enabled: None,
             },
             UserEntry {
@@ -65,6 +68,7 @@ fn sample_config() -> Config {
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
                 ws_path_vless: Some("/carol/vless path".into()),
                 xhttp_path_vless: None,
+                xhttp_path_ss: None,
                 enabled: None,
             },
         ],
@@ -200,6 +204,7 @@ fn emits_xhttp_packet_up_and_stream_one_artifacts() {
         vless_id: Some("750e8400-e29b-41d4-a716-446655440000".into()),
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         enabled: None,
     });
 
@@ -300,6 +305,7 @@ fn vless_uris_alpn_prefers_h3_when_quic_listener_enabled() {
         vless_id: Some("850e8400-e29b-41d4-a716-446655440000".into()),
         ws_path_vless: Some("/eve/vless".into()),
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         enabled: None,
     });
 
@@ -378,6 +384,7 @@ fn vless_uris_skip_alpn_for_plain_http_scheme() {
         vless_id: Some("950e8400-e29b-41d4-a716-446655440000".into()),
         ws_path_vless: Some("/frank/vless".into()),
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         enabled: None,
     });
 

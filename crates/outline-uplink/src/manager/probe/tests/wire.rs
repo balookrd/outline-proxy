@@ -15,6 +15,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
         name: "edge".to_string(),
         transport: UplinkTransport::Vless,
         tcp_ws_url: None,
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
         udp_mode: TransportMode::WsH1,
@@ -39,6 +40,7 @@ fn ws_fallback() -> FallbackTransport {
     FallbackTransport {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(url::Url::parse("wss://ws.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH2,
         udp_ws_url: Some(url::Url::parse("wss://ws.example.com/udp").unwrap()),
         udp_mode: TransportMode::WsH1,
@@ -58,6 +60,7 @@ fn vless_fallback() -> FallbackTransport {
     FallbackTransport {
         transport: UplinkTransport::Vless,
         tcp_ws_url: None,
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
         udp_mode: TransportMode::WsH1,

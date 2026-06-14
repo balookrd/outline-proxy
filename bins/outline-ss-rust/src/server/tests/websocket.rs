@@ -327,6 +327,7 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
                 vless_id: None,
                 ws_path_vless: None,
                 xhttp_path_vless: None,
+                xhttp_path_ss: None,
                 enabled: None,
             },
             UserEntry {
@@ -339,6 +340,7 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
                 vless_id: None,
                 ws_path_vless: None,
                 xhttp_path_vless: None,
+                xhttp_path_ss: None,
                 enabled: None,
             },
         ],

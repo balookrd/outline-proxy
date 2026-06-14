@@ -33,17 +33,19 @@
 
 | Payload \ Carrier | WebSocket (h1/h2/h3) | XHTTP (h1/h2/h3) | raw QUIC |
 |---|:---:|:---:|:---:|
-| **Shadowsocks** (AEAD / SS2022) | ✅ | — | ✅ |
+| **Shadowsocks** (AEAD / SS2022) | ✅ | ✅ (forward TCP) | ✅ |
 | **VLESS** | ✅ | ✅ | ✅ |
 
-XHTTP — это VLESS-only протокол `packet-up` / `stream-one`; у Shadowsocks
-XHTTP-носителя нет. Все остальные ячейки поддерживаются в обе стороны.
+XHTTP — это протокол `packet-up` / `stream-one`. VLESS ходит по нему для
+TCP + UDP; Shadowsocks — только для **forward-пути TCP** (client→server): SS
+UDP-over-XHTTP и reverse-tunnel поверх XHTTP — запланированные продолжения. Все
+остальные ячейки поддерживаются в обе стороны.
 
 Клиент выбирает пару `transport` + `mode` на каждый uplink:
 
 | `transport` | допустимые значения `*_mode` | поле URL для dial |
 |---|---|---|
-| `ss` (алиас `shadowsocks`; deprecated `ws` / `websocket`) | `ws_h1` · `ws_h2` · `ws_h3` · `quic` | `tcp_ws_url` / `udp_ws_url` |
+| `ss` (алиас `shadowsocks`; deprecated `ws` / `websocket`) | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` (TCP) | `tcp_ws_url` / `udp_ws_url` (ws / quic) · `tcp_xhttp_url` (xhttp) |
 | `vless` | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `vless_ws_url` (ws / quic) · `vless_xhttp_url` (xhttp) |
 
 Алиасы носителей: `h1` / `http1` → `ws_h1`, `h2` → `ws_h2`, `h3` → `ws_h3`.
@@ -52,9 +54,10 @@ XHTTP-носителя нет. Все остальные ячейки подде
 
 - **WebSocket h1 / h2 / h3** — RFC 6455, RFC 8441 (H2 Extended CONNECT), RFC 9220
   (H3 Extended CONNECT). Базовый путь для обоих payload'ов.
-- **XHTTP** (только VLESS) — два sub-режима: `packet-up` (каждый пакет — отдельный
-  запрос, работает на h1 / h2 / h3) и `stream-one` (один bidi-POST, нужен
-  мультиплекс — только h2 / h3; на h1 сервер отдаёт 505).
+- **XHTTP** — два sub-режима: `packet-up` (каждый пакет — отдельный запрос,
+  работает на h1 / h2 / h3) и `stream-one` (один bidi-POST, нужен мультиплекс —
+  только h2 / h3; на h1 сервер отдаёт 505). Несёт VLESS (TCP + UDP) и
+  Shadowsocks (forward-путь TCP).
 - **raw QUIC** — без WebSocket / HTTP-обёртки, ALPN `outline-quic`. Несёт и
   Shadowsocks, и VLESS. TCP-подобные сессии едут по свежему bidi-стриму,
   UDP-подобные — по QUIC-датаграммам (RFC 9221). Требует feature `quic` при сборке.
