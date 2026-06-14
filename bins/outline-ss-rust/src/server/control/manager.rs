@@ -127,16 +127,25 @@ impl From<&UserEntry> for UserView {
     }
 }
 
+/// Startup-registered route paths the control plane may attach new users
+/// to. The live axum/h3 routers cannot grow new paths until the next
+/// process restart, so a hot-reload mutation that names an unregistered
+/// path is rejected. Bundled into one argument to keep `UserManager::new`
+/// within the project's argument-count budget (cf. `H3ServeCtx`).
+pub(in crate::server) struct AllowedRoutePaths {
+    pub(in crate::server) tcp: BTreeSet<String>,
+    pub(in crate::server) udp: BTreeSet<String>,
+    pub(in crate::server) vless: BTreeSet<String>,
+    pub(in crate::server) xhttp_vless: BTreeSet<String>,
+    pub(in crate::server) xhttp_ss: BTreeSet<String>,
+}
+
 impl UserManager {
     pub(in crate::server) fn new(
         config: &Config,
         routes: RoutesSnapshot,
         auth_users: AuthUsersSnapshot,
-        allowed_tcp_paths: BTreeSet<String>,
-        allowed_udp_paths: BTreeSet<String>,
-        allowed_vless_paths: BTreeSet<String>,
-        allowed_xhttp_paths: BTreeSet<String>,
-        allowed_xhttp_ss_paths: BTreeSet<String>,
+        allowed: AllowedRoutePaths,
     ) -> Self {
         Self {
             inner: Mutex::new(Inner { users: config.users.clone() }),
@@ -150,11 +159,11 @@ impl UserManager {
             default_xhttp_path_ss: config.xhttp_path_ss.clone(),
             access_key_config: config.access_key.clone(),
             access_key_base_config: config.clone(),
-            allowed_tcp_paths,
-            allowed_udp_paths,
-            allowed_vless_paths,
-            allowed_xhttp_paths,
-            allowed_xhttp_ss_paths,
+            allowed_tcp_paths: allowed.tcp,
+            allowed_udp_paths: allowed.udp,
+            allowed_vless_paths: allowed.vless,
+            allowed_xhttp_paths: allowed.xhttp_vless,
+            allowed_xhttp_ss_paths: allowed.xhttp_ss,
             has_raw_quic_vless: config.h3_alpn.contains(&H3Alpn::Vless),
             config_path: config.config_path.clone(),
         }
