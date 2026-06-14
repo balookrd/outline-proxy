@@ -209,12 +209,53 @@ impl Config {
         if let Some(conflict) = vless_paths.intersection(&ss_xhttp_paths).next() {
             bail!("vless-ws and ss-xhttp paths must be distinct, conflict on {}", conflict);
         }
+        // ── SS-UDP-over-XHTTP paths ──────────────────────────────────────
+        // Same password-keyed gates as SS-over-XHTTP, on the separate UDP
+        // base path (mirrors `ws_path_tcp` vs `ws_path_udp`).
+        let mut ss_udp_xhttp_paths = BTreeSet::new();
+        if let Some(path) = self.xhttp_path_ss_udp.as_deref()
+            && !path.starts_with('/')
+        {
+            bail!("xhttp_path_ss_udp must start with '/'");
+        }
+        if self.xhttp_path_ss_udp.is_some() && self.users.iter().all(|user| user.password.is_none())
+        {
+            bail!("xhttp_path_ss_udp requires at least one [[users]] entry with a password");
+        }
+        for user in &self.users {
+            if let Some(path) = user.xhttp_path_ss_udp.as_deref()
+                && !path.starts_with('/')
+            {
+                bail!("user {} xhttp_path_ss_udp must start with '/'", user.id);
+            }
+            if user.xhttp_path_ss_udp.is_some() && user.password.is_none() {
+                bail!("user {} xhttp_path_ss_udp requires a password", user.id);
+            }
+            if user.password.is_some()
+                && let Some(path) =
+                    user.effective_xhttp_path_ss_udp(self.xhttp_path_ss_udp.as_deref())
+            {
+                ss_udp_xhttp_paths.insert(path.to_owned());
+            }
+        }
+        for (other, label) in [
+            (&xhttp_paths, "vless-xhttp"),
+            (&ss_xhttp_paths, "ss-xhttp (tcp)"),
+            (&tcp_paths, "tcp"),
+            (&udp_paths, "udp"),
+            (&vless_paths, "vless-ws"),
+        ] {
+            if let Some(conflict) = other.intersection(&ss_udp_xhttp_paths).next() {
+                bail!("{label} and ss-udp-xhttp paths must be distinct, conflict on {}", conflict,);
+            }
+        }
         if self.http_root_auth
             && (tcp_paths.contains("/")
                 || udp_paths.contains("/")
                 || vless_paths.contains("/")
                 || xhttp_paths.contains("/")
-                || ss_xhttp_paths.contains("/"))
+                || ss_xhttp_paths.contains("/")
+                || ss_udp_xhttp_paths.contains("/"))
         {
             bail!("http_root_auth requires all websocket paths to differ from '/'");
         }

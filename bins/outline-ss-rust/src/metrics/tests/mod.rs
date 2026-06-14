@@ -28,6 +28,7 @@ fn test_config() -> Config {
         ws_path_vless: None,
         xhttp_path_vless: None,
         xhttp_path_ss: None,
+        xhttp_path_ss_udp: None,
         http_root_auth: false,
         http_root_realm: "Authorization required".to_owned(),
         users: vec![crate::config::UserEntry {
@@ -41,6 +42,7 @@ fn test_config() -> Config {
             ws_path_vless: None,
             xhttp_path_vless: None,
             xhttp_path_ss: None,
+            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         method: crate::config::CipherKind::Chacha20IetfPoly1305,

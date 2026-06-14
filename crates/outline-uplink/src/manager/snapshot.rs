@@ -270,7 +270,7 @@ impl UplinkManager {
                 },
                 udp_mode: match uplink.transport {
                     UplinkTransport::Ss => {
-                        uplink.udp_ws_url.as_ref().map(|_| uplink.udp_mode.to_string())
+                        uplink.udp_dial_url().map(|_| uplink.udp_mode.to_string())
                     },
                     UplinkTransport::Vless => {
                         uplink.udp_dial_url().map(|_| uplink.vless_mode.to_string())

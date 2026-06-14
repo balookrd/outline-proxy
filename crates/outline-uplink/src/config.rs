@@ -98,6 +98,9 @@ pub struct FallbackTransport {
     pub tcp_xhttp_url: Option<Url>,
     pub tcp_mode: TransportMode,
     pub udp_ws_url: Option<Url>,
+    /// `transport = "ss"` only. Base URL for SS-UDP-over-XHTTP; selected
+    /// instead of `udp_ws_url` when `udp_mode` is an XHTTP variant.
+    pub udp_xhttp_url: Option<Url>,
     pub udp_mode: TransportMode,
     pub vless_ws_url: Option<Url>,
     pub vless_xhttp_url: Option<Url>,
@@ -115,10 +118,7 @@ impl FallbackTransport {
     /// Mirrors [`UplinkConfig::supports_udp`] but operates on the
     /// fallback's own wire fields.
     pub fn supports_udp(&self) -> bool {
-        match self.transport {
-            UplinkTransport::Ss => self.udp_ws_url.is_some(),
-            UplinkTransport::Vless => self.vless_dial_url().is_some(),
-        }
+        self.udp_dial_url().is_some()
     }
 
     pub fn tcp_dial_url(&self) -> Option<&Url> {
@@ -132,6 +132,7 @@ impl FallbackTransport {
     pub fn udp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
+            UplinkTransport::Ss if self.udp_mode.is_xhttp() => self.udp_xhttp_url.as_ref(),
             UplinkTransport::Ss => self.udp_ws_url.as_ref(),
         }
     }
@@ -176,9 +177,14 @@ pub struct UplinkConfig {
     pub tcp_xhttp_url: Option<Url>,
     /// `transport = "ss"` only. Meaningless for vless.
     pub tcp_mode: TransportMode,
-    /// `transport = "ws"` only. None for vless.
+    /// `transport = "ss"` only. None for vless. Used when `udp_mode` is
+    /// a WS variant; for XHTTP variants `udp_xhttp_url` is dialed instead.
     pub udp_ws_url: Option<Url>,
-    /// `transport = "ws"` only. Meaningless for vless.
+    /// `transport = "ss"` only. Base URL for SS-UDP-over-XHTTP; selected
+    /// instead of `udp_ws_url` when `udp_mode` is `XhttpH1` / `XhttpH2` /
+    /// `XhttpH3`. Session id is appended at dial time.
+    pub udp_xhttp_url: Option<Url>,
+    /// `transport = "ss"` only. Meaningless for vless.
     pub udp_mode: TransportMode,
     /// `transport = "vless"` only. Single WS URL serving both TCP
     /// and UDP — required when `vless_mode` is one of the WS or QUIC
@@ -245,10 +251,7 @@ impl UplinkConfig {
     /// whether *any* (primary or fallback) wire on this uplink supports UDP,
     /// use [`UplinkConfig::supports_udp_any`].
     pub fn supports_udp(&self) -> bool {
-        match self.transport {
-            UplinkTransport::Ss => self.udp_ws_url.is_some(),
-            UplinkTransport::Vless => self.vless_dial_url().is_some(),
-        }
+        self.udp_dial_url().is_some()
     }
 
     /// True when at least one configured wire (primary or any fallback) on
@@ -276,6 +279,7 @@ impl UplinkConfig {
     pub fn udp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
+            UplinkTransport::Ss if self.udp_mode.is_xhttp() => self.udp_xhttp_url.as_ref(),
             UplinkTransport::Ss => self.udp_ws_url.as_ref(),
         }
     }
@@ -337,6 +341,7 @@ impl UplinkConfig {
             tcp_xhttp_url: fb.tcp_xhttp_url.clone(),
             tcp_mode: fb.tcp_mode,
             udp_ws_url: fb.udp_ws_url.clone(),
+            udp_xhttp_url: fb.udp_xhttp_url.clone(),
             udp_mode: fb.udp_mode,
             vless_ws_url: fb.vless_ws_url.clone(),
             vless_xhttp_url: fb.vless_xhttp_url.clone(),

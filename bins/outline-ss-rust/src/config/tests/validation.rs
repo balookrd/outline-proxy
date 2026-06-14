@@ -27,6 +27,7 @@ fn base_config() -> Config {
         ws_path_vless: None,
         xhttp_path_vless: None,
         xhttp_path_ss: None,
+        xhttp_path_ss_udp: None,
         http_root_auth: false,
         http_root_realm: default_http_root_realm(),
         users: vec![super::super::UserEntry {
@@ -40,6 +41,7 @@ fn base_config() -> Config {
             ws_path_vless: None,
             xhttp_path_vless: None,
             xhttp_path_ss: None,
+            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         method: CipherKind::Chacha20IetfPoly1305,
@@ -154,6 +156,27 @@ fn rejects_xhttp_path_ss_equal_to_xhttp_path_vless() {
 }
 
 #[test]
+fn accepts_xhttp_path_ss_udp_with_password_user() {
+    Config {
+        xhttp_path_ss_udp: Some("/ssu".into()),
+        ..base_config()
+    }
+    .validate()
+    .unwrap();
+}
+
+#[test]
+fn rejects_xhttp_path_ss_udp_equal_to_xhttp_path_ss() {
+    // The TCP and UDP SS-XHTTP base paths must differ (mirrors ws_path_tcp
+    // vs ws_path_udp).
+    let mut cfg = base_config();
+    cfg.xhttp_path_ss = Some("/x".into());
+    cfg.xhttp_path_ss_udp = Some("/x".into());
+    let error = cfg.validate().unwrap_err().to_string();
+    assert!(error.contains("ss-udp-xhttp"), "got: {error}");
+}
+
+#[test]
 fn allows_vless_reverse_user_without_ws_path() {
     use super::super::resolved::ReverseTunnelConfig;
     use super::super::{ReverseProtocol, ReverseTunnelEndpoint};
@@ -183,6 +206,7 @@ fn allows_vless_reverse_user_without_ws_path() {
             ws_path_vless: None,
             xhttp_path_vless: None,
             xhttp_path_ss: None,
+            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         reverse_tunnel: Some(ReverseTunnelConfig { endpoints: vec![endpoint] }),
@@ -198,6 +222,7 @@ fn allows_vless_only_users() {
         ws_path_vless: Some("/vless".into()),
         xhttp_path_vless: None,
         xhttp_path_ss: None,
+        xhttp_path_ss_udp: None,
         users: vec![super::super::UserEntry {
             id: "550e8400-e29b-41d4-a716-446655440000".into(),
             password: None,
@@ -209,6 +234,7 @@ fn allows_vless_only_users() {
             ws_path_vless: None,
             xhttp_path_vless: None,
             xhttp_path_ss: None,
+            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         ..base_config()
@@ -223,6 +249,7 @@ fn rejects_vless_path_conflict_with_tcp_path() {
         ws_path_vless: Some("/tcp".into()),
         xhttp_path_vless: None,
         xhttp_path_ss: None,
+        xhttp_path_ss_udp: None,
         users: vec![
             super::super::UserEntry {
                 id: "alice".into(),
@@ -235,6 +262,7 @@ fn rejects_vless_path_conflict_with_tcp_path() {
                 ws_path_vless: None,
                 xhttp_path_vless: None,
                 xhttp_path_ss: None,
+                xhttp_path_ss_udp: None,
                 enabled: None,
             },
             super::super::UserEntry {
@@ -248,6 +276,7 @@ fn rejects_vless_path_conflict_with_tcp_path() {
                 ws_path_vless: None,
                 xhttp_path_vless: None,
                 xhttp_path_ss: None,
+                xhttp_path_ss_udp: None,
                 enabled: None,
             },
         ],
@@ -266,6 +295,7 @@ fn allows_per_user_vless_path_without_global_default() {
         ws_path_vless: None,
         xhttp_path_vless: None,
         xhttp_path_ss: None,
+        xhttp_path_ss_udp: None,
         users: vec![super::super::UserEntry {
             id: "alice".into(),
             password: None,
@@ -277,6 +307,7 @@ fn allows_per_user_vless_path_without_global_default() {
             ws_path_vless: Some("/alice-vless".into()),
             xhttp_path_vless: None,
             xhttp_path_ss: None,
+            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         ..base_config()
@@ -291,6 +322,7 @@ fn allows_vless_id_without_path_when_raw_quic_alpn_enabled() {
         ws_path_vless: None,
         xhttp_path_vless: None,
         xhttp_path_ss: None,
+        xhttp_path_ss_udp: None,
         h3_alpn: vec![crate::config::H3Alpn::H3, crate::config::H3Alpn::Vless],
         users: vec![super::super::UserEntry {
             id: "alice".into(),
@@ -303,6 +335,7 @@ fn allows_vless_id_without_path_when_raw_quic_alpn_enabled() {
             ws_path_vless: None,
             xhttp_path_vless: None,
             xhttp_path_ss: None,
+            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         ..base_config()
@@ -317,6 +350,7 @@ fn rejects_vless_id_without_any_path() {
         ws_path_vless: None,
         xhttp_path_vless: None,
         xhttp_path_ss: None,
+        xhttp_path_ss_udp: None,
         users: vec![super::super::UserEntry {
             id: "alice".into(),
             password: None,
@@ -328,6 +362,7 @@ fn rejects_vless_id_without_any_path() {
             ws_path_vless: None,
             xhttp_path_vless: None,
             xhttp_path_ss: None,
+            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         ..base_config()

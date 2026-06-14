@@ -23,6 +23,7 @@ fn uplink(name: &str) -> UplinkConfig {
         tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: Some(format!("wss://{name}.example.com/udp").parse().unwrap()),
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,

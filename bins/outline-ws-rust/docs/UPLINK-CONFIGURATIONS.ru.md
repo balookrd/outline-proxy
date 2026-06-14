@@ -100,6 +100,9 @@ group = "main"
 transport = "ss"
 tcp_xhttp_url = "https://ss.example.com/SECRET/xhttp"
 tcp_mode = "xhttp_h3"
+# Опционально: пустить и SS-UDP по XHTTP (отдельный base-путь на сервере).
+udp_xhttp_url = "https://ss.example.com/SECRET/xhttp-udp"
+udp_mode = "xhttp_h3"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 weight = 1.0
@@ -119,9 +122,12 @@ weight = 1.0
 - **Сервер:** соответствующий серверный listener — `xhttp_path_ss`
   (отдельный от `xhttp_path_vless` — один базовый путь обслуживает один
   протокол).
-- **UDP:** для SS пока не ходит по XHTTP; `udp_*` остаётся на
-  WebSocket-носителе. (Forward UDP-over-XHTTP для SS — запланированное
-  продолжение.)
+- **UDP:** задайте `udp_xhttp_url` с `udp_mode = xhttp_h*`, чтобы пустить
+  и SS-UDP-датаграммы по XHTTP. В отличие от VLESS (который мультиплексит
+  TCP + UDP на одном пути), у SS TCP и UDP — на **разных** base-путях:
+  сервер регистрирует `xhttp_path_ss_udp` под датаграммы, зеркаля
+  разделение `ws_path_tcp` / `ws_path_udp`. TCP-only uplink'и просто
+  оставляют UDP-поля пустыми.
 
 ## 4. VLESS over raw QUIC
 

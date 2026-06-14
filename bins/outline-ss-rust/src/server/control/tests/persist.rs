@@ -14,6 +14,7 @@ fn sample_users() -> Vec<UserEntry> {
             ws_path_vless: None,
             xhttp_path_vless: None,
             xhttp_path_ss: None,
+            xhttp_path_ss_udp: None,
             enabled: None,
         },
         UserEntry {
@@ -27,6 +28,7 @@ fn sample_users() -> Vec<UserEntry> {
             ws_path_vless: None,
             xhttp_path_vless: None,
             xhttp_path_ss: None,
+            xhttp_path_ss_udp: None,
             enabled: Some(false),
         },
     ]

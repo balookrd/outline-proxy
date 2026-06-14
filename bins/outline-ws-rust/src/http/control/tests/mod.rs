@@ -266,6 +266,7 @@ fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,

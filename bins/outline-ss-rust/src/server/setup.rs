@@ -299,6 +299,36 @@ pub(super) fn build_ss_xhttp_user_routes(config: &Config) -> Result<Arc<[SsXhttp
     ))
 }
 
+/// Same as [`build_ss_xhttp_user_routes`] but for the SS-UDP-over-XHTTP
+/// base path (`xhttp_path_ss_udp`). Reuses `SsXhttpUserRoute` /
+/// `build_xhttp_ss_route_map` — the route record is identical; only the
+/// base path resolved per user differs.
+pub(super) fn build_ss_xhttp_udp_user_routes(config: &Config) -> Result<Arc<[SsXhttpUserRoute]>> {
+    Ok(Arc::from(
+        config
+            .user_entries()?
+            .into_iter()
+            .filter_map(|entry| {
+                let path = entry
+                    .effective_xhttp_path_ss_udp(config.xhttp_path_ss_udp.as_deref())?
+                    .to_owned();
+                Some((entry, path))
+            })
+            .map(|(entry, xhttp_path)| {
+                let method = entry.effective_method(config.method);
+                let password = entry.password.expect("user_entries filters passwordless users");
+                UserKey::new(entry.id, &password, entry.fwmark, method).map(|user| {
+                    SsXhttpUserRoute {
+                        user,
+                        xhttp_path: Arc::from(xhttp_path.as_str()),
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice(),
+    ))
+}
+
 pub(super) fn build_xhttp_ss_route_map(
     routes: &[SsXhttpUserRoute],
 ) -> BTreeMap<String, Arc<TransportRoute>> {

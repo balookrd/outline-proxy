@@ -20,9 +20,10 @@ use super::{
     resumption::{OrphanRegistry, ResumptionConfig},
     setup::{
         SsXhttpUserRoute, UserRoute, VlessUserRoute, VlessXhttpUserRoute, build_raw_vless_users,
-        build_ss_xhttp_user_routes, build_transport_route_map, build_user_routes,
-        build_vless_transport_route_map, build_vless_user_routes, build_vless_xhttp_user_routes,
-        build_xhttp_ss_route_map, build_xhttp_vless_route_map, user_keys,
+        build_ss_xhttp_udp_user_routes, build_ss_xhttp_user_routes, build_transport_route_map,
+        build_user_routes, build_vless_transport_route_map, build_vless_user_routes,
+        build_vless_xhttp_user_routes, build_xhttp_ss_route_map, build_xhttp_vless_route_map,
+        user_keys,
     },
     state::{
         AuthPolicy, AuthUsersSnapshot, RouteRegistry, RoutesSnapshot, Services, TransportRoute,
@@ -41,11 +42,13 @@ pub(super) struct Built {
     pub(super) raw_vless_users: Arc<[crate::protocol::vless::VlessUser]>,
     pub(super) vless_xhttp_user_routes: Arc<[VlessXhttpUserRoute]>,
     pub(super) ss_xhttp_user_routes: Arc<[SsXhttpUserRoute]>,
+    pub(super) ss_xhttp_udp_user_routes: Arc<[SsXhttpUserRoute]>,
     pub(super) tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) vless_routes: Arc<BTreeMap<String, Arc<VlessTransportRoute>>>,
     pub(super) xhttp_vless_routes: Arc<BTreeMap<String, Arc<VlessTransportRoute>>>,
     pub(super) xhttp_ss_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+    pub(super) xhttp_ss_udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) routes: RoutesSnapshot,
     #[cfg_attr(not(feature = "control"), allow(dead_code))]
     pub(super) auth_users: AuthUsersSnapshot,
@@ -67,6 +70,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     let raw_vless_users = build_raw_vless_users(config)?;
     let vless_xhttp_user_routes = build_vless_xhttp_user_routes(config)?;
     let ss_xhttp_user_routes = build_ss_xhttp_user_routes(config)?;
+    let ss_xhttp_udp_user_routes = build_ss_xhttp_udp_user_routes(config)?;
     let users = user_keys(user_routes.as_ref());
     let tcp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
@@ -74,6 +78,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     let xhttp_vless_routes =
         Arc::new(build_xhttp_vless_route_map(vless_xhttp_user_routes.as_ref()));
     let xhttp_ss_routes = Arc::new(build_xhttp_ss_route_map(ss_xhttp_user_routes.as_ref()));
+    let xhttp_ss_udp_routes = Arc::new(build_xhttp_ss_route_map(ss_xhttp_udp_user_routes.as_ref()));
     let outbound_ipv6_source: Option<OutboundIpv6Source> =
         if let Some(prefix) = config.outbound_ipv6_prefix {
             Some(OutboundIpv6Source::Prefix(prefix))
@@ -116,6 +121,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         vless: Arc::clone(&vless_routes),
         xhttp_vless: Arc::clone(&xhttp_vless_routes),
         xhttp_ss: Arc::clone(&xhttp_ss_routes),
+        xhttp_ss_udp: Arc::clone(&xhttp_ss_udp_routes),
     }));
     let auth_users: AuthUsersSnapshot =
         Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::clone(&users))));
@@ -169,11 +175,13 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         raw_vless_users,
         vless_xhttp_user_routes,
         ss_xhttp_user_routes,
+        ss_xhttp_udp_user_routes,
         tcp_routes,
         udp_routes,
         vless_routes,
         xhttp_vless_routes,
         xhttp_ss_routes,
+        xhttp_ss_udp_routes,
         routes,
         auth_users,
         services,

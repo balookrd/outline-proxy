@@ -382,7 +382,7 @@ where
     Ok(())
 }
 
-async fn run_udp_relay<T: WsSocket>(
+pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     socket: T,
     server: Arc<UdpServerCtx>,
     route: Arc<UdpRouteCtx>,

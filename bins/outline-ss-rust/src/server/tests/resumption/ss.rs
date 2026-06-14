@@ -67,6 +67,7 @@ async fn spawn_ss_two_user_server() -> Result<(ResumptionTestServer, UserKey, Us
                 ws_path_vless: None,
                 xhttp_path_vless: None,
                 xhttp_path_ss: None,
+                xhttp_path_ss_udp: None,
                 enabled: None,
             },
             UserEntry {
@@ -80,6 +81,7 @@ async fn spawn_ss_two_user_server() -> Result<(ResumptionTestServer, UserKey, Us
                 ws_path_vless: None,
                 xhttp_path_vless: None,
                 xhttp_path_ss: None,
+                xhttp_path_ss_udp: None,
                 enabled: None,
             },
         ],

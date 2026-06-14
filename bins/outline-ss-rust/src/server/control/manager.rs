@@ -47,6 +47,7 @@ pub(in crate::server) struct UserManager {
     default_ws_path_vless: Option<String>,
     default_xhttp_path_vless: Option<String>,
     default_xhttp_path_ss: Option<String>,
+    default_xhttp_path_ss_udp: Option<String>,
     access_key_config: crate::config::AccessKeyConfig,
     access_key_base_config: Config,
     // Paths that exist in the startup Axum/H3 routers. Mutations that
@@ -57,6 +58,7 @@ pub(in crate::server) struct UserManager {
     allowed_vless_paths: BTreeSet<String>,
     allowed_xhttp_paths: BTreeSet<String>,
     allowed_xhttp_ss_paths: BTreeSet<String>,
+    allowed_xhttp_ss_udp_paths: BTreeSet<String>,
     /// Whether raw VLESS-over-QUIC is enabled (`"vless"` in `[server.h3].alpn`).
     /// When true a `vless_id` user needs no ws/xhttp path — the raw-QUIC ALPN is
     /// itself a transport. Mirrors the startup check in `config::validation` so
@@ -87,6 +89,8 @@ pub(super) struct UserView {
     pub xhttp_path_vless: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xhttp_path_ss: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xhttp_path_ss_udp: Option<String>,
     pub has_password: bool,
     pub has_vless_id: bool,
 }
@@ -121,6 +125,7 @@ impl From<&UserEntry> for UserView {
             ws_path_vless: entry.ws_path_vless.clone(),
             xhttp_path_vless: entry.xhttp_path_vless.clone(),
             xhttp_path_ss: entry.xhttp_path_ss.clone(),
+            xhttp_path_ss_udp: entry.xhttp_path_ss_udp.clone(),
             has_password: entry.password.is_some(),
             has_vless_id: entry.vless_id.is_some(),
         }
@@ -138,6 +143,7 @@ pub(in crate::server) struct AllowedRoutePaths {
     pub(in crate::server) vless: BTreeSet<String>,
     pub(in crate::server) xhttp_vless: BTreeSet<String>,
     pub(in crate::server) xhttp_ss: BTreeSet<String>,
+    pub(in crate::server) xhttp_ss_udp: BTreeSet<String>,
 }
 
 impl UserManager {
@@ -157,6 +163,7 @@ impl UserManager {
             default_ws_path_vless: config.ws_path_vless.clone(),
             default_xhttp_path_vless: config.xhttp_path_vless.clone(),
             default_xhttp_path_ss: config.xhttp_path_ss.clone(),
+            default_xhttp_path_ss_udp: config.xhttp_path_ss_udp.clone(),
             access_key_config: config.access_key.clone(),
             access_key_base_config: config.clone(),
             allowed_tcp_paths: allowed.tcp,
@@ -164,6 +171,7 @@ impl UserManager {
             allowed_vless_paths: allowed.vless,
             allowed_xhttp_paths: allowed.xhttp_vless,
             allowed_xhttp_ss_paths: allowed.xhttp_ss,
+            allowed_xhttp_ss_udp_paths: allowed.xhttp_ss_udp,
             has_raw_quic_vless: config.h3_alpn.contains(&H3Alpn::Vless),
             config_path: config.config_path.clone(),
         }
@@ -381,6 +389,23 @@ impl UserManager {
                 );
             }
         }
+        // SS-UDP-over-XHTTP: same password gate on the separate UDP path.
+        if entry.password.is_some()
+            && let Some(path) = entry
+                .xhttp_path_ss_udp
+                .as_deref()
+                .or(self.default_xhttp_path_ss_udp.as_deref())
+        {
+            if !path.starts_with('/') {
+                bail!("xhttp_path_ss_udp must start with '/'");
+            }
+            if !self.allowed_xhttp_ss_udp_paths.contains(path) {
+                bail!(
+                    "xhttp_path_ss_udp {path:?} was not registered at startup; restart \
+                     the server after adding it to the config file"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -414,6 +439,7 @@ impl UserManager {
 
         let mut user_routes: Vec<UserRoute> = Vec::new();
         let mut ss_xhttp_routes: Vec<crate::server::setup::SsXhttpUserRoute> = Vec::new();
+        let mut ss_xhttp_udp_routes: Vec<crate::server::setup::SsXhttpUserRoute> = Vec::new();
         for user in &enabled {
             let Some(password) = &user.password else { continue };
             let method = user.effective_method(self.default_method);
@@ -426,6 +452,14 @@ impl UserManager {
             if let Some(path) = user.effective_xhttp_path_ss(self.default_xhttp_path_ss.as_deref())
             {
                 ss_xhttp_routes.push(crate::server::setup::SsXhttpUserRoute {
+                    user: user_key.clone(),
+                    xhttp_path: Arc::from(path),
+                });
+            }
+            if let Some(path) =
+                user.effective_xhttp_path_ss_udp(self.default_xhttp_path_ss_udp.as_deref())
+            {
+                ss_xhttp_udp_routes.push(crate::server::setup::SsXhttpUserRoute {
                     user: user_key.clone(),
                     xhttp_path: Arc::from(path),
                 });
@@ -470,6 +504,8 @@ impl UserManager {
             crate::server::setup::build_xhttp_vless_route_map(&xhttp_routes);
         let xhttp_ss_map: BTreeMap<String, Arc<TransportRoute>> =
             crate::server::setup::build_xhttp_ss_route_map(&ss_xhttp_routes);
+        let xhttp_ss_udp_map: BTreeMap<String, Arc<TransportRoute>> =
+            crate::server::setup::build_xhttp_ss_route_map(&ss_xhttp_udp_routes);
 
         let auth_keys: Arc<[UserKey]> = Arc::from(
             user_routes
@@ -486,6 +522,7 @@ impl UserManager {
                 vless: Arc::new(vless_map),
                 xhttp_vless: Arc::new(xhttp_map),
                 xhttp_ss: Arc::new(xhttp_ss_map),
+                xhttp_ss_udp: Arc::new(xhttp_ss_udp_map),
             },
             auth_keys,
         ))
@@ -502,6 +539,7 @@ pub(super) struct UserPatch {
     pub ws_path_vless: FieldPatch<String>,
     pub xhttp_path_vless: FieldPatch<String>,
     pub xhttp_path_ss: FieldPatch<String>,
+    pub xhttp_path_ss_udp: FieldPatch<String>,
     pub enabled: Option<bool>,
 }
 
@@ -533,6 +571,9 @@ impl UserPatch {
         }
         if let FieldPatch::Set(xhttp_path_ss) = self.xhttp_path_ss {
             entry.xhttp_path_ss = xhttp_path_ss;
+        }
+        if let FieldPatch::Set(xhttp_path_ss_udp) = self.xhttp_path_ss_udp {
+            entry.xhttp_path_ss_udp = xhttp_path_ss_udp;
         }
         if let Some(enabled) = self.enabled {
             entry.enabled = Some(enabled);
