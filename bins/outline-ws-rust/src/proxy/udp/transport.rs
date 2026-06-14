@@ -334,10 +334,11 @@ async fn dial_udp_fallback(
 pub(super) async fn select_udp_transport(
     uplinks: &UplinkManager,
     target: Option<&TargetAddr>,
+    client: Option<&str>,
 ) -> Result<ActiveUdpTransport> {
     let mut last_error = None;
     let strict_transport = uplinks.strict_active_uplink_for(TransportKind::Udp);
-    let mut candidates = uplinks.udp_candidates(target).await;
+    let mut candidates = uplinks.udp_candidates_for(target, client).await;
     if strict_transport {
         candidates.truncate(1);
     }
@@ -345,7 +346,12 @@ pub(super) async fn select_udp_transport(
         match acquire_udp_with_fallbacks(uplinks, &candidate).await {
             Ok(transport) => {
                 uplinks
-                    .confirm_selected_uplink(TransportKind::Udp, target, candidate.index)
+                    .confirm_selected_uplink_for(
+                        TransportKind::Udp,
+                        target,
+                        client,
+                        candidate.index,
+                    )
                     .await;
                 return Ok(ActiveUdpTransport {
                     index: candidate.index,
@@ -372,6 +378,7 @@ pub(super) async fn failover_udp_transport(
     uplinks: &UplinkManager,
     active_transport: &ArcSwap<ActiveUdpTransport>,
     target: Option<&TargetAddr>,
+    client: Option<&str>,
     failed_index: usize,
     error: anyhow::Error,
 ) -> Result<ActiveUdpTransport> {
@@ -385,7 +392,7 @@ pub(super) async fn failover_udp_transport(
     uplinks
         .report_runtime_failure(failed_index, TransportKind::Udp, &error)
         .await;
-    let replacement = select_udp_transport(uplinks, target).await?;
+    let replacement = select_udp_transport(uplinks, target, client).await?;
     if let Some(previous_transport) =
         replace_active_udp_transport_if_current(active_transport, failed_index, replacement.clone())
     {
@@ -431,7 +438,9 @@ pub(super) async fn reconcile_global_udp_transport(
         }
         active.uplink_name.clone()
     };
-    let replacement = select_udp_transport(uplinks, target).await?;
+    // Reconcile only runs in strict (active_passive) scopes — it early-returns
+    // above otherwise — so the per-client key is never relevant here.
+    let replacement = select_udp_transport(uplinks, target, None).await?;
     if let Some(previous_transport) =
         replace_active_udp_transport_if_current(active_transport, selected, replacement.clone())
     {

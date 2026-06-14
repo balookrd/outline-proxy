@@ -204,7 +204,7 @@ name = "example.com"
 #
 # [outline.load_balancing]
 # mode = "active_active"            # | "active_passive"
-# routing_scope = "per_flow"        # | "per_uplink" | "global"
+# routing_scope = "per_flow"        # | "per_uplink" | "per_client" | "global"
 # sticky_ttl_secs = 300
 # hysteresis_ms = 50
 # failure_cooldown_secs = 10
@@ -239,7 +239,15 @@ name = "example.com"
 [[uplink_group]]
 name = "main"
 mode = "active_active"          # "active_active" or "active_passive"
-routing_scope = "per_flow"      # "per_flow" | "per_uplink" | "global"
+# Sticky-route granularity in active_active mode:
+#   per_flow    — affinity per destination (transport + target). Default.
+#   per_uplink  — one active uplink per transport (TCP / UDP).
+#   per_client  — affinity per ingress client (SOCKS5 peer IP / TUN LAN
+#                 device IP). Each client sticks to one balancer-chosen uplink
+#                 instead of spreading its flows across all of them, and still
+#                 fails over when its pinned uplink dies. active_active only.
+#   global      — one active uplink for the whole group.
+routing_scope = "per_flow"      # "per_flow" | "per_uplink" | "per_client" | "global"
 warm_standby_tcp = 1
 warm_standby_udp = 1
 sticky_ttl_secs = 300

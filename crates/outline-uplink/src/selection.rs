@@ -153,7 +153,7 @@ pub(crate) fn strict_gate_transport(
 ) -> TransportKind {
     match scope {
         RoutingScope::Global => TransportKind::Tcp,
-        RoutingScope::PerUplink | RoutingScope::PerFlow => transport,
+        RoutingScope::PerUplink | RoutingScope::PerFlow | RoutingScope::PerClient => transport,
     }
 }
 
@@ -260,7 +260,13 @@ pub(crate) fn selection_score(
     match scope {
         RoutingScope::Global => global_selection_score_latency(status, weight, now, config),
         RoutingScope::PerUplink => base_score_latency(status, weight, transport),
-        RoutingScope::PerFlow => score_latency(status, weight, transport, now, config),
+        // Per-client uses the same penalty-aware per-transport score as
+        // per-flow: the only difference between the two scopes is the sticky
+        // key granularity (client identity vs target), not how an uplink's
+        // latency is ranked.
+        RoutingScope::PerFlow | RoutingScope::PerClient => {
+            score_latency(status, weight, transport, now, config)
+        },
     }
 }
 

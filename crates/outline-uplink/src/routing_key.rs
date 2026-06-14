@@ -21,6 +21,14 @@ pub(crate) enum RoutingKey {
         transport: TransportKind,
         target: TargetAddr,
     },
+    /// Per-client affinity key (`routing_scope = "per_client"`). Carries the
+    /// transport so that, like [`Self::Target`], a client can pin a different
+    /// uplink for TCP vs UDP when its preferred uplink only carries one of
+    /// them — without the two legs fighting over a single map entry.
+    Client {
+        transport: TransportKind,
+        client: String,
+    },
     Default(TransportKind),
 }
 
@@ -34,6 +42,9 @@ impl fmt::Display for RoutingKey {
             Self::Target { transport, target } => {
                 write!(f, "{}:{target}", transport_key_prefix(*transport))
             },
+            Self::Client { transport, client } => {
+                write!(f, "{}:client:{client}", transport_key_prefix(*transport))
+            },
             Self::Default(transport) => write!(f, "{}:default", transport_key_prefix(*transport)),
         }
     }
@@ -42,13 +53,23 @@ impl fmt::Display for RoutingKey {
 pub(crate) fn routing_key(
     transport: TransportKind,
     target: Option<&TargetAddr>,
+    client: Option<&str>,
     scope: RoutingScope,
 ) -> RoutingKey {
-    match target {
-        _ if matches!(scope, RoutingScope::Global) => RoutingKey::Global,
-        _ if matches!(scope, RoutingScope::PerUplink) => RoutingKey::TransportGlobal(transport),
-        Some(target) => RoutingKey::Target { transport, target: target.clone() },
-        None => RoutingKey::Default(transport),
+    match scope {
+        RoutingScope::Global => RoutingKey::Global,
+        RoutingScope::PerUplink => RoutingKey::TransportGlobal(transport),
+        // No client identity available (e.g. an ingress that cannot attribute
+        // the flow to a source): fall back to a single shared key so the flow
+        // is still served deterministically instead of being dropped.
+        RoutingScope::PerClient => match client {
+            Some(client) => RoutingKey::Client { transport, client: client.to_string() },
+            None => RoutingKey::Default(transport),
+        },
+        RoutingScope::PerFlow => match target {
+            Some(target) => RoutingKey::Target { transport, target: target.clone() },
+            None => RoutingKey::Default(transport),
+        },
     }
 }
 
@@ -56,7 +77,10 @@ pub(crate) fn strict_route_key(transport: TransportKind, scope: RoutingScope) ->
     match scope {
         RoutingScope::Global => RoutingKey::Global,
         RoutingScope::PerUplink => RoutingKey::TransportGlobal(transport),
-        RoutingScope::PerFlow => RoutingKey::Default(transport),
+        // Strict (active_passive) pinning is not defined for per-client scope —
+        // per_client is an active_active concept. Use the same default key as
+        // per_flow so the function stays total.
+        RoutingScope::PerFlow | RoutingScope::PerClient => RoutingKey::Default(transport),
     }
 }
 
