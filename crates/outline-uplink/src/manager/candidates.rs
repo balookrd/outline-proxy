@@ -15,6 +15,10 @@ use super::super::selection::{
 use super::super::types::{TransportKind, Uplink, UplinkCandidate, UplinkManager};
 use super::status::UplinkStatus;
 
+#[cfg(test)]
+#[path = "tests/candidates.rs"]
+mod tests;
+
 #[derive(Clone)]
 pub(crate) struct CandidateState {
     pub(crate) index: usize,

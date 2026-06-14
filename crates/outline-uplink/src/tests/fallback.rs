@@ -545,7 +545,7 @@ fn wire_dial_order_is_singleton_when_no_fallbacks() {
 }
 
 #[test]
-fn record_wire_outcome_stamps_last_any_wire_success() {
+fn data_proven_arms_liveness_override_but_bare_dial_does_not() {
     use crate::manager::status::UplinkStatus;
     use crate::selection::any_wire_recent_success;
 
@@ -554,11 +554,11 @@ fn record_wire_outcome_stamps_last_any_wire_success() {
     let lb = make_lb(std::time::Duration::from_secs(60));
     let manager =
         UplinkManager::new_for_test("test", vec![cfg.clone()], make_probe(2), lb.clone()).unwrap();
+    let uplink_handle = &manager.uplinks()[0];
 
     // Before any outcome: liveness override returns false.
     let snap_initial: UplinkStatus = manager.read_status_for_test(0);
     let now = tokio::time::Instant::now();
-    let uplink_handle = &manager.uplinks()[0];
     assert!(!any_wire_recent_success(
         &snap_initial,
         uplink_handle,
@@ -567,23 +567,32 @@ fn record_wire_outcome_stamps_last_any_wire_success() {
         &lb,
     ));
 
-    // After a successful primary dial: liveness override returns true.
+    // A bare dial handshake is NOT proof of life — a degraded server can
+    // complete the WS upgrade then close the data path (1013), so it must
+    // not arm the liveness override.
     manager.record_wire_outcome(0, TransportKind::Tcp, 0, true, 2);
-    let snap_after: UplinkStatus = manager.read_status_for_test(0);
+    let snap_dial: UplinkStatus = manager.read_status_for_test(0);
     let now = tokio::time::Instant::now();
-    assert!(any_wire_recent_success(
-        &snap_after,
-        uplink_handle,
-        TransportKind::Tcp,
-        now,
-        &lb,
-    ));
+    assert!(
+        !any_wire_recent_success(&snap_dial, uplink_handle, TransportKind::Tcp, now, &lb),
+        "a bare dial handshake must NOT arm the liveness override",
+    );
+
+    // Proven delivery (fallback-wire probe reached its target / real traffic)
+    // arms it.
+    manager.mark_wire_data_proven(0, TransportKind::Tcp);
+    let snap_proven: UplinkStatus = manager.read_status_for_test(0);
+    let now = tokio::time::Instant::now();
+    assert!(
+        any_wire_recent_success(&snap_proven, uplink_handle, TransportKind::Tcp, now, &lb),
+        "proven delivery arms the liveness override",
+    );
 
     // Single-wire uplink: liveness override always false (no fallbacks).
     let single_cfg = ws_tcp_only_primary();
     let single_mgr =
         UplinkManager::new_for_test("solo", vec![single_cfg], make_probe(1), lb.clone()).unwrap();
-    single_mgr.record_wire_outcome(0, TransportKind::Tcp, 0, true, 1);
+    single_mgr.mark_wire_data_proven(0, TransportKind::Tcp);
     let snap = single_mgr.read_status_for_test(0);
     assert!(!any_wire_recent_success(
         &snap,
@@ -1984,9 +1993,10 @@ fn fallback_bootstrap_off_after_first_wire_success() {
     let manager =
         UplinkManager::new_for_test("test", vec![cfg], make_probe(1), lb.clone()).unwrap();
 
-    // Record a fallback-wire success — bootstrap must hand off to the
-    // recent-success window from this point on.
-    manager.record_wire_outcome(0, TransportKind::Tcp, 1, true, 2);
+    // Record proven fallback-wire delivery — bootstrap must hand off to the
+    // recent-success window from this point on. (A bare dial handshake would
+    // NOT — only proven delivery arms `last_any_wire_success`.)
+    manager.mark_wire_data_proven(0, TransportKind::Tcp);
 
     let status = manager.read_status_for_test(0);
     let uplink = &manager.uplinks()[0];
@@ -1994,7 +2004,7 @@ fn fallback_bootstrap_off_after_first_wire_success() {
 
     assert!(
         !fallback_bootstrap_allowed(&status, uplink, TransportKind::Tcp, now),
-        "after the first wire success the bootstrap path is no longer needed",
+        "after the first proven wire delivery the bootstrap path is no longer needed",
     );
 }
 
@@ -2127,15 +2137,15 @@ async fn snapshot_effective_health_uses_any_wire_for_multi_wire_uplinks() {
         "no fallback success yet, effective should mirror probe verdict",
     );
 
-    // Stamp a successful fallback wire dial.
-    manager.record_wire_outcome(0, TransportKind::Tcp, 1, true, 2);
+    // Stamp proven fallback-wire delivery (probe reached its target).
+    manager.mark_wire_data_proven(0, TransportKind::Tcp);
 
     let snap = manager.snapshot().await;
     assert_eq!(snap.uplinks[0].tcp_healthy, Some(false), "probe verdict unchanged");
     assert_eq!(
         snap.uplinks[0].tcp_health_effective,
         Some(true),
-        "fallback wire success surfaces as effective health true",
+        "proven fallback-wire delivery surfaces as effective health true",
     );
 }
 
@@ -2649,14 +2659,14 @@ fn shuffle_wires_on_resets_round_counter_on_success() {
     manager.record_wire_outcome(0, TransportKind::Tcp, 0, false, 3);
     assert_eq!(manager.read_status_for_test(0).tcp.wires_failed_in_round, 1);
 
-    // Traffic stabilises on whichever wire — the spec says any wire success
-    // resets the round, not just the active one. Here we report success on
-    // wire 2 (a non-active wire from the dial loop's perspective).
-    manager.record_wire_outcome(0, TransportKind::Tcp, 2, true, 3);
+    // Traffic stabilises — proven delivery (not a bare dial handshake)
+    // resets the round counter. The round counter is per-transport, so it
+    // does not matter which wire delivered.
+    manager.mark_wire_data_proven(0, TransportKind::Tcp);
     assert_eq!(
         manager.read_status_for_test(0).tcp.wires_failed_in_round,
         0,
-        "any-wire success must reset the shuffle_wires round counter",
+        "proven delivery must reset the shuffle_wires round counter",
     );
     // active_wire must NOT snap back to 0 — the spec is "forward only,
     // rotation continues from current position on next failure".
