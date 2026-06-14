@@ -4,7 +4,7 @@
 
 # outline-ws-rust
 
-`outline-ws-rust` is a production-oriented Rust proxy that accepts local SOCKS5 traffic and forwards it to Outline-compatible WebSocket transports over HTTP/1.1, HTTP/2, or HTTP/3, to direct Shadowsocks socket uplinks, to VLESS-over-WebSocket uplinks, or to raw QUIC uplinks (Shadowsocks / VLESS framed directly over QUIC streams and datagrams).
+`outline-ws-rust` is a production-oriented Rust proxy that accepts local SOCKS5 traffic and forwards it to Outline-compatible WebSocket transports over HTTP/1.1, HTTP/2, or HTTP/3, to VLESS-over-WebSocket uplinks, or to raw QUIC uplinks (Shadowsocks / VLESS framed directly over QUIC streams and datagrams).
 
 It supports:
 
@@ -15,7 +15,6 @@ It supports:
 - raw QUIC transport (per-ALPN: `vless`, `ss`, `h3`) — VLESS / Shadowsocks framed directly over QUIC bidi streams and datagrams (RFC 9221), no WebSocket / no HTTP/3
 - VLESS-over-WebSocket uplinks (UUID auth, shared WSS dial path, per-destination UDP session-mux)
 - one-line VLESS uplink config via `vless://UUID@HOST:PORT?...#NAME` share-link URIs (TOML `link = "..."`, CLI `--vless-link`, control-plane `link` payload field)
-- direct Shadowsocks TCP/UDP socket uplinks
 - Prometheus metrics, built-in multi-instance dashboard, and packaged Grafana dashboards
 - existing TUN device integration for `tun2udp`
 - stateful `tun2tcp` relay with production-oriented guardrails
@@ -30,7 +29,7 @@ At a high level, the process does five jobs:
 
 1. Accepts local SOCKS5 and optional TUN traffic.
 2. Selects the best available uplink using health probes, EWMA RTT scoring, sticky routing, hysteresis, penalties, and warm standby.
-3. Connects to an Outline WebSocket transport using the requested mode (`http1`, `h2`, or `h3`) with automatic fallback, to a raw QUIC uplink (`quic`; pairs with the matching ALPN-keyed listener on the server, falls back to WS over H2 → H1 on dial / handshake failure), or to a direct Shadowsocks socket / VLESS-over-WebSocket uplink.
+3. Connects to an Outline WebSocket transport using the requested mode (`http1`, `h2`, or `h3`) with automatic fallback, to a raw QUIC uplink (`quic`; pairs with the matching ALPN-keyed listener on the server, falls back to WS over H2 → H1 on dial / handshake failure), or to a VLESS-over-WebSocket uplink.
 4. Encrypts payloads using Shadowsocks AEAD, or frames them as VLESS with UUID auth, before sending them upstream.
 5. Exposes Prometheus metrics for runtime, uplink, probe, TUN, and `tun2tcp` behavior.
 
@@ -58,8 +57,6 @@ sticky + hysteresis"]
 HTTP/1.1 / HTTP/2 / HTTP/3"]
         QC["Raw QUIC connectors
 ALPN: vless / ss"]
-        DS["Direct Shadowsocks
-TCP / UDP socket"]
         SS["Shadowsocks AEAD"]
         VL["VLESS framing
 UUID auth"]
@@ -74,7 +71,6 @@ tun2udp + tun2tcp"]
     U --> LB
     LB -->|"*_ws_mode = http1/h2/h3"| WS
     LB -->|"*_ws_mode = quic"| QC
-    LB -->|"transport = shadowsocks"| DS
     WS -->|"outline"| SS
     WS -->|"vless"| VL
     QC -->|"transport = websocket"| SS
@@ -83,13 +79,11 @@ tun2udp + tun2tcp"]
     subgraph Upstream["Upstream uplinks"]
         O1["outline-over-ws (A/B)"]
         O2["raw-quic edge (vless / ss)"]
-        O3["direct shadowsocks edge"]
         O4["vless-over-ws edge"]
     end
 
     SS --> O1
     SS --> O2
-    DS --> O3
     VL --> O4
     VL --> O2
 
@@ -129,7 +123,6 @@ tun2udp + tun2tcp"]
 - RFC 9220 WebSocket over HTTP/3 / QUIC
 - raw QUIC (per-ALPN, no WebSocket / no HTTP/3): selected via `*_ws_mode = "quic"`. ALPN `vless` carries VLESS-TCP (one bidi per session) and VLESS-UDP (per-target control bidi + datagrams demuxed by 4-byte server-allocated `session_id`). ALPN `ss` carries Shadowsocks-TCP (one bidi per session) and Shadowsocks-UDP (1 datagram = 1 SS-AEAD packet, RFC 9221). Multiple sessions of the same ALPN to the same `host:port` share one cached QUIC connection. Auxiliary ALPNs `vless-mtu` / `ss-mtu` carry oversized UDP packets that exceed the QUIC datagram limit on a server-initiated bidi. On dial / handshake failure, raw-QUIC paths fall back to WS over H2 (then H1) and open the H3-downgrade window so subsequent dials skip QUIC until the recovery probe confirms QUIC is reachable again.
 - VLESS-over-XHTTP (`vless_mode = "xhttp_h1"`, `"xhttp_h2"` or `"xhttp_h3"`): pairs with the `xhttp_path_vless` listener on outline-ss-rust. The dial URL `vless_xhttp_url` selects the wire mode through its query string — bare URL or `?mode=packet-up` runs the GET + sequenced POSTs pair, `?mode=stream-one` runs a single bidirectional POST (h2 / h3 only; the h1 carrier supports packet-up only and bails on stream-one). Useful when WebSocket upgrades are blocked on the path (Cloudflare-style CDNs, captive-portal middleboxes).
-- direct Shadowsocks TCP/UDP socket uplinks
 - VLESS-over-WebSocket uplinks (`transport = "vless"`, UUID auth, shared WSS dial path with `websocket`, per-destination UDP session-mux bounded by `vless_udp_max_sessions`)
 - transport fallback:
   - `h3 -> h2 -> http1`
@@ -216,7 +209,7 @@ The project is intentionally practical, but there are still boundaries:
 - [`src/config/`](src/config) - configuration loading, schema, and validated types
 - [`src/proxy/`](src/proxy) - SOCKS5 TCP/UDP ingress handlers (dispatcher, TCP failover, UDP relay)
 - [`crates/outline-uplink/`](crates/outline-uplink) - uplink selection, probing, failover, and standby management
-- [`crates/outline-transport/`](crates/outline-transport) - WebSocket / HTTP-2 / HTTP-3 / raw-QUIC / VLESS / direct-Shadowsocks transports + the cross-transport `ResumeCache`
+- [`crates/outline-transport/`](crates/outline-transport) - WebSocket / HTTP-2 / HTTP-3 / raw-QUIC / VLESS transports + the cross-transport `ResumeCache`
 - [`crates/outline-net/`](crates/outline-net) - DNS cache and shared net plumbing extracted from `outline-transport`
 - [`crates/outline-tun/`](crates/outline-tun) - stateful TUN relay engines (TCP and UDP)
 - [`crates/shadowsocks-crypto/`](crates/shadowsocks-crypto) - AEAD crypto helpers for Shadowsocks
@@ -748,11 +741,10 @@ via = "main"
 
 ### Key config behavior
 
-- `transport` accepts `websocket` (default), `shadowsocks`, or `vless`. VLESS shares the WSS dial path with `websocket` (same `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark` fields) but authenticates with a single `vless_id` instead of a Shadowsocks `method` + `password`. VLESS UDP opens one WSS session per destination inside the uplink (bounded by `[outline.load_balancing] vless_udp_max_sessions`, LRU-evicted, with idle eviction controlled by `vless_udp_session_idle_secs`).
+- `transport` accepts `websocket` (default) or `vless`. VLESS shares the WSS dial path with `websocket` (same `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark` fields) but authenticates with a single `vless_id` instead of a Shadowsocks `method` + `password`. VLESS UDP opens one WSS session per destination inside the uplink (bounded by `[outline.load_balancing] vless_udp_max_sessions`, LRU-evicted, with idle eviction controlled by `vless_udp_session_idle_secs`).
 - `link = "vless://UUID@HOST:PORT?type=...&security=...&alpn=...#NAME"` configures a VLESS uplink from a single share-link URI in lieu of the explicit `vless_id` / `vless_*_url` / `vless_mode` fields; `transport = "vless"` is implied. The same value is accepted via the `--vless-link` CLI flag (`OUTLINE_VLESS_LINK`) and the `/control/uplinks` REST payload (`link`, alias `share_link`). Mixing `link` with the explicit fields is rejected. See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md#7-vless-share-link-uris) for the recognised query-parameter table and constraints.
 - At least one ingress must be configured: `--listen` / `[socks5].listen` and/or `[tun]`. If neither is present, the process exits with an error instead of silently binding `127.0.0.1:1080`.
 - `tcp_mode` / `udp_mode` (`transport = "ws"`) and `vless_mode` (`transport = "vless"`) pick the per-direction transport carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade), `quic` (raw QUIC framing on ALPN `vless` / `ss`), or `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (VLESS-only XHTTP packet-up). See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) for per-shape config blocks, dial-time fallback chains, and resume behaviour.
-- `tcp_addr` / `udp_addr` are used with `transport = "shadowsocks"` and accept `host:port` or `[ipv6]:port`.
 - `ipv6_first` (default `false`) changes resolved-address preference for that uplink from IPv4-first to IPv6-first for TCP, UDP, H1, H2, and H3 connections.
 - `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`; for these methods `password` must be a base64-encoded PSK of the exact cipher key length.
 - `[[socks5.users]]` enables local SOCKS5 username/password auth for multiple users. Each entry must include both `username` and `password`.
@@ -1257,11 +1249,6 @@ When TUN UDP forwarding fails before a packet can be delivered upstream, `outlin
 Oversized SOCKS5 UDP packets dropped before uplink forwarding, and oversized UDP responses dropped before client delivery, are exported as `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing", cause}` (the `cause` label distinguishes `quic_dgram`, `vless_quic_dgram`, `vless_udp`, `ss_socket`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`).
 On the TUN UDP path, oversize drops also synthesise an ICMP "Fragmentation Needed" (IPv4) or "Packet Too Big" (IPv6) reply toward the sender so its own PMTUD state machine can react — throttled to one PTB per second per flow, and suppressed below QUIC v1's Initial-datagram floor (1200 v4 / 1280 v6) so well-behaved QUIC clients are not pushed off UDP into a TCP fallback. See [docs/TUN-PMTUD.md](docs/TUN-PMTUD.md) for the full contract.
 Local ICMP echo handling is exported separately via `outline_ws_rust_tun_icmp_local_replies_total{ip_family}`.
-
-For direct `transport = "shadowsocks"` UDP uplinks, the same oversized checks still apply on the local relay boundaries:
-
-- incoming: the relay drops the packet if `target + payload` exceeds the Shadowsocks AEAD payload limit before encrypting and sending it to the uplink
-- outgoing: the relay drops the packet if the decoded upstream response becomes larger than a safe SOCKS5 UDP datagram before sending it back to the client
 
 Grafana dashboards:
 

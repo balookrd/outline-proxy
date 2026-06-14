@@ -1,8 +1,8 @@
 //! Shared TCP transport setup for probes that need a real Shadowsocks stream
 //! (HTTP probe, TCP-tunnel probe).
 //!
-//! Both probe kinds dial the uplink the same way — optionally tunnelling
-//! through WebSocket — wrap the resulting byte stream in Shadowsocks AEAD
+//! Both probe kinds dial the uplink the same way — tunnelling through
+//! WebSocket — wrap the resulting byte stream in Shadowsocks AEAD
 //! reader/writer halves, and return them to the caller for the probe-specific
 //! request/response exchange.  Keeping this in one place lets the two
 //! probe modules focus on their protocol instead of repeating ~60 lines of
@@ -17,13 +17,12 @@ use tracing::debug;
 
 use outline_transport::{
     DialNetworkOptions, DnsCache, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
-    TransportDialOptions, TransportOperation, UpstreamTransportGuard,
-    connect_shadowsocks_tcp_with_source, connect_transport,
+    TransportDialOptions, TransportOperation, UpstreamTransportGuard, connect_transport,
 };
 
 use crate::config::{TargetAddr, TransportMode, UplinkConfig, UplinkTransport};
 
-/// Connects a probe's Shadowsocks TCP stream (WebSocket or direct socket) and
+/// Connects a probe's Shadowsocks TCP stream (tunnelled through WebSocket) and
 /// returns the framed writer/reader halves plus a downgrade marker.  `source`
 /// is the connect-source tag that propagates into transport metrics and trace
 /// spans; `probe_label` is used only to build human-readable error contexts.
@@ -103,7 +102,6 @@ pub(super) async fn connect_probe_tcp(
                 let r = r.with_request_salt(request_salt);
                 Ok((TcpWriter::QuicSs(w), TcpReader::QuicSs(r), None))
             },
-            _ => unreachable!(),
         };
     }
 
@@ -197,35 +195,6 @@ pub(super) async fn connect_probe_tcp(
                 ws_stream, uuid, target, lifetime, diag, None,
             );
             Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader), downgraded_from))
-        },
-        UplinkTransport::Shadowsocks => {
-            let stream = connect_shadowsocks_tcp_with_source(
-                cache,
-                uplink
-                    .tcp_addr
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", uplink.name))?,
-                uplink.fwmark,
-                uplink.ipv6_first,
-                source,
-            )
-            .await
-            .with_context(|| TransportOperation::Connect {
-                target: format!("{probe_label} shadowsocks socket for uplink {}", uplink.name),
-            })?;
-            let (reader_half, writer_half) = stream.into_split();
-            let writer = TcpShadowsocksWriter::connect_socket(
-                writer_half,
-                uplink.cipher,
-                &master_key,
-                Arc::clone(&lifetime),
-            )?;
-            let request_salt = writer.request_salt();
-            let reader =
-                TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
-                    .with_request_salt(request_salt);
-            // Direct shadowsocks socket has no WS layer to downgrade.
-            Ok((TcpWriter::Socket(writer), TcpReader::Socket(reader), None))
         },
     }
 }

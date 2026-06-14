@@ -99,6 +99,8 @@
 
 ### Удалено
 
+- **Удалён клиентский direct/plain Shadowsocks-uplink поверх голого сокета (`transport = "shadowsocks"`).** Поля `tcp_addr` / `udp_addr` (top-level, `[outline]`, `[[outline.uplinks]]` и `[[outline.uplinks.fallbacks]]`), их CLI-флаги `--tcp-addr` / `--udp-addr`, переменные окружения `OUTLINE_TCP_ADDR` / `OUTLINE_UDP_ADDR` и значение `shadowsocks` у `transport` убраны полностью — вместе с соответствующими полями control-API payload и их отображением в dashboard. Bare Shadowsocks поверх голого TCP/UDP-сокета детектируется энтропийными DPI-эвристиками (серверный plain-Shadowsocks-листенер был удалён ранее); Shadowsocks-over-WebSocket (`transport = "ws"`, поля `tcp_ws_url` / `udp_ws_url`) и VLESS не затронуты и остаются поддерживаемыми транспортами, а SS-AEAD-шифрование сохранено для пути SS-over-WebSocket. Конфиг, всё ещё использующий `transport = "shadowsocks"` или `tcp_addr` / `udp_addr`, теперь не загружается с явной ошибкой.
+
 - **Удалена миграция legacy top-level конфигов (`--migrate-config` + авто-миграция).** One-shot CLI-флаг `--migrate-config` и авто-миграция на загрузке, переписывавшая до-`[outline]` flat-раскладку (top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]`) в секцию `[outline]` (`config/migrate.rs`), убраны. Runtime-совместимость не изменилась: flat-раскладка по-прежнему принимается в памяти через compat-слой и логирует deprecation-предупреждение — удалён только путь миграции с переписыванием файла. Сконвертируйте конфиг в `[outline]` однократно (deprecation-предупреждение называет поля), чтобы убрать warning.
 
 ## [1.4.4] - 2026-05-07

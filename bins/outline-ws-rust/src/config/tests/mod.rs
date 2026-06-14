@@ -460,37 +460,6 @@ async fn load_config_disables_probes_when_probe_section_has_no_checks() {
 }
 
 #[tokio::test]
-async fn load_config_supports_direct_shadowsocks_uplink() {
-    let tmp = TempDir::new().unwrap();
-    let path = tmp.path().join("config.toml");
-    std::fs::write(
-        &path,
-        r#"
-        transport = "shadowsocks"
-        tcp_addr = "ss.example.com:8388"
-        udp_addr = "ss.example.com:8388"
-        method = "chacha20-ietf-poly1305"
-        password = "Secret0"
-
-        [socks5]
-        listen = "127.0.0.1:1080"
-        "#,
-    )
-    .unwrap();
-
-    let args = super::Args::parse_from(["test"]);
-    let config = super::load_config(&path, &args).await.unwrap();
-    assert_eq!(config.groups.len(), 1);
-    assert_eq!(config.groups[0].uplinks.len(), 1);
-    let uplink = &config.groups[0].uplinks[0];
-    assert_eq!(uplink.transport, UplinkTransport::Shadowsocks);
-    assert_eq!(uplink.tcp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
-    assert_eq!(uplink.udp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
-    assert!(uplink.tcp_ws_url.is_none());
-    assert!(uplink.udp_ws_url.is_none());
-}
-
-#[tokio::test]
 async fn load_config_rejects_missing_all_ingress() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("config.toml");

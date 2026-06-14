@@ -19,7 +19,6 @@ pub enum UplinkTransport {
     #[default]
     #[serde(alias = "websocket")]
     Ws,
-    Shadowsocks,
     /// VLESS over WebSocket (iteration 1: TCP + UDP, no Mux, no flow/xtls,
     /// TLS supplied by the WS URL scheme `wss://` going through rustls).
     Vless,
@@ -31,7 +30,6 @@ impl std::str::FromStr for UplinkTransport {
     fn from_str(s: &str) -> Result<Self> {
         match s {
             "ws" | "websocket" => Ok(Self::Ws),
-            "shadowsocks" => Ok(Self::Shadowsocks),
             "vless" => Ok(Self::Vless),
             _ => anyhow::bail!("unsupported uplink transport: {s}"),
         }
@@ -42,7 +40,6 @@ impl std::fmt::Display for UplinkTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Ws => "ws",
-            Self::Shadowsocks => "shadowsocks",
             Self::Vless => "vless",
         })
     }
@@ -92,8 +89,6 @@ pub struct FallbackTransport {
     pub vless_xhttp_url: Option<Url>,
     pub vless_mode: TransportMode,
     pub vless_id: Option<[u8; 16]>,
-    pub tcp_addr: Option<ServerAddr>,
-    pub udp_addr: Option<ServerAddr>,
     pub cipher: CipherKind,
     pub password: String,
     pub fwmark: Option<u32>,
@@ -109,7 +104,6 @@ impl FallbackTransport {
         match self.transport {
             UplinkTransport::Ws => self.udp_ws_url.is_some(),
             UplinkTransport::Vless => self.vless_dial_url().is_some(),
-            UplinkTransport::Shadowsocks => self.udp_addr.is_some(),
         }
     }
 
@@ -117,7 +111,6 @@ impl FallbackTransport {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
             UplinkTransport::Ws => self.tcp_ws_url.as_ref(),
-            UplinkTransport::Shadowsocks => None,
         }
     }
 
@@ -125,7 +118,6 @@ impl FallbackTransport {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
             UplinkTransport::Ws => self.udp_ws_url.as_ref(),
-            UplinkTransport::Shadowsocks => None,
         }
     }
 
@@ -159,13 +151,13 @@ impl FallbackTransport {
 pub struct UplinkConfig {
     pub name: String,
     pub transport: UplinkTransport,
-    /// `transport = "ws"` only. None for vless/shadowsocks.
+    /// `transport = "ws"` only. None for vless.
     pub tcp_ws_url: Option<Url>,
-    /// `transport = "ws"` only. Meaningless for vless/shadowsocks.
+    /// `transport = "ws"` only. Meaningless for vless.
     pub tcp_mode: TransportMode,
-    /// `transport = "ws"` only. None for vless/shadowsocks.
+    /// `transport = "ws"` only. None for vless.
     pub udp_ws_url: Option<Url>,
-    /// `transport = "ws"` only. Meaningless for vless/shadowsocks.
+    /// `transport = "ws"` only. Meaningless for vless.
     pub udp_mode: TransportMode,
     /// `transport = "vless"` only. Single WS URL serving both TCP
     /// and UDP — required when `vless_mode` is one of the WS or QUIC
@@ -177,8 +169,6 @@ pub struct UplinkConfig {
     pub vless_xhttp_url: Option<Url>,
     /// `transport = "vless"` only.
     pub vless_mode: TransportMode,
-    pub tcp_addr: Option<ServerAddr>,
-    pub udp_addr: Option<ServerAddr>,
     pub cipher: CipherKind,
     pub password: String,
     pub weight: f64,
@@ -237,7 +227,6 @@ impl UplinkConfig {
         match self.transport {
             UplinkTransport::Ws => self.udp_ws_url.is_some(),
             UplinkTransport::Vless => self.vless_dial_url().is_some(),
-            UplinkTransport::Shadowsocks => self.udp_addr.is_some(),
         }
     }
 
@@ -251,12 +240,11 @@ impl UplinkConfig {
 
     /// URL to dial for TCP-style sessions. For VLESS this is either
     /// `vless_ws_url` or `vless_xhttp_url` depending on `vless_mode`;
-    /// for WS this is `tcp_ws_url`. Shadowsocks returns None.
+    /// for WS this is `tcp_ws_url`.
     pub fn tcp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
             UplinkTransport::Ws => self.tcp_ws_url.as_ref(),
-            UplinkTransport::Shadowsocks => None,
         }
     }
 
@@ -267,7 +255,6 @@ impl UplinkConfig {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
             UplinkTransport::Ws => self.udp_ws_url.as_ref(),
-            UplinkTransport::Shadowsocks => None,
         }
     }
 
@@ -331,8 +318,6 @@ impl UplinkConfig {
             vless_ws_url: fb.vless_ws_url.clone(),
             vless_xhttp_url: fb.vless_xhttp_url.clone(),
             vless_mode: fb.vless_mode,
-            tcp_addr: fb.tcp_addr.clone(),
-            udp_addr: fb.udp_addr.clone(),
             cipher: fb.cipher,
             password: fb.password.clone(),
             weight: self.weight,

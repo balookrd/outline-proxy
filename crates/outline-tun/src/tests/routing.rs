@@ -26,8 +26,6 @@ fn uplink(name: &str) -> UplinkConfig {
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
-        tcp_addr: None,
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "Secret0".to_string(),
         weight: 1.0,

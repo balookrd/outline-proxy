@@ -73,7 +73,7 @@ pub fn find_typed<T: std::error::Error + Send + Sync + 'static>(
 }
 
 use anyhow::{Context, Result};
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::TcpStream;
 
 // Re-export resumption surface so callers in outline-uplink (and any
 // future user) can reach `SessionId`, `global_resume_cache`, and friends
@@ -127,7 +127,7 @@ mod xhttp;
 mod xhttp_mode_cache;
 mod xhttp_submode_cache;
 
-use dns::resolve_server_addr;
+#[cfg(any(feature = "h3", feature = "quic"))]
 pub(crate) use outline_net::{bind_addr_for, bind_udp_socket};
 use std::net::SocketAddr;
 
@@ -278,48 +278,6 @@ pub async fn gc_shared_connections() {
     ws_mode_cache::gc().await;
     xhttp_mode_cache::gc().await;
     xhttp_submode_cache::gc().await;
-}
-
-pub async fn connect_shadowsocks_tcp_with_source(
-    cache: &DnsCache,
-    addr: &ServerAddr,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-    source: &'static str,
-) -> Result<TcpStream> {
-    let mut connect_guard = TransportConnectGuard::new(source, "tcp");
-    let server_addr = resolve_server_addr(cache, addr, ipv6_first).await?;
-    let stream = connect_tcp_socket(server_addr, fwmark).await?;
-    connect_guard.finish("success");
-    Ok(stream)
-}
-
-pub async fn connect_shadowsocks_udp_with_source(
-    cache: &DnsCache,
-    addr: &ServerAddr,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-    source: &'static str,
-) -> Result<UdpSocket> {
-    let mut connect_guard = TransportConnectGuard::new(source, "udp");
-    let server_addr = resolve_server_addr(cache, addr, ipv6_first).await?;
-    let bind_addr = bind_addr_for(server_addr);
-    let socket = if fwmark.is_some() {
-        UdpSocket::from_std(bind_udp_socket(bind_addr, fwmark)?)
-            .context("failed to adopt UDP socket into tokio")?
-    } else {
-        UdpSocket::bind(bind_addr)
-            .await
-            .with_context(|| format!("failed to bind UDP socket on {bind_addr}"))?
-    };
-    socket
-        .connect(server_addr)
-        .await
-        .with_context(|| TransportOperation::Connect {
-            target: format!("UDP socket to {server_addr}"),
-        })?;
-    connect_guard.finish("success");
-    Ok(socket)
 }
 
 #[cfg(test)]

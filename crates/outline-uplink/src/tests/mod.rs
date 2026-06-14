@@ -125,8 +125,6 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
-        tcp_addr: None,
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         weight: 1.0,
@@ -1835,8 +1833,6 @@ fn make_ws_uplink_with_modes(
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
-        tcp_addr: None,
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         weight: 1.0,
@@ -1862,8 +1858,6 @@ fn make_vless_h3_uplink(name: &str, url: &str) -> UplinkConfig {
         vless_ws_url: Some(Url::parse(url).unwrap()),
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH3,
-        tcp_addr: None,
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         weight: 1.0,
@@ -1878,19 +1872,21 @@ fn make_vless_h3_uplink(name: &str, url: &str) -> UplinkConfig {
     }
 }
 
-fn make_shadowsocks_uplink(name: &str) -> UplinkConfig {
+/// Shadowsocks-over-WebSocket uplink (`transport = "ws"`). The plain
+/// direct-socket Shadowsocks transport was removed; SS now always rides
+/// a WS carrier, so this helper builds a `Ws` uplink with both TCP and
+/// UDP WS URLs set.
+fn make_ss_over_ws_uplink(name: &str) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Shadowsocks,
-        tcp_ws_url: None,
-        tcp_mode: TransportMode::WsH3,
-        udp_ws_url: None,
-        udp_mode: TransportMode::WsH3,
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://ss.example.com/tcp").unwrap()),
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: Some(Url::parse("wss://ss.example.com/udp").unwrap()),
+        udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
-        tcp_addr: Some("127.0.0.1:9000".parse().unwrap()),
-        udp_addr: Some("127.0.0.1:9001".parse().unwrap()),
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         weight: 1.0,
@@ -1974,28 +1970,6 @@ async fn note_silent_transport_fallback_works_for_vless_uplink() {
 }
 
 #[tokio::test]
-async fn note_silent_transport_fallback_is_noop_for_shadowsocks_uplink() {
-    // The mode_downgrade guard explicitly excludes plain Shadowsocks uplinks
-    // (they don't carry a WS layer). A misrouted call must not produce any
-    // observable change in the effective mode.
-    let manager = UplinkManager::new_for_test(
-        "test",
-        vec![make_shadowsocks_uplink("ss")],
-        probe_disabled(),
-        lb(),
-    )
-    .unwrap();
-
-    manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::WsH3);
-    manager.note_silent_transport_fallback(0, TransportKind::Udp, TransportMode::WsH3);
-    // The configured mode field is just a slot; for Shadowsocks transports
-    // `effective_*_ws_mode` returns whatever was configured, with the
-    // downgrade window suppressed by the guard.
-    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::WsH3);
-    assert_eq!(manager.effective_udp_mode(0).await, TransportMode::WsH3);
-}
-
-#[tokio::test]
 async fn note_silent_transport_fallback_is_noop_when_mode_is_not_advanced() {
     // The guard also suppresses the window when the configured mode is below
     // H3/Quic — there is nothing to "downgrade from". A spurious call from a
@@ -2034,8 +2008,6 @@ fn make_vless_xhttp_uplink_with_mode(
         vless_ws_url: None,
         vless_xhttp_url: Some(Url::parse(url).unwrap()),
         vless_mode,
-        tcp_addr: None,
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         weight: 1.0,
@@ -2165,7 +2137,7 @@ async fn tcp_candidates_are_grouped_by_transport_kind() {
             make_vless_h3_uplink("vless1", "wss://vless1.example.com/v"),
             make_uplink("ws1", "wss://ws1.example.com/tcp"),
             make_vless_h3_uplink("vless2", "wss://vless2.example.com/v"),
-            make_shadowsocks_uplink("ss1"),
+            make_ss_over_ws_uplink("ss1"),
             make_uplink("ws2", "wss://ws2.example.com/tcp"),
         ],
         probe_disabled(),
@@ -2180,7 +2152,11 @@ async fn tcp_candidates_are_grouped_by_transport_kind() {
     let target = TargetAddr::Domain("example.com".to_string(), 443);
     let candidates = manager.tcp_candidates(&target).await;
     let names: Vec<_> = candidates.iter().map(|c| c.uplink.name.as_str()).collect();
-    assert_eq!(names, vec!["vless1", "vless2", "ws1", "ws2", "ss1"]);
+    // Two transport groups in first-seen order: Vless (vless1, vless2)
+    // then Ws (ws1, ss1, ws2). `ss1` is Shadowsocks-over-WS, i.e. a `Ws`
+    // transport, so it groups with the other WS wires in its original
+    // relative position.
+    assert_eq!(names, vec!["vless1", "vless2", "ws1", "ss1", "ws2"]);
 }
 
 #[tokio::test]
@@ -2189,7 +2165,7 @@ async fn udp_candidates_are_grouped_by_transport_kind() {
         "test",
         vec![
             make_uplink("ws1", "wss://ws1.example.com/tcp"),
-            make_shadowsocks_uplink("ss1"),
+            make_ss_over_ws_uplink("ss1"),
             make_vless_h3_uplink("vless1", "wss://vless1.example.com/v"),
             make_uplink("ws2", "wss://ws2.example.com/tcp"),
         ],
@@ -2205,7 +2181,11 @@ async fn udp_candidates_are_grouped_by_transport_kind() {
     let target = TargetAddr::Domain("example.com".to_string(), 443);
     let candidates = manager.udp_candidates(Some(&target)).await;
     let names: Vec<_> = candidates.iter().map(|c| c.uplink.name.as_str()).collect();
-    assert_eq!(names, vec!["ws1", "ws2", "ss1", "vless1"]);
+    // Two transport groups in first-seen order: Ws (ws1, ss1, ws2) then
+    // Vless (vless1). `ss1` is Shadowsocks-over-WS, i.e. a `Ws`
+    // transport, so it stays inside the WS group in its original
+    // relative position.
+    assert_eq!(names, vec!["ws1", "ss1", "ws2", "vless1"]);
 }
 
 #[tokio::test]

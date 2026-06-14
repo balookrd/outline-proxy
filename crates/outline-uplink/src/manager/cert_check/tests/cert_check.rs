@@ -16,8 +16,6 @@ fn ws_uplink(name: &str, tcp_url: &str, udp_url: &str) -> UplinkConfig {
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
-        tcp_addr: None,
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         weight: 1.0,
@@ -56,8 +54,6 @@ fn vless_ws_fallback(host: &str) -> FallbackTransport {
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH3,
         vless_id: Some([0u8; 16]),
-        tcp_addr: None,
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: String::new(),
         fwmark: None,
@@ -97,15 +93,6 @@ fn plain_ws_carries_no_tls_endpoint() {
 fn vless_xhttp_collapses_tcp_and_udp_to_one_https_endpoint() {
     let u = vless_xhttp_uplink("a", "https://edge.example/xhttp?mode=stream-one");
     assert_eq!(uplink_tls_endpoints(&u), vec![endpoint("edge.example", 443)]);
-}
-
-#[test]
-fn shadowsocks_uplink_has_no_tls_endpoints() {
-    let mut u = ws_uplink("a", "wss://x/tcp", "wss://x/udp");
-    u.transport = UplinkTransport::Shadowsocks;
-    u.tcp_ws_url = None;
-    u.udp_ws_url = None;
-    assert!(uplink_tls_endpoints(&u).is_empty());
 }
 
 #[test]

@@ -69,8 +69,7 @@ fn routing_scope_name(scope: RoutingScope) -> &'static str {
 /// independent of the cache state.
 /// Configured TCP mode string for a single wire entry. Mirrors
 /// [`UplinkConfig::tcp_dial_mode`] but operates on a synthetic
-/// transport+mode tuple drawn from primary or a fallback. Returns
-/// `None` for Shadowsocks (no TransportMode enum applies).
+/// transport+mode tuple drawn from primary or a fallback.
 fn wire_tcp_mode(
     transport: crate::config::UplinkTransport,
     ws_mode: crate::config::TransportMode,
@@ -80,7 +79,6 @@ fn wire_tcp_mode(
     match transport {
         UplinkTransport::Vless => Some(vless_mode.to_string()),
         UplinkTransport::Ws => Some(ws_mode.to_string()),
-        UplinkTransport::Shadowsocks => None,
     }
 }
 
@@ -143,7 +141,6 @@ impl UplinkManager {
         index: usize,
         uplink: &super::super::types::Uplink,
     ) -> Vec<outline_metrics::WireSnapshot> {
-        use crate::config::UplinkTransport;
         use outline_metrics::WireSnapshot;
         if uplink.fallbacks.is_empty() {
             return Vec::new();
@@ -163,20 +160,10 @@ impl UplinkManager {
             wire_xhttp_submode(uplink.transport, uplink.tcp_dial_url()).await;
         let (primary_udp_sm, primary_udp_block) =
             wire_xhttp_submode(uplink.transport, uplink.udp_dial_url()).await;
-        let (primary_tcp_eff_opt, primary_tcp_dg) = match uplink.transport {
-            UplinkTransport::Shadowsocks => (None, false),
-            _ => (
-                Some(primary_tcp_eff.clone()),
-                primary_tcp_configured.as_deref() != Some(&primary_tcp_eff),
-            ),
-        };
-        let (primary_udp_eff_opt, primary_udp_dg) = match uplink.transport {
-            UplinkTransport::Shadowsocks => (None, false),
-            _ => (
-                Some(primary_udp_eff.clone()),
-                primary_udp_configured.as_deref() != Some(&primary_udp_eff),
-            ),
-        };
+        let primary_tcp_eff_opt = Some(primary_tcp_eff.clone());
+        let primary_tcp_dg = primary_tcp_configured.as_deref() != Some(&primary_tcp_eff);
+        let primary_udp_eff_opt = Some(primary_udp_eff.clone());
+        let primary_udp_dg = primary_udp_configured.as_deref() != Some(&primary_udp_eff);
         chain.push(WireSnapshot {
             transport: uplink.transport.to_string(),
             tcp_downgrade_active: primary_tcp_dg,
@@ -198,14 +185,10 @@ impl UplinkManager {
             let eff_udp = self.effective_udp_mode_for_wire(index, wire_idx).await.to_string();
             let (sm_tcp, block_tcp) = wire_xhttp_submode(fb.transport, fb.tcp_dial_url()).await;
             let (sm_udp, block_udp) = wire_xhttp_submode(fb.transport, fb.udp_dial_url()).await;
-            let (eff_tcp_opt, dg_tcp) = match fb.transport {
-                UplinkTransport::Shadowsocks => (None, false),
-                _ => (Some(eff_tcp.clone()), configured_tcp.as_deref() != Some(&eff_tcp)),
-            };
-            let (eff_udp_opt, dg_udp) = match fb.transport {
-                UplinkTransport::Shadowsocks => (None, false),
-                _ => (Some(eff_udp.clone()), configured_udp.as_deref() != Some(&eff_udp)),
-            };
+            let eff_tcp_opt = Some(eff_tcp.clone());
+            let dg_tcp = configured_tcp.as_deref() != Some(&eff_tcp);
+            let eff_udp_opt = Some(eff_udp.clone());
+            let dg_udp = configured_udp.as_deref() != Some(&eff_udp);
             chain.push(WireSnapshot {
                 transport: fb.transport.to_string(),
                 tcp_downgrade_active: dg_tcp,
@@ -284,7 +267,6 @@ impl UplinkManager {
                     UplinkTransport::Vless => {
                         uplink.tcp_dial_url().map(|_| uplink.vless_mode.to_string())
                     },
-                    UplinkTransport::Shadowsocks => None,
                 },
                 udp_mode: match uplink.transport {
                     UplinkTransport::Ws => {
@@ -293,7 +275,6 @@ impl UplinkManager {
                     UplinkTransport::Vless => {
                         uplink.udp_dial_url().map(|_| uplink.vless_mode.to_string())
                     },
-                    UplinkTransport::Shadowsocks => None,
                 },
                 weight: uplink.weight,
                 tcp_healthy: status.tcp.healthy,
@@ -421,9 +402,9 @@ impl UplinkManager {
                 // OnceLock-frozen pool rather than letting the dashboard
                 // re-do the hash. `tcp_dial_url` covers WS / VLESS / XHTTP;
                 // `udp_dial_url` is the fallback for UDP-only uplinks.
-                // Plain Shadowsocks (no URL) returns `None` — the
+                // A wire without a dial URL returns `None` — the
                 // fingerprint module's HTTP-header surface doesn't apply
-                // to a raw socket, so showing a profile would be a lie.
+                // without an HTTP carrier, so showing a profile would be a lie.
                 fingerprint_profile_name: {
                     let strategy = uplink
                         .fingerprint_profile

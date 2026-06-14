@@ -224,9 +224,8 @@ struct ControlUplinkTopology {
     /// renders this directly inside the FP chip so the operator sees
     /// the actual identity on the wire instead of just the strategy
     /// token. `Some("random")` for `random` strategy (rotation, no
-    /// stable identity); absent for `none` strategy or
-    /// Shadowsocks-over-raw-socket uplinks where no URL-based dial
-    /// path engages the fingerprint module.
+    /// stable identity); absent for `none` strategy or uplinks with
+    /// no URL-based dial path that would engage the fingerprint module.
     #[serde(skip_serializing_if = "Option::is_none")]
     fingerprint_profile_name: Option<String>,
 }

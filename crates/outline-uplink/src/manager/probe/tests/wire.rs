@@ -21,8 +21,6 @@ fn vless_xhttp_primary() -> UplinkConfig {
         vless_ws_url: None,
         vless_xhttp_url: Some(url::Url::parse("https://cdn.example.com/SECRET/xhttp").unwrap()),
         vless_mode: TransportMode::XhttpH3,
-        tcp_addr: None,
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         weight: 1.0,
@@ -48,8 +46,6 @@ fn ws_fallback() -> FallbackTransport {
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
         vless_id: None,
-        tcp_addr: None,
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "shared".to_string(),
         fwmark: None,
@@ -58,19 +54,17 @@ fn ws_fallback() -> FallbackTransport {
     }
 }
 
-fn ss_fallback() -> FallbackTransport {
+fn vless_fallback() -> FallbackTransport {
     FallbackTransport {
-        transport: UplinkTransport::Shadowsocks,
+        transport: UplinkTransport::Vless,
         tcp_ws_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
         udp_mode: TransportMode::WsH1,
-        vless_ws_url: None,
+        vless_ws_url: Some(url::Url::parse("wss://vless.example.com/ws").unwrap()),
         vless_xhttp_url: None,
-        vless_mode: TransportMode::WsH1,
-        vless_id: None,
-        tcp_addr: Some("9.9.9.9:8388".parse().unwrap()),
-        udp_addr: Some("9.9.9.9:8388".parse().unwrap()),
+        vless_mode: TransportMode::WsH2,
+        vless_id: Some([1u8; 16]),
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "shared".to_string(),
         fwmark: None,
@@ -82,7 +76,7 @@ fn ss_fallback() -> FallbackTransport {
 #[test]
 fn wire_view_index_zero_returns_primary_with_empty_fallbacks() {
     let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(), ss_fallback()];
+    cfg.fallbacks = vec![ws_fallback(), vless_fallback()];
 
     let view = cfg.wire_view(0).expect("primary view exists");
     assert_eq!(view.transport, UplinkTransport::Vless);
@@ -97,7 +91,7 @@ fn wire_view_index_zero_returns_primary_with_empty_fallbacks() {
 #[test]
 fn wire_view_first_fallback_is_synthetic_uplink_with_fallback_fields() {
     let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(), ss_fallback()];
+    cfg.fallbacks = vec![ws_fallback(), vless_fallback()];
 
     let view = cfg.wire_view(1).expect("first fallback view exists");
     assert_eq!(view.transport, UplinkTransport::Ws);
@@ -112,11 +106,11 @@ fn wire_view_first_fallback_is_synthetic_uplink_with_fallback_fields() {
 #[test]
 fn wire_view_second_fallback_walks_chain() {
     let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(), ss_fallback()];
+    cfg.fallbacks = vec![ws_fallback(), vless_fallback()];
 
     let view = cfg.wire_view(2).expect("second fallback view exists");
-    assert_eq!(view.transport, UplinkTransport::Shadowsocks);
-    assert_eq!(view.tcp_addr.as_ref().unwrap().to_string(), "9.9.9.9:8388");
+    assert_eq!(view.transport, UplinkTransport::Vless);
+    assert_eq!(view.vless_ws_url.as_ref().unwrap().as_str(), "wss://vless.example.com/ws");
 }
 
 #[test]
@@ -139,7 +133,7 @@ fn target_wire_picks_first_fallback_when_active_still_on_primary() {
 #[test]
 fn target_wire_follows_active_wire_when_advanced() {
     let mut cfg = vless_xhttp_primary();
-    cfg.fallbacks = vec![ws_fallback(), ss_fallback()];
+    cfg.fallbacks = vec![ws_fallback(), vless_fallback()];
     // TCP has flipped to wire 2, UDP still on wire 1 — probe whichever is
     // furthest along, so we validate the wire that any new TCP session
     // would actually land on.

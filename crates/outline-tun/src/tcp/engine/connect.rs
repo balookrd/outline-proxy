@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 use outline_metrics as metrics;
 use outline_transport::{
     TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter, UplinkConnectionBinding,
-    UpstreamTransportGuard, connect_shadowsocks_tcp_with_source,
+    UpstreamTransportGuard,
 };
 use outline_uplink::UplinkTransport;
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
@@ -106,24 +106,6 @@ async fn connect_tcp_uplink(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<(TcpWriter, TcpReader)> {
-    let cache = uplinks.dns_cache();
-    if candidate.uplink.transport == UplinkTransport::Shadowsocks {
-        let stream = connect_shadowsocks_tcp_with_source(
-            cache,
-            candidate
-                .uplink
-                .tcp_addr
-                .as_ref()
-                .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", candidate.uplink.name))?,
-            candidate.uplink.fwmark,
-            candidate.uplink.ipv6_first,
-            "tun_tcp",
-        )
-        .await?;
-        let binding = tun_tcp_binding(uplinks, &candidate.uplink.name);
-        return do_tcp_ss_setup_socket(stream, &candidate.uplink, target, binding).await;
-    }
-
     // Raw QUIC (VLESS-over-QUIC or SS-over-QUIC) is shared via the per-ALPN
     // connection registry, not the warm-standby pool. Dispatch directly to
     // the QUIC dial helper which already returns a ready-to-use writer/reader
@@ -243,29 +225,4 @@ async fn do_tcp_ss_setup(
         .await
         .context("failed to send target address")?;
     Ok((TcpWriter::Ws(writer), TcpReader::Ws(reader)))
-}
-
-async fn do_tcp_ss_setup_socket(
-    stream: tokio::net::TcpStream,
-    uplink: &outline_uplink::UplinkConfig,
-    target: &TargetAddr,
-    binding: UplinkConnectionBinding,
-) -> Result<(TcpWriter, TcpReader)> {
-    let (reader_half, writer_half) = stream.into_split();
-    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
-    let lifetime = UpstreamTransportGuard::new_with_uplink("tun_tcp", "tcp", binding);
-    let mut writer = TcpShadowsocksWriter::connect_socket(
-        writer_half,
-        uplink.cipher,
-        &master_key,
-        Arc::clone(&lifetime),
-    )?;
-    let reader =
-        TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
-            .with_request_salt(writer.request_salt());
-    writer
-        .send_chunk(&target.to_wire_bytes()?)
-        .await
-        .context("failed to send target address")?;
-    Ok((TcpWriter::Socket(writer), TcpReader::Socket(reader)))
 }
