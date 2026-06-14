@@ -136,10 +136,18 @@ pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
             .into_iter()
             .map(|entry| {
                 let method = entry.effective_method(config.method);
-                let ws_path_tcp: Arc<str> =
-                    Arc::from(entry.effective_ws_path_tcp(&config.ws_path_tcp));
-                let ws_path_udp: Arc<str> =
-                    Arc::from(entry.effective_ws_path_udp(&config.ws_path_udp));
+                // A combined `ws_path_ss` puts both legs on one path: tcp and
+                // udp resolve to the same base, so it lands in both WS route
+                // tables and the bootstrap registers a combined
+                // `<base>/{token}` upgrade. Split users keep distinct paths.
+                let (ws_path_tcp, ws_path_udp): (Arc<str>, Arc<str>) =
+                    match entry.effective_ws_path_ss(config.ws_path_ss.as_deref()) {
+                        Some(ss) => (Arc::from(ss), Arc::from(ss)),
+                        None => (
+                            Arc::from(entry.effective_ws_path_tcp(&config.ws_path_tcp)),
+                            Arc::from(entry.effective_ws_path_udp(&config.ws_path_udp)),
+                        ),
+                    };
                 let password = entry.password.expect("user_entries filters passwordless users");
                 UserKey::new(entry.id, &password, entry.fwmark, method).map(|user| UserRoute {
                     user,
@@ -276,11 +284,16 @@ pub(super) fn build_ss_xhttp_user_routes(config: &Config) -> Result<Arc<[SsXhttp
             .user_entries()?
             .into_iter()
             // Keep only users that resolve to an SS-over-XHTTP base path
-            // (per-user override or the global `xhttp_path_ss`). Others
+            // (per-user override or the global `xhttp_path_tcp`). Others
             // belong to the WS tables, not this one.
             .filter_map(|entry| {
+                // A combined `xhttp_path_ss` feeds BOTH the tcp and udp maps,
+                // so the base path lands in both tables and the bootstrap tags
+                // it `SsCombined`. The split `xhttp_path_tcp` is the fallback
+                // for non-combined users.
                 let path = entry
-                    .effective_xhttp_path_ss(config.xhttp_path_ss.as_deref())?
+                    .effective_xhttp_path_ss(config.xhttp_path_ss.as_deref())
+                    .or_else(|| entry.effective_xhttp_path_tcp(config.xhttp_path_tcp.as_deref()))?
                     .to_owned();
                 Some((entry, path))
             })
@@ -300,7 +313,7 @@ pub(super) fn build_ss_xhttp_user_routes(config: &Config) -> Result<Arc<[SsXhttp
 }
 
 /// Same as [`build_ss_xhttp_user_routes`] but for the SS-UDP-over-XHTTP
-/// base path (`xhttp_path_ss_udp`). Reuses `SsXhttpUserRoute` /
+/// base path (`xhttp_path_udp`). Reuses `SsXhttpUserRoute` /
 /// `build_xhttp_ss_route_map` — the route record is identical; only the
 /// base path resolved per user differs.
 pub(super) fn build_ss_xhttp_udp_user_routes(config: &Config) -> Result<Arc<[SsXhttpUserRoute]>> {
@@ -309,8 +322,11 @@ pub(super) fn build_ss_xhttp_udp_user_routes(config: &Config) -> Result<Arc<[SsX
             .user_entries()?
             .into_iter()
             .filter_map(|entry| {
+                // Combined `xhttp_path_ss` also feeds the udp map (see the tcp
+                // builder); the split `xhttp_path_udp` is the fallback.
                 let path = entry
-                    .effective_xhttp_path_ss_udp(config.xhttp_path_ss_udp.as_deref())?
+                    .effective_xhttp_path_ss(config.xhttp_path_ss.as_deref())
+                    .or_else(|| entry.effective_xhttp_path_udp(config.xhttp_path_udp.as_deref()))?
                     .to_owned();
                 Some((entry, path))
             })

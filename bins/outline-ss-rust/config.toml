@@ -104,8 +104,18 @@ path = "/metrics"
 # ipv6_sticky_ttl_secs = 1800
 
 [websocket]
+# Split paths: TCP and UDP on separate base paths.
 ws_path_tcp = "/tcp"
 ws_path_udp = "/udp"
+# Combined SS paths (opt-in): ONE base path carries both TCP and UDP, told
+# apart by a hidden bit in the URL token (WS) or session-id (XHTTP). The
+# client sets `ss_ws_url` / `ss_xhttp_url` + `ss_mode`. Mutually exclusive
+# with the split fields above — a censor then sees one endpoint, not two.
+# ws_path_ss = "/ss"
+# xhttp_path_ss = "/ssx"
+# Split SS-over-XHTTP paths (alternative to combined; pair tcp + udp):
+# xhttp_path_tcp = "/ssx-tcp"
+# xhttp_path_udp = "/ssx-udp"
 # Optional VLESS over WebSocket path on the main TCP listener.
 # Use with TLS for public deployments. MVP supports TCP CONNECT only.
 # ws_path_vless = "/vless"

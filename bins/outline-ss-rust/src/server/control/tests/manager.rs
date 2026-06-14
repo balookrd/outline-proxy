@@ -46,11 +46,13 @@ fn vless_only_entry() -> UserEntry {
         method: None,
         ws_path_tcp: None,
         ws_path_udp: None,
+        ws_path_ss: None,
         vless_id: Some("00000000-0000-0000-0000-000000000001".into()),
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_tcp: None,
+        xhttp_path_udp: None,
         xhttp_path_ss: None,
-        xhttp_path_ss_udp: None,
         enabled: None,
     }
 }

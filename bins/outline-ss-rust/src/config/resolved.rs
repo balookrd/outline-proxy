@@ -106,6 +106,9 @@ pub struct Config {
     pub outbound_ipv6_sticky_ttl_secs: u64,
     pub ws_path_tcp: String,
     pub ws_path_udp: String,
+    /// Combined SS-over-WS path: one path carries both TCP and UDP legs (the
+    /// server splits them by the hidden `/{token}` bit). None disables it.
+    pub ws_path_ss: Option<String>,
     pub ws_path_vless: Option<String>,
     /// Base path under which the server accepts VLESS-over-XHTTP
     /// packet-up. The actual axum/h3 routes registered are
@@ -114,10 +117,13 @@ pub struct Config {
     pub xhttp_path_vless: Option<String>,
     /// Base path under which the server accepts Shadowsocks-over-XHTTP.
     /// Same route shape as `xhttp_path_vless`; None disables it.
-    pub xhttp_path_ss: Option<String>,
+    pub xhttp_path_tcp: Option<String>,
     /// Base path under which the server accepts SS-UDP-over-XHTTP.
-    /// Separate from `xhttp_path_ss` (the TCP path); None disables it.
-    pub xhttp_path_ss_udp: Option<String>,
+    /// Separate from `xhttp_path_tcp` (the TCP path); None disables it.
+    pub xhttp_path_udp: Option<String>,
+    /// Combined SS-over-XHTTP path: one path carries both TCP and UDP legs
+    /// (split by the hidden session-id bit). None disables it.
+    pub xhttp_path_ss: Option<String>,
     pub http_root_auth: bool,
     pub http_root_realm: String,
     pub users: Vec<UserEntry>,

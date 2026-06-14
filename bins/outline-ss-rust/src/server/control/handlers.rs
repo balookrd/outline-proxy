@@ -47,13 +47,17 @@ pub(super) struct CreateRequest {
     #[serde(default)]
     pub ws_path_udp: Option<String>,
     #[serde(default)]
+    pub ws_path_ss: Option<String>,
+    #[serde(default)]
     pub ws_path_vless: Option<String>,
     #[serde(default)]
     pub xhttp_path_vless: Option<String>,
     #[serde(default)]
-    pub xhttp_path_ss: Option<String>,
+    pub xhttp_path_tcp: Option<String>,
     #[serde(default)]
-    pub xhttp_path_ss_udp: Option<String>,
+    pub xhttp_path_udp: Option<String>,
+    #[serde(default)]
+    pub xhttp_path_ss: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -67,11 +71,13 @@ impl From<CreateRequest> for UserEntry {
             method: req.method,
             ws_path_tcp: req.ws_path_tcp,
             ws_path_udp: req.ws_path_udp,
+            ws_path_ss: req.ws_path_ss,
             vless_id: req.vless_id,
             ws_path_vless: req.ws_path_vless,
             xhttp_path_vless: req.xhttp_path_vless,
+            xhttp_path_tcp: req.xhttp_path_tcp,
+            xhttp_path_udp: req.xhttp_path_udp,
             xhttp_path_ss: req.xhttp_path_ss,
-            xhttp_path_ss_udp: req.xhttp_path_ss_udp,
             enabled: req.enabled,
         }
     }
@@ -92,13 +98,17 @@ pub(super) struct UpdateRequest {
     #[serde(default)]
     pub ws_path_udp: FieldPatch<String>,
     #[serde(default)]
+    pub ws_path_ss: FieldPatch<String>,
+    #[serde(default)]
     pub ws_path_vless: FieldPatch<String>,
     #[serde(default)]
     pub xhttp_path_vless: FieldPatch<String>,
     #[serde(default)]
-    pub xhttp_path_ss: FieldPatch<String>,
+    pub xhttp_path_tcp: FieldPatch<String>,
     #[serde(default)]
-    pub xhttp_path_ss_udp: FieldPatch<String>,
+    pub xhttp_path_udp: FieldPatch<String>,
+    #[serde(default)]
+    pub xhttp_path_ss: FieldPatch<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -112,10 +122,12 @@ impl From<UpdateRequest> for UserPatch {
             fwmark: req.fwmark,
             ws_path_tcp: req.ws_path_tcp,
             ws_path_udp: req.ws_path_udp,
+            ws_path_ss: req.ws_path_ss,
             ws_path_vless: req.ws_path_vless,
             xhttp_path_vless: req.xhttp_path_vless,
+            xhttp_path_tcp: req.xhttp_path_tcp,
+            xhttp_path_udp: req.xhttp_path_udp,
             xhttp_path_ss: req.xhttp_path_ss,
-            xhttp_path_ss_udp: req.xhttp_path_ss_udp,
             enabled: req.enabled,
         }
     }
