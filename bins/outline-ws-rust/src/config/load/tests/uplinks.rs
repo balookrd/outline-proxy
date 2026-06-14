@@ -454,6 +454,94 @@ fn shuffle_wires_on_with_no_fallbacks_is_a_no_op() {
 }
 
 #[test]
+fn shuffle_keeps_combined_ss_fallback_dialable_when_promoted_to_primary() {
+    // Repro of the dashboard "uplink aeza missing tcp dial URL" report.
+    // Topology: a VLESS-XHTTP primary with a combined-path SS fallback
+    // (`ss_xhttp_url` + `ss_mode`, no split `tcp_*`/`udp_*`). When
+    // `shuffle_wires` promoted the SS wire into the primary slot the
+    // primary<->fallback shape round-trip dropped the `ss_*` fields, so
+    // `is_combined_ss()` turned false and `tcp_dial_url()` returned None —
+    // but only on the restarts whose shuffle landed this wire at index 0,
+    // which is why the chip came and went across restarts.
+    let combined = FallbackSection {
+        transport: UplinkTransport::Ss,
+        ss_xhttp_url: Some(Url::parse("https://aeza.example.com/ssx").unwrap()),
+        ss_mode: Some(TransportMode::XhttpH3),
+        method: Some(CipherKind::Chacha20IetfPoly1305),
+        password: Some("secret".to_string()),
+        ..empty_fallback()
+    };
+    let combined_url = Url::parse("https://aeza.example.com/ssx").unwrap();
+
+    let mut saw_ss_primary = false;
+    for _ in 0..256 {
+        let mut section =
+            vless_uplink_section("aeza", "https://aeza.example.com/xhttp", vec![combined.clone()]);
+        section.shuffle_wires = Some(true);
+        let cfg = resolve_and_shuffle(section).unwrap();
+
+        // Whichever wire landed at the primary slot: if it is the combined
+        // SS one, it must still dial both legs through the shared URL.
+        if cfg.transport == UplinkTransport::Ss {
+            saw_ss_primary = true;
+            assert!(cfg.is_combined_ss(), "promoted SS wire lost its combined marker");
+            assert_eq!(cfg.tcp_dial_url(), Some(&combined_url), "promoted SS lost tcp dial URL");
+            assert_eq!(cfg.udp_dial_url(), Some(&combined_url), "promoted SS lost udp dial URL");
+        }
+    }
+    assert!(
+        saw_ss_primary,
+        "shuffle never promoted the combined SS wire to primary in 256 tries"
+    );
+}
+
+#[test]
+fn shuffle_keeps_combined_ss_primary_dialable_when_demoted_to_fallback() {
+    // Symmetric guard: a combined-path SS *primary* must keep its `ss_*`
+    // URL when `shuffle_wires` demotes it into the fallback list. The
+    // primary->fallback shape extraction used to null the combined fields.
+    let vless_fb = FallbackSection {
+        transport: UplinkTransport::Vless,
+        vless_ws_url: Some(Url::parse("wss://aeza.example.com/vless").unwrap()),
+        vless_mode: Some(TransportMode::WsH3),
+        vless_id: Some("d9ac06ee-c80b-4938-894b-328fff73222e".to_string()),
+        ..empty_fallback()
+    };
+    let combined_url = Url::parse("https://aeza.example.com/ssx").unwrap();
+
+    let mut saw_ss_demoted = false;
+    for _ in 0..256 {
+        let mut section =
+            ss_xhttp_uplink_section("aeza", "https://aeza.example.com/ssx", TransportMode::XhttpH3);
+        // Convert the split SS-XHTTP section into a combined one.
+        section.tcp_xhttp_url = None;
+        section.tcp_mode = None;
+        section.ss_xhttp_url = Some(combined_url.clone());
+        section.ss_mode = Some(TransportMode::XhttpH3);
+        section.fallbacks = Some(vec![vless_fb.clone()]);
+        section.shuffle_wires = Some(true);
+        let cfg = resolve_and_shuffle(section).unwrap();
+
+        if cfg.transport == UplinkTransport::Ss {
+            // Combined SS stayed primary — still dials.
+            assert!(cfg.is_combined_ss(), "combined SS primary lost its marker");
+            assert_eq!(cfg.tcp_dial_url(), Some(&combined_url));
+        } else {
+            // Combined SS was demoted into the fallback list — must survive.
+            saw_ss_demoted = true;
+            let fb = cfg
+                .fallbacks
+                .iter()
+                .find(|f| f.transport == UplinkTransport::Ss)
+                .expect("combined SS wire vanished from the chain after demotion");
+            assert!(fb.is_combined_ss(), "demoted SS wire lost its combined marker");
+            assert_eq!(fb.tcp_dial_url(), Some(&combined_url), "demoted combined SS lost dial URL");
+        }
+    }
+    assert!(saw_ss_demoted, "shuffle never demoted the combined SS primary in 256 tries");
+}
+
+#[test]
 fn shuffle_wires_per_group_avoids_collisions_in_the_same_group() {
     // Three identical 3-wire uplinks in the same `main` group. Naive
     // independent shuffles would land on the same permutation ~17% of
