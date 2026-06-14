@@ -50,6 +50,12 @@ impl Config {
         let users = self.user_entries()?;
         let mut tcp_paths = BTreeSet::new();
         let mut udp_paths = BTreeSet::new();
+        // Paths a single user assigns to BOTH its TCP and UDP legs — the
+        // opt-in combined mode, where one base path carries both and the
+        // server tells them apart by the hidden discriminator in the WS
+        // token. Such a path may appear in both `tcp_paths` and `udp_paths`;
+        // every other tcp/udp overlap is still a conflict.
+        let mut ws_combined_paths = BTreeSet::new();
         for user in users {
             if let Some(path) = user.ws_path_tcp.as_deref()
                 && !path.starts_with('/')
@@ -61,8 +67,13 @@ impl Config {
             {
                 bail!("user {} ws_path_udp must start with '/'", user.id);
             }
-            tcp_paths.insert(user.effective_ws_path_tcp(&self.ws_path_tcp).to_owned());
-            udp_paths.insert(user.effective_ws_path_udp(&self.ws_path_udp).to_owned());
+            let tcp = user.effective_ws_path_tcp(&self.ws_path_tcp).to_owned();
+            let udp = user.effective_ws_path_udp(&self.ws_path_udp).to_owned();
+            if tcp == udp {
+                ws_combined_paths.insert(tcp.clone());
+            }
+            tcp_paths.insert(tcp);
+            udp_paths.insert(udp);
         }
         let mut vless_paths = BTreeSet::new();
         let vless_enabled_users = self.users.iter().filter(|user| user.vless_id.is_some());
@@ -118,8 +129,16 @@ impl Config {
                 bail!("duplicate vless_id for user {}", user.id);
             }
         }
-        if let Some(conflict) = tcp_paths.intersection(&udp_paths).next() {
-            bail!("tcp and udp websocket paths must be distinct, conflict on {}", conflict);
+        // tcp/udp overlap is a conflict UNLESS the path is a combined one (a
+        // single user sharing it for both legs on purpose).
+        for conflict in tcp_paths.intersection(&udp_paths) {
+            if !ws_combined_paths.contains(conflict) {
+                bail!(
+                    "tcp and udp websocket paths must be distinct (unless a single user \
+                     shares one path for both = combined mode), conflict on {}",
+                    conflict,
+                );
+            }
         }
         if let Some(conflict) = tcp_paths.intersection(&vless_paths).next() {
             bail!("tcp and vless websocket paths must be distinct, conflict on {}", conflict);
@@ -238,9 +257,34 @@ impl Config {
                 ss_udp_xhttp_paths.insert(path.to_owned());
             }
         }
+        // A user whose effective ss and ss-udp xhttp base paths are equal
+        // opts that path into combined mode (the session-id's hidden bit
+        // splits tcp from udp on one base path).
+        let mut ss_xhttp_combined_paths = BTreeSet::new();
+        for user in &self.users {
+            if user.password.is_some() {
+                let ss = user.effective_xhttp_path_ss(self.xhttp_path_ss.as_deref());
+                let ss_udp = user.effective_xhttp_path_ss_udp(self.xhttp_path_ss_udp.as_deref());
+                if let (Some(a), Some(b)) = (ss, ss_udp)
+                    && a == b
+                {
+                    ss_xhttp_combined_paths.insert(a.to_owned());
+                }
+            }
+        }
+        // ss-xhttp (tcp) vs ss-udp-xhttp: combined mode lets them share one
+        // base path; every other overlap stays a conflict.
+        for conflict in ss_xhttp_paths.intersection(&ss_udp_xhttp_paths) {
+            if !ss_xhttp_combined_paths.contains(conflict) {
+                bail!(
+                    "ss-xhttp (tcp) and ss-udp-xhttp paths must be distinct (unless a single \
+                     user shares one path for both = combined mode), conflict on {}",
+                    conflict,
+                );
+            }
+        }
         for (other, label) in [
             (&xhttp_paths, "vless-xhttp"),
-            (&ss_xhttp_paths, "ss-xhttp (tcp)"),
             (&tcp_paths, "tcp"),
             (&udp_paths, "udp"),
             (&vless_paths, "vless-ws"),

@@ -9,12 +9,13 @@ use std::{net::SocketAddr, sync::Arc};
 use axum::{
     body::Body,
     extract::{
-        ConnectInfo, OriginalUri, State,
+        ConnectInfo, OriginalUri, Path, State,
         ws::{WebSocketUpgrade, rejection::WebSocketUpgradeRejection},
     },
     http::{HeaderMap, Method, StatusCode, Version},
     response::{IntoResponse, Response},
 };
+use outline_wire::xhttp::{SsPathKind, decode_kind};
 use tracing::{debug, warn};
 
 use crate::metrics::{AppProtocol, DisconnectReason, Metrics, Transport, WebSocketSessionGuard};
@@ -72,8 +73,25 @@ pub(super) async fn tcp_websocket_upgrade(
         Ok(ws) => ws,
         Err(_) => return build_not_found_response(Body::empty()),
     };
+    let ConnectInfo(peer_addr) = connect_info;
+    tcp_upgrade_for_path(ws, state, Arc::from(uri.path()), method, version, headers, peer_addr)
+        .await
+}
+
+/// Core of the TCP-WS upgrade, parameterised by base path so both the
+/// split-path handler above and the combined-path handler below can drive
+/// it. The path is the **base** (no `/{token}` segment): split callers pass
+/// the request path verbatim, the combined caller strips the token first.
+async fn tcp_upgrade_for_path(
+    ws: WebSocketUpgrade,
+    state: AppState,
+    path: Arc<str>,
+    method: Method,
+    version: Version,
+    headers: HeaderMap,
+    peer_addr: SocketAddr,
+) -> Response {
     let protocol = protocol_from_http_version(version);
-    let path: Arc<str> = Arc::from(uri.path());
     let routes_snap = state.routes.load();
     let route = routes_snap
         .tcp
@@ -88,7 +106,6 @@ pub(super) async fn tcp_websocket_upgrade(
             .metrics
             .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Shadowsocks);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
-    let ConnectInfo(peer_addr) = connect_info;
     // Captured by value before `resume` moves into the upgrade closure.
     // The echoed Session ID MUST be the one the relay later parks under —
     // re-parsing the headers would mint a different ID and silently
@@ -221,9 +238,22 @@ pub(super) async fn udp_websocket_upgrade(
         Ok(ws) => ws,
         Err(_) => return build_not_found_response(Body::empty()),
     };
+    udp_upgrade_for_path(ws, state, Arc::from(uri.path()), method, version, headers).await
+}
+
+/// Core of the UDP-WS upgrade, parameterised by base path so the split-path
+/// and combined-path handlers share it. Applies the zero write-buffer the
+/// datagram path relies on.
+async fn udp_upgrade_for_path(
+    ws: WebSocketUpgrade,
+    state: AppState,
+    path: Arc<str>,
+    method: Method,
+    version: Version,
+    headers: HeaderMap,
+) -> Response {
     let ws = ws.write_buffer_size(0);
     let protocol = protocol_from_http_version(version);
-    let path: Arc<str> = Arc::from(uri.path());
     let routes_snap = state.routes.load();
     let route = routes_snap
         .udp
@@ -253,6 +283,47 @@ pub(super) async fn udp_websocket_upgrade(
     });
     echo.apply(response.headers_mut());
     response
+}
+
+/// Combined-path WS upgrade: TCP and UDP share one base path, and the client
+/// encodes which leg it wants into the first character of the `/{token}`
+/// segment (see [`outline_wire::xhttp::SsPathKind`]). Decode the bit, strip
+/// the token to recover the base path, and hand off to the same per-leg core
+/// the split-path handlers use.
+#[allow(clippy::too_many_arguments)] // axum extractors, like the other upgrade handlers
+pub(super) async fn combined_websocket_upgrade(
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Path(token): Path<String>,
+    method: Method,
+    version: Version,
+    headers: HeaderMap,
+    connect_info: ConnectInfo<SocketAddr>,
+) -> Response {
+    let ws: WebSocketUpgrade = match ws {
+        Ok(ws) => ws,
+        Err(_) => return build_not_found_response(Body::empty()),
+    };
+    let base_path: Arc<str> = Arc::from(combined_base_path(uri.path(), &token));
+    match decode_kind(&token) {
+        SsPathKind::Tcp => {
+            let ConnectInfo(peer_addr) = connect_info;
+            tcp_upgrade_for_path(ws, state, base_path, method, version, headers, peer_addr).await
+        },
+        SsPathKind::Udp => {
+            udp_upgrade_for_path(ws, state, base_path, method, version, headers).await
+        },
+    }
+}
+
+/// Strips the trailing `/{token}` segment from a combined-path request URI
+/// to recover the base path the route maps are keyed on.
+fn combined_base_path(full: &str, token: &str) -> String {
+    full.strip_suffix(token)
+        .and_then(|base| base.strip_suffix('/'))
+        .unwrap_or(full)
+        .to_string()
 }
 
 pub(super) fn finish_ws_session(

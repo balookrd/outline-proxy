@@ -49,9 +49,9 @@ use crate::resumption::SessionId;
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
 use super::{
     ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, RequestBody, XhttpStream, XhttpSubmode, XhttpTarget, default_port_for,
-    empty_request_body, full_request_body, generate_session_id, parse_ack_prefix_echo,
-    parse_session_response,
+    RESUME_REQUEST_HEADER, RequestBody, SsPathKind, XhttpStream, XhttpSubmode, XhttpTarget,
+    default_port_for, empty_request_body, full_request_body, generate_session_id,
+    parse_ack_prefix_echo, parse_session_response,
 };
 
 /// Same dial budget as the h2/h3 paths — keeps fallback windows
@@ -75,6 +75,7 @@ pub(super) async fn connect_xhttp_h1(
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
+    combined_ss_kind: Option<SsPathKind>,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     if !matches!(submode, XhttpSubmode::PacketUp) {
         bail!("xhttp/h1 carrier supports packet-up only (got submode {submode:?})");
@@ -116,7 +117,7 @@ pub(super) async fn connect_xhttp_h1(
         // explicit price h1 charges for not multiplexing.
         let down_send = h1_handshake(server_addr, &host, use_tls, fwmark).await?;
         let up_send = h1_handshake(server_addr, &host, use_tls, fwmark).await?;
-        let session_id = generate_session_id()?;
+        let session_id = generate_session_id(combined_ss_kind)?;
 
         let authority = if port == default_port_for(use_tls) {
             host.clone()

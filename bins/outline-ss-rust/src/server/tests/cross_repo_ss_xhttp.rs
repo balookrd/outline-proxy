@@ -25,8 +25,8 @@ use tokio::task::JoinHandle;
 use url::Url;
 
 use outline_transport::{
-    DnsCache as ClientDnsCache, TcpShadowsocksReader, TcpShadowsocksWriter, TransportMode,
-    UdpWsTransport, UpstreamTransportGuard,
+    DnsCache as ClientDnsCache, SsPathKind, TcpShadowsocksReader, TcpShadowsocksWriter,
+    TransportDialOptions, TransportMode, UdpWsTransport, UpstreamTransportGuard, connect_transport,
 };
 
 use super::super::bootstrap::serve_listener;
@@ -224,6 +224,8 @@ async fn cross_repo_ss_udp_xhttp_packet_up_h2_round_trip() -> Result<()> {
         false,
         "cross-repo-ss-udp-test",
         None,
+        // Split UDP path in this test, so no combined-path discriminator.
+        None,
     )
     .await?;
 
@@ -237,6 +239,142 @@ async fn cross_repo_ss_udp_xhttp_packet_up_h2_round_trip() -> Result<()> {
 
     let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&upstream_bytes, b"ping", "SS-UDP-over-XHTTP uplink reached upstream");
+
+    transport.close().await?;
+    server.abort();
+    Ok(())
+}
+
+/// Stand up a server whose single base path is *combined*: registered in BOTH
+/// the `xhttp_ss` and `xhttp_ss_udp` tables, so `build_app` tags it
+/// `SsCombined` and the server picks the tcp or udp relay from the hidden bit
+/// in each request's session id.
+async fn setup_ss_combined_xhttp_server(
+    base_path: &'static str,
+) -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let config = sample_config(listen_addr);
+    let metrics = Metrics::new(&config);
+    let user = UserKey::new("ss-combined-user".to_string(), TEST_PASSWORD, None, TEST_CIPHER)?;
+    let ss_routes = Arc::new(build_xhttp_ss_route_map(&[SsXhttpUserRoute {
+        user,
+        xhttp_path: Arc::from(base_path),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: Arc::new(BTreeMap::new()),
+        xhttp_vless: Arc::new(BTreeMap::new()),
+        // Same route map under both keys → the base path is combined.
+        xhttp_ss: Arc::clone(&ss_routes),
+        xhttp_ss_udp: ss_routes,
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+    let app = build_app(routes, services, auth, None);
+    let handle =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    Ok((listen_addr, handle))
+}
+
+/// The defining combined-path test: one server, one base path, both legs.
+/// The TCP leg dials with the TCP discriminator and must land on the TCP
+/// relay; the UDP leg dials the *same path* with the UDP discriminator and
+/// must land on the UDP relay. Proves the session-id bit alone splits the two
+/// on a shared base path.
+#[tokio::test]
+async fn cross_repo_ss_combined_xhttp_both_legs_one_path() -> Result<()> {
+    let (listen_addr, server) = setup_ss_combined_xhttp_server("/ssc").await?;
+    let url = Url::parse(&format!("http://{listen_addr}/ssc"))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+
+    // ── TCP leg ──────────────────────────────────────────────────────────
+    let tcp_upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let tcp_upstream_addr = tcp_upstream.local_addr()?;
+    let tcp_upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = tcp_upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    let options = TransportDialOptions::new(&cache, &url, TransportMode::XhttpH2, "combined-tcp")
+        .with_combined_ss_kind(Some(SsPathKind::Tcp));
+    let stream = connect_transport(options).await?;
+    let master_key = TEST_CIPHER.derive_master_key(TEST_PASSWORD)?;
+    let lifetime = UpstreamTransportGuard::new("combined-tcp", "tcp");
+    let (sink, source) = stream.split();
+    let (mut writer, ctrl_tx) =
+        TcpShadowsocksWriter::connect(sink, TEST_CIPHER, &master_key, Arc::clone(&lifetime))
+            .await?;
+    let request_salt = writer.request_salt();
+    let mut reader = TcpShadowsocksReader::new(source, TEST_CIPHER, &master_key, lifetime, ctrl_tx)
+        .with_request_salt(request_salt);
+    writer.send_chunk(&ss_first_chunk(tcp_upstream_addr, b"ping")).await?;
+    let mut echoed = Vec::new();
+    while echoed.len() < 4 {
+        let chunk = reader.read_chunk().await?;
+        if chunk.is_empty() {
+            break;
+        }
+        echoed.extend_from_slice(&chunk);
+    }
+    assert_eq!(&echoed[..4], b"pong", "combined TCP leg downlink echo");
+    let tcp_bytes = tokio::time::timeout(Duration::from_secs(5), tcp_upstream_task).await???;
+    assert_eq!(&tcp_bytes, b"ping", "combined TCP leg reached the TCP upstream");
+    drop(writer);
+    drop(reader);
+
+    // ── UDP leg, SAME base path ──────────────────────────────────────────
+    let udp_upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let udp_upstream_addr = udp_upstream.local_addr()?;
+    let udp_upstream_task = tokio::spawn(async move {
+        let mut buf = [0_u8; 1500];
+        let (n, peer) = udp_upstream.recv_from(&mut buf).await?;
+        udp_upstream.send_to(&buf[..n], peer).await?;
+        Result::<_, anyhow::Error>::Ok(buf[..n].to_vec())
+    });
+
+    let transport = UdpWsTransport::connect(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        TEST_CIPHER,
+        TEST_PASSWORD,
+        None,
+        false,
+        "combined-udp",
+        None,
+        Some(SsPathKind::Udp),
+    )
+    .await?;
+    transport
+        .send_packet(&ss_first_chunk(udp_upstream_addr, b"ping"))
+        .await?;
+    let reply = transport.read_packet().await?;
+    assert!(reply.ends_with(b"ping"), "combined UDP leg downlink echo: {reply:?}");
+    let udp_bytes = tokio::time::timeout(Duration::from_secs(5), udp_upstream_task).await???;
+    assert_eq!(&udp_bytes, b"ping", "combined UDP leg reached the UDP upstream");
 
     transport.close().await?;
     server.abort();

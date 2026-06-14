@@ -129,6 +129,43 @@ weight = 1.0
   разделение `ws_path_tcp` / `ws_path_udp`. TCP-only uplink'и просто
   оставляют UDP-поля пустыми.
 
+### Combined-путь: один URL для TCP и UDP
+
+Опционально TCP и UDP можно свести на **один** base-путь, чтобы цензор видел
+один endpoint вместо двух. Задайте `ss_xhttp_url` (один URL на обе ноги) и
+`ss_mode` вместо раздельных полей `tcp_*` / `udp_*` (а на сервере —
+`xhttp_path_ss` == `xhttp_path_ss_udp`). Клиент тогда кодирует
+TCP/UDP-дискриминатор в первый символ session-id — невидимо внутри TLS,
+статистически неотличимо от случайного id — и сервер направляет каждый запрос
+в нужный relay без второго пути.
+
+```toml
+[[outline.uplinks]]
+name = "ss-xhttp-combined"
+group = "main"
+transport = "ss"
+ss_xhttp_url = "https://ss.example.com/SECRET/xhttp"   # один URL для TCP + UDP
+ss_mode = "xhttp_h2"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
+weight = 1.0
+```
+
+Для WebSocket-носителя задайте вместо этого `ss_ws_url` + WS-`ss_mode`
+(дискриминатор тогда поедет в `/{token}`-сегменте URL, который клиент
+добавляет при дайле):
+
+```toml
+ss_ws_url = "wss://ss.example.com/SECRET/ws"
+ss_mode = "ws_h2"
+```
+
+`ss_xhttp_url` и `ss_ws_url` взаимоисключающи, а `ss_mode` должен
+соответствовать выбранному носителю (XHTTP-`ss_mode` для `ss_xhttp_url`,
+WS — для `ss_ws_url`). Combined-поля также взаимоисключающи с раздельными
+`tcp_*` / `udp_*` URL — загрузка конфига отвергает их смешивание. Raw QUIC
+этого не требует — он мультиплексирует TCP + UDP на одном соединении нативно.
+
 ## 4. VLESS over raw QUIC
 
 `vless_mode = "quic"` выбирает raw QUIC с ALPN `vless`. Несколько TCP-

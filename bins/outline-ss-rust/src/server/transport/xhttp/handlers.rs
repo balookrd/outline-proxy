@@ -21,6 +21,8 @@ use futures_util::stream::unfold;
 use std::net::SocketAddr;
 use tracing::{debug, warn};
 
+use outline_wire::xhttp::{SsPathKind, decode_kind};
+
 use crate::metrics::{AppProtocol, Protocol, Transport};
 
 use super::super::super::state::{AppState, Services, TransportRoute, VlessTransportRoute};
@@ -53,6 +55,11 @@ pub(in crate::server) enum XhttpAppProtocol {
     /// SS-UDP-over-XHTTP. A separate base path from `Ss` (the TCP path),
     /// mirroring the WS `ws_path_tcp` / `ws_path_udp` split.
     SsUdp,
+    /// Combined SS path: one base path carries both TCP and UDP, and the
+    /// session-id's first character encodes which (see
+    /// [`outline_wire::xhttp::SsPathKind`]). `resolve_route` decodes the bit
+    /// to pick the `xhttp_ss` (TCP) or `xhttp_ss_udp` (UDP) route.
+    SsCombined,
 }
 
 /// State threaded into every XHTTP axum handler. `registry` + `parent`
@@ -263,7 +270,7 @@ async fn xhttp_get(
     peer_addr: SocketAddr,
     headers: &HeaderMap,
 ) -> Response {
-    let route = match resolve_route(&state) {
+    let route = match resolve_route(&state, &session_id) {
         Some(route) => route,
         None => {
             warn!(
@@ -350,7 +357,7 @@ async fn xhttp_post(
     };
     let fin = headers.contains_key(FIN_HEADER);
 
-    let route = match resolve_route(&state) {
+    let route = match resolve_route(&state, &session_id) {
         Some(route) => route,
         None => return short_status(StatusCode::NOT_FOUND),
     };
@@ -474,7 +481,7 @@ async fn xhttp_stream_one(
         // consumed. Reject loudly so the client switches to packet-up.
         return short_status(StatusCode::HTTP_VERSION_NOT_SUPPORTED);
     }
-    let route = match resolve_route(&state) {
+    let route = match resolve_route(&state, &session_id) {
         Some(route) => route,
         None => {
             warn!(
@@ -746,24 +753,24 @@ fn parse_seq(headers: &HeaderMap) -> Option<u64> {
     headers.get(SEQ_HEADER)?.to_str().ok()?.trim().parse::<u64>().ok()
 }
 
-fn resolve_route(state: &XhttpAxumState) -> Option<XhttpRoute> {
+fn resolve_route(state: &XhttpAxumState, session_id: &str) -> Option<XhttpRoute> {
     let routes_snap = state.parent.routes.load();
+    let base = state.base_path.as_ref();
     let route = match state.protocol {
-        XhttpAppProtocol::Vless => routes_snap
-            .xhttp_vless
-            .get(state.base_path.as_ref())
-            .cloned()
-            .map(XhttpRoute::Vless),
-        XhttpAppProtocol::Ss => routes_snap
-            .xhttp_ss
-            .get(state.base_path.as_ref())
-            .cloned()
-            .map(XhttpRoute::Ss),
-        XhttpAppProtocol::SsUdp => routes_snap
-            .xhttp_ss_udp
-            .get(state.base_path.as_ref())
-            .cloned()
-            .map(XhttpRoute::SsUdp),
+        XhttpAppProtocol::Vless => {
+            routes_snap.xhttp_vless.get(base).cloned().map(XhttpRoute::Vless)
+        },
+        XhttpAppProtocol::Ss => routes_snap.xhttp_ss.get(base).cloned().map(XhttpRoute::Ss),
+        XhttpAppProtocol::SsUdp => {
+            routes_snap.xhttp_ss_udp.get(base).cloned().map(XhttpRoute::SsUdp)
+        },
+        // Combined path: the session-id's first character is the hidden
+        // TCP/UDP discriminator. Decode it to pick the matching table; a
+        // non-encoding id (e.g. a stray third-party client) defaults to TCP.
+        XhttpAppProtocol::SsCombined => match decode_kind(session_id) {
+            SsPathKind::Tcp => routes_snap.xhttp_ss.get(base).cloned().map(XhttpRoute::Ss),
+            SsPathKind::Udp => routes_snap.xhttp_ss_udp.get(base).cloned().map(XhttpRoute::SsUdp),
+        },
     };
     drop(routes_snap);
     route

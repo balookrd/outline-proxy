@@ -250,11 +250,11 @@ cargo release-musl-armv7
 | `tuning.ws_data_channel_capacity` | Per-session bounded mpsc capacity (в чанках) для WS-writer fan-in (upstream-reader → WS-writer для TCP-relay, NAT-reader → WS-writer для UDP-relay). Дефолты: `16` / `64` / `128` для `small` / `medium` / `large`. Слишком маленькое значение приводит к back-pressure от WS-writer'а на upstream-чтение при кратковременных задержках записи — видно как буферный underrun у видеоплеера; слишком большое — раздувает worst-case per-session residency (`capacity × 16 KiB` для TCP). Поднимайте для high-bandwidth single-tenant деплоев, снижайте для memory-constrained хостов со многими сессиями |
 | `tuning.h2_*` / `tuning.h3_*` | Тонкие настройки flow-control windows, лимитов стримов и сокет-буферов — см. `TuningProfile` в `src/config/mod.rs` |
 | `ws_path_tcp` | Глобальный TCP WebSocket-путь |
-| `ws_path_udp` | Глобальный UDP WebSocket-путь |
+| `ws_path_udp` | Глобальный UDP WebSocket-путь. Может совпадать с `ws_path_tcp` для *combined*-пути — клиент тогда дайлит `<base>/<token>`, и первый символ токена несёт скрытый TCP/UDP-дискриминатор |
 | `ws_path_vless` | Опциональный VLESS-over-WebSocket путь на основном HTTP/1.1/HTTP/2 слушателе |
 | `xhttp_path_vless` | Опциональный VLESS-over-XHTTP base-путь. Сервер регистрирует `<base>/{id}` для каждого base; `{id}` — opaque per-session токен, выбираемый клиентом. Должен отличаться от `ws_path_vless` |
 | `xhttp_path_ss` | Опциональный Shadowsocks-over-XHTTP base-путь. Та же схема маршрута `<base>/{id}`, что у `xhttp_path_vless`, но несёт SS-AEAD-поток. Один base-путь обслуживает один протокол — должен отличаться от `xhttp_path_vless` |
-| `xhttp_path_ss_udp` | Опциональный SS-UDP-over-XHTTP base-путь. Отдельный от `xhttp_path_ss` (TCP-путь), зеркаля `ws_path_tcp` / `ws_path_udp`. Должен отличаться от всех прочих путей |
+| `xhttp_path_ss_udp` | Опциональный SS-UDP-over-XHTTP base-путь. Отдельный от `xhttp_path_ss` (TCP-путь), зеркаля `ws_path_tcp` / `ws_path_udp`. Должен отличаться от путей всех прочих протоколов, но **может совпадать с `xhttp_path_ss`** — тогда обе ноги обслуживаются с одного *combined*-пути, а первый символ session-id несёт скрытый TCP/UDP-дискриминатор |
 | `http_root_auth` | Включить OpenConnect-подобный HTTP Basic challenge на `/`; после 3 неверных паролей сервер отдаёт `403`, а не-корневые пути остаются `404` |
 | `http_root_realm` | Текст в HTTP Basic запросе пароля для `/`; по умолчанию `Authorization required` |
 | `public_host` | Публичный хост для генерации Outline-ключей |

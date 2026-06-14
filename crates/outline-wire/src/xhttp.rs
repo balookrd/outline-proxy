@@ -94,6 +94,71 @@ pub fn is_valid_session_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
+/// Hidden TCP-vs-UDP discriminator for the optional *combined* path mode,
+/// where Shadowsocks TCP and UDP share one base path instead of the default
+/// split (`xhttp_path_ss` / `xhttp_path_ss_udp` and `ws_path_tcp` /
+/// `ws_path_udp`). The bit rides the parity of the index of the session-id /
+/// WS token's first character in [`SESSION_ID_ALPHABET`]: even → TCP, odd →
+/// UDP. The first character stays a uniform alphanumeric (31 of the 62
+/// choices per parity), so the token is statistically indistinguishable from
+/// an ordinary random id and still satisfies [`is_valid_session_id`].
+///
+/// The client always knows whether it is dialing TCP or UDP, so it always
+/// encodes the bit; the server only *reads* it on a combined path. On the
+/// default split paths the path itself is the discriminator and the bit is
+/// ignored, which keeps split-path and third-party (xray) clients working
+/// unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SsPathKind {
+    /// Shadowsocks TCP relay (stream). Encoded as even first-char parity.
+    Tcp,
+    /// Shadowsocks UDP relay (datagrams). Encoded as odd first-char parity.
+    Udp,
+}
+
+impl SsPathKind {
+    /// The parity bit this kind occupies in the token's first character.
+    const fn bit(self) -> usize {
+        match self {
+            Self::Tcp => 0,
+            Self::Udp => 1,
+        }
+    }
+
+    /// Short label for logs / metrics. Not a wire form.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+        }
+    }
+}
+
+/// Maps one random byte to a [`SESSION_ID_ALPHABET`] character whose index
+/// has the parity of `kind`, preserving uniformity across the 31 characters
+/// of that parity. Callers supply the randomness (this crate carries no rng
+/// dependency); the remaining session-id characters are generated the usual
+/// way (`SESSION_ID_ALPHABET[byte % 62]`).
+pub fn encode_kind_first_byte(rand_byte: u8, kind: SsPathKind) -> u8 {
+    let half = (rand_byte as usize) % 31;
+    SESSION_ID_ALPHABET[half * 2 + kind.bit()]
+}
+
+/// Recovers the [`SsPathKind`] a token encodes, from the parity of its first
+/// character's index in [`SESSION_ID_ALPHABET`]. A first character outside
+/// the alphabet (or an empty token) defaults to [`SsPathKind::Tcp`] — the
+/// safe default for the combined path.
+pub fn decode_kind(token: &str) -> SsPathKind {
+    match token
+        .as_bytes()
+        .first()
+        .and_then(|first| SESSION_ID_ALPHABET.iter().position(|c| c == first))
+    {
+        Some(index) if index % 2 == 1 => SsPathKind::Udp,
+        _ => SsPathKind::Tcp,
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/xhttp.rs"]
 mod tests;

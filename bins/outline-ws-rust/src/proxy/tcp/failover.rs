@@ -5,9 +5,9 @@ use futures_util::StreamExt;
 use tracing::{debug, warn};
 
 use outline_transport::{
-    DialNetworkOptions, DialResumeOptions, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter,
-    TcpWriter, TransportDialOptions, UplinkConnectionBinding, UpstreamTransportGuard,
-    connect_transport, global_resume_cache,
+    DialNetworkOptions, DialResumeOptions, SsPathKind, TcpReader, TcpShadowsocksReader,
+    TcpShadowsocksWriter, TcpWriter, TransportDialOptions, UplinkConnectionBinding,
+    UpstreamTransportGuard, connect_transport, global_resume_cache,
 };
 use outline_uplink::{
     FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
@@ -573,6 +573,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
                 fwmark: fallback.fwmark,
                 ipv6_first: fallback.ipv6_first,
             })
+            .with_combined_ss_kind(fallback.combined_ss_kind(SsPathKind::Tcp))
             .with_resume(DialResumeOptions {
                 resume_request,
                 // Initial-dial / chunk-0 wire-handover paths pass

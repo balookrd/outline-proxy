@@ -128,6 +128,43 @@ weight = 1.0
   `ws_path_tcp` / `ws_path_udp` split. TCP-only uplinks just leave the
   UDP fields unset.
 
+### Combined path: one URL for TCP and UDP
+
+Optionally you can collapse TCP and UDP onto **one** base path so a censor
+sees a single endpoint instead of two. Set `ss_xhttp_url` (one URL for both
+legs) and `ss_mode` instead of the split `tcp_*` / `udp_*` fields — and on the
+server set `xhttp_path_ss` == `xhttp_path_ss_udp`. The client then encodes the
+TCP-vs-UDP discriminator into the first character of the per-session id —
+invisible inside TLS, statistically indistinguishable from a random id — so the
+server routes each request to the right relay with no second path.
+
+```toml
+[[outline.uplinks]]
+name = "ss-xhttp-combined"
+group = "main"
+transport = "ss"
+ss_xhttp_url = "https://ss.example.com/SECRET/xhttp"   # one URL for TCP + UDP
+ss_mode = "xhttp_h2"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
+weight = 1.0
+```
+
+For a WebSocket carrier use `ss_ws_url` + a WS `ss_mode` instead (the
+discriminator then rides a `/{token}` URL segment the client appends at dial
+time):
+
+```toml
+ss_ws_url = "wss://ss.example.com/SECRET/ws"
+ss_mode = "ws_h2"
+```
+
+`ss_xhttp_url` and `ss_ws_url` are mutually exclusive, and `ss_mode` must match
+the chosen carrier (an XHTTP `ss_mode` for `ss_xhttp_url`, a WS one for
+`ss_ws_url`). The combined fields are also mutually exclusive with the split
+`tcp_*` / `udp_*` URLs — config load rejects mixing them. Raw QUIC never needs
+this, since it muxes TCP + UDP on one connection natively.
+
 ## 4. VLESS over raw QUIC
 
 `vless_mode = "quic"` selects raw QUIC with ALPN `vless`. Multiple TCP

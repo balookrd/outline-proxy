@@ -36,9 +36,9 @@ use crate::{TransportOperation, connect_tcp_socket};
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
 use super::{
     ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, RequestBody, XhttpStream, XhttpSubmode, XhttpTarget, default_port_for,
-    empty_request_body, full_request_body, generate_session_id, parse_ack_prefix_echo,
-    parse_session_response, resolve_effective_submode,
+    RESUME_REQUEST_HEADER, RequestBody, SsPathKind, XhttpStream, XhttpSubmode, XhttpTarget,
+    default_port_for, empty_request_body, full_request_body, generate_session_id,
+    parse_ack_prefix_echo, parse_session_response, resolve_effective_submode,
 };
 
 /// Time budget for the initial dial: TCP + TLS + h2 handshake +
@@ -65,6 +65,7 @@ pub(super) async fn connect_xhttp_h2(
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
+    combined_ss_kind: Option<SsPathKind>,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     let submode = resolve_effective_submode(url, mode).await;
     let host = url
@@ -97,7 +98,7 @@ pub(super) async fn connect_xhttp_h2(
             anyhow::Error::new(TransportOperation::DnsResolveNoAddresses { host: host.clone() })
         })?;
         let send_request = h2_handshake(server_addr, &host, use_tls, fwmark).await?;
-        let session_id = generate_session_id()?;
+        let session_id = generate_session_id(combined_ss_kind)?;
 
         let (in_tx, in_rx) = mpsc::channel::<Result<Message, WsError>>(INBOUND_CHANNEL_CAPACITY);
         let (out_tx, out_rx) = mpsc::channel::<Message>(OUTBOUND_CHANNEL_CAPACITY);
