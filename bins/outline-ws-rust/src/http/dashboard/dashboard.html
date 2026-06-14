@@ -192,8 +192,7 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .rows-head,.row { display: grid; grid-template-columns: minmax(80px, max-content) minmax(110px, .9fr) minmax(80px, .7fr) minmax(170px, 1.5fr) minmax(170px, 1.5fr) minmax(80px, .7fr) minmax(120px, 1fr) 100px; gap: 12px; align-items: center; padding: 13px 18px; }
 .proto-pill { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 4px; font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; background: var(--soft); color: var(--text); border: 1px solid var(--line); }
 .proto-pill.proto-vless { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
-.proto-pill.proto-shadowsocks { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
-.proto-pill.proto-ws { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
+.proto-pill.proto-ss { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
 /* Leg label ("TCP" / "UDP") shares the same inset-chip styling as the
  * submode badge ("(S)" / "(P)") — both are sub-pills inside the parent
  * pill, so they should read as a uniform pair of inset frames. The
@@ -229,8 +228,7 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
  * rather than blown up into a separate visual class. */
 .fb-chain .fb-link.fb-active { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); font-weight: 800; }
 .fb-chain .fb-link.fb-active.proto-vless { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
-.fb-chain .fb-link.fb-active.proto-shadowsocks { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
-.fb-chain .fb-link.fb-active.proto-ws { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
+.fb-chain .fb-link.fb-active.proto-ss { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
 .fb-chain .fb-link.fb-failed { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); font-weight: 800; }
 .fb-chain .fb-arrow { color: var(--muted); font-size: 10px; }
 .fb-chain .fb-pin { padding: 1px 6px; border-radius: 4px; background: var(--amber-soft); color: #b45309; border: 1px solid rgba(180, 83, 9, .4); font-size: 10px; font-weight: 700; }
@@ -433,7 +431,7 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
         <span class="wire-legend-item"><span class="wire-dot fam-vless-xhttp"></span>VLESS / XHTTP · H1 / H2 / H3</span>
         <span class="wire-legend-item"><span class="wire-dot fam-vless-quic"></span>VLESS / QUIC</span>
         <span class="wire-legend-item"><span class="wire-dot fam-ss-ws"></span>Shadowsocks / WS</span>
-        <span class="wire-legend-item"><span class="wire-dot fam-ss-quic"></span>Shadowsocks direct (QUIC&nbsp;UDP)</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-ss-quic"></span>Shadowsocks / QUIC</span>
         <span class="wire-legend-item"><span class="wire-dot failed"></span>failed in current shuffle round</span>
         <span class="wire-legend-item wire-legend-note">Active wire of the leg is rendered as a full pill; hover any square for the exact `transport / mode` of that wire.</span>
       </div>
@@ -571,7 +569,7 @@ function groupBypassChip(group) {
 // `select_with_strategy(primary_dial_url, effective_strategy)`, so:
 //   * `per_host_stable` → concrete profile id like `chrome-142-macos`,
 //   * `random` → the literal `"random"` (no fixed profile applies),
-//   * `none` (or shadowsocks-over-raw-socket) → field absent → no chip.
+//   * `none` (or an uplink with no dial URL) → field absent → no chip.
 // `prettyProfileName` translates the kebab-case id into a human label
 // (`Chrome 130 macOS`) so the chip reads as identity, not config.
 function prettyProfileName(name) {
@@ -642,7 +640,7 @@ function groupFingerprintChip(group) {
 function protocolLabel(transport) {
   const v = String(transport || "").toLowerCase();
   if (v === "vless") return "VLESS";
-  if (v === "shadowsocks" || v === "ws") return "SS";
+  if (v === "ss") return "SS";
   return transport ? String(transport) : "—";
 }
 function transportLabel(mode) {
@@ -661,8 +659,6 @@ function transportLabel(mode) {
   return v.toUpperCase();
 }
 function stackLabel(transport, mode) {
-  const t = String(transport || "").toLowerCase();
-  if (t === "shadowsocks") return "SS/QUIC";
   const enc = protocolLabel(transport);
   const tr = transportLabel(mode);
   if (!tr) return enc;
@@ -692,15 +688,17 @@ function submodeSuffix(submode, effective, downgraded) {
 // Carrier-family CSS class for the per-wire dot in the leg chain cell.
 // Maps `(transport, mode)` onto the colour palette declared in CSS
 // (`fam-vless-ws`, `fam-vless-xhttp`, `fam-vless-quic`, `fam-ss-ws`,
-// `fam-ss-quic`). `transport = "ws"` is Shadowsocks-over-WS (collapses
-// to `fam-ss-ws`); `transport = "shadowsocks"` is direct SS (QUIC for
-// UDP, raw TCP for TCP — `fam-ss-quic`). Returns `fam-unknown` for
-// anything the dashboard doesn't recognise so the dot still renders.
+// `fam-ss-quic`). `transport = "ss"` is Shadowsocks-over-WS; with a
+// `quic` mode it is SS-over-QUIC (`fam-ss-quic`), otherwise `fam-ss-ws`.
+// Returns `fam-unknown` for anything the dashboard doesn't recognise so
+// the dot still renders.
 function wireFamilyClass(transport, mode) {
   const t = String(transport || "").toLowerCase();
   const m = String(mode || "").toLowerCase();
-  if (t === "ws") return "fam-ss-ws";
-  if (t === "shadowsocks") return "fam-ss-quic";
+  if (t === "ss") {
+    if (m === "quic") return "fam-ss-quic";
+    return "fam-ss-ws";
+  }
   if (t === "vless") {
     if (m.startsWith("xhttp")) return "fam-vless-xhttp";
     if (m === "quic") return "fam-vless-quic";
@@ -716,7 +714,7 @@ function wireFamilyClass(transport, mode) {
 // "where does this uplink want to be" instead of "where is it right now".
 function primaryProtocolCell(uplink) {
   const t = String(uplink.transport || "").toLowerCase();
-  const cls = t === "vless" || t === "shadowsocks" || t === "ws" ? `proto-${t}` : "";
+  const cls = t === "vless" || t === "ss" ? `proto-${t}` : "";
   const fallbacks = Array.isArray(uplink.configured_fallbacks) ? uplink.configured_fallbacks : [];
   const wireChain = Array.isArray(uplink.configured_wire_chain) ? uplink.configured_wire_chain : [];
   const wire0 = wireChain[0] || null;
@@ -728,9 +726,6 @@ function primaryProtocolCell(uplink) {
   const countChip = fallbacks.length > 0
     ? `<span class="wire-count-chip" data-tip="${fallbacks.length} fallback wire${fallbacks.length === 1 ? "" : "s"} configured">+${fallbacks.length}</span>`
     : "";
-  if (t === "shadowsocks") {
-    return `<div class="primary-cell"><span class="proto-pill ${cls}" data-tip="primary wire: ${escapeHtml(stackLabel(t))}">${escapeHtml(stackLabel(t))}</span>${countChip}</div>`;
-  }
   // One pill in the Protocol cell — always. When TCP and UDP primary
   // modes diverge we surface the TCP shape and the divergence goes
   // into the hover title. The live per-leg carrier (post-downgrade,
@@ -840,7 +835,7 @@ function legWireChainCell(uplink, leg) {
   // Build the active pill — same shape as the old `legPill` minus the
   // leg label (the column header carries that now).
   const t = active.transport;
-  const protoCls = (t === "vless" || t === "shadowsocks" || t === "ws") ? `proto-${t}` : "";
+  const protoCls = (t === "vless" || t === "ss") ? `proto-${t}` : "";
   const dgArrow = activeDeco.dg ? "<span class=\"proto-dg\">↘</span>" : "";
   const [submodeHtml, submodeTitle] = submodeSuffix(activeDeco.sm, activeDeco.smEff, activeDeco.smDg);
   const dgCls = activeDeco.dg ? " proto-downgraded" : "";
@@ -925,7 +920,7 @@ function activeProtocolChip(group) {
     return { transport, configured, effective, downgraded, submode, submodeEff, submodeDg };
   };
   const renderChip = (scope, s) => {
-    const cls = s.transport === "vless" || s.transport === "shadowsocks" || s.transport === "ws" ? `proto-${s.transport}` : "";
+    const cls = s.transport === "vless" || s.transport === "ss" ? `proto-${s.transport}` : "";
     const dg = s.downgraded ? " proto-downgraded" : "";
     const star = s.downgraded ? "<span class=\"proto-dg\">↘</span>" : "";
     const [submodeHtml, submodeTitle] = submodeSuffix(s.submode, s.submodeEff, s.submodeDg);
