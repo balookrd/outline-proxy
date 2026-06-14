@@ -261,7 +261,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
 fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(format!("wss://{addr}/tcp").parse().unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,

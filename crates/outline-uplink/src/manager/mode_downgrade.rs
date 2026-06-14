@@ -87,7 +87,7 @@ impl UplinkManager {
         trigger: ModeDowngradeTrigger<'_>,
     ) {
         let uplink = &self.inner.uplinks[index];
-        if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+        if !matches!(uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return;
         }
         // Operator-opt-out of the per-wire `h3 → h2 → h1` carrier
@@ -411,7 +411,7 @@ impl UplinkManager {
             return uplink.tcp_dial_mode();
         };
         let configured = fallback.tcp_dial_mode();
-        if !matches!(fallback.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+        if !matches!(fallback.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return configured;
         }
         let status = self.inner.read_status(index);
@@ -433,7 +433,7 @@ impl UplinkManager {
             return uplink.udp_dial_mode();
         };
         let configured = fallback.udp_dial_mode();
-        if !matches!(fallback.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+        if !matches!(fallback.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return configured;
         }
         let status = self.inner.read_status(index);
@@ -478,7 +478,7 @@ impl UplinkManager {
     /// even when the capped carrier itself is healthy.
     pub(crate) fn walk_up_mode_downgrade(&self, index: usize, transport: TransportKind) {
         let uplink = &self.inner.uplinks[index];
-        if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+        if !matches!(uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return;
         }
         let configured_mode = match transport {
@@ -714,7 +714,7 @@ pub(crate) fn wire_is_at_carrier_floor(
         // (kept defensive: the transport enum is WS / VLESS today).
         if !matches!(
             family_transport,
-            crate::config::UplinkTransport::Ws | crate::config::UplinkTransport::Vless
+            crate::config::UplinkTransport::Ss | crate::config::UplinkTransport::Vless
         ) {
             return true;
         }
@@ -727,7 +727,7 @@ pub(crate) fn wire_is_at_carrier_floor(
     };
     if !matches!(
         fallback.transport,
-        crate::config::UplinkTransport::Ws | crate::config::UplinkTransport::Vless
+        crate::config::UplinkTransport::Ss | crate::config::UplinkTransport::Vless
     ) {
         return true;
     }

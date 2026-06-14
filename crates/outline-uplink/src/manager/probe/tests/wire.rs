@@ -37,7 +37,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
 
 fn ws_fallback() -> FallbackTransport {
     FallbackTransport {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(url::Url::parse("wss://ws.example.com/tcp").unwrap()),
         tcp_mode: TransportMode::WsH2,
         udp_ws_url: Some(url::Url::parse("wss://ws.example.com/udp").unwrap()),
@@ -94,7 +94,7 @@ fn wire_view_first_fallback_is_synthetic_uplink_with_fallback_fields() {
     cfg.fallbacks = vec![ws_fallback(), vless_fallback()];
 
     let view = cfg.wire_view(1).expect("first fallback view exists");
-    assert_eq!(view.transport, UplinkTransport::Ws);
+    assert_eq!(view.transport, UplinkTransport::Ss);
     assert_eq!(view.tcp_mode, TransportMode::WsH2);
     assert_eq!(view.tcp_ws_url.as_ref().unwrap().as_str(), "wss://ws.example.com/tcp",);
     assert!(view.fallbacks.is_empty());

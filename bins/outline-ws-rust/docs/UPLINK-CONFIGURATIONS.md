@@ -26,7 +26,7 @@ packets. The dial URL is reused as the QUIC dial target — only
 [[outline.uplinks]]
 name = "ss-quic"
 group = "main"
-transport = "ws"
+transport = "ss"
 tcp_ws_url = "https://ss.example.com:443"
 udp_ws_url = "https://ss.example.com:443"
 tcp_mode = "quic"
@@ -61,7 +61,7 @@ QUIC handshake versus TCP+TLS+HTTP for H2.
 [[outline.uplinks]]
 name = "ss-ws-h3"
 group = "main"
-transport = "ws"
+transport = "ss"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 udp_ws_url = "wss://example.com/SECRET/udp"
 tcp_mode = "h3"
@@ -362,7 +362,7 @@ trivial deployments; not used together with `[[outline.uplinks]]` /
 
 ```toml
 [outline]
-transport = "ws"                  # "ws" (default; alias "websocket") | "vless"
+transport = "ss"                  # "ss" (default; alias "shadowsocks"); "ws"/"websocket" deprecated | "vless"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 udp_ws_url = "wss://example.com/SECRET/udp"
 tcp_mode = "h3"
@@ -373,10 +373,11 @@ password = "Secret0"
 
 `outline.transport` accepts:
 
-| value         | wire shape                                                                       |
-|---------------|----------------------------------------------------------------------------------|
-| `ws`          | Shadowsocks AEAD framing inside a WebSocket carrier (default; alias `websocket`) |
-| `vless`       | VLESS over WebSocket or XHTTP (h1/h2/h3) — see §§ 3–6                            |
+| value             | wire shape                                                                       |
+|-------------------|----------------------------------------------------------------------------------|
+| `ss`              | Shadowsocks AEAD framing inside a WebSocket carrier (default; alias `shadowsocks`) |
+| `ws` / `websocket`| **Deprecated** aliases for `ss` — still accepted, removed in a future release    |
+| `vless`           | VLESS over WebSocket or XHTTP (h1/h2/h3) — see §§ 3–6                            |
 
 **2. Multi-uplink + groups (production shape).** `[[outline.uplinks]]`
 declares uplinks; `[[uplink_group]]` (top-level, *not* nested under
@@ -587,7 +588,7 @@ Mid-session retry (Ack-Prefix Protocol v1):
   SSH-style downlink-heavy sessions on its own — v1 does not
   replay the downlink direction. The v2 Symmetric Downlink Replay
   protocol (see below) closes that gap.
-- Gated to WS-family carriers — SS-WS (`transport = "ws"`) and
+- Gated to WS-family carriers — SS-WS (`transport = "ss"`) and
   VLESS-WS (`transport = "vless"`). Raw QUIC is a no-op for retry
   in v1; the relay falls back to the legacy "single shot, propagate
   error" behaviour with no observable change.
@@ -1120,7 +1121,7 @@ cipher          = "2022-blake3-aes-256-gcm"
 password        = "BASE64=="
 
   [[outline.uplinks.fallbacks]]
-  transport   = "ws"
+  transport   = "ss"
   tcp_ws_url  = "wss://ws.example.com/tcp"
   udp_ws_url  = "wss://ws.example.com/udp"
   tcp_mode    = "ws_h2"
@@ -1143,8 +1144,8 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
 
 | Field | Required for | Notes |
 |---|---|---|
-| `transport` | always | `ws` / `vless`. **No uniqueness restriction** — same-transport-as-parent and duplicate-transport entries are explicitly allowed. The most common cross-family shape is a VLESS primary on `xhttp_h*` with a VLESS fallback on `ws_h*` (same `transport = "vless"`, different carrier family, different dial URL); two VLESS fallbacks at distinct hosts as belt-and-suspenders also work. The dial loop and per-wire mode tracking treat each fallback as its own wire regardless of `transport`. |
-| `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ws"` | `tcp_ws_url` mandatory; `udp_ws_url` optional (UDP fallback opt-in). |
+| `transport` | always | `ss` / `vless` (`ss` also accepts the deprecated `ws` / `websocket` aliases). **No uniqueness restriction** — same-transport-as-parent and duplicate-transport entries are explicitly allowed. The most common cross-family shape is a VLESS primary on `xhttp_h*` with a VLESS fallback on `ws_h*` (same `transport = "vless"`, different carrier family, different dial URL); two VLESS fallbacks at distinct hosts as belt-and-suspenders also work. The dial loop and per-wire mode tracking treat each fallback as its own wire regardless of `transport`. |
+| `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ss"` | `tcp_ws_url` mandatory; `udp_ws_url` optional (UDP fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws/quic → `vless_ws_url`). `vless_id` is per-wire-credential and **not** inherited from the parent — different VLESS endpoints use different uuids by definition. |
 | `cipher`, `password` | inherited | Default to the parent uplink's value. Override here to dial a fallback that uses a different shared secret. |
 | `fwmark`, `ipv6_first`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. |

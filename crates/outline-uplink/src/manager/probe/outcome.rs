@@ -293,7 +293,7 @@ fn record_transport_success(
 /// carrier is back requires an explicit attempt at the higher rank.
 ///
 /// Covers both families:
-/// * WS (`UplinkTransport::Ws`) configured at `WsH3` — capped to `WsH2`.
+/// * WS (`UplinkTransport::Ss`) configured at `WsH3` — capped to `WsH2`.
 ///   Recovery probes `WsH3` and clears the cap when it answers.
 /// * VLESS+XHTTP (`UplinkTransport::Vless`) configured at `XhttpH3` —
 ///   capped to `XhttpH2` or `XhttpH1`; recovery probes `XhttpH3`.
@@ -328,10 +328,10 @@ fn needs_carrier_recovery(
         return false;
     }
     match (uplink_transport, uplink_configured_mode) {
-        (UplinkTransport::Ws, TransportMode::WsH3) => {
+        (UplinkTransport::Ss, TransportMode::WsH3) => {
             matches!(effective_mode, TransportMode::WsH2 | TransportMode::WsH1)
         },
-        (UplinkTransport::Ws, TransportMode::WsH2) => effective_mode == TransportMode::WsH1,
+        (UplinkTransport::Ss, TransportMode::WsH2) => effective_mode == TransportMode::WsH1,
         (UplinkTransport::Vless, TransportMode::XhttpH3) => {
             matches!(effective_mode, TransportMode::XhttpH2 | TransportMode::XhttpH1)
         },

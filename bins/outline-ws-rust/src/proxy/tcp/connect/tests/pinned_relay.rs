@@ -79,7 +79,7 @@ fn lb(keepalive_interval: Duration) -> LoadBalancingConfig {
 fn make_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(format!("ws://{addr}/tcp").parse().unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
@@ -204,7 +204,7 @@ async fn run_relay_keepalive_does_not_extend_idle_timeout() {
 fn make_ws_uplink_pointing_at(name: &str, redial_target: SocketAddr) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(format!("ws://{}/test", redial_target).parse().unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,

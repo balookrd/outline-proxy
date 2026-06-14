@@ -240,7 +240,7 @@ impl UplinkManager {
                 Option<WarmUdpProbeSlot>,
             ) = if matches!(
                 uplink.transport,
-                crate::config::UplinkTransport::Vless | crate::config::UplinkTransport::Ws,
+                crate::config::UplinkTransport::Vless | crate::config::UplinkTransport::Ss,
             ) {
                 (
                     Some(Arc::clone(self.inner.warm_tcp_probe_slot(index))),

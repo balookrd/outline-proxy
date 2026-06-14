@@ -38,7 +38,7 @@ pub(super) async fn run_dns_probe(
     };
 
     match uplink.transport {
-        UplinkTransport::Ws => {
+        UplinkTransport::Ss => {
             let mut payload = dns_server.to_wire_bytes()?;
             payload.extend_from_slice(&query);
 

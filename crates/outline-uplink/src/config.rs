@@ -11,14 +11,24 @@ pub use outline_transport::{ServerAddr, TransportMode, VlessUdpMuxLimits};
 pub use shadowsocks_crypto::CipherKind;
 pub use socks5_proto::TargetAddr;
 
+#[cfg(test)]
+#[path = "tests/config.rs"]
+mod tests;
+
 // ── UplinkTransport ──────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UplinkTransport {
+    /// Shadowsocks-over-WebSocket. Canonical config value is `"ss"`, with
+    /// `"shadowsocks"` accepted as an equal alias. `"ws"` / `"websocket"`
+    /// are accepted as **deprecated** aliases (this transport used to be
+    /// spelled `ws` before the direct-socket Shadowsocks uplink was
+    /// removed and the name freed up) and will be dropped in a future
+    /// release.
     #[default]
-    #[serde(alias = "websocket")]
-    Ws,
+    #[serde(rename = "ss", alias = "shadowsocks", alias = "ws", alias = "websocket")]
+    Ss,
     /// VLESS over WebSocket (iteration 1: TCP + UDP, no Mux, no flow/xtls,
     /// TLS supplied by the WS URL scheme `wss://` going through rustls).
     Vless,
@@ -29,7 +39,8 @@ impl std::str::FromStr for UplinkTransport {
 
     fn from_str(s: &str) -> Result<Self> {
         match s {
-            "ws" | "websocket" => Ok(Self::Ws),
+            // `ws` / `websocket` are deprecated aliases for `ss`.
+            "ss" | "shadowsocks" | "ws" | "websocket" => Ok(Self::Ss),
             "vless" => Ok(Self::Vless),
             _ => anyhow::bail!("unsupported uplink transport: {s}"),
         }
@@ -39,7 +50,7 @@ impl std::str::FromStr for UplinkTransport {
 impl std::fmt::Display for UplinkTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Ws => "ws",
+            Self::Ss => "ss",
             Self::Vless => "vless",
         })
     }
@@ -102,7 +113,7 @@ impl FallbackTransport {
     /// fallback's own wire fields.
     pub fn supports_udp(&self) -> bool {
         match self.transport {
-            UplinkTransport::Ws => self.udp_ws_url.is_some(),
+            UplinkTransport::Ss => self.udp_ws_url.is_some(),
             UplinkTransport::Vless => self.vless_dial_url().is_some(),
         }
     }
@@ -110,14 +121,14 @@ impl FallbackTransport {
     pub fn tcp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
-            UplinkTransport::Ws => self.tcp_ws_url.as_ref(),
+            UplinkTransport::Ss => self.tcp_ws_url.as_ref(),
         }
     }
 
     pub fn udp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
-            UplinkTransport::Ws => self.udp_ws_url.as_ref(),
+            UplinkTransport::Ss => self.udp_ws_url.as_ref(),
         }
     }
 
@@ -225,7 +236,7 @@ impl UplinkConfig {
     /// use [`UplinkConfig::supports_udp_any`].
     pub fn supports_udp(&self) -> bool {
         match self.transport {
-            UplinkTransport::Ws => self.udp_ws_url.is_some(),
+            UplinkTransport::Ss => self.udp_ws_url.is_some(),
             UplinkTransport::Vless => self.vless_dial_url().is_some(),
         }
     }
@@ -244,7 +255,7 @@ impl UplinkConfig {
     pub fn tcp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
-            UplinkTransport::Ws => self.tcp_ws_url.as_ref(),
+            UplinkTransport::Ss => self.tcp_ws_url.as_ref(),
         }
     }
 
@@ -254,7 +265,7 @@ impl UplinkConfig {
     pub fn udp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
-            UplinkTransport::Ws => self.udp_ws_url.as_ref(),
+            UplinkTransport::Ss => self.udp_ws_url.as_ref(),
         }
     }
 

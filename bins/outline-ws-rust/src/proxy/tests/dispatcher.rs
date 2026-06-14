@@ -19,7 +19,7 @@ const FWMARK: u32 = 0x7;
 fn uplink(name: &str) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse(&format!("wss://{name}.example.com/tcp")).unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: Some(Url::parse(&format!("wss://{name}.example.com/udp")).unwrap()),

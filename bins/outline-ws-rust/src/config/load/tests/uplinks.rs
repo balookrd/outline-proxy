@@ -18,7 +18,7 @@ use super::super::uplinks::ResolvedUplinkInput;
 fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> UplinkSection {
     UplinkSection {
         name: Some(name.to_string()),
-        transport: Some(UplinkTransport::Ws),
+        transport: Some(UplinkTransport::Ss),
         tcp_ws_url: Some(Url::parse(url).unwrap()),
         tcp_mode: Some(TransportMode::WsH1),
         udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
@@ -75,7 +75,7 @@ fn vless_uplink_section(
 
 fn empty_fallback() -> FallbackSection {
     FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: None,
         tcp_mode: None,
         udp_ws_url: None,
@@ -115,7 +115,7 @@ fn resolve_and_shuffle(section: UplinkSection) -> Result<UplinkConfig, anyhow::E
 #[test]
 fn vless_primary_with_two_ws_fallbacks_inherits_password_and_fwmark() {
     let ws_fb = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
         udp_ws_url: Some(Url::parse("wss://ws.example.com/udp").unwrap()),
         tcp_mode: Some(TransportMode::WsH2),
@@ -123,7 +123,7 @@ fn vless_primary_with_two_ws_fallbacks_inherits_password_and_fwmark() {
         ..empty_fallback()
     };
     let ws_fb_2 = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws2.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
@@ -136,7 +136,7 @@ fn vless_primary_with_two_ws_fallbacks_inherits_password_and_fwmark() {
 
     assert_eq!(cfg.fallbacks.len(), 2);
     let ws = &cfg.fallbacks[0];
-    assert_eq!(ws.transport, UplinkTransport::Ws);
+    assert_eq!(ws.transport, UplinkTransport::Ss);
     assert_eq!(ws.tcp_mode, TransportMode::WsH2);
     assert_eq!(ws.udp_mode, TransportMode::WsH1);
     assert_eq!(ws.password, "secret", "password inherited from parent");
@@ -145,7 +145,7 @@ fn vless_primary_with_two_ws_fallbacks_inherits_password_and_fwmark() {
     assert!(ws.vless_id.is_none());
 
     let ws2 = &cfg.fallbacks[1];
-    assert_eq!(ws2.transport, UplinkTransport::Ws);
+    assert_eq!(ws2.transport, UplinkTransport::Ss);
     assert_eq!(ws2.password, "secret");
     assert_eq!(ws2.fwmark, Some(99));
 }
@@ -153,7 +153,7 @@ fn vless_primary_with_two_ws_fallbacks_inherits_password_and_fwmark() {
 #[test]
 fn fallback_can_override_inherited_password_and_fwmark() {
     let fb = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb.example.com/tcp").unwrap()),
         password: Some("override-secret".to_string()),
         fwmark: Some(7),
@@ -210,12 +210,12 @@ fn allows_vless_xhttp_primary_with_vless_ws_fallback() {
 #[test]
 fn allows_two_ws_fallbacks_at_distinct_endpoints() {
     let ws_fb_1 = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://a.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
     let ws_fb_2 = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://b.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
@@ -233,7 +233,7 @@ fn allows_two_ws_fallbacks_at_distinct_endpoints() {
 #[test]
 fn rejects_ws_fallback_missing_tcp_ws_url() {
     let bad = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         // tcp_ws_url omitted — required
         ..empty_fallback()
     };
@@ -280,17 +280,17 @@ fn shuffle_wires_defaults_to_false_when_unset() {
 fn shuffle_wires_off_preserves_operator_ordering() {
     // Three distinct WS fallback URLs let us assert ordering after resolve.
     let fb_a = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
     let fb_b = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
     let fb_c = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-c.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
@@ -323,17 +323,17 @@ fn shuffle_wires_on_keeps_full_wire_set_intact() {
     // (primary ↔ FallbackTransport) without being flaky on the specific
     // ordering, which is intentionally random.
     let fb_a = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
     let fb_b = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
     let fb_c = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-c.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
@@ -358,9 +358,9 @@ fn shuffle_wires_on_keeps_full_wire_set_intact() {
         assert!(cfg.shuffle_wires);
         // All four wires must still be Ws (transport unchanged for this
         // single-family setup) so the shuffle did not corrupt fields.
-        assert_eq!(cfg.transport, UplinkTransport::Ws);
+        assert_eq!(cfg.transport, UplinkTransport::Ss);
         for fb in &cfg.fallbacks {
-            assert_eq!(fb.transport, UplinkTransport::Ws);
+            assert_eq!(fb.transport, UplinkTransport::Ss);
         }
         let mut wires: std::collections::BTreeSet<String> = cfg
             .fallbacks
@@ -378,12 +378,12 @@ fn shuffle_wires_on_eventually_promotes_a_fallback_to_primary() {
     // bug: with 3 wires and 64 attempts, the probability of NEVER seeing
     // primary moved off slot 0 is (1/3)^64 ≈ 3.4e-31 — negligible.
     let fb_a = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
     let fb_b = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
@@ -429,12 +429,12 @@ fn shuffle_wires_per_group_avoids_collisions_in_the_same_group() {
     // so the assertion is hard. We run it for many seeds to make
     // sure the dedup actually kicks in instead of relying on luck.
     let fb_a = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
     let fb_b = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
@@ -487,12 +487,12 @@ fn shuffle_wires_per_group_isolates_groups() {
     // share a permutation — the collision-free guarantee is per-group
     // and groups don't share state.
     let fb_a = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
     let fb_b = FallbackSection {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
         ..empty_fallback()
     };

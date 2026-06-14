@@ -1286,7 +1286,7 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
         "test",
         vec![UplinkConfig {
             name: "test".to_string(),
-            transport: UplinkTransport::Ws,
+            transport: UplinkTransport::Ss,
             tcp_ws_url: Some(tcp_ws_url),
             tcp_mode: TransportMode::WsH1,
             udp_ws_url: None,
