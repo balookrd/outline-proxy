@@ -249,12 +249,14 @@ cargo release-musl-armv7
 | `tuning.udp_replay_max_sessions` | Максимум одновременных SS-2022 anti-replay окон (по умолчанию зависит от профиля; `262144` для `large`). Пакеты с новым `client_session_id` отбрасываются при достижении лимита — это ограничивает память от клиента, который вращает session ID, раздувая стор. `0` отключает cap |
 | `tuning.ws_data_channel_capacity` | Per-session bounded mpsc capacity (в чанках) для WS-writer fan-in (upstream-reader → WS-writer для TCP-relay, NAT-reader → WS-writer для UDP-relay). Дефолты: `16` / `64` / `128` для `small` / `medium` / `large`. Слишком маленькое значение приводит к back-pressure от WS-writer'а на upstream-чтение при кратковременных задержках записи — видно как буферный underrun у видеоплеера; слишком большое — раздувает worst-case per-session residency (`capacity × 16 KiB` для TCP). Поднимайте для high-bandwidth single-tenant деплоев, снижайте для memory-constrained хостов со многими сессиями |
 | `tuning.h2_*` / `tuning.h3_*` | Тонкие настройки flow-control windows, лимитов стримов и сокет-буферов — см. `TuningProfile` в `src/config/mod.rs` |
-| `ws_path_tcp` | Глобальный TCP WebSocket-путь |
-| `ws_path_udp` | Глобальный UDP WebSocket-путь. Может совпадать с `ws_path_tcp` для *combined*-пути — клиент тогда дайлит `<base>/<token>`, и первый символ токена несёт скрытый TCP/UDP-дискриминатор |
+| `ws_path_tcp` | Глобальный **split** TCP WebSocket-путь (в паре с `ws_path_udp`) |
+| `ws_path_udp` | Глобальный **split** UDP WebSocket-путь |
+| `ws_path_ss` | Опциональный **combined** SS-over-WS-путь: один путь несёт ОБЕ ноги — клиент дайлит `<base>/<token>`, первый символ токена = скрытый TCP/UDP-дискриминатор. Вместо `ws_path_tcp` + `ws_path_udp`; взаимоисключающ с ними |
 | `ws_path_vless` | Опциональный VLESS-over-WebSocket путь на основном HTTP/1.1/HTTP/2 слушателе |
 | `xhttp_path_vless` | Опциональный VLESS-over-XHTTP base-путь. Сервер регистрирует `<base>/{id}` для каждого base; `{id}` — opaque per-session токен, выбираемый клиентом. Должен отличаться от `ws_path_vless` |
-| `xhttp_path_ss` | Опциональный Shadowsocks-over-XHTTP base-путь. Та же схема маршрута `<base>/{id}`, что у `xhttp_path_vless`, но несёт SS-AEAD-поток. Один base-путь обслуживает один протокол — должен отличаться от `xhttp_path_vless` |
-| `xhttp_path_ss_udp` | Опциональный SS-UDP-over-XHTTP base-путь. Отдельный от `xhttp_path_ss` (TCP-путь), зеркаля `ws_path_tcp` / `ws_path_udp`. Должен отличаться от путей всех прочих протоколов, но **может совпадать с `xhttp_path_ss`** — тогда обе ноги обслуживаются с одного *combined*-пути, а первый символ session-id несёт скрытый TCP/UDP-дискриминатор |
+| `xhttp_path_tcp` | Опциональный **split** SS-over-XHTTP TCP-путь. Та же схема маршрута `<base>/{id}`, что у `xhttp_path_vless`, но несёт SS-AEAD-поток. В паре с `xhttp_path_udp`; один base-путь обслуживает один протокол |
+| `xhttp_path_udp` | Опциональный **split** SS-UDP-over-XHTTP-путь. В паре с `xhttp_path_tcp`, зеркаля `ws_path_tcp` / `ws_path_udp` |
+| `xhttp_path_ss` | Опциональный **combined** SS-over-XHTTP-путь: один путь несёт ОБЕ ноги, разделяемые битом первого символа session-id. Вместо `xhttp_path_tcp` + `xhttp_path_udp`; взаимоисключающ с ними и отличается от всех прочих путей |
 | `http_root_auth` | Включить OpenConnect-подобный HTTP Basic challenge на `/`; после 3 неверных паролей сервер отдаёт `403`, а не-корневые пути остаются `404` |
 | `http_root_realm` | Текст в HTTP Basic запросе пароля для `/`; по умолчанию `Authorization required` |
 | `public_host` | Публичный хост для генерации Outline-ключей |
@@ -270,8 +272,10 @@ cargo release-musl-armv7
 | `users[].vless_id` | Опциональный VLESS UUID на пользователя |
 | `users[].ws_path_vless` | Опциональный VLESS WebSocket-путь на пользователя; при отсутствии используется верхнеуровневый `ws_path_vless` |
 | `users[].xhttp_path_vless` | Опциональный VLESS XHTTP base-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_vless` |
-| `users[].xhttp_path_ss` | Опциональный SS-over-XHTTP base-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_ss` |
-| `users[].xhttp_path_ss_udp` | Опциональный SS-UDP-over-XHTTP base-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_ss_udp` |
+| `users[].xhttp_path_tcp` | Опциональный split SS-over-XHTTP TCP-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_tcp` |
+| `users[].xhttp_path_udp` | Опциональный split SS-UDP-over-XHTTP-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_udp` |
+| `users[].xhttp_path_ss` | Опциональный combined SS-over-XHTTP-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_ss` |
+| `users[].ws_path_ss` | Опциональный combined SS-over-WS-путь на пользователя; при отсутствии используется верхнеуровневый `ws_path_ss` |
 | `users[].enabled` | Опциональный переключатель. `false` блокирует пользователя (маршруты и аутентификация отключаются), не удаляя запись. По умолчанию `true` |
 | `[control]` | Опциональный HTTP-эндпоинт управления пользователями в рантайме (фича `control`, включена по умолчанию). См. [Управляющий эндпоинт](#управляющий-эндпоинт) |
 | `control.listen` | Адрес сокета управляющего слушателя, например `127.0.0.1:7001`. Отдельный сокет — не выставляйте в публичную сеть |

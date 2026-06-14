@@ -37,14 +37,14 @@ pair of both per uplink.
 
 XHTTP is a `packet-up` / `stream-one` protocol. VLESS rides it for TCP + UDP on
 one path; Shadowsocks rides it on the **forward path** (client→server) for both
-TCP and UDP. By default TCP and UDP take separate base paths (`xhttp_path_ss` /
-`xhttp_path_ss_udp`, mirroring the WS tcp/udp split); optionally they can share
-**one combined path** (set both server paths to the same value, and give the
-client one URL for both legs). The TCP/UDP split then rides a hidden
-discriminator in the session id, so a censor sees one endpoint instead of two.
-The same combined option applies to WebSocket (`ws_path_tcp` == `ws_path_udp`).
-Reverse-tunnel-over-XHTTP is a planned follow-up. Every other cell is supported
-in both directions.
+TCP and UDP. By default TCP and UDP take separate base paths (server
+`xhttp_path_tcp` / `xhttp_path_udp`, mirroring the WS `ws_path_tcp` /
+`ws_path_udp` split); optionally they share **one combined path** (server
+`xhttp_path_ss`, client `ss_xhttp_url` + `ss_mode`). The TCP/UDP split then
+rides a hidden discriminator in the session id, so a censor sees one endpoint
+instead of two. The same combined option applies to WebSocket (server
+`ws_path_ss`, client `ss_ws_url`). Reverse-tunnel-over-XHTTP is a planned
+follow-up. Every other cell is supported in both directions.
 
 The client picks a `transport` + `mode` pair on each uplink:
 

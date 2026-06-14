@@ -20,6 +20,10 @@ pub struct UserEntry {
     pub ws_path_tcp: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws_path_udp: Option<String>,
+    /// Per-user override of the global `[websocket].ws_path_ss` — the
+    /// combined SS-over-WS path (one path for both TCP and UDP legs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ws_path_ss: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vless_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -30,16 +34,20 @@ pub struct UserEntry {
     /// deployments behind a CDN.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xhttp_path_vless: Option<String>,
-    /// Per-user override of the global `[websocket].xhttp_path_ss` base.
+    /// Per-user override of the global `[websocket].xhttp_path_tcp` base.
     /// Same semantics as `xhttp_path_vless`, but selects the path under
     /// which this user is reachable over Shadowsocks-over-XHTTP.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_ss: Option<String>,
-    /// Per-user override of the global `[websocket].xhttp_path_ss_udp`
+    pub xhttp_path_tcp: Option<String>,
+    /// Per-user override of the global `[websocket].xhttp_path_udp`
     /// base — the SS-UDP-over-XHTTP path (separate from the TCP path,
     /// mirroring `ws_path_tcp` vs `ws_path_udp`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_ss_udp: Option<String>,
+    pub xhttp_path_udp: Option<String>,
+    /// Per-user override of the global `[websocket].xhttp_path_ss` — the
+    /// combined SS-over-XHTTP path (one path for both TCP and UDP legs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xhttp_path_ss: Option<String>,
     /// `false` blocks the user without removing their config entry. Absent
     /// in the config means enabled; control-plane mutations write the field
     /// explicitly so on-disk state round-trips unambiguously.
@@ -72,12 +80,20 @@ impl UserEntry {
         self.xhttp_path_vless.as_deref().or(default)
     }
 
-    pub fn effective_xhttp_path_ss<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
-        self.xhttp_path_ss.as_deref().or(default)
+    pub fn effective_xhttp_path_tcp<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
+        self.xhttp_path_tcp.as_deref().or(default)
     }
 
-    pub fn effective_xhttp_path_ss_udp<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
-        self.xhttp_path_ss_udp.as_deref().or(default)
+    pub fn effective_xhttp_path_udp<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
+        self.xhttp_path_udp.as_deref().or(default)
+    }
+
+    pub fn effective_ws_path_ss<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
+        self.ws_path_ss.as_deref().or(default)
+    }
+
+    pub fn effective_xhttp_path_ss<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
+        self.xhttp_path_ss.as_deref().or(default)
     }
 }
 

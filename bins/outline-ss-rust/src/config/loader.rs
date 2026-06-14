@@ -157,10 +157,12 @@ impl AppMode {
                 .ws_path_udp
                 .or(websocket.ws_path_udp)
                 .unwrap_or_else(|| "/udp".to_owned()),
+            ws_path_ss: websocket.ws_path_ss,
             ws_path_vless: websocket.ws_path_vless,
             xhttp_path_vless: websocket.xhttp_path_vless,
+            xhttp_path_tcp: websocket.xhttp_path_tcp,
+            xhttp_path_udp: websocket.xhttp_path_udp,
             xhttp_path_ss: websocket.xhttp_path_ss,
-            xhttp_path_ss_udp: websocket.xhttp_path_ss_udp,
             http_root_auth: args.http_root_auth.or(http_root.auth).unwrap_or(false),
             http_root_realm: args
                 .http_root_realm
