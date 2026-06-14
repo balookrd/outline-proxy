@@ -67,6 +67,7 @@ pub(in crate::server) fn build_app(
         .keys()
         .map(|p| (p.clone(), XhttpAppProtocol::Vless))
         .chain(snap.xhttp_ss.keys().map(|p| (p.clone(), XhttpAppProtocol::Ss)))
+        .chain(snap.xhttp_ss_udp.keys().map(|p| (p.clone(), XhttpAppProtocol::SsUdp)))
         .collect();
     drop(snap);
 

@@ -21,6 +21,7 @@ fn make_uplink(name: &str) -> UplinkConfig {
         tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: Some(Url::parse(&format!("wss://{name}.example.com/udp")).unwrap()),
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,

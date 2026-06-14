@@ -108,6 +108,7 @@ pub async fn run(config: Config) -> Result<()> {
     let vless_paths = built.vless_routes.keys().cloned().collect::<BTreeSet<_>>();
     let xhttp_paths = built.xhttp_vless_routes.keys().cloned().collect::<BTreeSet<_>>();
     let xhttp_ss_paths = built.xhttp_ss_routes.keys().cloned().collect::<BTreeSet<_>>();
+    let xhttp_ss_udp_paths = built.xhttp_ss_udp_routes.keys().cloned().collect::<BTreeSet<_>>();
 
     #[cfg(feature = "control")]
     if let Some(control_config) = config.control.clone() {
@@ -121,6 +122,7 @@ pub async fn run(config: Config) -> Result<()> {
                 vless: vless_paths.clone(),
                 xhttp_vless: xhttp_paths.clone(),
                 xhttp_ss: xhttp_ss_paths.clone(),
+                xhttp_ss_udp: xhttp_ss_udp_paths.clone(),
             },
         ));
         control::spawn_control_server(control_config, manager, shutdown_signal.clone());
@@ -134,6 +136,8 @@ pub async fn run(config: Config) -> Result<()> {
     let vless_xhttp_user_routes =
         describe_vless_xhttp_user_routes(built.vless_xhttp_user_routes.as_ref());
     let ss_xhttp_user_routes = describe_ss_xhttp_user_routes(built.ss_xhttp_user_routes.as_ref());
+    let ss_xhttp_udp_user_routes =
+        describe_ss_xhttp_user_routes(built.ss_xhttp_udp_user_routes.as_ref());
     info!(
         listen = ?config.listen,
         tcp_tls = config.tcp_tls_enabled(),
@@ -146,15 +150,18 @@ pub async fn run(config: Config) -> Result<()> {
         ws_path_vless = ?config.ws_path_vless,
         xhttp_path_vless = ?config.xhttp_path_vless,
         xhttp_path_ss = ?config.xhttp_path_ss,
+        xhttp_path_ss_udp = ?config.xhttp_path_ss_udp,
         tcp_ws_paths = ?tcp_paths,
         udp_ws_paths = ?udp_paths,
         vless_paths = ?vless_paths,
         xhttp_paths = ?xhttp_paths,
         xhttp_ss_paths = ?xhttp_ss_paths,
+        xhttp_ss_udp_paths = ?xhttp_ss_udp_paths,
         user_routes = ?user_routes,
         vless_user_routes = ?vless_user_routes,
         vless_xhttp_user_routes = ?vless_xhttp_user_routes,
         ss_xhttp_user_routes = ?ss_xhttp_user_routes,
+        ss_xhttp_udp_user_routes = ?ss_xhttp_udp_user_routes,
         method = ?config.method,
         users = built.users.len(),
         udp_nat_idle_timeout_secs = config.tuning.udp_nat_idle_timeout_secs,

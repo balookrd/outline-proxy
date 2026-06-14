@@ -55,6 +55,7 @@ fn resolve_fallback(
     let mut tcp_xhttp_url = section.tcp_xhttp_url.clone();
     let mut tcp_mode = section.tcp_mode;
     let mut udp_ws_url = section.udp_ws_url.clone();
+    let mut udp_xhttp_url = section.udp_xhttp_url.clone();
     let mut udp_mode = section.udp_mode;
     let mut vless_ws_url = section.vless_ws_url.clone();
     let mut vless_xhttp_url = section.vless_xhttp_url.clone();
@@ -78,12 +79,15 @@ fn resolve_fallback(
                 );
             }
             let mode = tcp_mode.unwrap_or_default();
+            let udp_mode_val = udp_mode.unwrap_or_default();
             #[cfg(not(feature = "h3"))]
-            if matches!(mode, TransportMode::XhttpH3 | TransportMode::WsH3) {
-                bail!(
-                    "uplink {parent_name}: fallbacks[{idx}] mode={mode} requires the \
-                     `h3` feature"
-                );
+            for m in [mode, udp_mode_val] {
+                if matches!(m, TransportMode::XhttpH3 | TransportMode::WsH3) {
+                    bail!(
+                        "uplink {parent_name}: fallbacks[{idx}] mode={m} requires the \
+                         `h3` feature"
+                    );
+                }
             }
             // Carrier ↔ URL cross-check, mirroring the primary wire: an XHTTP
             // mode dials `tcp_xhttp_url`, a WS mode dials `tcp_ws_url`.
@@ -114,8 +118,24 @@ fn resolve_fallback(
                     );
                 }
             }
+            // UDP carrier ↔ URL cross-check. UDP is optional for SS, so
+            // only the wrong-URL-for-mode pairing is rejected (no URL is
+            // required — a TCP-only fallback leaves both unset).
+            if udp_mode_val.is_xhttp() {
+                if udp_ws_url.is_some() {
+                    bail!(
+                        "uplink {parent_name}: fallbacks[{idx}] (transport=ss udp_mode={udp_mode_val}) \
+                         dials `udp_xhttp_url`; remove `udp_ws_url`"
+                    );
+                }
+            } else if udp_xhttp_url.is_some() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=ss udp_mode={udp_mode_val}) \
+                     dials `udp_ws_url`; remove `udp_xhttp_url`"
+                );
+            }
             tcp_mode = Some(mode);
-            udp_mode = Some(udp_mode.unwrap_or_default());
+            udp_mode = Some(udp_mode_val);
             vless_mode = Some(TransportMode::default());
             // Validate password against cipher (skipped on inherit-only path
             // when parent already validated).
@@ -132,12 +152,13 @@ fn resolve_fallback(
                 || tcp_xhttp_url.is_some()
                 || tcp_mode.is_some()
                 || udp_ws_url.is_some()
+                || udp_xhttp_url.is_some()
                 || udp_mode.is_some()
             {
                 bail!(
                     "uplink {parent_name}: fallbacks[{idx}] (transport=vless) must not set \
-                     `tcp_ws_url`/`tcp_xhttp_url`/`tcp_mode`/`udp_ws_url`/`udp_mode`; use \
-                     `vless_ws_url`/`vless_xhttp_url`/`vless_mode`"
+                     `tcp_ws_url`/`tcp_xhttp_url`/`tcp_mode`/`udp_ws_url`/`udp_xhttp_url`/`udp_mode`; \
+                     use `vless_ws_url`/`vless_xhttp_url`/`vless_mode`"
                 );
             }
             let mode = vless_mode.unwrap_or_default();
@@ -194,6 +215,7 @@ fn resolve_fallback(
             tcp_ws_url = None;
             tcp_xhttp_url = None;
             udp_ws_url = None;
+            udp_xhttp_url = None;
         },
     }
 
@@ -203,6 +225,7 @@ fn resolve_fallback(
         tcp_xhttp_url,
         tcp_mode: tcp_mode.unwrap_or_default(),
         udp_ws_url,
+        udp_xhttp_url,
         udp_mode: udp_mode.unwrap_or_default(),
         vless_ws_url,
         vless_xhttp_url,

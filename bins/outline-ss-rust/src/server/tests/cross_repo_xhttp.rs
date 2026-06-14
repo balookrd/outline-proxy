@@ -605,6 +605,7 @@ async fn setup_xhttp_h3_server(
         vless: Arc::new(BTreeMap::new()),
         xhttp_vless: xhttp_routes,
         xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
     }));
     let orphan_registry = if resumption {
         Some(Arc::new(resumption::OrphanRegistry::new(
@@ -879,6 +880,7 @@ async fn setup_xhttp_h2_tls_server_with_resumption(
         vless: Arc::new(BTreeMap::new()),
         xhttp_vless: xhttp_routes,
         xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
     }));
     let orphan_registry = Some(Arc::new(resumption::OrphanRegistry::new(
         resumption::ResumptionConfig::from(&crate::config::SessionResumptionConfig {

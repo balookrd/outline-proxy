@@ -221,6 +221,9 @@ struct H3ConnectionCtx {
     /// alongside `xhttp_vless`; one base path serves exactly one
     /// protocol (config validation enforces distinctness).
     xhttp_ss: Arc<std::collections::BTreeMap<String, Arc<TransportRoute>>>,
+    /// XHTTP-Shadowsocks UDP base paths → SS transport routes. Separate
+    /// from `xhttp_ss` (the TCP path).
+    xhttp_ss_udp: Arc<std::collections::BTreeMap<String, Arc<TransportRoute>>>,
     /// Shared service bundle, needed to spawn the (VLESS or SS) relay
     /// through the common `spawn_relay` on the XHTTP path.
     services: Arc<Services>,
@@ -294,11 +297,13 @@ pub(in crate::server) async fn serve_h3_server(
             .xhttp_vless
             .keys()
             .chain(initial.xhttp_ss.keys())
+            .chain(initial.xhttp_ss_udp.keys())
             .cloned()
             .collect::<BTreeSet<_>>(),
     );
     let xhttp_vless = Arc::clone(&initial.xhttp_vless);
     let xhttp_ss = Arc::clone(&initial.xhttp_ss);
+    let xhttp_ss_udp = Arc::clone(&initial.xhttp_ss_udp);
     drop(initial);
     let xhttp_registry = Arc::clone(&services.xhttp_registry);
     let (endpoint, ws_config) = vendored::h3_ws_server_into_parts(server);
@@ -360,6 +365,7 @@ pub(in crate::server) async fn serve_h3_server(
             xhttp_paths: Arc::clone(&xhttp_paths),
             xhttp_vless: Arc::clone(&xhttp_vless),
             xhttp_ss: Arc::clone(&xhttp_ss),
+            xhttp_ss_udp: Arc::clone(&xhttp_ss_udp),
             services: Arc::clone(&services),
             xhttp_registry: Arc::clone(&xhttp_registry),
             ws_config: ws_config.clone(),

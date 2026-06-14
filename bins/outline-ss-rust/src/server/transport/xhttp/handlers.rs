@@ -26,6 +26,7 @@ use crate::metrics::{AppProtocol, Protocol, Transport};
 use super::super::super::state::{AppState, Services, TransportRoute, VlessTransportRoute};
 use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
 use super::super::tcp::{WsTcpRouteCtx, run_tcp_relay};
+use super::super::udp::{UdpRouteCtx, run_udp_relay};
 use super::super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::padding::post_response_headers;
@@ -49,6 +50,9 @@ const MAX_POST_BYTES: usize = 256 * 1024;
 pub(in crate::server) enum XhttpAppProtocol {
     Vless,
     Ss,
+    /// SS-UDP-over-XHTTP. A separate base path from `Ss` (the TCP path),
+    /// mirroring the WS `ws_path_tcp` / `ws_path_udp` split.
+    SsUdp,
 }
 
 /// State threaded into every XHTTP axum handler. `registry` + `parent`
@@ -72,6 +76,7 @@ pub(in crate::server) struct XhttpAxumState {
 pub(in crate::server) enum XhttpRoute {
     Vless(Arc<VlessTransportRoute>),
     Ss(Arc<TransportRoute>),
+    SsUdp(Arc<TransportRoute>),
 }
 
 /// axum-extracted pieces of a single XHTTP request, bundled so the
@@ -700,6 +705,27 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 finish_ws_session(metrics_session, classify_relay_result(result), "ss");
             });
         },
+        XhttpRoute::SsUdp(route) => {
+            let server = Arc::clone(&services.udp_server);
+            let route_ctx = Arc::new(UdpRouteCtx {
+                users: Arc::clone(&route.users),
+                protocol,
+                path: base_path,
+                candidate_users: Arc::clone(&route.candidate_users),
+            });
+            let metrics_session = server.metrics.open_websocket_session(
+                Transport::Udp,
+                protocol,
+                AppProtocol::Shadowsocks,
+            );
+            tokio::spawn(async move {
+                let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
+                let result = run_udp_relay::<XhttpDuplex>(socket, server, route_ctx, resume).await;
+                session_for_task.close();
+                registry.remove(&session_id);
+                finish_ws_session(metrics_session, classify_relay_result(result), "ss-udp");
+            });
+        },
     }
 }
 
@@ -733,6 +759,11 @@ fn resolve_route(state: &XhttpAxumState) -> Option<XhttpRoute> {
             .get(state.base_path.as_ref())
             .cloned()
             .map(XhttpRoute::Ss),
+        XhttpAppProtocol::SsUdp => routes_snap
+            .xhttp_ss_udp
+            .get(state.base_path.as_ref())
+            .cloned()
+            .map(XhttpRoute::SsUdp),
     };
     drop(routes_snap);
     route

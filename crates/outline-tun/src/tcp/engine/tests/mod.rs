@@ -1291,6 +1291,7 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             tcp_xhttp_url: None,
             tcp_mode: TransportMode::WsH1,
             udp_ws_url: None,
+            udp_xhttp_url: None,
             udp_mode: TransportMode::WsH1,
             vless_ws_url: None,
             vless_xhttp_url: None,

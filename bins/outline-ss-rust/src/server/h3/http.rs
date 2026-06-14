@@ -110,6 +110,7 @@ async fn handle_h3_request(
                 .cloned()
                 .map(XhttpRoute::Vless)
                 .or_else(|| ctx.xhttp_ss.get(base.as_ref()).cloned().map(XhttpRoute::Ss))
+                .or_else(|| ctx.xhttp_ss_udp.get(base.as_ref()).cloned().map(XhttpRoute::SsUdp))
         {
             // `match_xhttp_path` returns `session_id = None` for the
             // bare-`<base>` shape (xray's sessionless stream-one

@@ -35,6 +35,11 @@ pub struct UserEntry {
     /// which this user is reachable over Shadowsocks-over-XHTTP.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xhttp_path_ss: Option<String>,
+    /// Per-user override of the global `[websocket].xhttp_path_ss_udp`
+    /// base — the SS-UDP-over-XHTTP path (separate from the TCP path,
+    /// mirroring `ws_path_tcp` vs `ws_path_udp`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xhttp_path_ss_udp: Option<String>,
     /// `false` blocks the user without removing their config entry. Absent
     /// in the config means enabled; control-plane mutations write the field
     /// explicitly so on-disk state round-trips unambiguously.
@@ -69,6 +74,10 @@ impl UserEntry {
 
     pub fn effective_xhttp_path_ss<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
         self.xhttp_path_ss.as_deref().or(default)
+    }
+
+    pub fn effective_xhttp_path_ss_udp<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
+        self.xhttp_path_ss_udp.as_deref().or(default)
     }
 }
 

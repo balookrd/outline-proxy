@@ -87,6 +87,7 @@ fn empty_route_registry() -> Arc<ArcSwap<RouteRegistry>> {
         vless: Arc::new(BTreeMap::new()),
         xhttp_vless: Arc::new(BTreeMap::new()),
         xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
     }))
 }
 

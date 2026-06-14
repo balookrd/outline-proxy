@@ -11,6 +11,7 @@ pub(super) struct PrimaryWireInput<'a> {
     pub(super) tcp_xhttp_url: Option<Url>,
     pub(super) tcp_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
+    pub(super) udp_xhttp_url: Option<Url>,
     pub(super) udp_mode: Option<TransportMode>,
     pub(super) vless_ws_url: Option<Url>,
     pub(super) vless_xhttp_url: Option<Url>,
@@ -25,6 +26,7 @@ pub(super) struct PrimaryWireShape {
     pub(super) tcp_xhttp_url: Option<Url>,
     pub(super) tcp_mode: TransportMode,
     pub(super) udp_ws_url: Option<Url>,
+    pub(super) udp_xhttp_url: Option<Url>,
     pub(super) udp_mode: TransportMode,
     pub(super) vless_ws_url: Option<Url>,
     pub(super) vless_xhttp_url: Option<Url>,
@@ -40,6 +42,7 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
         tcp_xhttp_url,
         tcp_mode,
         udp_ws_url,
+        udp_xhttp_url,
         udp_mode,
         mut vless_ws_url,
         mut vless_xhttp_url,
@@ -91,6 +94,7 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
         tcp_xhttp_url,
         tcp_mode,
         udp_ws_url,
+        udp_xhttp_url,
         udp_mode,
         vless_ws_url,
         vless_xhttp_url,
@@ -103,18 +107,22 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
                 );
             }
             let mode = tcp_mode.unwrap_or_default();
+            let udp_mode = udp_mode.unwrap_or_default();
             // `xhttp_h3` / `ws_h3` need the QUIC + h3 stack behind the
             // optional `h3` feature on this binary (router builds omit it).
+            // Both the TCP and UDP carriers are checked.
             #[cfg(not(feature = "h3"))]
-            if matches!(mode, TransportMode::XhttpH3 | TransportMode::WsH3) {
-                bail!(
-                    "uplink {name}: mode={mode} requires the `h3` feature; \
-                     rebuild with `--features h3` (the default profile already enables it) \
-                     or pick a non-h3 mode"
-                );
+            for m in [mode, udp_mode] {
+                if matches!(m, TransportMode::XhttpH3 | TransportMode::WsH3) {
+                    bail!(
+                        "uplink {name}: mode={m} requires the `h3` feature; \
+                         rebuild with `--features h3` (the default profile already enables it) \
+                         or pick a non-h3 mode"
+                    );
+                }
             }
-            // Carrier ↔ URL cross-check: an XHTTP mode dials `tcp_xhttp_url`,
-            // a WS mode dials `tcp_ws_url`. Require the matching URL and
+            // Carrier ↔ URL cross-check: an XHTTP mode dials `*_xhttp_url`,
+            // a WS mode dials `*_ws_url`. TCP requires the matching URL;
             // reject the other so a misconfig surfaces here, not at dial time.
             let (tcp_ws_url, tcp_xhttp_url) = if mode.is_xhttp() {
                 if tcp_ws_url.is_some() {
@@ -137,12 +145,31 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
                 })?;
                 (Some(ws), None)
             };
+            // UDP is optional for SS (a TCP-only uplink leaves both unset),
+            // so we only reject the wrong-URL-for-mode pairing — we do not
+            // require a UDP URL.
+            let (udp_ws_url, udp_xhttp_url) = if udp_mode.is_xhttp() {
+                if udp_ws_url.is_some() {
+                    bail!(
+                        "uplink {name}: transport=ss with udp_mode={udp_mode} dials `udp_xhttp_url`; remove `udp_ws_url`"
+                    );
+                }
+                (None, udp_xhttp_url)
+            } else {
+                if udp_xhttp_url.is_some() {
+                    bail!(
+                        "uplink {name}: transport=ss with udp_mode={udp_mode} dials `udp_ws_url`; remove `udp_xhttp_url`"
+                    );
+                }
+                (udp_ws_url, None)
+            };
             (
                 tcp_ws_url,
                 tcp_xhttp_url,
                 mode,
                 udp_ws_url,
-                udp_mode.unwrap_or_default(),
+                udp_xhttp_url,
+                udp_mode,
                 None,
                 None,
                 TransportMode::default(),
@@ -153,10 +180,11 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
                 || tcp_xhttp_url.is_some()
                 || tcp_mode.is_some()
                 || udp_ws_url.is_some()
+                || udp_xhttp_url.is_some()
                 || udp_mode.is_some()
             {
                 bail!(
-                    "uplink {name}: `tcp_ws_url`/`tcp_xhttp_url`/`tcp_mode`/`udp_ws_url`/`udp_mode` are not valid for transport=vless; use `vless_ws_url`/`vless_xhttp_url`/`vless_mode` instead (the VLESS server exposes a single path for both TCP and UDP)"
+                    "uplink {name}: `tcp_ws_url`/`tcp_xhttp_url`/`tcp_mode`/`udp_ws_url`/`udp_xhttp_url`/`udp_mode` are not valid for transport=vless; use `vless_ws_url`/`vless_xhttp_url`/`vless_mode` instead (the VLESS server exposes a single path for both TCP and UDP)"
                 );
             }
             let mode = vless_mode.unwrap_or_default();
@@ -189,6 +217,7 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
                 None,
                 TransportMode::default(),
                 None,
+                None,
                 TransportMode::default(),
                 vless_ws_url,
                 vless_xhttp_url,
@@ -203,6 +232,7 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
         tcp_xhttp_url,
         tcp_mode,
         udp_ws_url,
+        udp_xhttp_url,
         udp_mode,
         vless_ws_url,
         vless_xhttp_url,
