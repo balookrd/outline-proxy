@@ -37,6 +37,7 @@ fn test_config() -> Config {
         ws_path_udp: "/udp".into(),
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
         users: vec![UserEntry {
@@ -49,6 +50,7 @@ fn test_config() -> Config {
             vless_id: None,
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_ss: None,
             enabled: None,
         }],
         method: CipherKind::Chacha20IetfPoly1305,

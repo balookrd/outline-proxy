@@ -107,6 +107,7 @@ async fn setup_vless_ws_server(
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -172,6 +173,7 @@ async fn setup_vless_raw_quic_server() -> Result<(SocketAddr, JoinHandle<Result<
         udp: Arc::new(BTreeMap::new()),
         vless: Arc::new(BTreeMap::new()),
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -356,6 +358,7 @@ async fn setup_vless_ws_h3_server(
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -551,6 +554,7 @@ async fn setup_vless_ws_server_with_resumption_inner(
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let orphan_registry = Some(Arc::new(OrphanRegistry::new(
         ResumptionConfig::from(&crate::config::SessionResumptionConfig {
@@ -1060,6 +1064,7 @@ async fn setup_vless_raw_quic_server_with_resumption()
         udp: Arc::new(BTreeMap::new()),
         vless: Arc::new(BTreeMap::new()),
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let orphan_registry = Some(Arc::new(OrphanRegistry::new(
         ResumptionConfig::from(&crate::config::SessionResumptionConfig {
@@ -1228,6 +1233,7 @@ async fn setup_vless_ws_h3_server_with_resumption(
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let orphan_registry = Some(Arc::new(OrphanRegistry::new(
         ResumptionConfig::from(&crate::config::SessionResumptionConfig {
@@ -1406,6 +1412,7 @@ async fn setup_vless_ws_h2_tls_server_with_resumption(
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let orphan_registry = Some(Arc::new(OrphanRegistry::new(
         ResumptionConfig::from(&crate::config::SessionResumptionConfig {
@@ -1574,6 +1581,7 @@ async fn setup_vless_ws_h1_only_server_with_resumption(
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let orphan_registry = Some(Arc::new(OrphanRegistry::new(
         ResumptionConfig::from(&crate::config::SessionResumptionConfig {

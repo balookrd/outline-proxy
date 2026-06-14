@@ -247,6 +247,87 @@ pub(super) fn build_xhttp_vless_route_map(
         .collect()
 }
 
+/// A Shadowsocks user reachable over an XHTTP base path. The SS payload is
+/// authenticated by the same [`UserKey`] as SS-over-WS; only the carrier
+/// differs, so the route record is a plain [`TransportRoute`].
+#[derive(Clone)]
+pub(super) struct SsXhttpUserRoute {
+    pub user: UserKey,
+    pub xhttp_path: Arc<str>,
+}
+
+pub(super) fn describe_ss_xhttp_user_routes(routes: &[SsXhttpUserRoute]) -> Vec<String> {
+    routes
+        .iter()
+        .map(|route| {
+            format!(
+                "{}:{} ss-xhttp={}",
+                route.user.id(),
+                route.user.cipher().as_str(),
+                route.xhttp_path,
+            )
+        })
+        .collect()
+}
+
+pub(super) fn build_ss_xhttp_user_routes(config: &Config) -> Result<Arc<[SsXhttpUserRoute]>> {
+    Ok(Arc::from(
+        config
+            .user_entries()?
+            .into_iter()
+            // Keep only users that resolve to an SS-over-XHTTP base path
+            // (per-user override or the global `xhttp_path_ss`). Others
+            // belong to the WS tables, not this one.
+            .filter_map(|entry| {
+                let path = entry
+                    .effective_xhttp_path_ss(config.xhttp_path_ss.as_deref())?
+                    .to_owned();
+                Some((entry, path))
+            })
+            .map(|(entry, xhttp_path)| {
+                let method = entry.effective_method(config.method);
+                let password = entry.password.expect("user_entries filters passwordless users");
+                UserKey::new(entry.id, &password, entry.fwmark, method).map(|user| {
+                    SsXhttpUserRoute {
+                        user,
+                        xhttp_path: Arc::from(xhttp_path.as_str()),
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice(),
+    ))
+}
+
+pub(super) fn build_xhttp_ss_route_map(
+    routes: &[SsXhttpUserRoute],
+) -> BTreeMap<String, Arc<TransportRoute>> {
+    let mut grouped = BTreeMap::<String, Vec<UserKey>>::new();
+    for route in routes {
+        grouped
+            .entry(route.xhttp_path.to_string())
+            .or_default()
+            .push(route.user.clone());
+    }
+    grouped
+        .into_iter()
+        .map(|(path, path_users)| {
+            let candidate_users =
+                path_users.iter().map(|user| user.log_label()).collect::<Vec<_>>();
+            (
+                path,
+                Arc::new(TransportRoute {
+                    users: Arc::from(path_users.into_boxed_slice()),
+                    candidate_users: Arc::from(candidate_users.into_boxed_slice()),
+                    peer_user_cache: Arc::new(PeerUserCache::with_capacity(
+                        TCP_PEER_USER_CACHE_CAPACITY,
+                    )),
+                }),
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 pub(super) fn build_users(config: &Config) -> Result<Arc<[UserKey]>> {
     Ok(user_keys(build_user_routes(config)?.as_ref()))

@@ -112,10 +112,9 @@ pub(super) async fn connect_probe_tcp(
                 connect_transport(
                     TransportDialOptions::new(
                         cache,
-                        uplink
-                            .tcp_ws_url
-                            .as_ref()
-                            .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
+                        uplink.tcp_dial_url().ok_or_else(|| {
+                            anyhow!("uplink {} missing tcp dial URL", uplink.name)
+                        })?,
                         effective_tcp_mode,
                         source,
                     )

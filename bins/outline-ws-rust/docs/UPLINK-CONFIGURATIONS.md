@@ -84,7 +84,45 @@ weight = 1.0
   H3→H2→H1 fallback inside `connect_transport` carries the
   same `resume_request` token across all three carriers.
 
-## 3. VLESS over raw QUIC
+## 3. Shadowsocks over XHTTP
+
+`tcp_mode = "xhttp_h3"` (or `xhttp_h2` / `xhttp_h1`) carries the
+Shadowsocks AEAD stream over the XHTTP packet-up / stream-one driver
+instead of WebSocket — the same carrier VLESS uses, but with the SS
+payload. The base URL goes into `tcp_xhttp_url` (not `tcp_ws_url`); the
+per-session id is appended at dial time as one path segment. Useful
+when WebSocket Upgrade is blocked but plain HTTP POST/GET pass (CDN
+gateways, captive-portal middleboxes).
+
+```toml
+[[outline.uplinks]]
+name = "ss-xhttp-h3"
+group = "main"
+transport = "ss"
+tcp_xhttp_url = "https://ss.example.com/SECRET/xhttp"
+tcp_mode = "xhttp_h3"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
+weight = 1.0
+```
+
+- **Carrier vs URL:** `tcp_mode` selects the carrier family; an XHTTP
+  mode dials `tcp_xhttp_url`, a WS mode dials `tcp_ws_url`. Setting the
+  wrong URL for the mode (or both at once) is rejected at config load.
+  One wire carries one family — switch WS↔XHTTP with a separate
+  fallback wire.
+- **TCP fallback chain:** `xhttp_h3 → xhttp_h2 → xhttp_h1`, identical to
+  the VLESS-XHTTP descent (see section 6). The h1 carrier coerces
+  stream-one to packet-up exactly as VLESS does.
+- **Submode:** packet-up (default) or stream-one, selected via `?mode=`
+  on `tcp_xhttp_url` — same rules as the VLESS-XHTTP submode table.
+- **Server:** the matching server listener is `xhttp_path_ss` (distinct
+  from `xhttp_path_vless` — one base path serves one protocol).
+- **UDP:** not yet carried over XHTTP for SS; `udp_*` stays on the
+  WebSocket carrier. (Forward UDP-over-XHTTP for SS is a planned
+  follow-up.)
+
+## 4. VLESS over raw QUIC
 
 `vless_mode = "quic"` selects raw QUIC with ALPN `vless`. Multiple TCP
 and UDP sessions to different targets share a single QUIC connection;
@@ -119,7 +157,7 @@ weight = 1.0
   participate in resume (the hybrid mux re-creates per-target sessions
   on the WS side after the pivot).
 
-## 4. VLESS over WebSocket (H3)
+## 5. VLESS over WebSocket (H3)
 
 WebSocket carrier with VLESS framing. The VLESS server exposes a single
 WS path (`ws_path_vless`) shared by TCP and UDP — VLESS UDP rides the
@@ -145,7 +183,7 @@ weight = 1.0
   WS session, so it follows TCP's reconnects implicitly (no separate
   UDP resume token).
 
-## 5. VLESS over XHTTP (H3)
+## 6. VLESS over XHTTP (H3)
 
 `vless_mode = "xhttp_h3"` selects XHTTP packet-up over QUIC + HTTP/3.
 The driver opens one long-lived GET (downlink) and pipelines POSTs
@@ -207,10 +245,10 @@ CDN / proxy intermediaries to rely on. As a result:
   bail in the inner h1 driver is preserved for direct callers that
   bypass the public `connect_xhttp` entry point.
 
-## 6. VLESS share-link URIs
+## 7. VLESS share-link URIs
 
 The five VLESS shapes above (sections 3–5, plus the `ws_h2` / `ws_h1`
-variants of section 4) can also be configured through a single
+variants of section 5) can also be configured through a single
 `vless://UUID@HOST:PORT?...#NAME` URI — the share-link format used by
 Xray / V2Ray clients. Set the `link` field instead of writing the
 `vless_id` / `vless_*_url` / `vless_mode` triple by hand:

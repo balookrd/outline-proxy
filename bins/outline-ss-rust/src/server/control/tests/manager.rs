@@ -16,12 +16,22 @@ fn manager_with_alpn(h3_alpn: Vec<H3Alpn>) -> UserManager {
         udp: Arc::new(BTreeMap::new()),
         vless: Arc::new(BTreeMap::new()),
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let auth: AuthUsersSnapshot =
         Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<UserKey>::new()))));
     let tcp_paths = BTreeSet::from([config.ws_path_tcp.clone()]);
     let udp_paths = BTreeSet::from([config.ws_path_udp.clone()]);
-    UserManager::new(&config, routes, auth, tcp_paths, udp_paths, BTreeSet::new(), BTreeSet::new())
+    UserManager::new(
+        &config,
+        routes,
+        auth,
+        tcp_paths,
+        udp_paths,
+        BTreeSet::new(),
+        BTreeSet::new(),
+        BTreeSet::new(),
+    )
 }
 
 fn vless_only_entry() -> UserEntry {
@@ -35,6 +45,7 @@ fn vless_only_entry() -> UserEntry {
         vless_id: Some("00000000-0000-0000-0000-000000000001".into()),
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         enabled: None,
     }
 }

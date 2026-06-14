@@ -21,6 +21,7 @@ fn icmp_gate_manager(suppress_when_down: bool, bypass_when_down: bool) -> Uplink
             name: "primary".to_string(),
             transport: UplinkTransport::Ss,
             tcp_ws_url: Some("wss://main.example.com/tcp".parse().unwrap()),
+            tcp_xhttp_url: None,
             tcp_mode: TransportMode::WsH1,
             udp_ws_url: Some("wss://main.example.com/udp".parse().unwrap()),
             udp_mode: TransportMode::WsH1,

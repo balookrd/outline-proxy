@@ -16,6 +16,7 @@ pub(crate) struct UplinkPayload {
     pub(crate) name: Option<String>,
     pub(crate) transport: Option<String>,
     pub(crate) tcp_ws_url: Option<String>,
+    pub(crate) tcp_xhttp_url: Option<String>,
     pub(crate) tcp_mode: Option<String>,
     pub(crate) udp_ws_url: Option<String>,
     pub(crate) udp_mode: Option<String>,
@@ -57,6 +58,7 @@ pub(crate) struct UplinkPayload {
 pub(crate) struct FallbackPayload {
     pub(crate) transport: String,
     pub(crate) tcp_ws_url: Option<String>,
+    pub(crate) tcp_xhttp_url: Option<String>,
     pub(crate) tcp_mode: Option<String>,
     pub(crate) udp_ws_url: Option<String>,
     pub(crate) udp_mode: Option<String>,
@@ -167,6 +169,7 @@ pub(super) fn payload_to_table(payload: &UplinkPayload) -> Table {
     set_str(&mut tbl, "name", payload.name.as_deref());
     set_str(&mut tbl, "transport", payload.transport.as_deref());
     set_str(&mut tbl, "tcp_ws_url", payload.tcp_ws_url.as_deref());
+    set_str(&mut tbl, "tcp_xhttp_url", payload.tcp_xhttp_url.as_deref());
     set_str(&mut tbl, "tcp_mode", payload.tcp_mode.as_deref());
     set_str(&mut tbl, "udp_ws_url", payload.udp_ws_url.as_deref());
     set_str(&mut tbl, "udp_mode", payload.udp_mode.as_deref());
@@ -207,6 +210,7 @@ fn fallbacks_to_array(fallbacks: &[FallbackPayload]) -> ArrayOfTables {
         }
         sub.insert("transport", Item::Value(Value::from(fb.transport.as_str())));
         set_str(&mut sub, "tcp_ws_url", fb.tcp_ws_url.as_deref());
+        set_str(&mut sub, "tcp_xhttp_url", fb.tcp_xhttp_url.as_deref());
         set_str(&mut sub, "tcp_mode", fb.tcp_mode.as_deref());
         set_str(&mut sub, "udp_ws_url", fb.udp_ws_url.as_deref());
         set_str(&mut sub, "udp_mode", fb.udp_mode.as_deref());
@@ -241,6 +245,9 @@ pub(super) fn merge_patch_into_table(tbl: &mut Table, patch: &UplinkPayload) {
     }
     if let Some(v) = patch.tcp_ws_url.as_deref() {
         set_str(tbl, "tcp_ws_url", Some(v));
+    }
+    if let Some(v) = patch.tcp_xhttp_url.as_deref() {
+        set_str(tbl, "tcp_xhttp_url", Some(v));
     }
     if let Some(v) = patch.tcp_mode.as_deref() {
         set_str(tbl, "tcp_mode", Some(v));

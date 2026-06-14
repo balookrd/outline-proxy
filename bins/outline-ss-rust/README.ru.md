@@ -253,6 +253,7 @@ cargo release-musl-armv7
 | `ws_path_udp` | Глобальный UDP WebSocket-путь |
 | `ws_path_vless` | Опциональный VLESS-over-WebSocket путь на основном HTTP/1.1/HTTP/2 слушателе |
 | `xhttp_path_vless` | Опциональный VLESS-over-XHTTP base-путь. Сервер регистрирует `<base>/{id}` для каждого base; `{id}` — opaque per-session токен, выбираемый клиентом. Должен отличаться от `ws_path_vless` |
+| `xhttp_path_ss` | Опциональный Shadowsocks-over-XHTTP base-путь. Та же схема маршрута `<base>/{id}`, что у `xhttp_path_vless`, но несёт SS-AEAD-поток. Один base-путь обслуживает один протокол — должен отличаться от `xhttp_path_vless` |
 | `http_root_auth` | Включить OpenConnect-подобный HTTP Basic challenge на `/`; после 3 неверных паролей сервер отдаёт `403`, а не-корневые пути остаются `404` |
 | `http_root_realm` | Текст в HTTP Basic запросе пароля для `/`; по умолчанию `Authorization required` |
 | `public_host` | Публичный хост для генерации Outline-ключей |
@@ -268,6 +269,7 @@ cargo release-musl-armv7
 | `users[].vless_id` | Опциональный VLESS UUID на пользователя |
 | `users[].ws_path_vless` | Опциональный VLESS WebSocket-путь на пользователя; при отсутствии используется верхнеуровневый `ws_path_vless` |
 | `users[].xhttp_path_vless` | Опциональный VLESS XHTTP base-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_vless` |
+| `users[].xhttp_path_ss` | Опциональный SS-over-XHTTP base-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_ss` |
 | `users[].enabled` | Опциональный переключатель. `false` блокирует пользователя (маршруты и аутентификация отключаются), не удаляя запись. По умолчанию `true` |
 | `[control]` | Опциональный HTTP-эндпоинт управления пользователями в рантайме (фича `control`, включена по умолчанию). См. [Управляющий эндпоинт](#управляющий-эндпоинт) |
 | `control.listen` | Адрес сокета управляющего слушателя, например `127.0.0.1:7001`. Отдельный сокет — не выставляйте в публичную сеть |

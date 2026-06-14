@@ -8,6 +8,7 @@ pub(super) struct PrimaryWireInput<'a> {
     pub(super) name: &'a str,
     pub(super) transport: Option<UplinkTransport>,
     pub(super) tcp_ws_url: Option<Url>,
+    pub(super) tcp_xhttp_url: Option<Url>,
     pub(super) tcp_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
     pub(super) udp_mode: Option<TransportMode>,
@@ -21,6 +22,7 @@ pub(super) struct PrimaryWireInput<'a> {
 pub(super) struct PrimaryWireShape {
     pub(super) transport: UplinkTransport,
     pub(super) tcp_ws_url: Option<Url>,
+    pub(super) tcp_xhttp_url: Option<Url>,
     pub(super) tcp_mode: TransportMode,
     pub(super) udp_ws_url: Option<Url>,
     pub(super) udp_mode: TransportMode,
@@ -35,6 +37,7 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
         name,
         transport,
         tcp_ws_url,
+        tcp_xhttp_url,
         tcp_mode,
         udp_ws_url,
         udp_mode,
@@ -83,85 +86,121 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
     // the WS/socket fields. Cross-population is rejected at parse time so
     // misconfiguration surfaces as a clear error rather than a confusing
     // dial failure later.
-    let (tcp_ws_url, tcp_mode, udp_ws_url, udp_mode, vless_ws_url, vless_xhttp_url, vless_mode) =
-        match transport {
-            UplinkTransport::Ss => {
-                if vless_ws_url.is_some() || vless_xhttp_url.is_some() || vless_mode.is_some() {
-                    bail!(
-                        "uplink {name}: `vless_ws_url`/`vless_xhttp_url`/`vless_mode` are only valid for transport=vless"
-                    );
-                }
-                let tcp_ws_url =
-                    Some(tcp_ws_url.ok_or_else(|| {
-                        anyhow!("uplink {name}: transport=ws requires `tcp_ws_url`")
-                    })?);
-                (
-                    tcp_ws_url,
-                    tcp_mode.unwrap_or_default(),
-                    udp_ws_url,
-                    udp_mode.unwrap_or_default(),
-                    None,
-                    None,
-                    TransportMode::default(),
-                )
-            },
-            UplinkTransport::Vless => {
-                if tcp_ws_url.is_some()
-                    || tcp_mode.is_some()
-                    || udp_ws_url.is_some()
-                    || udp_mode.is_some()
-                {
-                    bail!(
-                        "uplink {name}: `tcp_ws_url`/`tcp_mode`/`udp_ws_url`/`udp_mode` are not valid for transport=vless; use `vless_ws_url`/`vless_xhttp_url`/`vless_mode` instead (the VLESS server exposes a single path for both TCP and UDP)"
-                    );
-                }
-                let mode = vless_mode.unwrap_or_default();
-                // `xhttp_h3`, `ws_h3` and `quic` all need the QUIC + h3 stack
-                // that lives behind the optional `h3` feature on this binary.
-                #[cfg(not(feature = "h3"))]
-                if matches!(
-                    mode,
-                    TransportMode::XhttpH3 | TransportMode::WsH3 | TransportMode::Quic
-                ) {
-                    bail!(
-                        "uplink {name}: mode={mode} requires the `h3` feature; \
+    let (
+        tcp_ws_url,
+        tcp_xhttp_url,
+        tcp_mode,
+        udp_ws_url,
+        udp_mode,
+        vless_ws_url,
+        vless_xhttp_url,
+        vless_mode,
+    ) = match transport {
+        UplinkTransport::Ss => {
+            if vless_ws_url.is_some() || vless_xhttp_url.is_some() || vless_mode.is_some() {
+                bail!(
+                    "uplink {name}: `vless_ws_url`/`vless_xhttp_url`/`vless_mode` are only valid for transport=vless"
+                );
+            }
+            let mode = tcp_mode.unwrap_or_default();
+            // `xhttp_h3` / `ws_h3` need the QUIC + h3 stack behind the
+            // optional `h3` feature on this binary (router builds omit it).
+            #[cfg(not(feature = "h3"))]
+            if matches!(mode, TransportMode::XhttpH3 | TransportMode::WsH3) {
+                bail!(
+                    "uplink {name}: mode={mode} requires the `h3` feature; \
                      rebuild with `--features h3` (the default profile already enables it) \
                      or pick a non-h3 mode"
-                    );
-                }
-                // Cross-check: the URL field carrying the dial target must match
-                // the chosen mode. Forgetting either is a common mistake; surface
-                // it as a clear error rather than a confusing dial-time failure.
-                let needs_xhttp_url = matches!(
-                    mode,
-                    TransportMode::XhttpH1 | TransportMode::XhttpH2 | TransportMode::XhttpH3
                 );
-                let needs_ws_url = !needs_xhttp_url;
-                if needs_ws_url && vless_ws_url.is_none() {
+            }
+            // Carrier ↔ URL cross-check: an XHTTP mode dials `tcp_xhttp_url`,
+            // a WS mode dials `tcp_ws_url`. Require the matching URL and
+            // reject the other so a misconfig surfaces here, not at dial time.
+            let (tcp_ws_url, tcp_xhttp_url) = if mode.is_xhttp() {
+                if tcp_ws_url.is_some() {
                     bail!(
-                        "uplink {name}: transport=vless with mode={mode} requires `vless_ws_url`"
+                        "uplink {name}: transport=ss with mode={mode} dials `tcp_xhttp_url`; remove `tcp_ws_url`"
                     );
                 }
-                if needs_xhttp_url && vless_xhttp_url.is_none() {
+                let xhttp = tcp_xhttp_url.ok_or_else(|| {
+                    anyhow!("uplink {name}: transport=ss with mode={mode} requires `tcp_xhttp_url`")
+                })?;
+                (None, Some(xhttp))
+            } else {
+                if tcp_xhttp_url.is_some() {
                     bail!(
-                        "uplink {name}: transport=vless with mode={mode} requires `vless_xhttp_url`"
+                        "uplink {name}: transport=ss with mode={mode} dials `tcp_ws_url`; remove `tcp_xhttp_url`"
                     );
                 }
-                (
-                    None,
-                    TransportMode::default(),
-                    None,
-                    TransportMode::default(),
-                    vless_ws_url,
-                    vless_xhttp_url,
-                    mode,
-                )
-            },
-        };
+                let ws = tcp_ws_url.ok_or_else(|| {
+                    anyhow!("uplink {name}: transport=ss with mode={mode} requires `tcp_ws_url`")
+                })?;
+                (Some(ws), None)
+            };
+            (
+                tcp_ws_url,
+                tcp_xhttp_url,
+                mode,
+                udp_ws_url,
+                udp_mode.unwrap_or_default(),
+                None,
+                None,
+                TransportMode::default(),
+            )
+        },
+        UplinkTransport::Vless => {
+            if tcp_ws_url.is_some()
+                || tcp_xhttp_url.is_some()
+                || tcp_mode.is_some()
+                || udp_ws_url.is_some()
+                || udp_mode.is_some()
+            {
+                bail!(
+                    "uplink {name}: `tcp_ws_url`/`tcp_xhttp_url`/`tcp_mode`/`udp_ws_url`/`udp_mode` are not valid for transport=vless; use `vless_ws_url`/`vless_xhttp_url`/`vless_mode` instead (the VLESS server exposes a single path for both TCP and UDP)"
+                );
+            }
+            let mode = vless_mode.unwrap_or_default();
+            // `xhttp_h3`, `ws_h3` and `quic` all need the QUIC + h3 stack
+            // that lives behind the optional `h3` feature on this binary.
+            #[cfg(not(feature = "h3"))]
+            if matches!(mode, TransportMode::XhttpH3 | TransportMode::WsH3 | TransportMode::Quic) {
+                bail!(
+                    "uplink {name}: mode={mode} requires the `h3` feature; \
+                     rebuild with `--features h3` (the default profile already enables it) \
+                     or pick a non-h3 mode"
+                );
+            }
+            // Cross-check: the URL field carrying the dial target must match
+            // the chosen mode. Forgetting either is a common mistake; surface
+            // it as a clear error rather than a confusing dial-time failure.
+            let needs_xhttp_url = matches!(
+                mode,
+                TransportMode::XhttpH1 | TransportMode::XhttpH2 | TransportMode::XhttpH3
+            );
+            let needs_ws_url = !needs_xhttp_url;
+            if needs_ws_url && vless_ws_url.is_none() {
+                bail!("uplink {name}: transport=vless with mode={mode} requires `vless_ws_url`");
+            }
+            if needs_xhttp_url && vless_xhttp_url.is_none() {
+                bail!("uplink {name}: transport=vless with mode={mode} requires `vless_xhttp_url`");
+            }
+            (
+                None,
+                None,
+                TransportMode::default(),
+                None,
+                TransportMode::default(),
+                vless_ws_url,
+                vless_xhttp_url,
+                mode,
+            )
+        },
+    };
 
     Ok(PrimaryWireShape {
         transport,
         tcp_ws_url,
+        tcp_xhttp_url,
         tcp_mode,
         udp_ws_url,
         udp_mode,

@@ -26,6 +26,12 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_TCP_WS_URL")]
     pub tcp_ws_url: Option<Url>,
 
+    /// SS-only: base URL for SS-over-XHTTP. Used instead of `tcp_ws_url`
+    /// when `tcp_mode` is `xhttp_h1` / `xhttp_h2` / `xhttp_h3`. The
+    /// session id is appended at dial time (single path segment).
+    #[arg(long, env = "OUTLINE_TCP_XHTTP_URL")]
+    pub tcp_xhttp_url: Option<Url>,
+
     #[arg(long, env = "OUTLINE_TRANSPORT")]
     pub transport: Option<UplinkTransport>,
 

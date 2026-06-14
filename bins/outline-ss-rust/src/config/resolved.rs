@@ -112,6 +112,9 @@ pub struct Config {
     /// `<base>/{id}` for each base; `id` is the opaque session
     /// token the client picks. None disables XHTTP.
     pub xhttp_path_vless: Option<String>,
+    /// Base path under which the server accepts Shadowsocks-over-XHTTP.
+    /// Same route shape as `xhttp_path_vless`; None disables it.
+    pub xhttp_path_ss: Option<String>,
     pub http_root_auth: bool,
     pub http_root_realm: String,
     pub users: Vec<UserEntry>,

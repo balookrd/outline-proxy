@@ -166,11 +166,55 @@ impl Config {
                 conflict,
             );
         }
+        // ── SS-over-XHTTP paths ──────────────────────────────────────────
+        // SS identity is a password (not a vless_id), so the gates mirror the
+        // vless-xhttp block but key off `password`.
+        let mut ss_xhttp_paths = BTreeSet::new();
+        if let Some(path) = self.xhttp_path_ss.as_deref()
+            && !path.starts_with('/')
+        {
+            bail!("xhttp_path_ss must start with '/'");
+        }
+        if self.xhttp_path_ss.is_some() && self.users.iter().all(|user| user.password.is_none()) {
+            bail!("xhttp_path_ss requires at least one [[users]] entry with a password");
+        }
+        for user in &self.users {
+            if let Some(path) = user.xhttp_path_ss.as_deref()
+                && !path.starts_with('/')
+            {
+                bail!("user {} xhttp_path_ss must start with '/'", user.id);
+            }
+            if user.xhttp_path_ss.is_some() && user.password.is_none() {
+                bail!("user {} xhttp_path_ss requires a password", user.id);
+            }
+            if user.password.is_some()
+                && let Some(path) = user.effective_xhttp_path_ss(self.xhttp_path_ss.as_deref())
+            {
+                ss_xhttp_paths.insert(path.to_owned());
+            }
+        }
+        if let Some(conflict) = xhttp_paths.intersection(&ss_xhttp_paths).next() {
+            bail!(
+                "vless-xhttp and ss-xhttp base paths must be distinct (one base path serves \
+                 one protocol), conflict on {}",
+                conflict,
+            );
+        }
+        if let Some(conflict) = tcp_paths.intersection(&ss_xhttp_paths).next() {
+            bail!("tcp and ss-xhttp paths must be distinct, conflict on {}", conflict);
+        }
+        if let Some(conflict) = udp_paths.intersection(&ss_xhttp_paths).next() {
+            bail!("udp and ss-xhttp paths must be distinct, conflict on {}", conflict);
+        }
+        if let Some(conflict) = vless_paths.intersection(&ss_xhttp_paths).next() {
+            bail!("vless-ws and ss-xhttp paths must be distinct, conflict on {}", conflict);
+        }
         if self.http_root_auth
             && (tcp_paths.contains("/")
                 || udp_paths.contains("/")
                 || vless_paths.contains("/")
-                || xhttp_paths.contains("/"))
+                || xhttp_paths.contains("/")
+                || ss_xhttp_paths.contains("/"))
         {
             bail!("http_root_auth requires all websocket paths to differ from '/'");
         }
