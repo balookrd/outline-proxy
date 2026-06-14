@@ -48,10 +48,11 @@ follow-up. Every other cell is supported in both directions.
 
 The client picks a `transport` + `mode` pair on each uplink:
 
-| `transport` | accepted `*_mode` values | dial URL field |
-|---|---|---|
-| `ss` (alias `shadowsocks`; deprecated `ws` / `websocket`) | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `tcp_ws_url` / `udp_ws_url` (ws / quic) · `tcp_xhttp_url` / `udp_xhttp_url` (xhttp) |
-| `vless` | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `vless_ws_url` (ws / quic) · `vless_xhttp_url` (xhttp) |
+| `transport` | style | accepted `*_mode` values | dial URL field |
+|---|---|---|---|
+| `ss` (alias `shadowsocks`; deprecated `ws` / `websocket`) | split | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `tcp_ws_url` / `udp_ws_url` (ws / quic) · `tcp_xhttp_url` / `udp_xhttp_url` (xhttp) |
+| `ss` | combined | `ws_h1` · `ws_h2` · `ws_h3` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `ss_ws_url` or `ss_xhttp_url` + `ss_mode` |
+| `vless` | — | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `vless_ws_url` (ws / quic) · `vless_xhttp_url` (xhttp) |
 
 Carrier aliases: `h1` / `http1` → `ws_h1`, `h2` → `ws_h2`, `h3` → `ws_h3`.
 
@@ -73,9 +74,10 @@ falls back to WebSocket-over-H2 on a dial failure.
 
 > **Outline compatibility:** Shadowsocks-over-WebSocket is the path the Outline
 > apps speak — the server emits an Outline access key (`$type: websocket`,
-> TCP + UDP) for it. Shadowsocks-over-QUIC is a standalone mode for the bundled
-> `outline-ws-rust` client only and is not exposed as an Outline key. VLESS is
-> exposed as a `vless://…` share link (`ws` / `xhttp` / `quic`).
+> TCP + UDP) for it. Shadowsocks-over-XHTTP and Shadowsocks-over-QUIC are
+> standalone modes for the bundled `outline-ws-rust` client only and are not
+> exposed as Outline keys. VLESS is exposed as a `vless://…` share link
+> (`ws` / `xhttp` / `quic`).
 
 ## Layout
 
