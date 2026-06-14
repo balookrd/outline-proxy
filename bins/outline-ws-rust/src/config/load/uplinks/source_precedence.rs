@@ -15,6 +15,7 @@ pub(in crate::config::load) struct ResolvedUplinkInput {
     pub(super) tcp_xhttp_url: Option<Url>,
     pub(super) tcp_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
+    pub(super) udp_xhttp_url: Option<Url>,
     pub(super) udp_mode: Option<TransportMode>,
     pub(super) vless_ws_url: Option<Url>,
     pub(super) vless_xhttp_url: Option<Url>,
@@ -74,6 +75,10 @@ impl ResolvedUplinkInput {
                 .udp_ws_url
                 .clone()
                 .or_else(|| outline.and_then(|section| section.udp_ws_url.clone())),
+            udp_xhttp_url: args
+                .udp_xhttp_url
+                .clone()
+                .or_else(|| outline.and_then(|section| section.udp_xhttp_url.clone())),
             udp_mode: args.udp_mode.or_else(|| outline.and_then(|section| section.udp_mode)),
             vless_ws_url: args
                 .vless_ws_url
@@ -127,6 +132,7 @@ impl ResolvedUplinkInput {
             tcp_xhttp_url: uplink.tcp_xhttp_url.clone(),
             tcp_mode: uplink.tcp_mode,
             udp_ws_url: uplink.udp_ws_url.clone(),
+            udp_xhttp_url: uplink.udp_xhttp_url.clone(),
             udp_mode: uplink.udp_mode,
             vless_ws_url: uplink.vless_ws_url.clone(),
             vless_xhttp_url: uplink.vless_xhttp_url.clone(),
@@ -153,6 +159,7 @@ pub(in crate::config::load) fn cli_uplink_override_requested(args: &Args) -> boo
         || args.transport.is_some()
         || args.tcp_mode.is_some()
         || args.udp_ws_url.is_some()
+        || args.udp_xhttp_url.is_some()
         || args.udp_mode.is_some()
         || args.vless_ws_url.is_some()
         || args.vless_xhttp_url.is_some()

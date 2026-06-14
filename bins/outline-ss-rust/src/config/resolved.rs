@@ -115,6 +115,9 @@ pub struct Config {
     /// Base path under which the server accepts Shadowsocks-over-XHTTP.
     /// Same route shape as `xhttp_path_vless`; None disables it.
     pub xhttp_path_ss: Option<String>,
+    /// Base path under which the server accepts SS-UDP-over-XHTTP.
+    /// Separate from `xhttp_path_ss` (the TCP path); None disables it.
+    pub xhttp_path_ss_udp: Option<String>,
     pub http_root_auth: bool,
     pub http_root_realm: String,
     pub users: Vec<UserEntry>,

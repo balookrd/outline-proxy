@@ -20,13 +20,13 @@ use anyhow::Result;
 use arc_swap::ArcSwap;
 use futures_util::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::task::JoinHandle;
 use url::Url;
 
 use outline_transport::{
     DnsCache as ClientDnsCache, TcpShadowsocksReader, TcpShadowsocksWriter, TransportMode,
-    UpstreamTransportGuard,
+    UdpWsTransport, UpstreamTransportGuard,
 };
 
 use super::super::bootstrap::serve_listener;
@@ -46,8 +46,11 @@ const TEST_PASSWORD: &str = "ss-over-xhttp-secret";
 
 /// Stand up a server whose only route is an SS-over-XHTTP base path,
 /// authenticated by a single `UserKey` derived from `TEST_PASSWORD`.
+/// `udp = false` registers the base on the TCP path (`xhttp_ss`);
+/// `udp = true` registers it on the UDP path (`xhttp_ss_udp`).
 async fn setup_ss_xhttp_server(
     base_path: &'static str,
+    udp: bool,
 ) -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
@@ -58,12 +61,18 @@ async fn setup_ss_xhttp_server(
         user,
         xhttp_path: Arc::from(base_path),
     }]));
+    let empty = Arc::new(BTreeMap::new());
     let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
         vless: Arc::new(BTreeMap::new()),
         xhttp_vless: Arc::new(BTreeMap::new()),
-        xhttp_ss: ss_routes,
+        xhttp_ss: if udp {
+            Arc::clone(&empty)
+        } else {
+            Arc::clone(&ss_routes)
+        },
+        xhttp_ss_udp: if udp { ss_routes } else { empty },
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -167,7 +176,7 @@ async fn ss_xhttp_round_trip(url: Url) -> Result<()> {
 
 #[tokio::test]
 async fn cross_repo_ss_xhttp_packet_up_h2_round_trip() -> Result<()> {
-    let (listen_addr, server) = setup_ss_xhttp_server("/ssx").await?;
+    let (listen_addr, server) = setup_ss_xhttp_server("/ssx", false).await?;
     let url = Url::parse(&format!("http://{listen_addr}/ssx"))?;
     let result = ss_xhttp_round_trip(url).await;
     server.abort();
@@ -176,11 +185,60 @@ async fn cross_repo_ss_xhttp_packet_up_h2_round_trip() -> Result<()> {
 
 #[tokio::test]
 async fn cross_repo_ss_xhttp_stream_one_h2_round_trip() -> Result<()> {
-    let (listen_addr, server) = setup_ss_xhttp_server("/ssx").await?;
+    let (listen_addr, server) = setup_ss_xhttp_server("/ssx", false).await?;
     // Stream-one is selected entirely by `?mode=stream-one` on the dial
     // URL — both sides parse the query, no second config knob.
     let url = Url::parse(&format!("http://{listen_addr}/ssx?mode=stream-one"))?;
     let result = ss_xhttp_round_trip(url).await;
     server.abort();
     result
+}
+
+/// SS-UDP-over-XHTTP packet-up round trip. The client uses the same
+/// `UdpWsTransport` the real proxy dials with — its datagram channel
+/// rides the XHTTP carrier (`from_ws_datagrams` over the XHTTP
+/// `TransportStream`). The server routes the base on `xhttp_ss_udp`,
+/// so `spawn_relay` runs `run_udp_relay` over `XhttpDuplex`.
+#[tokio::test]
+async fn cross_repo_ss_udp_xhttp_packet_up_h2_round_trip() -> Result<()> {
+    // UDP echo upstream: reply with the same bytes to the sender.
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let mut buf = [0_u8; 1500];
+        let (n, peer) = upstream.recv_from(&mut buf).await?;
+        upstream.send_to(&buf[..n], peer).await?;
+        Result::<_, anyhow::Error>::Ok(buf[..n].to_vec())
+    });
+
+    let (listen_addr, server) = setup_ss_xhttp_server("/ssu", true).await?;
+    let url = Url::parse(&format!("http://{listen_addr}/ssu"))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let transport = UdpWsTransport::connect(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        TEST_CIPHER,
+        TEST_PASSWORD,
+        None,
+        false,
+        "cross-repo-ss-udp-test",
+        None,
+    )
+    .await?;
+
+    // SS-UDP datagram payload = SOCKS5 target header + data; the transport
+    // encrypts it as one packet.
+    transport.send_packet(&ss_first_chunk(upstream_addr, b"ping")).await?;
+    let reply = transport.read_packet().await?;
+    // The downlink datagram is `[SOCKS5 source-addr][echoed data]`; the
+    // echoed payload is the trailing bytes.
+    assert!(reply.ends_with(b"ping"), "SS-UDP-over-XHTTP downlink echo: {reply:?}");
+
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&upstream_bytes, b"ping", "SS-UDP-over-XHTTP uplink reached upstream");
+
+    transport.close().await?;
+    server.abort();
+    Ok(())
 }

@@ -18,6 +18,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
         tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: Some(Url::parse("https://cdn.example.com/SECRET/xhttp").unwrap()),
@@ -47,6 +48,7 @@ fn ws_tcp_only_primary() -> UplinkConfig {
         tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None, // <-- no UDP on primary
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,
@@ -76,6 +78,7 @@ fn ws_fallback(udp: bool) -> FallbackTransport {
         } else {
             None
         },
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,
@@ -111,6 +114,7 @@ fn ws_floor_primary(udp: bool) -> UplinkConfig {
         } else {
             None
         },
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,
@@ -146,6 +150,7 @@ fn ws_alt_floor_fallback(udp: bool) -> FallbackTransport {
         } else {
             None
         },
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,
@@ -173,6 +178,7 @@ fn ws_floor_fallback(udp: bool) -> FallbackTransport {
         } else {
             None
         },
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,
@@ -1420,6 +1426,7 @@ fn ws_h3_primary() -> UplinkConfig {
         tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH3,
         udp_ws_url: Some(Url::parse("wss://ws.example.com/udp").unwrap()),
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH3,
         vless_ws_url: None,
         vless_xhttp_url: None,
@@ -1551,6 +1558,7 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
         tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH3,
         udp_ws_url: Some(Url::parse("wss://ws.example.com/udp").unwrap()),
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH3,
         vless_ws_url: None,
         vless_xhttp_url: None,
@@ -2280,6 +2288,7 @@ async fn fallback_wire_downgrade_is_monotonic_within_window() {
         tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
+        udp_xhttp_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: Some(Url::parse("https://other.example.com/xhttp").unwrap()),

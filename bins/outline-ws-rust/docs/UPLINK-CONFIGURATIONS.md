@@ -101,6 +101,9 @@ group = "main"
 transport = "ss"
 tcp_xhttp_url = "https://ss.example.com/SECRET/xhttp"
 tcp_mode = "xhttp_h3"
+# Optional: carry SS-UDP over XHTTP too (separate base path on the server).
+udp_xhttp_url = "https://ss.example.com/SECRET/xhttp-udp"
+udp_mode = "xhttp_h3"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 weight = 1.0
@@ -118,9 +121,12 @@ weight = 1.0
   on `tcp_xhttp_url` — same rules as the VLESS-XHTTP submode table.
 - **Server:** the matching server listener is `xhttp_path_ss` (distinct
   from `xhttp_path_vless` — one base path serves one protocol).
-- **UDP:** not yet carried over XHTTP for SS; `udp_*` stays on the
-  WebSocket carrier. (Forward UDP-over-XHTTP for SS is a planned
-  follow-up.)
+- **UDP:** set `udp_xhttp_url` with `udp_mode = xhttp_h*` to carry SS-UDP
+  datagrams over XHTTP too. Unlike VLESS (which muxes TCP + UDP on one
+  path), SS keeps TCP and UDP on **separate** base paths — the server
+  registers `xhttp_path_ss_udp` for the UDP datagrams, mirroring the
+  `ws_path_tcp` / `ws_path_udp` split. TCP-only uplinks just leave the
+  UDP fields unset.
 
 ## 4. VLESS over raw QUIC
 

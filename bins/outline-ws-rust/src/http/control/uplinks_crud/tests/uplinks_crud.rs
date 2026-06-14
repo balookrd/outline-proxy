@@ -286,6 +286,7 @@ fn payload_with_fallbacks_round_trips_through_section() {
                 tcp_xhttp_url: None,
                 tcp_mode: Some("ws_h2".into()),
                 udp_ws_url: Some("wss://ws.example.com/udp".into()),
+                udp_xhttp_url: None,
                 udp_mode: Some("ws_h1".into()),
                 ..Default::default()
             },
@@ -294,6 +295,7 @@ fn payload_with_fallbacks_round_trips_through_section() {
                 tcp_ws_url: Some("wss://ws2.example.com/tcp".into()),
                 tcp_xhttp_url: None,
                 udp_ws_url: Some("wss://ws2.example.com/udp".into()),
+                udp_xhttp_url: None,
                 ..Default::default()
             },
         ]),

@@ -57,6 +57,7 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
         xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -144,6 +145,7 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
         xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -238,6 +240,7 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
         xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -326,6 +329,7 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
         xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -439,6 +443,7 @@ async fn vless_websocket_invalid_version_sinks_then_closes() -> Result<()> {
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
         xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -532,6 +537,7 @@ async fn vless_websocket_probe_sink_byte_cap_short_circuits() -> Result<()> {
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
         xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,

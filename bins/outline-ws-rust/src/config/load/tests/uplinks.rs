@@ -23,6 +23,7 @@ fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> 
         tcp_xhttp_url: None,
         tcp_mode: Some(TransportMode::WsH1),
         udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
+        udp_xhttp_url: None,
         udp_mode: Some(TransportMode::WsH1),
         vless_ws_url: None,
         vless_xhttp_url: None,
@@ -55,6 +56,7 @@ fn vless_uplink_section(
         tcp_xhttp_url: None,
         tcp_mode: None,
         udp_ws_url: None,
+        udp_xhttp_url: None,
         udp_mode: None,
         vless_ws_url: None,
         vless_xhttp_url: Some(Url::parse(xhttp_url).unwrap()),
@@ -82,6 +84,7 @@ fn empty_fallback() -> FallbackSection {
         tcp_xhttp_url: None,
         tcp_mode: None,
         udp_ws_url: None,
+        udp_xhttp_url: None,
         udp_mode: None,
         vless_ws_url: None,
         vless_xhttp_url: None,
@@ -122,6 +125,7 @@ fn vless_primary_with_two_ws_fallbacks_inherits_password_and_fwmark() {
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
         tcp_xhttp_url: None,
         udp_ws_url: Some(Url::parse("wss://ws.example.com/udp").unwrap()),
+        udp_xhttp_url: None,
         tcp_mode: Some(TransportMode::WsH2),
         udp_mode: Some(TransportMode::WsH1),
         ..empty_fallback()
@@ -558,6 +562,7 @@ fn ss_xhttp_uplink_section(name: &str, xhttp_url: &str, mode: TransportMode) -> 
         tcp_xhttp_url: Some(Url::parse(xhttp_url).unwrap()),
         tcp_mode: Some(mode),
         udp_ws_url: None,
+        udp_xhttp_url: None,
         udp_mode: None,
         vless_ws_url: None,
         vless_xhttp_url: None,
@@ -634,4 +639,26 @@ fn ss_xhttp_fallback_after_ss_ws_primary_parses() {
     let fb = &cfg.fallbacks[0];
     assert_eq!(fb.tcp_dial_mode(), TransportMode::XhttpH2);
     assert_eq!(fb.tcp_dial_url().map(|u| u.as_str()), Some("https://cdn.example.com/ss"));
+}
+
+#[test]
+fn ss_udp_xhttp_parses_and_dials_udp_xhttp_url() {
+    let mut section =
+        ss_xhttp_uplink_section("ss-xhttp", "https://cdn.example.com/ss", TransportMode::XhttpH2);
+    section.udp_xhttp_url = Some(Url::parse("https://cdn.example.com/ss-udp").unwrap());
+    section.udp_mode = Some(TransportMode::XhttpH2);
+    let cfg = resolve(section).expect("ss-over-xhttp uplink with UDP should parse");
+    assert_eq!(cfg.udp_dial_mode(), TransportMode::XhttpH2);
+    assert_eq!(cfg.udp_dial_url().map(|u| u.as_str()), Some("https://cdn.example.com/ss-udp"));
+    assert!(cfg.supports_udp(), "udp_xhttp_url should enable UDP");
+}
+
+#[test]
+fn ss_udp_xhttp_mode_rejects_udp_ws_url() {
+    let mut section =
+        ss_xhttp_uplink_section("ss-xhttp", "https://cdn.example.com/ss", TransportMode::XhttpH2);
+    section.udp_mode = Some(TransportMode::XhttpH2);
+    section.udp_ws_url = Some(Url::parse("wss://cdn.example.com/udp").unwrap());
+    let err = resolve(section).expect_err("udp xhttp mode with udp_ws_url must fail");
+    assert!(err.to_string().contains("udp_ws_url"), "unexpected error: {err}");
 }

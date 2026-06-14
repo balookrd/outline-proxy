@@ -36,6 +36,9 @@ pub(super) struct RouteRegistry {
     /// `TransportRoute` as SS-over-WS — the SS AEAD auth surface is
     /// identical, only the carrier differs.
     pub(super) xhttp_ss: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+    /// XHTTP-Shadowsocks UDP routes, keyed by base path. Separate from
+    /// `xhttp_ss` (the TCP path), mirroring `tcp` vs `udp`.
+    pub(super) xhttp_ss_udp: Arc<BTreeMap<String, Arc<TransportRoute>>>,
 }
 
 /// Snapshot of live routing state that control-plane mutations swap atomically.

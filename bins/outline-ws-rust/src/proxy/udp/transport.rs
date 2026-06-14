@@ -152,8 +152,8 @@ async fn dial_udp_fallback(
 
     match fallback.transport {
         UplinkTransport::Ss => {
-            let url = fallback.udp_ws_url.as_ref().ok_or_else(|| {
-                anyhow!("uplink {} fallback (transport=ws) missing udp_ws_url", parent.uplink.name,)
+            let url = fallback.udp_dial_url().ok_or_else(|| {
+                anyhow!("uplink {} fallback missing UDP dial URL", parent.uplink.name)
             })?;
             // Per-wire mode-downgrade window: cap from this fallback's
             // own slot, family-aware (same family/rank rules as primary).

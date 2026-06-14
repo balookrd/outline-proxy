@@ -190,6 +190,10 @@ pub(super) struct WebsocketSection {
     /// shape as `xhttp_path_vless`, but carries the SS AEAD stream
     /// instead of VLESS. Absent (the default) disables SS-over-XHTTP.
     pub xhttp_path_ss: Option<String>,
+    /// Base path for SS-UDP-over-XHTTP. Separate from `xhttp_path_ss`
+    /// (the TCP path), mirroring `ws_path_tcp` vs `ws_path_udp`. Absent
+    /// (the default) disables SS-UDP-over-XHTTP.
+    pub xhttp_path_ss_udp: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

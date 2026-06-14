@@ -45,6 +45,12 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_UDP_WS_URL")]
     pub udp_ws_url: Option<Url>,
 
+    /// SS-only: base URL for SS-UDP-over-XHTTP. Used instead of
+    /// `udp_ws_url` when `udp_mode` is `xhttp_h1` / `xhttp_h2` /
+    /// `xhttp_h3`.
+    #[arg(long, env = "OUTLINE_UDP_XHTTP_URL")]
+    pub udp_xhttp_url: Option<Url>,
+
     #[arg(
         long,
         env = "OUTLINE_UDP_MODE",
