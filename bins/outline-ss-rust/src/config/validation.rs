@@ -67,13 +67,16 @@ impl Config {
                     bail!("user {} {field} must start with '/'", user.id);
                 }
             }
-            // Combined and split are mutually exclusive on one user.
-            if user.effective_ws_path_ss(self.ws_path_ss.as_deref()).is_some()
+            // A user must not pin BOTH a per-user combined `ws_path_ss` and a
+            // per-user split path. (A *global* combined `ws_path_ss` does not
+            // clash: a user's own split paths opt it out — see
+            // `effective_ws_path_ss`.)
+            if user.ws_path_ss.is_some()
                 && (user.ws_path_tcp.is_some() || user.ws_path_udp.is_some())
             {
                 bail!(
-                    "user {} is on a combined `ws_path_ss` but also sets \
-                     `ws_path_tcp` / `ws_path_udp` — remove the split overrides",
+                    "user {} sets both a per-user `ws_path_ss` (combined) and \
+                     `ws_path_tcp` / `ws_path_udp` (split) — pick one",
                     user.id
                 );
             }
@@ -245,13 +248,15 @@ impl Config {
             if user.password.is_none() {
                 continue;
             }
-            // Combined and split are mutually exclusive on one user.
-            if user.effective_xhttp_path_ss(self.xhttp_path_ss.as_deref()).is_some()
+            // A user must not pin BOTH a per-user combined `xhttp_path_ss` and
+            // a per-user split path. (A *global* combined does not clash — a
+            // user's own split paths opt it out, see `effective_xhttp_path_ss`.)
+            if user.xhttp_path_ss.is_some()
                 && (user.xhttp_path_tcp.is_some() || user.xhttp_path_udp.is_some())
             {
                 bail!(
-                    "user {} is on a combined `xhttp_path_ss` but also sets \
-                     `xhttp_path_tcp` / `xhttp_path_udp` — remove the split overrides",
+                    "user {} sets both a per-user `xhttp_path_ss` (combined) and \
+                     `xhttp_path_tcp` / `xhttp_path_udp` (split) — pick one",
                     user.id
                 );
             }

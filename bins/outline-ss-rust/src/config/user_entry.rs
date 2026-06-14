@@ -88,11 +88,24 @@ impl UserEntry {
         self.xhttp_path_udp.as_deref().or(default)
     }
 
+    /// Combined SS-over-WS path for this user. An explicit per-user split path
+    /// (`ws_path_tcp` / `ws_path_udp`) opts the user OUT of a global combined
+    /// `ws_path_ss` — specific beats general, so a global combined default does
+    /// not clash with users that pin their own split paths. A per-user
+    /// `ws_path_ss` still wins over the global split defaults.
     pub fn effective_ws_path_ss<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
+        if self.ws_path_tcp.is_some() || self.ws_path_udp.is_some() {
+            return None;
+        }
         self.ws_path_ss.as_deref().or(default)
     }
 
+    /// Combined SS-over-XHTTP path for this user. Same per-user-split-wins rule
+    /// as [`Self::effective_ws_path_ss`].
     pub fn effective_xhttp_path_ss<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
+        if self.xhttp_path_tcp.is_some() || self.xhttp_path_udp.is_some() {
+            return None;
+        }
         self.xhttp_path_ss.as_deref().or(default)
     }
 }
