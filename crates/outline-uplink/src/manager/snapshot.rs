@@ -54,6 +54,7 @@ fn routing_scope_name(scope: RoutingScope) -> &'static str {
     match scope {
         RoutingScope::PerFlow => "per_flow",
         RoutingScope::PerUplink => "per_uplink",
+        RoutingScope::PerClient => "per_client",
         RoutingScope::Global => "global",
     }
 }

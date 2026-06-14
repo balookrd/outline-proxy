@@ -34,6 +34,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
     let session = metrics::track_session("udp");
     let result = async {
         let bind_ip = client.local_addr()?.ip();
+        let client_peer_ip = client.peer_addr()?.ip();
         let direct_socket = if direct_udp_possible(&config, &registry) {
             let std_sock =
                 outline_net::bind_udp_socket(SocketAddr::new(bind_ip, 0), config.direct_fwmark)
@@ -70,6 +71,8 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
         let responses_tx_uplink = responses_tx.clone();
         let uplink = async move {
             let mut route_cache: UdpRouteCache = new_udp_route_cache();
+            // Per-client affinity key (source IP); see serve_udp_associate.
+            let client_id = client_peer_ip.to_string();
             loop {
                 let Some(packet) = read_udp_tcp_packet(&mut client_read).await? else {
                     break;
@@ -118,6 +121,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
                     &registry_uplink,
                     &group_name,
                     &responses_tx_uplink,
+                    Some(&client_id),
                 )
                 .await?;
                 send_tunneled_udp(&ctx, Some(&packet.target), &payload).await?;

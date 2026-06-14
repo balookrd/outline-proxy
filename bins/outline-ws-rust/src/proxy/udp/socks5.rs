@@ -85,6 +85,10 @@ pub(in crate::proxy) async fn serve_udp_associate(
         let uplink = async move {
             let mut reassembler = UdpFragmentReassembler::default();
             let mut route_cache: UdpRouteCache = new_udp_route_cache();
+            // Per-client affinity key for this association (the client's source
+            // IP). Computed once; consulted only under routing_scope =
+            // "per_client", ignored by every other scope.
+            let client_id = client_peer_ip.to_string();
             loop {
                 // Park on readability without holding a buffer; allocate it
                 // only once a datagram is ready and drop it before the next
@@ -185,6 +189,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                     &registry_uplink,
                     &group_name,
                     &responses_tx_uplink,
+                    Some(&client_id),
                 )
                 .await?;
                 send_tunneled_udp(&ctx, Some(&packet.target), &payload).await?;

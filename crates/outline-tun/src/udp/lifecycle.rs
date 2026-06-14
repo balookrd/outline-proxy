@@ -101,9 +101,18 @@ impl TunUdpEngine {
         manager: &UplinkManager,
     ) -> Result<(u64, Arc<UdpSessionTransport>, usize, Arc<str>)> {
         let remote_target = ip_to_target(key.remote_ip, key.remote_port);
-        let (candidate, transport) = select_candidate_and_connect(manager, &remote_target).await?;
+        // Per-client affinity key: the LAN client's source IP. Consulted only
+        // under routing_scope = "per_client"; ignored otherwise.
+        let client_id = key.local_ip.to_string();
+        let (candidate, transport) =
+            select_candidate_and_connect(manager, &remote_target, Some(&client_id)).await?;
         manager
-            .confirm_selected_uplink(TransportKind::Udp, Some(&remote_target), candidate.index)
+            .confirm_selected_uplink_for(
+                TransportKind::Udp,
+                Some(&remote_target),
+                Some(&client_id),
+                candidate.index,
+            )
             .await;
         let transport = Arc::new(transport);
         let now = Instant::now();
@@ -343,10 +352,11 @@ async fn report_udp_runtime_failure(
 async fn select_candidate_and_connect(
     manager: &UplinkManager,
     remote_target: &TargetAddr,
+    client: Option<&str>,
 ) -> Result<(UplinkCandidate, UdpSessionTransport)> {
     let mut last_error = None;
     let strict_transport = manager.strict_active_uplink_for(TransportKind::Udp);
-    let candidates = manager.udp_candidates(Some(remote_target)).await;
+    let candidates = manager.udp_candidates_for(Some(remote_target), client).await;
     let iter = if strict_transport {
         candidates.into_iter().take(1).collect::<Vec<_>>()
     } else {

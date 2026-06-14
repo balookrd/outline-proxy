@@ -859,5 +859,11 @@ pub enum LoadBalancingMode {
 pub enum RoutingScope {
     PerFlow,
     PerUplink,
+    /// Active-active affinity keyed by the ingress client identity (source IP
+    /// by default). Each distinct client sticks to one uplink instead of
+    /// spreading its flows across all of them, while the balancer still picks
+    /// *which* uplink and fails the client over when its pinned uplink dies.
+    /// Only meaningful in `active_active` mode.
+    PerClient,
     Global,
 }

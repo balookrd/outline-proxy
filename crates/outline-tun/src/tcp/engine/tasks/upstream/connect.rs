@@ -129,6 +129,9 @@ impl TunTcpEngine {
             }
 
             // Tunneled path (existing).
+            // Per-client affinity key: the LAN client's source IP. Consulted
+            // only under routing_scope = "per_client"; ignored otherwise.
+            let client_id = key.client_ip.to_string();
             let connected = tokio::select! {
                 _ = close_rx.changed() => {
                     if *close_rx.borrow() {
@@ -141,7 +144,7 @@ impl TunTcpEngine {
                 }
                 result = timeout(
                     engine.inner.tcp.connect_timeout,
-                    select_tcp_candidate_and_connect(&manager, &target),
+                    select_tcp_candidate_and_connect(&manager, &target, Some(&client_id)),
                 ) => result,
             };
 

@@ -28,6 +28,10 @@ use crate::proxy::TcpTimeouts;
 pub(super) struct Chunk0FailoverParams<'a> {
     pub uplinks: &'a UplinkManager,
     pub target: &'a TargetAddr,
+    /// Ingress client identity for `routing_scope = "per_client"` affinity;
+    /// `None` for other scopes. Forwarded to cross-uplink failover so a
+    /// failed-over selection lands on (and re-pins) the same client's key.
+    pub client_id: Option<&'a str>,
     pub strict_transport: bool,
     pub chunk0_attempt_timeout: std::time::Duration,
     pub timeouts: &'a TcpTimeouts,
@@ -73,6 +77,7 @@ pub(super) async fn try_uplinks(
     let Chunk0FailoverParams {
         uplinks,
         target,
+        client_id,
         strict_transport,
         chunk0_attempt_timeout,
         timeouts,
@@ -303,6 +308,7 @@ pub(super) async fn try_uplinks(
                     uplinks,
                     active,
                     target,
+                    client_id,
                     tried_indexes,
                     &mut tried_wires_per_uplink,
                 )
