@@ -267,7 +267,7 @@ function getUplinkConfig(group, name) {
   return map ? (map[detailsKey(group, name)] || null) : null;
 }
 
-const TRANSPORTS = ["shadowsocks", "vless"];
+const TRANSPORTS = ["ws", "vless"];
 // `tcp_mode` / `udp_mode` apply to `transport = "ws"` (Shadowsocks-over-WS).
 // XHTTP modes are VLESS-only, so they live in VLESS_MODES instead.
 const WS_MODES = ["", "ws_h1", "ws_h2", "ws_h3", "quic"];
@@ -336,8 +336,6 @@ function renderGroups() {
       const cfg = getUplinkConfig(group.name, u.name) || {};
       const chips = [];
       if (cfg.transport) chips.push(`<span class="meta-chip transport">${escapeHtml(cfg.transport)}</span>`);
-      if (cfg.tcp_addr) chips.push(`<span class="meta-chip">TCP <strong>${escapeHtml(cfg.tcp_addr)}</strong></span>`);
-      if (cfg.udp_addr) chips.push(`<span class="meta-chip">UDP <strong>${escapeHtml(cfg.udp_addr)}</strong></span>`);
       if (cfg.tcp_ws_url) chips.push(`<span class="meta-chip">TCP WS <strong>${escapeHtml(cfg.tcp_ws_url)}</strong></span>`);
       if (cfg.tcp_mode) chips.push(`<span class="meta-chip">TCP mode <strong>${escapeHtml(cfg.tcp_mode)}</strong></span>`);
       if (cfg.udp_ws_url) chips.push(`<span class="meta-chip">UDP WS <strong>${escapeHtml(cfg.udp_ws_url)}</strong></span>`);
@@ -395,8 +393,6 @@ function renderGroups() {
 const FIELDS = [
   { key: "name",        label: "Name (required for create)" },
   { key: "transport",   label: "Transport", type: "select", options: TRANSPORTS },
-  { key: "tcp_addr",    label: "TCP addr" },
-  { key: "udp_addr",    label: "UDP addr" },
   { key: "method",      label: "Cipher" },
   { key: "password",    label: "Password" },
   { key: "vless_id",    label: "VLESS id" },

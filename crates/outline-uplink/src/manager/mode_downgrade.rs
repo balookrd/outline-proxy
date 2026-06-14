@@ -709,9 +709,9 @@ pub(crate) fn wire_is_at_carrier_floor(
             TransportKind::Udp => (uplink.transport, uplink.udp_dial_mode()),
         };
         // Only WS / VLESS families participate in the carrier-downgrade
-        // stack (see `extend_mode_downgrade` guard). SS direct sockets
-        // and any other family count as "at floor" so wire-rotation is
-        // not held back.
+        // stack (see `extend_mode_downgrade` guard). Any other transport
+        // family counts as "at floor" so wire-rotation is not held back
+        // (kept defensive: the transport enum is WS / VLESS today).
         if !matches!(
             family_transport,
             crate::config::UplinkTransport::Ws | crate::config::UplinkTransport::Vless

@@ -2,9 +2,8 @@ use super::*;
 use http::HeaderMap;
 use outline_metrics::{StickyRouteSnapshot, UplinkManagerSnapshot, UplinkSnapshot};
 use outline_uplink::{
-    CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, ServerAddr,
-    TransportMode, UplinkConfig, UplinkManager, UplinkRegistry, UplinkTransport, VlessUdpMuxLimits,
-    WsProbeConfig,
+    CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TransportMode,
+    UplinkConfig, UplinkManager, UplinkRegistry, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
 };
 use serde_json::Value;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -262,16 +261,14 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
 fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Shadowsocks,
-        tcp_ws_url: None,
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(format!("wss://{addr}/tcp").parse().unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
-        tcp_addr: Some(addr.to_string().parse::<ServerAddr>().unwrap()),
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         weight: 1.0,

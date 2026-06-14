@@ -1,22 +1,21 @@
-//! Connectivity-only probes: WebSocket handshake, direct Shadowsocks TCP
-//! socket, direct Shadowsocks UDP socket.  Each verifies that the transport
-//! layer can be established but does not exercise the Shadowsocks payload —
-//! data-path correctness is covered by the http / dns / tcp_tunnel sub-probes.
+//! Connectivity-only probes: WebSocket handshake and raw-QUIC handshake.
+//! Each verifies that the transport layer can be established but does not
+//! exercise the tunnelled payload — data-path correctness is covered by the
+//! http / dns / tcp_tunnel sub-probes.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use futures_util::SinkExt;
 use tokio::sync::Semaphore;
 use tracing::debug;
 
 use outline_transport::{
-    DialNetworkOptions, DnsCache, TransportDialOptions, TransportOperation,
-    connect_shadowsocks_tcp_with_source, connect_shadowsocks_udp_with_source, connect_transport,
+    DialNetworkOptions, DnsCache, TransportDialOptions, TransportOperation, connect_transport,
 };
 
-use crate::config::{TransportMode, UplinkConfig, UplinkTransport};
+use crate::config::{TransportMode, UplinkTransport};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_ws_probe(
@@ -85,11 +84,6 @@ pub(super) async fn run_quic_handshake_probe(
     let alpn: &'static [u8] = match uplink_transport {
         UplinkTransport::Vless => outline_transport::quic::ALPN_VLESS,
         UplinkTransport::Ws => outline_transport::quic::ALPN_SS,
-        UplinkTransport::Shadowsocks => {
-            return Err(anyhow!(
-                "raw-QUIC probe requested for shadowsocks uplink {uplink_name}; this transport does not use a URL"
-            ));
-        },
     };
     let _conn = outline_transport::quic::connect_quic_uplink(
         cache,
@@ -127,49 +121,7 @@ pub(super) async fn run_quic_handshake_probe(
     _ipv6_first: bool,
     _dial_limit: Arc<Semaphore>,
 ) -> Result<Option<TransportMode>> {
-    Err(anyhow!(
+    Err(anyhow::anyhow!(
         "TransportMode::Quic requested but binary was built without the `quic` feature"
     ))
-}
-
-pub(super) async fn run_tcp_socket_probe(
-    cache: &DnsCache,
-    uplink: &UplinkConfig,
-    dial_limit: Arc<Semaphore>,
-) -> Result<Option<TransportMode>> {
-    let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
-    let addr = uplink
-        .tcp_addr
-        .as_ref()
-        .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", uplink.name))?;
-    let _stream = connect_shadowsocks_tcp_with_source(
-        cache,
-        addr,
-        uplink.fwmark,
-        uplink.ipv6_first,
-        "probe_tcp",
-    )
-    .await?;
-    Ok(None)
-}
-
-pub(super) async fn run_udp_socket_probe(
-    cache: &DnsCache,
-    uplink: &UplinkConfig,
-    dial_limit: Arc<Semaphore>,
-) -> Result<Option<TransportMode>> {
-    let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
-    let addr = uplink
-        .udp_addr
-        .as_ref()
-        .ok_or_else(|| anyhow!("uplink {} missing udp_addr", uplink.name))?;
-    let _socket = connect_shadowsocks_udp_with_source(
-        cache,
-        addr,
-        uplink.fwmark,
-        uplink.ipv6_first,
-        "probe_udp",
-    )
-    .await?;
-    Ok(None)
 }

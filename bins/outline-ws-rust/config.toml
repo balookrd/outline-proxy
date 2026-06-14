@@ -309,7 +309,7 @@ runtime_failure_window_secs = 60
 # See docs/UPLINK-CONFIGURATIONS.md "Top-level [outline] shape".
 #
 # [outline]
-# transport = "ws"                  # "ws" (default; alias "websocket") | "shadowsocks" | "vless"
+# transport = "ws"                  # "ws" (default; alias "websocket") | "vless"
 # tcp_ws_url = "wss://example.com/SECRET/tcp"
 # udp_ws_url = "wss://example.com/SECRET/udp"
 # tcp_mode = "h3"
@@ -415,9 +415,10 @@ password = "Secret0"
 # # cipher / password inherited from parent edge-1
 #
 # [[outline.uplinks.fallbacks]]
-# transport = "shadowsocks"
-# tcp_addr = "1.2.3.4:8388"
-# udp_addr = "1.2.3.4:8389"
+# transport = "vless"
+# vless_ws_url = "wss://vless.example.com/SECRET/vless"
+# vless_mode = "ws_h2"
+# vless_id = "11111111-2222-3333-4444-555555555555"
 
 # Random forward-only wire rotation. When set to `true`:
 #   * the wire chain `[primary, fallbacks[0], fallbacks[1], …]` is reshuffled
@@ -564,16 +565,6 @@ password = "Secret0"
 # udp_ws_url = "https://ss.example.com:443"
 # tcp_mode = "quic"
 # udp_mode = "quic"
-# method = "chacha20-ietf-poly1305"
-# password = "Secret0"
-
-# Direct Shadowsocks example (no WebSocket wrapper):
-# [[outline.uplinks]]
-# name = "direct-ss"
-# group = "main"
-# transport = "shadowsocks"
-# tcp_addr = "ss.example.com:8388"
-# udp_addr = "ss.example.com:8388"
 # method = "chacha20-ietf-poly1305"
 # password = "Secret0"
 

@@ -31,9 +31,7 @@ use self::http::run_http_probe;
 use self::metrics::record_attempt;
 use self::tcp_tunnel::run_tcp_tunnel_probe;
 use self::tls::run_tls_probe;
-use self::ws::{
-    run_quic_handshake_probe, run_tcp_socket_probe, run_udp_socket_probe, run_ws_probe,
-};
+use self::ws::{run_quic_handshake_probe, run_ws_probe};
 use super::manager::probe::outcome::ProbeOutcome;
 use super::manager::probe::warm_tcp::WarmTcpProbeSlot;
 use super::manager::probe::warm_udp::WarmUdpProbeSlot;
@@ -148,9 +146,6 @@ async fn run_tcp_probe(
                         )
                         .await
                     }
-                },
-                UplinkTransport::Shadowsocks => {
-                    run_tcp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
                 },
             }
         };
@@ -291,9 +286,6 @@ async fn run_udp_probe(
                         )
                         .await
                     }
-                },
-                UplinkTransport::Shadowsocks => {
-                    run_udp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
                 },
             }
         };

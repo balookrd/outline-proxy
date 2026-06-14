@@ -165,7 +165,7 @@ pub(crate) struct UplinkStatus {
     /// endpoints (primary + fallback wires that dial `wss`/`https`), as Unix
     /// milliseconds. Populated by the periodic cert-check loop
     /// (`manager::cert_check`); `None` until the first check completes, when
-    /// the uplink has no TLS endpoint (plain Shadowsocks), or when the
+    /// the uplink has no TLS endpoint (e.g. a plaintext `ws://` uplink), or when the
     /// `cert-check` feature is disabled. A transient check failure leaves the
     /// last known value in place rather than clearing it.
     pub(crate) cert_not_after_unix_ms: Option<u64>,

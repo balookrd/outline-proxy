@@ -114,7 +114,7 @@ pub struct UplinkSnapshot {
     /// `notAfter` of the soonest-expiring TLS certificate among this uplink's
     /// endpoints (Unix milliseconds), populated by the periodic cert-check
     /// loop. `None` until the first check completes, for uplinks with no TLS
-    /// endpoint (plain Shadowsocks), or when the `cert-check` feature is off.
+    /// endpoint (e.g. a plaintext `ws://` uplink), or when the `cert-check` feature is off.
     /// Surfaced as the `outline_ws_rust_uplink_cert_expiry_timestamp_seconds`
     /// gauge and on the control topology so the dashboard can warn before an
     /// expired cert silently breaks the uplink.

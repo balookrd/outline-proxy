@@ -77,8 +77,6 @@ pub(super) async fn run_http_probe(
     // alive via HTTP keep-alive — the SOCKS5 target prefix is only sent
     // once per cached pipe lifetime (gated by `dialed_fresh` below) so the
     // server's tunnel stays bound to the probe target across cycles.
-    // Plain Shadowsocks (direct UDP socket) gets `None` — no slot is
-    // populated for it.
     let warm_taken = warm_slot.and_then(|slot| warm_tcp::take_if_matches(slot, effective_tcp_mode));
     let (mut writer, mut reader, downgraded_from, dialed_fresh) = match warm_taken {
         Some(WarmTcpProbe::Vless { writer, reader, .. })
@@ -143,17 +141,6 @@ pub(super) async fn run_http_probe(
                 },
                 UplinkTransport::Ws => {
                     WarmTcpProbe::Ws { writer, reader, mode: effective_tcp_mode }
-                },
-                // Slot is only populated for Vless / Ws. Direct
-                // Shadowsocks should never reach this branch because
-                // `warm_slot.is_some()` would be false. Defend against
-                // misuse by closing instead of mis-tagging.
-                UplinkTransport::Shadowsocks => {
-                    close_probe_tcp_writer(&uplink.name, "http", &mut writer).await;
-                    return match probe_err {
-                        Some(err) => Err(err),
-                        None => Ok((status_ok, downgraded_from)),
-                    };
                 },
             };
             warm_tcp::put_back(slot, warm);

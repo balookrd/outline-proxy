@@ -1,6 +1,6 @@
 use url::Url;
 
-use outline_transport::{FingerprintProfileStrategy, ServerAddr, TransportMode};
+use outline_transport::{FingerprintProfileStrategy, TransportMode};
 use outline_uplink::UplinkTransport;
 use shadowsocks_crypto::CipherKind;
 
@@ -18,8 +18,6 @@ pub(in crate::config::load) struct ResolvedUplinkInput {
     pub(super) vless_ws_url: Option<Url>,
     pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
-    pub(super) tcp_addr: Option<ServerAddr>,
-    pub(super) udp_addr: Option<ServerAddr>,
     pub(super) cipher: Option<CipherKind>,
     pub(super) password: Option<String>,
     pub(super) weight: Option<f64>,
@@ -83,14 +81,6 @@ impl ResolvedUplinkInput {
             vless_mode: args
                 .vless_mode
                 .or_else(|| outline.and_then(|section| section.vless_mode)),
-            tcp_addr: args
-                .tcp_addr
-                .clone()
-                .or_else(|| outline.and_then(|section| section.tcp_addr.clone())),
-            udp_addr: args
-                .udp_addr
-                .clone()
-                .or_else(|| outline.and_then(|section| section.udp_addr.clone())),
             cipher: args.method.or_else(|| outline.and_then(|section| section.method)),
             password: args
                 .password
@@ -135,8 +125,6 @@ impl ResolvedUplinkInput {
             vless_ws_url: uplink.vless_ws_url.clone(),
             vless_xhttp_url: uplink.vless_xhttp_url.clone(),
             vless_mode: uplink.vless_mode,
-            tcp_addr: uplink.tcp_addr.clone(),
-            udp_addr: uplink.udp_addr.clone(),
             cipher: uplink.method,
             password: uplink.password.clone(),
             weight: uplink.weight,
@@ -163,8 +151,6 @@ pub(in crate::config::load) fn cli_uplink_override_requested(args: &Args) -> boo
         || args.vless_xhttp_url.is_some()
         || args.vless_mode.is_some()
         || args.vless_link.is_some()
-        || args.tcp_addr.is_some()
-        || args.udp_addr.is_some()
         || args.method.is_some()
         || args.password.is_some()
         || args.fwmark.is_some()

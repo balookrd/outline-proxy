@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 
 use super::*;
 use outline_transport::{
-    ServerAddr, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
+    TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
 };
 use outline_uplink::{
     CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TargetAddr,
@@ -79,16 +79,14 @@ fn lb(keepalive_interval: Duration) -> LoadBalancingConfig {
 fn make_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Shadowsocks,
-        tcp_ws_url: None,
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(format!("ws://{addr}/tcp").parse().unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
         udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
-        tcp_addr: Some(addr.to_string().parse::<ServerAddr>().unwrap()),
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         weight: 1.0,
@@ -145,7 +143,7 @@ async fn run_relay_keepalive_does_not_extend_idle_timeout() {
         candidate: UplinkCandidate { index: 0, uplink: uplink.into() },
         writer: TcpWriter::Socket(writer),
         reader: TcpReader::Socket(reader),
-        source: TcpUplinkSource::DirectSocket,
+        source: TcpUplinkSource::FreshDial,
         wire_index: 0,
     };
 
@@ -214,10 +212,6 @@ fn make_ws_uplink_pointing_at(name: &str, redial_target: SocketAddr) -> UplinkCo
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
-        // tcp_addr is unused on the Ws transport, but the loader still
-        // accepts it on the struct; setting None keeps the test honest.
-        tcp_addr: None,
-        udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,
         password: "secret".to_string(),
         weight: 1.0,
@@ -328,11 +322,11 @@ async fn run_relay_attempts_redial_on_mid_session_runtime_failure() {
         candidate: UplinkCandidate { index: 0, uplink: uplink.into() },
         writer: TcpWriter::Socket(writer),
         reader: TcpReader::Socket(reader),
-        // Passing DirectSocket here is fine — the orchestrator's
+        // Passing FreshDial here is fine — the orchestrator's
         // retry path inspects `candidate.uplink.transport`, not
-        // `source`. DirectSocket just records how the active became
+        // `source`. The source just records how the active became
         // active in the first place.
-        source: TcpUplinkSource::DirectSocket,
+        source: TcpUplinkSource::FreshDial,
         wire_index: 0,
     };
 
@@ -436,7 +430,7 @@ async fn run_relay_aborts_with_rst_on_active_uplink_switch() {
         candidate: UplinkCandidate { index: 0, uplink: primary.clone().into() },
         writer: TcpWriter::Socket(writer),
         reader: TcpReader::Socket(reader),
-        source: TcpUplinkSource::DirectSocket,
+        source: TcpUplinkSource::FreshDial,
         wire_index: 0,
     };
 
@@ -555,7 +549,7 @@ async fn run_relay_does_not_abort_in_active_active_mode() {
         candidate: UplinkCandidate { index: 0, uplink: primary.clone().into() },
         writer: TcpWriter::Socket(writer),
         reader: TcpReader::Socket(reader),
-        source: TcpUplinkSource::DirectSocket,
+        source: TcpUplinkSource::FreshDial,
         wire_index: 0,
     };
 

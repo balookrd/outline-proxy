@@ -4,29 +4,7 @@ use std::sync::Arc;
 use tokio::net::lookup_host;
 use tracing::warn;
 
-use crate::TransportOperation;
-use crate::config::ServerAddr;
 use crate::dns_cache::DnsCache;
-
-pub(super) async fn resolve_server_addr(
-    cache: &DnsCache,
-    addr: &ServerAddr,
-    ipv6_first: bool,
-) -> Result<SocketAddr> {
-    resolve_host_with_preference(
-        cache,
-        addr.host(),
-        addr.port(),
-        &format!("failed to resolve {}", addr),
-        ipv6_first,
-    )
-    .await?
-    .first()
-    .copied()
-    .ok_or_else(|| {
-        anyhow::Error::new(TransportOperation::DnsResolveNoAddresses { host: addr.to_string() })
-    })
-}
 
 /// Resolves `host:port` through the supplied cache, returning addresses
 /// pre-sorted by the `ipv6_first` preference.

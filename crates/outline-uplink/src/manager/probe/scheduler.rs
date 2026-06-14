@@ -232,10 +232,9 @@ impl UplinkManager {
             // ping/pong at the connection level).
             let effective_tcp_mode = self.effective_tcp_mode(index).await;
             let effective_udp_mode = self.effective_udp_mode(index).await;
-            // VLESS and Shadowsocks-over-WS uplinks reuse warm probe pipes.
-            // Plain Shadowsocks (direct sockets, no WS handshake) still
-            // dials fresh — there is no handshake to amortize and passing
-            // `None` keeps the probe code path identical.
+            // VLESS and Shadowsocks-over-WS uplinks reuse warm probe pipes
+            // (the `else` arm is kept defensive: the transport enum is
+            // WS / VLESS today, so both already qualify).
             let (warm_tcp_slot, warm_udp_slot): (
                 Option<WarmTcpProbeSlot>,
                 Option<WarmUdpProbeSlot>,

@@ -208,8 +208,7 @@ pub(super) async fn try_uplinks(
                 // outcome than re-dialing the same endpoint once the flap
                 // clears.  Bounded retries + short backoff cap the worst-case
                 // recovery at well under a second.  Only applied to fresh-dial
-                // sources: Standby has its own retry branch above, and
-                // DirectSocket does not go through WebSocket.
+                // sources: Standby has its own retry branch above.
                 if should_retry_rst_on_current_uplink(
                     active.source,
                     rst_retries_on_current_uplink,

@@ -27,8 +27,6 @@ fn uplink(name: &str) -> UplinkConfig {
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
-        tcp_addr: None,
-        udp_addr: None,
         cipher: shadowsocks_crypto::CipherKind::Chacha20IetfPoly1305,
         password: "s3cr3t_password".to_string(),
         weight: 1.0,

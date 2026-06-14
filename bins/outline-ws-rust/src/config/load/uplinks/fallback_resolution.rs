@@ -58,8 +58,6 @@ fn resolve_fallback(
     let mut vless_ws_url = section.vless_ws_url.clone();
     let mut vless_xhttp_url = section.vless_xhttp_url.clone();
     let mut vless_mode = section.vless_mode;
-    let mut tcp_addr = section.tcp_addr.clone();
-    let mut udp_addr = section.udp_addr.clone();
 
     // Per-transport gating: each wire family owns a disjoint subset of the
     // fields. Cross-population is rejected at parse time so misconfiguration
@@ -70,12 +68,6 @@ fn resolve_fallback(
                 bail!(
                     "uplink {parent_name}: fallbacks[{idx}] (transport=ws) must not set \
                      `vless_ws_url`/`vless_xhttp_url`/`vless_mode`"
-                );
-            }
-            if tcp_addr.is_some() || udp_addr.is_some() {
-                bail!(
-                    "uplink {parent_name}: fallbacks[{idx}] (transport=ws) must not set \
-                     `tcp_addr`/`udp_addr`"
                 );
             }
             if section.vless_id.is_some() {
@@ -113,12 +105,6 @@ fn resolve_fallback(
                     "uplink {parent_name}: fallbacks[{idx}] (transport=vless) must not set \
                      `tcp_ws_url`/`tcp_mode`/`udp_ws_url`/`udp_mode`; use \
                      `vless_ws_url`/`vless_xhttp_url`/`vless_mode`"
-                );
-            }
-            if tcp_addr.is_some() || udp_addr.is_some() {
-                bail!(
-                    "uplink {parent_name}: fallbacks[{idx}] (transport=vless) must not set \
-                     `tcp_addr`/`udp_addr`"
                 );
             }
             let mode = vless_mode.unwrap_or_default();
@@ -162,45 +148,6 @@ fn resolve_fallback(
             // VLESS has no shared secret; password is irrelevant on this wire.
             (String::new(), Some(parsed_id))
         },
-        UplinkTransport::Shadowsocks => {
-            if tcp_ws_url.is_some()
-                || tcp_mode.is_some()
-                || udp_ws_url.is_some()
-                || udp_mode.is_some()
-                || vless_ws_url.is_some()
-                || vless_xhttp_url.is_some()
-                || vless_mode.is_some()
-            {
-                bail!(
-                    "uplink {parent_name}: fallbacks[{idx}] (transport=shadowsocks) must not \
-                     set websocket fields; use `tcp_addr`/`udp_addr`"
-                );
-            }
-            if section.vless_id.is_some() {
-                bail!(
-                    "uplink {parent_name}: fallbacks[{idx}] (transport=shadowsocks) must not \
-                     set `vless_id`"
-                );
-            }
-            if tcp_addr.is_none() {
-                bail!(
-                    "uplink {parent_name}: fallbacks[{idx}] (transport=shadowsocks) requires \
-                     `tcp_addr`"
-                );
-            }
-            tcp_mode = Some(TransportMode::default());
-            udp_mode = Some(TransportMode::default());
-            vless_mode = Some(TransportMode::default());
-            // Shadowsocks needs the shared key validated against the cipher
-            // (mirrors the primary-path check).
-            validate_shared_secret(cipher, &password_inherited, || {
-                format!(
-                    "uplink {parent_name}: fallbacks[{idx}] invalid password/PSK \
-                     for cipher {cipher}"
-                )
-            })?;
-            (password_inherited, None)
-        },
     };
 
     // Field nulling for fields that don't apply to the chosen transport,
@@ -209,20 +156,10 @@ fn resolve_fallback(
         UplinkTransport::Ws => {
             vless_ws_url = None;
             vless_xhttp_url = None;
-            tcp_addr = None;
-            udp_addr = None;
         },
         UplinkTransport::Vless => {
             tcp_ws_url = None;
             udp_ws_url = None;
-            tcp_addr = None;
-            udp_addr = None;
-        },
-        UplinkTransport::Shadowsocks => {
-            tcp_ws_url = None;
-            udp_ws_url = None;
-            vless_ws_url = None;
-            vless_xhttp_url = None;
         },
     }
 
@@ -236,8 +173,6 @@ fn resolve_fallback(
         vless_xhttp_url,
         vless_mode: vless_mode.unwrap_or_default(),
         vless_id: final_vless_id,
-        tcp_addr,
-        udp_addr,
         cipher,
         password: final_password,
         fwmark,
