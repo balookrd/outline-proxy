@@ -188,9 +188,14 @@ fn primary_to_fallback_shape(uplink: &UplinkConfig) -> FallbackTransport {
         vless_ws_url: uplink.vless_ws_url.clone(),
         vless_xhttp_url: uplink.vless_xhttp_url.clone(),
         vless_mode: uplink.vless_mode,
-        ss_ws_url: None,
-        ss_xhttp_url: None,
-        ss_mode: None,
+        // Combined-path SS fields ride along with the wire so a primary
+        // that is itself a combined SS uplink keeps its `ss_*` URL when the
+        // shuffle demotes it into the fallback list. Dropping them here
+        // would resurface as `is_combined_ss() == false` →
+        // `tcp_dial_url() == None` after the round-trip.
+        ss_ws_url: uplink.ss_ws_url.clone(),
+        ss_xhttp_url: uplink.ss_xhttp_url.clone(),
+        ss_mode: uplink.ss_mode,
         vless_id: uplink.vless_id,
         cipher: uplink.cipher,
         password: uplink.password.clone(),
@@ -214,6 +219,14 @@ fn apply_fallback_shape_to_primary(uplink: &mut UplinkConfig, wire: FallbackTran
     uplink.vless_ws_url = wire.vless_ws_url;
     uplink.vless_xhttp_url = wire.vless_xhttp_url;
     uplink.vless_mode = wire.vless_mode;
+    // Combined-path SS URL + mode. Without these a combined SS fallback
+    // promoted into the primary slot loses its `ss_xhttp_url` / `ss_ws_url`,
+    // so `is_combined_ss()` turns false and both `tcp_dial_url()` and
+    // `udp_dial_url()` return None — the "missing tcp dial URL" failure the
+    // shuffle surfaces only on the restarts that land this wire at index 0.
+    uplink.ss_ws_url = wire.ss_ws_url;
+    uplink.ss_xhttp_url = wire.ss_xhttp_url;
+    uplink.ss_mode = wire.ss_mode;
     uplink.vless_id = wire.vless_id;
     uplink.cipher = wire.cipher;
     uplink.password = wire.password;
