@@ -8,7 +8,7 @@ use outline_metrics as metrics;
 #[cfg(feature = "h3")]
 use outline_transport::{FallbackNotifier, VlessUdpHybridMux, VlessUdpQuicMux, WsFallbackFactory};
 use outline_transport::{
-    TransportMode, UdpSessionTransport, UdpWsTransport, VlessUdpDowngradeNotifier,
+    SsPathKind, TransportMode, UdpSessionTransport, UdpWsTransport, VlessUdpDowngradeNotifier,
     VlessUdpSessionMux, global_resume_cache,
 };
 use outline_uplink::{
@@ -176,6 +176,7 @@ async fn dial_udp_fallback(
                 source,
                 keepalive,
                 resume_request,
+                fallback.combined_ss_kind(SsPathKind::Udp),
             )
             .await
             .with_context(|| format!("fallback ws dial to {url} failed"))?;

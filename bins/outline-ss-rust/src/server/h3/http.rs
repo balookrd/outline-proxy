@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use axum::http::{self, Method, StatusCode};
 use bytes::Bytes;
 use h3::server::Connection as H3Connection;
+use outline_wire::xhttp::{SsPathKind, decode_kind};
 use tracing::{debug, warn};
 
 use super::super::{
@@ -104,13 +105,26 @@ async fn handle_h3_request(
         // clients or eat xhttp upgrade requests.
         if let Some((base, session_id, path_seq)) =
             match_xhttp_path(&path, ctx.xhttp_paths.as_ref())
-            && let Some(route) = ctx
-                .xhttp_vless
-                .get(base.as_ref())
-                .cloned()
-                .map(XhttpRoute::Vless)
-                .or_else(|| ctx.xhttp_ss.get(base.as_ref()).cloned().map(XhttpRoute::Ss))
-                .or_else(|| ctx.xhttp_ss_udp.get(base.as_ref()).cloned().map(XhttpRoute::SsUdp))
+            && let Some(route) = if ctx.xhttp_ss.contains_key(base.as_ref())
+                && ctx.xhttp_ss_udp.contains_key(base.as_ref())
+            {
+                // Combined SS path (base in both tables): decode the hidden
+                // tcp/udp bit from the session id, mirroring the axum
+                // `resolve_route`. A missing / non-encoding id defaults to tcp.
+                match session_id.as_deref().map(decode_kind).unwrap_or(SsPathKind::Tcp) {
+                    SsPathKind::Tcp => ctx.xhttp_ss.get(base.as_ref()).cloned().map(XhttpRoute::Ss),
+                    SsPathKind::Udp => {
+                        ctx.xhttp_ss_udp.get(base.as_ref()).cloned().map(XhttpRoute::SsUdp)
+                    },
+                }
+            } else {
+                ctx.xhttp_vless
+                    .get(base.as_ref())
+                    .cloned()
+                    .map(XhttpRoute::Vless)
+                    .or_else(|| ctx.xhttp_ss.get(base.as_ref()).cloned().map(XhttpRoute::Ss))
+                    .or_else(|| ctx.xhttp_ss_udp.get(base.as_ref()).cloned().map(XhttpRoute::SsUdp))
+            }
         {
             // `match_xhttp_path` returns `session_id = None` for the
             // bare-`<base>` shape (xray's sessionless stream-one
@@ -168,10 +182,28 @@ async fn handle_h3_request(
         ws_req.protocol = protocol_header;
     }
 
-    if !ctx.tcp_paths.contains(ws_req.path.as_str())
-        && !ctx.udp_paths.contains(ws_req.path.as_str())
-        && !ctx.vless_paths.contains(ws_req.path.as_str())
-    {
+    // Combined WS path: an h3 CONNECT lands on `<base>/<token>`. When the
+    // base is in both the tcp and udp tables, rewrite the request path to the
+    // base and force the matching leg from the token's hidden bit — mirrors
+    // the axum `combined_websocket_upgrade` and the XHTTP combined path above.
+    let force_kind = match combined_ws_h3_base(&ws_req.path, &ctx.tcp_paths, &ctx.udp_paths) {
+        Some((base, kind)) => {
+            ws_req.path = base;
+            Some(kind)
+        },
+        None => None,
+    };
+    let path_is_tcp = match force_kind {
+        Some(kind) => kind == SsPathKind::Tcp,
+        None => ctx.tcp_paths.contains(ws_req.path.as_str()),
+    };
+    let path_is_udp = match force_kind {
+        Some(kind) => kind == SsPathKind::Udp,
+        None => ctx.udp_paths.contains(ws_req.path.as_str()),
+    };
+    let path_is_vless = force_kind.is_none() && ctx.vless_paths.contains(ws_req.path.as_str());
+
+    if !path_is_tcp && !path_is_udp && !path_is_vless {
         stream
             .send_response(build_extended_connect_error(StatusCode::NOT_FOUND, Some("Not Found")))
             .await
@@ -194,11 +226,11 @@ async fn handle_h3_request(
     // point at the same underlying `Arc<OrphanRegistry>`); we pick the
     // one that matches the path so the receiving relay queries the
     // intended registry.
-    let resume = if ctx.tcp_paths.contains(ws_req.path.as_str()) {
+    let resume = if path_is_tcp {
         ResumeContext::from_request_headers(request.headers(), &ctx.tcp_server.orphan_registry)
-    } else if ctx.udp_paths.contains(ws_req.path.as_str()) {
+    } else if path_is_udp {
         ResumeContext::from_request_headers(request.headers(), &ctx.udp_server.orphan_registry)
-    } else if ctx.vless_paths.contains(ws_req.path.as_str()) {
+    } else if path_is_vless {
         ResumeContext::from_request_headers(request.headers(), &ctx.vless_server.orphan_registry)
     } else {
         ResumeContext::default()
@@ -209,7 +241,7 @@ async fn handle_h3_request(
     // relay already emits them on a resume hit regardless of carrier — an
     // unconfirmed client would misread the control frames as payload). The
     // UDP datagram path echoes only the Session ID, as on h1/h2.
-    let echo = if ctx.udp_paths.contains(ws_req.path.as_str()) {
+    let echo = if path_is_udp {
         resume.session_echo()
     } else {
         resume.response_echo()
@@ -223,7 +255,7 @@ async fn handle_h3_request(
 
     let socket = vendored::server_ws_stream(stream, ctx.ws_config.clone());
 
-    if ctx.tcp_paths.contains(ws_req.path.as_str()) {
+    if path_is_tcp {
         let routes_snap = ctx.routes.load();
         let route = routes_snap
             .tcp
@@ -253,7 +285,7 @@ async fn handle_h3_request(
         )
         .await;
         finish_ws_session(session, result, "tcp");
-    } else if ctx.udp_paths.contains(ws_req.path.as_str()) {
+    } else if path_is_udp {
         let routes_snap = ctx.routes.load();
         let route = routes_snap
             .udp
@@ -276,7 +308,7 @@ async fn handle_h3_request(
         let result =
             handle_udp_h3_connection(socket, Arc::clone(&ctx.udp_server), route_ctx, resume).await;
         finish_ws_session(session, result, "udp");
-    } else if ctx.vless_paths.contains(ws_req.path.as_str()) {
+    } else if path_is_vless {
         let routes_snap = ctx.routes.load();
         let route = routes_snap
             .vless
@@ -320,6 +352,24 @@ async fn handle_h3_request(
 /// Done with a linear scan — `xhttp_paths` is at most a few entries
 /// in any realistic deployment, and the cost is dominated by the
 /// per-request work that follows.
+/// If `path` is `<base>/<token>` with `base` present in BOTH the tcp and udp
+/// path sets (a combined WS base), returns the base and the tcp/udp kind the
+/// token's first character encodes. The axum router handles this split via a
+/// `/{token}` route shape; h3 matches CONNECT paths by hand, so it decodes
+/// the segment here.
+fn combined_ws_h3_base(
+    path: &str,
+    tcp_paths: &std::collections::BTreeSet<String>,
+    udp_paths: &std::collections::BTreeSet<String>,
+) -> Option<(String, SsPathKind)> {
+    let (base, token) = path.rsplit_once('/')?;
+    if base.is_empty() || token.is_empty() {
+        return None;
+    }
+    (tcp_paths.contains(base) && udp_paths.contains(base))
+        .then(|| (base.to_owned(), decode_kind(token)))
+}
+
 fn match_xhttp_path(
     path: &str,
     xhttp_paths: &std::collections::BTreeSet<String>,

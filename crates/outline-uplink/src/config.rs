@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use url::Url;
 
-pub use outline_transport::{ServerAddr, TransportMode, VlessUdpMuxLimits};
+pub use outline_transport::{ServerAddr, SsPathKind, TransportMode, VlessUdpMuxLimits};
 pub use shadowsocks_crypto::CipherKind;
 pub use socks5_proto::TargetAddr;
 
@@ -105,6 +105,15 @@ pub struct FallbackTransport {
     pub vless_ws_url: Option<Url>,
     pub vless_xhttp_url: Option<Url>,
     pub vless_mode: TransportMode,
+    /// `transport = "ss"` only. Combined-path mode: ONE URL carries both the
+    /// TCP and UDP legs (instead of the split `tcp_*` / `udp_*` fields), with
+    /// the server telling them apart by a hidden discriminator in the
+    /// session-id / WS token. `ss_xhttp_url` selects the XHTTP carrier,
+    /// `ss_ws_url` the WS carrier; `ss_mode` is the single carrier mode used
+    /// for both legs. When set, these take precedence over the split fields.
+    pub ss_ws_url: Option<Url>,
+    pub ss_xhttp_url: Option<Url>,
+    pub ss_mode: Option<TransportMode>,
     pub vless_id: Option<[u8; 16]>,
     pub cipher: CipherKind,
     pub password: String,
@@ -124,6 +133,7 @@ impl FallbackTransport {
     pub fn tcp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
+            UplinkTransport::Ss if self.is_combined_ss() => self.combined_ss_url(),
             UplinkTransport::Ss if self.tcp_mode.is_xhttp() => self.tcp_xhttp_url.as_ref(),
             UplinkTransport::Ss => self.tcp_ws_url.as_ref(),
         }
@@ -132,9 +142,34 @@ impl FallbackTransport {
     pub fn udp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
+            UplinkTransport::Ss if self.is_combined_ss() => self.combined_ss_url(),
             UplinkTransport::Ss if self.udp_mode.is_xhttp() => self.udp_xhttp_url.as_ref(),
             UplinkTransport::Ss => self.udp_ws_url.as_ref(),
         }
+    }
+
+    /// True when this SS fallback shares one URL for its TCP and UDP legs
+    /// (combined-path mode): both dial the same endpoint and the server
+    /// tells them apart via the hidden discriminator in the session-id / WS
+    /// token, instead of the default split across distinct paths. Always
+    /// false for VLESS, which muxes TCP+UDP on one path natively.
+    pub fn is_combined_ss(&self) -> bool {
+        matches!(self.transport, UplinkTransport::Ss)
+            && (self.ss_xhttp_url.is_some() || self.ss_ws_url.is_some())
+    }
+
+    /// The single combined-path URL — `ss_xhttp_url` (XHTTP carrier) or
+    /// `ss_ws_url` (WS carrier); they are mutually exclusive, validated at
+    /// config load. Both TCP and UDP legs dial this URL.
+    fn combined_ss_url(&self) -> Option<&Url> {
+        self.ss_xhttp_url.as_ref().or(self.ss_ws_url.as_ref())
+    }
+
+    /// The combined-path discriminator for the given leg, or `None` when
+    /// this fallback uses the default split paths (keeping the historical
+    /// wire shape for that dial).
+    pub fn combined_ss_kind(&self, leg: SsPathKind) -> Option<SsPathKind> {
+        self.is_combined_ss().then_some(leg)
     }
 
     fn vless_dial_url(&self) -> Option<&Url> {
@@ -149,6 +184,7 @@ impl FallbackTransport {
     pub fn tcp_dial_mode(&self) -> TransportMode {
         match self.transport {
             UplinkTransport::Vless => self.vless_mode,
+            UplinkTransport::Ss if self.is_combined_ss() => self.ss_mode.unwrap_or(self.tcp_mode),
             _ => self.tcp_mode,
         }
     }
@@ -156,6 +192,7 @@ impl FallbackTransport {
     pub fn udp_dial_mode(&self) -> TransportMode {
         match self.transport {
             UplinkTransport::Vless => self.vless_mode,
+            UplinkTransport::Ss if self.is_combined_ss() => self.ss_mode.unwrap_or(self.udp_mode),
             _ => self.udp_mode,
         }
     }
@@ -196,6 +233,15 @@ pub struct UplinkConfig {
     pub vless_xhttp_url: Option<Url>,
     /// `transport = "vless"` only.
     pub vless_mode: TransportMode,
+    /// `transport = "ss"` only. Combined-path mode: ONE URL carries both the
+    /// TCP and UDP legs (instead of the split `tcp_*` / `udp_*` fields), with
+    /// the server telling them apart by a hidden discriminator in the
+    /// session-id / WS token. `ss_xhttp_url` selects the XHTTP carrier,
+    /// `ss_ws_url` the WS carrier; `ss_mode` is the single carrier mode used
+    /// for both legs. When set, these take precedence over the split fields.
+    pub ss_ws_url: Option<Url>,
+    pub ss_xhttp_url: Option<Url>,
+    pub ss_mode: Option<TransportMode>,
     pub cipher: CipherKind,
     pub password: String,
     pub weight: f64,
@@ -268,6 +314,7 @@ impl UplinkConfig {
     pub fn tcp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
+            UplinkTransport::Ss if self.is_combined_ss() => self.combined_ss_url(),
             UplinkTransport::Ss if self.tcp_mode.is_xhttp() => self.tcp_xhttp_url.as_ref(),
             UplinkTransport::Ss => self.tcp_ws_url.as_ref(),
         }
@@ -279,9 +326,34 @@ impl UplinkConfig {
     pub fn udp_dial_url(&self) -> Option<&Url> {
         match self.transport {
             UplinkTransport::Vless => self.vless_dial_url(),
+            UplinkTransport::Ss if self.is_combined_ss() => self.combined_ss_url(),
             UplinkTransport::Ss if self.udp_mode.is_xhttp() => self.udp_xhttp_url.as_ref(),
             UplinkTransport::Ss => self.udp_ws_url.as_ref(),
         }
+    }
+
+    /// True when this SS uplink shares one URL for its TCP and UDP legs
+    /// (combined-path mode): both dial the same endpoint and the server
+    /// tells them apart via the hidden discriminator in the session-id / WS
+    /// token, instead of the default split across distinct paths. Always
+    /// false for VLESS, which muxes TCP+UDP on one path natively.
+    pub fn is_combined_ss(&self) -> bool {
+        matches!(self.transport, UplinkTransport::Ss)
+            && (self.ss_xhttp_url.is_some() || self.ss_ws_url.is_some())
+    }
+
+    /// The single combined-path URL — `ss_xhttp_url` (XHTTP carrier) or
+    /// `ss_ws_url` (WS carrier); they are mutually exclusive, validated at
+    /// config load. Both TCP and UDP legs dial this URL.
+    fn combined_ss_url(&self) -> Option<&Url> {
+        self.ss_xhttp_url.as_ref().or(self.ss_ws_url.as_ref())
+    }
+
+    /// The combined-path discriminator for the given leg, or `None` when
+    /// this uplink uses the default split paths (keeping the historical
+    /// wire shape for that dial).
+    pub fn combined_ss_kind(&self, leg: SsPathKind) -> Option<SsPathKind> {
+        self.is_combined_ss().then_some(leg)
     }
 
     /// Picks the right VLESS dial URL based on the configured mode.
@@ -301,6 +373,7 @@ impl UplinkConfig {
     pub fn tcp_dial_mode(&self) -> TransportMode {
         match self.transport {
             UplinkTransport::Vless => self.vless_mode,
+            UplinkTransport::Ss if self.is_combined_ss() => self.ss_mode.unwrap_or(self.tcp_mode),
             _ => self.tcp_mode,
         }
     }
@@ -310,6 +383,7 @@ impl UplinkConfig {
     pub fn udp_dial_mode(&self) -> TransportMode {
         match self.transport {
             UplinkTransport::Vless => self.vless_mode,
+            UplinkTransport::Ss if self.is_combined_ss() => self.ss_mode.unwrap_or(self.udp_mode),
             _ => self.udp_mode,
         }
     }
@@ -346,6 +420,9 @@ impl UplinkConfig {
             vless_ws_url: fb.vless_ws_url.clone(),
             vless_xhttp_url: fb.vless_xhttp_url.clone(),
             vless_mode: fb.vless_mode,
+            ss_ws_url: fb.ss_ws_url.clone(),
+            ss_xhttp_url: fb.ss_xhttp_url.clone(),
+            ss_mode: fb.ss_mode,
             cipher: fb.cipher,
             password: fb.password.clone(),
             weight: self.weight,

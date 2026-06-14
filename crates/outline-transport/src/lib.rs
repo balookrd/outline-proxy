@@ -153,7 +153,7 @@ pub(crate) async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) ->
 // Config data types reused by callers that construct transport parameters
 // (uplink config loader, CLI args, main-binary schema).
 pub use config::{ServerAddr, TransportMode};
-pub use xhttp::{XhttpSubmode, submode_from_url};
+pub use xhttp::{SsPathKind, XhttpSubmode, submode_from_url};
 
 // Test-only TLS knob: cross-repo integration tests in `outline-ss-rust`
 // (which spin up an in-process self-signed server) call this before

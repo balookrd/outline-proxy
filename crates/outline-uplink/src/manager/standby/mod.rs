@@ -16,7 +16,7 @@ use outline_transport::{
     global_resume_cache,
 };
 
-use crate::config::UplinkTransport;
+use crate::config::{SsPathKind, UplinkTransport};
 use crate::manager::status::PerTransportStatus;
 use outline_transport::collections::maybe_shrink_vecdeque;
 
@@ -217,6 +217,7 @@ impl UplinkManager {
                         fwmark: candidate.uplink.fwmark,
                         ipv6_first: candidate.uplink.ipv6_first,
                     })
+                    .with_combined_ss_kind(candidate.uplink.combined_ss_kind(SsPathKind::Tcp))
                     .with_resume(DialResumeOptions {
                         resume_request,
                         ack_prefix_requested,
@@ -592,6 +593,7 @@ impl UplinkManager {
             source,
             self.inner.load_balancing.udp_ws_keepalive_interval,
             udp_resume_request,
+            candidate.uplink.combined_ss_kind(SsPathKind::Udp),
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", udp_ws_url) })?;

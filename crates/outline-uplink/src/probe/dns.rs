@@ -13,7 +13,9 @@ use outline_transport::{DnsCache, TransportOperation, UdpWsTransport, VlessUdpWs
 #[cfg(feature = "quic")]
 use outline_transport::{connect_ss_udp_quic, connect_vless_udp_session_quic};
 
-use crate::config::{DnsProbeConfig, TargetAddr, TransportMode, UplinkConfig, UplinkTransport};
+use crate::config::{
+    DnsProbeConfig, SsPathKind, TargetAddr, TransportMode, UplinkConfig, UplinkTransport,
+};
 use crate::manager::probe::warm_udp::{self, WarmUdpProbe, WarmUdpProbeSlot};
 
 use super::metrics::BytesRecorder;
@@ -115,6 +117,7 @@ pub(super) async fn run_dns_probe(
                                 "probe_dns",
                                 None,
                                 None,
+                                uplink.combined_ss_kind(SsPathKind::Udp),
                             )
                             .await
                             .with_context(|| TransportOperation::Connect {

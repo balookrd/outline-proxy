@@ -19,8 +19,8 @@ use shadowsocks_crypto::{
 };
 
 use super::{
-    DialNetworkOptions, DialResumeOptions, DnsCache, TransportDialOptions, TransportStream,
-    UplinkConnectionBinding, UpstreamTransportGuard, connect_transport,
+    DialNetworkOptions, DialResumeOptions, DnsCache, SsPathKind, TransportDialOptions,
+    TransportStream, UplinkConnectionBinding, UpstreamTransportGuard, connect_transport,
 };
 use crate::resumption::SessionId;
 
@@ -153,10 +153,12 @@ impl UdpWsTransport {
         ipv6_first: bool,
         source: &'static str,
         keepalive_interval: Option<Duration>,
+        combined_ss_kind: Option<SsPathKind>,
     ) -> Result<Self> {
         let ws_stream = connect_transport(
             TransportDialOptions::new(cache, url, mode, source)
-                .with_network(DialNetworkOptions { fwmark, ipv6_first }),
+                .with_network(DialNetworkOptions { fwmark, ipv6_first })
+                .with_combined_ss_kind(combined_ss_kind),
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
@@ -190,10 +192,12 @@ impl UdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
         resume_request: Option<SessionId>,
+        combined_ss_kind: Option<SsPathKind>,
     ) -> Result<(Self, Option<SessionId>, Option<TransportMode>)> {
         let ws_stream = connect_transport(
             TransportDialOptions::new(cache, url, mode, source)
                 .with_network(DialNetworkOptions { fwmark, ipv6_first })
+                .with_combined_ss_kind(combined_ss_kind)
                 .with_resume(DialResumeOptions {
                     resume_request,
                     // Ack-Prefix Protocol is a TCP-side mid-session retry feature;

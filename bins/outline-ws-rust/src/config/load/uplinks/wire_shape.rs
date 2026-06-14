@@ -16,6 +16,9 @@ pub(super) struct PrimaryWireInput<'a> {
     pub(super) vless_ws_url: Option<Url>,
     pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
+    pub(super) ss_ws_url: Option<Url>,
+    pub(super) ss_xhttp_url: Option<Url>,
+    pub(super) ss_mode: Option<TransportMode>,
     pub(super) vless_id: Option<String>,
     pub(super) link: Option<String>,
 }
@@ -31,6 +34,9 @@ pub(super) struct PrimaryWireShape {
     pub(super) vless_ws_url: Option<Url>,
     pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: TransportMode,
+    pub(super) ss_ws_url: Option<Url>,
+    pub(super) ss_xhttp_url: Option<Url>,
+    pub(super) ss_mode: Option<TransportMode>,
     pub(super) vless_id: Option<String>,
 }
 
@@ -47,6 +53,9 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
         mut vless_ws_url,
         mut vless_xhttp_url,
         mut vless_mode,
+        ss_ws_url,
+        ss_xhttp_url,
+        ss_mode,
         mut vless_id,
         link,
     } = input;
@@ -85,6 +94,56 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
         transport.unwrap_or_default()
     };
 
+    // Combined-path SS: `ss_xhttp_url` / `ss_ws_url` carry BOTH legs on one
+    // URL, with `ss_mode` as the single carrier mode. Validate the shape here
+    // (mutual exclusion + carrier consistency) before the per-transport gate;
+    // a combined uplink then short-circuits the split SS branch below.
+    let combined_ss =
+        matches!(transport, UplinkTransport::Ss) && (ss_xhttp_url.is_some() || ss_ws_url.is_some());
+    if combined_ss {
+        if ss_xhttp_url.is_some() && ss_ws_url.is_some() {
+            bail!(
+                "uplink {name}: `ss_xhttp_url` and `ss_ws_url` are mutually exclusive — pick one combined carrier"
+            );
+        }
+        if tcp_ws_url.is_some()
+            || tcp_xhttp_url.is_some()
+            || udp_ws_url.is_some()
+            || udp_xhttp_url.is_some()
+        {
+            bail!(
+                "uplink {name}: combined `ss_xhttp_url`/`ss_ws_url` is mutually exclusive with the split `tcp_*`/`udp_*` URL fields — remove the split URLs"
+            );
+        }
+        let m = ss_mode.ok_or_else(|| {
+            anyhow!("uplink {name}: combined `ss_xhttp_url`/`ss_ws_url` requires `ss_mode`")
+        })?;
+        if matches!(m, TransportMode::Quic) {
+            bail!(
+                "uplink {name}: combined mode does not support raw QUIC (it muxes tcp+udp on one connection natively)"
+            );
+        }
+        #[cfg(not(feature = "h3"))]
+        if matches!(m, TransportMode::XhttpH3 | TransportMode::WsH3) {
+            bail!(
+                "uplink {name}: ss_mode={m} requires the `h3` feature; \
+                 rebuild with `--features h3` or pick a non-h3 mode"
+            );
+        }
+        if ss_xhttp_url.is_some() && !m.is_xhttp() {
+            bail!(
+                "uplink {name}: `ss_xhttp_url` requires an XHTTP `ss_mode` (xhttp_h1/h2/h3), got {m}"
+            );
+        }
+        if ss_ws_url.is_some() && m.is_xhttp() {
+            bail!("uplink {name}: `ss_ws_url` requires a WS `ss_mode` (ws_h1/h2/h3), got {m}");
+        }
+    } else if ss_mode.is_some() || ss_xhttp_url.is_some() || ss_ws_url.is_some() {
+        bail!(
+            "uplink {name}: `ss_xhttp_url` / `ss_ws_url` / `ss_mode` are combined-path SS fields — valid only for transport=ss, and `ss_mode` requires one of the ss URLs"
+        );
+    }
+
     // Per-transport field gating: each transport owns a disjoint subset of
     // the WS/socket fields. Cross-population is rejected at parse time so
     // misconfiguration surfaces as a clear error rather than a confusing
@@ -100,6 +159,14 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
         vless_xhttp_url,
         vless_mode,
     ) = match transport {
+        UplinkTransport::Ss if combined_ss => {
+            // Validated above: exactly one `ss_*_url`, `ss_mode` set + carrier
+            // consistent, split fields empty. Both legs ride `ss_mode`; the
+            // split URL fields stay None and the combined URLs pass through to
+            // `PrimaryWireShape` (read back via `combined_ss_url`).
+            let m = ss_mode.expect("combined_ss implies ss_mode (validated above)");
+            (None, None, m, None, None, m, None, None, TransportMode::default())
+        },
         UplinkTransport::Ss => {
             if vless_ws_url.is_some() || vless_xhttp_url.is_some() || vless_mode.is_some() {
                 bail!(
@@ -237,6 +304,9 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
         vless_ws_url,
         vless_xhttp_url,
         vless_mode,
+        ss_ws_url,
+        ss_xhttp_url,
+        ss_mode,
         vless_id,
     })
 }

@@ -28,6 +28,13 @@ pub(crate) struct ConfigFile {
     /// Required when `vless_mode` is `xhttp_h1` / `xhttp_h2` / `xhttp_h3`.
     pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
+    /// `transport = "ss"` only. Combined-path mode: ONE URL for both TCP and
+    /// UDP legs (server splits them by a hidden session-id / token bit).
+    /// `ss_xhttp_url` = XHTTP carrier, `ss_ws_url` = WS carrier; `ss_mode` is
+    /// the single carrier mode. Mutually exclusive with split `tcp_*`/`udp_*`.
+    pub(super) ss_ws_url: Option<Url>,
+    pub(super) ss_xhttp_url: Option<Url>,
+    pub(super) ss_mode: Option<TransportMode>,
     /// VLESS share-link URI (`vless://UUID@HOST:PORT?...#NAME`). When set,
     /// expands at load time into the matching `vless_id`, dial URL and
     /// `vless_mode`. Mutually exclusive with explicitly-set `vless_*`
@@ -174,6 +181,10 @@ pub(crate) struct OutlineSection {
     /// Required when `vless_mode` is `xhttp_h1` / `xhttp_h2` / `xhttp_h3`.
     pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
+    /// `transport = "ss"` combined-path mode — see `ConfigFile::ss_xhttp_url`.
+    pub(super) ss_ws_url: Option<Url>,
+    pub(super) ss_xhttp_url: Option<Url>,
+    pub(super) ss_mode: Option<TransportMode>,
     /// VLESS share-link URI. Same semantics as `ConfigFile::link`; provided
     /// here so the inline-uplink shape can carry a one-line VLESS config.
     pub(super) link: Option<String>,
@@ -293,6 +304,14 @@ pub(crate) struct UplinkSection {
     /// of the same name on `ConfigFile` for semantics.
     pub(crate) vless_xhttp_url: Option<Url>,
     pub(crate) vless_mode: Option<TransportMode>,
+    /// `transport = "ss"` only. Combined-path mode: ONE URL carries both the
+    /// TCP and UDP legs (the server splits them by a hidden discriminator in
+    /// the session-id / WS token). `ss_xhttp_url` picks the XHTTP carrier,
+    /// `ss_ws_url` the WS carrier; `ss_mode` is the single carrier mode for
+    /// both legs. Mutually exclusive with the split `tcp_*` / `udp_*` fields.
+    pub(crate) ss_ws_url: Option<Url>,
+    pub(crate) ss_xhttp_url: Option<Url>,
+    pub(crate) ss_mode: Option<TransportMode>,
     /// VLESS share-link URI (`vless://UUID@HOST:PORT?...#NAME`). When set,
     /// expands at load time into the matching `vless_id`, dial URL and
     /// `vless_mode`. Mutually exclusive with explicitly-set `vless_*`
@@ -403,6 +422,10 @@ pub(crate) struct FallbackSection {
     pub(crate) vless_ws_url: Option<Url>,
     pub(crate) vless_xhttp_url: Option<Url>,
     pub(crate) vless_mode: Option<TransportMode>,
+    /// `transport = "ss"` combined-path mode — see `ConfigFile::ss_xhttp_url`.
+    pub(crate) ss_ws_url: Option<Url>,
+    pub(crate) ss_xhttp_url: Option<Url>,
+    pub(crate) ss_mode: Option<TransportMode>,
     pub(crate) method: Option<CipherKind>,
     pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,

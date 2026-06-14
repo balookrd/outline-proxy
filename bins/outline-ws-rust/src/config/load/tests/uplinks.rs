@@ -28,6 +28,9 @@ fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> 
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: None,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
         link: None,
         method: Some(CipherKind::Chacha20IetfPoly1305),
         password: Some("secret".to_string()),
@@ -61,6 +64,9 @@ fn vless_uplink_section(
         vless_ws_url: None,
         vless_xhttp_url: Some(Url::parse(xhttp_url).unwrap()),
         vless_mode: Some(TransportMode::XhttpH1),
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
         link: None,
         method: Some(CipherKind::Chacha20IetfPoly1305),
         password: Some("secret".to_string()),
@@ -89,6 +95,9 @@ fn empty_fallback() -> FallbackSection {
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: None,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
         method: None,
         password: None,
         fwmark: None,
@@ -198,6 +207,9 @@ fn allows_vless_xhttp_primary_with_vless_ws_fallback() {
         transport: UplinkTransport::Vless,
         vless_ws_url: Some(Url::parse("wss://vless-ws.example.com/v").unwrap()),
         vless_mode: Some(TransportMode::WsH3),
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
         vless_id: Some("11111111-2222-3333-4444-555555555555".into()),
         ..empty_fallback()
     };
@@ -262,6 +274,9 @@ fn rejects_vless_fallback_missing_vless_id() {
         transport: UplinkTransport::Vless,
         vless_xhttp_url: Some(Url::parse("https://other.example.com/x").unwrap()),
         vless_mode: Some(TransportMode::XhttpH1),
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
         // vless_id omitted — required and not inherited
         ..empty_fallback()
     };
@@ -567,6 +582,9 @@ fn ss_xhttp_uplink_section(name: &str, xhttp_url: &str, mode: TransportMode) -> 
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: None,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
         link: None,
         method: Some(CipherKind::Chacha20IetfPoly1305),
         password: Some("secret".to_string()),
@@ -661,4 +679,66 @@ fn ss_udp_xhttp_mode_rejects_udp_ws_url() {
     section.udp_ws_url = Some(Url::parse("wss://cdn.example.com/udp").unwrap());
     let err = resolve(section).expect_err("udp xhttp mode with udp_ws_url must fail");
     assert!(err.to_string().contains("udp_ws_url"), "unexpected error: {err}");
+}
+
+#[test]
+fn combined_ss_xhttp_url_dials_one_url_for_both_legs() {
+    // Combined XHTTP: no split tcp_*/udp_*, just ss_xhttp_url + ss_mode.
+    let mut section =
+        ss_xhttp_uplink_section("combined", "https://cdn.example.com/ss", TransportMode::XhttpH2);
+    section.tcp_xhttp_url = None;
+    section.tcp_mode = None;
+    section.ss_xhttp_url = Some(Url::parse("https://cdn.example.com/ssc").unwrap());
+    section.ss_mode = Some(TransportMode::XhttpH2);
+    let cfg = resolve(section).expect("combined ss_xhttp_url should resolve");
+    assert!(cfg.is_combined_ss(), "ss_xhttp_url should mark the uplink combined");
+    let expected = Url::parse("https://cdn.example.com/ssc").unwrap();
+    assert_eq!(cfg.tcp_dial_url(), Some(&expected), "tcp leg dials the combined URL");
+    assert_eq!(cfg.udp_dial_url(), Some(&expected), "udp leg dials the same combined URL");
+    assert_eq!(cfg.tcp_dial_mode(), TransportMode::XhttpH2);
+    assert_eq!(cfg.udp_dial_mode(), TransportMode::XhttpH2);
+}
+
+#[test]
+fn combined_ss_ws_url_uses_ws_carrier() {
+    let mut section = ss_xhttp_uplink_section(
+        "combined-ws",
+        "https://cdn.example.com/ss",
+        TransportMode::XhttpH2,
+    );
+    section.tcp_xhttp_url = None;
+    section.tcp_mode = None;
+    section.ss_ws_url = Some(Url::parse("wss://cdn.example.com/ws").unwrap());
+    section.ss_mode = Some(TransportMode::WsH2);
+    let cfg = resolve(section).expect("combined ss_ws_url should resolve");
+    assert!(cfg.is_combined_ss());
+    let expected = Url::parse("wss://cdn.example.com/ws").unwrap();
+    assert_eq!(cfg.tcp_dial_url(), Some(&expected));
+    assert_eq!(cfg.udp_dial_url(), Some(&expected));
+}
+
+#[test]
+fn combined_ss_xhttp_url_requires_xhttp_ss_mode() {
+    let mut section =
+        ss_xhttp_uplink_section("bad", "https://cdn.example.com/ss", TransportMode::XhttpH2);
+    section.tcp_xhttp_url = None;
+    section.tcp_mode = None;
+    section.ss_xhttp_url = Some(Url::parse("https://cdn.example.com/ssc").unwrap());
+    section.ss_mode = Some(TransportMode::WsH2); // WS mode for an XHTTP URL
+    let err = resolve(section).expect_err("carrier mismatch must fail");
+    assert!(err.to_string().contains("requires an XHTTP"), "unexpected error: {err}");
+}
+
+#[test]
+fn combined_ss_url_rejects_split_url_fields() {
+    // ss_xhttp_url + a leftover tcp_xhttp_url → mutual-exclusion error.
+    let mut section =
+        ss_xhttp_uplink_section("bad", "https://cdn.example.com/ss", TransportMode::XhttpH2);
+    section.ss_xhttp_url = Some(Url::parse("https://cdn.example.com/combined").unwrap());
+    section.ss_mode = Some(TransportMode::XhttpH2);
+    let err = resolve(section).expect_err("split + combined must fail");
+    assert!(
+        err.to_string().contains("mutually exclusive with the split"),
+        "unexpected error: {err}"
+    );
 }

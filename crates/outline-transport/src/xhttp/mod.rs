@@ -67,7 +67,7 @@ pub(crate) use stream::XhttpStream;
 pub(super) use outline_wire::resume::{
     ACK_PREFIX_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER,
 };
-pub use outline_wire::xhttp::XhttpSubmode;
+pub use outline_wire::xhttp::{SsPathKind, XhttpSubmode};
 
 /// Extracts the submode from a `?mode=...` query parameter on the
 /// dial URL. The mode is not threaded through the dial-dispatcher
@@ -168,6 +168,7 @@ pub(crate) async fn connect_xhttp(
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
+    combined_ss_kind: Option<SsPathKind>,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     match mode {
         TransportMode::XhttpH2 => {
@@ -181,6 +182,7 @@ pub(crate) async fn connect_xhttp(
                 ack_prefix_requested,
                 symmetric_replay_requested,
                 client_acked_offset,
+                combined_ss_kind,
             )
             .await
         },
@@ -196,6 +198,7 @@ pub(crate) async fn connect_xhttp(
                 ack_prefix_requested,
                 symmetric_replay_requested,
                 client_acked_offset,
+                combined_ss_kind,
             )
             .await
         },
@@ -212,6 +215,7 @@ pub(crate) async fn connect_xhttp(
                 ack_prefix_requested,
                 symmetric_replay_requested,
                 client_acked_offset,
+                combined_ss_kind,
             )
             .await
         },
@@ -289,16 +293,28 @@ impl XhttpTarget {
     }
 }
 
-pub(super) fn generate_session_id() -> Result<String> {
-    use outline_wire::xhttp::SESSION_ID_ALPHABET as ALPHABET;
+pub(crate) fn generate_session_id(kind: Option<SsPathKind>) -> Result<String> {
+    use outline_wire::xhttp::{SESSION_ID_ALPHABET as ALPHABET, encode_kind_first_byte};
     let mut raw = [0_u8; SESSION_ID_BYTES];
     rand::rng().fill_bytes(&mut raw);
     // URL-safe alphanumeric. Bias from `% 62` is negligible at these
     // lengths and stays a strict subset of what the server-side
     // `outline_wire::xhttp::is_valid_session_id` accepts.
+    //
+    // On a combined SS path the first character carries the hidden TCP/UDP
+    // discriminator (see `outline_wire::xhttp::SsPathKind`). The server
+    // reads it only there, so off-combined dials (VLESS, split-path SS)
+    // pass `None` and keep the historical fully-random shape.
     let id: String = raw
         .iter()
-        .map(|byte| char::from(ALPHABET[(*byte as usize) % ALPHABET.len()]))
+        .enumerate()
+        .map(|(index, byte)| {
+            let mapped = match (index, kind) {
+                (0, Some(kind)) => encode_kind_first_byte(*byte, kind),
+                _ => ALPHABET[(*byte as usize) % ALPHABET.len()],
+            };
+            char::from(mapped)
+        })
         .collect();
     Ok(id)
 }

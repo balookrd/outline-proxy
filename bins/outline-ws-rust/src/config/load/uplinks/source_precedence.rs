@@ -20,6 +20,9 @@ pub(in crate::config::load) struct ResolvedUplinkInput {
     pub(super) vless_ws_url: Option<Url>,
     pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
+    pub(super) ss_ws_url: Option<Url>,
+    pub(super) ss_xhttp_url: Option<Url>,
+    pub(super) ss_mode: Option<TransportMode>,
     pub(super) cipher: Option<CipherKind>,
     pub(super) password: Option<String>,
     pub(super) weight: Option<f64>,
@@ -91,6 +94,11 @@ impl ResolvedUplinkInput {
             vless_mode: args
                 .vless_mode
                 .or_else(|| outline.and_then(|section| section.vless_mode)),
+            // Combined-path SS fields are TOML-only (like fallbacks /
+            // fingerprint overrides); the CLI builds a single split uplink.
+            ss_ws_url: outline.and_then(|section| section.ss_ws_url.clone()),
+            ss_xhttp_url: outline.and_then(|section| section.ss_xhttp_url.clone()),
+            ss_mode: outline.and_then(|section| section.ss_mode),
             cipher: args.method.or_else(|| outline.and_then(|section| section.method)),
             password: args
                 .password
@@ -137,6 +145,9 @@ impl ResolvedUplinkInput {
             vless_ws_url: uplink.vless_ws_url.clone(),
             vless_xhttp_url: uplink.vless_xhttp_url.clone(),
             vless_mode: uplink.vless_mode,
+            ss_ws_url: uplink.ss_ws_url.clone(),
+            ss_xhttp_url: uplink.ss_xhttp_url.clone(),
+            ss_mode: uplink.ss_mode,
             cipher: uplink.method,
             password: uplink.password.clone(),
             weight: uplink.weight,
