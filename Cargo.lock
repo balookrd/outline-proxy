@@ -1954,6 +1954,7 @@ dependencies = [
  "parking_lot",
  "quinn",
  "rand",
+ "rcgen",
  "rustls",
  "serde",
  "serde_json",

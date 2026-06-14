@@ -44,6 +44,17 @@ fn spawn_mimalloc_maintenance() {
 fn main() -> Result<()> {
     outline_ws_rust::init_rustls_crypto_provider()?;
 
+    // Integration-test hook (compiled out of production builds): trust a
+    // self-signed root supplied by the e2e harness so the binary can dial
+    // TLS / H3 / raw-QUIC carriers against a local test server. Installed
+    // before any dial, since the rustls client-config cache captures the
+    // root override on its first build.
+    #[cfg(feature = "test-tls")]
+    if let Ok(ca_path) = std::env::var("OUTLINE_WS_TEST_TLS_CA_DER") {
+        let der = std::fs::read(&ca_path)?;
+        outline_transport::install_test_tls_root(rustls::pki_types::CertificateDer::from(der));
+    }
+
     let args = Args::parse();
 
     // Router builds compile without the multi-thread feature, so only the
