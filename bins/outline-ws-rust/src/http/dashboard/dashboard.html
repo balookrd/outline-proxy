@@ -317,6 +317,7 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .wire-dot.fam-vless-xhttp { background: #a855f7; }
 .wire-dot.fam-vless-quic  { background: #ec4899; }
 .wire-dot.fam-ss-ws       { background: #06b6d4; }
+.wire-dot.fam-ss-xhttp    { background: #8b5cf6; }
 .wire-dot.fam-ss-quic     { background: #94a3b8; }
 .wire-dot.fam-unknown     { background: var(--dot-idle); }
 .leg-chain .leg-arrow { color: var(--muted); font-size: 9px; opacity: .6; }
@@ -325,6 +326,7 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 [data-theme="light"] .wire-dot.fam-vless-xhttp { background: #c084fc; }
 [data-theme="light"] .wire-dot.fam-vless-quic  { background: #f472b6; }
 [data-theme="light"] .wire-dot.fam-ss-ws       { background: #22d3ee; }
+[data-theme="light"] .wire-dot.fam-ss-xhttp    { background: #a78bfa; }
 [data-theme="light"] .wire-dot.fam-ss-quic     { background: #94a3b8; }
 /* Wire-chain legend — collapsed by default so it doesn't crowd the
  * summary cards. Click the summary chip to expand the colour key.
@@ -427,10 +429,11 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
     <details class="wire-legend" id="wireLegend">
       <summary><span class="wire-legend-title">Wire chain legend</span><span class="wire-legend-hint">click to expand</span></summary>
       <div class="wire-legend-body">
-        <span class="wire-legend-item"><span class="wire-dot fam-vless-ws"></span>VLESS / WS · H1 / H2 / H3</span>
-        <span class="wire-legend-item"><span class="wire-dot fam-vless-xhttp"></span>VLESS / XHTTP · H1 / H2 / H3</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-vless-ws"></span>VLESS / WS</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-vless-xhttp"></span>VLESS / XHTTP</span>
         <span class="wire-legend-item"><span class="wire-dot fam-vless-quic"></span>VLESS / QUIC</span>
         <span class="wire-legend-item"><span class="wire-dot fam-ss-ws"></span>Shadowsocks / WS</span>
+        <span class="wire-legend-item"><span class="wire-dot fam-ss-xhttp"></span>Shadowsocks / XHTTP</span>
         <span class="wire-legend-item"><span class="wire-dot fam-ss-quic"></span>Shadowsocks / QUIC</span>
         <span class="wire-legend-item"><span class="wire-dot failed"></span>failed in current shuffle round</span>
         <span class="wire-legend-item wire-legend-note">Active wire of the leg is rendered as a full pill; hover any square for the exact `transport / mode` of that wire.</span>
@@ -688,8 +691,8 @@ function submodeSuffix(submode, effective, downgraded) {
 // Carrier-family CSS class for the per-wire dot in the leg chain cell.
 // Maps `(transport, mode)` onto the colour palette declared in CSS
 // (`fam-vless-ws`, `fam-vless-xhttp`, `fam-vless-quic`, `fam-ss-ws`,
-// `fam-ss-quic`). `transport = "ss"` is Shadowsocks-over-WS; with a
-// `quic` mode it is SS-over-QUIC (`fam-ss-quic`), otherwise `fam-ss-ws`.
+// `fam-ss-xhttp`, `fam-ss-quic`). For Shadowsocks transport:
+// mode="quic" → `fam-ss-quic`, mode.startsWith("xhttp") → `fam-ss-xhttp`, else → `fam-ss-ws`.
 // Returns `fam-unknown` for anything the dashboard doesn't recognise so
 // the dot still renders.
 function wireFamilyClass(transport, mode) {
@@ -697,6 +700,7 @@ function wireFamilyClass(transport, mode) {
   const m = String(mode || "").toLowerCase();
   if (t === "ss") {
     if (m === "quic") return "fam-ss-quic";
+    if (m.startsWith("xhttp")) return "fam-ss-xhttp";
     return "fam-ss-ws";
   }
   if (t === "vless") {
