@@ -297,9 +297,9 @@ fn payload_with_fallbacks_round_trips_through_section() {
     let section = payload_to_section(&payload, Some("core")).unwrap();
     let fbs = section.fallbacks.as_ref().expect("fallbacks must round-trip");
     assert_eq!(fbs.len(), 2);
-    assert_eq!(format!("{:?}", fbs[0].transport), "Ws");
+    assert_eq!(format!("{:?}", fbs[0].transport), "Ss");
     assert_eq!(fbs[0].tcp_ws_url.as_ref().unwrap().as_str(), "wss://ws.example.com/tcp");
-    assert_eq!(format!("{:?}", fbs[1].transport), "Ws");
+    assert_eq!(format!("{:?}", fbs[1].transport), "Ss");
     // Validation walks the same pipeline as the TOML loader.
     validate_uplink_section(&section, 0).unwrap();
 }

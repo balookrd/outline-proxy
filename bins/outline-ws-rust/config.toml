@@ -309,7 +309,7 @@ runtime_failure_window_secs = 60
 # See docs/UPLINK-CONFIGURATIONS.md "Top-level [outline] shape".
 #
 # [outline]
-# transport = "ws"                  # "ws" (default; alias "websocket") | "vless"
+# transport = "ss"                  # "ss" (default; alias "shadowsocks"); "ws"/"websocket" deprecated | "vless"
 # tcp_ws_url = "wss://example.com/SECRET/tcp"
 # udp_ws_url = "wss://example.com/SECRET/udp"
 # tcp_mode = "h3"
@@ -320,7 +320,7 @@ runtime_failure_window_secs = 60
 [[outline.uplinks]]
 name = "primary"
 group = "main"
-transport = "ws"
+transport = "ss"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
 # Requested transport mode. WebSocket variants ("h3", "h2", "http1") fall
@@ -345,7 +345,7 @@ password = "Secret0"
 [[outline.uplinks]]
 name = "backup"
 group = "main"
-transport = "ws"
+transport = "ss"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
 weight = 0.8
 # requested mode; runtime fallback order is h2 -> http1
@@ -356,7 +356,7 @@ method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
 # VLESS-over-WebSocket example. Uses the same WSS dial plumbing as
-# `transport = "ws"` but authenticates with `vless_id` instead of
+# `transport = "ss"` but authenticates with `vless_id` instead of
 # cipher+password. The VLESS server exposes a single WS path
 # (`ws_path_vless`) shared by TCP and UDP, so VLESS uplinks take a
 # single `vless_ws_url` / `vless_mode` pair (NOT `tcp_ws_url`/
@@ -407,7 +407,7 @@ password = "Secret0"
 # password = "BASE64=="
 #
 # [[outline.uplinks.fallbacks]]
-# transport = "ws"
+# transport = "ss"
 # tcp_ws_url = "wss://ws.example.com/SECRET/tcp"
 # udp_ws_url = "wss://ws.example.com/SECRET/udp"
 # tcp_mode = "h2"
@@ -521,7 +521,7 @@ password = "Secret0"
 # vless_mode = "ws_h3"
 #
 # [[outline.uplinks.fallbacks]]
-# transport = "websocket"
+# transport = "ss"
 # tcp_ws_url = "wss://cdn.example.com/SECRET/tcp"
 # udp_ws_url = "wss://cdn.example.com/SECRET/udp"
 # tcp_mode = "ws_h3"
@@ -560,7 +560,7 @@ password = "Secret0"
 # [[outline.uplinks]]
 # name = "ss-quic"
 # group = "main"
-# transport = "ws"   # ws+quic mode = SS-over-QUIC; vless+quic = VLESS-over-QUIC
+# transport = "ss"   # ss+quic mode = SS-over-QUIC; vless+quic = VLESS-over-QUIC
 # tcp_ws_url = "https://ss.example.com:443"
 # udp_ws_url = "https://ss.example.com:443"
 # tcp_mode = "quic"

@@ -71,7 +71,7 @@ impl UplinkManager {
     pub async fn effective_tcp_mode(&self, index: usize) -> crate::config::TransportMode {
         let uplink = &self.inner.uplinks[index];
         let configured = uplink.tcp_dial_mode();
-        if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+        if !matches!(uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return configured;
         }
         let status = self.inner.read_status(index);
@@ -83,7 +83,7 @@ impl UplinkManager {
     pub(crate) async fn effective_udp_mode(&self, index: usize) -> crate::config::TransportMode {
         let uplink = &self.inner.uplinks[index];
         let configured = uplink.udp_dial_mode();
-        if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+        if !matches!(uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return configured;
         }
         let status = self.inner.read_status(index);
@@ -107,7 +107,7 @@ impl UplinkManager {
         &self,
         candidate: &UplinkCandidate,
     ) -> Option<TransportStream> {
-        if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+        if !matches!(candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return None;
         }
         // The pool is never refilled when the effective TCP mode is raw
@@ -180,7 +180,7 @@ impl UplinkManager {
         client_acked_offset: u64,
     ) -> Result<TransportStream> {
         let cache = self.inner.dns_cache.as_ref();
-        if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+        if !matches!(candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             bail!("uplink {} does not use websocket transport", candidate.uplink.name);
         }
         metrics::record_warm_standby_acquire(
@@ -335,7 +335,7 @@ impl UplinkManager {
                 });
                 (outline_transport::TcpWriter::Vless(w), outline_transport::TcpReader::Vless(r))
             },
-            UplinkTransport::Ws => {
+            UplinkTransport::Ss => {
                 // Standalone "shadowsocks-over-quic" path uses the
                 // existing WS uplink config: same URL field, but
                 // `tcp_mode = "quic"` selects this branch.
@@ -635,7 +635,7 @@ impl UplinkManager {
             return;
         }
         let ctx = self.standby_ctx(index, TransportKind::Tcp).await;
-        if !matches!(ctx.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+        if !matches!(ctx.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return;
         }
         ctx.keepalive().await;

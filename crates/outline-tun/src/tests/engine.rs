@@ -19,7 +19,7 @@ fn icmp_gate_manager(suppress_when_down: bool, bypass_when_down: bool) -> Uplink
         "main",
         vec![UplinkConfig {
             name: "primary".to_string(),
-            transport: UplinkTransport::Ws,
+            transport: UplinkTransport::Ss,
             tcp_ws_url: Some("wss://main.example.com/tcp".parse().unwrap()),
             tcp_mode: TransportMode::WsH1,
             udp_ws_url: Some("wss://main.example.com/udp".parse().unwrap()),

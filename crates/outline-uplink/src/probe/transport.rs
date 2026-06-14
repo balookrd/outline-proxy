@@ -48,7 +48,7 @@ pub(super) async fn connect_probe_tcp(
 
     #[cfg(feature = "quic")]
     if effective_tcp_mode == TransportMode::Quic
-        && (uplink.transport == UplinkTransport::Ws || uplink.transport == UplinkTransport::Vless)
+        && (uplink.transport == UplinkTransport::Ss || uplink.transport == UplinkTransport::Vless)
     {
         let url = uplink
             .tcp_dial_url()
@@ -80,7 +80,7 @@ pub(super) async fn connect_probe_tcp(
                 // `ws_mode_cache` clamp to surface here.
                 Ok((TcpWriter::Vless(w), TcpReader::Vless(r), None))
             },
-            UplinkTransport::Ws => {
+            UplinkTransport::Ss => {
                 let (w, r) = crate::dial::dial_in_uplink_scope(
                     uplink,
                     outline_transport::connect_ss_tcp_quic(
@@ -106,7 +106,7 @@ pub(super) async fn connect_probe_tcp(
     }
 
     match uplink.transport {
-        UplinkTransport::Ws => {
+        UplinkTransport::Ss => {
             let ws_stream = crate::dial::dial_in_uplink_scope(
                 uplink,
                 connect_transport(

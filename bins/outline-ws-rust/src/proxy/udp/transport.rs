@@ -151,7 +151,7 @@ async fn dial_udp_fallback(
     };
 
     match fallback.transport {
-        UplinkTransport::Ws => {
+        UplinkTransport::Ss => {
             let url = fallback.udp_ws_url.as_ref().ok_or_else(|| {
                 anyhow!("uplink {} fallback (transport=ws) missing udp_ws_url", parent.uplink.name,)
             })?;

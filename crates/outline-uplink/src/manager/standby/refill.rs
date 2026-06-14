@@ -122,7 +122,7 @@ impl<'a> StandbyCtx<'a> {
         if self.desired == 0 {
             return;
         }
-        if !matches!(self.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+        if !matches!(self.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return;
         }
         // Raw QUIC has its own connection-cache layer (per-ALPN
