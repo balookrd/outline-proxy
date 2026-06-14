@@ -4,7 +4,7 @@
 
 # outline-ws-rust
 
-`outline-ws-rust` — production-ориентированный Rust-прокси, который принимает локальный SOCKS5-трафик и перенаправляет его на Outline-совместимые WebSocket-транспорты по HTTP/1.1, HTTP/2 или HTTP/3, на прямые Shadowsocks socket uplink'и, на VLESS-over-WebSocket аплинки, либо на raw QUIC аплинки (Shadowsocks / VLESS прямо поверх QUIC-стримов и датаграмм, без WebSocket).
+`outline-ws-rust` — production-ориентированный Rust-прокси, который принимает локальный SOCKS5-трафик и перенаправляет его на Outline-совместимые WebSocket-транспорты по HTTP/1.1, HTTP/2 или HTTP/3, на VLESS-over-WebSocket аплинки, либо на raw QUIC аплинки (Shadowsocks / VLESS прямо поверх QUIC-стримов и датаграмм, без WebSocket).
 
 Поддерживает:
 
@@ -15,7 +15,6 @@
 - raw QUIC транспорт (per-ALPN: `vless`, `ss`, `h3`) — VLESS / Shadowsocks-кадры прямо поверх QUIC bidi-стримов и датаграмм (RFC 9221), без WebSocket / HTTP/3
 - VLESS-over-WebSocket аплинки (UUID-аутентификация, общий WSS dial path, per-destination UDP session-mux)
 - однострочная конфигурация VLESS-аплинка через share-link URI `vless://UUID@HOST:PORT?...#NAME` (TOML-поле `link = "..."`, CLI `--vless-link`, control-plane payload `link`)
-- прямые Shadowsocks TCP/UDP socket uplink'и
 - метрики Prometheus, встроенный multi-instance дашборд и готовые дашборды Grafana
 - интеграцию с существующим TUN-устройством для `tun2udp`
 - stateful `tun2tcp`-реле с production-ориентированными ограничениями
@@ -30,7 +29,7 @@
 
 1. Принимает локальный SOCKS5 и опциональный TUN-трафик.
 2. Выбирает лучший доступный аплинк с помощью health-проб, EWMA RTT-скоринга, sticky-маршрутизации, гистерезиса, штрафов и warm standby.
-3. Подключается к Outline WebSocket-транспорту в запрошенном режиме (`http1`, `h2` или `h3`) с автоматическим fallback, к raw QUIC аплинку (`quic`; пара к ALPN-листенеру на сервере, на провал dial / handshake падает на WS over H2 → H1), либо к прямому Shadowsocks socket / VLESS-over-WebSocket аплинку.
+3. Подключается к Outline WebSocket-транспорту в запрошенном режиме (`http1`, `h2` или `h3`) с автоматическим fallback, к raw QUIC аплинку (`quic`; пара к ALPN-листенеру на сервере, на провал dial / handshake падает на WS over H2 → H1), либо к VLESS-over-WebSocket аплинку.
 4. Шифрует payload с помощью Shadowsocks AEAD или формирует VLESS-кадры с UUID-аутентификацией перед отправкой в upstream.
 5. Публикует метрики Prometheus для runtime, аплинков, проб, TUN и `tun2tcp`.
 
@@ -58,8 +57,6 @@ sticky + hysteresis"]
 HTTP/1.1 / HTTP/2 / HTTP/3"]
         QC["Raw QUIC connectors
 ALPN: vless / ss"]
-        DS["Direct Shadowsocks
-TCP / UDP socket"]
         SS["Shadowsocks AEAD"]
         VL["VLESS framing
 UUID auth"]
@@ -74,7 +71,6 @@ tun2udp + tun2tcp"]
     U --> LB
     LB -->|"*_ws_mode = http1/h2/h3"| WS
     LB -->|"*_ws_mode = quic"| QC
-    LB -->|"transport = shadowsocks"| DS
     WS -->|"outline"| SS
     WS -->|"vless"| VL
     QC -->|"transport = websocket"| SS
@@ -83,13 +79,11 @@ tun2udp + tun2tcp"]
     subgraph Upstream["Upstream аплинки"]
         O1["outline-over-ws (A/B)"]
         O2["raw-quic edge (vless / ss)"]
-        O3["direct shadowsocks edge"]
         O4["vless-over-ws edge"]
     end
 
     SS --> O1
     SS --> O2
-    DS --> O3
     VL --> O4
     VL --> O2
 
@@ -129,7 +123,6 @@ tun2udp + tun2tcp"]
 - RFC 9220 WebSocket over HTTP/3 / QUIC
 - raw QUIC (per-ALPN, без WebSocket / HTTP/3): выбирается через `*_ws_mode = "quic"`. ALPN `vless` несёт VLESS-TCP (один bidi на сессию) и VLESS-UDP (per-target control bidi + датаграммы, демукс по 4-байтному `session_id`, выдаваемому сервером). ALPN `ss` несёт Shadowsocks-TCP (один bidi на сессию) и Shadowsocks-UDP (1 датаграмма = 1 SS-AEAD пакет, RFC 9221). Несколько сессий с одинаковым ALPN на тот же `host:port` шарят один кэшированный QUIC-коннект. Вспомогательные ALPN `vless-mtu` / `ss-mtu` несут UDP-пакеты, превысившие лимит датаграммы QUIC, поверх server-initiated bidi. На провал dial / handshake raw-QUIC падает на WS over H2 (далее H1) и открывает окно H3-downgrade — следующие дайлы пропускают QUIC, пока recovery-проба не подтвердит, что QUIC снова доступен.
 - VLESS-over-XHTTP (`vless_mode = "xhttp_h1"`, `"xhttp_h2"` или `"xhttp_h3"`): парный листенер — `xhttp_path_vless` в outline-ss-rust. Dial-URL `vless_xhttp_url` выбирает wire-режим через свой query-параметр — голый URL или `?mode=packet-up` запускает GET + sequenced POSTs, `?mode=stream-one` — один bidirectional POST (только h2 / h3; h1-carrier поддерживает только packet-up и явно отваливается на stream-one). Полезно когда WebSocket-апгрейд режется на пути (Cloudflare-style CDN, captive-portal middleboxes).
-- прямые Shadowsocks TCP/UDP socket uplink'и
 - VLESS-over-WebSocket аплинки (`transport = "vless"`, UUID-аутентификация, общий WSS dial path с `websocket`, per-destination UDP session-mux с границей `vless_udp_max_sessions`)
 - transport fallback:
   - `h3 -> h2 -> http1`
@@ -213,7 +206,7 @@ tun2udp + tun2tcp"]
 - [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json) — диагностика ситуативных hang'ов
 - [`src/proxy/`](src/proxy) — обработчики TCP/UDP ingress для SOCKS5
 - [`crates/outline-uplink/`](crates/outline-uplink) — выбор аплинка, пробы, failover и standby-логика
-- [`crates/outline-transport/`](crates/outline-transport) — WebSocket / HTTP-2 / HTTP-3 / raw-QUIC / VLESS / direct-Shadowsocks транспорты + кросс-транспортный `ResumeCache`
+- [`crates/outline-transport/`](crates/outline-transport) — WebSocket / HTTP-2 / HTTP-3 / raw-QUIC / VLESS транспорты + кросс-транспортный `ResumeCache`
 - [`crates/outline-net/`](crates/outline-net) — DNS-cache и общий net-обвес, вынесенный из `outline-transport`
 - [`crates/outline-tun/`](crates/outline-tun) — stateful TUN relay engines
 - [`crates/outline-metrics/`](crates/outline-metrics) — регистрация Prometheus-метрик и session/transport snapshots
@@ -743,11 +736,10 @@ via = "main"
 
 ### Ключевые параметры конфигурации
 
-- `transport` принимает `websocket` (по умолчанию), `shadowsocks` или `vless`. VLESS делит WSS-путь дозвона с `websocket` (те же поля `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark`), но аутентифицируется одним `vless_id` вместо пары Shadowsocks `method` + `password`. VLESS UDP открывает по одной WSS-сессии на каждое назначение внутри аплинка (ограничено `[outline.load_balancing] vless_udp_max_sessions` с LRU-вытеснением; idle-эвикция управляется `vless_udp_session_idle_secs`).
+- `transport` принимает `websocket` (по умолчанию) или `vless`. VLESS делит WSS-путь дозвона с `websocket` (те же поля `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark`), но аутентифицируется одним `vless_id` вместо пары Shadowsocks `method` + `password`. VLESS UDP открывает по одной WSS-сессии на каждое назначение внутри аплинка (ограничено `[outline.load_balancing] vless_udp_max_sessions` с LRU-вытеснением; idle-эвикция управляется `vless_udp_session_idle_secs`).
 - `link = "vless://UUID@HOST:PORT?type=...&security=...&alpn=...#NAME"` конфигурирует VLESS-аплинк одной share-link URI вместо явных полей `vless_id` / `vless_*_url` / `vless_mode`; `transport = "vless"` подставляется автоматически. То же значение принимает CLI-флаг `--vless-link` (`OUTLINE_VLESS_LINK`) и REST-payload `/control/uplinks` (`link`, алиас `share_link`). Смешение `link` с явными полями отвергается. Таблицу поддерживаемых query-параметров и ограничения см. в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md#7-vless-share-link-uris).
 - Должен быть настроен хотя бы один ingress: `--listen` / `[socks5].listen` и/или `[tun]`. Если не задано ни то ни другое, процесс завершится с ошибкой вместо молчаливого bind на `127.0.0.1:1080`.
 - `tcp_mode` / `udp_mode` (для `transport = "ws"`) и `vless_mode` (для `transport = "vless"`) задают per-direction carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade), `quic` (raw-QUIC framing на ALPN `vless` / `ss`) или `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (только VLESS, XHTTP packet-up). Конфиг-блоки на каждую форму, цепочки fallback на этапе дозвона и поведение resume — см. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
-- `tcp_addr` / `udp_addr` используются с `transport = "shadowsocks"` и принимают `host:port` или `[ipv6]:port`.
 - `ipv6_first` (по умолчанию `false`) меняет предпочтение адресов после DNS для этого uplink с IPv4-first на IPv6-first для TCP, UDP, H1, H2 и H3 соединений.
 - `method` также поддерживает `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305`; для них `password` должен быть base64-кодированным PSK точной длины ключа выбранного шифра.
 - `[[socks5.users]]` включает локальную SOCKS5-аутентификацию по логину/паролю для нескольких пользователей. В каждой записи должны быть и `username`, и `password`.
@@ -1254,11 +1246,6 @@ Snapshot дескрипторов включает общее количеств
 При ошибке UDP-forwarding в TUN метрика `outline_ws_rust_tun_udp_forward_errors_total{reason}` разбивает их по: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
 Дроп oversized SOCKS5 UDP-пакетов до отправки в uplink и oversized UDP-ответов до отправки клиенту экспортируется как `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing", cause}` (label `cause` различает `quic_dgram`, `vless_quic_dgram`, `vless_udp`, `ss_socket`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`).
 На TUN UDP-пути oversize-дропы дополнительно синтезируют ICMP «Fragmentation Needed» (IPv4) или «Packet Too Big» (IPv6) в адрес отправителя, чтобы сработала его собственная PMTUD state machine — throttled до одного PTB в секунду на flow и полностью подавлены ниже QUIC v1 Initial-datagram floor (1200 v4 / 1280 v6), чтобы compliant QUIC-клиентов не выбивало с UDP в TCP fallback. Полный контракт описан в [docs/TUN-PMTUD.ru.md](docs/TUN-PMTUD.ru.md).
-
-Для прямых UDP uplink'ов с `transport = "shadowsocks"` действуют те же проверки на границах локального relay:
-
-- `incoming`: relay дропает пакет, если `target + payload` превышает лимит Shadowsocks AEAD payload ещё до шифрования и отправки в uplink
-- `outgoing`: relay дропает пакет, если декодированный ответ от upstream после сборки становится слишком большим для безопасной SOCKS5 UDP datagram перед отправкой клиенту
 
 Дашборды Grafana:
 

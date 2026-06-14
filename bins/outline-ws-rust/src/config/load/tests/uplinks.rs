@@ -27,8 +27,6 @@ fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> 
         vless_xhttp_url: None,
         vless_mode: None,
         link: None,
-        tcp_addr: None,
-        udp_addr: None,
         method: Some(CipherKind::Chacha20IetfPoly1305),
         password: Some("secret".to_string()),
         weight: Some(1.0),
@@ -60,8 +58,6 @@ fn vless_uplink_section(
         vless_xhttp_url: Some(Url::parse(xhttp_url).unwrap()),
         vless_mode: Some(TransportMode::XhttpH1),
         link: None,
-        tcp_addr: None,
-        udp_addr: None,
         method: Some(CipherKind::Chacha20IetfPoly1305),
         password: Some("secret".to_string()),
         weight: Some(1.0),
@@ -87,8 +83,6 @@ fn empty_fallback() -> FallbackSection {
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: None,
-        tcp_addr: None,
-        udp_addr: None,
         method: None,
         password: None,
         fwmark: None,
@@ -119,34 +113,7 @@ fn resolve_and_shuffle(section: UplinkSection) -> Result<UplinkConfig, anyhow::E
 // ── Happy paths ─────────────────────────────────────────────────────────────
 
 #[test]
-fn ws_primary_with_ss_fallback_inherits_cipher_and_password() {
-    let ss_fb = FallbackSection {
-        transport: UplinkTransport::Shadowsocks,
-        tcp_addr: Some("1.2.3.4:8388".parse().unwrap()),
-        udp_addr: Some("1.2.3.4:8389".parse().unwrap()),
-        ..empty_fallback()
-    };
-    let cfg =
-        resolve(ws_uplink_section("edge", "wss://primary.example.com/tcp", vec![ss_fb])).unwrap();
-
-    assert_eq!(cfg.fallbacks.len(), 1);
-    let fb = &cfg.fallbacks[0];
-    assert_eq!(fb.transport, UplinkTransport::Shadowsocks);
-    assert!(
-        matches!(fb.cipher, CipherKind::Chacha20IetfPoly1305),
-        "cipher inherits from parent"
-    );
-    assert_eq!(fb.password, "secret", "password inherits from parent");
-    assert_eq!(fb.fwmark, None, "parent's None fwmark inherited as None");
-    assert!(!fb.ipv6_first, "parent's false ipv6_first inherited");
-    assert_eq!(fb.tcp_addr.as_ref().unwrap().to_string(), "1.2.3.4:8388");
-    assert_eq!(fb.udp_addr.as_ref().unwrap().to_string(), "1.2.3.4:8389");
-    assert!(fb.tcp_ws_url.is_none(), "WS fields nulled for SS fallback");
-    assert!(fb.vless_id.is_none());
-}
-
-#[test]
-fn vless_primary_with_ws_and_ss_fallbacks_inherits_password_and_fwmark() {
+fn vless_primary_with_two_ws_fallbacks_inherits_password_and_fwmark() {
     let ws_fb = FallbackSection {
         transport: UplinkTransport::Ws,
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
@@ -155,16 +122,15 @@ fn vless_primary_with_ws_and_ss_fallbacks_inherits_password_and_fwmark() {
         udp_mode: Some(TransportMode::WsH1),
         ..empty_fallback()
     };
-    let ss_fb = FallbackSection {
-        transport: UplinkTransport::Shadowsocks,
-        tcp_addr: Some("9.9.9.9:443".parse().unwrap()),
-        udp_addr: Some("9.9.9.9:443".parse().unwrap()),
+    let ws_fb_2 = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://ws2.example.com/tcp").unwrap()),
         ..empty_fallback()
     };
     let cfg = resolve(vless_uplink_section(
         "edge",
         "https://cdn.example.com/SECRET/xhttp",
-        vec![ws_fb, ss_fb],
+        vec![ws_fb, ws_fb_2],
     ))
     .unwrap();
 
@@ -178,28 +144,25 @@ fn vless_primary_with_ws_and_ss_fallbacks_inherits_password_and_fwmark() {
     assert!(ws.ipv6_first, "ipv6_first inherited (parent set true)");
     assert!(ws.vless_id.is_none());
 
-    let ss = &cfg.fallbacks[1];
-    assert_eq!(ss.transport, UplinkTransport::Shadowsocks);
-    assert_eq!(ss.password, "secret");
-    assert_eq!(ss.fwmark, Some(99));
+    let ws2 = &cfg.fallbacks[1];
+    assert_eq!(ws2.transport, UplinkTransport::Ws);
+    assert_eq!(ws2.password, "secret");
+    assert_eq!(ws2.fwmark, Some(99));
 }
 
 #[test]
 fn fallback_can_override_inherited_password_and_fwmark() {
-    let ss_fb = FallbackSection {
-        transport: UplinkTransport::Shadowsocks,
-        tcp_addr: Some("9.9.9.9:443".parse().unwrap()),
+    let fb = FallbackSection {
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse("wss://fb.example.com/tcp").unwrap()),
         password: Some("override-secret".to_string()),
         fwmark: Some(7),
         ipv6_first: Some(false),
         ..empty_fallback()
     };
-    let cfg = resolve(vless_uplink_section(
-        "edge",
-        "https://cdn.example.com/SECRET/xhttp",
-        vec![ss_fb],
-    ))
-    .unwrap();
+    let cfg =
+        resolve(vless_uplink_section("edge", "https://cdn.example.com/SECRET/xhttp", vec![fb]))
+            .unwrap();
 
     let fb = &cfg.fallbacks[0];
     assert_eq!(fb.password, "override-secret");
@@ -282,20 +245,6 @@ fn rejects_ws_fallback_missing_tcp_ws_url() {
 }
 
 #[test]
-fn rejects_shadowsocks_fallback_missing_tcp_addr() {
-    let bad = FallbackSection {
-        transport: UplinkTransport::Shadowsocks,
-        // tcp_addr omitted — required
-        ..empty_fallback()
-    };
-    let err =
-        resolve(vless_uplink_section("edge", "https://cdn.example.com/SECRET/xhttp", vec![bad]))
-            .unwrap_err()
-            .to_string();
-    assert!(err.contains("requires `tcp_addr`"), "got: {err}");
-}
-
-#[test]
 fn rejects_vless_fallback_missing_vless_id() {
     let bad = FallbackSection {
         transport: UplinkTransport::Vless,
@@ -311,39 +260,6 @@ fn rejects_vless_fallback_missing_vless_id() {
         err.contains("requires `vless_id`") && err.contains("not inherited"),
         "got: {err}"
     );
-}
-
-#[test]
-fn rejects_ws_fallback_with_cross_family_fields() {
-    let bad = FallbackSection {
-        transport: UplinkTransport::Ws,
-        tcp_ws_url: Some(Url::parse("wss://other.example.com/tcp").unwrap()),
-        // SS-only field on a WS fallback — should be rejected.
-        tcp_addr: Some("1.2.3.4:8388".parse().unwrap()),
-        ..empty_fallback()
-    };
-    let err =
-        resolve(vless_uplink_section("edge", "https://cdn.example.com/SECRET/xhttp", vec![bad]))
-            .unwrap_err()
-            .to_string();
-    assert!(err.contains("must not set `tcp_addr`/`udp_addr`"), "got: {err}");
-}
-
-#[test]
-fn rejects_shadowsocks_fallback_with_websocket_fields() {
-    let bad = FallbackSection {
-        transport: UplinkTransport::Shadowsocks,
-        tcp_addr: Some("1.2.3.4:8388".parse().unwrap()),
-        // WS-only field on an SS fallback — should be rejected.
-        tcp_ws_url: Some(Url::parse("wss://other.example.com/tcp").unwrap()),
-        ..empty_fallback()
-    };
-    let err =
-        resolve(vless_uplink_section("edge", "https://cdn.example.com/SECRET/xhttp", vec![bad]))
-            .unwrap_err()
-            .to_string();
-    assert!(err.contains("must not"), "got: {err}");
-    assert!(err.contains("websocket fields"), "got: {err}");
 }
 
 #[test]

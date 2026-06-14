@@ -9,7 +9,7 @@ use outline_metrics as metrics;
 use outline_transport::{FallbackNotifier, VlessUdpHybridMux, VlessUdpQuicMux, WsFallbackFactory};
 use outline_transport::{
     TransportMode, UdpSessionTransport, UdpWsTransport, VlessUdpDowngradeNotifier,
-    VlessUdpSessionMux, connect_shadowsocks_udp_with_source, global_resume_cache,
+    VlessUdpSessionMux, global_resume_cache,
 };
 use outline_uplink::{
     FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
@@ -151,31 +151,6 @@ async fn dial_udp_fallback(
     };
 
     match fallback.transport {
-        UplinkTransport::Shadowsocks => {
-            let addr = fallback.udp_addr.as_ref().ok_or_else(|| {
-                anyhow!(
-                    "uplink {} fallback (transport=shadowsocks) missing udp_addr",
-                    parent.uplink.name,
-                )
-            })?;
-            let socket = connect_shadowsocks_udp_with_source(
-                cache,
-                addr,
-                fallback.fwmark,
-                fallback.ipv6_first,
-                source,
-            )
-            .await
-            .with_context(|| format!("fallback udp dial to {addr} failed"))?;
-            let transport =
-                UdpWsTransport::from_socket(socket, fallback.cipher, &fallback.password, source)
-                    .map(|t| t.with_uplink_binding(binding()))
-                    .map(UdpSessionTransport::Ss)?;
-            uplinks
-                .report_connection_latency(parent.index, TransportKind::Udp, dial_started.elapsed())
-                .await;
-            Ok(transport)
-        },
         UplinkTransport::Ws => {
             let url = fallback.udp_ws_url.as_ref().ok_or_else(|| {
                 anyhow!("uplink {} fallback (transport=ws) missing udp_ws_url", parent.uplink.name,)

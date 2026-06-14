@@ -34,8 +34,6 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             vless_ws_url,
             vless_xhttp_url,
             vless_mode,
-            tcp_addr,
-            udp_addr,
             cipher,
             password,
             weight,
@@ -76,8 +74,6 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             vless_ws_url,
             vless_xhttp_url,
             vless_mode,
-            tcp_addr,
-            udp_addr,
             vless_id,
             link,
         })?;
@@ -94,8 +90,6 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             vless_ws_url: wire.vless_ws_url,
             vless_xhttp_url: wire.vless_xhttp_url,
             vless_mode: wire.vless_mode,
-            tcp_addr: wire.tcp_addr,
-            udp_addr: wire.udp_addr,
             cipher: credentials.cipher,
             password: credentials.password,
             weight,
@@ -178,8 +172,6 @@ fn primary_to_fallback_shape(uplink: &UplinkConfig) -> FallbackTransport {
         vless_xhttp_url: uplink.vless_xhttp_url.clone(),
         vless_mode: uplink.vless_mode,
         vless_id: uplink.vless_id,
-        tcp_addr: uplink.tcp_addr.clone(),
-        udp_addr: uplink.udp_addr.clone(),
         cipher: uplink.cipher,
         password: uplink.password.clone(),
         fwmark: uplink.fwmark,
@@ -201,8 +193,6 @@ fn apply_fallback_shape_to_primary(uplink: &mut UplinkConfig, wire: FallbackTran
     uplink.vless_xhttp_url = wire.vless_xhttp_url;
     uplink.vless_mode = wire.vless_mode;
     uplink.vless_id = wire.vless_id;
-    uplink.tcp_addr = wire.tcp_addr;
-    uplink.udp_addr = wire.udp_addr;
     uplink.cipher = wire.cipher;
     uplink.password = wire.password;
     uplink.fwmark = wire.fwmark;
@@ -225,7 +215,7 @@ pub(super) fn load_uplinks(
     let uplinks = outline.and_then(|o| o.uplinks.as_ref()).ok_or_else(|| {
         anyhow!(
             "no uplink configured: add an [outline] section (or at least `password` + \
-             `tcp_ws_url`/`tcp_addr`), use `[[uplink_group]]`, or pass CLI overrides. \
+             `tcp_ws_url`), use `[[uplink_group]]`, or pass CLI overrides. \
              A reverse-tunnel deployment still needs at least one forward uplink group \
              (a [reverse_listener] alone is not enough to bring the proxy up)"
         )

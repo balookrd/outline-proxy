@@ -12,8 +12,8 @@ use tracing::debug;
 use outline_metrics as metrics;
 use outline_transport::{
     DialNetworkOptions, DialResumeOptions, TransportDialOptions, TransportOperation,
-    TransportStream, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux,
-    connect_shadowsocks_udp_with_source, connect_transport, global_resume_cache,
+    TransportStream, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, connect_transport,
+    global_resume_cache,
 };
 
 use crate::config::UplinkTransport;
@@ -365,12 +365,6 @@ impl UplinkManager {
                     .context("failed to send target address over ss-quic")?;
                 (outline_transport::TcpWriter::QuicSs(w), outline_transport::TcpReader::QuicSs(r))
             },
-            UplinkTransport::Shadowsocks => {
-                bail!(
-                    "uplink {} uses direct shadowsocks transport, not compatible with quic mode",
-                    uplink.name
-                );
-            },
         };
         self.report_connection_latency(candidate.index, TransportKind::Tcp, started.elapsed())
             .await;
@@ -395,38 +389,6 @@ impl UplinkManager {
                 candidate.uplink.name.as_str(),
             )
         };
-        if candidate.uplink.transport == UplinkTransport::Shadowsocks {
-            metrics::record_warm_standby_acquire(
-                "udp",
-                &self.inner.group_name,
-                &candidate.uplink.name,
-                "miss",
-            );
-            let udp_addr = candidate.uplink.udp_addr.as_ref().ok_or_else(|| {
-                anyhow!("udp_addr is not configured for uplink {}", candidate.uplink.name)
-            })?;
-            let started = Instant::now();
-            let socket = connect_shadowsocks_udp_with_source(
-                cache,
-                udp_addr,
-                candidate.uplink.fwmark,
-                candidate.uplink.ipv6_first,
-                source,
-            )
-            .await
-            .with_context(|| TransportOperation::Connect { target: format!("to {}", udp_addr) })?;
-            self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
-                .await;
-            return UdpWsTransport::from_socket(
-                socket,
-                candidate.uplink.cipher,
-                &candidate.uplink.password,
-                source,
-            )
-            .map(|t| t.with_uplink_binding(binding()))
-            .map(UdpSessionTransport::Ss);
-        }
-
         if candidate.uplink.transport == UplinkTransport::Vless {
             // VLESS UDP has no warm-standby pool — each destination opens its
             // own session inside the mux on first packet, so there is no

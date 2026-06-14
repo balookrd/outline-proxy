@@ -16,16 +16,16 @@ name = "core"
 [[outline.uplinks]]
 name = "u1"
 group = "core"
-transport = "shadowsocks"
-tcp_addr = "1.2.3.4:8388"
+transport = "ws"
+tcp_ws_url = "wss://1.2.3.4:8388/tcp"
 method = "chacha20-ietf-poly1305"
 password = "secret-password-1"
 
 [[outline.uplinks]]
 name = "u2"
 group = "core"
-transport = "shadowsocks"
-tcp_addr = "5.6.7.8:8388"
+transport = "ws"
+tcp_ws_url = "wss://5.6.7.8:8388/tcp"
 method = "chacha20-ietf-poly1305"
 password = "secret-password-2"
 "#
@@ -55,8 +55,8 @@ fn insert_appends_uplink_table() {
     let arr = get_or_init_outline_uplinks(&mut doc);
     let payload = UplinkPayload {
         name: Some("u3".into()),
-        transport: Some("shadowsocks".into()),
-        tcp_addr: Some("9.9.9.9:8388".into()),
+        transport: Some("ws".into()),
+        tcp_ws_url: Some("wss://9.9.9.9:8388/tcp".into()),
         method: Some("chacha20-ietf-poly1305".into()),
         password: Some("secret-password-3".into()),
         ..Default::default()
@@ -115,15 +115,15 @@ fn enrich_round_trip_returns_uplink_fields() {
     let json = table_to_json(arr.get(idx).unwrap()).expect("table_to_json");
     assert_eq!(json["name"], "u1");
     assert_eq!(json["group"], "core");
-    assert_eq!(json["tcp_addr"], "1.2.3.4:8388");
+    assert_eq!(json["tcp_ws_url"], "wss://1.2.3.4:8388/tcp");
 }
 
 #[test]
 fn payload_round_trip_validates_as_section() {
     let payload = UplinkPayload {
         name: Some("u9".into()),
-        transport: Some("shadowsocks".into()),
-        tcp_addr: Some("1.1.1.1:8388".into()),
+        transport: Some("ws".into()),
+        tcp_ws_url: Some("wss://1.1.1.1:8388/tcp".into()),
         method: Some("chacha20-ietf-poly1305".into()),
         password: Some("some-long-password".into()),
         ..Default::default()
@@ -251,11 +251,11 @@ fn validation_rejects_link_alongside_explicit_vless_fields() {
 }
 
 #[test]
-fn validation_rejects_missing_password_for_shadowsocks() {
+fn validation_rejects_missing_password_for_ws() {
     let payload = UplinkPayload {
         name: Some("u9".into()),
-        transport: Some("shadowsocks".into()),
-        tcp_addr: Some("1.1.1.1:8388".into()),
+        transport: Some("ws".into()),
+        tcp_ws_url: Some("wss://1.1.1.1:8388/tcp".into()),
         method: Some("chacha20-ietf-poly1305".into()),
         // password intentionally missing
         ..Default::default()
@@ -286,9 +286,9 @@ fn payload_with_fallbacks_round_trips_through_section() {
                 ..Default::default()
             },
             FallbackPayload {
-                transport: "shadowsocks".into(),
-                tcp_addr: Some("1.2.3.4:8388".into()),
-                udp_addr: Some("1.2.3.4:8389".into()),
+                transport: "ws".into(),
+                tcp_ws_url: Some("wss://ws2.example.com/tcp".into()),
+                udp_ws_url: Some("wss://ws2.example.com/udp".into()),
                 ..Default::default()
             },
         ]),
@@ -299,7 +299,7 @@ fn payload_with_fallbacks_round_trips_through_section() {
     assert_eq!(fbs.len(), 2);
     assert_eq!(format!("{:?}", fbs[0].transport), "Ws");
     assert_eq!(fbs[0].tcp_ws_url.as_ref().unwrap().as_str(), "wss://ws.example.com/tcp");
-    assert_eq!(format!("{:?}", fbs[1].transport), "Shadowsocks");
+    assert_eq!(format!("{:?}", fbs[1].transport), "Ws");
     // Validation walks the same pipeline as the TOML loader.
     validate_uplink_section(&section, 0).unwrap();
 }
@@ -359,8 +359,8 @@ method = "chacha20-ietf-poly1305"
 password = "some-long-password"
 
 [[outline.uplinks.fallbacks]]
-transport = "shadowsocks"
-tcp_addr = "old.example.com:8388"
+transport = "ws"
+tcp_ws_url = "wss://old.example.com:8388/tcp"
 "#
     .parse::<DocumentMut>()
     .unwrap();
@@ -405,8 +405,8 @@ method = "chacha20-ietf-poly1305"
 password = "some-long-password"
 
 [[outline.uplinks.fallbacks]]
-transport = "shadowsocks"
-tcp_addr = "old.example.com:8388"
+transport = "ws"
+tcp_ws_url = "wss://old.example.com:8388/tcp"
 "#
     .parse::<DocumentMut>()
     .unwrap();
@@ -442,8 +442,8 @@ method = "chacha20-ietf-poly1305"
 password = "some-long-password"
 
 [[outline.uplinks.fallbacks]]
-transport = "shadowsocks"
-tcp_addr = "kept.example.com:8388"
+transport = "ws"
+tcp_ws_url = "wss://kept.example.com:8388/tcp"
 "#
     .parse::<DocumentMut>()
     .unwrap();

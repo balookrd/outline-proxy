@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 use outline_transport::{
     DialNetworkOptions, DialResumeOptions, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter,
     TcpWriter, TransportDialOptions, UplinkConnectionBinding, UpstreamTransportGuard,
-    connect_shadowsocks_tcp_with_source, connect_transport, global_resume_cache,
+    connect_transport, global_resume_cache,
 };
 use outline_uplink::{
     FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
@@ -20,7 +20,6 @@ pub(super) const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 pub(super) enum TcpUplinkSource {
     Standby,
     FreshDial,
-    DirectSocket,
 }
 
 pub(super) struct ConnectedTcpUplink {
@@ -279,32 +278,6 @@ async fn connect_tcp_uplink_primary(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<ConnectedTcpUplink> {
-    let cache = uplinks.dns_cache();
-    if candidate.uplink.transport == UplinkTransport::Shadowsocks {
-        let stream = connect_shadowsocks_tcp_with_source(
-            cache,
-            candidate
-                .uplink
-                .tcp_addr
-                .as_ref()
-                .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", candidate.uplink.name))?,
-            candidate.uplink.fwmark,
-            candidate.uplink.ipv6_first,
-            "socks_tcp",
-        )
-        .await?;
-        let setup = WireSetup::from_uplink(&candidate.uplink);
-        let binding = tcp_binding(uplinks, setup.name);
-        let (writer, reader) =
-            do_tcp_ss_setup_socket(stream, &setup, target, "socks_tcp", binding).await?;
-        return Ok(ConnectedTcpUplink {
-            writer,
-            reader,
-            source: TcpUplinkSource::DirectSocket,
-            wire_index: 0,
-        });
-    }
-
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
 
     // Variant A: try a standby pool connection first.  If it turns out to be
@@ -398,9 +371,8 @@ pub(super) async fn connect_tcp_uplink_fresh(
 /// at its WS branch with one restriction and one opt-in:
 ///
 /// * WS-family carriers only (`UplinkTransport::Ws` for SS-WS,
-///   `UplinkTransport::Vless` for VLESS-WS). Direct-socket
-///   Shadowsocks bypasses the WS layer entirely and raw-QUIC has
-///   no Ack-Prefix support in v1.1; the orchestrator degrades to
+///   `UplinkTransport::Vless` for VLESS-WS). raw-QUIC has no
+///   Ack-Prefix support in v1.1; the orchestrator degrades to
 ///   "no retry" for those uplinks rather than redialling a path
 ///   that would not give us the offset header.
 /// * No raw-QUIC fallback — even when the uplink is configured for
@@ -572,46 +544,6 @@ pub(super) async fn connect_tcp_fallback_fresh(
     let source = options.source;
     let dial_started = std::time::Instant::now();
 
-    if fallback.transport == UplinkTransport::Shadowsocks {
-        let addr = fallback.tcp_addr.as_ref().ok_or_else(|| {
-            anyhow!(
-                "uplink {} fallback (transport=shadowsocks) missing tcp_addr",
-                parent.uplink.name,
-            )
-        })?;
-        let stream = connect_shadowsocks_tcp_with_source(
-            cache,
-            addr,
-            fallback.fwmark,
-            fallback.ipv6_first,
-            source,
-        )
-        .await?;
-        let binding = tcp_binding(uplinks, setup.name);
-        let (writer, reader) =
-            do_tcp_ss_setup_socket(stream, &setup, target, source, binding).await?;
-        // Feed the dial latency into the uplink's RTT EWMA so score-based
-        // selection between uplinks reflects this wire's real quality
-        // when it is the sticky-active one. See doc comment above on the
-        // shared-per-transport EWMA tradeoff.
-        uplinks
-            .report_connection_latency(parent.index, TransportKind::Tcp, dial_started.elapsed())
-            .await;
-        debug!(
-            uplink = %parent.uplink.name,
-            target = %target,
-            transport = "shadowsocks",
-            wire = "fallback",
-            "opened fallback TCP uplink",
-        );
-        return Ok(ConnectedTcpUplink {
-            writer,
-            reader,
-            source: TcpUplinkSource::DirectSocket,
-            wire_index,
-        });
-    }
-
     // WS / VLESS dial — both ride the same WS-family primitives. Mode is
     // taken from the fallback's configured value (no per-fallback downgrade
     // tracking yet — Phase 2 follow-up).
@@ -620,8 +552,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
     // the wire), so the X-Outline-Resume token issued for a primary dial
     // is presented on the fallback dial too — server-side re-attaches the
     // upstream session, enabling handover-via-resume across wire switches
-    // without renegotiating the upstream conversation. SS fallback has no
-    // WS layer and no resume mechanism; it always dials fresh.
+    // without renegotiating the upstream conversation.
     let url = fallback.tcp_dial_url().ok_or_else(|| {
         anyhow!(
             "uplink {} fallback ({}) missing TCP dial URL",
@@ -815,29 +746,6 @@ async fn do_tcp_ss_setup(
         .with_expect_ack_prefix(expect_ack_prefix)
         .with_expect_downlink_replay(expect_downlink_replay);
     send_initial_ss_target(&mut writer, setup, target, "ws").await?;
-    Ok((writer, reader))
-}
-
-async fn do_tcp_ss_setup_socket(
-    stream: tokio::net::TcpStream,
-    setup: &WireSetup<'_>,
-    target: &TargetAddr,
-    source: &'static str,
-    binding: UplinkConnectionBinding,
-) -> Result<(TcpWriter, TcpReader)> {
-    let (reader_half, writer_half) = stream.into_split();
-    let master_key = setup.cipher.derive_master_key(setup.password)?;
-    let lifetime = UpstreamTransportGuard::new_with_uplink(source, "tcp", binding);
-    let writer = TcpShadowsocksWriter::connect_socket(
-        writer_half,
-        setup.cipher,
-        &master_key,
-        Arc::clone(&lifetime),
-    )?;
-    let reader = TcpShadowsocksReader::new_socket(reader_half, setup.cipher, &master_key, lifetime);
-    let mut writer = TcpWriter::Socket(writer);
-    let reader = TcpReader::Socket(reader).with_request_salt(writer.request_salt());
-    send_initial_ss_target(&mut writer, setup, target, "socket").await?;
     Ok((writer, reader))
 }
 

@@ -99,6 +99,8 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 ### Removed
 
+- **Client-side direct/plain Shadowsocks socket uplink removed (`transport = "shadowsocks"`).** The `tcp_addr` / `udp_addr` config fields (top-level, `[outline]`, `[[outline.uplinks]]`, and `[[outline.uplinks.fallbacks]]`), their `--tcp-addr` / `--udp-addr` CLI flags, the `OUTLINE_TCP_ADDR` / `OUTLINE_UDP_ADDR` environment variables, and the `shadowsocks` value of `transport` are all gone, along with the matching control-API payload fields and dashboard surface. Bare Shadowsocks over a plain TCP/UDP socket is fingerprintable by entropy-based DPI (the server-side plain-Shadowsocks listener was removed earlier); Shadowsocks-over-WebSocket (`transport = "ws"`, the `tcp_ws_url` / `udp_ws_url` fields) and VLESS are unaffected and remain the supported transports, and SS-AEAD encryption is retained for the SS-over-WebSocket path. A config that still uses `transport = "shadowsocks"` or `tcp_addr` / `udp_addr` now fails to load with an explicit error.
+
 - **Legacy top-level config migration removed (`--migrate-config` + auto-migrate).** The one-shot `--migrate-config` CLI flag and the on-load auto-migration that rewrote the pre-`[outline]` flat layout (top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]`) into the `[outline]` section (`config/migrate.rs`) are gone. Runtime backwards-compatibility is unchanged: the flat layout is still accepted in memory via the compat shim and logs a deprecation warning — only the file-rewriting migration path was removed. Convert the config to `[outline]` once (the deprecation warning names the fields) to drop the warning.
 
 ## [1.4.4] - 2026-05-07

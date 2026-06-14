@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use url::Url;
 
-use outline_transport::{ServerAddr, TransportMode};
+use outline_transport::TransportMode;
 use outline_uplink::{LoadBalancingMode, RoutingScope, UplinkTransport};
 use shadowsocks_crypto::CipherKind;
 
@@ -28,8 +28,6 @@ pub(crate) struct ConfigFile {
     /// `vless_mode`. Mutually exclusive with explicitly-set `vless_*`
     /// fields. See docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs".
     pub(super) link: Option<String>,
-    pub(super) tcp_addr: Option<ServerAddr>,
-    pub(super) udp_addr: Option<ServerAddr>,
     pub(super) method: Option<CipherKind>,
     pub(super) password: Option<String>,
     pub(super) fwmark: Option<u32>,
@@ -169,8 +167,6 @@ pub(crate) struct OutlineSection {
     /// VLESS share-link URI. Same semantics as `ConfigFile::link`; provided
     /// here so the inline-uplink shape can carry a one-line VLESS config.
     pub(super) link: Option<String>,
-    pub(super) tcp_addr: Option<ServerAddr>,
-    pub(super) udp_addr: Option<ServerAddr>,
     pub(super) method: Option<CipherKind>,
     pub(super) password: Option<String>,
     pub(super) fwmark: Option<u32>,
@@ -287,8 +283,6 @@ pub(crate) struct UplinkSection {
     /// `vless_mode`. Mutually exclusive with explicitly-set `vless_*`
     /// fields. See docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs".
     pub(crate) link: Option<String>,
-    pub(crate) tcp_addr: Option<ServerAddr>,
-    pub(crate) udp_addr: Option<ServerAddr>,
     pub(crate) method: Option<CipherKind>,
     pub(crate) password: Option<String>,
     pub(crate) weight: Option<f64>,
@@ -389,8 +383,6 @@ pub(crate) struct FallbackSection {
     pub(crate) vless_ws_url: Option<Url>,
     pub(crate) vless_xhttp_url: Option<Url>,
     pub(crate) vless_mode: Option<TransportMode>,
-    pub(crate) tcp_addr: Option<ServerAddr>,
-    pub(crate) udp_addr: Option<ServerAddr>,
     pub(crate) method: Option<CipherKind>,
     pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use url::Url;
 
-use outline_transport::{ServerAddr, TransportMode};
+use outline_transport::TransportMode;
 use outline_uplink::UplinkTransport;
 use shadowsocks_crypto::CipherKind;
 
@@ -38,12 +38,6 @@ pub struct Args {
 
     #[arg(long, env = "OUTLINE_UDP_WS_URL")]
     pub udp_ws_url: Option<Url>,
-
-    #[arg(long, env = "OUTLINE_TCP_ADDR")]
-    pub tcp_addr: Option<ServerAddr>,
-
-    #[arg(long, env = "OUTLINE_UDP_ADDR")]
-    pub udp_addr: Option<ServerAddr>,
 
     #[arg(
         long,

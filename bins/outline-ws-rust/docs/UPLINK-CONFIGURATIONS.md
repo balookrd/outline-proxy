@@ -1,6 +1,6 @@
 # Uplink Configurations and Fallback Behavior
 
-Defines the six supported `[[outline.uplinks]]` shapes, with a minimal
+Defines the five supported `[[outline.uplinks]]` shapes, with a minimal
 config block and the dial-time fallback chain for each.
 
 Each fallback step fires only when the previous step returns an error
@@ -15,27 +15,7 @@ configured mode.
 
 ---
 
-## 1. Native Shadowsocks
-
-Direct TCP / UDP sockets to the SS server. No HTTP, no WebSocket, no QUIC.
-
-```toml
-[[outline.uplinks]]
-name = "ss-native"
-group = "main"
-transport = "shadowsocks"
-tcp_addr = "ss.example.com:8388"
-udp_addr = "ss.example.com:8388"
-method = "chacha20-ietf-poly1305"
-password = "Secret0"
-weight = 1.0
-```
-
-- **TCP fallback:** none. Dial failure surfaces as an uplink failure.
-- **UDP fallback:** none.
-- **Resume:** not used (SS over plain sockets has no session-id concept).
-
-## 2. Shadowsocks over raw QUIC
+## 1. Shadowsocks over raw QUIC
 
 `tcp_mode = "quic"` selects the raw-QUIC carrier (ALPN `ss`). One QUIC
 bidi per SS-TCP session; SS-UDP rides QUIC datagrams 1:1 with SS-AEAD
@@ -71,7 +51,7 @@ weight = 1.0
   Session ID survives the carrier switch — a parked upstream
   re-attaches across the QUIC→WS pivot.
 
-## 3. Shadowsocks over WebSocket (H3)
+## 2. Shadowsocks over WebSocket (H3)
 
 WebSocket carrier on HTTP/1.1, /2, or /3. `ws_h3` (alias `h3`) is
 recommended when the server supports it — H3 dials are a single 1-RTT
@@ -104,7 +84,7 @@ weight = 1.0
   H3→H2→H1 fallback inside `connect_transport` carries the
   same `resume_request` token across all three carriers.
 
-## 4. VLESS over raw QUIC
+## 3. VLESS over raw QUIC
 
 `vless_mode = "quic"` selects raw QUIC with ALPN `vless`. Multiple TCP
 and UDP sessions to different targets share a single QUIC connection;
@@ -139,7 +119,7 @@ weight = 1.0
   participate in resume (the hybrid mux re-creates per-target sessions
   on the WS side after the pivot).
 
-## 5. VLESS over WebSocket (H3)
+## 4. VLESS over WebSocket (H3)
 
 WebSocket carrier with VLESS framing. The VLESS server exposes a single
 WS path (`ws_path_vless`) shared by TCP and UDP — VLESS UDP rides the
@@ -165,7 +145,7 @@ weight = 1.0
   WS session, so it follows TCP's reconnects implicitly (no separate
   UDP resume token).
 
-## 6. VLESS over XHTTP (H3)
+## 5. VLESS over XHTTP (H3)
 
 `vless_mode = "xhttp_h3"` selects XHTTP packet-up over QUIC + HTTP/3.
 The driver opens one long-lived GET (downlink) and pipelines POSTs
@@ -227,10 +207,10 @@ CDN / proxy intermediaries to rely on. As a result:
   bail in the inner h1 driver is preserved for direct callers that
   bypass the public `connect_xhttp` entry point.
 
-## 7. VLESS share-link URIs
+## 6. VLESS share-link URIs
 
-The five VLESS shapes above (sections 4–6, plus the `ws_h2` / `ws_h1`
-variants of section 5) can also be configured through a single
+The five VLESS shapes above (sections 3–5, plus the `ws_h2` / `ws_h1`
+variants of section 4) can also be configured through a single
 `vless://UUID@HOST:PORT?...#NAME` URI — the share-link format used by
 Xray / V2Ray clients. Set the `link` field instead of writing the
 `vless_id` / `vless_*_url` / `vless_mode` triple by hand:
@@ -373,7 +353,7 @@ supported.
 
 **1. Inline single-uplink shorthand.** Writing `transport`, `tcp_ws_url`,
 `udp_ws_url`, `vless_ws_url`, `vless_xhttp_url`, `tcp_mode` / `udp_mode` /
-`vless_mode`, `link`, `tcp_addr`, `udp_addr`, `method`, `password`,
+`vless_mode`, `link`, `method`, `password`,
 `fwmark`, `ipv6_first` directly under `[outline]` (or — for backward
 compatibility — at the top level) declares a single implicit uplink. CLI
 flags (`--tcp-ws-url`, `--password`, …) target this shape. Convenient for
@@ -382,7 +362,7 @@ trivial deployments; not used together with `[[outline.uplinks]]` /
 
 ```toml
 [outline]
-transport = "ws"                  # "ws" (default; alias "websocket") | "shadowsocks" | "vless"
+transport = "ws"                  # "ws" (default; alias "websocket") | "vless"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 udp_ws_url = "wss://example.com/SECRET/udp"
 tcp_mode = "h3"
@@ -396,8 +376,7 @@ password = "Secret0"
 | value         | wire shape                                                                       |
 |---------------|----------------------------------------------------------------------------------|
 | `ws`          | Shadowsocks AEAD framing inside a WebSocket carrier (default; alias `websocket`) |
-| `shadowsocks` | Plain Shadowsocks over raw TCP/UDP sockets — see § 1                             |
-| `vless`       | VLESS over WebSocket or XHTTP (h1/h2/h3) — see §§ 4–7                            |
+| `vless`       | VLESS over WebSocket or XHTTP (h1/h2/h3) — see §§ 3–6                            |
 
 **2. Multi-uplink + groups (production shape).** `[[outline.uplinks]]`
 declares uplinks; `[[uplink_group]]` (top-level, *not* nested under
@@ -609,10 +588,9 @@ Mid-session retry (Ack-Prefix Protocol v1):
   replay the downlink direction. The v2 Symmetric Downlink Replay
   protocol (see below) closes that gap.
 - Gated to WS-family carriers — SS-WS (`transport = "ws"`) and
-  VLESS-WS (`transport = "vless"`). Raw QUIC and direct-socket
-  Shadowsocks are no-ops for retry in v1; the relay falls back to
-  the legacy "single shot, propagate error" behaviour with no
-  observable change.
+  VLESS-WS (`transport = "vless"`). Raw QUIC is a no-op for retry
+  in v1; the relay falls back to the legacy "single shot, propagate
+  error" behaviour with no observable change.
 - The redial dials the **wire the manager currently considers
   active** for this transport (`active_wire`), not unconditionally
   the primary. When an earlier primary failure has advanced
@@ -674,8 +652,8 @@ Symmetric Downlink Replay (v2):
   `"hard"` drops the session immediately. Use the same value as
   for the v1 buffer-overflow case to keep policy consistent.
 - Same eligibility gate as v1 — SS-WS / VLESS-WS / VLESS-XHTTP
-  carriers; raw QUIC and direct-socket Shadowsocks are out of
-  scope (no HTTP-layer carrier for the v2 negotiation).
+  carriers; raw QUIC is out of scope (no HTTP-layer carrier for the
+  v2 negotiation).
 
 Example — `[outline.load_balancing]` for the inline shape, and the same
 fields lifted onto a group:
@@ -1069,8 +1047,8 @@ between forms.
 The active profile is computed in the snapshot builder by running
 `select_with_strategy(primary_dial_url, effective_strategy)` —
 `tcp_dial_url()` first, falling back to `udp_dial_url()` for
-UDP-only uplinks, and skipped entirely for plain Shadowsocks
-uplinks (no URL → no profile). Surfaced as
+UDP-only uplinks, and skipped entirely for any uplink with no
+dial URL (no URL → no profile). Surfaced as
 `UplinkSnapshot::fingerprint_profile_name` and forwarded through
 the topology JSON as `fingerprint_profile_name` (omitted when
 absent).
@@ -1125,7 +1103,7 @@ A single `[[outline.uplinks]]` entry can carry an ordered list of
 transport on this uplink fails to dial. The motivating use-case is a
 VLESS endpoint that gets blocked at the network path: instead of
 demoting the whole uplink and failing over to a different one in the
-group, the loop falls through to a Shadowsocks or WS wire on the
+group, the loop falls through to a WS or VLESS wire on the
 **same** uplink, keeping the operator's identity / weight / group
 attribution intact.
 
@@ -1151,9 +1129,10 @@ password        = "BASE64=="
   # are inherited from the parent uplink unless overridden here.
 
   [[outline.uplinks.fallbacks]]
-  transport   = "shadowsocks"
-  tcp_addr    = "1.2.3.4:8388"
-  udp_addr    = "1.2.3.4:8389"
+  transport       = "vless"
+  vless_ws_url    = "wss://vless.example.com/SECRET/vless"
+  vless_mode      = "ws_h2"
+  vless_id        = "11111111-2222-3333-4444-555555555555"
 ```
 
 ### Fields
@@ -1164,10 +1143,9 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
 
 | Field | Required for | Notes |
 |---|---|---|
-| `transport` | always | `ws` / `shadowsocks` / `vless`. **No uniqueness restriction** — same-transport-as-parent and duplicate-transport entries are explicitly allowed. The most common cross-family shape is a VLESS primary on `xhttp_h*` with a VLESS fallback on `ws_h*` (same `transport = "vless"`, different carrier family, different dial URL); two SS fallbacks at distinct hosts as belt-and-suspenders also work. The dial loop and per-wire mode tracking treat each fallback as its own wire regardless of `transport`. |
+| `transport` | always | `ws` / `vless`. **No uniqueness restriction** — same-transport-as-parent and duplicate-transport entries are explicitly allowed. The most common cross-family shape is a VLESS primary on `xhttp_h*` with a VLESS fallback on `ws_h*` (same `transport = "vless"`, different carrier family, different dial URL); two VLESS fallbacks at distinct hosts as belt-and-suspenders also work. The dial loop and per-wire mode tracking treat each fallback as its own wire regardless of `transport`. |
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ws"` | `tcp_ws_url` mandatory; `udp_ws_url` optional (UDP fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws/quic → `vless_ws_url`). `vless_id` is per-wire-credential and **not** inherited from the parent — different VLESS endpoints use different uuids by definition. |
-| `tcp_addr`, `udp_addr` | `transport = "shadowsocks"` | `tcp_addr` mandatory; `udp_addr` optional. |
 | `cipher`, `password` | inherited | Default to the parent uplink's value. Override here to dial a fallback that uses a different shared secret. |
 | `fwmark`, `ipv6_first`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. |
 
@@ -1323,8 +1301,8 @@ Semantics:
   (caps the wire one rank lower: `ws_h3 → ws_h2 → ws_h1`,
   `xhttp_h3 → xhttp_h2 → xhttp_h1`) rather than the per-wire
   advance counter. Only when the wire reaches `ws_h1` / `xhttp_h1`
-  (or sits on a family with no descent stack: Shadowsocks direct
-  sockets, raw QUIC ALPN cases) does the next failure on the
+  (or sits on a family with no descent stack: raw QUIC ALPN
+  cases) does the next failure on the
   active wire trigger the actual wire-rotation step. This gives
   the operator's `min_failures × carrier_ranks` budget on each
   wire before rotating to the next one — matching the legacy
@@ -1356,7 +1334,7 @@ Semantics:
 When to use it:
 
 - You have several near-equivalent fallback endpoints (multiple
-  CDNs, multiple SNIs to the same upstream, mirror Shadowsocks
+  CDNs, multiple SNIs to the same upstream, mirror upstream
   servers) and want different process restarts / replicas to
   spread load across them without the leftmost entry always taking
   the first hit.
@@ -1507,8 +1485,8 @@ mode-downgrade cap) but no longer changes `active_wire`.
   primary fails presents that token on the fallback dial; the
   server-side resume mechanism re-attaches the upstream session.
   Works for any combination where both wires carry the WS-resume
-  header (WS, VLESS-WS, VLESS-XHTTP). Shadowsocks fallback has no WS
-  layer and dials fresh — the user-visible session restart there is
+  header (WS, VLESS-WS, VLESS-XHTTP). A raw-QUIC fallback wire has no
+  WS layer and dials fresh — the user-visible session restart there is
   unavoidable.
 
 #### Liveness override
@@ -1602,8 +1580,8 @@ mode-downgrade cap) but no longer changes `active_wire`.
 
 - The UDP candidate filter (`supports_transport_for_scope`) consults
   `UplinkConfig::supports_udp_any()` so an uplink whose primary is
-  TCP-only (e.g. SS without `udp_addr`) but whose fallback is
-  UDP-capable still shows up for UDP dispatch.
+  TCP-only (e.g. a WS uplink with no `udp_ws_url`) but whose
+  fallback is UDP-capable still shows up for UDP dispatch.
 
 #### VLESS-fallback wire types
 
@@ -1644,8 +1622,8 @@ The soonest `notAfter` across an uplink's endpoints is surfaced two ways:
 
 - **Prometheus**: `outline_ws_rust_uplink_cert_expiry_timestamp_seconds{group,uplink}`
   — the expiry as a Unix timestamp in seconds. Absent until the first
-  check completes and for uplinks with no TLS endpoint (plain
-  Shadowsocks). Alert with your own threshold, e.g.
+  check completes and for uplinks with no TLS endpoint. Alert with
+  your own threshold, e.g.
   `outline_ws_rust_uplink_cert_expiry_timestamp_seconds - time() < 14 * 86400`.
 - **Dashboard**: the uplink's Status cell shows an amber `⚠ cert Nd` chip
   when the certificate expires within 14 days and a red `⚠ cert expired`

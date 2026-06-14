@@ -82,7 +82,7 @@ pub(super) fn one_step_down(failed: TransportMode) -> Option<TransportMode> {
 /// the per-wire failure streak, so the wire never advances away from
 /// h3 / h2 before its own carrier stack has been walked down to
 /// h1. Once the wire is at h1 (or the carrier family doesn't have a
-/// downgrade stack at all, e.g. Shadowsocks direct sockets), failures
+/// downgrade stack at all, e.g. a raw-QUIC wire), failures
 /// resume their normal role of driving wire-rotation.
 ///
 /// Modes outside the Ws / Xhttp families never enter the downgrade

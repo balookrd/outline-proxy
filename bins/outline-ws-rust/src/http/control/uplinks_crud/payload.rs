@@ -28,8 +28,6 @@ pub(crate) struct UplinkPayload {
     /// where the field is commonly named that way.
     #[serde(alias = "share_link")]
     pub(crate) link: Option<String>,
-    pub(crate) tcp_addr: Option<String>,
-    pub(crate) udp_addr: Option<String>,
     pub(crate) method: Option<String>,
     pub(crate) password: Option<String>,
     pub(crate) weight: Option<f64>,
@@ -65,8 +63,6 @@ pub(crate) struct FallbackPayload {
     pub(crate) vless_ws_url: Option<String>,
     pub(crate) vless_xhttp_url: Option<String>,
     pub(crate) vless_mode: Option<String>,
-    pub(crate) tcp_addr: Option<String>,
-    pub(crate) udp_addr: Option<String>,
     pub(crate) method: Option<String>,
     pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,
@@ -178,8 +174,6 @@ pub(super) fn payload_to_table(payload: &UplinkPayload) -> Table {
     set_str(&mut tbl, "vless_xhttp_url", payload.vless_xhttp_url.as_deref());
     set_str(&mut tbl, "vless_mode", payload.vless_mode.as_deref());
     set_str(&mut tbl, "link", payload.link.as_deref());
-    set_str(&mut tbl, "tcp_addr", payload.tcp_addr.as_deref());
-    set_str(&mut tbl, "udp_addr", payload.udp_addr.as_deref());
     set_str(&mut tbl, "method", payload.method.as_deref());
     set_str(&mut tbl, "password", payload.password.as_deref());
     if let Some(w) = payload.weight {
@@ -219,8 +213,6 @@ fn fallbacks_to_array(fallbacks: &[FallbackPayload]) -> ArrayOfTables {
         set_str(&mut sub, "vless_ws_url", fb.vless_ws_url.as_deref());
         set_str(&mut sub, "vless_xhttp_url", fb.vless_xhttp_url.as_deref());
         set_str(&mut sub, "vless_mode", fb.vless_mode.as_deref());
-        set_str(&mut sub, "tcp_addr", fb.tcp_addr.as_deref());
-        set_str(&mut sub, "udp_addr", fb.udp_addr.as_deref());
         set_str(&mut sub, "method", fb.method.as_deref());
         set_str(&mut sub, "password", fb.password.as_deref());
         if let Some(fw) = fb.fwmark {
@@ -270,12 +262,6 @@ pub(super) fn merge_patch_into_table(tbl: &mut Table, patch: &UplinkPayload) {
     }
     if let Some(v) = patch.link.as_deref() {
         set_str(tbl, "link", Some(v));
-    }
-    if let Some(v) = patch.tcp_addr.as_deref() {
-        set_str(tbl, "tcp_addr", Some(v));
-    }
-    if let Some(v) = patch.udp_addr.as_deref() {
-        set_str(tbl, "udp_addr", Some(v));
     }
     if let Some(v) = patch.method.as_deref() {
         set_str(tbl, "method", Some(v));
