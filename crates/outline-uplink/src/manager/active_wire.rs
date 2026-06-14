@@ -202,20 +202,22 @@ impl UplinkManager {
                 TransportKind::Udp => &mut status.udp,
             };
             if success {
-                // Stamp the any-wire liveness timestamp regardless of which
-                // wire succeeded — this is the signal `selection_health`
-                // uses to keep an uplink in the candidate set when the
-                // probe has marked the *primary* wire unhealthy but a
-                // fallback wire is doing the actual work.
-                st.last_any_wire_success = Some(now);
+                // A successful *dial* only proves the transport handshake
+                // completed — NOT that data is flowing. A degraded server can
+                // accept the WS upgrade and immediately close the data path
+                // (e.g. `Close 1013`), so treating a bare handshake as liveness
+                // lets a handshake-alive / data-dead uplink reset the round
+                // counter and re-stamp liveness on every reconnect and thus keep
+                // the strict-global active slot forever (no health flip ever
+                // fires). A dial success therefore only advances the
+                // wire-rotation streak (the wire did dial); the any-wire
+                // liveness stamp and the shuffle round-counter reset are
+                // reserved for *proven* delivery — a fallback-wire probe that
+                // reached its target, or real traffic — via
+                // [`Self::mark_wire_data_proven`] / `report_active_traffic`.
                 if attempted_wire == st.active_wire {
                     st.active_wire_streak = 0;
                 }
-                // ANY working wire (primary or fallback) means traffic has
-                // stabilised, so the shuffle_wires round counter resets —
-                // the next failure starts a fresh forward sweep from
-                // wherever active_wire currently points.
-                st.wires_failed_in_round = 0;
                 return;
             }
             // Failure on a non-active wire is session-local churn — the
@@ -356,6 +358,30 @@ impl UplinkManager {
             };
             outline_metrics::record_failover(kind, &group_name, &uplink_name, &uplink_name);
         }
+    }
+
+    /// Record that data was *actually delivered* over `uplink_index` on
+    /// `transport` — a fallback-wire probe that reached its external target, or
+    /// real client traffic. Unlike a bare dial handshake
+    /// ([`Self::record_wire_outcome`] with `success = true`), this is genuine
+    /// end-to-end proof the uplink is alive, so it stamps the any-wire liveness
+    /// timestamp consulted by `selection_health` /
+    /// `should_skip_primary_probe_escalation` and resets the `shuffle_wires`
+    /// round counter (traffic has stabilised). Keeping the liveness signal
+    /// distinct from the handshake signal is what stops a handshake-alive /
+    /// data-dead server (one that completes the WS upgrade then closes with
+    /// 1013) from holding the strict-global active slot forever.
+    pub fn mark_wire_data_proven(&self, uplink_index: usize, transport: TransportKind) {
+        let now = Instant::now();
+        self.inner.with_status_mut(uplink_index, |status| {
+            let st = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            st.last_any_wire_success = Some(now);
+            st.active_wire_streak = 0;
+            st.wires_failed_in_round = 0;
+        });
     }
 
     /// Reroll the active wire on both transports for `uplink_index` to a
