@@ -26,7 +26,7 @@ SS-AEAD пакетами. Dial URL используется как QUIC dial tar
 [[outline.uplinks]]
 name = "ss-quic"
 group = "main"
-transport = "ws"
+transport = "ss"
 tcp_ws_url = "https://ss.example.com:443"
 udp_ws_url = "https://ss.example.com:443"
 tcp_mode = "quic"
@@ -61,7 +61,7 @@ handshake, против TCP+TLS+HTTP для H2.
 [[outline.uplinks]]
 name = "ss-ws-h3"
 group = "main"
-transport = "ws"
+transport = "ss"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 udp_ws_url = "wss://example.com/SECRET/udp"
 tcp_mode = "h3"
@@ -360,7 +360,7 @@ dial снимает блок раньше срока.
 
 ```toml
 [outline]
-transport = "ws"                  # "ws" (по умолчанию; alias "websocket") | "vless"
+transport = "ss"                  # "ss" (по умолчанию; alias "shadowsocks"); "ws"/"websocket" deprecated | "vless"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 udp_ws_url = "wss://example.com/SECRET/udp"
 tcp_mode = "h3"
@@ -371,10 +371,11 @@ password = "Secret0"
 
 `outline.transport` принимает:
 
-| значение      | форма канала                                                                       |
-|---------------|------------------------------------------------------------------------------------|
-| `ws`          | Shadowsocks AEAD-фрейминг внутри WebSocket-носителя (по умолчанию; alias `websocket`) |
-| `vless`       | VLESS поверх WebSocket или XHTTP (h1/h2/h3) — см. §§ 3–6                           |
+| значение          | форма канала                                                                       |
+|-------------------|------------------------------------------------------------------------------------|
+| `ss`              | Shadowsocks AEAD-фрейминг внутри WebSocket-носителя (по умолчанию; alias `shadowsocks`) |
+| `ws` / `websocket`| **Deprecated**-алиасы для `ss` — всё ещё принимаются, удалятся в следующем релизе  |
+| `vless`           | VLESS поверх WebSocket или XHTTP (h1/h2/h3) — см. §§ 3–6                           |
 
 **2. Multi-uplink + группы (продакшен-форма).** `[[outline.uplinks]]`
 объявляет аплинки; `[[uplink_group]]` (на верхнем уровне, *не* под
@@ -584,7 +585,7 @@ Mid-session retry (Ack-Prefix Protocol v1):
   SSH-подобных downlink-heavy сессий *сама по себе*: v1 не
   replay'ит downlink-направление. Этот gap закрывает протокол v2
   Symmetric Downlink Replay (см. ниже).
-- Ограничено WS-family carrier'ами — SS-WS (`transport = "ws"`) и
+- Ограничено WS-family carrier'ами — SS-WS (`transport = "ss"`) и
   VLESS-WS (`transport = "vless"`). Raw QUIC для retry в v1 —
   no-op; relay падает в legacy-поведение «один shot, прокидываем
   ошибку наружу» без видимых изменений.
@@ -1125,7 +1126,7 @@ cipher          = "2022-blake3-aes-256-gcm"
 password        = "BASE64=="
 
   [[outline.uplinks.fallbacks]]
-  transport   = "ws"
+  transport   = "ss"
   tcp_ws_url  = "wss://ws.example.com/tcp"
   udp_ws_url  = "wss://ws.example.com/udp"
   tcp_mode    = "ws_h2"
@@ -1148,8 +1149,8 @@ top-level `[[outline.uplinks]]` **минус** атрибуты идентичн
 
 | Поле | Обязательно для | Заметки |
 |---|---|---|
-| `transport` | всегда | `ws` / `vless`. **Ограничений по уникальности нет** — same-transport-as-parent и duplicate-transport entries разрешены явно. Самая распространённая кросс-family форма: VLESS primary на `xhttp_h*` плюс VLESS fallback на `ws_h*` (тот же `transport = "vless"`, другая carrier-семья, другой dial URL); два VLESS fallback'а на разные хосты (belt-and-suspenders) тоже работают. Dial-loop и per-wire mode tracking трактуют каждый fallback как собственный wire независимо от `transport`. |
-| `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ws"` | `tcp_ws_url` обязателен; `udp_ws_url` опционален (UDP-fallback opt-in). |
+| `transport` | всегда | `ss` / `vless` (`ss` также принимает deprecated-алиасы `ws` / `websocket`). **Ограничений по уникальности нет** — same-transport-as-parent и duplicate-transport entries разрешены явно. Самая распространённая кросс-family форма: VLESS primary на `xhttp_h*` плюс VLESS fallback на `ws_h*` (тот же `transport = "vless"`, другая carrier-семья, другой dial URL); два VLESS fallback'а на разные хосты (belt-and-suspenders) тоже работают. Dial-loop и per-wire mode tracking трактуют каждый fallback как собственный wire независимо от `transport`. |
+| `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ss"` | `tcp_ws_url` обязателен; `udp_ws_url` опционален (UDP-fallback opt-in). |
 | `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL должен соответствовать `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws/quic → `vless_ws_url`). `vless_id` per-wire и **не наследуется** от родителя — у разных VLESS-эндпоинтов разные uuid'ы. |
 | `cipher`, `password` | наследуются | По умолчанию — значение родителя. Переопределите тут, если fallback использует другой shared secret. |
 | `fwmark`, `ipv6_first`, `fingerprint_profile` | наследуются | То же самое: дефолтятся к родителю, можно переопределить per-fallback. |

@@ -78,7 +78,7 @@ fn wire_tcp_mode(
     use crate::config::UplinkTransport;
     match transport {
         UplinkTransport::Vless => Some(vless_mode.to_string()),
-        UplinkTransport::Ws => Some(ws_mode.to_string()),
+        UplinkTransport::Ss => Some(ws_mode.to_string()),
     }
 }
 
@@ -261,7 +261,7 @@ impl UplinkManager {
                 group: self.inner.group_name.clone(),
                 transport: uplink.transport.to_string(),
                 tcp_mode: match uplink.transport {
-                    UplinkTransport::Ws => {
+                    UplinkTransport::Ss => {
                         uplink.tcp_ws_url.as_ref().map(|_| uplink.tcp_mode.to_string())
                     },
                     UplinkTransport::Vless => {
@@ -269,7 +269,7 @@ impl UplinkManager {
                     },
                 },
                 udp_mode: match uplink.transport {
-                    UplinkTransport::Ws => {
+                    UplinkTransport::Ss => {
                         uplink.udp_ws_url.as_ref().map(|_| uplink.udp_mode.to_string())
                     },
                     UplinkTransport::Vless => {

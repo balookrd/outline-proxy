@@ -8,7 +8,7 @@ use crate::config::{CipherKind, FallbackTransport, TransportMode, UplinkConfig, 
 fn ws_uplink(name: &str, tcp_url: &str, udp_url: &str) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse(tcp_url).unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: Some(Url::parse(udp_url).unwrap()),

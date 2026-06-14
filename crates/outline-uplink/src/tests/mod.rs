@@ -117,7 +117,7 @@ fn http_probe_formats_ipv6_host_header() {
 fn make_uplink(name: &str, url: &str) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse(url).unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
@@ -1825,7 +1825,7 @@ fn make_ws_uplink_with_modes(
 ) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse(url).unwrap()),
         tcp_mode,
         udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
@@ -1879,7 +1879,7 @@ fn make_vless_h3_uplink(name: &str, url: &str) -> UplinkConfig {
 fn make_ss_over_ws_uplink(name: &str) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ss.example.com/tcp").unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: Some(Url::parse("wss://ss.example.com/udp").unwrap()),

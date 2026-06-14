@@ -113,7 +113,7 @@ impl UplinkManager {
         };
 
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
-            if !matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ws,) {
+            if !matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ss,) {
                 continue;
             }
             // UDP keepalive. The Vless and Ws variants of the warm slot

@@ -370,7 +370,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
 /// after a transport reset. Identical to [`connect_tcp_uplink_fresh`]
 /// at its WS branch with one restriction and one opt-in:
 ///
-/// * WS-family carriers only (`UplinkTransport::Ws` for SS-WS,
+/// * WS-family carriers only (`UplinkTransport::Ss` for SS-WS,
 ///   `UplinkTransport::Vless` for VLESS-WS). raw-QUIC has no
 ///   Ack-Prefix support in v1.1; the orchestrator degrades to
 ///   "no retry" for those uplinks rather than redialling a path
@@ -407,7 +407,7 @@ pub(super) async fn redial_for_mid_session_retry(
     client_acked_offset: u64,
 ) -> Result<ConnectedTcpUplink> {
     if wire_index == 0 {
-        if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless,) {
+        if !matches!(candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless,) {
             bail!(
                 "mid-session retry redial only supports WS-family uplinks (SS-WS or \
                  VLESS-WS); uplink {} primary uses transport {:?}",
@@ -459,7 +459,7 @@ pub(super) async fn redial_for_mid_session_retry(
             wire_index,
         )
     })?;
-    if !matches!(fallback.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+    if !matches!(fallback.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
         bail!(
             "mid-session retry redial only supports WS-family wires; uplink {} fallback[{}] \
              uses transport {:?}",

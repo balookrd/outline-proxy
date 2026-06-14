@@ -267,8 +267,8 @@ function getUplinkConfig(group, name) {
   return map ? (map[detailsKey(group, name)] || null) : null;
 }
 
-const TRANSPORTS = ["ws", "vless"];
-// `tcp_mode` / `udp_mode` apply to `transport = "ws"` (Shadowsocks-over-WS).
+const TRANSPORTS = ["ss", "vless"];
+// `tcp_mode` / `udp_mode` apply to `transport = "ss"` (Shadowsocks-over-WS).
 // XHTTP modes are VLESS-only, so they live in VLESS_MODES instead.
 const WS_MODES = ["", "ws_h1", "ws_h2", "ws_h3", "quic"];
 const VLESS_MODES = ["", "ws_h1", "ws_h2", "ws_h3", "quic", "xhttp_h2", "xhttp_h3"];

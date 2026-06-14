@@ -41,7 +41,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
 fn ws_tcp_only_primary() -> UplinkConfig {
     UplinkConfig {
         name: "edge".to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None, // <-- no UDP on primary
@@ -65,7 +65,7 @@ fn ws_tcp_only_primary() -> UplinkConfig {
 
 fn ws_fallback(udp: bool) -> FallbackTransport {
     FallbackTransport {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
         tcp_mode: TransportMode::WsH2,
         udp_ws_url: if udp {
@@ -99,7 +99,7 @@ fn ws_fallback(udp: bool) -> FallbackTransport {
 fn ws_floor_primary(udp: bool) -> UplinkConfig {
     UplinkConfig {
         name: "edge".to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://floor.example.com/tcp").unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: if udp {
@@ -133,7 +133,7 @@ fn ws_floor_primary(udp: bool) -> UplinkConfig {
 /// any debug output.
 fn ws_alt_floor_fallback(udp: bool) -> FallbackTransport {
     FallbackTransport {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://alt-floor.example.com/tcp").unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: if udp {
@@ -159,7 +159,7 @@ fn ws_alt_floor_fallback(udp: bool) -> FallbackTransport {
 /// floor wires are individually identifiable.
 fn ws_floor_fallback(udp: bool) -> FallbackTransport {
     FallbackTransport {
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://floor.example.com/tcp").unwrap()),
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: if udp {
@@ -1409,7 +1409,7 @@ fn xhttp_recovery_streak_reset_when_cap_changes_via_descent() {
 fn ws_h3_primary() -> UplinkConfig {
     UplinkConfig {
         name: "ws-edge".to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
         tcp_mode: TransportMode::WsH3,
         udp_ws_url: Some(Url::parse("wss://ws.example.com/udp").unwrap()),
@@ -1539,7 +1539,7 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
     // WS uplink configured at H3, single TCP wire.
     let cfg = UplinkConfig {
         name: "ws-edge".to_string(),
-        transport: UplinkTransport::Ws,
+        transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
         tcp_mode: TransportMode::WsH3,
         udp_ws_url: Some(Url::parse("wss://ws.example.com/udp").unwrap()),

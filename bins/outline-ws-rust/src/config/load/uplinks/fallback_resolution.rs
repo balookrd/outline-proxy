@@ -63,7 +63,7 @@ fn resolve_fallback(
     // fields. Cross-population is rejected at parse time so misconfiguration
     // surfaces as a clear error rather than a confusing dial-time failure.
     let (final_password, final_vless_id) = match transport {
-        UplinkTransport::Ws => {
+        UplinkTransport::Ss => {
             if vless_ws_url.is_some() || vless_xhttp_url.is_some() || vless_mode.is_some() {
                 bail!(
                     "uplink {parent_name}: fallbacks[{idx}] (transport=ws) must not set \
@@ -153,7 +153,7 @@ fn resolve_fallback(
     // Field nulling for fields that don't apply to the chosen transport,
     // mirroring the post-validation shape `UplinkConfig` carries.
     match transport {
-        UplinkTransport::Ws => {
+        UplinkTransport::Ss => {
             vless_ws_url = None;
             vless_xhttp_url = None;
         },

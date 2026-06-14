@@ -83,7 +83,7 @@ pub(super) async fn run_quic_handshake_probe(
     let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     let alpn: &'static [u8] = match uplink_transport {
         UplinkTransport::Vless => outline_transport::quic::ALPN_VLESS,
-        UplinkTransport::Ws => outline_transport::quic::ALPN_SS,
+        UplinkTransport::Ss => outline_transport::quic::ALPN_SS,
     };
     let _conn = outline_transport::quic::connect_quic_uplink(
         cache,

@@ -138,7 +138,7 @@ pub(super) async fn run_relay(
     // budget while keeping the buffer warm.
     let retry_eligible = buffer_cap > 0
         && configured_budget > 0
-        && matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless,);
+        && matches!(candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless,);
     let mut budget: u8 = if retry_eligible { configured_budget } else { 0 };
 
     let ring: Option<Arc<Mutex<ClientUpstreamRingBuffer>>> =

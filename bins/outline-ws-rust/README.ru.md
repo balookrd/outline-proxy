@@ -73,7 +73,7 @@ tun2udp + tun2tcp"]
     LB -->|"*_ws_mode = quic"| QC
     WS -->|"outline"| SS
     WS -->|"vless"| VL
-    QC -->|"transport = websocket"| SS
+    QC -->|"transport = ss"| SS
     QC -->|"transport = vless"| VL
 
     subgraph Upstream["Upstream аплинки"]
@@ -123,13 +123,13 @@ tun2udp + tun2tcp"]
 - RFC 9220 WebSocket over HTTP/3 / QUIC
 - raw QUIC (per-ALPN, без WebSocket / HTTP/3): выбирается через `*_ws_mode = "quic"`. ALPN `vless` несёт VLESS-TCP (один bidi на сессию) и VLESS-UDP (per-target control bidi + датаграммы, демукс по 4-байтному `session_id`, выдаваемому сервером). ALPN `ss` несёт Shadowsocks-TCP (один bidi на сессию) и Shadowsocks-UDP (1 датаграмма = 1 SS-AEAD пакет, RFC 9221). Несколько сессий с одинаковым ALPN на тот же `host:port` шарят один кэшированный QUIC-коннект. Вспомогательные ALPN `vless-mtu` / `ss-mtu` несут UDP-пакеты, превысившие лимит датаграммы QUIC, поверх server-initiated bidi. На провал dial / handshake raw-QUIC падает на WS over H2 (далее H1) и открывает окно H3-downgrade — следующие дайлы пропускают QUIC, пока recovery-проба не подтвердит, что QUIC снова доступен.
 - VLESS-over-XHTTP (`vless_mode = "xhttp_h1"`, `"xhttp_h2"` или `"xhttp_h3"`): парный листенер — `xhttp_path_vless` в outline-ss-rust. Dial-URL `vless_xhttp_url` выбирает wire-режим через свой query-параметр — голый URL или `?mode=packet-up` запускает GET + sequenced POSTs, `?mode=stream-one` — один bidirectional POST (только h2 / h3; h1-carrier поддерживает только packet-up и явно отваливается на stream-one). Полезно когда WebSocket-апгрейд режется на пути (Cloudflare-style CDN, captive-portal middleboxes).
-- VLESS-over-WebSocket аплинки (`transport = "vless"`, UUID-аутентификация, общий WSS dial path с `websocket`, per-destination UDP session-mux с границей `vless_udp_max_sessions`)
+- VLESS-over-WebSocket аплинки (`transport = "vless"`, UUID-аутентификация, общий WSS dial path с `ss`, per-destination UDP session-mux с границей `vless_udp_max_sessions`)
 - transport fallback:
   - `h3 -> h2 -> http1`
   - `h2 -> http1`
   - `quic -> h2 -> http1` на провал dial / handshake, с per-uplink окном mode-downgrade (управляется `h3_downgrade_secs`, принимается также как `mode_downgrade_secs`) — следующие дайлы пропускают QUIC, пока recovery-проба не подтвердит его снова
   - `xhttp_h3 -> xhttp_h2 -> xhttp_h1` на провал dial'а (только packet-up — stream-one останавливается на h2), с прокидыванием того же `X-Outline-Resume` токена через каждую смену carrier'а — сервер outline-ss-rust с включённой фичей переcаживает на припаркованный VLESS upstream вместо нового connect'а. Шаг h1 — фолбек последнего шанса для путей, режущих и QUIC, и ALPN h2; открывает два keep-alive сокета на сессию (долгоживущий GET + сериализованные POST'ы), потому что h1 не мультиплексирует
-  - **per-аплинковые fallback-транспорты** через `[[outline.uplinks.fallbacks]]` — каждый аплинк может объявить дополнительные wire-формы (другой `transport` + URL/addr), которые dial-loop пробует после провала primary. Поддерживает `vless → ws`, `vless → ss`, `ws → vless` и т.п. После `probe.min_failures` подряд провалов dial'а активный wire становится sticky на `mode_downgrade_secs` (один knob, два применения), и новые сессии стартуют с fallback'а; auto-failback возвращает на primary по истечении пина. Resume-токены (`X-Outline-Resume`) едут через wire-свитч через identity-level resume-cache, так что handover-via-resume на `vless ↔ ws` бесшовен на сервере с включённой фичей. Цикл chunk-0 failover также пробует каждый другой wire **этого же** аплинка перед прыжком на другой аплинк (handover внутри аплинка). Опциональный per-аплинковый `shuffle_wires = true` перемешивает цепочку при старте процесса (collision-free перестановки внутри `[[uplink_group]]`) и эскалирует uplink-failover после одного полного forward-прохода без успеха ни на одном wire (любой успешный dial обнуляет круг); `shuffle_timer = "1h"` рероллит `active_wire` на per-uplink интервале (`30s` / `5m` / `1h30m` / `2d` / голые секунды) и подавляет probe-driven early-failback на primary, чтобы реролл оставался видимым. `carrier_downgrade = false` свёртывает вертикальный carrier-каскад — фейлы переезжают на следующий wire напрямую (полезно против DPI, который дропает весь upstream независимо от HTTP-версии). См. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md) «Внутри-аплинковые fallback-транспорты».
+  - **per-аплинковые fallback-транспорты** через `[[outline.uplinks.fallbacks]]` — каждый аплинк может объявить дополнительные wire-формы (другой `transport` + URL/addr), которые dial-loop пробует после провала primary. Поддерживает `vless → ss`, `ss → vless` и т.п. После `probe.min_failures` подряд провалов dial'а активный wire становится sticky на `mode_downgrade_secs` (один knob, два применения), и новые сессии стартуют с fallback'а; auto-failback возвращает на primary по истечении пина. Resume-токены (`X-Outline-Resume`) едут через wire-свитч через identity-level resume-cache, так что handover-via-resume на `vless ↔ ss` бесшовен на сервере с включённой фичей. Цикл chunk-0 failover также пробует каждый другой wire **этого же** аплинка перед прыжком на другой аплинк (handover внутри аплинка). Опциональный per-аплинковый `shuffle_wires = true` перемешивает цепочку при старте процесса (collision-free перестановки внутри `[[uplink_group]]`) и эскалирует uplink-failover после одного полного forward-прохода без успеха ни на одном wire (любой успешный dial обнуляет круг); `shuffle_timer = "1h"` рероллит `active_wire` на per-uplink интервале (`30s` / `5m` / `1h30m` / `2d` / голые секунды) и подавляет probe-driven early-failback на primary, чтобы реролл оставался видимым. `carrier_downgrade = false` свёртывает вертикальный carrier-каскад — фейлы переезжают на следующий wire напрямую (полезно против DPI, который дропает весь upstream независимо от HTTP-версии). См. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md) «Внутри-аплинковые fallback-транспорты».
 - кросс-транспортное возобновление сессии на стороне клиента: WebSocket Upgrade несёт `X-Outline-Resume-Capable: 1`; Session ID, выданный сервером в `X-Outline-Session`, кэшируется по аплинку (а внутри VLESS UDP mux — по (uplink, target)) и предъявляется как `X-Outline-Resume: <hex>` на следующем on-demand dial — сервер outline-ss-rust с включённой фичей переcаживает клиента на припаркованный upstream, минуя connect к таргету. Покрытие: TCP-WS, SS-UDP-WS, VLESS-TCP raw QUIC (через Addons opcodes), VLESS-UDP raw QUIC и VLESS-over-XHTTP (h1, h2, h3, packet-up и stream-one — токен round-trip'ится в том же response, что доставляет первый downlink-чанк). Opt-in на проводе, без overhead'а если сервер не поддерживает.
 
 ### Шифрование
@@ -639,7 +639,7 @@ h3_downgrade_secs = 60
 [[outline.uplinks]]
 name = "primary"
 group = "main"
-transport = "websocket"
+transport = "ss"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
 tcp_mode = "h3"
@@ -653,7 +653,7 @@ password = "Secret0"
 [[outline.uplinks]]
 name = "backup"
 group = "main"
-transport = "websocket"
+transport = "ss"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
 weight = 0.8
 tcp_mode = "h2"
@@ -663,7 +663,7 @@ method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
 # VLESS-over-WebSocket аплинк. Использует тот же WSS-путь дозвона, что и
-# transport = "websocket"; `vless_id` заменяет Shadowsocks-овые cipher/password.
+# transport = "ss"; `vless_id` заменяет Shadowsocks-овые cipher/password.
 # Сервер VLESS открывает один WS-путь (`ws_path_vless`), общий для TCP и
 # UDP, поэтому в клиентском конфиге задаётся одна пара
 # `vless_ws_url`/`vless_mode` — поля `tcp_ws_url`/`udp_ws_url` для
@@ -707,13 +707,13 @@ weight = 1.0
 
 # Shadowsocks поверх raw QUIC (ALPN = "ss"). Один QUIC bidi на SS-TCP
 # сессию; SS-UDP едет в QUIC-датаграммах 1-к-1 c SS-AEAD пакетами.
-# Cipher / password те же, что в WS-варианте. transport = "websocket" +
+# Cipher / password те же, что в WS-варианте. transport = "ss" +
 # tcp_mode = "quic" — это SS-over-QUIC; transport = "vless" +
 # tcp_mode = "quic" — VLESS-over-QUIC (см. выше).
 [[outline.uplinks]]
 name = "ss-quic"
 group = "main"
-transport = "websocket"
+transport = "ss"
 tcp_ws_url = "https://ss.example.com:443"
 udp_ws_url = "https://ss.example.com:443"
 tcp_mode = "quic"
@@ -736,10 +736,10 @@ via = "main"
 
 ### Ключевые параметры конфигурации
 
-- `transport` принимает `websocket` (по умолчанию) или `vless`. VLESS делит WSS-путь дозвона с `websocket` (те же поля `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark`), но аутентифицируется одним `vless_id` вместо пары Shadowsocks `method` + `password`. VLESS UDP открывает по одной WSS-сессии на каждое назначение внутри аплинка (ограничено `[outline.load_balancing] vless_udp_max_sessions` с LRU-вытеснением; idle-эвикция управляется `vless_udp_session_idle_secs`).
+- `transport` принимает `ss` (по умолчанию; алиас `shadowsocks`) или `vless`. Прежние значения `ws` / `websocket` — deprecated-алиасы для `ss` и будут удалены в следующем релизе. VLESS делит WSS-путь дозвона с `ss` (те же поля `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark`), но аутентифицируется одним `vless_id` вместо пары Shadowsocks `method` + `password`. VLESS UDP открывает по одной WSS-сессии на каждое назначение внутри аплинка (ограничено `[outline.load_balancing] vless_udp_max_sessions` с LRU-вытеснением; idle-эвикция управляется `vless_udp_session_idle_secs`).
 - `link = "vless://UUID@HOST:PORT?type=...&security=...&alpn=...#NAME"` конфигурирует VLESS-аплинк одной share-link URI вместо явных полей `vless_id` / `vless_*_url` / `vless_mode`; `transport = "vless"` подставляется автоматически. То же значение принимает CLI-флаг `--vless-link` (`OUTLINE_VLESS_LINK`) и REST-payload `/control/uplinks` (`link`, алиас `share_link`). Смешение `link` с явными полями отвергается. Таблицу поддерживаемых query-параметров и ограничения см. в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md#7-vless-share-link-uris).
 - Должен быть настроен хотя бы один ingress: `--listen` / `[socks5].listen` и/или `[tun]`. Если не задано ни то ни другое, процесс завершится с ошибкой вместо молчаливого bind на `127.0.0.1:1080`.
-- `tcp_mode` / `udp_mode` (для `transport = "ws"`) и `vless_mode` (для `transport = "vless"`) задают per-direction carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade), `quic` (raw-QUIC framing на ALPN `vless` / `ss`) или `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (только VLESS, XHTTP packet-up). Конфиг-блоки на каждую форму, цепочки fallback на этапе дозвона и поведение resume — см. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
+- `tcp_mode` / `udp_mode` (для `transport = "ss"`) и `vless_mode` (для `transport = "vless"`) задают per-direction carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade), `quic` (raw-QUIC framing на ALPN `vless` / `ss`) или `xhttp_h1` / `xhttp_h2` / `xhttp_h3` (только VLESS, XHTTP packet-up). Конфиг-блоки на каждую форму, цепочки fallback на этапе дозвона и поведение resume — см. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
 - `ipv6_first` (по умолчанию `false`) меняет предпочтение адресов после DNS для этого uplink с IPv4-first на IPv6-first для TCP, UDP, H1, H2 и H3 соединений.
 - `method` также поддерживает `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305`; для них `password` должен быть base64-кодированным PSK точной длины ключа выбранного шифра.
 - `[[socks5.users]]` включает локальную SOCKS5-аутентификацию по логину/паролю для нескольких пользователей. В каждой записи должны быть и `username`, и `password`.
@@ -751,7 +751,7 @@ via = "main"
 - `[outline.load_balancing] auto_failback` (по умолчанию `false`): управляет тем, возвращает ли прокси трафик на восстановившийся аплинк с более высоким приоритетом.
   - `false` (по умолчанию): активный аплинк заменяется **только при сбое**. Как только прокси переключился на резервный, он остаётся на нём, пока не упадёт сам резервный — никакого автоматического возврата на primary. Рекомендуется для production, чтобы исключить лишние обрывы соединений.
   - `true`: если текущий активный аплинк здоров, но существует кандидат с **более высоким `weight`** (или равным weight и меньшим индексом в конфиге), прокси может вернуть трафик на него — но только после того, как кандидат накопит `min_failures` последовательных успешных циклов проб. Приоритет определяется `weight`, а не EWMA RTT: это исключает ложные переключения под нагрузкой, когда EWMA активного аплинка временно растёт из-за медленных соединений, а idle-резервный выглядит лучше по latency. Failback всегда движется в сторону большего `weight` (`1.0 → 1.5 → 2.0`): переключение на аплинк с меньшим weight через auto_failback невозможно — это failover, который требует probe-подтверждённого сбоя.
-- `h3_downgrade_secs` (per-group, по умолчанию `60`, принимается также как `mode_downgrade_secs`): сколько секунд аплинк, получивший сбой на «продвинутом» режиме (H3 application-level error либо провал dial / handshake raw QUIC) — для `transport = "ws"` и `transport = "vless"`, — будет использовать H2-fallback (далее H2 → H1 при необходимости внутри `connect_transport`) перед повторной попыткой исходного режима. Установите `0`, чтобы отключить автоматический даунгрейд.
+- `h3_downgrade_secs` (per-group, по умолчанию `60`, принимается также как `mode_downgrade_secs`): сколько секунд аплинк, получивший сбой на «продвинутом» режиме (H3 application-level error либо провал dial / handshake raw QUIC) — для `transport = "ss"` и `transport = "vless"`, — будет использовать H2-fallback (далее H2 → H1 при необходимости внутри `connect_transport`) перед повторной попыткой исходного режима. Установите `0`, чтобы отключить автоматический даунгрейд.
 - `state_path` (опционально): путь к TOML-файлу, в котором сохраняется выбор активного аплинка между рестартами. По умолчанию — путь к конфигу с заменой расширения на `.state.toml` (например, `config.toml` → `config.state.toml`). Если файл не удаётся открыть на запись (например, конфиг находится в `/etc/` с `ProtectSystem=strict`), при старте выводится предупреждение и процесс продолжает работу без персистентности. Прилагаемые systemd-юниты задают `STATE_PATH=/var/lib/outline-ws-rust/state.toml`, чтобы состояние попадало в записываемую директорию. Сохраняется только выбор активного аплинка (по имени); EWMA и штрафы не сохраняются — они восстанавливаются за один цикл проб после рестарта.
 - Группы аплинков (`[[uplink_group]]`) полностью изолированы в runtime: у каждой свой probe loop, standby pool, sticky-routes, активный аплинк и load-balancing политика.
 - `[outline.probe]` — шаблон: каждая группа его наследует, а `[uplink_group.probe]` переопределяет поля по отдельности. Подтаблицы пробников (`ws`/`http`/`dns`/`tcp`/`tls`) заменяются целиком — если группа задаёт `[uplink_group.probe.http]`, шаблонный `[outline.probe.http]` для неё игнорируется. Application-level пробы (`http`/`tcp`/`tls`) взаимоисключающие: один цикл выполняет одну, приоритет `tls → http → tcp`.

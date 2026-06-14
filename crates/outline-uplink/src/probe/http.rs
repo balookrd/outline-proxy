@@ -139,7 +139,7 @@ pub(super) async fn run_http_probe(
                 UplinkTransport::Vless => {
                     WarmTcpProbe::Vless { writer, reader, mode: effective_tcp_mode }
                 },
-                UplinkTransport::Ws => {
+                UplinkTransport::Ss => {
                     WarmTcpProbe::Ws { writer, reader, mode: effective_tcp_mode }
                 },
             };

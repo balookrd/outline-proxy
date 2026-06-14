@@ -108,7 +108,7 @@ async fn run_tcp_probe(
     // exists to avoid. Skip it; the HTTP sub-probe below still validates
     // the data path through the warm pipe.
     let ws_warm_elided = probe.ws.enabled
-        && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ws)
+        && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ss)
         && warm_tcp_slot.as_ref().is_some_and(|slot| {
             use crate::manager::probe::warm_tcp::peek_matches;
             peek_matches(slot, effective_tcp_mode)
@@ -116,7 +116,7 @@ async fn run_tcp_probe(
     if probe.ws.enabled && !ws_warm_elided {
         let ws_attempt = async {
             match uplink.transport {
-                UplinkTransport::Ws | UplinkTransport::Vless => {
+                UplinkTransport::Ss | UplinkTransport::Vless => {
                     let url = uplink
                         .tcp_dial_url()
                         .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
@@ -248,7 +248,7 @@ async fn run_udp_probe(
     // the measured UDP probe latency for VLESS uplinks once the DNS
     // sub-probe path is cheap (e.g. local dnsmasq cache on the server).
     let ws_warm_elided = probe.ws.enabled
-        && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ws)
+        && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ss)
         && warm_udp_slot.as_ref().is_some_and(|slot| {
             use crate::manager::probe::warm_udp::peek_matches;
             peek_matches(slot, effective_udp_mode)
@@ -256,7 +256,7 @@ async fn run_udp_probe(
     if probe.ws.enabled && !ws_warm_elided {
         let ws_attempt = async {
             match uplink.transport {
-                UplinkTransport::Ws | UplinkTransport::Vless => {
+                UplinkTransport::Ss | UplinkTransport::Vless => {
                     let url = uplink
                         .udp_dial_url()
                         .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;

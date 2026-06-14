@@ -85,7 +85,7 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
     // dial failure later.
     let (tcp_ws_url, tcp_mode, udp_ws_url, udp_mode, vless_ws_url, vless_xhttp_url, vless_mode) =
         match transport {
-            UplinkTransport::Ws => {
+            UplinkTransport::Ss => {
                 if vless_ws_url.is_some() || vless_xhttp_url.is_some() || vless_mode.is_some() {
                     bail!(
                         "uplink {name}: `vless_ws_url`/`vless_xhttp_url`/`vless_mode` are only valid for transport=vless"
