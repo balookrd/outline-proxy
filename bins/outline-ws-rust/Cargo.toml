@@ -33,6 +33,12 @@ env-filter = ["tracing-subscriber/env-filter"]
 multi-thread = ["tokio/rt-multi-thread"]
 mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 router = ["control"]  # convenience alias: use with --no-default-features --features router
+# test-tls: integration-only. Lets the binary trust a self-signed root supplied
+# via the OUTLINE_WS_TEST_TLS_CA_DER env var (forwarded to
+# outline_transport::install_test_tls_root) so e2e tests can drive TLS / H3 /
+# raw-QUIC carriers against a local self-signed server. NEVER in `default` —
+# production builds omit the env hook and the install symbol entirely.
+test-tls = ["outline-transport/test-tls"]
 
 [dependencies]
 anyhow = "1.0"
@@ -78,5 +84,13 @@ webpki-roots = "1.0"
 
 [dev-dependencies]
 outline-uplink = { path = "../../crates/outline-uplink", default-features = false, features = ["test-helpers"] }
+# rcgen: e2e harness self-signed CA + leaf generation (ring backend per the
+# workspace rustls-on-ring invariant). 0.14.x is already in Cargo.lock.
+rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+# serde_json: parse the client's /control/topology JSON in the e2e harness,
+# independent of the `metrics`/`control` features that gate the runtime copy.
+serde_json = "1.0"
 tempfile = "3"
-tokio = { version = "1", features = ["test-util"] }
+# rt-multi-thread + net/io drive the e2e harness's background echo / blackhole /
+# splice servers; test-util stays for the existing time-paused unit tests.
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util", "time"] }
