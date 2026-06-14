@@ -26,11 +26,13 @@ fn manager_with_alpn(h3_alpn: Vec<H3Alpn>) -> UserManager {
         &config,
         routes,
         auth,
-        tcp_paths,
-        udp_paths,
-        BTreeSet::new(),
-        BTreeSet::new(),
-        BTreeSet::new(),
+        AllowedRoutePaths {
+            tcp: tcp_paths,
+            udp: udp_paths,
+            vless: BTreeSet::new(),
+            xhttp_vless: BTreeSet::new(),
+            xhttp_ss: BTreeSet::new(),
+        },
     )
 }
 

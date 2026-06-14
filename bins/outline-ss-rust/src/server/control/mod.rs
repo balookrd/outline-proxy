@@ -21,5 +21,5 @@ mod manager;
 mod persist;
 mod server;
 
-pub(in crate::server) use manager::UserManager;
+pub(in crate::server) use manager::{AllowedRoutePaths, UserManager};
 pub(in crate::server) use server::spawn_control_server;
