@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
-use tokio::time::{Instant, timeout};
+use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use outline_transport::DnsCache;
@@ -188,48 +188,50 @@ impl UplinkManager {
             },
         };
 
-        let now = Instant::now();
         let alpha = self.inner.load_balancing.rtt_ewma_alpha;
         self.inner.with_status_mut(index, |status| {
             if result.tcp_ok {
-                status.tcp.last_any_wire_success = Some(now);
                 // Per-wire RTT EWMA: feed the fallback-wire probe latency
                 // into this wire's slot so cross-uplink scoring uses the
                 // wire that's actually carrying traffic, not primary's
-                // (now-stale) measurement.
+                // (now-stale) measurement. The any-wire liveness stamp is
+                // applied via `mark_wire_data_proven` below.
                 status
                     .tcp
                     .record_fallback_wire_latency(wire_index_u8, result.tcp_latency, alpha);
             }
             if result.udp_applicable && result.udp_ok {
-                status.udp.last_any_wire_success = Some(now);
                 status
                     .udp
                     .record_fallback_wire_latency(wire_index_u8, result.udp_latency, alpha);
             }
         });
-        // Per-transport outcome of the fallback-wire probe. `record_wire_outcome`
-        // increments `active_wire_streak` on `success=false` when the failed
-        // wire matches the current active wire and resets it on any success;
-        // when the streak crosses `min_failures` it advances `active_wire`
-        // to the next wire in the chain. This is the only path that moves
-        // sticky off a fallback wire on a passive uplink (no client traffic
-        // to drive `record_wire_outcome` from the dial path).
-        self.record_wire_outcome(
-            index,
-            TransportKind::Tcp,
-            wire_index_u8,
-            result.tcp_ok,
-            total_wires,
-        );
+        // Per-transport outcome of the fallback-wire probe. A success here
+        // reached the probe's external target, so it is *proven delivery*, not
+        // a bare handshake: `mark_wire_data_proven` stamps the any-wire liveness
+        // timestamp and resets the `shuffle_wires` round counter. A failure
+        // feeds `record_wire_outcome`, which increments `active_wire_streak`
+        // when the failed wire matches the current active wire and, once the
+        // streak crosses `min_failures`, advances `active_wire` to the next wire
+        // in the chain. This is the only path that moves sticky off a fallback
+        // wire on a passive uplink (no client traffic to drive the dial path).
+        if result.tcp_ok {
+            self.mark_wire_data_proven(index, TransportKind::Tcp);
+        } else {
+            self.record_wire_outcome(index, TransportKind::Tcp, wire_index_u8, false, total_wires);
+        }
         if result.udp_applicable {
-            self.record_wire_outcome(
-                index,
-                TransportKind::Udp,
-                wire_index_u8,
-                result.udp_ok,
-                total_wires,
-            );
+            if result.udp_ok {
+                self.mark_wire_data_proven(index, TransportKind::Udp);
+            } else {
+                self.record_wire_outcome(
+                    index,
+                    TransportKind::Udp,
+                    wire_index_u8,
+                    false,
+                    total_wires,
+                );
+            }
         }
         debug!(
             uplink = %uplink.name,
