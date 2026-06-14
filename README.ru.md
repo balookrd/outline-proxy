@@ -25,6 +25,50 @@
 
 *English version: [README.md](README.md)*
 
+## Поддерживаемые протоколы и транспорты
+
+Две независимые оси: **протокол полезной нагрузки (payload)** — что едет внутри —
+и **транспорт-носитель (carrier)** — как он доставляется. Клиент и сервер
+согласуют пару из обоих на каждый uplink.
+
+| Payload \ Carrier | WebSocket (h1/h2/h3) | XHTTP (h1/h2/h3) | raw QUIC |
+|---|:---:|:---:|:---:|
+| **Shadowsocks** (AEAD / SS2022) | ✅ | — | ✅ |
+| **VLESS** | ✅ | ✅ | ✅ |
+
+XHTTP — это VLESS-only протокол `packet-up` / `stream-one`; у Shadowsocks
+XHTTP-носителя нет. Все остальные ячейки поддерживаются в обе стороны.
+
+Клиент выбирает пару `transport` + `mode` на каждый uplink:
+
+| `transport` | допустимые значения `*_mode` | поле URL для dial |
+|---|---|---|
+| `ss` (алиас `shadowsocks`; deprecated `ws` / `websocket`) | `ws_h1` · `ws_h2` · `ws_h3` · `quic` | `tcp_ws_url` / `udp_ws_url` |
+| `vless` | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `vless_ws_url` (ws / quic) · `vless_xhttp_url` (xhttp) |
+
+Алиасы носителей: `h1` / `http1` → `ws_h1`, `h2` → `ws_h2`, `h3` → `ws_h3`.
+
+**Носители (carrier)**
+
+- **WebSocket h1 / h2 / h3** — RFC 6455, RFC 8441 (H2 Extended CONNECT), RFC 9220
+  (H3 Extended CONNECT). Базовый путь для обоих payload'ов.
+- **XHTTP** (только VLESS) — два sub-режима: `packet-up` (каждый пакет — отдельный
+  запрос, работает на h1 / h2 / h3) и `stream-one` (один bidi-POST, нужен
+  мультиплекс — только h2 / h3; на h1 сервер отдаёт 505).
+- **raw QUIC** — без WebSocket / HTTP-обёртки, ALPN `outline-quic`. Несёт и
+  Shadowsocks, и VLESS. TCP-подобные сессии едут по свежему bidi-стриму,
+  UDP-подобные — по QUIC-датаграммам (RFC 9221). Требует feature `quic` при сборке.
+
+**Автоматический fallback** (per-uplink, в том числе mid-session): WebSocket
+деградирует `h3 → h2 → h1`, XHTTP — `xhttp_h3 → xhttp_h2 → xhttp_h1`, а raw QUIC
+при неудаче dial'а откатывается на WebSocket-over-H2.
+
+> **Совместимость с Outline:** Shadowsocks-over-WebSocket — это путь, на котором
+> говорят приложения Outline: сервер выдаёт для него Outline-ключ доступа
+> (`$type: websocket`, TCP + UDP). Shadowsocks-over-QUIC — standalone-режим
+> только для встроенного клиента `outline-ws-rust`, наружу как Outline-ключ не
+> отдаётся. VLESS отдаётся как share-link `vless://…` (`ws` / `xhttp` / `quic`).
+
 ## Структура
 
 ```
