@@ -35,7 +35,7 @@ pub struct ServerConfig {
     ws_path_tcp: Option<String>,
     ws_path_udp: Option<String>,
     ws_path_vless: Option<String>,
-    xhttp_path_ss: Option<String>,
+    xhttp_path_tcp: Option<String>,
     xhttp_path_vless: Option<String>,
     user_password: Option<String>,
     user_vless_id: Option<String>,
@@ -53,7 +53,7 @@ impl ServerConfig {
             ws_path_tcp: None,
             ws_path_udp: None,
             ws_path_vless: None,
-            xhttp_path_ss: None,
+            xhttp_path_tcp: None,
             xhttp_path_vless: None,
             user_password: None,
             user_vless_id: None,
@@ -70,7 +70,7 @@ impl ServerConfig {
         self.ws_path_tcp = Some(PATH_SS_TCP.into());
         self.ws_path_udp = Some(PATH_SS_UDP.into());
         self.ws_path_vless = Some(PATH_VLESS_WS.into());
-        self.xhttp_path_ss = Some(PATH_SS_XHTTP.into());
+        self.xhttp_path_tcp = Some(PATH_SS_XHTTP.into());
         self.xhttp_path_vless = Some(PATH_VLESS_XHTTP.into());
         self.user_password = Some(TEST_PASSWORD.into());
         self.user_vless_id = Some(TEST_VLESS_ID.into());
@@ -115,7 +115,7 @@ impl ServerConfig {
             ("ws_path_tcp", &self.ws_path_tcp),
             ("ws_path_udp", &self.ws_path_udp),
             ("ws_path_vless", &self.ws_path_vless),
-            ("xhttp_path_ss", &self.xhttp_path_ss),
+            ("xhttp_path_tcp", &self.xhttp_path_tcp),
             ("xhttp_path_vless", &self.xhttp_path_vless),
         ] {
             if let Some(v) = val {
