@@ -167,6 +167,9 @@ fn vless_xhttp_payload_round_trips_through_table() {
         transport: Some("vless".into()),
         vless_xhttp_url: Some("https://example.com/SECRET/xhttp".into()),
         vless_mode: Some("xhttp_h3".into()),
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
         vless_id: Some("11111111-2222-3333-4444-555555555555".into()),
         ..Default::default()
     };
@@ -200,6 +203,9 @@ vless_id = "11111111-2222-3333-4444-555555555555"
     let patch = UplinkPayload {
         vless_xhttp_url: Some("https://new.example.com/B/xhttp".into()),
         vless_mode: Some("xhttp_h3".into()),
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
         ..Default::default()
     };
     merge_patch_into_table(arr.get_mut(idx).unwrap(), &patch);
@@ -276,6 +282,9 @@ fn payload_with_fallbacks_round_trips_through_section() {
         transport: Some("vless".into()),
         vless_xhttp_url: Some("https://cdn.example.com/SECRET/xhttp".into()),
         vless_mode: Some("xhttp_h3".into()),
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
         vless_id: Some("00000000-0000-0000-0000-000000000000".into()),
         method: Some("chacha20-ietf-poly1305".into()),
         password: Some("some-long-password".into()),
@@ -323,6 +332,9 @@ fn rendered_toml_inserted_into_document_includes_fallbacks_array() {
         transport: Some("vless".into()),
         vless_ws_url: Some("wss://primary.example.com/v".into()),
         vless_mode: Some("ws_h2".into()),
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
         vless_id: Some("00000000-0000-0000-0000-000000000000".into()),
         fallbacks: Some(vec![FallbackPayload {
             transport: "ws".into(),
@@ -485,6 +497,9 @@ fn payload_accepts_vless_xhttp_primary_with_vless_ws_fallback() {
         transport: Some("vless".into()),
         vless_xhttp_url: Some("https://cdn.example.com/SECRET/xhttp".into()),
         vless_mode: Some("xhttp_h3".into()),
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
         vless_id: Some("00000000-0000-0000-0000-000000000000".into()),
         method: Some("chacha20-ietf-poly1305".into()),
         password: Some("some-long-password".into()),
@@ -492,6 +507,9 @@ fn payload_accepts_vless_xhttp_primary_with_vless_ws_fallback() {
             transport: "vless".into(),
             vless_ws_url: Some("wss://vless-ws.example.com/v".into()),
             vless_mode: Some("ws_h3".into()),
+            ss_ws_url: None,
+            ss_xhttp_url: None,
+            ss_mode: None,
             vless_id: Some("11111111-2222-3333-4444-555555555555".into()),
             ..Default::default()
         }]),

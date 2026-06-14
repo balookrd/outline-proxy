@@ -24,7 +24,7 @@ use tokio::time::{Instant, timeout};
 
 use outline_transport::DnsCache;
 
-use crate::config::{ProbeConfig, TransportMode, UplinkConfig, UplinkTransport};
+use crate::config::{ProbeConfig, SsPathKind, TransportMode, UplinkConfig, UplinkTransport};
 
 use self::dns::run_dns_probe;
 use self::http::run_http_probe;
@@ -141,6 +141,7 @@ async fn run_tcp_probe(
                             url,
                             effective_tcp_mode,
                             uplink.fwmark,
+                            uplink.combined_ss_kind(SsPathKind::Tcp),
                             Arc::clone(&dial_limit),
                             probe.timeout,
                         )
@@ -281,6 +282,7 @@ async fn run_udp_probe(
                             url,
                             effective_udp_mode,
                             uplink.fwmark,
+                            uplink.combined_ss_kind(SsPathKind::Udp),
                             Arc::clone(&dial_limit),
                             probe.timeout,
                         )

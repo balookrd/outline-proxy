@@ -9,6 +9,8 @@ use url::Url;
 
 #[cfg(feature = "h3")]
 use crate::h3::connect_websocket_h3;
+use outline_wire::xhttp::SsPathKind;
+
 use crate::{
     DnsCache, SessionId, TransportMode, TransportOperation, TransportStream, connect_tcp_socket,
     h2::connect_websocket_h2, ws_mode_cache, ws_stream::H1WsStream, xhttp_mode_cache,
@@ -48,6 +50,12 @@ pub struct TransportDialOptions<'a> {
     pub source: &'static str,
     pub network: DialNetworkOptions,
     pub resume: DialResumeOptions,
+    /// Set on a *combined* Shadowsocks dial (TCP and UDP share one base
+    /// path). The XHTTP carriers encode this into the session-id's first
+    /// character so the server can recover TCP-vs-UDP on the shared path;
+    /// the WS carriers append it as a `/{token}` URL segment. `None` for
+    /// split-path SS and for VLESS, which keeps the historical wire shape.
+    pub combined_ss_kind: Option<SsPathKind>,
 }
 
 impl<'a> TransportDialOptions<'a> {
@@ -64,6 +72,7 @@ impl<'a> TransportDialOptions<'a> {
             source,
             network: DialNetworkOptions::default(),
             resume: DialResumeOptions::default(),
+            combined_ss_kind: None,
         }
     }
 
@@ -74,6 +83,14 @@ impl<'a> TransportDialOptions<'a> {
 
     pub fn with_resume(mut self, resume: DialResumeOptions) -> Self {
         self.resume = resume;
+        self
+    }
+
+    /// Marks this dial as the TCP or UDP leg of a combined Shadowsocks path
+    /// (TCP and UDP sharing one base path / URL). The carriers carry the
+    /// hidden discriminator accordingly; leave unset for split paths.
+    pub fn with_combined_ss_kind(mut self, kind: Option<SsPathKind>) -> Self {
+        self.combined_ss_kind = kind;
         self
     }
 }
@@ -110,6 +127,21 @@ impl DialPlan {
     }
 
     async fn connect(self, options: TransportDialOptions<'_>) -> Result<TransportStream> {
+        // On a combined WS dial the TCP/UDP discriminator rides a `/{token}`
+        // path segment appended here; XHTTP carries it in the session-id
+        // instead, so XHTTP modes leave `options.url` untouched. The owned
+        // URL is built once so its borrow outlives every carrier branch.
+        let combined_ws_url = match options.combined_ss_kind {
+            Some(kind) if !self.selected.is_xhttp() => {
+                Some(append_ws_token_segment(options.url, kind)?)
+            },
+            _ => None,
+        };
+        let mut options = options;
+        if let Some(url) = combined_ws_url.as_ref() {
+            options.url = url;
+        }
+
         // Pick the dial's TLS fingerprint once and scope it here so every
         // carrier's TLS-config build below mimics the same browser family the
         // HTTP headers advertise. One scope at the dispatch root covers all
@@ -317,6 +349,7 @@ impl DialPlan {
             options.resume.ack_prefix_requested,
             options.resume.symmetric_replay_requested,
             options.resume.client_acked_offset,
+            options.combined_ss_kind,
         )
         .await
         {
@@ -356,6 +389,7 @@ impl DialPlan {
             options.resume.ack_prefix_requested,
             options.resume.symmetric_replay_requested,
             options.resume.client_acked_offset,
+            options.combined_ss_kind,
         )
         .await
         {
@@ -395,6 +429,7 @@ impl DialPlan {
                         options.resume.ack_prefix_requested,
                         options.resume.symmetric_replay_requested,
                         options.resume.client_acked_offset,
+                        options.combined_ss_kind,
                     )
                     .await?;
                 debug!(
@@ -424,6 +459,7 @@ impl DialPlan {
                 options.resume.ack_prefix_requested,
                 options.resume.symmetric_replay_requested,
                 options.resume.client_acked_offset,
+                options.combined_ss_kind,
             )
             .await?;
         debug!(url = %options.url, selected_mode = "xhttp_h1", ?issued, "xhttp h1 connected");
@@ -439,6 +475,22 @@ impl DialPlan {
 /// caches and inline fallback chains before returning a unified stream.
 pub async fn connect_transport(options: TransportDialOptions<'_>) -> Result<TransportStream> {
     DialPlan::resolve(&options).await.connect(options).await
+}
+
+/// Appends a random `/{token}` segment to a WebSocket base URL, encoding the
+/// combined-path TCP/UDP discriminator into the token's first character (see
+/// [`outline_wire::xhttp::SsPathKind`]). On a combined path the server
+/// registers `<ws-base>/{token}` and recovers the kind from the token; split
+/// paths never reach here. Reuses the XHTTP session-id generator so the token
+/// shares the exact same shape and validation contract.
+fn append_ws_token_segment(base: &Url, kind: SsPathKind) -> Result<Url> {
+    let token = crate::xhttp::generate_session_id(Some(kind))?;
+    let mut url = base.clone();
+    url.path_segments_mut()
+        .map_err(|()| anyhow!("websocket url cannot be a base: {base}"))?
+        .pop_if_empty()
+        .push(&token);
+    Ok(url)
 }
 
 async fn connect_websocket_http1(

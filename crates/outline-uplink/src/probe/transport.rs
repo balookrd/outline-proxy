@@ -20,7 +20,7 @@ use outline_transport::{
     TransportDialOptions, TransportOperation, UpstreamTransportGuard, connect_transport,
 };
 
-use crate::config::{TargetAddr, TransportMode, UplinkConfig, UplinkTransport};
+use crate::config::{SsPathKind, TargetAddr, TransportMode, UplinkConfig, UplinkTransport};
 
 /// Connects a probe's Shadowsocks TCP stream (tunnelled through WebSocket) and
 /// returns the framed writer/reader halves plus a downgrade marker.  `source`
@@ -121,7 +121,8 @@ pub(super) async fn connect_probe_tcp(
                     .with_network(DialNetworkOptions {
                         fwmark: uplink.fwmark,
                         ipv6_first: uplink.ipv6_first,
-                    }),
+                    })
+                    .with_combined_ss_kind(uplink.combined_ss_kind(SsPathKind::Tcp)),
                 ),
             )
             .await

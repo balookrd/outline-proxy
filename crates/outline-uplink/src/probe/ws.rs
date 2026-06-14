@@ -12,7 +12,8 @@ use tokio::sync::Semaphore;
 use tracing::debug;
 
 use outline_transport::{
-    DialNetworkOptions, DnsCache, TransportDialOptions, TransportOperation, connect_transport,
+    DialNetworkOptions, DnsCache, SsPathKind, TransportDialOptions, TransportOperation,
+    connect_transport,
 };
 
 use crate::config::{TransportMode, UplinkTransport};
@@ -26,6 +27,7 @@ pub(super) async fn run_ws_probe(
     url: &url::Url,
     mode: TransportMode,
     fwmark: Option<u32>,
+    combined_ss_kind: Option<SsPathKind>,
     dial_limit: Arc<Semaphore>,
     _pong_timeout: Duration,
 ) -> Result<Option<TransportMode>> {
@@ -36,7 +38,8 @@ pub(super) async fn run_ws_probe(
     // data-path is checked by the http / dns sub-probes that follow.
     let mut ws_stream = connect_transport(
         TransportDialOptions::new(cache, url, mode, "probe_ws")
-            .with_network(DialNetworkOptions { fwmark, ipv6_first: false }),
+            .with_network(DialNetworkOptions { fwmark, ipv6_first: false })
+            .with_combined_ss_kind(combined_ss_kind),
     )
     .await
     .with_context(|| TransportOperation::Connect {

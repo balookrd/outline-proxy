@@ -8,7 +8,7 @@ use outline_transport::{
     DialNetworkOptions, TransportDialOptions, TransportStream, connect_transport,
 };
 
-use crate::config::UplinkTransport;
+use crate::config::{SsPathKind, UplinkTransport};
 use crate::error_classify::StandbyProbeExpected;
 use crate::probe::is_expected_standby_probe_failure;
 use outline_transport::collections::maybe_shrink_vecdeque;
@@ -154,7 +154,8 @@ impl<'a> StandbyCtx<'a> {
                         .with_network(DialNetworkOptions {
                             fwmark: self.uplink.fwmark,
                             ipv6_first: self.uplink.ipv6_first,
-                        }),
+                        })
+                        .with_combined_ss_kind(self.uplink.combined_ss_kind(SsPathKind::Tcp)),
                 ),
             )
             .await

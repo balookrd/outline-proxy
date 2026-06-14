@@ -33,8 +33,8 @@ use crate::resumption::SessionId;
 use super::stream::io_ws_err;
 use super::{
     ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, XhttpStream, XhttpSubmode, XhttpTarget,
-    generate_session_id,
+    RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, SsPathKind, XhttpStream, XhttpSubmode,
+    XhttpTarget, generate_session_id,
 };
 
 /// Same dial budget the h2 path uses — keeps fallback windows
@@ -84,6 +84,7 @@ pub(super) async fn connect_xhttp_h3(
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
+    combined_ss_kind: Option<SsPathKind>,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     let host = url
         .host_str()
@@ -121,7 +122,7 @@ pub(super) async fn connect_xhttp_h3(
         })?;
 
         let send_request = h3_handshake(server_addr, &host, fwmark).await?;
-        let session_id = generate_session_id()?;
+        let session_id = generate_session_id(combined_ss_kind)?;
 
         let authority = if port == 443 {
             host.clone()

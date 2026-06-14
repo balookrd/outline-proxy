@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::BTreeSet, net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
@@ -26,10 +26,10 @@ use super::super::{
     shutdown::ShutdownSignal,
     state::{AppState, AuthPolicy, RoutesSnapshot, Services},
     transport::{
-        HttpFallbackContext, XhttpAppProtocol, XhttpAxumState, http_fallback_handler,
-        metrics_handler, not_found_handler, root_http_auth_handler, sni_fallback,
-        tcp_websocket_upgrade, udp_websocket_upgrade, vless_websocket_upgrade, xhttp_handler,
-        xhttp_handler_no_session, xhttp_handler_with_path_seq,
+        HttpFallbackContext, XhttpAppProtocol, XhttpAxumState, combined_websocket_upgrade,
+        http_fallback_handler, metrics_handler, not_found_handler, root_http_auth_handler,
+        sni_fallback, tcp_websocket_upgrade, udp_websocket_upgrade, vless_websocket_upgrade,
+        xhttp_handler, xhttp_handler_no_session, xhttp_handler_with_path_seq,
     },
 };
 use super::cert_reload::{spawn_cert_reloader, tcp_cert_paths};
@@ -49,25 +49,63 @@ pub(in crate::server) fn build_app(
     }
 
     let snap = routes.load();
+    // A WS base path present in BOTH the tcp and udp tables is a *combined*
+    // path: it carries both legs, told apart by the hidden bit in the
+    // `/{token}` segment. Register it once as `<base>/{token}` on the
+    // combined handler; split paths keep their bare per-leg routes.
+    let combined_ws: BTreeSet<String> = snap
+        .tcp
+        .keys()
+        .filter(|p| snap.udp.contains_key(*p))
+        .cloned()
+        .collect();
     for path in snap.tcp.keys() {
-        router = router.route(path, any(tcp_websocket_upgrade));
+        if combined_ws.contains(path) {
+            router = router.route(&format!("{path}/{{token}}"), any(combined_websocket_upgrade));
+        } else {
+            router = router.route(path, any(tcp_websocket_upgrade));
+        }
     }
 
     for path in snap.udp.keys() {
-        router = router.route(path, any(udp_websocket_upgrade));
+        // Combined paths were already registered via the tcp loop above.
+        if !combined_ws.contains(path) {
+            router = router.route(path, any(udp_websocket_upgrade));
+        }
     }
 
     for path in snap.vless.keys() {
         router = router.route(path, any(vless_websocket_upgrade));
     }
-    // One base path serves exactly one protocol; tag each so the merged
-    // loop below can stamp the right `XhttpAppProtocol` into its state.
+    // One base path serves exactly one protocol; tag each so the merged loop
+    // below can stamp the right `XhttpAppProtocol` into its state. An ss base
+    // present in both the ss and ss-udp tables is combined — tagged
+    // `SsCombined` once (and skipped in the ss-udp chain), so `resolve_route`
+    // decodes the session-id bit to pick the tcp or udp table.
+    let combined_ss_xhttp: BTreeSet<String> = snap
+        .xhttp_ss
+        .keys()
+        .filter(|p| snap.xhttp_ss_udp.contains_key(*p))
+        .cloned()
+        .collect();
     let xhttp_bases: Vec<(String, XhttpAppProtocol)> = snap
         .xhttp_vless
         .keys()
         .map(|p| (p.clone(), XhttpAppProtocol::Vless))
-        .chain(snap.xhttp_ss.keys().map(|p| (p.clone(), XhttpAppProtocol::Ss)))
-        .chain(snap.xhttp_ss_udp.keys().map(|p| (p.clone(), XhttpAppProtocol::SsUdp)))
+        .chain(snap.xhttp_ss.keys().map(|p| {
+            let proto = if combined_ss_xhttp.contains(p) {
+                XhttpAppProtocol::SsCombined
+            } else {
+                XhttpAppProtocol::Ss
+            };
+            (p.clone(), proto)
+        }))
+        .chain(
+            snap.xhttp_ss_udp
+                .keys()
+                .filter(|p| !combined_ss_xhttp.contains(*p))
+                .map(|p| (p.clone(), XhttpAppProtocol::SsUdp)),
+        )
         .collect();
     drop(snap);
 

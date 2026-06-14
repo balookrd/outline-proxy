@@ -248,11 +248,11 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `tuning.ws_data_channel_capacity` | Per-session bounded mpsc capacity (in chunks) for the WebSocket writer fan-in (upstream-reader → WS-writer for TCP relay, NAT-reader → WS-writer for UDP relay). Defaults: `16` / `64` / `128` for `small` / `medium` / `large`. Sized too low and a momentary WS writer stall back-pressures the upstream read, visible as video buffer underrun; sized too high inflates worst-case per-session memory residency (`capacity × 16 KiB` for TCP). Tune up for high-bandwidth single-tenant deployments, down for memory-constrained hosts with many concurrent sessions |
 | `tuning.h2_*` / `tuning.h3_*` | Fine-grained H2/H3 flow-control windows, stream limits and socket buffers — see `TuningProfile` in `src/config/mod.rs` |
 | `ws_path_tcp` | Default TCP WebSocket path |
-| `ws_path_udp` | Default UDP WebSocket path |
+| `ws_path_udp` | Default UDP WebSocket path. May equal `ws_path_tcp` for a *combined* path — the client then dials `<base>/<token>` and the token's first character carries a hidden TCP/UDP discriminator |
 | `ws_path_vless` | Optional VLESS-over-WebSocket TCP path on the main HTTP/1.1/HTTP/2 listener |
 | `xhttp_path_vless` | Optional VLESS-over-XHTTP base path. Server registers `<base>/{id}` for each base; `{id}` is an opaque per-session token chosen by the client. Distinct from `ws_path_vless` |
 | `xhttp_path_ss` | Optional Shadowsocks-over-XHTTP base path. Same `<base>/{id}` route shape as `xhttp_path_vless`, but carries the SS AEAD stream. One base path serves one protocol — must differ from `xhttp_path_vless` |
-| `xhttp_path_ss_udp` | Optional SS-UDP-over-XHTTP base path. Separate from `xhttp_path_ss` (the TCP path), mirroring `ws_path_tcp` vs `ws_path_udp`. Must differ from all other paths |
+| `xhttp_path_ss_udp` | Optional SS-UDP-over-XHTTP base path. Separate from `xhttp_path_ss` (the TCP path), mirroring `ws_path_tcp` vs `ws_path_udp`. Must differ from every other protocol's path, but **may equal `xhttp_path_ss`** to serve both legs from one *combined* base path — the session-id's first character then carries the hidden TCP/UDP discriminator |
 | `http_root_auth` | Enable OpenConnect-style HTTP Basic auth on `/`; after 3 failed passwords it returns `403`, while non-root paths still return `404` |
 | `http_root_realm` | Text shown in the HTTP Basic password prompt for `/`; default is `Authorization required` |
 | `public_host` | Public host used for generated Outline access keys |

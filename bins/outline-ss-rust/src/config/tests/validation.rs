@@ -121,6 +121,49 @@ fn accepts_xhttp_path_ss_with_password_user() {
 }
 
 #[test]
+fn accepts_combined_ws_tcp_udp_path() {
+    // The opt-in combined mode: one user shares a single base path for both
+    // TCP and UDP. The hidden token bit splits them, so this must validate.
+    Config {
+        ws_path_tcp: "/both".into(),
+        ws_path_udp: "/both".into(),
+        ..base_config()
+    }
+    .validate()
+    .unwrap();
+}
+
+#[test]
+fn accepts_combined_xhttp_ss_path() {
+    // Same idea on the XHTTP carrier: one ss base path for tcp and udp.
+    Config {
+        xhttp_path_ss: Some("/ssc".into()),
+        xhttp_path_ss_udp: Some("/ssc".into()),
+        ..base_config()
+    }
+    .validate()
+    .unwrap();
+}
+
+#[test]
+fn rejects_combined_ws_path_colliding_with_other_protocol() {
+    // Combining tcp+udp on one path is allowed, but that path must still be
+    // distinct from every OTHER protocol's path — a combined ws base sharing
+    // a value with an ss-xhttp base is a conflict, not a second combine.
+    let error = Config {
+        ws_path_tcp: "/shared".into(),
+        ws_path_udp: "/shared".into(),
+        xhttp_path_ss: Some("/shared".into()),
+        ..base_config()
+    }
+    .validate()
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("must be distinct"), "got: {error}");
+}
+
+#[test]
 fn rejects_xhttp_path_ss_without_leading_slash() {
     let error = Config {
         xhttp_path_ss: Some("ss".into()),
@@ -165,16 +208,8 @@ fn accepts_xhttp_path_ss_udp_with_password_user() {
     .unwrap();
 }
 
-#[test]
-fn rejects_xhttp_path_ss_udp_equal_to_xhttp_path_ss() {
-    // The TCP and UDP SS-XHTTP base paths must differ (mirrors ws_path_tcp
-    // vs ws_path_udp).
-    let mut cfg = base_config();
-    cfg.xhttp_path_ss = Some("/x".into());
-    cfg.xhttp_path_ss_udp = Some("/x".into());
-    let error = cfg.validate().unwrap_err().to_string();
-    assert!(error.contains("ss-udp-xhttp"), "got: {error}");
-}
+// Note: `xhttp_path_ss == xhttp_path_ss_udp` used to be rejected, but now
+// opts the base path into combined mode — see `accepts_combined_xhttp_ss_path`.
 
 #[test]
 fn allows_vless_reverse_user_without_ws_path() {

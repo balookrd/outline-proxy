@@ -38,9 +38,14 @@
 
 XHTTP — это протокол `packet-up` / `stream-one`. VLESS ходит по нему для
 TCP + UDP на одном пути; Shadowsocks — на **forward-пути** (client→server) и для
-TCP, и для UDP, но на раздельных base-путях (`xhttp_path_ss` /
-`xhttp_path_ss_udp`, зеркаля WS-разделение tcp/udp). Reverse-tunnel поверх XHTTP —
-запланированное продолжение. Все остальные ячейки поддерживаются в обе стороны.
+TCP, и для UDP. По умолчанию TCP и UDP идут по раздельным base-путям
+(`xhttp_path_ss` / `xhttp_path_ss_udp`, зеркаля WS-разделение tcp/udp); опционально
+их можно свести на **один общий путь** (задать оба серверных пути одинаковыми и
+дать клиенту один URL на обе ноги). Тогда разделение TCP/UDP несёт скрытый
+дискриминатор в session id, и цензор видит один endpoint вместо двух. Тот же
+combined-вариант работает и для WebSocket (`ws_path_tcp` == `ws_path_udp`).
+Reverse-tunnel поверх XHTTP — запланированное продолжение. Все остальные ячейки
+поддерживаются в обе стороны.
 
 Клиент выбирает пару `transport` + `mode` на каждый uplink:
 

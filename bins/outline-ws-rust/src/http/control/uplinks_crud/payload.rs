@@ -24,6 +24,12 @@ pub(crate) struct UplinkPayload {
     pub(crate) vless_ws_url: Option<String>,
     pub(crate) vless_xhttp_url: Option<String>,
     pub(crate) vless_mode: Option<String>,
+    /// `transport = "ss"` combined-path mode: one URL for both legs (server
+    /// splits by a hidden session-id / token bit). `ss_xhttp_url` = XHTTP,
+    /// `ss_ws_url` = WS; `ss_mode` is the single carrier mode.
+    pub(crate) ss_ws_url: Option<String>,
+    pub(crate) ss_xhttp_url: Option<String>,
+    pub(crate) ss_mode: Option<String>,
     /// VLESS share-link URI; expanded into the matching `vless_*` fields
     /// at load time. Mutually exclusive with the explicit fields. The
     /// `share_link` alias keeps API ergonomics close to other VPN tooling
@@ -67,6 +73,9 @@ pub(crate) struct FallbackPayload {
     pub(crate) vless_ws_url: Option<String>,
     pub(crate) vless_xhttp_url: Option<String>,
     pub(crate) vless_mode: Option<String>,
+    pub(crate) ss_ws_url: Option<String>,
+    pub(crate) ss_xhttp_url: Option<String>,
+    pub(crate) ss_mode: Option<String>,
     pub(crate) method: Option<String>,
     pub(crate) password: Option<String>,
     pub(crate) fwmark: Option<u32>,
@@ -179,6 +188,9 @@ pub(super) fn payload_to_table(payload: &UplinkPayload) -> Table {
     set_str(&mut tbl, "vless_ws_url", payload.vless_ws_url.as_deref());
     set_str(&mut tbl, "vless_xhttp_url", payload.vless_xhttp_url.as_deref());
     set_str(&mut tbl, "vless_mode", payload.vless_mode.as_deref());
+    set_str(&mut tbl, "ss_ws_url", payload.ss_ws_url.as_deref());
+    set_str(&mut tbl, "ss_xhttp_url", payload.ss_xhttp_url.as_deref());
+    set_str(&mut tbl, "ss_mode", payload.ss_mode.as_deref());
     set_str(&mut tbl, "link", payload.link.as_deref());
     set_str(&mut tbl, "method", payload.method.as_deref());
     set_str(&mut tbl, "password", payload.password.as_deref());
@@ -221,6 +233,9 @@ fn fallbacks_to_array(fallbacks: &[FallbackPayload]) -> ArrayOfTables {
         set_str(&mut sub, "vless_ws_url", fb.vless_ws_url.as_deref());
         set_str(&mut sub, "vless_xhttp_url", fb.vless_xhttp_url.as_deref());
         set_str(&mut sub, "vless_mode", fb.vless_mode.as_deref());
+        set_str(&mut sub, "ss_ws_url", fb.ss_ws_url.as_deref());
+        set_str(&mut sub, "ss_xhttp_url", fb.ss_xhttp_url.as_deref());
+        set_str(&mut sub, "ss_mode", fb.ss_mode.as_deref());
         set_str(&mut sub, "method", fb.method.as_deref());
         set_str(&mut sub, "password", fb.password.as_deref());
         if let Some(fw) = fb.fwmark {
@@ -273,6 +288,15 @@ pub(super) fn merge_patch_into_table(tbl: &mut Table, patch: &UplinkPayload) {
     }
     if let Some(v) = patch.vless_mode.as_deref() {
         set_str(tbl, "vless_mode", Some(v));
+    }
+    if let Some(v) = patch.ss_ws_url.as_deref() {
+        set_str(tbl, "ss_ws_url", Some(v));
+    }
+    if let Some(v) = patch.ss_xhttp_url.as_deref() {
+        set_str(tbl, "ss_xhttp_url", Some(v));
+    }
+    if let Some(v) = patch.ss_mode.as_deref() {
+        set_str(tbl, "ss_mode", Some(v));
     }
     if let Some(v) = patch.link.as_deref() {
         set_str(tbl, "link", Some(v));
