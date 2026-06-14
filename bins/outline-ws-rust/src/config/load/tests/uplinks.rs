@@ -742,3 +742,45 @@ fn combined_ss_url_rejects_split_url_fields() {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn combined_ss_fallback_does_not_require_tcp_ws_url() {
+    // Repro of the production bug: a combined SS fallback (`ss_ws_url` +
+    // `ss_mode`) was validated as a split wire and wrongly demanded
+    // `tcp_ws_url`. It must resolve to a combined wire instead.
+    let fb = FallbackSection {
+        transport: UplinkTransport::Ss,
+        ss_ws_url: Some(Url::parse("wss://fb.example.com/ws").unwrap()),
+        ss_mode: Some(TransportMode::WsH3),
+        ..empty_fallback()
+    };
+    let mut section =
+        ss_xhttp_uplink_section("p", "https://cdn.example.com/ss", TransportMode::XhttpH2);
+    section.fallbacks = Some(vec![fb]);
+    let cfg = resolve(section).expect("combined ss fallback should resolve");
+    let wire = &cfg.fallbacks[0];
+    assert!(wire.is_combined_ss(), "fallback should be combined");
+    let expected = Url::parse("wss://fb.example.com/ws").unwrap();
+    assert_eq!(wire.tcp_dial_url(), Some(&expected));
+    assert_eq!(wire.udp_dial_url(), Some(&expected));
+    assert_eq!(wire.tcp_dial_mode(), TransportMode::WsH3);
+}
+
+#[test]
+fn combined_ss_xhttp_fallback_resolves() {
+    // Same on the XHTTP carrier: `ss_xhttp_url` + an XHTTP `ss_mode`.
+    let fb = FallbackSection {
+        transport: UplinkTransport::Ss,
+        ss_xhttp_url: Some(Url::parse("https://fb.example.com/xh").unwrap()),
+        ss_mode: Some(TransportMode::XhttpH3),
+        ..empty_fallback()
+    };
+    let mut section = ws_uplink_section("p", "wss://cdn.example.com/ws", Vec::new());
+    section.fallbacks = Some(vec![fb]);
+    let cfg = resolve(section).expect("combined ss-xhttp fallback should resolve");
+    let wire = &cfg.fallbacks[0];
+    assert!(wire.is_combined_ss());
+    let expected = Url::parse("https://fb.example.com/xh").unwrap();
+    assert_eq!(wire.tcp_dial_url(), Some(&expected));
+    assert_eq!(wire.tcp_dial_mode(), TransportMode::XhttpH3);
+}
