@@ -262,7 +262,7 @@ impl UplinkManager {
                 transport: uplink.transport.to_string(),
                 tcp_mode: match uplink.transport {
                     UplinkTransport::Ss => {
-                        uplink.tcp_ws_url.as_ref().map(|_| uplink.tcp_mode.to_string())
+                        uplink.tcp_dial_url().map(|_| uplink.tcp_mode.to_string())
                     },
                     UplinkTransport::Vless => {
                         uplink.tcp_dial_url().map(|_| uplink.vless_mode.to_string())

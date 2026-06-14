@@ -14,6 +14,10 @@ pub(crate) struct ConfigFile {
     pub(super) socks5: Option<Socks5Section>,
     pub(super) transport: Option<UplinkTransport>,
     pub(super) tcp_ws_url: Option<Url>,
+    /// `transport = "ss"` only. Base URL for SS-over-XHTTP; dialed instead
+    /// of `tcp_ws_url` when `tcp_mode` is `xhttp_h1` / `xhttp_h2` /
+    /// `xhttp_h3`. Mirrors `vless_xhttp_url` for the SS payload.
+    pub(super) tcp_xhttp_url: Option<Url>,
     pub(super) tcp_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
     pub(super) udp_mode: Option<TransportMode>,
@@ -155,6 +159,10 @@ pub(super) struct Socks5UserSection {
 pub(crate) struct OutlineSection {
     pub(super) transport: Option<UplinkTransport>,
     pub(super) tcp_ws_url: Option<Url>,
+    /// `transport = "ss"` only. Base URL for SS-over-XHTTP; dialed instead
+    /// of `tcp_ws_url` when `tcp_mode` is `xhttp_h1` / `xhttp_h2` /
+    /// `xhttp_h3`. Mirrors `vless_xhttp_url` for the SS payload.
+    pub(super) tcp_xhttp_url: Option<Url>,
     pub(super) tcp_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
     pub(super) udp_mode: Option<TransportMode>,
@@ -270,6 +278,10 @@ pub(crate) struct UplinkSection {
     pub(crate) name: Option<String>,
     pub(crate) transport: Option<UplinkTransport>,
     pub(crate) tcp_ws_url: Option<Url>,
+    /// `transport = "ss"` only. Base URL for SS-over-XHTTP; dialed instead
+    /// of `tcp_ws_url` when `tcp_mode` is `xhttp_h1` / `xhttp_h2` /
+    /// `xhttp_h3`. Mirrors `vless_xhttp_url` for the SS payload.
+    pub(crate) tcp_xhttp_url: Option<Url>,
     pub(crate) tcp_mode: Option<TransportMode>,
     pub(crate) udp_ws_url: Option<Url>,
     pub(crate) udp_mode: Option<TransportMode>,
@@ -377,6 +389,10 @@ pub(crate) struct UplinkSection {
 pub(crate) struct FallbackSection {
     pub(crate) transport: UplinkTransport,
     pub(crate) tcp_ws_url: Option<Url>,
+    /// `transport = "ss"` only. Base URL for SS-over-XHTTP; dialed instead
+    /// of `tcp_ws_url` when `tcp_mode` is `xhttp_h1` / `xhttp_h2` /
+    /// `xhttp_h3`. Mirrors `vless_xhttp_url` for the SS payload.
+    pub(crate) tcp_xhttp_url: Option<Url>,
     pub(crate) tcp_mode: Option<TransportMode>,
     pub(crate) udp_ws_url: Option<Url>,
     pub(crate) udp_mode: Option<TransportMode>,

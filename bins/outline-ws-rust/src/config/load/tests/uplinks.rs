@@ -20,6 +20,7 @@ fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> 
         name: Some(name.to_string()),
         transport: Some(UplinkTransport::Ss),
         tcp_ws_url: Some(Url::parse(url).unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: Some(TransportMode::WsH1),
         udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
         udp_mode: Some(TransportMode::WsH1),
@@ -51,6 +52,7 @@ fn vless_uplink_section(
         name: Some(name.to_string()),
         transport: Some(UplinkTransport::Vless),
         tcp_ws_url: None,
+        tcp_xhttp_url: None,
         tcp_mode: None,
         udp_ws_url: None,
         udp_mode: None,
@@ -77,6 +79,7 @@ fn empty_fallback() -> FallbackSection {
     FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: None,
+        tcp_xhttp_url: None,
         tcp_mode: None,
         udp_ws_url: None,
         udp_mode: None,
@@ -117,6 +120,7 @@ fn vless_primary_with_two_ws_fallbacks_inherits_password_and_fwmark() {
     let ws_fb = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         udp_ws_url: Some(Url::parse("wss://ws.example.com/udp").unwrap()),
         tcp_mode: Some(TransportMode::WsH2),
         udp_mode: Some(TransportMode::WsH1),
@@ -125,6 +129,7 @@ fn vless_primary_with_two_ws_fallbacks_inherits_password_and_fwmark() {
     let ws_fb_2 = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://ws2.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let cfg = resolve(vless_uplink_section(
@@ -155,6 +160,7 @@ fn fallback_can_override_inherited_password_and_fwmark() {
     let fb = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         password: Some("override-secret".to_string()),
         fwmark: Some(7),
         ipv6_first: Some(false),
@@ -212,11 +218,13 @@ fn allows_two_ws_fallbacks_at_distinct_endpoints() {
     let ws_fb_1 = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://a.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let ws_fb_2 = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://b.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let cfg = resolve(vless_uplink_section(
@@ -282,16 +290,19 @@ fn shuffle_wires_off_preserves_operator_ordering() {
     let fb_a = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let fb_b = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let fb_c = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-c.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let mut section =
@@ -325,16 +336,19 @@ fn shuffle_wires_on_keeps_full_wire_set_intact() {
     let fb_a = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let fb_b = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let fb_c = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-c.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let expected: std::collections::BTreeSet<String> = [
@@ -380,11 +394,13 @@ fn shuffle_wires_on_eventually_promotes_a_fallback_to_primary() {
     let fb_a = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let fb_b = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
 
@@ -431,11 +447,13 @@ fn shuffle_wires_per_group_avoids_collisions_in_the_same_group() {
     let fb_a = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let fb_b = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let make_section = |name: &str| {
@@ -489,11 +507,13 @@ fn shuffle_wires_per_group_isolates_groups() {
     let fb_a = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-a.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let fb_b = FallbackSection {
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse("wss://fb-b.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
         ..empty_fallback()
     };
     let make_section = |name: &str, group: &str| {
@@ -524,4 +544,94 @@ fn shuffle_wires_per_group_isolates_groups() {
     for cfg in &resolved {
         assert_eq!(1 + cfg.fallbacks.len(), 3);
     }
+}
+
+// ── SS-over-XHTTP ─────────────────────────────────────────────────────────────
+
+/// Build an SS uplink that dials over XHTTP: `tcp_mode = xhttp_*` with a
+/// matching `tcp_xhttp_url` and no `tcp_ws_url`.
+fn ss_xhttp_uplink_section(name: &str, xhttp_url: &str, mode: TransportMode) -> UplinkSection {
+    UplinkSection {
+        name: Some(name.to_string()),
+        transport: Some(UplinkTransport::Ss),
+        tcp_ws_url: None,
+        tcp_xhttp_url: Some(Url::parse(xhttp_url).unwrap()),
+        tcp_mode: Some(mode),
+        udp_ws_url: None,
+        udp_mode: None,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: None,
+        link: None,
+        method: Some(CipherKind::Chacha20IetfPoly1305),
+        password: Some("secret".to_string()),
+        weight: Some(1.0),
+        fwmark: None,
+        ipv6_first: None,
+        vless_id: None,
+        group: None,
+        fingerprint_profile: None,
+        fallbacks: None,
+        shuffle_wires: None,
+        carrier_downgrade: None,
+        shuffle_timer: None,
+    }
+}
+
+#[test]
+fn ss_xhttp_primary_parses_and_dials_xhttp_url() {
+    let cfg = resolve(ss_xhttp_uplink_section(
+        "ss-xhttp",
+        "https://cdn.example.com/ss",
+        TransportMode::XhttpH2,
+    ))
+    .expect("ss-over-xhttp uplink should parse");
+    assert_eq!(cfg.transport, UplinkTransport::Ss);
+    assert_eq!(cfg.tcp_dial_mode(), TransportMode::XhttpH2);
+    // The XHTTP mode must select `tcp_xhttp_url`, not `tcp_ws_url`.
+    assert_eq!(cfg.tcp_dial_url().map(|u| u.as_str()), Some("https://cdn.example.com/ss"));
+    assert!(cfg.tcp_ws_url.is_none());
+}
+
+#[test]
+fn ss_xhttp_mode_requires_tcp_xhttp_url() {
+    let mut section =
+        ss_xhttp_uplink_section("ss-xhttp", "https://cdn.example.com/ss", TransportMode::XhttpH2);
+    section.tcp_xhttp_url = None;
+    let err = resolve(section).expect_err("xhttp mode without tcp_xhttp_url must fail");
+    assert!(err.to_string().contains("tcp_xhttp_url"), "unexpected error: {err}");
+}
+
+#[test]
+fn ss_xhttp_mode_rejects_tcp_ws_url() {
+    let mut section =
+        ss_xhttp_uplink_section("ss-xhttp", "https://cdn.example.com/ss", TransportMode::XhttpH2);
+    section.tcp_ws_url = Some(Url::parse("wss://cdn.example.com/ws").unwrap());
+    let err = resolve(section).expect_err("xhttp mode with tcp_ws_url must fail");
+    assert!(err.to_string().contains("tcp_ws_url"), "unexpected error: {err}");
+}
+
+#[test]
+fn ss_ws_mode_rejects_tcp_xhttp_url() {
+    // A WS-family `tcp_mode` must not carry an XHTTP URL.
+    let mut section = ws_uplink_section("ss-ws", "wss://cdn.example.com/ws", Vec::new());
+    section.tcp_xhttp_url = Some(Url::parse("https://cdn.example.com/ss").unwrap());
+    let err = resolve(section).expect_err("ws mode with tcp_xhttp_url must fail");
+    assert!(err.to_string().contains("tcp_xhttp_url"), "unexpected error: {err}");
+}
+
+#[test]
+fn ss_xhttp_fallback_after_ss_ws_primary_parses() {
+    let xhttp_fb = FallbackSection {
+        transport: UplinkTransport::Ss,
+        tcp_xhttp_url: Some(Url::parse("https://cdn.example.com/ss").unwrap()),
+        tcp_mode: Some(TransportMode::XhttpH2),
+        ..empty_fallback()
+    };
+    let cfg = resolve(ws_uplink_section("ss", "wss://main.example.com/tcp", vec![xhttp_fb]))
+        .expect("ss-ws primary with ss-xhttp fallback should parse");
+    assert_eq!(cfg.fallbacks.len(), 1);
+    let fb = &cfg.fallbacks[0];
+    assert_eq!(fb.tcp_dial_mode(), TransportMode::XhttpH2);
+    assert_eq!(fb.tcp_dial_url().map(|u| u.as_str()), Some("https://cdn.example.com/ss"));
 }

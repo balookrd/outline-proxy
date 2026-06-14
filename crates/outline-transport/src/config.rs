@@ -48,6 +48,15 @@ pub enum TransportMode {
     XhttpH3,
 }
 
+impl TransportMode {
+    /// True for the XHTTP carrier family (`xhttp_h1` / `xhttp_h2` /
+    /// `xhttp_h3`). Centralises the variant match so dial-URL selection
+    /// and carrier checks do not re-spell the list each time.
+    pub const fn is_xhttp(self) -> bool {
+        matches!(self, Self::XhttpH1 | Self::XhttpH2 | Self::XhttpH3)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerAddr {
     host: String,

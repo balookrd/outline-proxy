@@ -15,46 +15,31 @@ use h3::server::RequestStream;
 use h3_quinn::BidiStream;
 use tracing::{debug, warn};
 
-use crate::{
-    metrics::{AppProtocol, Protocol, Transport},
-    server::state::VlessTransportRoute,
-};
+use crate::metrics::Protocol;
 
+use super::super::super::state::Services;
+use super::super::is_normal_h3_shutdown;
 use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
-use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
-use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
+use super::handlers::{XhttpRoute, spawn_relay};
 use super::padding::post_response_headers;
 use super::{
-    AttachOutcome, FIN_HEADER, SEQ_HEADER, UplinkIngestError, XhttpDuplex, XhttpRegistry,
-    XhttpSession, XhttpSubmode, generate_padding_header, is_valid_session_id,
-    masquerade_response_headers,
+    AttachOutcome, FIN_HEADER, SEQ_HEADER, UplinkIngestError, XhttpRegistry, XhttpSession,
+    XhttpSubmode, generate_padding_header, is_valid_session_id, masquerade_response_headers,
 };
 
 const MAX_POST_BYTES: usize = 256 * 1024;
 
 /// Session-routing context shared by every xhttp/h3 entry point: the
-/// process-wide session registry plus the VLESS route the request's
-/// base path resolved to. Built once per request by `h3/http.rs` and
-/// threaded through the method/submode dispatch below.
+/// process-wide session registry, the shared service bundle, and the
+/// (VLESS or SS) route the request's base path resolved to. Built once
+/// per request by `h3/http.rs` and threaded through the method/submode
+/// dispatch below. The relay itself is spawned via the shared
+/// [`spawn_relay`], identical to the axum h1/h2 path.
 pub(in crate::server) struct XhttpH3Ctx {
     pub(in crate::server) registry: Arc<XhttpRegistry>,
-    pub(in crate::server) vless_server: Arc<VlessWsServerCtx>,
-    pub(in crate::server) route: Arc<VlessTransportRoute>,
+    pub(in crate::server) services: Arc<Services>,
+    pub(in crate::server) route: XhttpRoute,
     pub(in crate::server) base_path: Arc<str>,
-}
-
-impl XhttpH3Ctx {
-    /// Per-relay route context: the same `VlessWsRouteCtx` shape the
-    /// WS-upgrade path builds, parameterised only by the metric
-    /// protocol of the carrier the session arrived on.
-    fn route_ctx(&self, protocol: Protocol) -> VlessWsRouteCtx {
-        VlessWsRouteCtx {
-            users: Arc::clone(&self.route.users),
-            protocol,
-            path: Arc::clone(&self.base_path),
-            candidate_users: Arc::clone(&self.route.candidate_users),
-        }
-    }
 }
 
 /// Dispatcher entry. Called from `h3/http.rs` once a non-CONNECT
@@ -134,7 +119,7 @@ async fn xhttp_h3_get(
 ) -> Result<()> {
     let protocol = protocol_from_h3_version(version);
     let resume_for_create =
-        ResumeContext::from_request_headers(&request_headers, &ctx.vless_server.orphan_registry);
+        ResumeContext::from_request_headers(&request_headers, &ctx.services.orphan_registry);
     // Captured before `resume_for_create` moves into spawn_relay; echoed in
     // the response like the h1/h2 XHTTP handlers do.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
@@ -144,7 +129,16 @@ async fn xhttp_h3_get(
         .get_or_create(&session_id, resume_for_create.issued_session_id);
 
     if created {
-        spawn_relay(ctx, Arc::clone(&session), protocol, resume_for_create);
+        spawn_relay(
+            Arc::clone(&session),
+            &ctx.services,
+            Arc::clone(&ctx.registry),
+            ctx.route.clone(),
+            Arc::clone(&ctx.base_path),
+            protocol,
+            peer_addr,
+            resume_for_create,
+        );
     }
 
     match session.try_attach_get() {
@@ -201,7 +195,7 @@ async fn xhttp_h3_post(
     let protocol = protocol_from_h3_version(version);
 
     let resume_for_create =
-        ResumeContext::from_request_headers(&headers, &ctx.vless_server.orphan_registry);
+        ResumeContext::from_request_headers(&headers, &ctx.services.orphan_registry);
     // Captured before `resume_for_create` moves on; echoed in the response
     // like the h1/h2 XHTTP handlers do.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
@@ -221,7 +215,16 @@ async fn xhttp_h3_post(
     }
 
     if created {
-        spawn_relay(ctx, Arc::clone(&session), protocol, resume_for_create);
+        spawn_relay(
+            Arc::clone(&session),
+            &ctx.services,
+            Arc::clone(&ctx.registry),
+            ctx.route.clone(),
+            Arc::clone(&ctx.base_path),
+            protocol,
+            peer_addr,
+            resume_for_create,
+        );
     }
 
     let mut body = BytesMut::new();
@@ -310,7 +313,7 @@ async fn xhttp_h3_stream_one(
 ) -> Result<()> {
     let protocol = protocol_from_h3_version(version);
     let resume_for_create =
-        ResumeContext::from_request_headers(&headers, &ctx.vless_server.orphan_registry);
+        ResumeContext::from_request_headers(&headers, &ctx.services.orphan_registry);
     // Captured before `resume_for_create` moves on; echoed in the response
     // like the h1/h2 XHTTP handlers do.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
@@ -322,7 +325,16 @@ async fn xhttp_h3_stream_one(
         return finish_with_status(stream, StatusCode::GONE).await;
     }
     if created {
-        spawn_relay(ctx, Arc::clone(&session), protocol, resume_for_create);
+        spawn_relay(
+            Arc::clone(&session),
+            &ctx.services,
+            Arc::clone(&ctx.registry),
+            ctx.route.clone(),
+            Arc::clone(&ctx.base_path),
+            protocol,
+            peer_addr,
+            resume_for_create,
+        );
     }
     match session.try_attach_get() {
         AttachOutcome::Ok => {},
@@ -497,38 +509,6 @@ async fn drive_downlink_h3(
         }
         notified.await;
     }
-}
-
-fn spawn_relay(
-    ctx: &XhttpH3Ctx,
-    session: Arc<XhttpSession>,
-    protocol: Protocol,
-    resume: ResumeContext,
-) {
-    let server = Arc::clone(&ctx.vless_server);
-    let registry = Arc::clone(&ctx.registry);
-    let route_ctx = ctx.route_ctx(protocol);
-    let session_for_task = Arc::clone(&session);
-    let session_id = Arc::clone(&session.id);
-    let metrics_session = server.metrics.open_websocket_session(
-        Transport::Tcp,
-        route_ctx.protocol,
-        AppProtocol::Vless,
-    );
-    tokio::spawn(async move {
-        let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
-        let result = run_vless_relay::<XhttpDuplex>(socket, &server, &route_ctx, resume).await;
-        session_for_task.close();
-        registry.remove(&session_id);
-        let mapped: anyhow::Result<()> = match result {
-            Ok(()) => Ok(()),
-            Err(error) if is_normal_h3_shutdown(&error) || sink::is_handshake_rejected(&error) => {
-                Err(error)
-            },
-            Err(error) => Err(error),
-        };
-        finish_ws_session(metrics_session, mapped, "vless");
-    });
 }
 
 fn parse_seq(headers: &HeaderMap) -> Option<u64> {

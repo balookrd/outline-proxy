@@ -251,6 +251,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `ws_path_udp` | Default UDP WebSocket path |
 | `ws_path_vless` | Optional VLESS-over-WebSocket TCP path on the main HTTP/1.1/HTTP/2 listener |
 | `xhttp_path_vless` | Optional VLESS-over-XHTTP base path. Server registers `<base>/{id}` for each base; `{id}` is an opaque per-session token chosen by the client. Distinct from `ws_path_vless` |
+| `xhttp_path_ss` | Optional Shadowsocks-over-XHTTP base path. Same `<base>/{id}` route shape as `xhttp_path_vless`, but carries the SS AEAD stream. One base path serves one protocol — must differ from `xhttp_path_vless` |
 | `http_root_auth` | Enable OpenConnect-style HTTP Basic auth on `/`; after 3 failed passwords it returns `403`, while non-root paths still return `404` |
 | `http_root_realm` | Text shown in the HTTP Basic password prompt for `/`; default is `Authorization required` |
 | `public_host` | Public host used for generated Outline access keys |
@@ -266,6 +267,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `users[].vless_id` | Optional per-user VLESS UUID |
 | `users[].ws_path_vless` | Optional per-user VLESS WebSocket path; falls back to top-level `ws_path_vless` |
 | `users[].xhttp_path_vless` | Optional per-user VLESS XHTTP base path; falls back to top-level `xhttp_path_vless` |
+| `users[].xhttp_path_ss` | Optional per-user SS-over-XHTTP base path; falls back to top-level `xhttp_path_ss` |
 | `users[].enabled` | Optional `bool` toggle. `false` blocks the user (no routes, no auth) without deleting the entry. Default: `true` |
 | `[control]` | Optional runtime user-management HTTP endpoint (feature `control`, on by default). See [Control Plane](#control-plane) |
 | `control.listen` | Socket address for the control listener, e.g. `127.0.0.1:7001`. Bound on its own socket — keep it off the public internet |

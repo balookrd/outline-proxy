@@ -18,6 +18,7 @@ use arc_swap::ArcSwap;
 
 mod auth;
 mod connect;
+mod cross_repo_ss_xhttp;
 mod cross_repo_vless;
 mod cross_repo_xhttp;
 mod dns_cache;
@@ -45,8 +46,9 @@ fn build_test_state(
     let udp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
     let vless = Arc::new(build_vless_transport_route_map(&[]));
     let xhttp_vless = Arc::new(std::collections::BTreeMap::new());
+    let xhttp_ss = Arc::new(std::collections::BTreeMap::new());
     let routes: RoutesSnapshot =
-        Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless, xhttp_vless }));
+        Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless, xhttp_vless, xhttp_ss }));
     let services = Arc::new(Services::new(
         metrics,
         dns_cache,
@@ -81,6 +83,7 @@ pub(in crate::server) fn sample_config(listen: SocketAddr) -> Config {
             vless_id: None,
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_ss: None,
             enabled: None,
         }],
     )
@@ -109,6 +112,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         ws_path_udp: "/udp".into(),
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_ss: None,
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
         users,

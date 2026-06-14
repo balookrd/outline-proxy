@@ -15,10 +15,10 @@ use super::super::{
     },
     state::{empty_transport_route, empty_vless_transport_route},
     transport::{
-        ResumeContext, UdpRouteCtx, VlessWsRouteCtx, WsTcpRouteCtx, XhttpH3Ctx, finish_ws_session,
-        generate_anonymous_xhttp_session_id, h3_fallback_handle, handle_tcp_h3_connection,
-        handle_udp_h3_connection, handle_vless_h3_connection, handle_xhttp_h3_request,
-        is_normal_h3_shutdown,
+        ResumeContext, UdpRouteCtx, VlessWsRouteCtx, WsTcpRouteCtx, XhttpH3Ctx, XhttpRoute,
+        finish_ws_session, generate_anonymous_xhttp_session_id, h3_fallback_handle,
+        handle_tcp_h3_connection, handle_udp_h3_connection, handle_vless_h3_connection,
+        handle_xhttp_h3_request, is_normal_h3_shutdown,
     },
 };
 use super::H3ConnectionCtx;
@@ -104,7 +104,12 @@ async fn handle_h3_request(
         // clients or eat xhttp upgrade requests.
         if let Some((base, session_id, path_seq)) =
             match_xhttp_path(&path, ctx.xhttp_paths.as_ref())
-            && let Some(route) = ctx.xhttp_vless.get(base.as_ref()).cloned()
+            && let Some(route) = ctx
+                .xhttp_vless
+                .get(base.as_ref())
+                .cloned()
+                .map(XhttpRoute::Vless)
+                .or_else(|| ctx.xhttp_ss.get(base.as_ref()).cloned().map(XhttpRoute::Ss))
         {
             // `match_xhttp_path` returns `session_id = None` for the
             // bare-`<base>` shape (xray's sessionless stream-one
@@ -115,7 +120,7 @@ async fn handle_h3_request(
             let session_id = session_id.unwrap_or_else(generate_anonymous_xhttp_session_id);
             let xhttp_ctx = XhttpH3Ctx {
                 registry: Arc::clone(&ctx.xhttp_registry),
-                vless_server: Arc::clone(&ctx.vless_server),
+                services: Arc::clone(&ctx.services),
                 route,
                 base_path: base,
             };

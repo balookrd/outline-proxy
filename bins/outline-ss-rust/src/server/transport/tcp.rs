@@ -225,7 +225,7 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
     }
 }
 
-async fn run_tcp_relay<T: WsSocket>(
+pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     socket: T,
     server: &WsTcpServerCtx,
     route: &WsTcpRouteCtx,

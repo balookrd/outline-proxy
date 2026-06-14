@@ -263,6 +263,7 @@ fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         name: name.to_string(),
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(format!("wss://{addr}/tcp").parse().unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
         udp_mode: TransportMode::WsH1,

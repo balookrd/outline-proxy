@@ -32,17 +32,19 @@ pair of both per uplink.
 
 | Payload \ Carrier | WebSocket (h1/h2/h3) | XHTTP (h1/h2/h3) | raw QUIC |
 |---|:---:|:---:|:---:|
-| **Shadowsocks** (AEAD / SS2022) | ✅ | — | ✅ |
+| **Shadowsocks** (AEAD / SS2022) | ✅ | ✅ (forward TCP) | ✅ |
 | **VLESS** | ✅ | ✅ | ✅ |
 
-XHTTP is a VLESS-only `packet-up` / `stream-one` protocol; Shadowsocks has no
-XHTTP carrier. Every other cell is supported in both directions.
+XHTTP is a `packet-up` / `stream-one` protocol. VLESS rides it for TCP + UDP;
+Shadowsocks rides it for the **forward-path TCP** (client→server) only — SS
+UDP-over-XHTTP and reverse-tunnel XHTTP are planned follow-ups. Every other
+cell is supported in both directions.
 
 The client picks a `transport` + `mode` pair on each uplink:
 
 | `transport` | accepted `*_mode` values | dial URL field |
 |---|---|---|
-| `ss` (alias `shadowsocks`; deprecated `ws` / `websocket`) | `ws_h1` · `ws_h2` · `ws_h3` · `quic` | `tcp_ws_url` / `udp_ws_url` |
+| `ss` (alias `shadowsocks`; deprecated `ws` / `websocket`) | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` (TCP) | `tcp_ws_url` / `udp_ws_url` (ws / quic) · `tcp_xhttp_url` (xhttp) |
 | `vless` | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `vless_ws_url` (ws / quic) · `vless_xhttp_url` (xhttp) |
 
 Carrier aliases: `h1` / `http1` → `ws_h1`, `h2` → `ws_h2`, `h3` → `ws_h3`.
@@ -51,9 +53,10 @@ Carrier aliases: `h1` / `http1` → `ws_h1`, `h2` → `ws_h2`, `h3` → `ws_h3`.
 
 - **WebSocket h1 / h2 / h3** — RFC 6455, RFC 8441 (H2 Extended CONNECT), RFC 9220
   (H3 Extended CONNECT). The baseline path for both payloads.
-- **XHTTP** (VLESS only) — two sub-modes: `packet-up` (each packet is its own
-  request, works on h1 / h2 / h3) and `stream-one` (a single bidi POST, needs
-  multiplexing — h2 / h3 only; the server returns 505 on h1).
+- **XHTTP** — two sub-modes: `packet-up` (each packet is its own request, works
+  on h1 / h2 / h3) and `stream-one` (a single bidi POST, needs multiplexing —
+  h2 / h3 only; the server returns 505 on h1). Carries VLESS (TCP + UDP) and
+  Shadowsocks (forward-path TCP).
 - **raw QUIC** — no WebSocket / HTTP framing, ALPN `outline-quic`. Carries both
   Shadowsocks and VLESS. TCP-like sessions ride a fresh bidi stream; UDP-like
   sessions use QUIC datagrams (RFC 9221). Requires the `quic` build feature.

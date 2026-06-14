@@ -26,10 +26,10 @@ use super::super::{
     shutdown::ShutdownSignal,
     state::{AppState, AuthPolicy, RoutesSnapshot, Services},
     transport::{
-        HttpFallbackContext, XhttpAxumState, http_fallback_handler, metrics_handler,
-        not_found_handler, root_http_auth_handler, sni_fallback, tcp_websocket_upgrade,
-        udp_websocket_upgrade, vless_websocket_upgrade, xhttp_handler, xhttp_handler_no_session,
-        xhttp_handler_with_path_seq,
+        HttpFallbackContext, XhttpAppProtocol, XhttpAxumState, http_fallback_handler,
+        metrics_handler, not_found_handler, root_http_auth_handler, sni_fallback,
+        tcp_websocket_upgrade, udp_websocket_upgrade, vless_websocket_upgrade, xhttp_handler,
+        xhttp_handler_no_session, xhttp_handler_with_path_seq,
     },
 };
 use super::cert_reload::{spawn_cert_reloader, tcp_cert_paths};
@@ -60,7 +60,14 @@ pub(in crate::server) fn build_app(
     for path in snap.vless.keys() {
         router = router.route(path, any(vless_websocket_upgrade));
     }
-    let xhttp_paths: Vec<String> = snap.xhttp_vless.keys().cloned().collect();
+    // One base path serves exactly one protocol; tag each so the merged
+    // loop below can stamp the right `XhttpAppProtocol` into its state.
+    let xhttp_bases: Vec<(String, XhttpAppProtocol)> = snap
+        .xhttp_vless
+        .keys()
+        .map(|p| (p.clone(), XhttpAppProtocol::Vless))
+        .chain(snap.xhttp_ss.keys().map(|p| (p.clone(), XhttpAppProtocol::Ss)))
+        .collect();
     drop(snap);
 
     let state = AppState {
@@ -104,9 +111,10 @@ pub(in crate::server) fn build_app(
     //   without a trailing slash depending on path normalisation).
     //   The handler generates a fresh server-side id and dispatches
     //   into the same stream-one carrier.
-    for base in xhttp_paths {
+    for (base, protocol) in xhttp_bases {
         let xhttp_state = XhttpAxumState {
             base_path: Arc::from(base.as_str()),
+            protocol,
             registry: Arc::clone(&services.xhttp_registry),
             parent: state.clone(),
         };

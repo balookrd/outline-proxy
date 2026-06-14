@@ -10,6 +10,7 @@ fn ws_uplink(name: &str, tcp_url: &str, udp_url: &str) -> UplinkConfig {
         name: name.to_string(),
         transport: UplinkTransport::Ss,
         tcp_ws_url: Some(Url::parse(tcp_url).unwrap()),
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH1,
         udp_ws_url: Some(Url::parse(udp_url).unwrap()),
         udp_mode: TransportMode::WsH1,
@@ -47,6 +48,7 @@ fn vless_ws_fallback(host: &str) -> FallbackTransport {
     FallbackTransport {
         transport: UplinkTransport::Vless,
         tcp_ws_url: None,
+        tcp_xhttp_url: None,
         tcp_mode: TransportMode::WsH3,
         udp_ws_url: None,
         udp_mode: TransportMode::WsH3,

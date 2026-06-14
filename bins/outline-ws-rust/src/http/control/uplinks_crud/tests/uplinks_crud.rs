@@ -57,6 +57,7 @@ fn insert_appends_uplink_table() {
         name: Some("u3".into()),
         transport: Some("ws".into()),
         tcp_ws_url: Some("wss://9.9.9.9:8388/tcp".into()),
+        tcp_xhttp_url: None,
         method: Some("chacha20-ietf-poly1305".into()),
         password: Some("secret-password-3".into()),
         ..Default::default()
@@ -124,6 +125,7 @@ fn payload_round_trip_validates_as_section() {
         name: Some("u9".into()),
         transport: Some("ws".into()),
         tcp_ws_url: Some("wss://1.1.1.1:8388/tcp".into()),
+        tcp_xhttp_url: None,
         method: Some("chacha20-ietf-poly1305".into()),
         password: Some("some-long-password".into()),
         ..Default::default()
@@ -256,6 +258,7 @@ fn validation_rejects_missing_password_for_ws() {
         name: Some("u9".into()),
         transport: Some("ws".into()),
         tcp_ws_url: Some("wss://1.1.1.1:8388/tcp".into()),
+        tcp_xhttp_url: None,
         method: Some("chacha20-ietf-poly1305".into()),
         // password intentionally missing
         ..Default::default()
@@ -280,6 +283,7 @@ fn payload_with_fallbacks_round_trips_through_section() {
             FallbackPayload {
                 transport: "ws".into(),
                 tcp_ws_url: Some("wss://ws.example.com/tcp".into()),
+                tcp_xhttp_url: None,
                 tcp_mode: Some("ws_h2".into()),
                 udp_ws_url: Some("wss://ws.example.com/udp".into()),
                 udp_mode: Some("ws_h1".into()),
@@ -288,6 +292,7 @@ fn payload_with_fallbacks_round_trips_through_section() {
             FallbackPayload {
                 transport: "ws".into(),
                 tcp_ws_url: Some("wss://ws2.example.com/tcp".into()),
+                tcp_xhttp_url: None,
                 udp_ws_url: Some("wss://ws2.example.com/udp".into()),
                 ..Default::default()
             },
@@ -320,6 +325,7 @@ fn rendered_toml_inserted_into_document_includes_fallbacks_array() {
         fallbacks: Some(vec![FallbackPayload {
             transport: "ws".into(),
             tcp_ws_url: Some("wss://ws.example.com/tcp".into()),
+            tcp_xhttp_url: None,
             tcp_mode: Some("ws_h1".into()),
             ..Default::default()
         }]),
@@ -371,6 +377,7 @@ tcp_ws_url = "wss://old.example.com:8388/tcp"
         fallbacks: Some(vec![FallbackPayload {
             transport: "ws".into(),
             tcp_ws_url: Some("wss://newws.example.com/tcp".into()),
+            tcp_xhttp_url: None,
             tcp_mode: Some("ws_h1".into()),
             ..Default::default()
         }]),

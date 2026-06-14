@@ -28,6 +28,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             name,
             transport,
             tcp_ws_url,
+            tcp_xhttp_url,
             tcp_mode,
             udp_ws_url,
             udp_mode,
@@ -68,6 +69,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             name: &name,
             transport,
             tcp_ws_url,
+            tcp_xhttp_url,
             tcp_mode,
             udp_ws_url,
             udp_mode,
@@ -84,6 +86,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             name,
             transport: wire.transport,
             tcp_ws_url: wire.tcp_ws_url,
+            tcp_xhttp_url: wire.tcp_xhttp_url,
             tcp_mode: wire.tcp_mode,
             udp_ws_url: wire.udp_ws_url,
             udp_mode: wire.udp_mode,
@@ -165,6 +168,7 @@ fn primary_to_fallback_shape(uplink: &UplinkConfig) -> FallbackTransport {
     FallbackTransport {
         transport: uplink.transport,
         tcp_ws_url: uplink.tcp_ws_url.clone(),
+        tcp_xhttp_url: uplink.tcp_xhttp_url.clone(),
         tcp_mode: uplink.tcp_mode,
         udp_ws_url: uplink.udp_ws_url.clone(),
         udp_mode: uplink.udp_mode,
@@ -186,6 +190,7 @@ fn primary_to_fallback_shape(uplink: &UplinkConfig) -> FallbackTransport {
 fn apply_fallback_shape_to_primary(uplink: &mut UplinkConfig, wire: FallbackTransport) {
     uplink.transport = wire.transport;
     uplink.tcp_ws_url = wire.tcp_ws_url;
+    uplink.tcp_xhttp_url = wire.tcp_xhttp_url;
     uplink.tcp_mode = wire.tcp_mode;
     uplink.udp_ws_url = wire.udp_ws_url;
     uplink.udp_mode = wire.udp_mode;

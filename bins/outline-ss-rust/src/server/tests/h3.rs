@@ -146,6 +146,7 @@ async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
         udp: std::sync::Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp)),
         vless: std::sync::Arc::new(build_vless_transport_route_map(&[])),
         xhttp_vless: std::sync::Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = std::sync::Arc::new(Services::new(
         std::sync::Arc::clone(&metrics),
@@ -306,6 +307,7 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -611,6 +613,7 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -757,6 +760,7 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,
@@ -897,6 +901,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
         xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         metrics,

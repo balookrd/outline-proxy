@@ -76,6 +76,7 @@ pub(super) async fn setup_xhttp_server_with_resumption_v2(
         udp: Arc::new(BTreeMap::new()),
         vless: Arc::new(BTreeMap::new()),
         xhttp_vless: xhttp_routes,
+        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
     }));
     // Build a real `OrphanRegistry` when resumption is requested so
     // `from_request_headers` mints a Session ID. Without this the
