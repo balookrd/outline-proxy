@@ -24,6 +24,50 @@ listens and routes user traffic back through it. See
 
 *Русская версия: [README.ru.md](README.ru.md)*
 
+## Supported protocols & transports
+
+Two independent axes: the **payload protocol** (what rides inside) and the
+**carrier transport** (how it is delivered). The client and server negotiate a
+pair of both per uplink.
+
+| Payload \ Carrier | WebSocket (h1/h2/h3) | XHTTP (h1/h2/h3) | raw QUIC |
+|---|:---:|:---:|:---:|
+| **Shadowsocks** (AEAD / SS2022) | ✅ | — | ✅ |
+| **VLESS** | ✅ | ✅ | ✅ |
+
+XHTTP is a VLESS-only `packet-up` / `stream-one` protocol; Shadowsocks has no
+XHTTP carrier. Every other cell is supported in both directions.
+
+The client picks a `transport` + `mode` pair on each uplink:
+
+| `transport` | accepted `*_mode` values | dial URL field |
+|---|---|---|
+| `ss` (alias `shadowsocks`; deprecated `ws` / `websocket`) | `ws_h1` · `ws_h2` · `ws_h3` · `quic` | `tcp_ws_url` / `udp_ws_url` |
+| `vless` | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `vless_ws_url` (ws / quic) · `vless_xhttp_url` (xhttp) |
+
+Carrier aliases: `h1` / `http1` → `ws_h1`, `h2` → `ws_h2`, `h3` → `ws_h3`.
+
+**Carriers**
+
+- **WebSocket h1 / h2 / h3** — RFC 6455, RFC 8441 (H2 Extended CONNECT), RFC 9220
+  (H3 Extended CONNECT). The baseline path for both payloads.
+- **XHTTP** (VLESS only) — two sub-modes: `packet-up` (each packet is its own
+  request, works on h1 / h2 / h3) and `stream-one` (a single bidi POST, needs
+  multiplexing — h2 / h3 only; the server returns 505 on h1).
+- **raw QUIC** — no WebSocket / HTTP framing, ALPN `outline-quic`. Carries both
+  Shadowsocks and VLESS. TCP-like sessions ride a fresh bidi stream; UDP-like
+  sessions use QUIC datagrams (RFC 9221). Requires the `quic` build feature.
+
+**Automatic fallback** (per uplink, including mid-session): WebSocket descends
+`h3 → h2 → h1`, XHTTP descends `xhttp_h3 → xhttp_h2 → xhttp_h1`, and raw QUIC
+falls back to WebSocket-over-H2 on a dial failure.
+
+> **Outline compatibility:** Shadowsocks-over-WebSocket is the path the Outline
+> apps speak — the server emits an Outline access key (`$type: websocket`,
+> TCP + UDP) for it. Shadowsocks-over-QUIC is a standalone mode for the bundled
+> `outline-ws-rust` client only and is not exposed as an Outline key. VLESS is
+> exposed as a `vless://…` share link (`ws` / `xhttp` / `quic`).
+
 ## Layout
 
 ```
