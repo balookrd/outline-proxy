@@ -44,10 +44,12 @@ pub(in crate::server) struct UserManager {
     default_method: CipherKind,
     default_ws_path_tcp: String,
     default_ws_path_udp: String,
+    default_ws_path_ss: Option<String>,
     default_ws_path_vless: Option<String>,
     default_xhttp_path_vless: Option<String>,
+    default_xhttp_path_tcp: Option<String>,
+    default_xhttp_path_udp: Option<String>,
     default_xhttp_path_ss: Option<String>,
-    default_xhttp_path_ss_udp: Option<String>,
     access_key_config: crate::config::AccessKeyConfig,
     access_key_base_config: Config,
     // Paths that exist in the startup Axum/H3 routers. Mutations that
@@ -84,13 +86,17 @@ pub(super) struct UserView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ws_path_udp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub ws_path_ss: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ws_path_vless: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xhttp_path_vless: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_ss: Option<String>,
+    pub xhttp_path_tcp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub xhttp_path_ss_udp: Option<String>,
+    pub xhttp_path_udp: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xhttp_path_ss: Option<String>,
     pub has_password: bool,
     pub has_vless_id: bool,
 }
@@ -122,10 +128,12 @@ impl From<&UserEntry> for UserView {
             fwmark: entry.fwmark,
             ws_path_tcp: entry.ws_path_tcp.clone(),
             ws_path_udp: entry.ws_path_udp.clone(),
+            ws_path_ss: entry.ws_path_ss.clone(),
             ws_path_vless: entry.ws_path_vless.clone(),
             xhttp_path_vless: entry.xhttp_path_vless.clone(),
+            xhttp_path_tcp: entry.xhttp_path_tcp.clone(),
+            xhttp_path_udp: entry.xhttp_path_udp.clone(),
             xhttp_path_ss: entry.xhttp_path_ss.clone(),
-            xhttp_path_ss_udp: entry.xhttp_path_ss_udp.clone(),
             has_password: entry.password.is_some(),
             has_vless_id: entry.vless_id.is_some(),
         }
@@ -160,10 +168,12 @@ impl UserManager {
             default_method: config.method,
             default_ws_path_tcp: config.ws_path_tcp.clone(),
             default_ws_path_udp: config.ws_path_udp.clone(),
+            default_ws_path_ss: config.ws_path_ss.clone(),
             default_ws_path_vless: config.ws_path_vless.clone(),
             default_xhttp_path_vless: config.xhttp_path_vless.clone(),
+            default_xhttp_path_tcp: config.xhttp_path_tcp.clone(),
+            default_xhttp_path_udp: config.xhttp_path_udp.clone(),
             default_xhttp_path_ss: config.xhttp_path_ss.clone(),
-            default_xhttp_path_ss_udp: config.xhttp_path_ss_udp.clone(),
             access_key_config: config.access_key.clone(),
             access_key_base_config: config.clone(),
             allowed_tcp_paths: allowed.tcp,
@@ -291,42 +301,56 @@ impl UserManager {
         if entry.password.is_none() && entry.vless_id.is_none() {
             bail!("user must have either password or vless_id");
         }
-        if let Some(path) = entry.ws_path_tcp.as_deref() {
-            if !path.starts_with('/') {
-                bail!("ws_path_tcp must start with '/'");
+        if let Some(ss) = entry.effective_ws_path_ss(self.default_ws_path_ss.as_deref()) {
+            // Combined WS path: registered in both the tcp and udp tables at
+            // startup, so it must be present in both allowed sets.
+            if !ss.starts_with('/') {
+                bail!("ws_path_ss must start with '/'");
             }
-            if !self.allowed_tcp_paths.contains(path) {
+            if !self.allowed_tcp_paths.contains(ss) || !self.allowed_udp_paths.contains(ss) {
                 bail!(
-                    "ws_path_tcp {path:?} was not registered at startup; restart the \
-                     server after adding it to [[users]] in the config file"
+                    "ws_path_ss {ss:?} was not registered at startup; restart the \
+                     server after adding it to the config file"
                 );
             }
         } else {
-            let default = self.default_ws_path_tcp.as_str();
-            if !self.allowed_tcp_paths.contains(default) {
-                bail!(
-                    "default ws_path_tcp {default:?} is not registered; this user needs \
-                     an explicit ws_path_tcp that matches an existing startup path"
-                );
+            if let Some(path) = entry.ws_path_tcp.as_deref() {
+                if !path.starts_with('/') {
+                    bail!("ws_path_tcp must start with '/'");
+                }
+                if !self.allowed_tcp_paths.contains(path) {
+                    bail!(
+                        "ws_path_tcp {path:?} was not registered at startup; restart the \
+                         server after adding it to [[users]] in the config file"
+                    );
+                }
+            } else {
+                let default = self.default_ws_path_tcp.as_str();
+                if !self.allowed_tcp_paths.contains(default) {
+                    bail!(
+                        "default ws_path_tcp {default:?} is not registered; this user needs \
+                         an explicit ws_path_tcp that matches an existing startup path"
+                    );
+                }
             }
-        }
-        if let Some(path) = entry.ws_path_udp.as_deref() {
-            if !path.starts_with('/') {
-                bail!("ws_path_udp must start with '/'");
-            }
-            if !self.allowed_udp_paths.contains(path) {
-                bail!(
-                    "ws_path_udp {path:?} was not registered at startup; restart the \
-                     server after adding it to [[users]] in the config file"
-                );
-            }
-        } else {
-            let default = self.default_ws_path_udp.as_str();
-            if !self.allowed_udp_paths.contains(default) {
-                bail!(
-                    "default ws_path_udp {default:?} is not registered; this user needs \
-                     an explicit ws_path_udp that matches an existing startup path"
-                );
+            if let Some(path) = entry.ws_path_udp.as_deref() {
+                if !path.starts_with('/') {
+                    bail!("ws_path_udp must start with '/'");
+                }
+                if !self.allowed_udp_paths.contains(path) {
+                    bail!(
+                        "ws_path_udp {path:?} was not registered at startup; restart the \
+                         server after adding it to [[users]] in the config file"
+                    );
+                }
+            } else {
+                let default = self.default_ws_path_udp.as_str();
+                if !self.allowed_udp_paths.contains(default) {
+                    bail!(
+                        "default ws_path_udp {default:?} is not registered; this user needs \
+                         an explicit ws_path_udp that matches an existing startup path"
+                    );
+                }
             }
         }
         if entry.vless_id.is_some() {
@@ -375,16 +399,16 @@ impl UserManager {
         // and the SS-XHTTP known-path set (symmetric to the vless block).
         if entry.password.is_some()
             && let Some(path) = entry
-                .xhttp_path_ss
+                .xhttp_path_tcp
                 .as_deref()
-                .or(self.default_xhttp_path_ss.as_deref())
+                .or(self.default_xhttp_path_tcp.as_deref())
         {
             if !path.starts_with('/') {
-                bail!("xhttp_path_ss must start with '/'");
+                bail!("xhttp_path_tcp must start with '/'");
             }
             if !self.allowed_xhttp_ss_paths.contains(path) {
                 bail!(
-                    "xhttp_path_ss {path:?} was not registered at startup; restart \
+                    "xhttp_path_tcp {path:?} was not registered at startup; restart \
                      the server after adding it to the config file"
                 );
             }
@@ -392,16 +416,36 @@ impl UserManager {
         // SS-UDP-over-XHTTP: same password gate on the separate UDP path.
         if entry.password.is_some()
             && let Some(path) = entry
-                .xhttp_path_ss_udp
+                .xhttp_path_udp
                 .as_deref()
-                .or(self.default_xhttp_path_ss_udp.as_deref())
+                .or(self.default_xhttp_path_udp.as_deref())
         {
             if !path.starts_with('/') {
-                bail!("xhttp_path_ss_udp must start with '/'");
+                bail!("xhttp_path_udp must start with '/'");
             }
             if !self.allowed_xhttp_ss_udp_paths.contains(path) {
                 bail!(
-                    "xhttp_path_ss_udp {path:?} was not registered at startup; restart \
+                    "xhttp_path_udp {path:?} was not registered at startup; restart \
+                     the server after adding it to the config file"
+                );
+            }
+        }
+        // Combined SS-over-XHTTP: one base path for both legs, registered in
+        // both ss tables at startup.
+        if entry.password.is_some()
+            && let Some(path) = entry
+                .xhttp_path_ss
+                .as_deref()
+                .or(self.default_xhttp_path_ss.as_deref())
+        {
+            if !path.starts_with('/') {
+                bail!("xhttp_path_ss must start with '/'");
+            }
+            if !self.allowed_xhttp_ss_paths.contains(path)
+                || !self.allowed_xhttp_ss_udp_paths.contains(path)
+            {
+                bail!(
+                    "xhttp_path_ss {path:?} was not registered at startup; restart \
                      the server after adding it to the config file"
                 );
             }
@@ -443,21 +487,30 @@ impl UserManager {
         for user in &enabled {
             let Some(password) = &user.password else { continue };
             let method = user.effective_method(self.default_method);
-            let ws_path_tcp: Arc<str> =
-                Arc::from(user.effective_ws_path_tcp(&self.default_ws_path_tcp));
-            let ws_path_udp: Arc<str> =
-                Arc::from(user.effective_ws_path_udp(&self.default_ws_path_udp));
+            // A combined ws_path_ss / xhttp_path_ss puts both legs on one path
+            // (mirrors `build_user_routes` / `build_ss_xhttp_*` in setup.rs).
+            let (ws_path_tcp, ws_path_udp): (Arc<str>, Arc<str>) =
+                match user.effective_ws_path_ss(self.default_ws_path_ss.as_deref()) {
+                    Some(ss) => (Arc::from(ss), Arc::from(ss)),
+                    None => (
+                        Arc::from(user.effective_ws_path_tcp(&self.default_ws_path_tcp)),
+                        Arc::from(user.effective_ws_path_udp(&self.default_ws_path_udp)),
+                    ),
+                };
             let user_key = UserKey::new(user.id.clone(), password, user.fwmark, method)
                 .with_context(|| format!("failed to derive key for user {}", user.id))?;
-            if let Some(path) = user.effective_xhttp_path_ss(self.default_xhttp_path_ss.as_deref())
+            if let Some(path) = user
+                .effective_xhttp_path_ss(self.default_xhttp_path_ss.as_deref())
+                .or_else(|| user.effective_xhttp_path_tcp(self.default_xhttp_path_tcp.as_deref()))
             {
                 ss_xhttp_routes.push(crate::server::setup::SsXhttpUserRoute {
                     user: user_key.clone(),
                     xhttp_path: Arc::from(path),
                 });
             }
-            if let Some(path) =
-                user.effective_xhttp_path_ss_udp(self.default_xhttp_path_ss_udp.as_deref())
+            if let Some(path) = user
+                .effective_xhttp_path_ss(self.default_xhttp_path_ss.as_deref())
+                .or_else(|| user.effective_xhttp_path_udp(self.default_xhttp_path_udp.as_deref()))
             {
                 ss_xhttp_udp_routes.push(crate::server::setup::SsXhttpUserRoute {
                     user: user_key.clone(),
@@ -536,10 +589,12 @@ pub(super) struct UserPatch {
     pub fwmark: FieldPatch<u32>,
     pub ws_path_tcp: FieldPatch<String>,
     pub ws_path_udp: FieldPatch<String>,
+    pub ws_path_ss: FieldPatch<String>,
     pub ws_path_vless: FieldPatch<String>,
     pub xhttp_path_vless: FieldPatch<String>,
+    pub xhttp_path_tcp: FieldPatch<String>,
+    pub xhttp_path_udp: FieldPatch<String>,
     pub xhttp_path_ss: FieldPatch<String>,
-    pub xhttp_path_ss_udp: FieldPatch<String>,
     pub enabled: Option<bool>,
 }
 
@@ -563,17 +618,23 @@ impl UserPatch {
         if let FieldPatch::Set(ws_path_udp) = self.ws_path_udp {
             entry.ws_path_udp = ws_path_udp;
         }
+        if let FieldPatch::Set(ws_path_ss) = self.ws_path_ss {
+            entry.ws_path_ss = ws_path_ss;
+        }
         if let FieldPatch::Set(ws_path_vless) = self.ws_path_vless {
             entry.ws_path_vless = ws_path_vless;
         }
         if let FieldPatch::Set(xhttp_path_vless) = self.xhttp_path_vless {
             entry.xhttp_path_vless = xhttp_path_vless;
         }
+        if let FieldPatch::Set(xhttp_path_tcp) = self.xhttp_path_tcp {
+            entry.xhttp_path_tcp = xhttp_path_tcp;
+        }
+        if let FieldPatch::Set(xhttp_path_udp) = self.xhttp_path_udp {
+            entry.xhttp_path_udp = xhttp_path_udp;
+        }
         if let FieldPatch::Set(xhttp_path_ss) = self.xhttp_path_ss {
             entry.xhttp_path_ss = xhttp_path_ss;
-        }
-        if let FieldPatch::Set(xhttp_path_ss_udp) = self.xhttp_path_ss_udp {
-            entry.xhttp_path_ss_udp = xhttp_path_ss_udp;
         }
         if let Some(enabled) = self.enabled {
             entry.enabled = Some(enabled);

@@ -24,10 +24,12 @@ fn base_config() -> Config {
         outbound_ipv6_sticky_ttl_secs: 1800,
         ws_path_tcp: "/tcp".into(),
         ws_path_udp: "/udp".into(),
+        ws_path_ss: None,
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_tcp: None,
+        xhttp_path_udp: None,
         xhttp_path_ss: None,
-        xhttp_path_ss_udp: None,
         http_root_auth: false,
         http_root_realm: default_http_root_realm(),
         users: vec![super::super::UserEntry {
@@ -37,11 +39,13 @@ fn base_config() -> Config {
             method: None,
             ws_path_tcp: None,
             ws_path_udp: None,
+            ws_path_ss: None,
             vless_id: None,
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_tcp: None,
+            xhttp_path_udp: None,
             xhttp_path_ss: None,
-            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         method: CipherKind::Chacha20IetfPoly1305,
@@ -110,10 +114,10 @@ fn rejects_http_root_auth_on_root_ws_path() {
 }
 
 #[test]
-fn accepts_xhttp_path_ss_with_password_user() {
+fn accepts_xhttp_path_tcp_with_password_user() {
     // base_config has a password user, so an SS-over-XHTTP base path is valid.
     Config {
-        xhttp_path_ss: Some("/ss".into()),
+        xhttp_path_tcp: Some("/ss".into()),
         ..base_config()
     }
     .validate()
@@ -121,12 +125,11 @@ fn accepts_xhttp_path_ss_with_password_user() {
 }
 
 #[test]
-fn accepts_combined_ws_tcp_udp_path() {
-    // The opt-in combined mode: one user shares a single base path for both
-    // TCP and UDP. The hidden token bit splits them, so this must validate.
+fn accepts_combined_ws_path_ss() {
+    // The opt-in combined mode: `ws_path_ss` is one base path for both legs,
+    // told apart by the hidden token bit. Must validate.
     Config {
-        ws_path_tcp: "/both".into(),
-        ws_path_udp: "/both".into(),
+        ws_path_ss: Some("/both".into()),
         ..base_config()
     }
     .validate()
@@ -134,11 +137,10 @@ fn accepts_combined_ws_tcp_udp_path() {
 }
 
 #[test]
-fn accepts_combined_xhttp_ss_path() {
-    // Same idea on the XHTTP carrier: one ss base path for tcp and udp.
+fn accepts_combined_xhttp_path_ss() {
+    // Same on the XHTTP carrier: `xhttp_path_ss` is one base path for both.
     Config {
         xhttp_path_ss: Some("/ssc".into()),
-        xhttp_path_ss_udp: Some("/ssc".into()),
         ..base_config()
     }
     .validate()
@@ -146,14 +148,12 @@ fn accepts_combined_xhttp_ss_path() {
 }
 
 #[test]
-fn rejects_combined_ws_path_colliding_with_other_protocol() {
-    // Combining tcp+udp on one path is allowed, but that path must still be
-    // distinct from every OTHER protocol's path — a combined ws base sharing
-    // a value with an ss-xhttp base is a conflict, not a second combine.
+fn rejects_combined_ws_path_ss_colliding_with_other_protocol() {
+    // A combined `ws_path_ss` must still be distinct from every other path —
+    // sharing a value with an ss-xhttp base is a conflict.
     let error = Config {
-        ws_path_tcp: "/shared".into(),
-        ws_path_udp: "/shared".into(),
-        xhttp_path_ss: Some("/shared".into()),
+        ws_path_ss: Some("/shared".into()),
+        xhttp_path_tcp: Some("/shared".into()),
         ..base_config()
     }
     .validate()
@@ -164,52 +164,54 @@ fn rejects_combined_ws_path_colliding_with_other_protocol() {
 }
 
 #[test]
-fn rejects_xhttp_path_ss_without_leading_slash() {
+fn rejects_xhttp_path_tcp_without_leading_slash() {
     let error = Config {
-        xhttp_path_ss: Some("ss".into()),
+        xhttp_path_tcp: Some("ss".into()),
         ..base_config()
     }
     .validate()
     .unwrap_err()
     .to_string();
-    assert!(error.contains("xhttp_path_ss must start with '/'"), "got: {error}");
+    assert!(error.contains("xhttp_path_tcp must start with '/'"), "got: {error}");
 }
 
 #[test]
-fn rejects_xhttp_path_ss_without_password_user() {
+fn rejects_xhttp_path_tcp_without_password_user() {
     // A vless-only user (no password) cannot back an SS-over-XHTTP path.
     let mut cfg = base_config();
     cfg.h3_alpn.push(crate::config::H3Alpn::Vless);
     cfg.users[0].password = None;
     cfg.users[0].vless_id = Some("00000000-0000-0000-0000-000000000001".into());
-    cfg.xhttp_path_ss = Some("/ss".into());
+    cfg.xhttp_path_tcp = Some("/ss".into());
     let error = cfg.validate().unwrap_err().to_string();
-    assert!(error.contains("xhttp_path_ss requires"), "got: {error}");
+    assert!(error.contains("xhttp_path_tcp requires"), "got: {error}");
 }
 
 #[test]
-fn rejects_xhttp_path_ss_equal_to_xhttp_path_vless() {
+fn rejects_xhttp_path_tcp_equal_to_xhttp_path_vless() {
     // One base path serves one protocol — a shared base is rejected.
     let mut cfg = base_config();
     cfg.xhttp_path_vless = Some("/x".into());
-    cfg.xhttp_path_ss = Some("/x".into());
+    cfg.xhttp_path_tcp = Some("/x".into());
     cfg.users[0].vless_id = Some("00000000-0000-0000-0000-000000000001".into());
     let error = cfg.validate().unwrap_err().to_string();
     assert!(error.contains("ss-xhttp"), "got: {error}");
 }
 
 #[test]
-fn accepts_xhttp_path_ss_udp_with_password_user() {
+fn accepts_xhttp_path_udp_with_password_user() {
     Config {
-        xhttp_path_ss_udp: Some("/ssu".into()),
+        xhttp_path_udp: Some("/ssu".into()),
+        xhttp_path_ss: None,
         ..base_config()
     }
     .validate()
     .unwrap();
 }
 
-// Note: `xhttp_path_ss == xhttp_path_ss_udp` used to be rejected, but now
-// opts the base path into combined mode — see `accepts_combined_xhttp_ss_path`.
+// Note: combined mode is opted into via the explicit `xhttp_path_ss` /
+// `ws_path_ss` fields — see `accepts_combined_xhttp_path_ss`. Split tcp/udp
+// paths sharing a value is a conflict, not an implicit combine.
 
 #[test]
 fn allows_vless_reverse_user_without_ws_path() {
@@ -237,11 +239,13 @@ fn allows_vless_reverse_user_without_ws_path() {
             method: None,
             ws_path_tcp: None,
             ws_path_udp: None,
+            ws_path_ss: None,
             vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_tcp: None,
+            xhttp_path_udp: None,
             xhttp_path_ss: None,
-            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         reverse_tunnel: Some(ReverseTunnelConfig { endpoints: vec![endpoint] }),
@@ -256,8 +260,9 @@ fn allows_vless_only_users() {
     Config {
         ws_path_vless: Some("/vless".into()),
         xhttp_path_vless: None,
+        xhttp_path_tcp: None,
+        xhttp_path_udp: None,
         xhttp_path_ss: None,
-        xhttp_path_ss_udp: None,
         users: vec![super::super::UserEntry {
             id: "550e8400-e29b-41d4-a716-446655440000".into(),
             password: None,
@@ -265,11 +270,13 @@ fn allows_vless_only_users() {
             method: None,
             ws_path_tcp: None,
             ws_path_udp: None,
+            ws_path_ss: None,
             vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_tcp: None,
+            xhttp_path_udp: None,
             xhttp_path_ss: None,
-            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         ..base_config()
@@ -283,8 +290,9 @@ fn rejects_vless_path_conflict_with_tcp_path() {
     let error = Config {
         ws_path_vless: Some("/tcp".into()),
         xhttp_path_vless: None,
+        xhttp_path_tcp: None,
+        xhttp_path_udp: None,
         xhttp_path_ss: None,
-        xhttp_path_ss_udp: None,
         users: vec![
             super::super::UserEntry {
                 id: "alice".into(),
@@ -293,11 +301,13 @@ fn rejects_vless_path_conflict_with_tcp_path() {
                 method: None,
                 ws_path_tcp: None,
                 ws_path_udp: None,
+                ws_path_ss: None,
                 vless_id: None,
                 ws_path_vless: None,
                 xhttp_path_vless: None,
+                xhttp_path_tcp: None,
+                xhttp_path_udp: None,
                 xhttp_path_ss: None,
-                xhttp_path_ss_udp: None,
                 enabled: None,
             },
             super::super::UserEntry {
@@ -307,11 +317,13 @@ fn rejects_vless_path_conflict_with_tcp_path() {
                 method: None,
                 ws_path_tcp: None,
                 ws_path_udp: None,
+                ws_path_ss: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
                 ws_path_vless: None,
                 xhttp_path_vless: None,
+                xhttp_path_tcp: None,
+                xhttp_path_udp: None,
                 xhttp_path_ss: None,
-                xhttp_path_ss_udp: None,
                 enabled: None,
             },
         ],
@@ -329,8 +341,9 @@ fn allows_per_user_vless_path_without_global_default() {
     Config {
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_tcp: None,
+        xhttp_path_udp: None,
         xhttp_path_ss: None,
-        xhttp_path_ss_udp: None,
         users: vec![super::super::UserEntry {
             id: "alice".into(),
             password: None,
@@ -338,11 +351,13 @@ fn allows_per_user_vless_path_without_global_default() {
             method: None,
             ws_path_tcp: None,
             ws_path_udp: None,
+            ws_path_ss: None,
             vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ws_path_vless: Some("/alice-vless".into()),
             xhttp_path_vless: None,
+            xhttp_path_tcp: None,
+            xhttp_path_udp: None,
             xhttp_path_ss: None,
-            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         ..base_config()
@@ -356,8 +371,9 @@ fn allows_vless_id_without_path_when_raw_quic_alpn_enabled() {
     Config {
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_tcp: None,
+        xhttp_path_udp: None,
         xhttp_path_ss: None,
-        xhttp_path_ss_udp: None,
         h3_alpn: vec![crate::config::H3Alpn::H3, crate::config::H3Alpn::Vless],
         users: vec![super::super::UserEntry {
             id: "alice".into(),
@@ -366,11 +382,13 @@ fn allows_vless_id_without_path_when_raw_quic_alpn_enabled() {
             method: None,
             ws_path_tcp: None,
             ws_path_udp: None,
+            ws_path_ss: None,
             vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_tcp: None,
+            xhttp_path_udp: None,
             xhttp_path_ss: None,
-            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         ..base_config()
@@ -384,8 +402,9 @@ fn rejects_vless_id_without_any_path() {
     let error = Config {
         ws_path_vless: None,
         xhttp_path_vless: None,
+        xhttp_path_tcp: None,
+        xhttp_path_udp: None,
         xhttp_path_ss: None,
-        xhttp_path_ss_udp: None,
         users: vec![super::super::UserEntry {
             id: "alice".into(),
             password: None,
@@ -393,11 +412,13 @@ fn rejects_vless_id_without_any_path() {
             method: None,
             ws_path_tcp: None,
             ws_path_udp: None,
+            ws_path_ss: None,
             vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
             ws_path_vless: None,
             xhttp_path_vless: None,
+            xhttp_path_tcp: None,
+            xhttp_path_udp: None,
             xhttp_path_ss: None,
-            xhttp_path_ss_udp: None,
             enabled: None,
         }],
         ..base_config()

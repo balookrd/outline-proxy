@@ -133,10 +133,11 @@ weight = 1.0
 Optionally you can collapse TCP and UDP onto **one** base path so a censor
 sees a single endpoint instead of two. Set `ss_xhttp_url` (one URL for both
 legs) and `ss_mode` instead of the split `tcp_*` / `udp_*` fields — and on the
-server set `xhttp_path_ss` == `xhttp_path_ss_udp`. The client then encodes the
-TCP-vs-UDP discriminator into the first character of the per-session id —
-invisible inside TLS, statistically indistinguishable from a random id — so the
-server routes each request to the right relay with no second path.
+server set the combined `xhttp_path_ss` (instead of the split `xhttp_path_tcp`
++ `xhttp_path_udp`). The client then encodes the TCP-vs-UDP discriminator into
+the first character of the per-session id — invisible inside TLS, statistically
+indistinguishable from a random id — so the server routes each request to the
+right relay with no second path.
 
 ```toml
 [[outline.uplinks]]

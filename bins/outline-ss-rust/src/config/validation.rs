@@ -50,30 +50,42 @@ impl Config {
         let users = self.user_entries()?;
         let mut tcp_paths = BTreeSet::new();
         let mut udp_paths = BTreeSet::new();
-        // Paths a single user assigns to BOTH its TCP and UDP legs — the
-        // opt-in combined mode, where one base path carries both and the
-        // server tells them apart by the hidden discriminator in the WS
-        // token. Such a path may appear in both `tcp_paths` and `udp_paths`;
-        // every other tcp/udp overlap is still a conflict.
-        let mut ws_combined_paths = BTreeSet::new();
+        // Combined-path users put BOTH legs on one base path via `ws_path_ss`
+        // (the server splits tcp/udp by the hidden `/{token}` bit). They go in
+        // their own `ws_ss_paths` set; split users use the distinct
+        // `ws_path_tcp` / `ws_path_udp`. Every category must stay distinct.
+        let mut ws_ss_paths = BTreeSet::new();
         for user in users {
-            if let Some(path) = user.ws_path_tcp.as_deref()
-                && !path.starts_with('/')
+            for (path, field) in [
+                (user.ws_path_tcp.as_deref(), "ws_path_tcp"),
+                (user.ws_path_udp.as_deref(), "ws_path_udp"),
+                (user.ws_path_ss.as_deref(), "ws_path_ss"),
+            ] {
+                if let Some(path) = path
+                    && !path.starts_with('/')
+                {
+                    bail!("user {} {field} must start with '/'", user.id);
+                }
+            }
+            // Combined and split are mutually exclusive on one user.
+            if user.effective_ws_path_ss(self.ws_path_ss.as_deref()).is_some()
+                && (user.ws_path_tcp.is_some() || user.ws_path_udp.is_some())
             {
-                bail!("user {} ws_path_tcp must start with '/'", user.id);
+                bail!(
+                    "user {} is on a combined `ws_path_ss` but also sets \
+                     `ws_path_tcp` / `ws_path_udp` — remove the split overrides",
+                    user.id
+                );
             }
-            if let Some(path) = user.ws_path_udp.as_deref()
-                && !path.starts_with('/')
-            {
-                bail!("user {} ws_path_udp must start with '/'", user.id);
+            match user.effective_ws_path_ss(self.ws_path_ss.as_deref()) {
+                Some(ss) => {
+                    ws_ss_paths.insert(ss.to_owned());
+                },
+                None => {
+                    tcp_paths.insert(user.effective_ws_path_tcp(&self.ws_path_tcp).to_owned());
+                    udp_paths.insert(user.effective_ws_path_udp(&self.ws_path_udp).to_owned());
+                },
             }
-            let tcp = user.effective_ws_path_tcp(&self.ws_path_tcp).to_owned();
-            let udp = user.effective_ws_path_udp(&self.ws_path_udp).to_owned();
-            if tcp == udp {
-                ws_combined_paths.insert(tcp.clone());
-            }
-            tcp_paths.insert(tcp);
-            udp_paths.insert(udp);
         }
         let mut vless_paths = BTreeSet::new();
         let vless_enabled_users = self.users.iter().filter(|user| user.vless_id.is_some());
@@ -129,22 +141,29 @@ impl Config {
                 bail!("duplicate vless_id for user {}", user.id);
             }
         }
-        // tcp/udp overlap is a conflict UNLESS the path is a combined one (a
-        // single user sharing it for both legs on purpose).
-        for conflict in tcp_paths.intersection(&udp_paths) {
-            if !ws_combined_paths.contains(conflict) {
-                bail!(
-                    "tcp and udp websocket paths must be distinct (unless a single user \
-                     shares one path for both = combined mode), conflict on {}",
-                    conflict,
-                );
-            }
+        // Split tcp/udp must be distinct — a path carrying both legs uses the
+        // combined `ws_path_ss` instead (tracked in `ws_ss_paths`).
+        if let Some(conflict) = tcp_paths.intersection(&udp_paths).next() {
+            bail!(
+                "tcp and udp websocket paths must be distinct — to carry both legs on one \
+                 path use a combined `ws_path_ss` instead, conflict on {}",
+                conflict,
+            );
         }
         if let Some(conflict) = tcp_paths.intersection(&vless_paths).next() {
             bail!("tcp and vless websocket paths must be distinct, conflict on {}", conflict);
         }
         if let Some(conflict) = udp_paths.intersection(&vless_paths).next() {
             bail!("udp and vless websocket paths must be distinct, conflict on {}", conflict);
+        }
+        // The combined ws path must not collide with any split or vless path.
+        for (other, label) in [(&tcp_paths, "tcp"), (&udp_paths, "udp"), (&vless_paths, "vless")] {
+            if let Some(conflict) = ws_ss_paths.intersection(other).next() {
+                bail!(
+                    "combined ws_path_ss must differ from the {label} websocket path, conflict on {}",
+                    conflict,
+                );
+            }
         }
         let mut xhttp_paths = BTreeSet::new();
         if let Some(path) = self.xhttp_path_vless.as_deref()
@@ -186,120 +205,116 @@ impl Config {
             );
         }
         // ── SS-over-XHTTP paths ──────────────────────────────────────────
-        // SS identity is a password (not a vless_id), so the gates mirror the
-        // vless-xhttp block but key off `password`.
-        let mut ss_xhttp_paths = BTreeSet::new();
-        if let Some(path) = self.xhttp_path_ss.as_deref()
-            && !path.starts_with('/')
-        {
-            bail!("xhttp_path_ss must start with '/'");
-        }
-        if self.xhttp_path_ss.is_some() && self.users.iter().all(|user| user.password.is_none()) {
-            bail!("xhttp_path_ss requires at least one [[users]] entry with a password");
-        }
-        for user in &self.users {
-            if let Some(path) = user.xhttp_path_ss.as_deref()
-                && !path.starts_with('/')
-            {
-                bail!("user {} xhttp_path_ss must start with '/'", user.id);
-            }
-            if user.xhttp_path_ss.is_some() && user.password.is_none() {
-                bail!("user {} xhttp_path_ss requires a password", user.id);
-            }
-            if user.password.is_some()
-                && let Some(path) = user.effective_xhttp_path_ss(self.xhttp_path_ss.as_deref())
-            {
-                ss_xhttp_paths.insert(path.to_owned());
-            }
-        }
-        if let Some(conflict) = xhttp_paths.intersection(&ss_xhttp_paths).next() {
-            bail!(
-                "vless-xhttp and ss-xhttp base paths must be distinct (one base path serves \
-                 one protocol), conflict on {}",
-                conflict,
-            );
-        }
-        if let Some(conflict) = tcp_paths.intersection(&ss_xhttp_paths).next() {
-            bail!("tcp and ss-xhttp paths must be distinct, conflict on {}", conflict);
-        }
-        if let Some(conflict) = udp_paths.intersection(&ss_xhttp_paths).next() {
-            bail!("udp and ss-xhttp paths must be distinct, conflict on {}", conflict);
-        }
-        if let Some(conflict) = vless_paths.intersection(&ss_xhttp_paths).next() {
-            bail!("vless-ws and ss-xhttp paths must be distinct, conflict on {}", conflict);
-        }
-        // ── SS-UDP-over-XHTTP paths ──────────────────────────────────────
-        // Same password-keyed gates as SS-over-XHTTP, on the separate UDP
-        // base path (mirrors `ws_path_tcp` vs `ws_path_udp`).
-        let mut ss_udp_xhttp_paths = BTreeSet::new();
-        if let Some(path) = self.xhttp_path_ss_udp.as_deref()
-            && !path.starts_with('/')
-        {
-            bail!("xhttp_path_ss_udp must start with '/'");
-        }
-        if self.xhttp_path_ss_udp.is_some() && self.users.iter().all(|user| user.password.is_none())
-        {
-            bail!("xhttp_path_ss_udp requires at least one [[users]] entry with a password");
-        }
-        for user in &self.users {
-            if let Some(path) = user.xhttp_path_ss_udp.as_deref()
-                && !path.starts_with('/')
-            {
-                bail!("user {} xhttp_path_ss_udp must start with '/'", user.id);
-            }
-            if user.xhttp_path_ss_udp.is_some() && user.password.is_none() {
-                bail!("user {} xhttp_path_ss_udp requires a password", user.id);
-            }
-            if user.password.is_some()
-                && let Some(path) =
-                    user.effective_xhttp_path_ss_udp(self.xhttp_path_ss_udp.as_deref())
-            {
-                ss_udp_xhttp_paths.insert(path.to_owned());
-            }
-        }
-        // A user whose effective ss and ss-udp xhttp base paths are equal
-        // opts that path into combined mode (the session-id's hidden bit
-        // splits tcp from udp on one base path).
-        let mut ss_xhttp_combined_paths = BTreeSet::new();
-        for user in &self.users {
-            if user.password.is_some() {
-                let ss = user.effective_xhttp_path_ss(self.xhttp_path_ss.as_deref());
-                let ss_udp = user.effective_xhttp_path_ss_udp(self.xhttp_path_ss_udp.as_deref());
-                if let (Some(a), Some(b)) = (ss, ss_udp)
-                    && a == b
-                {
-                    ss_xhttp_combined_paths.insert(a.to_owned());
+        // SS identity is a password (not a vless_id). Three categories: split
+        // tcp (`xhttp_path_tcp`), split udp (`xhttp_path_udp`), and combined
+        // (`xhttp_path_ss`, both legs on one base path split by the session-id
+        // bit). One base path serves one protocol, so all stay distinct.
+        let no_password = self.users.iter().all(|user| user.password.is_none());
+        for (global, field) in [
+            (self.xhttp_path_tcp.as_deref(), "xhttp_path_tcp"),
+            (self.xhttp_path_udp.as_deref(), "xhttp_path_udp"),
+            (self.xhttp_path_ss.as_deref(), "xhttp_path_ss"),
+        ] {
+            if let Some(path) = global {
+                if !path.starts_with('/') {
+                    bail!("{field} must start with '/'");
+                }
+                if no_password {
+                    bail!("{field} requires at least one [[users]] entry with a password");
                 }
             }
         }
-        // ss-xhttp (tcp) vs ss-udp-xhttp: combined mode lets them share one
-        // base path; every other overlap stays a conflict.
-        for conflict in ss_xhttp_paths.intersection(&ss_udp_xhttp_paths) {
-            if !ss_xhttp_combined_paths.contains(conflict) {
+        let mut ss_xhttp_tcp_paths = BTreeSet::new();
+        let mut ss_xhttp_udp_paths = BTreeSet::new();
+        let mut ss_xhttp_combined_paths = BTreeSet::new();
+        for user in &self.users {
+            for (path, field) in [
+                (user.xhttp_path_tcp.as_deref(), "xhttp_path_tcp"),
+                (user.xhttp_path_udp.as_deref(), "xhttp_path_udp"),
+                (user.xhttp_path_ss.as_deref(), "xhttp_path_ss"),
+            ] {
+                if let Some(path) = path {
+                    if !path.starts_with('/') {
+                        bail!("user {} {field} must start with '/'", user.id);
+                    }
+                    if user.password.is_none() {
+                        bail!("user {} {field} requires a password", user.id);
+                    }
+                }
+            }
+            if user.password.is_none() {
+                continue;
+            }
+            // Combined and split are mutually exclusive on one user.
+            if user.effective_xhttp_path_ss(self.xhttp_path_ss.as_deref()).is_some()
+                && (user.xhttp_path_tcp.is_some() || user.xhttp_path_udp.is_some())
+            {
                 bail!(
-                    "ss-xhttp (tcp) and ss-udp-xhttp paths must be distinct (unless a single \
-                     user shares one path for both = combined mode), conflict on {}",
-                    conflict,
+                    "user {} is on a combined `xhttp_path_ss` but also sets \
+                     `xhttp_path_tcp` / `xhttp_path_udp` — remove the split overrides",
+                    user.id
                 );
             }
+            match user.effective_xhttp_path_ss(self.xhttp_path_ss.as_deref()) {
+                Some(ss) => {
+                    ss_xhttp_combined_paths.insert(ss.to_owned());
+                },
+                None => {
+                    if let Some(p) = user.effective_xhttp_path_tcp(self.xhttp_path_tcp.as_deref()) {
+                        ss_xhttp_tcp_paths.insert(p.to_owned());
+                    }
+                    if let Some(p) = user.effective_xhttp_path_udp(self.xhttp_path_udp.as_deref()) {
+                        ss_xhttp_udp_paths.insert(p.to_owned());
+                    }
+                },
+            }
         }
-        for (other, label) in [
-            (&xhttp_paths, "vless-xhttp"),
-            (&tcp_paths, "tcp"),
-            (&udp_paths, "udp"),
-            (&vless_paths, "vless-ws"),
+        // ss-xhttp split tcp vs udp must differ (combined uses `xhttp_path_ss`).
+        if let Some(c) = ss_xhttp_tcp_paths.intersection(&ss_xhttp_udp_paths).next() {
+            bail!(
+                "ss-xhttp tcp and udp paths must be distinct — use a combined `xhttp_path_ss` \
+                 to carry both on one path, conflict on {}",
+                c,
+            );
+        }
+        // Every ss-xhttp category is distinct from vless-xhttp and the WS paths
+        // (one base path serves one protocol).
+        for (set, label) in [
+            (&ss_xhttp_tcp_paths, "ss-xhttp tcp"),
+            (&ss_xhttp_udp_paths, "ss-xhttp udp"),
+            (&ss_xhttp_combined_paths, "ss-xhttp combined"),
         ] {
-            if let Some(conflict) = other.intersection(&ss_udp_xhttp_paths).next() {
-                bail!("{label} and ss-udp-xhttp paths must be distinct, conflict on {}", conflict,);
+            for (other, olabel) in [
+                (&xhttp_paths, "vless-xhttp"),
+                (&tcp_paths, "ws-tcp"),
+                (&udp_paths, "ws-udp"),
+                (&vless_paths, "vless-ws"),
+                (&ws_ss_paths, "ws-combined"),
+            ] {
+                if let Some(c) = set.intersection(other).next() {
+                    bail!("{label} and {olabel} base paths must be distinct, conflict on {}", c);
+                }
+            }
+        }
+        // Combined ss-xhttp must not collide with split ss-xhttp either.
+        for (other, olabel) in [(&ss_xhttp_tcp_paths, "tcp"), (&ss_xhttp_udp_paths, "udp")] {
+            if let Some(c) = ss_xhttp_combined_paths.intersection(other).next() {
+                bail!(
+                    "combined `xhttp_path_ss` must differ from the split ss-xhttp {olabel} path, \
+                     conflict on {}",
+                    c,
+                );
             }
         }
         if self.http_root_auth
             && (tcp_paths.contains("/")
                 || udp_paths.contains("/")
+                || ws_ss_paths.contains("/")
                 || vless_paths.contains("/")
                 || xhttp_paths.contains("/")
-                || ss_xhttp_paths.contains("/")
-                || ss_udp_xhttp_paths.contains("/"))
+                || ss_xhttp_tcp_paths.contains("/")
+                || ss_xhttp_udp_paths.contains("/")
+                || ss_xhttp_combined_paths.contains("/"))
         {
             bail!("http_root_auth requires all websocket paths to differ from '/'");
         }
