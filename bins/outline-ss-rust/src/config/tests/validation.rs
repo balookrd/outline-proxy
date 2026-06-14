@@ -148,6 +148,37 @@ fn accepts_combined_xhttp_path_ss() {
 }
 
 #[test]
+fn accepts_global_combined_ws_path_ss_with_per_user_split() {
+    // Repro: a GLOBAL combined ws_path_ss must not clash with a user that pins
+    // its own split paths — the per-user split opts that user out of combined.
+    let mut cfg = base_config();
+    cfg.ws_path_ss = Some("/combined".into());
+    cfg.users[0].ws_path_tcp = Some("/u/tcp".into());
+    cfg.users[0].ws_path_udp = Some("/u/udp".into());
+    cfg.validate().unwrap();
+}
+
+#[test]
+fn accepts_global_combined_xhttp_path_ss_with_per_user_split() {
+    let mut cfg = base_config();
+    cfg.xhttp_path_ss = Some("/cmb".into());
+    cfg.users[0].xhttp_path_tcp = Some("/u/xtcp".into());
+    cfg.users[0].xhttp_path_udp = Some("/u/xudp".into());
+    cfg.validate().unwrap();
+}
+
+#[test]
+fn rejects_per_user_ws_path_ss_with_per_user_split() {
+    // But pinning BOTH per-user combined and per-user split on one user is a
+    // conflict.
+    let mut cfg = base_config();
+    cfg.users[0].ws_path_ss = Some("/u/ss".into());
+    cfg.users[0].ws_path_tcp = Some("/u/tcp".into());
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(err.contains("pick one"), "got: {err}");
+}
+
+#[test]
 fn rejects_combined_ws_path_ss_colliding_with_other_protocol() {
     // A combined `ws_path_ss` must still be distinct from every other path —
     // sharing a value with an ss-xhttp base is a conflict.

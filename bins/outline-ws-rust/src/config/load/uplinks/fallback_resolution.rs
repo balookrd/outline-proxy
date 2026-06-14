@@ -65,6 +65,77 @@ fn resolve_fallback(
     // fields. Cross-population is rejected at parse time so misconfiguration
     // surfaces as a clear error rather than a confusing dial-time failure.
     let (final_password, final_vless_id) = match transport {
+        // Combined fallback: ONE URL (`ss_xhttp_url` | `ss_ws_url`) + `ss_mode`
+        // carries both legs, mirroring the primary `resolve_primary_wire_shape`.
+        // The combined fields are read back by `FallbackTransport`'s
+        // `is_combined_ss` / dial helpers at dial time; the split mode fields
+        // are set to `ss_mode` so the per-wire mode tracking stays consistent.
+        UplinkTransport::Ss if section.ss_xhttp_url.is_some() || section.ss_ws_url.is_some() => {
+            if section.vless_ws_url.is_some()
+                || section.vless_xhttp_url.is_some()
+                || section.vless_mode.is_some()
+                || section.vless_id.is_some()
+            {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=ss) must not set vless fields"
+                );
+            }
+            if section.ss_xhttp_url.is_some() && section.ss_ws_url.is_some() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] `ss_xhttp_url` and `ss_ws_url` are \
+                     mutually exclusive — pick one combined carrier"
+                );
+            }
+            if tcp_ws_url.is_some()
+                || tcp_xhttp_url.is_some()
+                || udp_ws_url.is_some()
+                || udp_xhttp_url.is_some()
+            {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] combined `ss_xhttp_url`/`ss_ws_url` is \
+                     mutually exclusive with the split `tcp_*`/`udp_*` URL fields"
+                );
+            }
+            let m = section.ss_mode.ok_or_else(|| {
+                anyhow!(
+                    "uplink {parent_name}: fallbacks[{idx}] combined \
+                     `ss_xhttp_url`/`ss_ws_url` requires `ss_mode`"
+                )
+            })?;
+            if matches!(m, TransportMode::Quic) {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] combined mode does not support raw QUIC"
+                );
+            }
+            #[cfg(not(feature = "h3"))]
+            if matches!(m, TransportMode::XhttpH3 | TransportMode::WsH3) {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] ss_mode={m} requires the `h3` feature"
+                );
+            }
+            if section.ss_xhttp_url.is_some() && !m.is_xhttp() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] `ss_xhttp_url` requires an XHTTP \
+                     `ss_mode` (xhttp_h1/h2/h3), got {m}"
+                );
+            }
+            if section.ss_ws_url.is_some() && m.is_xhttp() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] `ss_ws_url` requires a WS `ss_mode` \
+                     (ws_h1/h2/h3), got {m}"
+                );
+            }
+            tcp_mode = Some(m);
+            udp_mode = Some(m);
+            vless_mode = Some(TransportMode::default());
+            validate_shared_secret(cipher, &password_inherited, || {
+                format!(
+                    "uplink {parent_name}: fallbacks[{idx}] invalid password/PSK \
+                     for cipher {cipher}"
+                )
+            })?;
+            (password_inherited, None)
+        },
         UplinkTransport::Ss => {
             if vless_ws_url.is_some() || vless_xhttp_url.is_some() || vless_mode.is_some() {
                 bail!(
@@ -76,6 +147,14 @@ fn resolve_fallback(
                 bail!(
                     "uplink {parent_name}: fallbacks[{idx}] (transport=ss) must not set \
                      `vless_id`"
+                );
+            }
+            // Combined `ss_*` fields belong to the guard arm above; a split
+            // fallback must not also set `ss_mode` without an ss URL.
+            if section.ss_mode.is_some() {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] `ss_mode` requires a combined \
+                     `ss_xhttp_url` / `ss_ws_url`"
                 );
             }
             let mode = tcp_mode.unwrap_or_default();
@@ -148,6 +227,15 @@ fn resolve_fallback(
             (password_inherited, None)
         },
         UplinkTransport::Vless => {
+            if section.ss_xhttp_url.is_some()
+                || section.ss_ws_url.is_some()
+                || section.ss_mode.is_some()
+            {
+                bail!(
+                    "uplink {parent_name}: fallbacks[{idx}] (transport=vless) must not set the \
+                     combined SS fields `ss_xhttp_url`/`ss_ws_url`/`ss_mode`"
+                );
+            }
             if tcp_ws_url.is_some()
                 || tcp_xhttp_url.is_some()
                 || tcp_mode.is_some()
