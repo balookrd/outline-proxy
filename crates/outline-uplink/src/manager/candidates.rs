@@ -87,21 +87,44 @@ fn group_candidates_by_transport(candidates: Vec<UplinkCandidate>) -> Vec<Uplink
 
 impl UplinkManager {
     pub async fn tcp_candidates(&self, target: &TargetAddr) -> Vec<UplinkCandidate> {
+        self.tcp_candidates_for(target, None).await
+    }
+
+    /// Client-aware variant of [`Self::tcp_candidates`]. `client` identifies the
+    /// ingress client (source IP by default) and is only consulted under
+    /// `routing_scope = "per_client"`; every other scope ignores it, so callers
+    /// that cannot attribute a flow to a client may pass `None` safely.
+    pub async fn tcp_candidates_for(
+        &self,
+        target: &TargetAddr,
+        client: Option<&str>,
+    ) -> Vec<UplinkCandidate> {
         let candidates = if self.strict_active_uplink_for(TransportKind::Tcp) {
             self.strict_transport_candidates(TransportKind::Tcp, Some(target), None, true)
                 .await
         } else {
-            self.ordered_candidates(TransportKind::Tcp, Some(target)).await
+            self.ordered_candidates(TransportKind::Tcp, Some(target), client)
+                .await
         };
         group_candidates_by_transport(candidates)
     }
 
     pub async fn udp_candidates(&self, target: Option<&TargetAddr>) -> Vec<UplinkCandidate> {
+        self.udp_candidates_for(target, None).await
+    }
+
+    /// Client-aware variant of [`Self::udp_candidates`]; see
+    /// [`Self::tcp_candidates_for`] for how `client` is interpreted.
+    pub async fn udp_candidates_for(
+        &self,
+        target: Option<&TargetAddr>,
+        client: Option<&str>,
+    ) -> Vec<UplinkCandidate> {
         let candidates = if self.strict_active_uplink_for(TransportKind::Udp) {
             self.strict_transport_candidates(TransportKind::Udp, target, None, true)
                 .await
         } else {
-            self.ordered_candidates(TransportKind::Udp, target).await
+            self.ordered_candidates(TransportKind::Udp, target, client).await
         };
         group_candidates_by_transport(candidates)
     }
@@ -110,6 +133,17 @@ impl UplinkManager {
         &self,
         target: &TargetAddr,
         failed_active_index: usize,
+    ) -> Vec<UplinkCandidate> {
+        self.tcp_failover_candidates_for(target, failed_active_index, None)
+            .await
+    }
+
+    /// Client-aware variant of [`Self::tcp_failover_candidates`].
+    pub async fn tcp_failover_candidates_for(
+        &self,
+        target: &TargetAddr,
+        failed_active_index: usize,
+        client: Option<&str>,
     ) -> Vec<UplinkCandidate> {
         let candidates = if self.strict_active_uplink_for(TransportKind::Tcp) {
             self.strict_transport_candidates(
@@ -120,7 +154,8 @@ impl UplinkManager {
             )
             .await
         } else {
-            self.ordered_candidates(TransportKind::Tcp, Some(target)).await
+            self.ordered_candidates(TransportKind::Tcp, Some(target), client)
+                .await
         };
         group_candidates_by_transport(candidates)
     }
@@ -145,7 +180,23 @@ impl UplinkManager {
         target: Option<&TargetAddr>,
         uplink_index: usize,
     ) {
-        let routing_key = routing_key(transport, target, self.inner.load_balancing.routing_scope);
+        self.confirm_selected_uplink_for(transport, target, None, uplink_index)
+            .await;
+    }
+
+    /// Client-aware variant of [`Self::confirm_selected_uplink`]. `client` must
+    /// match the value passed to the corresponding `*_candidates_for` call so
+    /// the sticky route is stored under the key it will later be looked up by;
+    /// only consulted under `routing_scope = "per_client"`.
+    pub async fn confirm_selected_uplink_for(
+        &self,
+        transport: TransportKind,
+        target: Option<&TargetAddr>,
+        client: Option<&str>,
+        uplink_index: usize,
+    ) {
+        let routing_key =
+            routing_key(transport, target, client, self.inner.load_balancing.routing_scope);
         // In strict global mode with probe enabled, the global active uplink is
         // owned by (a) the operator via manual switch and (b) the probe loop —
         // not by per-session connect outcomes. Letting every successful connect
@@ -185,6 +236,19 @@ impl UplinkManager {
         target: Option<&TargetAddr>,
         uplink_index: usize,
     ) {
+        self.confirm_runtime_failover_uplink_for(transport, target, None, uplink_index)
+            .await;
+    }
+
+    /// Client-aware variant of [`Self::confirm_runtime_failover_uplink`]; see
+    /// [`Self::confirm_selected_uplink_for`] for how `client` is interpreted.
+    pub async fn confirm_runtime_failover_uplink_for(
+        &self,
+        transport: TransportKind,
+        target: Option<&TargetAddr>,
+        client: Option<&str>,
+        uplink_index: usize,
+    ) {
         // In strict global mode with probes enabled, the probe is the
         // authoritative source of process-wide active-uplink health. A single
         // successful runtime failover should rescue only the current session,
@@ -196,7 +260,8 @@ impl UplinkManager {
             return;
         }
 
-        self.confirm_selected_uplink(transport, target, uplink_index).await;
+        self.confirm_selected_uplink_for(transport, target, client, uplink_index)
+            .await;
     }
 
     pub async fn global_active_uplink_index(&self) -> Option<usize> {
@@ -405,8 +470,10 @@ impl UplinkManager {
         &self,
         transport: TransportKind,
         target: Option<&TargetAddr>,
+        client: Option<&str>,
     ) -> Vec<UplinkCandidate> {
-        let routing_key = routing_key(transport, target, self.inner.load_balancing.routing_scope);
+        let routing_key =
+            routing_key(transport, target, client, self.inner.load_balancing.routing_scope);
         let now = Instant::now();
 
         let mut candidates = self.build_candidate_states(transport, now);

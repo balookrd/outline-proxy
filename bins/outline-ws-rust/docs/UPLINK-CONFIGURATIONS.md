@@ -486,7 +486,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | field                                | default            | unit  | purpose                                                                                           |
 |--------------------------------------|--------------------|-------|---------------------------------------------------------------------------------------------------|
 | `mode`                               | `"active_active"`  | enum  | `active_active` spreads per-flow / per-uplink load; `active_passive` keeps one active, others as failover |
-| `routing_scope`                      | `"per_flow"`       | enum  | `per_flow` (per-session selection) / `per_uplink` (sticky by host:port) / `global` (single active for the whole instance) |
+| `routing_scope`                      | `"per_flow"`       | enum  | `per_flow` (per-session selection) / `per_uplink` (sticky by host:port) / `per_client` (sticky per ingress source IP, `active_active` only) / `global` (single active for the whole instance) |
 | `sticky_ttl_secs`                    | `300`              | s     | how long a `(host, port)` keeps its assigned uplink                                               |
 | `hysteresis_ms`                      | `50`               | ms    | minimum gap between two `active` switches; suppresses flapping                                    |
 | `failure_cooldown_secs`              | `10`               | s     | how long after a failure the uplink is excluded from selection                                    |
@@ -533,6 +533,16 @@ Routing-scope cheat sheet:
   same uplink for `sticky_ttl_secs`. Useful when an origin is sensitive
   to source-IP churn (anti-fraud, sticky session cookies bound to
   client IP).
+- **`per_client`** — pins each ingress client to one balancer-chosen
+  uplink for `sticky_ttl_secs` (refreshed while the client stays
+  active), keyed by the client's source IP: the SOCKS5 peer IP, or the
+  LAN device IP behind a TUN router. Distinct clients spread across the
+  uplinks, but any single client keeps a stable egress instead of having
+  its flows fanned out — the per-source-IP analogue of `per_flow`. The
+  client fails over to another uplink when its pinned one goes
+  unhealthy. `active_active` only (it behaves like `per_flow` under
+  `active_passive`). Clients that cannot be attributed to a source IP
+  fall back to one shared key.
 - **`global`** — exactly one uplink is `active` instance-wide; failover
   is gated by `hysteresis_ms` + `failure_cooldown_secs`. Use for clean
   dashboard semantics on devices that should look like they have a
@@ -541,7 +551,10 @@ Routing-scope cheat sheet:
 Mode-vs-scope interaction:
 
 - `active_active` + `per_flow` is the only combination that exercises
-  weighted load distribution.
+  weighted load distribution at per-session granularity.
+- `active_active` + `per_client` keeps that weighted distribution but at
+  per-client granularity — each client lands on one uplink and stays
+  there, so its egress IP is stable across all its flows.
 - `active_passive` + `global` mirrors the classic primary/backup
   pattern — one uplink carries everything, others wait.
 - `active_passive` + `per_flow` is legal but has reduced meaning:

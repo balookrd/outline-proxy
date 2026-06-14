@@ -40,6 +40,7 @@ pub(super) async fn failover_to_next_candidate(
     uplinks: &UplinkManager,
     active: &mut ActiveTcpUplink,
     target: &TargetAddr,
+    client_id: Option<&str>,
     tried_indexes: &mut HashSet<usize>,
     tried_wires_per_uplink: &mut HashMap<usize, HashSet<u8>>,
 ) -> Result<FailoverStep> {
@@ -118,7 +119,9 @@ pub(super) async fn failover_to_next_candidate(
     }
 
     // ── Phase B: cross-uplink failover ─────────────────────────────────────
-    let candidates = uplinks.tcp_failover_candidates(target, active.index).await;
+    let candidates = uplinks
+        .tcp_failover_candidates_for(target, active.index, client_id)
+        .await;
     let candidates_total = candidates.len();
     let Some(next_candidate) = candidates.into_iter().find(|c| !tried_indexes.contains(&c.index))
     else {
@@ -159,7 +162,12 @@ pub(super) async fn failover_to_next_candidate(
         .insert(reconnected.wire_index);
 
     uplinks
-        .confirm_runtime_failover_uplink(TransportKind::Tcp, Some(target), next_candidate.index)
+        .confirm_runtime_failover_uplink_for(
+            TransportKind::Tcp,
+            Some(target),
+            client_id,
+            next_candidate.index,
+        )
         .await;
     metrics::record_failover(
         "tcp",

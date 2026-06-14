@@ -163,7 +163,10 @@ impl UplinkManager {
                 self.strict_per_uplink_active_uplink()
                     && matches!(key, RoutingKey::TransportGlobal(_))
             },
-            RoutingScope::PerFlow => false,
+            // Per-client entries expire on `sticky_ttl` like per-flow ones:
+            // an idle client releases its slot (and counts against
+            // MAX_STICKY_ROUTES), while an active one keeps refreshing it.
+            RoutingScope::PerFlow | RoutingScope::PerClient => false,
         }
     }
 }

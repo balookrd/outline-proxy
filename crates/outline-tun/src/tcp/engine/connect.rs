@@ -16,13 +16,14 @@ use socks5_proto::TargetAddr;
 pub(super) async fn select_tcp_candidate_and_connect(
     uplinks: &UplinkManager,
     target: &TargetAddr,
+    client: Option<&str>,
 ) -> Result<(UplinkCandidate, TcpWriter, TcpReader)> {
     let mut last_error = None;
     let mut failed_uplink = None::<String>;
     let strict_transport = uplinks.strict_active_uplink_for(TransportKind::Tcp);
     let mut tried_indexes = std::collections::HashSet::new();
     loop {
-        let candidates = uplinks.tcp_candidates(target).await;
+        let candidates = uplinks.tcp_candidates_for(target, client).await;
         if candidates.is_empty() {
             let cooldowns = uplinks.tcp_cooldown_debug_summary().await;
             warn!(
@@ -48,17 +49,19 @@ pub(super) async fn select_tcp_candidate_and_connect(
                 Ok((writer, reader)) => {
                     if failed_uplink.is_some() {
                         uplinks
-                            .confirm_runtime_failover_uplink(
+                            .confirm_runtime_failover_uplink_for(
                                 TransportKind::Tcp,
                                 Some(target),
+                                client,
                                 candidate.index,
                             )
                             .await;
                     } else {
                         uplinks
-                            .confirm_selected_uplink(
+                            .confirm_selected_uplink_for(
                                 TransportKind::Tcp,
                                 Some(target),
+                                client,
                                 candidate.index,
                             )
                             .await;

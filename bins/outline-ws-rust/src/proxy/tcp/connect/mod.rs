@@ -59,6 +59,14 @@ pub async fn serve_tcp_connect(
 
     let session = metrics::track_session("tcp");
     let result = async {
+        // Per-client affinity (`routing_scope = "per_client"`) keys uplink
+        // selection on the ingress client's source IP. Captured once here and
+        // ignored by every other routing scope. `peer_addr` can fail on an
+        // already-reset socket — fall back to `None` (the shared default key)
+        // rather than aborting the connection.
+        let client_id = client.peer_addr().ok().map(|addr| addr.ip().to_string());
+        let client_id = client_id.as_deref();
+
         // ── Initial uplink selection ─────────────────────────────────────────
         let mut last_error = None;
         let mut selected = None;
@@ -66,7 +74,7 @@ pub async fn serve_tcp_connect(
         let chunk0_attempt_timeout = uplinks.load_balancing().tcp_chunk0_failover_timeout;
         let mut tried_indexes = HashSet::new();
         loop {
-            let mut candidates = uplinks.tcp_candidates(&target).await;
+            let mut candidates = uplinks.tcp_candidates_for(&target, client_id).await;
             if strict_transport {
                 candidates.truncate(1);
             }
@@ -105,7 +113,7 @@ pub async fn serve_tcp_connect(
         })?;
         let mut active = ActiveTcpUplink::new(candidate.clone(), connected);
         uplinks
-            .confirm_selected_uplink(TransportKind::Tcp, Some(&target), active.index)
+            .confirm_selected_uplink_for(TransportKind::Tcp, Some(&target), client_id, active.index)
             .await;
         metrics::record_uplink_selected("tcp", uplinks.group_name(), &active.name);
         info!(
@@ -125,6 +133,7 @@ pub async fn serve_tcp_connect(
         let chunk0_params = Chunk0FailoverParams {
             uplinks: &uplinks,
             target: &target,
+            client_id,
             strict_transport,
             chunk0_attempt_timeout,
             timeouts: &timeouts,

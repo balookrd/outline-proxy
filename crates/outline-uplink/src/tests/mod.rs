@@ -2273,3 +2273,81 @@ async fn active_uplinks_snapshot_helpers_pick_correct_field() {
     assert_eq!(snapshot.udp_for(true), Some(7), "strict global must also serve UDP");
     assert_eq!(snapshot.udp_for(false), Some(9), "per-uplink mode must consult `udp`");
 }
+
+fn per_client_manager() -> UplinkManager {
+    let mut config = lb();
+    config.routing_scope = RoutingScope::PerClient;
+    UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe_disabled(),
+        config,
+    )
+    .unwrap()
+}
+
+/// `per_client` keys the sticky route on the ingress client, so the SAME target
+/// is served by DIFFERENT uplinks for different clients: each client pins the
+/// uplink that was fastest when it first connected and stays there.
+#[tokio::test]
+async fn per_client_pins_distinct_clients_to_distinct_uplinks() {
+    let manager = per_client_manager();
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+
+    // primary is fastest — client A lands on it and gets pinned.
+    set_tcp_status(&manager, 0, true, 50).await;
+    set_tcp_status(&manager, 1, true, 100).await;
+    let a_first = manager.tcp_candidates_for(&target, Some("10.0.0.1")).await;
+    assert_eq!(a_first[0].uplink.name, "primary");
+
+    // Conditions flip so backup is now faster, but by less than `hysteresis`
+    // (50 ms) — not enough to migrate an already-pinned client.
+    set_tcp_status(&manager, 0, true, 100).await;
+    set_tcp_status(&manager, 1, true, 70).await;
+
+    // A fresh client B selects the now-fastest uplink for the SAME target...
+    let b_first = manager.tcp_candidates_for(&target, Some("10.0.0.2")).await;
+    assert_eq!(b_first[0].uplink.name, "backup");
+
+    // ...while client A stays on its original uplink. One target, two uplinks,
+    // chosen purely by client identity — the whole point of per-client affinity.
+    let a_second = manager.tcp_candidates_for(&target, Some("10.0.0.1")).await;
+    assert_eq!(a_second[0].uplink.name, "primary");
+}
+
+/// Same per-client separation must hold on the UDP candidate path.
+#[tokio::test]
+async fn per_client_udp_affinity_is_keyed_per_client() {
+    let manager = per_client_manager();
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+
+    set_udp_status(&manager, 0, true, 50).await;
+    set_udp_status(&manager, 1, true, 100).await;
+    let a_first = manager.udp_candidates_for(Some(&target), Some("10.0.0.1")).await;
+    assert_eq!(a_first[0].uplink.name, "primary");
+
+    set_udp_status(&manager, 0, true, 100).await;
+    set_udp_status(&manager, 1, true, 70).await;
+    let b_first = manager.udp_candidates_for(Some(&target), Some("10.0.0.2")).await;
+    assert_eq!(b_first[0].uplink.name, "backup");
+    let a_second = manager.udp_candidates_for(Some(&target), Some("10.0.0.1")).await;
+    assert_eq!(a_second[0].uplink.name, "primary");
+}
+
+/// A flow with no attributable client identity must not be dropped: per-client
+/// degrades to one shared default key, still selecting and pinning normally.
+#[tokio::test]
+async fn per_client_without_identity_uses_shared_default_key() {
+    let manager = per_client_manager();
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    set_tcp_status(&manager, 0, true, 50).await;
+    set_tcp_status(&manager, 1, true, 100).await;
+
+    let first = manager.tcp_candidates_for(&target, None).await;
+    assert_eq!(first[0].uplink.name, "primary");
+    let second = manager.tcp_candidates_for(&target, None).await;
+    assert_eq!(second[0].uplink.name, "primary");
+}

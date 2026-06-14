@@ -29,6 +29,11 @@ pub(super) struct GroupUdpContext {
     pub(super) manager: UplinkManager,
     pub(super) active: Arc<ArcSwap<ActiveUdpTransport>>,
     pub(super) group_name: Arc<str>,
+    /// Ingress client identity (source IP) for `routing_scope = "per_client"`
+    /// affinity. Held for the whole association so both the send path and the
+    /// downlink failover task re-select on the same client key. `None` for
+    /// other scopes / ingresses that cannot attribute a source.
+    pub(super) client: Option<Arc<str>>,
 }
 
 impl GroupUdpContext {
@@ -52,9 +57,15 @@ impl GroupUdpContext {
             if is_dropped_oversized_udp_error(&error) {
                 return Ok(());
             }
-            let replacement =
-                failover_udp_transport(&self.manager, &self.active, target, active_index, error)
-                    .await?;
+            let replacement = failover_udp_transport(
+                &self.manager,
+                &self.active,
+                target,
+                self.client.as_deref(),
+                active_index,
+                error,
+            )
+            .await?;
             if let Err(error) = replacement.transport.send_packet(payload).await {
                 if is_dropped_oversized_udp_error(&error) {
                     return Ok(());
@@ -142,6 +153,7 @@ pub(super) async fn resolve_group_context(
     registry: &UplinkRegistry,
     group_name: &str,
     responses: &mpsc::Sender<UdpResponse>,
+    client: Option<&str>,
 ) -> Result<GroupUdpContext> {
     // Fast path: context already exists. Read-lock keeps concurrent senders
     // for the same (or different) groups from serializing on a single mutex.
@@ -157,12 +169,13 @@ pub(super) async fn resolve_group_context(
         .group_by_name(group_name)
         .ok_or_else(|| anyhow!("uplink group \"{group_name}\" is not configured"))?
         .clone();
-    let initial = select_udp_transport(&manager, None).await?;
+    let initial = select_udp_transport(&manager, None, client).await?;
     let active = Arc::new(ArcSwap::from_pointee(initial));
     let ctx = GroupUdpContext {
         manager: manager.clone(),
         active: Arc::clone(&active),
         group_name: Arc::from(group_name),
+        client: client.map(Arc::from),
     };
 
     // Insert the context and spawn the downlink task atomically: take the map
@@ -245,6 +258,7 @@ pub(super) async fn run_group_downlink(
                         &ctx.manager,
                         &ctx.active,
                         None,
+                        ctx.client.as_deref(),
                         index,
                         error,
                     )
