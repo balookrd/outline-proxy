@@ -131,3 +131,27 @@ async fn snapshot_keeps_bypass_inactive_when_opted_out() {
     assert!(!snap.bypass_active_tcp);
     assert!(!snap.bypass_active_udp);
 }
+
+#[tokio::test]
+async fn snapshot_combined_ss_surfaces_ss_mode_not_split_default() {
+    // A combined-SS uplink keeps its dial URL + carrier mode in
+    // `ss_xhttp_url`/`ss_mode`; the split `tcp_mode`/`udp_mode` stay at their
+    // default. The snapshot must surface the *effective* combined mode
+    // (`ss_mode`) via `*_dial_mode()`, not the split default — reading the raw
+    // mode fields showed the wrong carrier and, because configured then
+    // differed from effective, lit a phantom downgrade flag on the dashboard.
+    let mut u = uplink();
+    u.tcp_ws_url = None;
+    u.udp_ws_url = None;
+    u.ss_xhttp_url = Some(Url::parse("https://cdn.example.com/ssc").unwrap());
+    u.ss_mode = Some(TransportMode::XhttpH3);
+    assert!(u.is_combined_ss());
+
+    let manager =
+        UplinkManager::new_for_test("main", vec![u], probe_disabled(), lb(false)).unwrap();
+    let snap = manager.snapshot().await;
+    let up = &snap.uplinks[0];
+    let want = TransportMode::XhttpH3.to_string();
+    assert_eq!(up.tcp_mode.as_deref(), Some(want.as_str()), "combined tcp mode must be ss_mode");
+    assert_eq!(up.udp_mode.as_deref(), Some(want.as_str()), "combined udp mode must be ss_mode");
+}
