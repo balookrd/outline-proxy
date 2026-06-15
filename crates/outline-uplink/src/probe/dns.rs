@@ -67,8 +67,13 @@ pub(super) async fn run_dns_probe(
                     let (t, downgraded) = {
                         let _permit =
                             dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
-                        let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
-                            anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name)
+                        // `udp_dial_url()` is combined-SS-aware: it returns
+                        // `ss_xhttp_url`/`ss_ws_url` for a combined wire and the
+                        // split `udp_ws_url`/`udp_xhttp_url` otherwise. Reading
+                        // `udp_ws_url` directly here used to fail combined uplinks
+                        // with "has no udp_ws_url for DNS probe".
+                        let udp_ws_url = uplink.udp_dial_url().ok_or_else(|| {
+                            anyhow!("uplink {} has no udp dial URL for DNS probe", uplink.name)
                         })?;
                         if effective_udp_mode == TransportMode::Quic {
                             #[cfg(feature = "quic")]
