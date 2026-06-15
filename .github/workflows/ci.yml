@@ -102,19 +102,21 @@ jobs:
       - name: check server without default features (control gated off)
         run: cargo check -p outline-ss-rust --no-default-features
 
-      - name: check router build (memory-constrained client)
-        run: cargo check -p outline-ws-rust --no-default-features --features router
+      - name: check client without default features
+        run: cargo check -p outline-ws-rust --no-default-features
 
-      # Monorepo invariant: rustls must stay on a single CryptoProvider (ring).
-      # Two providers panic at runtime ("exactly one of aws-lc-rs and ring").
-      - name: invariant — ring only, no aws-lc-rs in the graph
+      # Monorepo invariant: rustls must stay on a single CryptoProvider
+      # (aws-lc-rs). Two providers panic at runtime ("exactly one of aws-lc-rs
+      # and ring"). The `ring` crate itself stays for SS AEAD / SHA-256, but
+      # never as the rustls provider.
+      - name: invariant — aws-lc-rs only, no ring rustls provider
         run: |
-          if cargo tree -i aws-lc-rs >/dev/null 2>&1; then
-            echo "::error::aws-lc-rs is in the dependency graph; rustls must stay on ring only"
-            cargo tree -i aws-lc-rs
+          if cargo tree -i 'rustls@0.23' -e features 2>/dev/null | grep -q 'rustls feature "ring"'; then
+            echo "::error::rustls is pulling its ring provider; the workspace must stay on aws-lc-rs only"
+            cargo tree -i 'rustls@0.23' -e features | grep 'rustls feature'
             exit 1
           fi
-          echo "ok: aws-lc-rs is absent"
+          echo "ok: rustls is on aws-lc-rs only"
 
       # Monorepo invariant: every direct sockudo-ws reference in production
       # code stays behind the two vendored-gate modules, so rebasing the
@@ -133,20 +135,7 @@ jobs:
           fi
           echo "ok: sockudo-ws stays behind the gate modules"
 
-      # Monorepo invariant: the router build must not pull the heavy server /
-      # metrics / H3-QUIC / aws-lc-rs dependencies.
-      - name: invariant — router build stays isolated
-        run: |
-          leaked=$(cargo tree -e features -p outline-ws-rust --no-default-features --features router \
-            | grep -iE 'mimalloc|prometheus|aws-lc-rs|quinn|h3-quinn|outline-ss-rust' || true)
-          if [ -n "$leaked" ]; then
-            echo "::error::router build leaks heavy dependencies:"
-            echo "$leaked"
-            exit 1
-          fi
-          echo "ok: router build is isolated"
-
-      # Install-script invariants: syntax + shellcheck for the three root
+      # Install-script invariants: syntax + shellcheck for the two root
       # installers, and byte-identity of the helpers deliberately duplicated
       # between install-server.sh and install-client.sh (single-file
       # curl|bash delivery rules out a sourced library; this gate replaces

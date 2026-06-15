@@ -232,22 +232,18 @@ cargo install cargo-zigbuild
 ```bash
 cargo release-musl-x86_64
 cargo release-musl-aarch64
-cargo release-router-musl-arm
-cargo release-router-musl-armv7
-cargo release-router-musl-aarch64
 ```
 
 ### CI-релизы
 
 - Каждый push в `main` запускает workflow `Nightly Release`.
 - Этот workflow передвигает rolling tag `nightly` на текущий коммит `main` и заново публикует GitHub prerelease `Nightly`.
-- Nightly публикует server-артефакты `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, router-артефакты `release-router` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, а также `SHA256SUMS.txt`.
-- Nightly server-архивы называются `outline-ws-rust-vnightly-<full-commit-sha>-<target>.tar.gz`; для router используется префикс `outline-ws-rust-router-vnightly-<full-commit-sha>-<target>.tar.gz`.
+- Nightly публикует server-артефакты `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, а также `SHA256SUMS.txt`.
+- Nightly server-архивы называются `outline-ws-rust-vnightly-<full-commit-sha>-<target>.tar.gz`.
 - Для стабильного релиза запускайте вручную workflow `Release` и передавайте `major_minor`, например `1.7`.
 - CI находит последний тег вида `v1.7.*`, автоматически увеличивает patch, обновляет `Cargo.toml` и `Cargo.lock`, создает release-коммит и пушит этот коммит в `main`.
 - После появления release-коммита в `main` нужно локально создать и отправить подписанный тег; именно push тега запускает workflow `Tag Release`, который собирает и публикует GitHub Release.
-- В результате один стабильный GitHub Release содержит и server-артефакты `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, и router-артефакты `release-router` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`.
-- Router-архивы называются `outline-ws-rust-router-v<version>-<target>.tar.gz`, чтобы не пересекаться с обычными server-артефактами.
+- В результате один стабильный GitHub Release содержит server-артефакты `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`.
 - Если нужно, push тега вида `v1.2.3` по-прежнему запускает workflow `Tag Release` как отдельный внешний tag-driven путь.
 
 Добавить нужные Rust-таргеты:
@@ -256,14 +252,7 @@ cargo release-router-musl-aarch64
 # Виртуалки / серверы
 rustup target add x86_64-unknown-linux-musl
 rustup target add aarch64-unknown-linux-musl
-
-# Роутеры (ARM, напр. Raspberry Pi, большинство современных домашних роутеров)
-rustup target add armv7-unknown-linux-musleabihf
-# Роутеры (AArch64, напр. новые Raspberry Pi, Banana Pi, роутеры с Cortex-A53+)
-rustup target add aarch64-unknown-linux-musl
 ```
-
-Текущий stable Rust больше не отдает `mips-unknown-linux-musl` и `mipsel-unknown-linux-musl` как скачиваемые `rust-std` targets, поэтому локальные shortcuts в документации покрывают только цели, которые еще доступны на stable. Для legacy MIPS-сборок теперь нужен либо pinned старый toolchain, либо кастомный `build-std` flow; официальные stable release-артефакты для этих целей собираются в CI через workflow `Release`.
 
 ---
 
@@ -279,9 +268,6 @@ rustup target add aarch64-unknown-linux-musl
 | `mimalloc` | ✓ | Заменяет системный аллокатор на mimalloc; снижает RSS-фрагментацию при большом потоке соединений. Фоновый поток периодически вызывает `mi_collect`, возвращая освобождённую память ОС после всплесков трафика |
 | `env-filter` | ✓ | Динамический парсинг `RUST_LOG`; отключить, чтобы жёстко задать уровень `WARN` и сэкономить ~300 КБ на MIPS |
 | `multi-thread` | ✓ | Work-stealing планировщик Tokio; отключить, чтобы принудительно использовать `current_thread` и сэкономить ~100–200 КБ |
-| `router` | — | Удобный псевдоним для `--no-default-features --features router` (отключает все дефолтные фичи выше) |
-
-> **Почему отключать на роутерах:** `h3`/QUIC добавляет ~1–2 МБ к бинарю и накладные расходы на MIPS/ARM. `metrics` добавляет prometheus + serde_json и фоновый sampler. `router` отключает оба сразу.
 
 ---
 
@@ -314,124 +300,6 @@ cargo release-musl-aarch64
 ```bash
 cargo zigbuild --release --no-default-features --features h3 --target x86_64-unknown-linux-musl
 ```
-
----
-
-### Роутеры (кросс-компиляция)
-
-Все сборки для роутеров используют `musl` libc — полностью статический бинарь без runtime-зависимостей.
-На устройстве используйте `config-router.toml` — см. [Конфигурация для роутера](#конфигурация-для-роутера).
-
-Все роутерные сборки используют `--no-default-features --features router`, что отключает:
-- `h3` → убирает quinn, h3, h3-quinn, sockudo-ws/http3 (~1–2 МБ меньше на MIPS)
-- `metrics` → убирает prometheus, serde_json, фоновый process sampler
-
-Роутерные сборки используют профиль `release-router` (`opt-level = "z"`) — оптимизация по размеру бинаря вместо скорости. Для ВМ используется `release` (`opt-level = 3`).
-
-**ARM soft-float** (минималистичные ARM-роутеры без FPU, напр. старые Linksys WRT):
-
-```bash
-cargo zigbuild --profile release-router --no-default-features --features router --target arm-unknown-linux-musleabi
-# или короче
-cargo release-router-musl-arm
-```
-
-**ARMv7 hard-float** (Raspberry Pi 2/3 в 32-битном режиме, многие mid-range роутеры):
-
-```bash
-cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
-# или короче
-cargo release-router-musl-armv7
-```
-
-**AArch64 / ARM64** (Raspberry Pi 3/4/5 в 64-битном режиме, Banana Pi R3/R4, NanoPi R5S, роутеры с MT7986/MT7988, IPQ8074):
-
-```bash
-cargo zigbuild --profile release-router --no-default-features --features router --target aarch64-unknown-linux-musl
-# или короче
-cargo release-router-musl-aarch64
-```
-
-Скомпилированный бинарь находится в `target/<target>/release-router/outline-ws-rust`.
-Скопировать на роутер и сделать исполняемым:
-
-```bash
-scp target/armv7-unknown-linux-musleabihf/release-router/outline-ws-rust root@192.168.1.1:/usr/local/bin/
-ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
-```
-
-> `router` — просто псевдоним: сам по себе не устанавливает флагов, просто позволяет написать `--features router` вместо `--no-default-features`.
-
-### Release-артефакты для роутеров
-
-Stable Rust больше не поставляет готовый `rust-std` для `mips-unknown-linux-musl` / `mipsel-unknown-linux-musl`, поэтому такие сборки теперь требуют nightly и `build-std`. Для локальной сборки по-прежнему нужен рабочий MIPS musl toolchain или эквивалентная схема с Zig-обертками; самый простой и надежный путь для официальных stable-артефактов сейчас — workflow `Release`.
-
-Локальный пример, если такой toolchain уже есть:
-
-```bash
-rustup toolchain install nightly --component rust-src
-cargo +nightly build -Z build-std=std,panic_abort --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
-```
-
-Пример через CI / релиз:
-
-- вручную запускаете workflow `Release` для обычного стабильного релиза или пушите тег вида `v1.2.3` для внешнего tag-driven пути
-- workflow `Release` публикует один GitHub Release и для server-, и для router-артефактов
-- для `aarch64-unknown-linux-musl` router-бинарь собирается через `cargo-zigbuild`
-- для `mips` и `mipsel` внутри используется nightly `build-std`, Zig и генерируемые wrapper-скрипты, которые мапятся на Zig musl EABI targets, без загрузки внешнего toolchain-архива
-- опубликованные router-архивы называются `outline-ws-rust-router-v<version>-<target>.tar.gz`
-
----
-
-### Конфигурация для роутера
-
-Используйте `config-router.toml` как отправную точку для устройств с ограниченной памятью.
-
-**Фичи сборки:**
-
-| Фича | ВМ | Роутер (`--no-default-features --features router`) |
-|---|---|---|
-| `h3` | ✓ | ✗ → H3 тихо падает на H2 |
-| `metrics` | ✓ | ✗ → все вызовы метрик — no-op, `/metrics` не работает |
-| `env-filter` | ✓ | ✗ → уровень логирования жёстко `WARN` (экономия ~300 КБ, без regex) |
-| `multi-thread` | ✓ | ✗ → всегда планировщик `current_thread` (экономия ~100–200 КБ) |
-
-**Runtime-параметры (конфиг / CLI):**
-
-| Параметр | ВМ (по умолчанию) | Роутер (пример) |
-|---|---|---|
-| `RUST_LOG` (env) | настраивается (по умолч.: `info,outline_ws_rust=debug`) | жёстко `WARN` (без regex) |
-| `--worker-threads` | кол-во CPU | N/A (всегда `current_thread`) |
-| `--thread-stack-size-kb` | 2048 КБ | N/A (`multi-thread` отключён) |
-| `udp_recv_buf_bytes` | дефолт ядра | напр. `212992` (208 КБ) |
-| `udp_send_buf_bytes` | дефолт ядра | напр. `212992` (208 КБ) |
-| `tun.max_flows` | 4096 | 128 |
-| `tun.defrag_max_fragment_sets` | 1024 | 64 |
-| `tun.defrag_max_fragments_per_set` | 64 | 16 |
-| `tun.defrag_max_total_bytes` | 16 МБ | 2 МБ |
-| `tun.defrag_max_bytes_per_set` | 128 КБ | 16 КБ |
-| `tun.tcp.max_pending_server_bytes` | 4 МБ | 64 КБ |
-| `tun.tcp.max_buffered_client_bytes` | 256 КБ | 64 КБ |
-| `[h2] initial_stream_window_size` | 1 МБ | 256 КБ |
-| `[h2] initial_connection_window_size` | 2 МБ | 512 КБ |
-| Warm standby | 1 TCP + 1 UDP | отключено |
-| Режим балансировки | `active_active` | `active_passive` |
-| Транспорт | `h3` | `h2` (QUIC тяжелее для MIPS/ARM) |
-| `state_path` | директория конфига (`.state.toml`) | указать на записываемый путь, например `/var/lib/outline-ws-rust/state.toml` |
-
-Запуск с роутерным конфигом:
-
-```bash
-outline-ws-rust --config /etc/outline-ws-rust/config-router.toml --worker-threads 1
-```
-
-Или через переменные окружения:
-
-```bash
-PROXY_CONFIG=/etc/outline-ws-rust/config-router.toml WORKER_THREADS=1 outline-ws-rust
-```
-
-> Роутерные сборки логируют только на уровне `WARN` — `RUST_LOG` игнорируется. Чтобы получить динамический уровень, добавьте `--features env-filter` к команде сборки (ценой ~300 КБ на MIPS).
 
 ## Быстрый старт
 

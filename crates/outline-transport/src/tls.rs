@@ -105,7 +105,7 @@ fn build_client_config_uncached(
     let mut config = match fp {
         Some(fp) => ClientConfig::builder_with_provider(crate::tls_fingerprint::provider_for(fp))
             .with_safe_default_protocol_versions()
-            .expect("ring provider supports TLS 1.2 + 1.3")
+            .expect("aws-lc-rs provider supports TLS 1.2 + 1.3")
             .with_root_certificates(roots)
             .with_no_client_auth(),
         None => ClientConfig::builder()

@@ -15,7 +15,7 @@
 //! accepting an untrusted/expired cert is safe: the only thing extracted is
 //! the `notAfter` timestamp.
 //!
-//! Gated behind the `cert-check` feature so router builds pull neither this
+//! Gated behind the `cert-check` feature so slim builds pull neither this
 //! code nor the X.509 parser.
 
 use std::net::IpAddr;
@@ -94,10 +94,10 @@ static ACCEPT_ANY_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
 
 fn accept_any_client_config() -> Arc<ClientConfig> {
     Arc::clone(ACCEPT_ANY_TLS_CONFIG.get_or_init(|| {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
         let config = ClientConfig::builder_with_provider(Arc::clone(&provider))
             .with_safe_default_protocol_versions()
-            .expect("ring provider supports the default protocol versions")
+            .expect("aws-lc-rs provider supports the default protocol versions")
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert { provider }))
             .with_no_client_auth();

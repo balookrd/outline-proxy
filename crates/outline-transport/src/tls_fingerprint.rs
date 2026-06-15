@@ -5,38 +5,43 @@
 //!
 //! ## What this controls — and what it cannot
 //!
-//! On stock rustls + `ring` the only ClientHello knobs the public API
-//! exposes are the *order* of the offered cipher suites and the *order* of
-//! the key-exchange groups (both are emitted verbatim from the
-//! `CryptoProvider` vectors). Reordering the cipher list moves JA3 — which
-//! hashes the ciphers in offer order — toward the target browser, but it
-//! cannot reach a byte-exact match:
+//! On rustls + `aws-lc-rs` the ClientHello knobs the public API exposes are
+//! the *order* of the offered cipher suites and the *order* of the
+//! key-exchange groups (both are emitted verbatim from the `CryptoProvider`
+//! vectors). Reordering the cipher list moves JA3 — which hashes the ciphers
+//! in offer order — toward the target browser, and leading with the
+//! post-quantum group closes the strongest modern tell, but it still cannot
+//! reach a byte-exact match:
 //!
+//! * **Post-quantum key share is offered.** `aws-lc-rs` provides
+//!   `X25519MLKEM768`, and it leads the kx-group list as current browsers
+//!   do, so a censor can no longer flag the dial on the *absence* of a PQ
+//!   key share behind a modern-browser User-Agent — the single strongest
+//!   "not a real browser" tell on stock rustls + `ring`.
 //! * **No GREASE.** Browsers prepend a random GREASE value to the cipher
-//!   list and sprinkle GREASE extensions; rustls emits none.
-//! * **The cipher *set* is fixed by `ring`.** No CBC, no RSA-kx, no
-//!   post-quantum `X25519MLKEM768` — the tail of a real Chrome list is
-//!   unreachable, so the *set* differs no matter how it is ordered.
+//!   list and sprinkle GREASE extensions; rustls emits none, whatever the
+//!   provider. This is the remaining byte-level gap.
 //! * **Extension set and order are owned by rustls** and are not exposed.
 //!   JA4 sorts ciphers/extensions and drops GREASE, so it keys on the
 //!   *set*; reordering alone does not move it.
 //!
-//! The honest payoff is a closer-but-not-identical JA3 plus removal of the
-//! obvious "rustls-default order behind a Chrome User-Agent" mismatch. A
-//! byte-exact JA3/JA4 needs a vendored rustls (GREASE + extension control);
-//! this module is the seam such a fork extends — callers keep asking for a
-//! provider by family and never see the difference.
+//! The honest payoff is a closer JA3 with a PQ-capable key_share, and
+//! removal of the obvious "rustls-default order / no post-quantum group
+//! behind a Chrome User-Agent" mismatch. A byte-exact JA3/JA4 still needs a
+//! vendored rustls (GREASE + extension control); this module is the seam
+//! such a fork extends — callers keep asking for a provider by family and
+//! never see the difference.
 //!
-//! The kx-group order is `[x25519, secp256r1, secp384r1]` for every family
-//! — that already matches what Chrome / Firefox / Safari offer (modulo the
-//! post-quantum group `ring` cannot provide), and it equals rustls's own
-//! default, so it is set explicitly only to keep the seam in one place.
+//! The kx-group order is `[X25519MLKEM768, x25519, secp256r1, secp384r1]`
+//! for every family — that matches what current Chrome / Firefox / Safari
+//! offer; it is set explicitly to keep the post-quantum group first and the
+//! seam in one place.
 
 use std::sync::{Arc, OnceLock};
 
 use rustls::SupportedCipherSuite;
 use rustls::crypto::CryptoProvider;
-use rustls::crypto::ring::{cipher_suite as cs, default_provider, kx_group};
+use rustls::crypto::aws_lc_rs::{cipher_suite as cs, default_provider, kx_group};
 
 use crate::fingerprint_profile::TlsFingerprint;
 
@@ -55,19 +60,25 @@ pub(crate) fn provider_for(fp: TlsFingerprint) -> Arc<CryptoProvider> {
     Arc::clone(slot.get_or_init(|| Arc::new(build_provider(fp))))
 }
 
-/// Clones `ring`'s default provider and swaps in the family-specific
-/// cipher / kx ordering, leaving the secure-random source, key provider,
-/// and signature-verification algorithms untouched.
+/// Clones aws-lc-rs's default provider and swaps in the family-specific
+/// cipher / kx ordering (post-quantum group leading), leaving the
+/// secure-random source, key provider, and signature-verification
+/// algorithms untouched.
 fn build_provider(fp: TlsFingerprint) -> CryptoProvider {
     CryptoProvider {
         cipher_suites: cipher_order(fp),
-        kx_groups: vec![kx_group::X25519, kx_group::SECP256R1, kx_group::SECP384R1],
+        kx_groups: vec![
+            kx_group::X25519MLKEM768,
+            kx_group::X25519,
+            kx_group::SECP256R1,
+            kx_group::SECP384R1,
+        ],
         ..default_provider()
     }
 }
 
-/// Cipher-suite offer order for a family, restricted to the suites `ring`
-/// actually implements (TLS 1.3 AEADs + TLS 1.2 ECDHE-GCM/ChaCha20). The
+/// Cipher-suite offer order for a family — a browser-like subset of what
+/// aws-lc-rs implements (TLS 1.3 AEADs + TLS 1.2 ECDHE-GCM/ChaCha20). The
 /// head — the three TLS 1.3 suites — is what differs most between
 /// browsers and is the part a JA3 rule keys on:
 ///

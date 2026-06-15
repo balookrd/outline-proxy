@@ -69,10 +69,10 @@ fn families_have_distinct_orders() {
 }
 
 #[test]
-fn every_family_offers_the_full_ring_suite_set() {
-    // ring implements 3 TLS 1.3 AEADs + 6 TLS 1.2 ECDHE suites = 9. Each
-    // family is a reordering of the same set, so the count is fixed and
-    // the set (sorted) is identical across families — only order moves.
+fn every_family_offers_the_full_suite_set() {
+    // We offer 3 TLS 1.3 AEADs + 6 TLS 1.2 ECDHE suites = 9. Each family is
+    // a reordering of the same set, so the count is fixed and the set
+    // (sorted) is identical across families — only order moves.
     let mut chromium = suites(TlsFingerprint::Chromium);
     let mut firefox = suites(TlsFingerprint::Firefox);
     let mut safari = suites(TlsFingerprint::Safari);
@@ -85,8 +85,15 @@ fn every_family_offers_the_full_ring_suite_set() {
 }
 
 #[test]
-fn kx_order_is_x25519_first_and_uniform() {
-    let expected = vec![NamedGroup::X25519, NamedGroup::secp256r1, NamedGroup::secp384r1];
+fn kx_order_leads_with_post_quantum_then_x25519_uniform() {
+    // The post-quantum hybrid leads (as current Chrome / Firefox / Safari
+    // offer), so a censor cannot flag the dial on a missing PQ key share.
+    let expected = vec![
+        NamedGroup::X25519MLKEM768,
+        NamedGroup::X25519,
+        NamedGroup::secp256r1,
+        NamedGroup::secp384r1,
+    ];
     assert_eq!(groups(TlsFingerprint::Chromium), expected);
     assert_eq!(groups(TlsFingerprint::Firefox), expected);
     assert_eq!(groups(TlsFingerprint::Safari), expected);

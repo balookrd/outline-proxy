@@ -11,8 +11,7 @@ WebSocket / XHTTP / HTTP/3 / raw QUIC.
   built-in TLS and QUIC/H3 listeners.
 - **[`outline-ws-rust`](bins/outline-ws-rust/)** — the **client**. Accepts local
   SOCKS5 (and optional TUN) traffic and forwards it through the matching
-  transports, with multi-uplink failover, load balancing, health probes, and a
-  stripped **router build** for memory-constrained devices (MIPS / armv7).
+  transports, with multi-uplink failover, load balancing, and health probes.
 
 The client dials the server; both speak the same wire protocol and share a set
 of common crates, which is why they live in one repository.
@@ -112,15 +111,12 @@ cargo test --workspace
 cargo build --release -p outline-ss-rust
 cargo build --release -p outline-ws-rust
 
-# client router build (stripped, memory-constrained)
-cargo build --profile release-router --no-default-features --features router -p outline-ws-rust
-
 # musl cross-builds via cargo-zigbuild aliases (need cargo-zigbuild + zig)
 cargo ss-release-musl-x86_64
-cargo ws-release-router-musl-armv7
+cargo ws-release-musl-aarch64
 ```
 
-`rustls` is pinned to the `ring` provider across the workspace, and the HTTP/3
+`rustls` uses the `aws-lc-rs` provider across the workspace, and the HTTP/3
 WebSocket path depends on the patched `vendor/h3` and `vendor/sockudo-ws`. See
 [`AGENTS.md`](AGENTS.md) for the full set of monorepo invariants.
 

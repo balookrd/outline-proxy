@@ -7,7 +7,7 @@
 //! `UplinkManager` so the forward hot path is untouched.
 //!
 //! Gated on `h3` (the feature that pulls `outline-transport/quic`), so
-//! router builds compile none of this.
+//! builds without `h3` compile none of this.
 
 use std::sync::Arc;
 

@@ -11,9 +11,8 @@
   TLS- и QUIC/H3-listener'ы.
 - **[`outline-ws-rust`](bins/outline-ws-rust/)** — **клиент**. Принимает
   локальный SOCKS5 (и опциональный TUN) трафик и отправляет его через
-  соответствующие транспорты, с multi-uplink failover, балансировкой нагрузки,
-  health-пробами и урезанной **router-сборкой** для устройств с ограниченной
-  памятью (MIPS / armv7).
+  соответствующие транспорты, с multi-uplink failover, балансировкой нагрузки
+  и health-пробами.
 
 Клиент дайлит сервер; обе стороны говорят на одном wire-протоколе и делят набор
 общих крейтов — поэтому они в одном репозитории.
@@ -114,15 +113,12 @@ cargo test --workspace
 cargo build --release -p outline-ss-rust
 cargo build --release -p outline-ws-rust
 
-# router-сборка клиента (урезанная, под ограниченную память)
-cargo build --profile release-router --no-default-features --features router -p outline-ws-rust
-
 # musl cross-сборки через алиасы cargo-zigbuild (нужны cargo-zigbuild + zig)
 cargo ss-release-musl-x86_64
-cargo ws-release-router-musl-armv7
+cargo ws-release-musl-aarch64
 ```
 
-`rustls` во всём workspace закреплён на провайдере `ring`, а HTTP/3 WebSocket
+`rustls` во всём workspace использует провайдер `aws-lc-rs`, а HTTP/3 WebSocket
 path зависит от пропатченных `vendor/h3` и `vendor/sockudo-ws`. Полный набор
 монорепо-инвариантов — в [`AGENTS.md`](AGENTS.md).
 
