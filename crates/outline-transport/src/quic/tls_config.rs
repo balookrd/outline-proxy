@@ -18,6 +18,23 @@ use parking_lot::Mutex;
 
 use crate::bind_udp_socket;
 
+// ── Per-process QUIC transport parameter jitter ─────────────────────────────
+//
+// `max_idle_timeout` is a QUIC transport parameter (wire id 0x0001) sent in
+// the Initial handshake packet and is therefore visible to passive observers.
+// `keep_alive_interval` controls the cadence of PING frames, observable as
+// timing. Fixing both to compile-time constants makes every instance of this
+// client immediately identifiable by fingerprint. A small per-process random
+// jitter (derived once at startup and held for the lifetime of the process)
+// is enough to break that trivially stable fingerprint across restarts.
+
+static QUIC_PARAM_SEED: OnceLock<u16> = OnceLock::new();
+
+/// Returns a per-process u16 drawn once at startup and stable afterwards.
+fn quic_param_seed() -> u16 {
+    *QUIC_PARAM_SEED.get_or_init(rand::random::<u16>)
+}
+
 // ── Shared per-AF endpoints ─────────────────────────────────────────────────
 
 static QUIC_CLIENT_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::new();
@@ -98,9 +115,17 @@ pub(crate) fn quic_client_config(alpn: &[u8]) -> quinn::ClientConfig {
         .expect("rustls ALPN config is always QUIC-compatible");
     let mut config = quinn::ClientConfig::new(Arc::new(quic_tls));
     let mut transport = quinn::TransportConfig::default();
-    transport.keep_alive_interval(Some(Duration::from_secs(10)));
+    // Jitter keep-alive and idle timeout with a stable per-process offset so
+    // that different client instances produce distinct timing fingerprints.
+    // Ranges are chosen so idle_timeout > 2 × keep_alive_interval always holds:
+    //   keep_alive: 8..=12 s  (seed bits [2:0])
+    //   idle_timeout: 28..=35 s  (seed bits [6:3])
+    let seed = quic_param_seed();
+    let keepalive_secs = 8u64 + (seed as u64 % 5);
+    let idle_secs = 28u64 + ((seed >> 4) as u64 % 8);
+    transport.keep_alive_interval(Some(Duration::from_secs(keepalive_secs)));
     transport.max_idle_timeout(Some(
-        Duration::from_secs(30).try_into().expect("valid client idle timeout"),
+        Duration::from_secs(idle_secs).try_into().expect("valid client idle timeout"),
     ));
     transport.datagram_receive_buffer_size(Some(64 * 1024));
     transport.datagram_send_buffer_size(64 * 1024);
