@@ -16,6 +16,7 @@
 //! so adding a new ALPN-aware caller doesn't need bespoke wiring.
 
 use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use hashbrown::HashMap;
 use parking_lot::Mutex;
@@ -32,9 +33,23 @@ use crate::fingerprint_profile::TlsFingerprint;
 /// scope — probes, raw-QUIC, tests) reproduces the pre-fingerprint default
 /// provider and the exact wire shape builds had before this knob landed.
 /// Builds are rare (one per distinct key, ever), so a single mutex is fine.
+///
+/// Each entry carries the `Instant` at which it was built. After
+/// [`SESSION_TICKET_ROTATION_INTERVAL`] the entry is considered stale and
+/// rebuilt — this drops the old `ClientSessionMemoryCache` inside the
+/// `ClientConfig`, which in turn discards any TLS session tickets that
+/// the server had issued. Connections made more than one rotation interval
+/// apart therefore cannot be correlated via session-ticket identity.
 type ClientConfigKey = (Option<TlsFingerprint>, Vec<Vec<u8>>);
-static CLIENT_CONFIG_CACHE: OnceLock<Mutex<HashMap<ClientConfigKey, Arc<ClientConfig>>>> =
+type ClientConfigEntry = (Arc<ClientConfig>, Instant);
+static CLIENT_CONFIG_CACHE: OnceLock<Mutex<HashMap<ClientConfigKey, ClientConfigEntry>>> =
     OnceLock::new();
+
+/// How long a `ClientConfig` (and its embedded session-ticket store) is
+/// retained before being replaced with a fresh one. Chosen to be shorter
+/// than the typical TLS 1.3 session-ticket lifetime (often 24 h) so that
+/// an observer cannot link two connections that are more than this apart.
+const SESSION_TICKET_ROTATION_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// Build (or return a cached) rustls `ClientConfig` with no client auth and
 /// the given ALPN protocol list (order = preference). When a dial-scoped
@@ -48,11 +63,14 @@ pub(crate) fn build_client_config(alpn_protocols: &[&[u8]]) -> Arc<ClientConfig>
     let cache = CLIENT_CONFIG_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let key: ClientConfigKey = (fp, alpn_protocols.iter().map(|p| p.to_vec()).collect());
     let mut guard = cache.lock();
-    if let Some(existing) = guard.get(&key) {
+    if let Some((existing, created_at)) = guard.get(&key)
+        && created_at.elapsed() < SESSION_TICKET_ROTATION_INTERVAL
+    {
         return Arc::clone(existing);
     }
+    // Entry absent or stale — fall through to rebuild with a fresh session store.
     let config = build_client_config_uncached(fp, alpn_protocols);
-    guard.insert(key, Arc::clone(&config));
+    guard.insert(key, (Arc::clone(&config), Instant::now()));
     config
 }
 
