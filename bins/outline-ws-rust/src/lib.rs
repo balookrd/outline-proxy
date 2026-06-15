@@ -21,17 +21,17 @@ mod bootstrap;
 pub use bootstrap::run_with_config;
 
 use anyhow::{Result, anyhow};
-use rustls::crypto::ring;
+use rustls::crypto::aws_lc_rs;
 
 use crate::config::{Args, load_config};
 use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 
 pub fn init_rustls_crypto_provider() -> Result<()> {
-    let provider = ring::default_provider();
+    let provider = aws_lc_rs::default_provider();
     match provider.install_default() {
         Ok(()) => Ok(()),
         Err(_) if rustls::crypto::CryptoProvider::get_default().is_some() => Ok(()),
-        Err(_) => Err(anyhow!("failed to install rustls ring CryptoProvider")),
+        Err(_) => Err(anyhow!("failed to install rustls aws-lc-rs CryptoProvider")),
     }
 }
 

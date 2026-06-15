@@ -53,9 +53,9 @@ pub(crate) struct ConfigFile {
     pub(super) dashboard: Option<DashboardSection>,
     #[cfg(feature = "tun")]
     pub(super) tun: Option<TunSection>,
-    /// Accepted-and-ignored in builds without the `tun` feature (router):
-    /// keeps the `[tun]` key "known" to `deny_unknown_fields`, so one
-    /// config file keeps loading across full and router builds.
+    /// Accepted-and-ignored in builds without the `tun` feature: keeps the
+    /// `[tun]` key "known" to `deny_unknown_fields`, so one config file
+    /// keeps loading with or without `tun`.
     #[cfg(not(feature = "tun"))]
     #[allow(dead_code)]
     pub(super) tun: Option<toml::Value>,

@@ -99,7 +99,7 @@ impl UplinkManager {
         });
     }
 
-    /// No-op when cert checking is compiled out (e.g. router builds): the
+    /// No-op when cert checking is compiled out (e.g. slim builds): the
     /// status field stays `None` and nothing pulls the X.509 parser. Keeps
     /// the bootstrap / registry call sites unconditional.
     #[cfg(not(feature = "cert-check"))]

@@ -20,8 +20,8 @@ metrics = ["outline-metrics/prometheus", "hyper/server"]
 test-tls = []
 # Per-uplink TLS certificate-expiry check: a direct endpoint handshake that
 # accepts any cert (so an already-expired one is still read) plus an X.509
-# `notAfter` parser. Pulls `x509-cert`; gated so `--features router` (which
-# does not enable it) stays lean.
+# `notAfter` parser. Pulls `x509-cert`; gated so `--no-default-features`
+# builds (which omit it) stay lean.
 cert-check = ["dep:x509-cert"]
 
 [dependencies]
@@ -51,23 +51,23 @@ outline-net = { path = "../outline-net" }
 outline-wire = { path = "../outline-wire" }
 parking_lot = "0.12"
 pin-project-lite = "0.2"
-quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"], optional = true }
 rand = "0.9"
 # SHA-256 cert fingerprinting + constant-time compare for reverse-tunnel
-# mTLS pinning. Gated under `quic` so router builds (no quic) pull neither.
+# mTLS pinning. Gated under `quic` so builds without it pull neither.
 ring = { version = "0.17", optional = true }
 subtle = { version = "2.6", optional = true }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 shadowsocks-crypto = { path = "../shadowsocks-crypto" }
 socks5-proto = { path = "../socks5-proto" }
-sockudo-ws = { path = "../../vendor/sockudo-ws", package = "sockudo-ws", default-features = false, features = ["rustls-webpki-roots", "ring", "fastrand"] }
+sockudo-ws = { path = "../../vendor/sockudo-ws", package = "sockudo-ws", default-features = false, features = ["rustls-webpki-roots", "aws_lc_rs", "fastrand"] }
 tokio = { version = "1.44", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
 tokio-util = { version = "0.7", default-features = false }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 # X.509 `notAfter` parsing for the optional `cert-check` feature. DER-only
-# (no PEM/std bloat); kept out of router builds by the feature gate.
+# (no PEM/std bloat); kept out of slim builds by the feature gate.
 x509-cert = { version = "0.2", default-features = false, optional = true }
 thiserror = "2.0"
 tracing = "0.1"

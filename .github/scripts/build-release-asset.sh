@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -ne 4 ]]; then
-  echo "usage: $0 <target> <profile> <flavor: server|router|router-build-std> <output-dir>" >&2
+  echo "usage: $0 <target> <profile> <flavor: server> <output-dir>" >&2
   exit 1
 fi
 
@@ -22,16 +22,6 @@ case "$flavor" in
     else
       cargo zigbuild --profile "$profile" -p outline-ws-rust --target "$target"
     fi
-    artifact_dir="$profile"
-    ;;
-  router)
-    dest_prefix="${binary_name}-router"
-    cargo zigbuild --profile "$profile" --no-default-features --features router -p outline-ws-rust --target "$target"
-    artifact_dir="$profile"
-    ;;
-  router-build-std)
-    dest_prefix="${binary_name}-router"
-    cargo zigbuild -Z build-std=std,panic_abort --profile "$profile" --no-default-features --features router -p outline-ws-rust --target "$target"
     artifact_dir="$profile"
     ;;
   *)

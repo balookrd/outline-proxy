@@ -12,7 +12,7 @@ metrics = ["outline-metrics/prometheus", "cert-check"]
 quic = ["outline-transport/quic"]
 # Periodic per-uplink TLS certificate-expiry check. Pulls
 # `outline-transport/cert-check` (the X.509 parser). Enabled transitively by
-# `metrics` and by the top-level `dashboard` feature; left off router builds.
+# `metrics` and by the top-level `dashboard` feature; left off slim builds.
 cert-check = ["outline-transport/cert-check"]
 # Exposes test-only public methods on `UplinkManager` (`new_for_test`,
 # `test_set_tcp_health`, …). Enabled automatically by dependent crates'

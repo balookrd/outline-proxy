@@ -36,12 +36,6 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
-# Router build (memory-constrained MIPS/armv7): size over throughput. Use:
-# cargo zigbuild --profile release-router --no-default-features --features router -p outline-ws-rust
-[profile.release-router]
-inherits = "release"
-opt-level = "z"
-
 # HTTP/3 WebSocket path depends on these patched copies — do not drop.
 [patch.crates-io]
 h3 = { path = "vendor/h3" }

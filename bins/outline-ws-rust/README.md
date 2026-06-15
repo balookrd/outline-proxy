@@ -202,7 +202,6 @@ The project is intentionally practical, but there are still boundaries:
 ## Repository Layout
 
 - [`config.toml`](config.toml) - example configuration
-- [`config-router.toml`](config-router.toml) - example router configuration
 - [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) - hardened systemd unit
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) - main operational dashboard
 - [`grafana/outline-ws-rust-hang-diagnostics.json`](grafana/outline-ws-rust-hang-diagnostics.json) - situational hang diagnostics
@@ -235,22 +234,18 @@ Shortcuts available in this repository:
 ```bash
 cargo release-musl-x86_64
 cargo release-musl-aarch64
-cargo release-router-musl-arm
-cargo release-router-musl-armv7
-cargo release-router-musl-aarch64
 ```
 
 ### CI Releases
 
 - Every push to `main` triggers the `Nightly Release` workflow.
 - That workflow moves the rolling tag `nightly` to the current `main` commit and republishes the `Nightly` GitHub prerelease.
-- Nightly publishes server `release` artifacts for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, router `release-router` artifacts for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, plus `SHA256SUMS.txt`.
-- Nightly server archives are named `outline-ws-rust-vnightly-<full-commit-sha>-<target>.tar.gz`; router archives use `outline-ws-rust-router-vnightly-<full-commit-sha>-<target>.tar.gz`.
+- Nightly publishes server `release` artifacts for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, plus `SHA256SUMS.txt`.
+- Nightly server archives are named `outline-ws-rust-vnightly-<full-commit-sha>-<target>.tar.gz`.
 - To cut a stable release, run the manual `Release` workflow and pass `major_minor` such as `1.7`.
 - CI finds the latest `v1.7.*` tag, increments the patch automatically, updates `Cargo.toml` and `Cargo.lock`, creates a release commit, and pushes that commit to `main`.
 - After the release commit lands on `main`, create and push a signed tag locally; the tag push triggers the `Tag Release` workflow, which builds and publishes the GitHub Release.
-- The stable release includes server `release` assets for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, and router `release-router` assets for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
-- Router archives are named `outline-ws-rust-router-v<version>-<target>.tar.gz` so they are distinct from the regular server assets.
+- The stable release includes server `release` assets for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
 - Pushing a tag like `v1.2.3` manually still triggers the `Tag Release` workflow as a separate external tag-driven path.
 
 Install the required Rust targets:
@@ -259,14 +254,7 @@ Install the required Rust targets:
 # VMs / servers
 rustup target add x86_64-unknown-linux-musl
 rustup target add aarch64-unknown-linux-musl
-
-# Routers (ARM, e.g. Raspberry Pi, many modern home routers)
-rustup target add armv7-unknown-linux-musleabihf
-# Routers (AArch64, e.g. newer Raspberry Pi, Banana Pi, routers with Cortex-A53+)
-rustup target add aarch64-unknown-linux-musl
 ```
-
-Current stable Rust no longer ships `mips-unknown-linux-musl` or `mipsel-unknown-linux-musl` as downloadable `rust-std` targets, so local shortcuts only cover the targets still available on stable. Legacy MIPS builds now require a pinned older toolchain or a custom `build-std` flow; official stable release assets for those targets are produced in the `Release` CI workflow.
 
 ---
 
@@ -282,9 +270,6 @@ The binary is controlled by Cargo feature flags. Mix and match as needed:
 | `mimalloc` | ✓ | Replace the system allocator with mimalloc; reduces RSS fragmentation under connection churn. A background thread periodically runs `mi_collect` to hand freed memory back to the OS after traffic bursts |
 | `env-filter` | ✓ | Dynamic `RUST_LOG` parsing; disable to hardcode log level at `WARN` and save ~300 KB on MIPS |
 | `multi-thread` | ✓ | Tokio work-stealing scheduler; disable to force `current_thread` and save ~100–200 KB |
-| `router` | — | Convenience alias for `--no-default-features --features router` (disables all defaults above) |
-
-> **Why disable for routers:** `h3`/QUIC adds ~1–2 MB of binary size and runtime overhead on MIPS/ARM. `metrics` adds prometheus + serde_json and a background sampling task. The `router` feature removes both at once.
 
 ---
 
@@ -317,125 +302,6 @@ To disable only one feature while keeping others (e.g. strip metrics but keep H3
 ```bash
 cargo zigbuild --release --no-default-features --features h3 --target x86_64-unknown-linux-musl
 ```
-
----
-
-### Routers (cross-compilation)
-
-All router builds use `musl` libc for a fully static binary with no runtime dependencies.
-Use `config-router.toml` on the device — see [Router Configuration](#router-configuration).
-
-All router builds use `--no-default-features --features router` which disables:
-- `h3` → removes quinn, h3, h3-quinn, sockudo-ws/http3 (~1–2 MB smaller on MIPS)
-- `metrics` → removes prometheus, serde_json, background process sampler
-
-Router builds use the `release-router` cargo profile (`opt-level = "z"`) which prioritises binary size over throughput. The default `release` profile uses `opt-level = 3` (maximum speed) and is the right choice for VMs.
-
-**ARM soft-float** (minimal ARM routers without FPU, e.g. older D-Link DIR, Linksys WRT):
-
-```bash
-cargo zigbuild --profile release-router --no-default-features --features router --target arm-unknown-linux-musleabi
-# or shorter
-cargo release-router-musl-arm
-```
-
-**ARMv7 hard-float** (Raspberry Pi 2/3 in 32-bit mode, many mid-range routers):
-
-```bash
-cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
-# or shorter
-cargo release-router-musl-armv7
-```
-
-**AArch64 / ARM64** (Raspberry Pi 3/4/5 in 64-bit mode, Banana Pi R3/R4, NanoPi R5S, routers with MT7986/MT7988, IPQ8074):
-
-```bash
-cargo zigbuild --profile release-router --no-default-features --features router --target aarch64-unknown-linux-musl
-# or shorter
-cargo release-router-musl-aarch64
-```
-
-The compiled binary is placed in `target/<target>/release-router/outline-ws-rust`.
-Copy it to the router and make it executable:
-
-```bash
-scp target/armv7-unknown-linux-musleabihf/release-router/outline-ws-rust root@192.168.1.1:/usr/local/bin/
-ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
-```
-
-> The `router` feature is a convenience alias — it sets no flags itself; it just exists so `--features router` is a memorable shorthand for `--no-default-features`.
-
-### Router Release Assets
-
-Stable Rust no longer provides prebuilt `rust-std` for `mips-unknown-linux-musl` / `mipsel-unknown-linux-musl`, so these builds now need nightly plus `build-std`. For local builds you still need a working MIPS musl-capable C toolchain (or equivalent Zig wrapper setup); the easiest reliable path for official stable artifacts is the `Release` CI flow.
-
-Local example, assuming you already have a working MIPS musl C toolchain:
-
-```bash
-rustup toolchain install nightly --component rust-src
-cargo +nightly build -Z build-std=std,panic_abort --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
-```
-
-CI / release example:
-
-- Run the manual `Release` workflow for the normal stable release, or push a tag like `v1.2.3` for the external tag-driven path.
-- The `Release` workflow publishes one GitHub Release for both server and router assets.
-- For `aarch64-unknown-linux-musl`, router binaries are built with `cargo-zigbuild`.
-- For `mips` and `mipsel`, CI uses nightly `build-std`, Zig, and generated compiler wrapper scripts mapped to Zig's musl EABI targets instead of downloading an external toolchain archive.
-- The published router assets are named `outline-ws-rust-router-v<version>-<target>.tar.gz`.
-
----
-
-### Router Configuration
-
-Use `config-router.toml` as a starting point for memory-constrained devices.
-Key differences from the default VM config:
-
-**Compile-time (feature flags):**
-
-| Feature | VM default | Router (`--no-default-features --features router`) |
-|---|---|---|
-| `h3` | ✓ enabled | ✗ → H3 silently falls back to H2 |
-| `metrics` | ✓ enabled | ✗ → all metrics calls are no-ops, no `/metrics` endpoint |
-| `env-filter` | ✓ enabled | ✗ → log level hardcoded to `WARN` (saves ~300 KB, no regex) |
-| `multi-thread` | ✓ enabled | ✗ → always `current_thread` scheduler (saves ~100–200 KB) |
-
-**Runtime (config / CLI):**
-
-| Parameter | VM default | Router example |
-|---|---|---|
-| `RUST_LOG` env | configurable (default: `info,outline_ws_rust=debug`) | hardcoded `WARN` (no regex) |
-| `--worker-threads` | CPU count | N/A (always `current_thread`) |
-| `--thread-stack-size-kb` | 2048 KiB | N/A (`multi-thread` disabled) |
-| `udp_recv_buf_bytes` | kernel default | e.g. `212992` (208 KiB) |
-| `udp_send_buf_bytes` | kernel default | e.g. `212992` (208 KiB) |
-| `tun.max_flows` | 4096 | 128 |
-| `tun.defrag_max_fragment_sets` | 1024 | 64 |
-| `tun.defrag_max_fragments_per_set` | 64 | 16 |
-| `tun.defrag_max_total_bytes` | 16 MiB | 2 MiB |
-| `tun.defrag_max_bytes_per_set` | 128 KiB | 16 KiB |
-| `tun.tcp.max_pending_server_bytes` | 4 MiB | 64 KiB |
-| `tun.tcp.max_buffered_client_bytes` | 256 KiB | 64 KiB |
-| `[h2] initial_stream_window_size` | 1 MiB | 256 KiB |
-| `[h2] initial_connection_window_size` | 2 MiB | 512 KiB |
-| Warm standby | 1 TCP + 1 UDP | disabled |
-| Load balancing mode | `active_active` | `active_passive` |
-| Transport mode | `h3` | `h2` (QUIC is heavy on MIPS/ARM) |
-| `state_path` | config dir (`.state.toml`) | point to writable path, e.g. `/var/lib/outline-ws-rust/state.toml` |
-
-Run with the router config:
-
-```bash
-outline-ws-rust --config /etc/outline-ws-rust/config-router.toml --worker-threads 1
-```
-
-Or via environment variables:
-
-```bash
-PROXY_CONFIG=/etc/outline-ws-rust/config-router.toml WORKER_THREADS=1 outline-ws-rust
-```
-
-> Router builds log at `WARN` level unconditionally — `RUST_LOG` is ignored. To get dynamic log levels, add `--features env-filter` to the build command (at the cost of ~300 KB on MIPS).
 
 ## Quick Start
 

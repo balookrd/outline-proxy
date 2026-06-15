@@ -33,10 +33,12 @@ metrics-util = { version = "0.20", default-features = false, features = ["recenc
 outline-net = { path = "../../crates/outline-net" }
 outline-wire = { path = "../../crates/outline-wire", features = ["clap"] }
 parking_lot = "0.12"
-quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
 rand = "0.9"
+# ring stays for the Shadowsocks AEAD / SHA-256 paths in `src/crypto/*`; it is
+# NOT the rustls CryptoProvider (that is aws-lc-rs, see `rustls` below).
 ring = "0.17"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 socket2 = "0.6"
@@ -44,7 +46,7 @@ sockudo-ws = { version = "1.7.3", default-features = false, features = ["tokio",
 subtle = "2.6"
 thiserror = "2.0"
 tokio = { version = "1.48", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "aws_lc_rs"] }
 tungstenite = { version = "0.29", default-features = false }
 toml = "0.9"
 toml_edit = { version = "0.23", features = ["serde"] }
@@ -59,10 +61,10 @@ control = []
 
 [dev-dependencies]
 proptest = "1.5"
-# Pin rcgen to the ring backend. Its default `aws_lc_rs` backend would add a
-# second rustls CryptoProvider to the shared workspace graph, making rustls
-# unable to pick a process-level default (breaks ws-rust's tls_probe tests).
-rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+# rcgen on the aws_lc_rs backend, matching the workspace-wide single rustls
+# CryptoProvider (aws-lc-rs); keeps the shared rustls graph on one provider so
+# implicit `ClientConfig::builder()` calls resolve a process-level default.
+rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs"] }
 # `test-util` enables tokio's paused virtual clock so timer-driven paths
 # (e.g. the WebSocket writer's control-flush cadence) can be tested without
 # real-time sleeps.

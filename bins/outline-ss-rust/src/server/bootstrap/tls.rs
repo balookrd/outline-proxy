@@ -20,7 +20,7 @@ use crate::config::{Config, TlsCertEntry};
 pub(in crate::server) fn ensure_rustls_provider_installed() {
     static RUSTLS_PROVIDER: OnceLock<()> = OnceLock::new();
     RUSTLS_PROVIDER.get_or_init(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     });
 }
 
