@@ -528,8 +528,10 @@ impl UplinkManager {
             uplink = %candidate.uplink.name,
             "no warm-standby UDP websocket available, dialing on-demand"
         );
-        let udp_ws_url = candidate.uplink.udp_ws_url.as_ref().ok_or_else(|| {
-            anyhow!("udp_ws_url is not configured for uplink {}", candidate.uplink.name)
+        // Combined-SS-aware: `udp_dial_url()` resolves to `ss_xhttp_url`/
+        // `ss_ws_url` on a combined wire (split `udp_ws_url` is None there).
+        let udp_ws_url = candidate.uplink.udp_dial_url().ok_or_else(|| {
+            anyhow!("no udp dial URL configured for uplink {}", candidate.uplink.name)
         })?;
         // `mode` is only reassigned inside the `#[cfg(feature = "quic")]`
         // block below, so without the feature `mut` is technically unneeded —

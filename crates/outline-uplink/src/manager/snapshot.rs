@@ -151,10 +151,14 @@ impl UplinkManager {
         // `UplinkConfig`. Effective mode comes from the existing
         // `effective_*_mode_for_wire(0)` path which folds in primary's
         // top-level mode-downgrade slot.
+        // `*_dial_mode()` is combined-SS-aware (returns `ss_mode` for a
+        // combined wire); reading the raw `tcp_mode`/`udp_mode` here showed the
+        // split default for combined wires, which also made `configured !=
+        // effective` and lit a phantom downgrade flag on the dashboard.
         let primary_tcp_configured =
-            wire_tcp_mode(uplink.transport, uplink.tcp_mode, uplink.vless_mode);
+            wire_tcp_mode(uplink.transport, uplink.tcp_dial_mode(), uplink.vless_mode);
         let primary_udp_configured =
-            wire_tcp_mode(uplink.transport, uplink.udp_mode, uplink.vless_mode);
+            wire_tcp_mode(uplink.transport, uplink.udp_dial_mode(), uplink.vless_mode);
         let primary_tcp_eff = self.effective_tcp_mode_for_wire(index, 0).await.to_string();
         let primary_udp_eff = self.effective_udp_mode_for_wire(index, 0).await.to_string();
         let (primary_tcp_sm, primary_tcp_block) =
@@ -180,8 +184,8 @@ impl UplinkManager {
         });
         for (offset, fb) in uplink.fallbacks.iter().enumerate() {
             let wire_idx = (offset + 1) as u8;
-            let configured_tcp = wire_tcp_mode(fb.transport, fb.tcp_mode, fb.vless_mode);
-            let configured_udp = wire_tcp_mode(fb.transport, fb.udp_mode, fb.vless_mode);
+            let configured_tcp = wire_tcp_mode(fb.transport, fb.tcp_dial_mode(), fb.vless_mode);
+            let configured_udp = wire_tcp_mode(fb.transport, fb.udp_dial_mode(), fb.vless_mode);
             let eff_tcp = self.effective_tcp_mode_for_wire(index, wire_idx).await.to_string();
             let eff_udp = self.effective_udp_mode_for_wire(index, wire_idx).await.to_string();
             let (sm_tcp, block_tcp) = wire_xhttp_submode(fb.transport, fb.tcp_dial_url()).await;
@@ -263,7 +267,7 @@ impl UplinkManager {
                 transport: uplink.transport.to_string(),
                 tcp_mode: match uplink.transport {
                     UplinkTransport::Ss => {
-                        uplink.tcp_dial_url().map(|_| uplink.tcp_mode.to_string())
+                        uplink.tcp_dial_url().map(|_| uplink.tcp_dial_mode().to_string())
                     },
                     UplinkTransport::Vless => {
                         uplink.tcp_dial_url().map(|_| uplink.vless_mode.to_string())
@@ -271,7 +275,7 @@ impl UplinkManager {
                 },
                 udp_mode: match uplink.transport {
                     UplinkTransport::Ss => {
-                        uplink.udp_dial_url().map(|_| uplink.udp_mode.to_string())
+                        uplink.udp_dial_url().map(|_| uplink.udp_dial_mode().to_string())
                     },
                     UplinkTransport::Vless => {
                         uplink.udp_dial_url().map(|_| uplink.vless_mode.to_string())
