@@ -111,3 +111,32 @@ fn provider_is_cached_per_family() {
         &provider_for(TlsFingerprint::Firefox)
     ));
 }
+
+/// Diagnostic: emit the raw ClientHello each family produces so an external
+/// parser can compute JA3/JA4 and confirm the post-quantum key share is on
+/// the wire. `write_tls` serialises the ClientHello without any network I/O.
+/// Run with `--nocapture` to see the `CLIENTHELLO <family> <hex>` lines.
+#[test]
+fn dump_clienthello_wire() {
+    for (name, fp) in [
+        ("chromium", TlsFingerprint::Chromium),
+        ("firefox", TlsFingerprint::Firefox),
+        ("safari", TlsFingerprint::Safari),
+    ] {
+        let mut config = rustls::ClientConfig::builder_with_provider(provider_for(fp))
+            .with_safe_default_protocol_versions()
+            .expect("aws-lc-rs provider supports TLS 1.2 + 1.3")
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
+        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let server_name = rustls::pki_types::ServerName::try_from("www.example.com").unwrap();
+        let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name).unwrap();
+        let mut buf = Vec::new();
+        conn.write_tls(&mut buf).unwrap();
+        // TLS record: 0x16 = handshake; payload byte 0 (record[5]) = 0x01 ClientHello.
+        assert_eq!(buf[0], 0x16, "{name}: expected a TLS handshake record");
+        assert_eq!(buf[5], 0x01, "{name}: expected a ClientHello");
+        let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+        eprintln!("CLIENTHELLO {name} {hex}");
+    }
+}
