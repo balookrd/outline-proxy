@@ -76,19 +76,19 @@ vendored-копии.
    error` / `HTTP/3 connection error` при чистом shutdown. Также
    восстанавливает `WebSocketServer::into_parts`, нужный серверному
    accept-циклу `outline-ss-rust`.
-2. **MIPS-fallback** (`src/pubsub.rs`) — `CounterU64` откатывается на
-   `Mutex<u64>` на таргетах без `target_has_atomic = "64"`, чтобы `pubsub`
-   собирался на MIPS32 (сборка `release-router`).
-3. **fix-h3-poll-write** (`src/http3/stream.rs`,
+2. **fix-h3-poll-write** (`src/http3/stream.rs`,
    `src/stream/transport_stream.rs`) — sockudo-половина poll-write-фикса:
    машины состояний `write_queued` / `shutdown_started`, дёргающие h3-методы
    `queue_send` / `poll_drain` / `queue_grease` / `poll_quic_finish` ровно
    один раз на логическую запись / shutdown.
 
-**`Cargo.toml`** (одна строка, в патч не входит): `tokio-rustls` выставлен в
-`default-features = false, features = ["ring", "tls12"]`, чтобы сборка
-`release-router` не тянула `aws-lc-sys` — это держит весь workspace на `ring`
-(см. инвариант ring-only в корневом `AGENTS.md`).
+**`Cargo.toml`** (в патч не входит): зависимости rustls-стека запинены с
+`default-features = false` и provider-фичей `aws_lc_rs`
+(`tokio-rustls = { features = ["aws_lc_rs", "tls12"] }`, `quinn` на
+`rustls-aws-lc-rs`, `rustls` на `aws_lc_rs`), чтобы vendored-крейт оставался
+на том же крипто-провайдере, что и остальной workspace, и в графе был ровно
+один `CryptoProvider` (см. инвариант о единственном провайдере в корневом
+`AGENTS.md`).
 
 ## Стратегия сопровождения (sockudo-ws)
 

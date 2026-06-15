@@ -57,10 +57,10 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    // Router builds compile without the multi-thread feature, so only the
-    // current_thread scheduler is available (saves ~100–200 KB on MIPS).
-    // Non-router builds choose based on --worker-threads: =1 → current_thread
-    // (avoids work-stealing overhead), anything else → multi-thread.
+    // Builds without the multi-thread feature have only the current_thread
+    // scheduler (saves ~100–200 KB on MIPS). With multi-thread, the choice is
+    // by --worker-threads: =1 → current_thread (avoids work-stealing
+    // overhead), anything else → multi-thread.
     #[cfg(feature = "multi-thread")]
     let runtime = if args.worker_threads == Some(1) {
         tokio::runtime::Builder::new_current_thread().enable_all().build()?

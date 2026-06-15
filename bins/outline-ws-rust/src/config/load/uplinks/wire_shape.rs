@@ -176,7 +176,7 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
             let mode = tcp_mode.unwrap_or_default();
             let udp_mode = udp_mode.unwrap_or_default();
             // `xhttp_h3` / `ws_h3` need the QUIC + h3 stack behind the
-            // optional `h3` feature on this binary (router builds omit it).
+            // optional `h3` feature on this binary (slim builds omit it).
             // Both the TCP and UDP carriers are checked.
             #[cfg(not(feature = "h3"))]
             for m in [mode, udp_mode] {

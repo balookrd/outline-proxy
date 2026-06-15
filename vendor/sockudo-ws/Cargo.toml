@@ -140,7 +140,7 @@ native-tls = { version = "^0.2", optional = true }
 tokio-native-tls = { version = "^0.3", optional = true }
 
 # TLS support via rustls
-tokio-rustls = { version = "^0.26", default-features = false, features = ["ring", "tls12"], optional = true }
+tokio-rustls = { version = "^0.26", default-features = false, features = ["aws_lc_rs", "tls12"], optional = true }
 webpki-roots = { version = "^1.0", optional = true }
 rustls-native-certs = { version = "^0.8", optional = true }
 rustls-platform-verifier = { version = "^0.6", optional = true }
@@ -150,10 +150,13 @@ h2 = { version = "^0.4", optional = true }
 http = { version = "^1.0", optional = true }
 
 # HTTP/3 support (RFC 9220)
-quinn = { version = "^0.11", optional = true }
+# default-features disabled + aws-lc-rs pinned so quinn's default `rustls-ring`
+# (and `platform-verifier`) do not pull a second rustls CryptoProvider into the
+# workspace graph — the whole tree is on aws-lc-rs.
+quinn = { version = "^0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"], optional = true }
 h3 = { version = "^0.0.8", optional = true }
 h3-quinn = { version = "^0.0.10", optional = true }
-rustls = { version = "^0.23", default-features = false, features = ["ring", "std"], optional = true }
+rustls = { version = "^0.23", default-features = false, features = ["aws_lc_rs", "std"], optional = true }
 
 # io_uring support (Linux only)
 tokio-uring = { version = "^0.5", optional = true }

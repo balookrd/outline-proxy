@@ -76,19 +76,19 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
    / `HTTP/3 connection error` `eprintln!`s on a clean shutdown. Also restores
    `WebSocketServer::into_parts`, which the `outline-ss-rust` accept loop
    needs.
-2. **MIPS fallback** (`src/pubsub.rs`) — `CounterU64` falls back to
-   `Mutex<u64>` on targets without `target_has_atomic = "64"` so `pubsub`
-   builds on MIPS32 (the `release-router` build).
-3. **fix-h3-poll-write** (`src/http3/stream.rs`,
+2. **fix-h3-poll-write** (`src/http3/stream.rs`,
    `src/stream/transport_stream.rs`) — the sockudo half of the poll-write
    fix: `write_queued` / `shutdown_started` state machines that drive h3's
    `queue_send` / `poll_drain` / `queue_grease` / `poll_quic_finish` exactly
    once per logical write / shutdown.
 
-**`Cargo.toml`** (one line, kept out of the patch): `tokio-rustls` is set to
-`default-features = false, features = ["ring", "tls12"]` so the
-`release-router` build does not pull `aws-lc-sys` — this keeps the whole
-workspace on `ring` (see the ring-only invariant in the root `AGENTS.md`).
+**`Cargo.toml`** (kept out of the patch): the rustls-stack dependencies are
+pinned with `default-features = false` and the `aws_lc_rs` provider feature
+(`tokio-rustls = { features = ["aws_lc_rs", "tls12"] }`, `quinn` on
+`rustls-aws-lc-rs`, `rustls` on `aws_lc_rs`) so the vendored crate stays on
+the same crypto provider as the rest of the workspace and the graph keeps
+exactly one `CryptoProvider` (see the single-provider invariant in the root
+`AGENTS.md`).
 
 ## Maintenance strategy (sockudo-ws)
 

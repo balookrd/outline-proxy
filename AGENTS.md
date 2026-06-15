@@ -27,7 +27,7 @@ raw QUIC), поэтому живут в одном дереве с общими 
 - `bins/outline-ss-rust/` — серверный бинарь: listeners, accept, relay, NAT,
   outbound, control/dashboard. Edition 2024.
 - `bins/outline-ws-rust/` — клиентский бинарь: SOCKS5/TUN ingress, uplink LB,
-  routing, dial. Edition 2024, имеет router-сборку для MIPS/armv7.
+  routing, dial. Edition 2024.
 - `crates/` — общие крейты. Truly-shared (обе стороны): `outline-wire` —
   wire-protocol примитивы (`CipherKind` + master-key/subkey KDF, `TargetAddr`,
   SS2022-заголовки и UDP-раскладки обеих половин, VLESS/mux-кодек; чистая
@@ -49,37 +49,34 @@ cargo test --workspace
 cargo fmt --all          # затрагивает и vendor/* — откатывай format-only diff в vendor
 ```
 
-Один бинарь / router-сборка / cross-build (через корневые `.cargo` aliases):
+Один бинарь / cross-build (через корневые `.cargo` aliases):
 
 ```bash
 cargo check -p outline-ss-rust
 cargo check -p outline-ws-rust
-cargo check -p outline-ws-rust --no-default-features --features router
 cargo ss-release-musl-x86_64       # zigbuild server, нужен cargo-zigbuild + zig
-cargo ws-release-router-musl-armv7 # stripped router build
+cargo ws-release-musl-aarch64      # zigbuild client
 ```
 
 ## Монорепо-инварианты (специфичны для слияния)
 
-- **rustls — только `ring`.** Никакого `aws_lc_rs` в графе: два
-  CryptoProvider'а ломают `rustls` default-provider (паника
+- **rustls — только `aws-lc-rs`.** Ровно один CryptoProvider в графе: два
+  (`ring` + `aws_lc_rs`) ломают `rustls` default-provider (паника
   «exactly one of aws-lc-rs and ring»). Любая зависимость, тянущая rustls
-  (`tokio-rustls`, `rcgen`, `quinn`, `tokio-tungstenite`), должна быть на ring:
-  `default-features = false` + явный `ring`. Проверка:
-  `cargo tree -i aws-lc-rs` должна давать «did not match any packages».
-- **Единый `vendor/`.** `vendor/sockudo-ws` = upstream 1.7.5 + два наложенных
-  патча: MIPS `AtomicU64`→`Mutex` fallback (router) и h3-noerror (protocol —
+  (`tokio-rustls`, `rcgen`, `quinn`, `tokio-tungstenite`, `sockudo-ws`), должна
+  быть на aws-lc-rs: `default-features = false` + явный `aws_lc_rs`
+  (`rustls-aws-lc-rs` у quinn). Проверка: `cargo tree -i 'rustls@0.23' -e features
+  | grep 'rustls feature "ring"'` — пусто. `ring`-крейт остаётся только для
+  SS-AEAD/SHA-256, не как rustls-провайдер. aws-lc-sys требует cmake при сборке.
+- **Единый `vendor/`.** `vendor/sockudo-ws` = upstream 1.7.5 + наложенные
+  патчи h3-noerror и poll-write (protocol —
   `writer.shutdown()` в WebSocket `close()`: FIN вместо RESET_STREAM, иначе
   `H3_INTERNAL_ERROR` рвёт всё QUIC-соединение; плюс `is_normal_h3_shutdown`).
   Также restored `WebSocketServer::into_parts` (нужен серверному accept-loop).
   Не плоди вторые копии vendored и не поднимай версии без явной причины.
-- **Router-изоляция.** `outline-ws-rust --no-default-features --features router`
-  НЕ должен тянуть `outline-ss-rust`, `mimalloc`, Prometheus metrics, H3/QUIC,
-  `aws-lc-rs`. Проверка: `cargo tree -e features -p outline-ws-rust
-  --no-default-features --features router` без этих зависимостей.
-- **Единый профиль.** `[profile.release]` (lto=fat, panic=abort) и
-  `[profile.release-router]` (opt-level=z) — только в корневом `Cargo.toml`.
-  Package-манифесты в `bins/*` тонкие, без `[workspace]`/`[profile]`/`[patch]`.
+- **Единый профиль.** `[profile.release]` (lto=fat, panic=abort) — только в
+  корневом `Cargo.toml`. Package-манифесты в `bins/*` тонкие, без
+  `[workspace]`/`[profile]`/`[patch]`.
 
 ## Общие рабочие правила
 

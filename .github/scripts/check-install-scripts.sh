@@ -3,30 +3,24 @@ set -Eeuo pipefail
 
 # Install-script invariants.
 #
-# The three root installers are delivered as single files over fixed
+# The two root installers are delivered as single files over fixed
 # raw.githubusercontent.com URLs (curl | bash), so the shared logic
 # between install-server.sh and install-client.sh is deliberately
 # duplicated instead of factored into a sourced library. This gate is
 # what keeps that duplication honest:
 #
-#  1. Syntax: both bash installers and the BusyBox (POSIX sh)
-#     keenetic installer must parse.
-#  2. shellcheck must pass for all three.
+#  1. Syntax: both bash installers must parse.
+#  2. shellcheck must pass for both.
 #  3. The shared helper functions listed in SHARED_FUNCS must stay
 #     byte-identical between install-server.sh and install-client.sh —
 #     a fix applied to one side only fails CI here.
-#
-# install-keenetic.sh is intentionally NOT part of the identity check:
-# it targets BusyBox sh on Entware and shares no bash-dialect helpers.
 
 cd "$(dirname "$0")/../.."
 
 bash -n install-server.sh
 bash -n install-client.sh
-sh -n install-keenetic.sh
 
 shellcheck install-server.sh install-client.sh
-shellcheck --shell=sh install-keenetic.sh
 
 # Print the body of function $2 in file $1: from the `name() {`
 # definition line to the first line that is exactly `}`. Single-line

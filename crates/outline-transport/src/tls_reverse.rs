@@ -141,14 +141,14 @@ pub fn build_reverse_server_quic_config(
     if allowed_client_pins.is_empty() {
         return Err(anyhow!("reverse listener requires at least one allowed client cert pin"));
     }
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let verifier = Arc::new(PinnedClientCertVerifier {
         provider: Arc::clone(&provider),
         allowed: allowed_client_pins,
     });
     let mut tls = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
-        .context("ring provider supports the default protocol versions")?
+        .context("aws-lc-rs provider supports the default protocol versions")?
         .with_client_cert_verifier(verifier)
         .with_single_cert(server_cert_chain, server_key)
         .context("failed to install reverse-tunnel server certificate")?;

@@ -151,7 +151,7 @@ impl UplinkRegistry {
     }
 
     /// Spawn one TLS certificate-expiry check loop per group. No-op build
-    /// when the `cert-check` feature is disabled (router builds).
+    /// when the `cert-check` feature is disabled (slim builds).
     pub fn spawn_cert_check_loops(&self) {
         for group in self.state.load().groups.iter() {
             group.manager.spawn_cert_check_loop();

@@ -66,38 +66,12 @@
 //! ```
 
 use std::sync::Arc;
-#[cfg(not(target_has_atomic = "64"))]
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use dashmap::{DashMap, DashSet};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::protocol::Message;
-
-#[cfg(target_has_atomic = "64")]
-type CounterU64 = std::sync::atomic::AtomicU64;
-
-#[cfg(not(target_has_atomic = "64"))]
-struct CounterU64(Mutex<u64>);
-
-#[cfg(not(target_has_atomic = "64"))]
-impl CounterU64 {
-    fn new(value: u64) -> Self {
-        Self(Mutex::new(value))
-    }
-
-    fn fetch_add(&self, value: u64, _ordering: Ordering) -> u64 {
-        let mut guard = self.0.lock().expect("counter mutex poisoned");
-        let previous = *guard;
-        *guard = previous.wrapping_add(value);
-        previous
-    }
-
-    fn load(&self, _ordering: Ordering) -> u64 {
-        *self.0.lock().expect("counter mutex poisoned")
-    }
-}
 
 /// Unique identifier for a subscriber
 ///
@@ -184,11 +158,11 @@ pub struct PubSub {
     /// Socket ID to SubscriberId mapping (for Pusher-style IDs)
     socket_id_map: DashMap<String, SubscriberId>,
     /// Next subscriber ID (atomic counter)
-    next_subscriber_id: CounterU64,
+    next_subscriber_id: AtomicU64,
     /// Total number of active subscribers
     subscriber_count: AtomicUsize,
     /// Total messages published (for stats)
-    messages_published: CounterU64,
+    messages_published: AtomicU64,
 }
 
 /// Type alias for backward compatibility
@@ -201,9 +175,9 @@ impl PubSub {
             topics: DashMap::new(),
             subscribers: DashMap::new(),
             socket_id_map: DashMap::new(),
-            next_subscriber_id: CounterU64::new(1),
+            next_subscriber_id: AtomicU64::new(1),
             subscriber_count: AtomicUsize::new(0),
-            messages_published: CounterU64::new(0),
+            messages_published: AtomicU64::new(0),
         }
     }
 

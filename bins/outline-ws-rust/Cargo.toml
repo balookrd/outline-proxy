@@ -5,10 +5,9 @@ edition = "2024"
 
 # Feature flags
 # -------------
-# default: VM/server build — H3/QUIC + Prometheus metrics + built-in dashboard
-# router:  stripped build for memory-constrained devices
-#          disables H3/QUIC, Prometheus metrics, and built-in dashboard
-#          build with: cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
+# default: full VM/server build — H3/QUIC + Prometheus metrics + built-in
+# dashboard. Each feature below is opt-out via `--no-default-features` for
+# custom slim builds on memory-constrained devices.
 [lints]
 workspace = true
 
@@ -20,19 +19,18 @@ metrics = ["outline-metrics/prometheus", "outline-transport/metrics", "outline-u
 # control: authenticated mutating HTTP plane (manual uplink switch etc.).
 # Independent of `metrics`; both planes bind separate sockets but share hyper's server stack.
 control = ["hyper/server", "dep:serde_json", "dep:toml_edit"]
-# dashboard: built-in multi-instance monitor/activation UI. Enabled in VM/server
-# builds, disabled in stripped router builds to save binary size. Pulls
+# dashboard: built-in multi-instance monitor/activation UI. On by default; opt
+# out via `--no-default-features` to save binary size. Pulls
 # `outline-uplink/cert-check` so the cert-expiry chip has data even in a
 # dashboard build that omits Prometheus `metrics`.
 dashboard = ["hyper/server", "dep:serde_json", "outline-uplink/cert-check"]
 # env-filter: dynamic log level via RUST_LOG (pulls in regex, ~300 KB on MIPS).
-# Disabled in router builds — log level is hardcoded to WARN instead.
+# Opt out via `--no-default-features` — log level falls back to WARN instead.
 env-filter = ["tracing-subscriber/env-filter"]
-# multi-thread: tokio work-stealing scheduler. Disabled in router builds (always
-# single-threaded), removing ~100–200 KB of scheduler code on MIPS.
+# multi-thread: tokio work-stealing scheduler. Opt out via `--no-default-features`
+# for a single-threaded build, removing ~100–200 KB of scheduler code on MIPS.
 multi-thread = ["tokio/rt-multi-thread"]
 mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
-router = ["control"]  # convenience alias: use with --no-default-features --features router
 # test-tls: integration-only. Lets the binary trust a self-signed root supplied
 # via the OUTLINE_WS_TEST_TLS_CA_DER env var (forwarded to
 # outline_transport::install_test_tls_root) so e2e tests can drive TLS / H3 /
@@ -63,17 +61,18 @@ outline-tun = { path = "../../crates/outline-tun", default-features = false, opt
 outline-uplink = { path = "../../crates/outline-uplink", default-features = false }
 parking_lot = "0.12"
 # QUIC server endpoint for the reverse-tunnel listener. Gated under `h3`
-# (which already pulls the QUIC client stack) so router builds stay quinn-free.
-quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
+# (which already pulls the QUIC client stack) so `--no-default-features`
+# builds stay quinn-free.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"], optional = true }
 rand = "0.9"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", optional = true }
 shadowsocks-crypto = { path = "../../crates/shadowsocks-crypto" }
 socket2 = "0.6"
 socks5-proto = { path = "../../crates/socks5-proto" }
 tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "rt", "signal", "sync", "time"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 toml = "0.9"
 toml_edit = { version = "0.23", optional = true }
@@ -84,9 +83,9 @@ webpki-roots = "1.0"
 
 [dev-dependencies]
 outline-uplink = { path = "../../crates/outline-uplink", default-features = false, features = ["test-helpers"] }
-# rcgen: e2e harness self-signed CA + leaf generation (ring backend per the
-# workspace rustls-on-ring invariant). 0.14.x is already in Cargo.lock.
-rcgen = { version = "0.14", default-features = false, features = ["pem", "ring"] }
+# rcgen: e2e harness self-signed CA + leaf generation (aws_lc_rs backend per
+# the workspace single-CryptoProvider invariant). 0.14.x is already in Cargo.lock.
+rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs"] }
 # serde_json: parse the client's /control/topology JSON in the e2e harness,
 # independent of the `metrics`/`control` features that gate the runtime copy.
 serde_json = "1.0"

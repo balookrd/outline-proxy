@@ -130,10 +130,10 @@ pub(in crate::server) fn build_reverse_client_quic_config(
     alpn_offered: &[&[u8]],
 ) -> Result<quinn::ClientConfig> {
     super::ensure_rustls_provider_installed();
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let mut tls = ClientConfig::builder_with_provider(Arc::clone(&provider))
         .with_safe_default_protocol_versions()
-        .context("ring provider supports the default protocol versions")?
+        .context("aws-lc-rs provider supports the default protocol versions")?
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(PinnedServerCertVerifier {
             provider,
