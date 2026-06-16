@@ -154,6 +154,12 @@ impl UplinkManager {
         let mut tasks = tokio::task::JoinSet::new();
         let now = Instant::now();
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
+            // Administratively-disabled uplinks (operator on/off) are skipped
+            // entirely: no probe, no health update. They are already excluded
+            // from selection, so probing them would only burn handshakes.
+            if !self.inner.admin_enabled(index) {
+                continue;
+            }
             // Skip the probe if recent traffic demonstrates the uplink is alive
             // AND it is already marked healthy.  We must NOT skip when the uplink
             // is unhealthy (tcp_healthy == Some(false) or None): in that case the

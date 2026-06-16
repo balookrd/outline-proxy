@@ -88,6 +88,7 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         udp_wires_failed_in_round: 0,
         fingerprint_profile_strategy: "none".to_string(),
         fingerprint_profile_name: None,
+        admin_disabled: false,
     }
 }
 

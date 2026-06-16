@@ -216,6 +216,10 @@ impl UplinkManager {
                 dns_cache,
                 shutdown_tx,
                 active_uplinks_tx,
+                admin_enabled: (0..count)
+                    .map(|_| std::sync::atomic::AtomicBool::new(true))
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
             }),
         })
     }

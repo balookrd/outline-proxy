@@ -113,6 +113,12 @@ impl UplinkManager {
         };
 
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
+            // Skip administratively-disabled uplinks (operator on/off): a
+            // parked uplink must see no traffic at all, including warm-probe
+            // keepalive round-trips.
+            if !self.inner.admin_enabled(index) {
+                continue;
+            }
             if !matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ss,) {
                 continue;
             }

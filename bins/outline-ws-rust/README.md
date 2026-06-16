@@ -943,6 +943,7 @@ If `[control]` is configured the process serves mutating endpoints on a
 - `GET /control/topology` - instance/group/uplink topology for dashboards
 - `GET /control/summary` - compact group/uplink health counters
 - `POST /control/activate` - JSON activation API for UI click actions
+- `POST /control/uplink_enabled` - administratively enable/disable an uplink (operator on/off). JSON body `{"group":"main","uplink":"backup","enabled":false}`. A disabled uplink is removed from **all** automatic machinery — probing, candidate selection, failover, and warm-standby refill — until re-enabled; if it was the active uplink, traffic fails over to an enabled standby immediately. Runtime-only: the override is **not** persisted, so a process restart starts every uplink enabled. Exposed in the dashboard as the per-uplink On/Off button.
 - `GET`/`POST`/`PATCH`/`DELETE /control/uplinks` - stage `[[outline.uplinks]]` edits in the config file
 - `POST /control/apply` - hot-apply staged uplink edits without a process restart
 - `POST /switch` - manual active-uplink override

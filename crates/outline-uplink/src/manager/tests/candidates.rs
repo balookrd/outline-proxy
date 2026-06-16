@@ -295,3 +295,54 @@ async fn global_active_fails_over_when_probe_passes_but_data_path_is_dead() {
         manager.active_wire(0, TransportKind::Tcp),
     );
 }
+
+/// Operator on/off: administratively disabling the active uplink must take it
+/// out of selection immediately (failing over to the enabled standby) and keep
+/// it out of the candidate set until it is re-enabled.
+#[tokio::test]
+async fn disabling_active_uplink_fails_over_and_excludes_it_from_selection() {
+    let manager = manager();
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+
+    // Both healthy; up-a (higher weight) wins the initial global selection.
+    manager.test_apply_probe_outcome_for_test(0, probe_ok());
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(manager.global_active_uplink_index().await, Some(0));
+
+    // Disable the active uplink → it must drop out and traffic move to up-b.
+    let idx = manager.set_uplink_enabled_by_name("up-a", false).await.unwrap();
+    assert_eq!(idx, 0);
+    assert_eq!(
+        manager.global_active_uplink_index().await,
+        Some(1),
+        "disabling the active uplink must fail over to the enabled standby",
+    );
+
+    // up-a must not appear in any candidate set while disabled.
+    let cands = manager.tcp_candidates(&target).await;
+    assert!(
+        cands.iter().all(|c| c.index != 0),
+        "a disabled uplink must be excluded from candidates",
+    );
+    assert!(
+        manager.test_admin_disabled(0),
+        "snapshot must report the uplink as admin-disabled",
+    );
+
+    // Re-enable up-a, then disable up-b (the current active). Failover must
+    // land on the re-enabled up-a — proving it is selectable again. (In strict
+    // global with auto_failback off, a healthy active is sticky, so we force the
+    // move by disabling up-b rather than expecting an automatic failback.)
+    manager.set_uplink_enabled_by_name("up-a", true).await.unwrap();
+    manager.test_apply_probe_outcome_for_test(0, probe_ok());
+    assert!(!manager.test_admin_disabled(0));
+    manager.set_uplink_enabled_by_name("up-b", false).await.unwrap();
+    assert_eq!(
+        manager.global_active_uplink_index().await,
+        Some(0),
+        "after re-enabling up-a and disabling up-b, the active slot must move to up-a",
+    );
+}

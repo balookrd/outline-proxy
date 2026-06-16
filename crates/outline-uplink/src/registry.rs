@@ -245,6 +245,40 @@ impl UplinkRegistry {
         Ok((manager.group_name().to_string(), index))
     }
 
+    /// Administratively enable or disable the uplink identified by
+    /// `uplink_name` (operator on/off). When `group` is `Some`, only that group
+    /// is considered; otherwise all groups are searched (uplink names are
+    /// globally unique across groups). A disabled uplink is removed from every
+    /// automatic path (probe, selection, failover, warm standby); see
+    /// [`UplinkManager::set_uplink_enabled_by_name`]. Returns the resolved
+    /// `(group, index)`.
+    pub async fn set_uplink_enabled_by_name(
+        &self,
+        group: Option<&str>,
+        uplink_name: &str,
+        enabled: bool,
+    ) -> Result<(String, usize)> {
+        let state = self.state.load();
+        let manager: UplinkManager = if let Some(g) = group {
+            state
+                .by_name
+                .get(g)
+                .map(|&i| state.groups[i].manager.clone())
+                .ok_or_else(|| anyhow::anyhow!("uplink group \"{}\" not found", g))?
+        } else {
+            state
+                .groups
+                .iter()
+                .find(|h| h.manager.uplinks().iter().any(|u| u.name == uplink_name))
+                .map(|h| h.manager.clone())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("uplink \"{}\" not found in any group", uplink_name)
+                })?
+        };
+        let index = manager.set_uplink_enabled_by_name(uplink_name, enabled).await?;
+        Ok((manager.group_name().to_string(), index))
+    }
+
     /// Snapshot each group for Prometheus rendering. The returned vector
     /// preserves declaration order, matching the `groups` view.
     pub async fn snapshots(&self) -> Vec<UplinkManagerSnapshot> {

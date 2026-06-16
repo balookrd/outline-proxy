@@ -369,6 +369,18 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .action-btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 10px 24px rgba(99,102,241,.22); }
 .action-btn.primary:hover { background: #4f46e5; }
 .action-btn:disabled { opacity: .5; cursor: default; }
+.action-cell { display: inline-flex; align-items: center; gap: 6px; }
+/* Power on/off toggle. `.on` = uplink is enabled (green, click disables);
+   `.off` = uplink is administratively disabled (muted, click re-enables). */
+.action-btn.power.on { background: var(--green-soft); border-color: var(--green-soft); color: var(--green-strong); box-shadow: none; }
+.action-btn.power.on:hover { border-color: var(--green); color: var(--green-strong); }
+.action-btn.power.off { background: var(--gray-soft); border-color: var(--line); color: var(--muted); }
+.action-btn.power.off:hover { border-color: var(--green); color: var(--green-strong); }
+.status-pill.off { background: var(--gray-soft); color: var(--muted); }
+.status-dot.off { background: var(--dot-idle); }
+/* Administratively disabled row: greyed out so it reads as "parked". */
+.row.disabled { opacity: .5; }
+.row.disabled:hover { opacity: .72; }
 .error { border: 1px solid var(--error-border); background: var(--error-bg); color: var(--error-text); border-radius: 12px; padding: 10px 14px; font-size: 12px; }
 @media (max-width: 1240px) {
   .summary-grid { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
@@ -1152,8 +1164,9 @@ function renderInstanceBody(panel, instance, groups) {
       const rows = groupEl.querySelector(".rows");
       for (const uplink of group.uplinks || []) {
         const entry = { instance: instance.name, group: group.name, uplink };
-        const rowTone = isActive(uplink) ? "good" : (healthy(uplink) ? "warn" : "bad");
-        const label = rowTone === "good" ? "Active" : rowTone === "warn" ? "Ready" : "Inactive";
+        const disabled = !!uplink.admin_disabled;
+        const rowTone = disabled ? "off" : (isActive(uplink) ? "good" : (healthy(uplink) ? "warn" : "bad"));
+        const label = disabled ? "Disabled" : (rowTone === "good" ? "Active" : rowTone === "warn" ? "Ready" : "Inactive");
         // Surface the most recent probe/runtime error so a degraded uplink
         // (e.g. primary wire down on an expired TLS cert, traffic riding a
         // fallback) is legible instead of looking like a healthy "Ready".
@@ -1163,7 +1176,18 @@ function renderInstanceBody(panel, instance, groups) {
           ? `<span class="proto-fail-chip" data-tip="${escapeHtml(errSummary(uplink.last_error))}" data-tip-wrap>⚠</span>`
           : '';
         const row = document.createElement("div");
-        row.className = "row";
+        row.className = disabled ? "row disabled" : "row";
+        // ACTION cell: a power toggle (on/off) is always present; Activate is
+        // shown only for an enabled, non-active uplink. A disabled uplink is
+        // out of every check, so it cannot be activated — only re-enabled.
+        const activateBtn = disabled
+          ? ``
+          : (rowTone === "good"
+              ? `<button class="action-btn" type="button" disabled>Active</button>`
+              : `<button class="action-btn primary" type="button" data-act="activate">▶ Activate</button>`);
+        const powerBtn = disabled
+          ? `<button class="action-btn power off" type="button" data-act="power" data-tip="Enable: add this uplink back to probing, selection and failover">⏻ Off</button>`
+          : `<button class="action-btn power on" type="button" data-act="power" data-tip="Disable: remove this uplink from probing, selection and failover">⏻ On</button>`;
         row.innerHTML = `
           <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
           <div>${primaryProtocolCell(uplink)}</div>
@@ -1172,10 +1196,15 @@ function renderInstanceBody(panel, instance, groups) {
           <div>${legWireChainCell(uplink, 'udp')}</div>
           <div class="muted-cell">${weightCell(uplink)}</div>
           <div class="muted-cell">${uplinkRoleCell(uplink)}</div>
-          <div>${rowTone === "good" ? `<button class="action-btn" type="button" disabled>Active</button>` : `<button class="action-btn primary" type="button">▶ Activate</button>`}</div>`;
-        if (rowTone !== "good") {
-          row.querySelector("button").addEventListener("click", ev => { ev.stopPropagation(); activateEntries([entry]); });
+          <div class="action-cell">${activateBtn}${powerBtn}</div>`;
+        const activateEl = row.querySelector('[data-act="activate"]');
+        if (activateEl) {
+          activateEl.addEventListener("click", ev => { ev.stopPropagation(); activateEntries([entry]); });
         }
+        row.querySelector('[data-act="power"]').addEventListener("click", ev => {
+          ev.stopPropagation();
+          setUplinkEnabled(entry, disabled);
+        });
         rows.appendChild(row);
       }
       body.appendChild(groupEl);
@@ -1295,6 +1324,18 @@ async function activateEntries(entries) {
   });
   const touched = new Set(entries.map(e => e.instance));
   await Promise.all(Array.from(touched).map(name => loadInstance(name)));
+}
+// Operator on/off: take an uplink out of (or back into) every automatic check
+// — probing, candidate selection, failover, warm standby. `enabled === true`
+// re-enables; `false` disables. Refreshes the instance so the toggle and row
+// state reflect the new value.
+async function setUplinkEnabled(entry, enabled) {
+  await fetch("/dashboard/api/set_enabled", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ instance: entry.instance, group: entry.group, uplink: entry.uplink.name, enabled })
+  });
+  await loadInstance(entry.instance);
 }
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));

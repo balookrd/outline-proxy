@@ -52,6 +52,15 @@ impl UplinkManager {
         self.inner.read_status(index).tcp.healthy
     }
 
+    /// Test helper: whether uplink `index` is administratively disabled
+    /// (operator on/off), i.e. the value the snapshot exposes as
+    /// `admin_disabled`.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn test_admin_disabled(&self, index: usize) -> bool {
+        !self.inner.admin_enabled(index)
+    }
+
     /// Test helper: snapshot of full UplinkStatus for uplink `index`.
     /// Visibility is `pub(crate)` because `UplinkStatus` itself is
     /// crate-private; the helper is only consumed by inline tests in
