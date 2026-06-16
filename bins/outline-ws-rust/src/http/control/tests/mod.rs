@@ -420,6 +420,33 @@ fn topology_serialises_active_fingerprint_profile_name() {
 }
 
 #[test]
+fn topology_carries_admin_disabled_flag() {
+    // Regression: the dashboard reads the operator on/off state from
+    // `/control/topology` (the `ControlUplinkTopology` view), NOT from the raw
+    // `UplinkManagerSnapshot`. Adding `admin_disabled` to the snapshot is not
+    // enough — it must be threaded into the topology view too, or the On/Off
+    // button silently never reflects the toggle (the field reads `undefined`
+    // on the client and the row never flips). Always serialised (no
+    // `skip_serializing_if`) so the client gets an explicit bool either way.
+    let mut snapshots = snapshot_fixture();
+    snapshots[0].uplinks[1].admin_disabled = true;
+    let topology = ControlTopologyResponse {
+        instance: build_instance_topology(&snapshots, Vec::new()),
+    };
+    let json: Value = serde_json::to_value(topology).unwrap();
+    let u0 = &json["instance"]["groups"][0]["uplinks"][0];
+    let u1 = &json["instance"]["groups"][0]["uplinks"][1];
+    assert_eq!(
+        u1["admin_disabled"], true,
+        "disabled uplink must surface admin_disabled=true in topology; got {u1}",
+    );
+    assert_eq!(
+        u0["admin_disabled"], false,
+        "enabled uplink must surface an explicit admin_disabled=false; got {u0}",
+    );
+}
+
+#[test]
 fn topology_omits_bypass_fields_when_off() {
     // The fixture group has `bypass_when_down = false`, so none of the
     // three bypass fields may appear — `skip_serializing_if` keeps the
