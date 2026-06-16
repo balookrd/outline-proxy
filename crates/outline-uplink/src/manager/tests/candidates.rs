@@ -346,3 +346,39 @@ async fn disabling_active_uplink_fails_over_and_excludes_it_from_selection() {
         "after re-enabling up-a and disabling up-b, the active slot must move to up-a",
     );
 }
+
+/// A 1013 "try again later" is a per-target upstream failure (the server could
+/// not reach THIS destination), not an uplink/tunnel fault. It must NOT stamp an
+/// uplink cooldown — otherwise a routine per-destination 1013 drives
+/// `health_effective` DOWN for the cooldown window and flaps the uplink
+/// indicator even though the tunnel is fine. It MUST still feed the
+/// consecutive-runtime-failure counter, so a genuinely dead backend (1013 on
+/// everything) still escalates to a health flip and failover.
+#[tokio::test]
+async fn try_again_1013_skips_cooldown_but_still_counts() {
+    let manager = manager();
+
+    // 1013 try-again on up-a: no cooldown, but the streak advances.
+    manager
+        .report_runtime_failure(0, TransportKind::Tcp, &ws_close_1013())
+        .await;
+    let st = manager.read_status_for_test(0);
+    assert!(
+        st.tcp.cooldown_until.is_none(),
+        "a 1013 try-again must NOT set an uplink cooldown (would flap health_effective)",
+    );
+    assert_eq!(
+        st.tcp.consecutive_runtime_failures, 1,
+        "a 1013 try-again must still count toward the escalation threshold",
+    );
+
+    // A genuine transport error DOES take the cooldown path (unchanged).
+    manager
+        .report_runtime_failure(1, TransportKind::Tcp, &anyhow!("connection reset by peer"))
+        .await;
+    let st1 = manager.read_status_for_test(1);
+    assert!(
+        st1.tcp.cooldown_until.is_some(),
+        "a real transport error must still set the runtime cooldown",
+    );
+}
