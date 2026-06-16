@@ -9,7 +9,7 @@ use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
-use outline_transport::{AbortOnDrop, UdpSessionTransport};
+use outline_transport::{AbortOnDrop, UdpSessionTransport, WsClosed};
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
 use socks5_proto::TargetAddr;
 
@@ -259,9 +259,24 @@ impl TunUdpEngine {
                 Ok::<(), anyhow::Error>(())
             }
             .await;
-            let close_reason = if result.is_ok() { "closed" } else { "read_error" };
+            // A clean WebSocket close (Close frame / EOF from the peer, surfaced
+            // as `WsClosed`) is NOT a data-path failure. UDP associations are
+            // ephemeral and the server closing the mux carrier — e.g. on its own
+            // idle timeout — is normal lifecycle, not an outage. Treat it like
+            // the TCP downlink does (`closed_cleanly()` → stop without error):
+            // do not stamp a runtime-failure cooldown, which would otherwise
+            // flap the UDP health indicator on every routine close. A *dirty*
+            // read error still escalates exactly as before. The flow is closed
+            // as "closed" either way and re-created on the next packet.
+            let clean_close = result.as_ref().err().is_some_and(is_clean_ws_close);
+            let close_reason = if result.is_ok() || clean_close {
+                "closed"
+            } else {
+                "read_error"
+            };
 
             if let Err(ref error) = result
+                && !clean_close
                 && flow_is_current(&engine.inner.flows, &key, flow_id).await
             {
                 report_udp_runtime_failure(&manager, uplink_index, error).await;
@@ -337,6 +352,21 @@ impl TunUdpEngine {
         metrics::record_failover("udp", manager.group_name(), uplink_name, &replacement.3);
         Ok(replacement)
     }
+}
+
+/// Whether a UDP flow-reader error is a *clean* WebSocket close (Close frame /
+/// EOF from the peer) rather than a data-path failure.
+///
+/// UDP associations are ephemeral: the server closing the mux carrier — e.g. on
+/// its own idle timeout — is normal lifecycle, not an outage. Charging it as a
+/// runtime failure stamps a cooldown and flaps the UDP health indicator on every
+/// routine close. The TCP downlink already distinguishes this via
+/// `closed_cleanly()`; this mirrors that on the connectionless path by matching
+/// the typed [`WsClosed`] marker anywhere in the error chain (the documented
+/// detection path, robust to added context layers). A *dirty* read error
+/// returns `false` and escalates as before.
+fn is_clean_ws_close(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.downcast_ref::<WsClosed>().is_some())
 }
 
 async fn report_udp_runtime_failure(
@@ -424,3 +454,7 @@ pub(crate) async fn close_udp_flow(flow: Arc<Mutex<UdpFlowState>>, reason: &'sta
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/lifecycle.rs"]
+mod tests;
