@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 use outline_metrics as metrics;
 
 use super::super::error_classify::{
-    classify_runtime_failure_cause, classify_runtime_failure_signature,
+    classify_runtime_failure_cause, classify_runtime_failure_signature, is_try_again_close,
 };
 use super::super::penalty::{add_penalty, current_penalty, update_rtt_ewma};
 use super::super::types::{TransportKind, UplinkManager};
@@ -204,6 +204,15 @@ impl UplinkManager {
 
         let failure_cause = classify_runtime_failure_cause(error);
         let failure_signature = classify_runtime_failure_signature(error);
+        // A 1013 "try again later" is a per-target upstream failure, not an
+        // uplink/tunnel fault. The dispatch layer still retries the flow, but we
+        // must NOT take an uplink cooldown for it — a routine per-destination
+        // 1013 would otherwise drive `health_effective` DOWN for the cooldown
+        // window and flap the uplink indicator even though the tunnel is fine.
+        // The consecutive-runtime-failure counter below is still incremented, so
+        // a genuinely dead backend (1013 on everything) still escalates to a
+        // health flip and failover; only the cooldown/penalty is suppressed.
+        let is_try_again = is_try_again_close(error);
         let error_text = format!("{error:#}");
         let failure_other_detail = (failure_signature == "other")
             .then(|| metrics::normalize_other_runtime_failure_detail(&error_text));
@@ -282,7 +291,7 @@ impl UplinkManager {
             status.last_error = Some(error_text.clone());
             match transport {
                 TransportKind::Tcp => {
-                    if !already_in_cooldown {
+                    if !already_in_cooldown && !is_try_again {
                         if !probe_enabled {
                             add_penalty(&mut status.tcp.penalty, now, &load_balancing);
                         }
@@ -357,7 +366,7 @@ impl UplinkManager {
                     }
                 },
                 TransportKind::Udp => {
-                    if !already_in_cooldown {
+                    if !already_in_cooldown && !is_try_again {
                         // Same rationale as TCP above: when probe is enabled, defer
                         // penalty to the probe confirmation path to avoid inflating
                         // the score of a healthy-but-loaded uplink.

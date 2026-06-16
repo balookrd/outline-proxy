@@ -22,6 +22,27 @@ impl fmt::Display for WsClosed {
 
 impl std::error::Error for WsClosed {}
 
+/// Typed marker placed in an `anyhow` error chain when the upstream closed the
+/// stream with WebSocket code 1013 "Try Again Later" (RFC 6455 / RFC 9220).
+/// This is the server telling the client it could not reach the *upstream
+/// target* for this request — a per-destination signal, NOT evidence the
+/// uplink/tunnel itself is unhealthy. Classifiers match it via
+/// `error.chain().any(|e| e.downcast_ref::<TryAgain>().is_some())` so a routine
+/// per-target retry does not stamp an uplink-level cooldown. Carried alongside
+/// [`WsClosed`] on the tokio-tungstenite path; the vendored sockudo-ws (HTTP/3)
+/// path surfaces 1013 only as the string "Invalid close code: 1013", which the
+/// classifier matches separately.
+#[derive(Debug)]
+pub struct TryAgain;
+
+impl fmt::Display for TryAgain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "upstream sent try-again (1013)")
+    }
+}
+
+impl std::error::Error for TryAgain {}
+
 /// Typed marker for the high-level operation that produced a transport error.
 /// Placed as an `anyhow` context layer at the failure site so classifiers can
 /// identify the operation via `downcast_ref` rather than grepping the

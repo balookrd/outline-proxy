@@ -35,7 +35,7 @@ const WS_DATA_CHANNEL_CAPACITY: usize = 256;
 const WS_CTRL_CHANNEL_CAPACITY: usize = 8;
 
 use crate::frame_io::{DatagramChannel, FrameSink, FrameSource};
-use crate::{AbortOnDrop, TransportOperation, TransportStream, WsClosed};
+use crate::{AbortOnDrop, TransportOperation, TransportStream, TryAgain, WsClosed};
 
 /// Default idle watchdog for WS transports. If no inbound frame arrives
 /// within this window the reader tears the session down — the only way
@@ -239,6 +239,11 @@ impl FrameSource for WsFrameSource {
                         frame = ?frame,
                         "ws frame source: received Close from upstream",
                     );
+                    if try_again {
+                        // Tag a per-target 1013 so the uplink-health classifier
+                        // can retry the flow without stamping an uplink cooldown.
+                        return Err(anyhow::Error::from(WsClosed).context(TryAgain));
+                    }
                     return Err(anyhow::Error::from(WsClosed));
                 },
                 Message::Ping(payload) => {
