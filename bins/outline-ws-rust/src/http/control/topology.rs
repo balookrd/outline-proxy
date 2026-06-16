@@ -228,6 +228,12 @@ struct ControlUplinkTopology {
     /// no URL-based dial path that would engage the fingerprint module.
     #[serde(skip_serializing_if = "Option::is_none")]
     fingerprint_profile_name: Option<String>,
+    /// Operator on/off state: `true` when the uplink has been administratively
+    /// disabled via `/control/uplink_enabled` and is out of every automatic
+    /// check (probe / selection / failover / standby). Always serialised (no
+    /// `skip_serializing_if`) so the dashboard can render the On/Off toggle and
+    /// grey out the row from an explicit value rather than guessing on absence.
+    admin_disabled: bool,
 }
 
 fn is_none_strategy(s: &str) -> bool {
@@ -427,6 +433,7 @@ fn build_uplink_topology(
         udp_wires_failed_in_round: uplink.udp_wires_failed_in_round,
         fingerprint_profile_strategy: uplink.fingerprint_profile_strategy.clone(),
         fingerprint_profile_name: uplink.fingerprint_profile_name.clone(),
+        admin_disabled: uplink.admin_disabled,
     }
 }
 
