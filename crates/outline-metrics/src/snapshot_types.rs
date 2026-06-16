@@ -266,6 +266,17 @@ pub struct UplinkSnapshot {
     /// applies there).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint_profile_name: Option<String>,
+    /// Operator-set administrative disable. `true` means the uplink has been
+    /// taken out of *all* automatic machinery via `/control/uplink_enabled`
+    /// (dashboard on/off button): the probe loop skips it, candidate selection
+    /// and failover never consider it, and warm-standby refill stops. It is a
+    /// runtime override (not persisted across restarts) and is independent of
+    /// probe health — a disabled uplink reports its last known health but is
+    /// simply not eligible. Surfaced so the dashboard can render the on/off
+    /// state and grey out the row. Defaults to `false` (enabled); skipped from
+    /// JSON when `false` so older dashboards keep working unchanged.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub admin_disabled: bool,
 }
 
 #[doc(hidden)]

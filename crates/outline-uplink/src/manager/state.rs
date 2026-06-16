@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex as SyncMutex;
 use tokio::sync::{Notify, RwLock, Semaphore, watch};
@@ -95,6 +96,15 @@ pub(crate) struct UplinkManagerInner {
     /// SOCKS5 strict-abort watcher and UDP downlink reconciler subscribe
     /// through `UplinkManager::subscribe_active_uplinks()`.
     pub(crate) active_uplinks_tx: watch::Sender<ActiveUplinksSnapshot>,
+    /// Per-uplink administrative enable flag (operator on/off via
+    /// `/control/uplink_enabled`). Length matches `uplinks`; all `true` at
+    /// construction. A `false` entry takes the uplink out of every automatic
+    /// path: the probe loop skips it, candidate selection / failover exclude
+    /// it, and warm-standby refill stops. Lock-free `AtomicBool` so the hot
+    /// selection path reads it without taking the per-uplink status lock.
+    /// Runtime-only: not persisted to the state store, so a restart starts
+    /// every uplink enabled.
+    pub(crate) admin_enabled: Box<[AtomicBool]>,
 }
 
 impl UplinkManagerInner {
@@ -130,5 +140,23 @@ impl UplinkManagerInner {
     /// eventually-consistent across indices (any single index is coherent).
     pub(crate) fn snapshot_statuses(&self) -> Vec<UplinkStatus> {
         self.statuses.iter().map(|m| m.lock().clone()).collect()
+    }
+
+    /// Whether the uplink at `index` is administratively enabled (operator
+    /// on/off). `true` for every uplink unless an operator turned it off via
+    /// `/control/uplink_enabled`. Lock-free read for the hot selection path.
+    pub(crate) fn admin_enabled(&self, index: usize) -> bool {
+        self.admin_enabled
+            .get(index)
+            .is_none_or(|flag| flag.load(Ordering::Relaxed))
+    }
+
+    /// Set the administrative enable flag for the uplink at `index`. Returns the
+    /// previous value. Out-of-range indices are a no-op returning `true`.
+    pub(crate) fn set_admin_enabled(&self, index: usize, enabled: bool) -> bool {
+        self.admin_enabled
+            .get(index)
+            .map(|flag| flag.swap(enabled, Ordering::Relaxed))
+            .unwrap_or(true)
     }
 }

@@ -145,6 +145,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_wires_failed_in_round: 0,
                 fingerprint_profile_strategy: "none".to_string(),
                 fingerprint_profile_name: None,
+                admin_disabled: false,
             },
             UplinkSnapshot {
                 index: 1,
@@ -247,6 +248,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 // the dashboard chip actually shows.
                 fingerprint_profile_strategy: "per_host_stable".to_string(),
                 fingerprint_profile_name: Some("chrome-142-macos".to_string()),
+                admin_disabled: false,
             },
         ],
         sticky_routes: vec![StickyRouteSnapshot {
