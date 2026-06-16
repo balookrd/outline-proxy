@@ -940,6 +940,7 @@ curl http://[::1]:9090/metrics
 - `GET /control/topology` — топология instance/group/uplink для дашборда
 - `GET /control/summary` — компактные счётчики для stat-карточек
 - `POST /control/activate` — JSON API активации для click action
+- `POST /control/uplink_enabled` — административно включить/выключить аплинк (operator on/off). JSON-тело `{"group":"main","uplink":"backup","enabled":false}`. Выключенный аплинк убирается из **всех** автоматических механизмов — probe, выбор кандидатов, failover, пополнение warm-standby — до повторного включения; если он был активным, трафик сразу уходит на включённый резерв. Только runtime: override **не** персистится, после рестарта процесса все аплинки включены. В дашборде — кнопка On/Off у каждого аплинка.
 - `GET`/`POST`/`PATCH`/`DELETE /control/uplinks` — staged-правки `[[outline.uplinks]]` в файле конфигурации
 - `POST /control/apply` — hot-apply staged-правок аплинков без рестарта процесса
 - `POST /switch` — ручное переключение активного аплинка

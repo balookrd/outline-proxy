@@ -292,6 +292,7 @@ impl UplinkManager {
             .uplinks
             .iter()
             .enumerate()
+            .filter(|(index, _)| self.inner.admin_enabled(*index))
             .filter(|(_, u)| supports_transport_for_scope(u, transport, scope))
             .any(|(index, _)| {
                 let status = self.inner.read_status(index);
@@ -423,6 +424,11 @@ impl UplinkManager {
             .uplinks
             .iter()
             .enumerate()
+            // Administratively-disabled uplinks (operator on/off) are excluded
+            // from every candidate set: selection never picks them, and an
+            // active uplink that is disabled drops out here so the next
+            // dispatch fails over to an enabled standby.
+            .filter(|(index, _)| self.inner.admin_enabled(*index))
             .filter(|(_, uplink)| supports_transport_for_scope(uplink, transport, scope))
             .map(|(index, uplink)| {
                 let status = self.inner.read_status(index);
@@ -732,6 +738,62 @@ impl UplinkManager {
                 uplink: candidate.uplink,
             })
             .collect()
+    }
+
+    /// Administratively enable or disable the uplink identified by `name`
+    /// (operator on/off, surfaced as the dashboard toggle). Disabling takes the
+    /// uplink out of *all* automatic machinery at once: the probe loop skips it,
+    /// candidate selection / failover exclude it, and warm-standby refill stops.
+    /// Enabling restores eligibility and wakes the probe loop to re-validate
+    /// health before the uplink can carry traffic again.
+    ///
+    /// This is a runtime override and is **not** persisted to the state store,
+    /// so a process restart starts every uplink enabled.
+    ///
+    /// On disable, sticky routes are dropped and — in strict (`active_passive`)
+    /// scopes — strict selection is re-run immediately so traffic on the now
+    /// disabled active uplink moves to an enabled standby without waiting for
+    /// the next failure. Returns the resolved uplink index, or an error when no
+    /// uplink in this group matches `name`.
+    pub async fn set_uplink_enabled_by_name(&self, name: &str, enabled: bool) -> Result<usize> {
+        let index = self
+            .inner
+            .uplinks
+            .iter()
+            .position(|u| u.name == name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "uplink \"{}\" not found in group \"{}\"",
+                    name,
+                    self.inner.group_name
+                )
+            })?;
+        let previous = self.inner.set_admin_enabled(index, enabled);
+        if previous == enabled {
+            // No change — avoid churning sticky routes / waking the probe loop.
+            return Ok(index);
+        }
+        if enabled {
+            // Newly eligible: re-probe promptly so health is fresh before the
+            // selection path can route to it.
+            self.inner.probe_wakeup.notify_waiters();
+        } else {
+            // Drop any sticky routes pinned to the now disabled uplink so the
+            // next dispatch re-selects from the enabled set.
+            self.inner.sticky_routes.write().await.clear();
+            // In strict scopes, proactively move the active slot off the
+            // disabled uplink instead of waiting for the next connection.
+            if self.strict_active_uplink_for(TransportKind::Tcp) {
+                let _ = self
+                    .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+                    .await;
+                let _ = self
+                    .strict_transport_candidates(TransportKind::Udp, None, None, true)
+                    .await;
+            }
+            self.inner.probe_wakeup.notify_waiters();
+        }
+        Ok(index)
     }
 
     /// Manually switch the active uplink for this group to the one identified

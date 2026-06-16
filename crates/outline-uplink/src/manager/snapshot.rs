@@ -444,6 +444,7 @@ impl UplinkManager {
                             }),
                     }
                 },
+                admin_disabled: !self.inner.admin_enabled(index),
             });
         }
 

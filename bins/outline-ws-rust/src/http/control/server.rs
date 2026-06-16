@@ -18,7 +18,9 @@ use outline_metrics::record_metrics_http_request;
 use outline_uplink::UplinkRegistry;
 
 use super::apply::{ApplyHandle, handle_apply};
-use super::handlers::{handle_activate, handle_summary, handle_switch, handle_topology};
+use super::handlers::{
+    handle_activate, handle_set_enabled, handle_summary, handle_switch, handle_topology,
+};
 use super::uplinks_crud::handle_uplinks;
 use super::{ControlResponse, is_authorized, plain_response, unauthorized_response};
 use crate::config::ControlConfig;
@@ -137,6 +139,7 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/control/topology" => "/control/topology",
         "/control/summary" => "/control/summary",
         "/control/activate" => "/control/activate",
+        "/control/uplink_enabled" => "/control/uplink_enabled",
         "/control/uplinks" => "/control/uplinks",
         "/control/apply" => "/control/apply",
         _ => "other",
@@ -167,6 +170,11 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/control/activate" => {
             let response = handle_activate(request, state.uplinks.clone()).await;
             record_metrics_http_request("/control/activate", response.status().as_u16());
+            response
+        },
+        "/control/uplink_enabled" => {
+            let response = handle_set_enabled(request, state.uplinks.clone()).await;
+            record_metrics_http_request("/control/uplink_enabled", response.status().as_u16());
             response
         },
         "/control/uplinks" => {

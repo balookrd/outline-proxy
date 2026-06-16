@@ -613,6 +613,12 @@ impl UplinkManager {
 
     pub(crate) async fn refill_all_standby(&self) {
         for index in 0..self.inner.uplinks.len() {
+            // Administratively-disabled uplinks (operator on/off) are kept out
+            // of every automatic path: do not open or maintain warm-standby
+            // sockets to a server the operator parked.
+            if !self.inner.admin_enabled(index) {
+                continue;
+            }
             self.maintain_pool(index, TransportKind::Tcp).await;
             self.maintain_pool(index, TransportKind::Udp).await;
         }
@@ -706,6 +712,9 @@ impl UplinkManager {
                     _ = sleep(interval) => {}
                 }
                 for index in 0..manager.inner.uplinks.len() {
+                    if !manager.inner.admin_enabled(index) {
+                        continue;
+                    }
                     manager.keepalive_tcp_pool(index).await;
                 }
             }

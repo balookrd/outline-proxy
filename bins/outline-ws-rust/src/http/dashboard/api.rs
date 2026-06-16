@@ -111,6 +111,14 @@ struct DashboardActivateResult {
     error: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DashboardSetEnabledRequest {
+    instance: String,
+    group: String,
+    uplink: String,
+    enabled: bool,
+}
+
 pub async fn handle_activate(
     request: Request<Incoming>,
     state: DashboardState,
@@ -368,6 +376,61 @@ async fn activate_instance(
     if let Some(transport) = transport {
         payload["transport"] = Value::String(transport.to_string());
     }
+    let body = serde_json::to_vec(&payload)?;
+    let (status, response_body) =
+        send_instance_request(instance, Method::POST, url, Some(body), request_timeout_secs)
+            .await?;
+    let parsed = serde_json::from_slice(&response_body)
+        .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&response_body) }));
+    Ok((status, parsed))
+}
+
+/// `POST /dashboard/api/set_enabled` — proxy the operator on/off toggle to the
+/// target instance's `/control/uplink_enabled`. Keeps the control token
+/// server-side; the browser only sends `{instance, group, uplink, enabled}`.
+pub async fn handle_set_enabled(
+    request: Request<Incoming>,
+    state: DashboardState,
+) -> DashboardResponse {
+    let body = match request.into_body().collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(error) => {
+            warn!(error = %format!("{error:#}"), "failed to read dashboard set_enabled body");
+            return json_error(StatusCode::BAD_REQUEST, "invalid request body");
+        },
+    };
+    let payload: DashboardSetEnabledRequest = match serde_json::from_slice(&body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            let msg = format!("invalid JSON: {error}");
+            return json_response(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": msg }));
+        },
+    };
+    let Some(instance) = state.instances.iter().find(|i| i.name == payload.instance) else {
+        return json_error(StatusCode::BAD_REQUEST, "unknown instance");
+    };
+    match set_enabled_instance(instance, &payload, state.request_timeout_secs).await {
+        Ok((status, body)) => {
+            json_response(status, &serde_json::json!({ "ok": status.is_success(), "body": body }))
+        },
+        Err(error) => json_response(
+            StatusCode::BAD_GATEWAY,
+            &serde_json::json!({ "ok": false, "error": format!("{error:#}") }),
+        ),
+    }
+}
+
+async fn set_enabled_instance(
+    instance: &DashboardInstanceConfig,
+    req: &DashboardSetEnabledRequest,
+    request_timeout_secs: u64,
+) -> Result<(StatusCode, Value)> {
+    let url = instance_url(&instance.control_url, "/control/uplink_enabled")?;
+    let payload = serde_json::json!({
+        "group": req.group,
+        "uplink": req.uplink,
+        "enabled": req.enabled,
+    });
     let body = serde_json::to_vec(&payload)?;
     let (status, response_body) =
         send_instance_request(instance, Method::POST, url, Some(body), request_timeout_secs)

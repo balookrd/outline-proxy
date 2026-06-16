@@ -217,3 +217,86 @@ pub(crate) async fn activate_from_json(body: &[u8], uplinks: UplinkRegistry) -> 
         },
     }
 }
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct EnableRequest {
+    pub(crate) group: String,
+    pub(crate) uplink: String,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct EnableResponse {
+    group: String,
+    uplink: String,
+    index: usize,
+    enabled: bool,
+}
+
+/// `POST /control/uplink_enabled` — administratively enable/disable an uplink
+/// (operator on/off). A disabled uplink is removed from every automatic path
+/// (probe, selection, failover, warm standby) until re-enabled. Runtime-only:
+/// the override is not persisted across restarts.
+pub(crate) async fn handle_set_enabled(
+    request: Request<Incoming>,
+    uplinks: UplinkRegistry,
+) -> ControlResponse {
+    if let Some(response) = require_method(request.method(), Method::POST, "POST") {
+        return response;
+    }
+
+    let body = match request.into_body().collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(error) => {
+            warn!(error = %format!("{error:#}"), "failed to read /control/uplink_enabled body");
+            return json_error(StatusCode::BAD_REQUEST, "invalid request body");
+        },
+    };
+
+    set_enabled_from_json(&body, uplinks).await
+}
+
+pub(crate) async fn set_enabled_from_json(body: &[u8], uplinks: UplinkRegistry) -> ControlResponse {
+    let payload: EnableRequest = match serde_json::from_slice(body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            let msg = format!("invalid JSON: {error}");
+            return json_response(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": msg }));
+        },
+    };
+    if payload.group.trim().is_empty() || payload.uplink.trim().is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "\"group\" and \"uplink\" are required");
+    }
+    match uplinks
+        .set_uplink_enabled_by_name(
+            Some(payload.group.trim()),
+            payload.uplink.trim(),
+            payload.enabled,
+        )
+        .await
+    {
+        Ok((group, index)) => {
+            info!(
+                group = %group,
+                uplink = %payload.uplink,
+                index,
+                enabled = payload.enabled,
+                "uplink enable toggled via /control/uplink_enabled"
+            );
+            json_response(
+                StatusCode::OK,
+                &EnableResponse {
+                    group,
+                    uplink: payload.uplink.trim().to_string(),
+                    index,
+                    enabled: payload.enabled,
+                },
+            )
+        },
+        Err(error) => {
+            warn!(error = %format!("{error:#}"), "/control/uplink_enabled failed");
+            let msg = format!("{error}");
+            json_response(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": msg }))
+        },
+    }
+}
