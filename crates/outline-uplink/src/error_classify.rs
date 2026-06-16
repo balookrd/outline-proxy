@@ -3,7 +3,7 @@ use std::io::ErrorKind;
 
 use anyhow::Error;
 use outline_transport::{
-    OversizedUdpDatagram, TransportOperation, WsClosed, contains_any, find_io_error_kind,
+    OversizedUdpDatagram, TransportOperation, TryAgain, WsClosed, contains_any, find_io_error_kind,
     find_typed, is_transport_level_disconnect, lower_error,
 };
 use outline_wire::ss2022::Ss2022Error;
@@ -44,6 +44,26 @@ pub(crate) fn is_expected_standby_probe_failure(error: &Error) -> bool {
     // Fallback for errors that bake the message into a formatted string.
     let lower = lower_error(error);
     contains_any(&lower, &["timed out", "timeout", "connection lost"])
+}
+
+/// Return true when a runtime failure is actually a per-target "try again later"
+/// (WebSocket close 1013): the server could not reach the *upstream target* for
+/// this request, which is NOT evidence the uplink/tunnel is down. The dispatch
+/// layer still retries the flow (possibly on another uplink), but the uplink
+/// must NOT take a health cooldown for it — otherwise a routine per-destination
+/// failure flaps the uplink's health indicator even though the tunnel is fine.
+/// A genuinely dead backend (1013 on *everything*) still escalates via the
+/// consecutive-runtime-failure counter, which the caller keeps incrementing.
+///
+/// Matches the typed [`TryAgain`] marker (tokio-tungstenite path) and, as a
+/// fallback, the vendored sockudo-ws HTTP/3 wording "invalid close code: 1013"
+/// (that stack rejects 1013 as unknown instead of surfacing a typed close).
+pub(crate) fn is_try_again_close(error: &Error) -> bool {
+    if find_typed::<TryAgain>(error).is_some() {
+        return true;
+    }
+    let lower = lower_error(error);
+    lower.contains("invalid close code: 1013") || lower.contains("close code 1013")
 }
 
 /// Classify the broad failure cause for a runtime uplink failure.

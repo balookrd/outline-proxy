@@ -1,6 +1,6 @@
 use crate::TransportOperation;
 use crate::TransportStream;
-use crate::WsClosed;
+use crate::{TryAgain, WsClosed};
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use futures_util::stream::SplitStream;
@@ -173,6 +173,11 @@ impl ReadTransport for WsReadTransport {
                         frame = ?frame,
                         "reader: websocket received Close frame from upstream"
                     );
+                    if try_again {
+                        // Tag a per-target 1013 so the uplink-health classifier
+                        // can retry the flow without stamping an uplink cooldown.
+                        return Err(anyhow::Error::from(WsClosed).context(TryAgain));
+                    }
                     return Err(anyhow::Error::from(WsClosed));
                 },
                 Message::Ping(payload) => {

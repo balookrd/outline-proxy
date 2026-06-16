@@ -152,3 +152,49 @@ fn chunk0_upstream_did_not_respond_classifies_as_timeout() {
     assert_eq!(classify_runtime_failure_cause(&wrapped), "timeout");
     assert_eq!(classify_runtime_failure_signature(&wrapped), "chunk0_timeout");
 }
+
+#[test]
+fn try_again_typed_marker_is_detected() {
+    // tokio-tungstenite path: the reader layers TryAgain on top of WsClosed
+    // exactly like this when it sees CloseCode::Again (1013).
+    let err = anyhow::Error::from(WsClosed).context(TryAgain);
+    assert!(
+        is_try_again_close(&err),
+        "typed TryAgain marker (tungstenite 1013 path) must be detected",
+    );
+    // Even with extra context layered on top, the chain walk must still find it.
+    let wrapped = err.context("forwarding upstream to client");
+    assert!(is_try_again_close(&wrapped), "TryAgain must survive added context");
+}
+
+#[test]
+fn try_again_sockudo_h3_string_is_detected() {
+    // vendored sockudo-ws (HTTP/3) rejects 1013 as unknown and surfaces only
+    // the wording, with no typed close frame — must be matched by string.
+    let err = anyhow::anyhow!(
+        "websocket read failed: IO error: Invalid close code: 1013: Invalid close code: 1013"
+    );
+    assert!(
+        is_try_again_close(&err),
+        "sockudo-ws HTTP/3 1013 wording must be detected as try-again",
+    );
+}
+
+#[test]
+fn plain_close_and_unrelated_errors_are_not_try_again() {
+    // A normal clean close (no 1013) must keep the regular cooldown path.
+    assert!(
+        !is_try_again_close(&anyhow::Error::from(WsClosed)),
+        "a plain WsClosed (clean close) must NOT be classified as try-again",
+    );
+    // A genuine transport error must still escalate normally.
+    assert!(
+        !is_try_again_close(&anyhow::anyhow!("connection reset by peer")),
+        "an unrelated error must NOT be classified as try-again",
+    );
+    // A different (non-1013) invalid close code must not be swept in.
+    assert!(
+        !is_try_again_close(&anyhow::anyhow!("Invalid close code: 1014")),
+        "a non-1013 close code must NOT be classified as try-again",
+    );
+}
