@@ -223,10 +223,40 @@ fn record_transport_success(
     min_failures: u32,
     grace_window: Duration,
     shuffle_timer_active: bool,
+    now: Instant,
+    runtime_failure_window: Duration,
 ) {
-    let now = Instant::now();
     status.consecutive_failures = 0;
     status.consecutive_successes = status.consecutive_successes.saturating_add(1);
+
+    // A probe success only proves the *handshake* path answers — it is NOT
+    // proof the data path carries traffic. A degraded server can keep
+    // answering the probe's lightweight handshake while closing every real
+    // flow with `Close 1013` ("front alive, back dead"). Treating that probe
+    // success as proof-of-life would erase the data-plane death signals real
+    // traffic just recorded (`consecutive_runtime_failures`, the shuffle
+    // round counter, the runtime cooldown) and re-arm `healthy = Some(true)`
+    // on every probe interval, so a global active uplink that cannot carry
+    // data would keep its slot forever (the health flip never fires). Same
+    // rationale as the bare-dial gate in `record_wire_outcome`: a handshake
+    // is not delivery.
+    //
+    // While the runtime-failure window still holds a recent failure, hold off
+    // the data-plane resets below so the runtime-failure escalation in
+    // `report_runtime_failure` can accumulate to a health flip. Once real
+    // traffic stops failing — the server recovered, or the uplink was demoted
+    // to standby and drained — the window lapses and the next probe success
+    // takes the normal recovery path. A genuine recovery is still observed
+    // immediately through `report_active_traffic` on the *downlink* (proven
+    // delivery), which clears the streak directly without waiting for this.
+    let data_plane_recently_failed = !runtime_failure_window.is_zero()
+        && status
+            .last_runtime_failure_at
+            .is_some_and(|t| now.saturating_duration_since(t) < runtime_failure_window);
+    if data_plane_recently_failed {
+        return;
+    }
+
     status.healthy = Some(true);
     // Probe confirms the data path works again: drop any data-plane failure
     // streak so a fresh burst is required before another health flip.
@@ -436,6 +466,8 @@ impl UplinkManager {
                     min_failures,
                     grace_window,
                     shuffle_timer_active,
+                    now,
+                    runtime_failure_window,
                 );
             }
             if result.udp_applicable {
@@ -467,6 +499,8 @@ impl UplinkManager {
                         min_failures,
                         grace_window,
                         shuffle_timer_active,
+                        now,
+                        runtime_failure_window,
                     );
                 }
             }

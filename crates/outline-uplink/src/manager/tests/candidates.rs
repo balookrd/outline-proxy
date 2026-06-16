@@ -232,3 +232,66 @@ async fn global_active_fails_over_when_active_uplink_server_dies() {
         manager.active_wire(0, TransportKind::Tcp),
     );
 }
+
+/// Variant where the **probe keeps succeeding** while the data path is dead.
+///
+/// This is the field case behind "a server reboot does not fail the client
+/// over": the active uplink's edge answers the lightweight probe handshake on
+/// every cycle (front alive) while every real flow dials fine and is then
+/// closed with `Close 1013` (back dead). Each probe success used to call
+/// `record_transport_success`, which reset `consecutive_runtime_failures`, the
+/// shuffle round counter (`wires_failed_in_round`) and the runtime cooldown and
+/// re-armed `healthy = Some(true)`. Since the probe runs far more often than the
+/// sparse data-plane failures, it erased the death signal every interval, the
+/// shuffle round never exhausted, `healthy` never flipped to `Some(false)`, and
+/// the global active slot stuck to the dead uplink forever.
+///
+/// With the fix a probe success no longer overwrites a freshly-recorded
+/// data-plane death (it is a handshake, not delivery), so the runtime failures
+/// drive the shuffle round to exhaustion, `healthy` flips, and global failover
+/// moves to the healthy standby.
+#[tokio::test]
+async fn global_active_fails_over_when_probe_passes_but_data_path_is_dead() {
+    let manager = manager();
+
+    // Both healthy at first; up-a (higher weight) wins the initial selection.
+    manager.test_apply_probe_outcome_for_test(0, probe_ok());
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(
+        manager.global_active_uplink_index().await,
+        Some(0),
+        "up-a should win the initial global selection on weight",
+    );
+
+    // up-a's edge stays handshake-alive but data-dead: a real flow dials fine
+    // (selection confirmed), then the read fails with Close 1013, and the probe
+    // still reports the edge as alive on every cycle.
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    for _ in 0..40 {
+        let _ = manager.tcp_candidates(&target).await;
+        manager
+            .confirm_selected_uplink(TransportKind::Tcp, Some(&target), 0)
+            .await;
+        manager
+            .report_runtime_failure(0, TransportKind::Tcp, &ws_close_1013())
+            .await;
+        // The probe keeps succeeding on the dead uplink the entire time.
+        manager.test_apply_probe_outcome_for_test(0, probe_ok());
+        // up-b stays fully healthy.
+        manager.test_apply_probe_outcome_for_test(1, probe_ok());
+    }
+
+    // A fresh dispatch now that up-a is data-plane-confirmed dead.
+    let _ = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        manager.global_active_uplink_index().await,
+        Some(1),
+        "global active must fail over to healthy up-b even though up-a's probe \
+         keeps passing; tcp_healthy(0)={:?}, active_wire(0)={}",
+        manager.test_tcp_healthy(0).await,
+        manager.active_wire(0, TransportKind::Tcp),
+    );
+}

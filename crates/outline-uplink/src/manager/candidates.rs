@@ -215,18 +215,25 @@ impl UplinkManager {
             .await;
         }
         self.store_sticky_route(&routing_key, uplink_index).await;
-        // Successful end-to-end connect on this uplink is strong evidence the
-        // data path is alive — clear the runtime-failure streak (and the
-        // parallel chunk-0 streak) so a transient burst of failures does not
-        // push it to unhealthy.
+        // A successful *dial* only proves the transport handshake completed —
+        // NOT that the data path delivers. A degraded server accepts the WS
+        // upgrade and then closes the data path (`Close 1013`), so confirming a
+        // selection must NOT clear `consecutive_runtime_failures`: doing so let
+        // a handshake-alive / data-dead uplink reset the data-plane death
+        // streak on every new flow, so the runtime-failure escalation never
+        // reached the threshold and the strict-global active slot stuck forever
+        // on a server that cannot carry data. The streak is cleared only by
+        // proven delivery (`report_active_traffic` on the downlink) or by a
+        // probe success once traffic stops failing. Same rationale as the
+        // bare-dial gate in `record_wire_outcome`.
+        //
+        // The chunk-0 streak is still reset here: it rides a wider decay window
+        // and a fresh end-to-end selection is a reasonable point to clear it.
         self.inner.with_status_mut(uplink_index, |status| match transport {
             TransportKind::Tcp => {
-                status.tcp.consecutive_runtime_failures = 0;
                 status.tcp.chunk0_consecutive_failures = 0;
             },
-            TransportKind::Udp => {
-                status.udp.consecutive_runtime_failures = 0;
-            },
+            TransportKind::Udp => {},
         });
     }
 

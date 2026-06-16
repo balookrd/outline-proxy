@@ -312,9 +312,16 @@ pub(super) async fn run_relay(
                 if chunks_sent == 1 {
                     debug!(uplink = %name_for_uplink, "first chunk sent to upstream");
                 }
-                manager_for_uplink
-                    .report_active_traffic(active_index, TransportKind::Tcp)
-                    .await;
+                // NOTE: do NOT call `report_active_traffic` here. Sending a
+                // chunk to the upstream only proves we wrote bytes into the
+                // tunnel — it is NOT proof the data path delivers. A degraded
+                // server accepts the bytes and then closes the data path
+                // (`Close 1013`), so stamping liveness on send let a
+                // handshake-alive / data-dead uplink clear its data-plane
+                // death streak on every flow and keep the strict-global active
+                // slot forever. Liveness is reported only on the *downlink*
+                // path below (bytes actually received from upstream and
+                // delivered to the client = proven delivery).
             }
             Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished)
         };
