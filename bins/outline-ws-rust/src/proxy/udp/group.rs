@@ -10,7 +10,7 @@ use tracing::debug;
 
 use outline_metrics as metrics;
 use outline_transport::is_dropped_oversized_udp_error;
-use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
+use outline_uplink::{UplinkManager, UplinkRegistry};
 use socks5_proto::TargetAddr;
 
 use super::transport::{
@@ -80,15 +80,18 @@ impl GroupUdpContext {
                 &replacement.uplink_name,
                 payload.len(),
             );
-            self.manager
-                .report_active_traffic(replacement.index, TransportKind::Udp)
-                .await;
+            // NOTE: do NOT report liveness here. This is the client→upstream
+            // (send) direction — writing a datagram into the tunnel does not
+            // prove the data path delivers. A degraded server can keep
+            // accepting datagrams while dropping every response, so stamping
+            // liveness on send let a data-dead uplink clear its UDP death
+            // streak forever (same `Close 1013` / "front alive, back dead"
+            // class of failure as TCP). Recovery is driven by the UDP probe
+            // (and, once it stops failing, the runtime-failure window lapsing)
+            // — mirroring the TUN UDP path, which never reported send liveness.
         } else {
             metrics::add_udp_datagram("client_to_upstream", group, &uplink_name);
             metrics::add_bytes("udp", "client_to_upstream", group, &uplink_name, payload.len());
-            self.manager
-                .report_active_traffic(active_index, TransportKind::Udp)
-                .await;
         }
         Ok(())
     }
