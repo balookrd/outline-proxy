@@ -32,7 +32,7 @@
 
 | Payload \ Carrier | WebSocket (h1/h2/h3) | XHTTP (h1/h2/h3) | raw QUIC |
 |---|:---:|:---:|:---:|
-| **Shadowsocks** (AEAD / SS2022) | ✅ | ✅ (forward TCP + UDP) | ✅ |
+| **Shadowsocks** (AEAD / SS2022) | ✅ | ✅ | ✅ |
 | **VLESS** | ✅ | ✅ | ✅ |
 
 XHTTP — это протокол `packet-up` / `stream-one`. VLESS ходит по нему для
