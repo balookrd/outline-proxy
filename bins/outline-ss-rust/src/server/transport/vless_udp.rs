@@ -68,7 +68,7 @@ where
                 );
                 outbound
                     .data_tx
-                    .send((outbound.make_binary)(carrier_padding::frame_vless_downlink(
+                    .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
                         route.padding,
                         Bytes::from_static(&[vless::VERSION, 0x00]),
                     )))
@@ -192,7 +192,7 @@ where
 
     outbound
         .data_tx
-        .send((outbound.make_binary)(carrier_padding::frame_vless_downlink(
+        .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
             route.padding,
             Bytes::from_static(&[vless::VERSION, 0x00]),
         )))
@@ -377,7 +377,7 @@ where
                 let mut framed = BytesMut::with_capacity(2 + read);
                 framed.put_u16(read as u16);
                 framed.extend_from_slice(&buffer[..read]);
-                let datagram = carrier_padding::frame_vless_downlink(padding, framed.freeze());
+                let datagram = carrier_padding::frame_downlink_message(padding, framed.freeze());
                 tx.send(make_binary(datagram)).await.map_err(|error| {
                     anyhow!("failed to queue vless udp websocket frame: {error}")
                 })?;

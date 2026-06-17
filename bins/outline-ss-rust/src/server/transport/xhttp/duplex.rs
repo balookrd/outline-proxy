@@ -14,7 +14,10 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
+use outline_wire::padding::PaddingScheme;
 use tokio::sync::mpsc;
+
+use super::super::carrier_padding;
 
 use crate::{
     metrics::{AppProtocol, Protocol},
@@ -175,8 +178,13 @@ impl WsSocket for XhttpDuplex {
         tx: mpsc::Sender<XhttpMsg>,
         _protocol: Protocol,
         app_protocol: AppProtocol,
+        scheme: PaddingScheme,
     ) -> UdpResponseSender {
-        UdpResponseSender::new(Arc::new(XhttpUdpResponseSender { tx, app_protocol }))
+        UdpResponseSender::new(Arc::new(XhttpUdpResponseSender {
+            tx,
+            app_protocol,
+            padding: scheme,
+        }))
     }
 }
 
@@ -189,11 +197,15 @@ impl WsSocket for XhttpDuplex {
 struct XhttpUdpResponseSender {
     tx: mpsc::Sender<XhttpMsg>,
     app_protocol: AppProtocol,
+    /// Carrier-padding scheme for this path; when enabled each downlink
+    /// datagram is framed before it goes on the wire (plain otherwise).
+    padding: PaddingScheme,
 }
 
 impl ResponseSender for XhttpUdpResponseSender {
     fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
-        Box::pin(async move { self.tx.send(XhttpMsg::Binary(data)).await.is_ok() })
+        let framed = carrier_padding::frame_downlink_message(self.padding, data);
+        Box::pin(async move { self.tx.send(XhttpMsg::Binary(framed)).await.is_ok() })
     }
 
     fn protocol(&self) -> Protocol {

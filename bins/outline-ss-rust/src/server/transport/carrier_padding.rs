@@ -122,16 +122,22 @@ pub(in crate::server) fn frame_payload_into<R: RngCore>(
     }
 }
 
-/// Frames one VLESS downlink message for `scheme`, or returns it unchanged when
-/// padding is disabled. Unlike the SS path — where the whole downlink is a
-/// single AEAD ciphertext stream funnelled through one `ChannelSink` — the VLESS
-/// relay emits several distinct downlink messages (the `[VERSION, 0x00]`
-/// response header, the v1 ack-prefix / v2 replay control frames, the relay
-/// payload, and UDP records). The client's streaming decoder treats the whole
-/// direction as one framed byte stream, so EVERY downlink buffer must be framed
-/// the same way or the decoder desyncs on the first unframed message. Callers
-/// route each downlink buffer through here before `make_binary`.
-pub(in crate::server) fn frame_vless_downlink(scheme: PaddingScheme, bytes: Bytes) -> Bytes {
+/// Frames one discrete downlink message for `scheme`, or returns it unchanged
+/// when padding is disabled. Used by the message-oriented downlink paths where
+/// each buffer is framed individually rather than streamed through one
+/// `ChannelSink` (the SS-TCP downlink):
+///
+/// - **VLESS** emits several distinct downlink messages (the `[VERSION, 0x00]`
+///   response header, the v1 ack-prefix / v2 replay control frames, the relay
+///   payload, and UDP records). The client's streaming decoder treats the whole
+///   direction as one framed byte stream, so EVERY downlink buffer must be
+///   framed the same way or the decoder desyncs on the first unframed message.
+/// - **SS-UDP** emits one encrypted datagram per upstream packet; each is framed
+///   individually so the datagram size no longer tracks the SS payload (the
+///   client decodes each one back before SS decryption).
+///
+/// Callers route each downlink buffer through here before `make_binary`.
+pub(in crate::server) fn frame_downlink_message(scheme: PaddingScheme, bytes: Bytes) -> Bytes {
     if scheme.is_enabled() {
         let mut out = Vec::with_capacity(bytes.len() + 8);
         frame_payload_into(scheme, &bytes, &mut rand::rng(), &mut out);

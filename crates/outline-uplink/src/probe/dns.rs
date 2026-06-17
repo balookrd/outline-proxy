@@ -111,7 +111,14 @@ pub(super) async fn run_dns_probe(
                             // downgrade marker propagates. DNS probes do not
                             // participate in cross-transport session resumption, so
                             // the SessionId tuple element is discarded.
-                            let (t, _issued, downgraded) = UdpWsTransport::connect_with_resume(
+                            //
+                            // Scope the per-uplink padding override over the dial +
+                            // build so a probe to a padded per-uplink SS-UDP path
+                            // frames its datagrams (the transport reads
+                            // `effective_carrier_padding` at build). raw QUIC (the
+                            // branch above) and the global default are unaffected by
+                            // an absent override — mirrors the VLESS-UDP probe.
+                            let connect = UdpWsTransport::connect_with_resume(
                                 cache,
                                 udp_ws_url,
                                 effective_udp_mode,
@@ -123,11 +130,16 @@ pub(super) async fn run_dns_probe(
                                 None,
                                 None,
                                 uplink.combined_ss_kind(SsPathKind::Udp),
-                            )
-                            .await
-                            .with_context(|| TransportOperation::Connect {
-                                target: format!("DNS probe websocket for uplink {}", uplink.name),
-                            })?;
+                            );
+                            let (t, _issued, downgraded) =
+                                crate::dial::with_uplink_padding_scope(uplink, connect)
+                                    .await
+                                    .with_context(|| TransportOperation::Connect {
+                                        target: format!(
+                                            "DNS probe websocket for uplink {}",
+                                            uplink.name
+                                        ),
+                                    })?;
                             (t, downgraded)
                         }
                     };

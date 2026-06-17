@@ -1,7 +1,9 @@
 use crate::TransportOperation;
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
+use outline_wire::padding::PaddingDecoder;
 use outline_wire::ss2022::Ss2022Error;
+use parking_lot::Mutex as SyncMutex;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
@@ -9,6 +11,7 @@ use tokio::sync::{Mutex, watch};
 use tracing::warn;
 use url::Url;
 
+use crate::carrier_padding::{self, CarrierPadding};
 use crate::config::TransportMode;
 use crate::frame_io::DatagramChannel;
 use crate::frame_io_ws::{carrier_liveness, from_ws_datagrams};
@@ -47,6 +50,24 @@ pub struct UdpWsTransport {
     cipher: CipherKind,
     master_key: Vec<u8>,
     ss2022: Option<Mutex<Ss2022UdpState>>,
+    /// Carrier padding for the datagram channel, read at construction. When
+    /// enabled, each already-encrypted SS-AEAD packet is wrapped in one padding
+    /// frame (`real` = the ciphertext, plus a random pad tail) before
+    /// `send_datagram`, and inbound datagrams are decoded before SS decrypt.
+    /// Only set on the WS / XHTTP datagram carrier (`from_websocket`); the raw
+    /// socket and raw-QUIC datagram channel stay plain (padding is a WS-carrier
+    /// fingerprint feature, mirroring VLESS-UDP). Per-datagram, no cover frames
+    /// on the uplink — UDP preserves packet boundaries so one frame wraps one
+    /// packet.
+    padding: CarrierPadding,
+    /// `Some` iff [`Self::padding`] is enabled: inbound datagrams run through
+    /// this decoder before SS decryption. `read_packet` is the only reader; the
+    /// `SyncMutex` keeps the type `Send` without holding the guard across the
+    /// decrypt await. One WS Binary frame carries exactly one padding frame
+    /// (the sender emits one per `send_packet`), so the decoder always lands on
+    /// a frame boundary — a `real_len = 0` cover frame decodes to nothing and
+    /// is skipped.
+    recv_decoder: Option<SyncMutex<PaddingDecoder>>,
     close_signal: watch::Sender<bool>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
@@ -86,17 +107,26 @@ impl UdpWsTransport {
         let (idle_timeout, keepalive) = carrier_liveness(ws_stream.is_h3(), keepalive_interval);
         let channel: Arc<dyn DatagramChannel> =
             Arc::new(from_ws_datagrams(ws_stream, idle_timeout, keepalive));
-        Self::from_channel(channel, cipher, password, source)
+        // Padding is a WS / XHTTP-carrier feature, read here (after the dial,
+        // inside the manager's `with_uplink_padding_scope`). The raw-QUIC
+        // datagram channel reaches `from_channel` directly with padding
+        // disabled, so raw QUIC stays plain — matching VLESS-UDP.
+        let padding = carrier_padding::effective_carrier_padding();
+        Self::from_channel(channel, cipher, password, source, padding)
     }
 
     /// Build an SS UDP transport over an arbitrary [`DatagramChannel`]. The
     /// channel is opaque — the SS layer cares only about send/recv of
-    /// already-encrypted datagrams.
+    /// already-encrypted datagrams. `padding` is resolved by the caller:
+    /// [`Self::from_websocket`] reads the per-dial carrier padding, while the
+    /// raw-QUIC datagram path passes [`CarrierPadding::disabled`] (raw QUIC is
+    /// not a WS carrier, so it is never framed — same scope as VLESS-UDP).
     pub fn from_channel(
         channel: Arc<dyn DatagramChannel>,
         cipher: CipherKind,
         password: &str,
         source: &'static str,
+        padding: CarrierPadding,
     ) -> Result<Self> {
         let master_key = cipher.derive_master_key(password)?;
         let (close_signal, _close_rx) = watch::channel(false);
@@ -112,6 +142,11 @@ impl UdpWsTransport {
                     last_server_packet_id: None,
                 })
             }),
+            recv_decoder: padding
+                .scheme
+                .is_enabled()
+                .then(|| SyncMutex::new(PaddingDecoder::new())),
+            padding,
             close_signal,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         })
@@ -137,6 +172,9 @@ impl UdpWsTransport {
                     last_server_packet_id: None,
                 })
             }),
+            // Raw socket is not a WS carrier — never framed.
+            padding: CarrierPadding::disabled(),
+            recv_decoder: None,
             close_signal,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         })
@@ -239,7 +277,27 @@ impl UdpWsTransport {
             encrypt_udp_packet(self.cipher, &self.master_key, payload)?
         };
         match &self.transport {
-            UdpTransport::Channel(chan) => chan.send_datagram(Bytes::from(packet)).await,
+            UdpTransport::Channel(chan) => {
+                // When padding is on, wrap the encrypted SS packet in one
+                // padding frame so the datagram size no longer tracks the SS
+                // payload; the server decodes it back before SS-UDP decrypt.
+                // One frame per packet (a datagram never exceeds the u16
+                // segment ceiling), mirroring VLESS-UDP. Otherwise hand it
+                // through unchanged (plain wire).
+                let datagram = if self.padding.scheme.is_enabled() {
+                    let mut out = Vec::with_capacity(packet.len() + 8);
+                    carrier_padding::frame_payload_into(
+                        self.padding.scheme,
+                        &packet,
+                        &mut rand::rng(),
+                        &mut out,
+                    );
+                    Bytes::from(out)
+                } else {
+                    Bytes::from(packet)
+                };
+                chan.send_datagram(datagram).await
+            },
             UdpTransport::Socket { socket } => {
                 if packet.len() > MAX_UDP_SOCKET_PACKET_SIZE {
                     warn!(
@@ -314,11 +372,28 @@ impl UdpWsTransport {
                 }
             },
             UdpTransport::Channel(chan) => {
-                let bytes = chan
-                    .recv_datagram()
-                    .await?
-                    .ok_or_else(|| anyhow::Error::from(crate::WsClosed))?;
-                self.decrypt_udp_bytes(&bytes).await.map(Bytes::from)
+                loop {
+                    let bytes = chan
+                        .recv_datagram()
+                        .await?
+                        .ok_or_else(|| anyhow::Error::from(crate::WsClosed))?;
+                    match &self.recv_decoder {
+                        // Padding off: the datagram is a bare SS packet.
+                        None => return self.decrypt_udp_bytes(&bytes).await.map(Bytes::from),
+                        // Padding on: strip the frame before SS decrypt. A
+                        // cover frame (`real_len = 0`) decodes to nothing, so
+                        // read the next datagram. The guard is dropped before
+                        // the decrypt await.
+                        Some(decoder) => {
+                            let mut decoded = Vec::with_capacity(bytes.len());
+                            decoder.lock().push(&bytes, &mut decoded);
+                            if decoded.is_empty() {
+                                continue;
+                            }
+                            return self.decrypt_udp_bytes(&decoded).await.map(Bytes::from);
+                        },
+                    }
+                }
             },
         }
     }

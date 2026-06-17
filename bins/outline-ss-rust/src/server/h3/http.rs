@@ -307,6 +307,10 @@ async fn handle_h3_request(
             protocol: Protocol::Http3,
             path: Arc::from(ws_req.path.as_str()),
             candidate_users: Arc::clone(&route.candidate_users),
+            // For a combined-SS base, `ws_req.path` was rewritten to the base
+            // above, so this resolves the same scheme as the TCP leg — the
+            // combined UDP leg pads iff the base path is listed.
+            padding: crate::server::transport::carrier_padding::scheme_for_path(&ws_req.path),
         });
         let result =
             handle_udp_h3_connection(socket, Arc::clone(&ctx.udp_server), route_ctx, resume).await;

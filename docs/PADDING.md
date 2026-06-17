@@ -72,8 +72,8 @@ operator turns padding on.
   operator can leave the global default off and pad only the uplinks pointing
   at their own servers (`padding = true`), or leave it on and exclude a
   specific uplink — e.g. a VLESS uplink to a third-party xray / sing-box server
-  — with `padding = false`. A padded dial (SS *and* VLESS, TCP *and* VLESS-UDP)
-  must point at a server path that is also padded.
+  — with `padding = false`. A padded dial (SS and VLESS, TCP and UDP alike)
+  must point at server path(s) that are also padded.
 
 ## Cover traffic
 
@@ -94,45 +94,43 @@ mechanism covers them all:
 
 - **SS-over-WebSocket** — h1, h2, **h3** (WebSocket-over-HTTP/3, RFC 9220).
 - **SS-over-XHTTP** — h1, h2, h3.
+- **SS-UDP over WebSocket / XHTTP** — padded **per datagram** (one frame wraps
+  one encrypted Shadowsocks packet); see *UDP* below.
 - **VLESS-over-WebSocket** — h1, h2, **h3**.
 - **VLESS-over-XHTTP** — h1, h2, h3.
 - **VLESS-UDP over WebSocket** — padded **per datagram** (one frame wraps one
-  packet). This is the one place UDP *is* padded — see below.
+  packet); see *UDP* below.
 
-VLESS multiplexes TCP and UDP on a *single* path (distinguished by a command
-byte inside the first frame), so the server cannot tell the two legs apart
-before it reads data. A padded VLESS path therefore has to pad the UDP leg too,
-or the server would feed an unframed UDP datagram into the decoder and corrupt
-the session. The codec wraps each datagram in exactly one frame, so packet
-boundaries survive.
+### UDP
 
-SS does not have this problem in *either* path mode, so its UDP leg always stays
-plain:
+Every UDP carrier is padded the same way, so there is no longer an asymmetry
+between SS-UDP and VLESS-UDP. Each datagram is wrapped in exactly one frame —
+the codec never splits a packet across datagrams, so packet boundaries survive —
+and the receiver runs each inbound datagram through a streaming decoder before
+the SS / VLESS layer parses it. A `real_len = 0` cover frame on a quiet downlink
+decodes to nothing and is dropped. The raw socket and the raw-QUIC datagram
+channel are *not* WS carriers and stay plain (see *Out of scope*).
 
-- **Split SS** — TCP and UDP are *separate* paths; the operator simply leaves
-  the UDP path out of `[padding] paths`.
-- **Combined SS** — TCP and UDP share one path, but the tcp/udp discriminator
-  rides in the URL token (WS) / session id (XHTTP), which the server decodes at
-  upgrade time — *before any data* — and dispatches the UDP leg to the unpadded
-  relay (`udp_upgrade_for_path` → `run_udp_relay`) while the TCP leg goes to the
-  padded `run_tcp_relay`. Both legs resolve the same base path, so listing the
-  combined base path in `[padding] paths` pads only the TCP leg; the UDP leg is
-  never fed into a decoder.
-
-VLESS has no such pre-data discriminator (its command byte is *inside* the
-encrypted-or-not data frame, not in the path/token), which is the one reason its
-UDP leg must be padded where SS's never is.
+- **VLESS-UDP** multiplexes TCP and UDP on a *single* path (distinguished by a
+  command byte *inside* the first frame), so the server cannot tell the legs
+  apart before it reads data — a padded VLESS path therefore *must* pad the UDP
+  leg too.
+- **Split SS** routes TCP and UDP on *separate* paths. List both in
+  `[padding] paths` to pad the whole uplink. The client's per-uplink switch is
+  all-or-nothing — a padded uplink frames every datagram it sends — so a padded
+  SS uplink expects both its TCP and UDP server paths to be padded.
+- **Combined SS** puts TCP and UDP on one base path, split by a hidden token
+  (WS) / session-id (XHTTP) bit the server decodes at upgrade time. Both legs
+  resolve the same base path, so listing the combined base path in
+  `[padding] paths` pads *both* legs: the UDP leg's `run_udp_relay` resolves the
+  same per-path scheme as the TCP leg's `run_tcp_relay`.
 
 **Out of scope:**
 
-- **SS-UDP over WS / XHTTP** — one Shadowsocks packet per frame; never padded
-  in either path mode (split: a path distinct from SS-TCP, left out of
-  `[padding] paths`; combined: shares the path with SS-TCP but the server
-  decodes the tcp/udp bit at upgrade time and routes the UDP leg to the unpadded
-  relay before reading data). Unlike VLESS-UDP, which shares its path with no
-  pre-data discriminator and so must be padded.
 - **Raw SS / VLESS over QUIC** (ALPN `ss` / `vless`) — a separate transport, not
   a WS carrier; QUIC has its own fingerprint surface (a separate future track).
+  The raw-QUIC datagram channel reaches the same `UdpWsTransport` as the WS
+  carrier, but it is built with padding disabled, so it stays plain.
 
 ## Configuration
 
@@ -141,7 +139,10 @@ UDP leg must be padded where SS's never is.
 ```toml
 [padding]
 enabled = true
-paths = ["/SECRET/tcp", "/SECRET/vless"] # WS/XHTTP carrier paths to pad (SS or VLESS)
+# WS/XHTTP carrier paths to pad. SS-TCP, SS-UDP, the combined SS base path, and
+# VLESS all ride the same per-path switch; list the SS-UDP path too to pad the
+# UDP leg uniformly.
+paths = ["/SECRET/tcp", "/SECRET/udp", "/SECRET/vless"]
 min_bytes = 0                            # min pad drawn per frame
 max_bytes = 256                          # max pad per frame (0 = no framing)
 cover = false                            # idle pad-only cover frames (downlink)

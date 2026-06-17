@@ -8,10 +8,12 @@ use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::WebSocket;
 use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use outline_wire::padding::{PaddingDecoder, PaddingScheme};
 use parking_lot::Mutex;
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, info, warn};
 
+use super::carrier_padding;
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::{
     crypto::{
@@ -77,6 +79,14 @@ pub(in crate::server) struct UdpRouteCtx {
     pub(in crate::server) protocol: Protocol,
     pub(in crate::server) path: Arc<str>,
     pub(in crate::server) candidate_users: Arc<[Arc<str>]>,
+    /// Carrier-padding scheme resolved for this path at handshake time
+    /// ([`carrier_padding::scheme_for_path`]). Disabled → plain wire (the
+    /// unpadded carrier stays byte-for-byte identical). When enabled, inbound
+    /// datagrams are decoded before SS decryption and downlink datagrams are
+    /// framed by the response sender. For a combined-SS path the UDP leg
+    /// resolves the same base path as the TCP leg, so listing the combined base
+    /// path in `[padding] paths` pads both legs uniformly.
+    pub(in crate::server) padding: PaddingScheme,
 }
 
 /// Per-session mutable state shared across concurrent datagram tasks.
@@ -191,7 +201,12 @@ async fn handle_udp_datagram_common<Msg>(
     session: &UdpSessionState,
     data: Bytes,
     outbound_tx: mpsc::Sender<Msg>,
-    make_response_sender: fn(mpsc::Sender<Msg>, Protocol, AppProtocol) -> UdpResponseSender,
+    make_response_sender: fn(
+        mpsc::Sender<Msg>,
+        Protocol,
+        AppProtocol,
+        PaddingScheme,
+    ) -> UdpResponseSender,
 ) -> Result<()>
 where
     Msg: Send + 'static,
@@ -303,7 +318,7 @@ where
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
     let response_sender =
-        make_response_sender(outbound_tx, route.protocol, AppProtocol::Shadowsocks);
+        make_response_sender(outbound_tx, route.protocol, AppProtocol::Shadowsocks, route.padding);
 
     // First-frame resume: if this stream advertised a pending
     // `X-Outline-Resume` ID, attempt the lookup and re-attach every
@@ -411,10 +426,20 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         Transport::Udp,
         route.protocol,
         AppProtocol::Shadowsocks,
-        // UDP-over-WS carries one SS packet per frame; carrier padding (a
-        // TCP-stream feature) does not apply, so no cover traffic here.
-        None,
+        // Idle cover traffic on the downlink when this path opts into it. Covers
+        // SS-UDP-over-WS and SS-UDP-over-XHTTP alike (both ride this writer); a
+        // quiet datagram channel still produces random-sized writes. `None` on
+        // an unpadded path keeps the plain wire unchanged.
+        carrier_padding::cover_for_path(&route.path),
     ));
+
+    // Strip carrier padding from inbound datagrams before SS decryption when
+    // this path pads. One WS Binary frame carries exactly one padding frame
+    // (the client emits one per packet), so the decoder always lands on a frame
+    // boundary; a `real_len = 0` cover frame decodes to nothing and is dropped.
+    // Decoding runs here in the relay loop — serially, before the per-datagram
+    // relay future is spawned — so the decoder needs no cross-task locking.
+    let mut padding_decoder = route.padding.is_enabled().then(PaddingDecoder::new);
 
     let mut loop_result = Ok(());
     loop {
@@ -431,6 +456,22 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
                 };
                 match T::classify(frame) {
                     WsFrame::Binary(data) => {
+                        // Strip the padding frame (when this path pads) before
+                        // anything else touches the datagram. A cover frame
+                        // (real_len = 0) decodes to nothing — drop it and read
+                        // the next frame. The decoded buffer is the bare SS
+                        // packet the relay expects.
+                        let data = match padding_decoder.as_mut() {
+                            Some(decoder) => {
+                                let mut decoded = Vec::with_capacity(data.len());
+                                decoder.push(&data, &mut decoded);
+                                if decoded.is_empty() {
+                                    continue;
+                                }
+                                Bytes::from(decoded)
+                            },
+                            None => data,
+                        };
                         server.metrics.record_websocket_binary_frame(
                             Transport::Udp,
                             route.protocol,

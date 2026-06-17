@@ -175,7 +175,7 @@ NAT-записи вытесняются через `tuning.udp_nat_idle_timeout_
 - **Config-синхронизация, без согласования.** Нет on-wire capability-бита — соответствующий клиент `outline-ws-rust` тоже обязан включить `[padding]`, иначе его обычные кадры попадут в padding-декодер и сессия упадёт. По умолчанию выключено, поэтому wire байт-в-байт неизменен, пока обе стороны не включат опцию.
 - **Cover-трафик.** При `cover = true` downlink отправляет pad-only кадры на простаивающем соединении со случайным интервалом (`cover_jitter_min_ms` … `cover_jitter_max_ms`), чтобы тишина не выдавала тайминг.
 
-Покрывает SS- и VLESS-over-WebSocket (h1/h2/h3) и -over-XHTTP одинаково; VLESS-UDP паддится по датаграмме (делит единый путь VLESS), а SS-UDP остаётся чистым. Полный справочник: [`docs/PADDING.ru.md`](../../docs/PADDING.ru.md); параметры — в блоке `[padding]` в `config.toml`.
+Покрывает SS- и VLESS-over-WebSocket (h1/h2/h3) и -over-XHTTP одинаково, а UDP паддится по датаграмме на любом WS-носителе — и SS-UDP (split: внесите его путь; combined: общий base-path), и VLESS-UDP; вне scope остаётся только raw SS / VLESS поверх QUIC. Полный справочник: [`docs/PADDING.ru.md`](../../docs/PADDING.ru.md); параметры — в блоке `[padding]` в `config.toml`.
 
 ## Модель пользователей
 
