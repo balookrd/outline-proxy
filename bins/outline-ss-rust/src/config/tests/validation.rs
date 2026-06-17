@@ -52,10 +52,29 @@ fn base_config() -> Config {
         access_key: Default::default(),
         tuning: super::super::TuningProfile::LARGE,
         session_resumption: Default::default(),
+        padding: Default::default(),
         http_fallback: None,
         sni_fallback: None,
         reverse_tunnel: None,
     }
+}
+
+#[test]
+fn padding_enabled_requires_non_empty_paths() {
+    let mut cfg = base_config();
+    cfg.padding.enabled = true;
+    cfg.padding.paths.clear();
+    let error = cfg.validate().unwrap_err().to_string();
+    assert!(error.contains("paths"), "expected a paths requirement, got: {error}");
+}
+
+#[test]
+fn padding_enabled_with_paths_validates() {
+    let mut cfg = base_config();
+    cfg.padding.enabled = true;
+    cfg.padding.paths = vec!["/tcp".to_owned()];
+    cfg.validate()
+        .expect("padding with a non-empty paths list should validate");
 }
 
 #[test]

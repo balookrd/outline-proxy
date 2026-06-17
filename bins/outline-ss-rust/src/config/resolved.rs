@@ -4,7 +4,8 @@ use anyhow::Result;
 
 use super::{
     CipherKind, ConfigError, ControlConfig, DashboardConfig, HttpFallbackConfig, SniFallbackConfig,
-    TlsCertEntry, TuningProfile, UserEntry, file::SessionResumptionSection,
+    TlsCertEntry, TuningProfile, UserEntry,
+    file::{PaddingSection, SessionResumptionSection},
 };
 
 /// ALPN protocols recognised on the HTTP/3 QUIC endpoint.
@@ -139,6 +140,10 @@ pub struct Config {
     /// disabled; opt in via `[session_resumption]` in the config file.
     /// See `docs/SESSION-RESUMPTION.md`.
     pub session_resumption: SessionResumptionConfig,
+    /// Resolved carrier-padding knobs (WS/XHTTP record-size obfuscation +
+    /// cover traffic, applied per-path). Defaults to disabled; opt in via
+    /// `[padding]`. Config-synchronised — both ends must match.
+    pub padding: PaddingConfig,
     /// Reverse-proxy unmatched HTTP requests to an upstream backend.
     /// `None` keeps the legacy 404 behaviour. Configure via
     /// `[http_fallback]` in the config file.
@@ -257,6 +262,90 @@ impl SessionResumptionConfig {
                 .downlink_buffer_bytes
                 .unwrap_or(defaults.downlink_buffer_bytes),
         }
+    }
+}
+
+/// Public snapshot of the `[padding]` config, defaults applied. Mirrors
+/// `PaddingSection`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaddingConfig {
+    pub enabled: bool,
+    pub min_bytes: u16,
+    pub max_bytes: u16,
+    pub cover: bool,
+    pub cover_jitter_min_ms: u64,
+    pub cover_jitter_max_ms: u64,
+    /// Carrier paths padding applies to. A connection is padded only when its
+    /// matched path is in this set, so third-party clients (Happ, Outline,
+    /// xray, sing-box) on other paths stay on the plain SS-over-WS/XHTTP wire.
+    /// Empty when disabled.
+    pub paths: Vec<String>,
+}
+
+impl Default for PaddingConfig {
+    fn default() -> Self {
+        // Disabled by default; the light profile (0..256) applies once
+        // enabled. Cover off by default — opt in alongside the rolled-out
+        // wire-protocol partner, like session-resumption v2.
+        Self {
+            enabled: false,
+            min_bytes: 0,
+            max_bytes: 256,
+            cover: false,
+            cover_jitter_min_ms: 250,
+            cover_jitter_max_ms: 1500,
+            paths: Vec::new(),
+        }
+    }
+}
+
+// `scheme` / `cover_enabled` are consumed by the WS/XHTTP data plane in the
+// follow-up integration commit; `from_section` is already used by the loader.
+#[allow(dead_code)]
+impl PaddingConfig {
+    pub(super) fn from_section(section: PaddingSection) -> Self {
+        let d = Self::default();
+        let min_bytes = section.min_bytes.unwrap_or(d.min_bytes);
+        // A max below min is clamped up, so the range is always well-formed
+        // (mirrors `PaddingScheme::new`).
+        let max_bytes = section.max_bytes.unwrap_or(d.max_bytes).max(min_bytes);
+        let cover_jitter_min_ms = section.cover_jitter_min_ms.unwrap_or(d.cover_jitter_min_ms);
+        let cover_jitter_max_ms = section
+            .cover_jitter_max_ms
+            .unwrap_or(d.cover_jitter_max_ms)
+            .max(cover_jitter_min_ms);
+        Self {
+            enabled: section.enabled.unwrap_or(d.enabled),
+            min_bytes,
+            max_bytes,
+            cover: section.cover.unwrap_or(d.cover),
+            cover_jitter_min_ms,
+            cover_jitter_max_ms,
+            paths: section.paths.unwrap_or_default(),
+        }
+    }
+
+    /// The wire-codec scheme this resolves to. Disabled → no framing, the
+    /// carrier stays byte-for-byte unchanged; the transport keys off
+    /// [`PaddingScheme::is_enabled`].
+    pub fn scheme(&self) -> outline_wire::padding::PaddingScheme {
+        if self.enabled {
+            outline_wire::padding::PaddingScheme::new(self.min_bytes, self.max_bytes)
+        } else {
+            outline_wire::padding::PaddingScheme::disabled()
+        }
+    }
+
+    /// Whether to emit idle cover frames: padding on *and* cover requested.
+    pub fn cover_enabled(&self) -> bool {
+        self.enabled && self.cover
+    }
+
+    /// Whether padding applies to a connection whose matched carrier path is
+    /// `path`. Only listed paths are padded; everything else (third-party
+    /// clients) stays on the plain wire.
+    pub fn applies_to(&self, path: &str) -> bool {
+        self.enabled && self.paths.iter().any(|p| p == path)
     }
 }
 

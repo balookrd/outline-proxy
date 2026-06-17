@@ -59,6 +59,7 @@ outline-routing = { path = "../../crates/outline-routing" }
 outline-transport = { path = "../../crates/outline-transport" }
 outline-tun = { path = "../../crates/outline-tun", default-features = false, optional = true }
 outline-uplink = { path = "../../crates/outline-uplink", default-features = false }
+outline-wire = { path = "../../crates/outline-wire" }
 parking_lot = "0.12"
 # QUIC server endpoint for the reverse-tunnel listener. Gated under `h3`
 # (which already pulls the QUIC client stack) so `--no-default-features`

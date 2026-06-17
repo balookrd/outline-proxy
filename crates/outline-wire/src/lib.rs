@@ -12,6 +12,7 @@
 //! callers control the clock source.
 
 pub mod cipher;
+pub mod padding;
 pub mod resume;
 pub mod ss2022;
 pub mod target;
