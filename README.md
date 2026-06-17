@@ -31,7 +31,7 @@ pair of both per uplink.
 
 | Payload \ Carrier | WebSocket (h1/h2/h3) | XHTTP (h1/h2/h3) | raw QUIC |
 |---|:---:|:---:|:---:|
-| **Shadowsocks** (AEAD / SS2022) | ✅ | ✅ (forward TCP + UDP) | ✅ |
+| **Shadowsocks** (AEAD / SS2022) | ✅ | ✅ | ✅ |
 | **VLESS** | ✅ | ✅ | ✅ |
 
 XHTTP is a `packet-up` / `stream-one` protocol. VLESS rides it for TCP + UDP on
