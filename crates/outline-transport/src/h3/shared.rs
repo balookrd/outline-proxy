@@ -14,7 +14,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use http::{Method, Request};
 use once_cell::sync::OnceCell;
-use rustls::ClientConfig;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tracing::info;
@@ -208,45 +207,12 @@ impl crate::shared_cache::CachedEntry for SharedH3Connection {
     }
 }
 
-// ── TLS / QUIC client configs (initialised once) ─────────────────────────────
-
-static H3_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
-static H3_QUIC_CLIENT_CONFIG: OnceLock<quinn::ClientConfig> = OnceLock::new();
-
-/// Returns a shared, lazily-initialised TLS config for H3 connections.
-/// Building the config (parsing root certificates) is expensive; doing it once
-/// avoids the cost on every connection attempt and every warm-standby refill.
-fn h3_client_tls_config() -> Arc<ClientConfig> {
-    Arc::clone(H3_CLIENT_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"h3"])))
-}
-
-/// Returns a cloned QUIC client config built once from the cached TLS config.
-fn h3_quic_client_config() -> quinn::ClientConfig {
-    H3_QUIC_CLIENT_CONFIG
-        .get_or_init(|| {
-            let tls = h3_client_tls_config();
-            let quic = quinn::crypto::rustls::QuicClientConfig::try_from((*tls).clone())
-                .expect("H3 TLS ALPN config is always QUIC-compatible");
-            let mut config = quinn::ClientConfig::new(Arc::new(quic));
-            let mut transport = quinn::TransportConfig::default();
-            // Send QUIC PING frames so NAT mappings stay alive and the server
-            // detects dead connections promptly.  Tighter max_idle_timeout
-            // (30s, down from 120s) so a silently-dropped QUIC path on
-            // consumer-router conntrack is torn down within ~30s instead of 2
-            // minutes, letting the shared-connection cache evict the dead
-            // entry and reconnects succeed promptly.  PING every 10s keeps
-            // NAT mappings fresh well inside that budget.
-            transport.keep_alive_interval(Some(Duration::from_secs(10)));
-            transport.max_idle_timeout(Some(
-                Duration::from_secs(30)
-                    .try_into()
-                    .expect("valid H3 QUIC client idle timeout"),
-            ));
-            config.transport_config(Arc::new(transport));
-            config
-        })
-        .clone()
-}
+// The H3 QUIC/TLS client config lives in `crate::quic` (`h3_quic_client_config`),
+// shared with the XHTTP-over-H3 carrier and keyed by dial fingerprint so the H3
+// ClientHello mimics the same browser family as the WS / XHTTP carriers, with
+// the same per-process keep-alive / idle jitter (8–12 s / 28–35 s). The jitter
+// range keeps the ~30 s idle budget that tears a silently-dropped QUIC path off
+// consumer-router conntrack, while QUIC PING (8–12 s) keeps NAT mappings fresh.
 
 // ── Shared endpoints ──────────────────────────────────────────────────────────
 
@@ -418,7 +384,7 @@ async fn connect_h3_connection(
     cache_key: Option<H3ConnectionKey>,
 ) -> Result<SharedH3Connection> {
     let bind_addr = bind_addr_for(server_addr);
-    let client_config = h3_quic_client_config();
+    let client_config = crate::quic::h3_quic_client_config();
 
     // For fwmark connections the socket must be bound with the mark set before
     // connect, so each stream needs its own UDP socket and endpoint.  For all

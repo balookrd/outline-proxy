@@ -36,6 +36,25 @@ fn quic_param_seed() -> u16 {
     *QUIC_PARAM_SEED.get_or_init(rand::random::<u16>)
 }
 
+/// Apply the shared per-process keep-alive / idle-timeout jitter to a client
+/// QUIC transport config, so different client instances produce distinct timing
+/// fingerprints. The same seed drives the raw-QUIC and H3 carriers, so both
+/// move together rather than splitting into two stable fingerprints. Ranges
+/// keep `idle_timeout > 2 × keep_alive_interval`:
+///   keep_alive:   8..=12 s  (seed bits [2:0])
+///   idle_timeout: 28..=35 s  (seed bits [6:3])
+pub(crate) fn apply_quic_jitter(transport: &mut quinn::TransportConfig) {
+    let seed = quic_param_seed();
+    let keepalive_secs = 8u64 + (seed as u64 % 5);
+    let idle_secs = 28u64 + ((seed >> 4) as u64 % 8);
+    transport.keep_alive_interval(Some(Duration::from_secs(keepalive_secs)));
+    transport.max_idle_timeout(Some(
+        Duration::from_secs(idle_secs)
+            .try_into()
+            .expect("valid client idle timeout"),
+    ));
+}
+
 // ── Shared per-AF endpoints ─────────────────────────────────────────────────
 
 static QUIC_CLIENT_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::new();
@@ -93,10 +112,11 @@ static QUIC_CLIENT_CONFIGS: OnceLock<
     Mutex<HashMap<(Option<TlsFingerprint>, Vec<u8>), (quinn::ClientConfig, Instant)>>,
 > = OnceLock::new();
 
-/// Returns a cloned QUIC client config for `alpn`. Keepalive / idle
-/// timeout match the H3 path: PING every 10s, drop after 30s of silence.
-/// QUIC datagrams are enabled (RFC 9221) — required by VLESS-UDP and
-/// SS-UDP over raw QUIC.
+/// Returns a cloned QUIC client config for `alpn` (raw VLESS / SS). Keep-alive
+/// and idle timeout carry the shared per-process jitter ([`apply_quic_jitter`]);
+/// QUIC datagrams are enabled (RFC 9221) — required by VLESS-UDP and SS-UDP over
+/// raw QUIC. The H3 carrier uses [`h3_quic_client_config`] instead (same jitter,
+/// datagrams off).
 ///
 /// For the legacy `vless` / `ss` ALPNs the rustls config offers BOTH
 /// the MTU-aware sibling (e.g. `vless-mtu`) AND the requested base
@@ -127,20 +147,7 @@ pub(crate) fn quic_client_config(alpn: &[u8]) -> quinn::ClientConfig {
         .expect("rustls ALPN config is always QUIC-compatible");
     let mut config = quinn::ClientConfig::new(Arc::new(quic_tls));
     let mut transport = quinn::TransportConfig::default();
-    // Jitter keep-alive and idle timeout with a stable per-process offset so
-    // that different client instances produce distinct timing fingerprints.
-    // Ranges are chosen so idle_timeout > 2 × keep_alive_interval always holds:
-    //   keep_alive: 8..=12 s  (seed bits [2:0])
-    //   idle_timeout: 28..=35 s  (seed bits [6:3])
-    let seed = quic_param_seed();
-    let keepalive_secs = 8u64 + (seed as u64 % 5);
-    let idle_secs = 28u64 + ((seed >> 4) as u64 % 8);
-    transport.keep_alive_interval(Some(Duration::from_secs(keepalive_secs)));
-    transport.max_idle_timeout(Some(
-        Duration::from_secs(idle_secs)
-            .try_into()
-            .expect("valid client idle timeout"),
-    ));
+    apply_quic_jitter(&mut transport);
     transport.datagram_receive_buffer_size(Some(64 * 1024));
     transport.datagram_send_buffer_size(64 * 1024);
     // VLESS / SS UDP over QUIC carry application UDP datagrams as QUIC
@@ -158,6 +165,49 @@ pub(crate) fn quic_client_config(alpn: &[u8]) -> quinn::ClientConfig {
     transport.mtu_discovery_config(Some(mtu));
     config.transport_config(Arc::new(transport));
     guard.insert(key, (config.clone(), Instant::now()));
+    config
+}
+
+/// Cache of the H3 QUIC client config, keyed by dial fingerprint with a build
+/// timestamp — shared by the WS-over-H3 and XHTTP-over-H3 carriers (both dial
+/// `h3` under `dial_plan`'s fingerprint scope). Keyed on the fingerprint for the
+/// same reason as [`QUIC_CLIENT_CONFIGS`] (so the family reaches the H3
+/// ClientHello and the first dial's choice does not stick) and rebuilt on the
+/// [`crate::tls::SESSION_TICKET_ROTATION_INTERVAL`] cadence to rotate the
+/// session-ticket store.
+static H3_QUIC_CLIENT_CONFIGS: OnceLock<
+    Mutex<HashMap<Option<TlsFingerprint>, (quinn::ClientConfig, Instant)>>,
+> = OnceLock::new();
+
+/// QUIC client config for the H3 carrier (`h3` ALPN). Same per-process jitter
+/// as [`quic_client_config`] but, like a browser's HTTP/3 stack, leaves QUIC
+/// datagrams disabled — enabling them would add `max_datagram_frame_size` to
+/// the Initial, a tell the raw-QUIC path accepts (it needs datagrams for UDP)
+/// but the H3 carrier should not carry. `build_client_config` reads the dial
+/// fingerprint and the test-root override, so a fresh process that installs the
+/// override before the first dial still captures it.
+pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
+    let fp = crate::fingerprint_profile::current_dial_fingerprint();
+    let cache = H3_QUIC_CLIENT_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock();
+    if let Some((existing, created_at)) = guard.get(&fp)
+        && created_at.elapsed() < crate::tls::SESSION_TICKET_ROTATION_INTERVAL
+    {
+        return existing.clone();
+    }
+    let tls = crate::tls::build_client_config(&[b"h3"]);
+    let quic_tls = quinn::crypto::rustls::QuicClientConfig::try_from((*tls).clone())
+        .expect("h3 rustls config is always QUIC-compatible");
+    let mut config = quinn::ClientConfig::new(Arc::new(quic_tls));
+    let mut transport = quinn::TransportConfig::default();
+    apply_quic_jitter(&mut transport);
+    // The H3 carrier's UDP rides QUIC *streams*, not datagrams, so disable
+    // datagram receive — otherwise quinn's default advertises
+    // `max_datagram_frame_size` in the Initial, a transport-parameter a browser
+    // HTTP/3 stack would not send (raw QUIC keeps it; it needs datagrams).
+    transport.datagram_receive_buffer_size(None);
+    config.transport_config(Arc::new(transport));
+    guard.insert(fp, (config.clone(), Instant::now()));
     config
 }
 
