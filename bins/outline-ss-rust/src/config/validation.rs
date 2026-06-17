@@ -47,6 +47,12 @@ impl Config {
                 bail!("dashboard.listen must differ from h3_listen");
             }
         }
+        if self.padding.enabled && self.padding.paths.is_empty() {
+            bail!(
+                "[padding] enabled requires a non-empty `paths` list — the carrier paths to \
+                 pad; third-party clients on other paths stay on the plain wire"
+            );
+        }
         let users = self.user_entries()?;
         let mut tcp_paths = BTreeSet::new();
         let mut udp_paths = BTreeSet::new();

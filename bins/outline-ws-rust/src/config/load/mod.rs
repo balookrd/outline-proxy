@@ -5,10 +5,12 @@ use tokio::fs;
 
 use super::args::Args;
 use super::compat::normalize_outline_section;
-use super::schema::{ConfigFile, ControlSection, DashboardSection, ReverseListenerSection};
+use super::schema::{
+    ConfigFile, ControlSection, DashboardSection, PaddingSection, ReverseListenerSection,
+};
 use super::types::{
     AppConfig, ControlConfig, DashboardConfig, DashboardInstanceConfig, MetricsConfig,
-    ReverseListenerConfig, ReversePeerConfig, ReversePeerKind,
+    PaddingConfig, ReverseListenerConfig, ReversePeerConfig, ReversePeerKind,
 };
 
 mod auth;
@@ -136,6 +138,11 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let reverse_listener =
         load_reverse_listener(file.as_ref().and_then(|f| f.reverse_listener.as_ref()), config_dir)?;
 
+    // Default = disabled, which keeps WS / XHTTP wire shape byte-identical.
+    // Config-synchronised with the server's `[padding]`; no CLI override
+    // (it must match the server, so it lives in the config file only).
+    let padding = resolve_padding(file.as_ref().and_then(|f| f.padding.as_ref()));
+
     Ok(AppConfig {
         listen,
         socks5_auth,
@@ -154,7 +161,32 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         tcp_timeouts,
         fingerprint_profile,
         reverse_listener,
+        padding,
     })
+}
+
+/// Resolve `[padding]` into runtime config. Absent → disabled (wire
+/// unchanged). A `max_bytes` below `min_bytes`, or a `cover_jitter_max_ms`
+/// below the min, is clamped up so the ranges stay well-formed (mirrors the
+/// server's `PaddingConfig::from_section`).
+fn resolve_padding(section: Option<&PaddingSection>) -> PaddingConfig {
+    let d = PaddingConfig::default();
+    let Some(s) = section else { return d };
+    let min_bytes = s.min_bytes.unwrap_or(d.min_bytes);
+    let max_bytes = s.max_bytes.unwrap_or(d.max_bytes).max(min_bytes);
+    let cover_jitter_min_ms = s.cover_jitter_min_ms.unwrap_or(d.cover_jitter_min_ms);
+    let cover_jitter_max_ms = s
+        .cover_jitter_max_ms
+        .unwrap_or(d.cover_jitter_max_ms)
+        .max(cover_jitter_min_ms);
+    PaddingConfig {
+        enabled: s.enabled.unwrap_or(d.enabled),
+        min_bytes,
+        max_bytes,
+        cover: s.cover.unwrap_or(d.cover),
+        cover_jitter_min_ms,
+        cover_jitter_max_ms,
+    }
 }
 
 /// Resolve `[reverse_listener]` into runtime config. `None` when absent or

@@ -88,6 +88,30 @@ pub(crate) struct ConfigFile {
     /// `outline-ss-rust` peers behind NAT and route SOCKS5/TUN traffic out
     /// through them. `None` keeps the dial-only client model.
     pub(super) reverse_listener: Option<ReverseListenerSection>,
+    /// Adaptive carrier padding applied to WS / XHTTP dials (record-size
+    /// obfuscation + optional cover traffic). Absent / `enabled = false`
+    /// keeps the wire byte-identical. Config-synchronised: the server must
+    /// run the matching `[padding]` block. See docs for the trade-offs.
+    pub(super) padding: Option<PaddingSection>,
+}
+
+/// `[padding]` block (client side). Mirrors the server's `[padding]`; both
+/// ends must agree since there is no on-wire capability bit.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PaddingSection {
+    /// Master switch. Default `false`.
+    pub(super) enabled: Option<bool>,
+    /// Minimum pad bytes per frame. Default 0.
+    pub(super) min_bytes: Option<u16>,
+    /// Maximum pad bytes per frame (clamped up to `min_bytes`). Default 256.
+    pub(super) max_bytes: Option<u16>,
+    /// Emit pad-only cover frames while idle. Default `false`.
+    pub(super) cover: Option<bool>,
+    /// Idle gap before a cover frame, randomised in this range (ms).
+    /// Defaults 250 / 1500.
+    pub(super) cover_jitter_min_ms: Option<u64>,
+    pub(super) cover_jitter_max_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
