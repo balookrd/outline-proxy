@@ -58,10 +58,12 @@ use super::super::resumption::{
     OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext,
 };
 use super::super::scratch::ScratchBuf;
+use super::carrier_padding;
 use super::resume_headers::ResumeContext;
 use super::sink;
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
+use outline_wire::padding::{PaddingDecoder, PaddingScheme};
 
 /// Process-wide services shared by every TCP relay session.
 pub(in crate::server) struct WsTcpServerCtx {
@@ -91,6 +93,12 @@ pub(in crate::server) struct WsTcpRouteCtx {
     /// user. Cloned from [`crate::server::state::TransportRoute`] so all
     /// connections on the path share one cache.
     pub(in crate::server) peer_user_cache: Arc<crate::server::peer_user_cache::PeerUserCache>,
+    /// Carrier-padding scheme resolved for this path at handshake time
+    /// ([`carrier_padding::scheme_for_path`]). Disabled (the default for
+    /// unlisted paths / disabled config) keeps the wire byte-for-byte
+    /// identical; enabled makes the relay frame the downlink and decode the
+    /// uplink. Config-synchronised — the client on this path must match.
+    pub(in crate::server) padding: PaddingScheme,
 }
 
 /// Relay-task return type used by the TCP-WS path. Carries either a
@@ -160,6 +168,12 @@ struct WsTcpRelayState {
     /// this session and the ring is never allocated.
     downlink_ring:
         Option<Arc<parking_lot::Mutex<crate::server::resumption::downlink_ring::DownlinkRing>>>,
+    /// `Some` when carrier padding is on for this path: each inbound binary
+    /// frame is run through the streaming decoder (stripping pad, recovering
+    /// the SS ciphertext) before it reaches the AEAD decryptor. `None` keeps
+    /// the plain path. State is held across frames because padding-frame
+    /// boundaries are unrelated to WS / h2 / h3 DATA boundaries.
+    padding_decoder: Option<PaddingDecoder>,
 }
 
 struct WsTcpFrameOutput<'a, Msg> {
@@ -169,7 +183,7 @@ struct WsTcpFrameOutput<'a, Msg> {
 }
 
 impl WsTcpRelayState {
-    fn new(resume: ResumeContext) -> Self {
+    fn new(resume: ResumeContext, padding: PaddingScheme) -> Self {
         Self {
             upstream_writer: None,
             upstream_to_client: None,
@@ -193,6 +207,9 @@ impl WsTcpRelayState {
             // capacity > 0). On resume hit it is restored from
             // `ParkedTcp::downlink_ring`.
             downlink_ring: None,
+            // One decoder per connection direction, allocated only when the
+            // path pads. Disabled scheme → no decoder → plain path.
+            padding_decoder: padding.is_enabled().then(PaddingDecoder::new),
         }
     }
 }
@@ -202,6 +219,12 @@ struct ChannelSink<Msg: Send + 'static> {
     make_binary: fn(Bytes) -> Msg,
     make_close: fn() -> Msg,
     metrics: Arc<Metrics>,
+    /// Downlink carrier-padding scheme for this session (cloned from the
+    /// route). Disabled → ciphertext is sent verbatim (plain wire); enabled →
+    /// each ciphertext buffer is wrapped in padding frames before it hits the
+    /// WS writer, breaking the record-size correlation. The client decodes
+    /// symmetrically (config-synchronised gate).
+    padding: PaddingScheme,
 }
 
 impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg> {
@@ -214,8 +237,20 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
         let used = self.tx.max_capacity().saturating_sub(self.tx.capacity());
         self.metrics
             .observe_ws_data_channel_fill(Transport::Tcp, AppProtocol::Shadowsocks, used);
+        let payload: Bytes = if self.padding.is_enabled() {
+            let mut out = Vec::with_capacity(ciphertext.len() + 8);
+            carrier_padding::frame_payload_into(
+                self.padding,
+                &ciphertext,
+                &mut rand::rng(),
+                &mut out,
+            );
+            out.into()
+        } else {
+            ciphertext
+        };
         self.tx
-            .send((self.make_binary)(ciphertext))
+            .send((self.make_binary)(payload))
             .await
             .map_err(|error| anyhow!("failed to queue encrypted websocket frame: {error}"))
     }
@@ -244,6 +279,9 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
         Transport::Tcp,
         route.protocol,
         AppProtocol::Shadowsocks,
+        // Idle cover traffic on the downlink when this path opts into it.
+        // Covers SS-over-WS and SS-over-XHTTP alike (both ride this writer).
+        carrier_padding::cover_for_path(&route.path),
     ));
 
     let mut decryptor = AeadStreamDecryptor::new(route.users.clone());
@@ -256,7 +294,7 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
         decryptor.set_user_hint(Some(hint));
     }
     let mut plaintext_buffer = ScratchBuf::take();
-    let mut state = WsTcpRelayState::new(resume);
+    let mut state = WsTcpRelayState::new(resume, route.padding);
     let mut client_closed = false;
 
     // Periodic WebSocket Ping sent from server to client.
@@ -543,7 +581,18 @@ where
         "in",
         data.len(),
     );
-    decryptor.feed_ciphertext(&data);
+    // Strip carrier padding before the AEAD layer when this path pads. The
+    // decoder is fragmentation-tolerant, so a WS frame may carry any slice of
+    // the padded stream; a cover frame (real_len = 0) recovers no bytes and is
+    // dropped transparently here.
+    match state.padding_decoder.as_mut() {
+        Some(decoder) => {
+            let mut unpadded = Vec::with_capacity(data.len());
+            decoder.push(&data, &mut unpadded);
+            decryptor.feed_ciphertext(&unpadded);
+        },
+        None => decryptor.feed_ciphertext(&data),
+    }
     match decryptor.drain_plaintext(plaintext_buffer) {
         Ok(()) => {},
         Err(CryptoError::UnknownUser) => {
@@ -767,6 +816,7 @@ where
             let sink_metrics = Arc::clone(&server.metrics);
             let relay_user_id = Arc::clone(&user_id);
             let protocol = route.protocol;
+            let sink_padding = route.padding;
             let cancel = Arc::new(Notify::new());
             let cancel_for_task = Arc::clone(&cancel);
             let parked_reader = parked.upstream_reader;
@@ -778,6 +828,7 @@ where
                         make_binary,
                         make_close,
                         metrics: sink_metrics,
+                        padding: sink_padding,
                     },
                     &mut encryptor,
                     relay_metrics,
@@ -871,6 +922,7 @@ where
         let sink_metrics = Arc::clone(&server.metrics);
         let relay_user_id = Arc::clone(&user_id);
         let protocol = route.protocol;
+        let sink_padding = route.padding;
         // Cancel-notify is registered unconditionally so park-on-drop
         // can harvest the reader. When resumption is disabled the
         // notify is simply never fired and the relay loop runs in its
@@ -898,6 +950,7 @@ where
                     make_binary,
                     make_close,
                     metrics: sink_metrics,
+                    padding: sink_padding,
                 },
                 &mut encryptor,
                 relay_metrics,

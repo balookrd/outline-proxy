@@ -18,7 +18,7 @@ pub use loader::AppMode;
 #[cfg(test)]
 pub use loader::default_http_root_realm;
 pub use resolved::{
-    AccessKeyConfig, Config, H3Alpn, ReverseProtocol, ReverseTunnelEndpoint,
+    AccessKeyConfig, Config, H3Alpn, PaddingConfig, ReverseProtocol, ReverseTunnelEndpoint,
     SessionResumptionConfig,
 };
 pub use sni::{SniBackend, SniFallbackConfig, SniMatcher, TlsCertEntry};

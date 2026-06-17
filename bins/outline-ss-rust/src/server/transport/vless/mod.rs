@@ -57,6 +57,9 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
         Transport::Tcp,
         route.protocol,
         AppProtocol::Vless,
+        // Carrier padding currently targets the Shadowsocks carriers only;
+        // VLESS keeps the plain wire, so no cover traffic.
+        None,
     ));
 
     let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);

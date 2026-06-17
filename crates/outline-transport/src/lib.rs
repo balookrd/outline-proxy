@@ -101,6 +101,7 @@ use tokio::net::TcpStream;
 // without taking a direct dependency on the inner module path.
 pub use resumption::{ResumeCache, SessionId, global_resume_cache};
 
+pub mod carrier_padding;
 #[cfg(feature = "cert-check")]
 pub mod cert_check;
 pub mod collections;
@@ -280,6 +281,12 @@ pub use fingerprint_profile::{
     current_strategy as current_fingerprint_profile_strategy,
     init_strategy as init_fingerprint_profile_strategy,
 };
+
+// Carrier padding: application-layer record-size obfuscation on the WS / XHTTP
+// carriers (anti TLS-in-TLS). Wired once at startup; default disabled keeps the
+// wire byte-for-byte identical to pre-padding builds. Config-synchronised with
+// the server, which enables it per-path.
+pub use carrier_padding::{CarrierPadding, carrier_padding, init_carrier_padding};
 
 // Transport lifetime guards — published because the uplink crate pairs a
 // `UpstreamTransportGuard` to every connection it hands out.
