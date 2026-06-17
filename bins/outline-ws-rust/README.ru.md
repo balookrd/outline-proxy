@@ -772,7 +772,7 @@ Warm-standby соединения учитывают активное состо
 - **Config-синхронизация, без согласования.** Сервер обязан включить `[padding]` на соответствующем carrier-пути (`outline-ss-rust` `[padding] paths`), иначе padded-кадры сломают его декодер. По умолчанию выключено (wire неизменен).
 - **Cover-трафик.** При `cover = true` uplink отправляет pad-only кадры на простаивающем соединении со случайным интервалом (`cover_jitter_min_ms` … `cover_jitter_max_ms`).
 
-Покрывает SS-over-WebSocket (h1/h2/h3) и SS-over-XHTTP одинаково; UDP-носители не padding'уются. Параметры — в блоке `[padding]` в `config.toml`.
+Покрывает SS-over-WebSocket (h1/h2/h3) и SS-over-XHTTP одинаково; UDP-носители не padding'уются. Полный справочник: [`docs/PADDING.ru.md`](../../docs/PADDING.ru.md); параметры — в блоке `[padding]` в `config.toml`.
 
 ## Выбор аплинка и runtime-поведение
 
