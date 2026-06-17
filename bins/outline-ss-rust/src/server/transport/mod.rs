@@ -24,6 +24,7 @@ use super::h3::vendored::H3WsError;
 use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
 
+pub(in crate::server) mod carrier_padding;
 mod fallback;
 mod proxy_protocol;
 mod raw_quic;
@@ -114,12 +115,14 @@ async fn tcp_upgrade_for_path(
     // time; the actual control-frame emits gate on the resume hit.
     let echo = resume.response_echo();
     let mut response = ws.on_upgrade(move |socket| async move {
+        let padding = carrier_padding::scheme_for_path(&path);
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
             protocol,
             path,
             candidate_users: Arc::clone(&route.candidate_users),
             peer_user_cache: Arc::clone(&route.peer_user_cache),
+            padding,
         };
         let result =
             tcp::handle_tcp_connection(socket, server, route_ctx, resume, Some(peer_addr)).await;

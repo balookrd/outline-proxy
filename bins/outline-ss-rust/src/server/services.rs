@@ -65,6 +65,10 @@ pub(super) struct Built {
 pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     let metrics = Metrics::new(config.as_ref());
     metrics.start_process_memory_sampler();
+    // Wire the process-wide carrier-padding policy (per-path; default disabled
+    // keeps the wire byte-for-byte identical for unlisted paths and for
+    // deployments that never opt in). Config-synchronised with the client.
+    super::transport::carrier_padding::init(config.padding.clone());
     let user_routes = build_user_routes(config)?;
     let vless_user_routes = build_vless_user_routes(config)?;
     let raw_vless_users = build_raw_vless_users(config)?;

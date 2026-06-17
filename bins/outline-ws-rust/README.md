@@ -767,6 +767,16 @@ When a timeout fires, the error is treated as an upstream runtime failure: the s
 
 **SOCKS5 negotiation abort classification:** when a local SOCKS5 client (TUN interceptor such as Sing-box or Clash) aborts the handshake early — closing the TCP connection after the method-negotiation greeting but before or during the CONNECT request — the resulting `early eof` / `failed to read request header` errors are classified as expected client disconnects and logged at `debug` level rather than `warn`. This is normal behaviour during reconnect storms when the TUN interceptor flushes its connection pool.
 
+## Carrier Padding
+
+Optional application-layer padding for the WebSocket / XHTTP dials — the client half of the server's `[padding]` feature. Each Shadowsocks chunk is wrapped in a length-delimited `real_len | pad_len | real | pad` frame so the outer TLS record size no longer tracks the payload size, defeating the record-size correlation TLS-in-TLS classifiers key on.
+
+- **Global.** Unlike the server's per-path knob, this client is always "ours", so `[padding]` here pads every WS / XHTTP dial when enabled.
+- **Config-synchronised, not negotiated.** The server must enable `[padding]` on the matching carrier path (`outline-ss-rust` `[padding] paths`) or the padded frames break its decoder. Off by default (wire unchanged).
+- **Cover traffic.** With `cover = true` the uplink emits pad-only frames on an idle connection at a jittered interval (`cover_jitter_min_ms` … `cover_jitter_max_ms`).
+
+Covers SS-over-WebSocket (h1/h2/h3) and SS-over-XHTTP alike; UDP carriers are not padded. See the `[padding]` block in `config.toml`.
+
 ## Uplink Selection and Runtime Behavior
 
 Each uplink has its own:

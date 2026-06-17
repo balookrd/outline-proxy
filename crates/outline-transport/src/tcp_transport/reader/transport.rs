@@ -4,6 +4,7 @@ use crate::{TryAgain, WsClosed};
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use futures_util::stream::SplitStream;
+use outline_wire::padding::PaddingDecoder;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::OwnedReadHalf;
@@ -74,6 +75,12 @@ pub struct WsReadTransport {
     pub(super) ctrl_tx: mpsc::Sender<Message>,
     pub(super) buffer: Vec<u8>,
     pub(super) diag: WsReadDiag,
+    /// `Some` when carrier padding is on: each inbound binary frame is run
+    /// through the streaming decoder (which strips pad and yields the original
+    /// SS bytes into `buffer`) instead of copied verbatim. `None` keeps the
+    /// plain path. Padding-frame boundaries are unrelated to WS/h2/h3 DATA
+    /// boundaries, so the decoder state is held across frames here.
+    pub(super) padding: Option<PaddingDecoder>,
 }
 
 impl ReadTransport for WsReadTransport {
@@ -154,7 +161,13 @@ impl ReadTransport for WsReadTransport {
             };
 
             match next {
-                Message::Binary(bytes) => self.buffer.extend_from_slice(&bytes),
+                Message::Binary(bytes) => match self.padding.as_mut() {
+                    // Padding on: strip the framing, append recovered SS bytes.
+                    // A cover frame (real_len = 0) yields nothing and is dropped
+                    // here transparently.
+                    Some(decoder) => decoder.push(&bytes, &mut self.buffer),
+                    None => self.buffer.extend_from_slice(&bytes),
+                },
                 Message::Close(frame) => {
                     // RFC 6455 code 1013 "Try Again Later" means the server
                     // could not reach the upstream target but the request

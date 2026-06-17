@@ -411,6 +411,9 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         Transport::Udp,
         route.protocol,
         AppProtocol::Shadowsocks,
+        // UDP-over-WS carries one SS packet per frame; carrier padding (a
+        // TCP-stream feature) does not apply, so no cover traffic here.
+        None,
     ));
 
     let mut loop_result = Ok(());

@@ -685,12 +685,18 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
         },
         XhttpRoute::Ss(route) => {
             let server = Arc::clone(&services.tcp_server);
+            // SS-over-XHTTP TCP rides the same `run_tcp_relay` as SS-over-WS
+            // (via the `XhttpDuplex` WsSocket adapter), so padding is resolved
+            // and applied here exactly like the WS path — the relay's decode
+            // (uplink) and `ChannelSink` encode (downlink) cover both carriers.
+            let padding = crate::server::transport::carrier_padding::scheme_for_path(&base_path);
             let route_ctx = WsTcpRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
                 path: base_path,
                 candidate_users: Arc::clone(&route.candidate_users),
                 peer_user_cache: Arc::clone(&route.peer_user_cache),
+                padding,
             };
             let metrics_session = server.metrics.open_websocket_session(
                 Transport::Tcp,
