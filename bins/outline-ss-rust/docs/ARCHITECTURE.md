@@ -83,7 +83,7 @@ Prometheus metrics are served from a separate optional listener so that operatio
 
 ## Camouflage Layers
 
-Two independent fallback knobs make the public listener look indistinguishable from a regular web frontend to passive scanners. Both are off by default.
+Independent knobs make the public listener look indistinguishable from a regular web frontend to passive scanners. Two are *fallback* knobs that protect the listener's unmatched surface (L4 SNI dispatch, L7 HTTP fallback); a third, *carrier padding*, hardens the wire shape of the matched proxy carriers themselves. All are off by default.
 
 ### L4: SNI dispatch (`[sni_fallback]`)
 
@@ -120,6 +120,10 @@ Two independent toggles select which inbound listeners the fallback applies to:
 PROXY-protocol headers emitted on the upstream TCP socket carry `Transport=STREAM` (`0x11` / `0x21`) for the h1/h2 inbound and `Transport=DGRAM` (`0x12` / `0x22`) for the h3 inbound, so the backend can tell the origin transport. v1 has no UDP form on the wire, so `proxy_protocol = "v1"` is rejected at config-load time when `apply_to_h3 = true` — use `"v2"` or disable PROXY-protocol.
 
 Both fallbacks share `transport::proxy_protocol::encode_proxy_protocol` so v1/v2 wire form is identical between L4 splices and L7 connects. The destination address is the inbound listener's bind addr (TCP listener for `apply_to_h1`, h3 listener for `apply_to_h3`), degrading to UNKNOWN (v1) / UNSPEC (v2) when bound to `0.0.0.0` / `[::]`.
+
+### Wire shape: carrier padding (`[padding]`)
+
+Where the two fallback knobs protect the listener's *unmatched* surface, carrier padding hardens the *matched* carriers themselves. Each Shadowsocks chunk on a padded WS / XHTTP path is wrapped in a `real_len | pad_len | real | pad` frame (codec in `crates/outline-wire/src/padding.rs`) before it reaches the outer TLS record layer, so the encrypted record size no longer tracks the Shadowsocks payload size — breaking the record-size correlation that "proxy-inside-TLS" (TLS-in-TLS) classifiers key on. The relay decodes inbound frames before the AEAD layer (`handle_tcp_binary_frame`) and frames the downlink in `ChannelSink`. Per-path (`[padding] paths`), config-synchronised with the client (no on-wire capability bit, off by default), with optional idle cover traffic on a quiet connection. It rides the `Message` layer shared by every WS / XHTTP carrier, so one mechanism covers SS-over-WS (h1/h2/h3) and SS-over-XHTTP alike; UDP and raw-QUIC are out of scope. Full reference: [`../../../docs/PADDING.md`](../../../docs/PADDING.md).
 
 ## Request Routing
 

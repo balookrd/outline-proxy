@@ -775,7 +775,7 @@ Optional application-layer padding for the WebSocket / XHTTP dials — the clien
 - **Config-synchronised, not negotiated.** The server must enable `[padding]` on the matching carrier path (`outline-ss-rust` `[padding] paths`) or the padded frames break its decoder. Off by default (wire unchanged).
 - **Cover traffic.** With `cover = true` the uplink emits pad-only frames on an idle connection at a jittered interval (`cover_jitter_min_ms` … `cover_jitter_max_ms`).
 
-Covers SS-over-WebSocket (h1/h2/h3) and SS-over-XHTTP alike; UDP carriers are not padded. See the `[padding]` block in `config.toml`.
+Covers SS-over-WebSocket (h1/h2/h3) and SS-over-XHTTP alike; UDP carriers are not padded. Full reference: [`docs/PADDING.md`](../../docs/PADDING.md); the `[padding]` block in `config.toml` lists the knobs.
 
 ## Uplink Selection and Runtime Behavior
 
