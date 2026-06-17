@@ -41,6 +41,8 @@ pub struct ServerConfig {
     user_vless_id: Option<String>,
     session_resumption: bool,
     downlink_buffer_bytes: Option<usize>,
+    /// `(paths, cover)` for the `[padding]` block when carrier padding is on.
+    padding: Option<(Vec<String>, bool)>,
     tls: Option<(String, String)>,
     h3: Option<(SocketAddr, Vec<String>)>,
 }
@@ -59,6 +61,7 @@ impl ServerConfig {
             user_vless_id: None,
             session_resumption: false,
             downlink_buffer_bytes: None,
+            padding: None,
             tls: None,
             h3: None,
         }
@@ -92,6 +95,13 @@ impl ServerConfig {
     pub fn with_session_resumption(mut self, downlink_buffer_bytes: usize) -> Self {
         self.session_resumption = true;
         self.downlink_buffer_bytes = Some(downlink_buffer_bytes);
+        self
+    }
+
+    /// Enable carrier padding on the given carrier paths. `cover` toggles idle
+    /// cover frames (with a fast 50–100 ms jitter so tests do not wait long).
+    pub fn with_padding(mut self, paths: &[&str], cover: bool) -> Self {
+        self.padding = Some((paths.iter().map(|p| p.to_string()).collect(), cover));
         self
     }
 
@@ -132,6 +142,22 @@ impl ServerConfig {
             if let Some(n) = self.downlink_buffer_bytes {
                 let _ = writeln!(s, "downlink_buffer_bytes = {n}");
             }
+        }
+
+        if let Some((paths, cover)) = &self.padding {
+            let list = paths
+                .iter()
+                .map(|p| format!("\"{p}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(s, "\n[padding]");
+            let _ = writeln!(s, "enabled = true");
+            let _ = writeln!(s, "paths = [{list}]");
+            let _ = writeln!(s, "min_bytes = 16");
+            let _ = writeln!(s, "max_bytes = 256");
+            let _ = writeln!(s, "cover = {cover}");
+            let _ = writeln!(s, "cover_jitter_min_ms = 50");
+            let _ = writeln!(s, "cover_jitter_max_ms = 100");
         }
 
         let _ = writeln!(s, "\n[[users]]");
@@ -402,6 +428,8 @@ pub struct ClientConfig {
     metrics: Option<SocketAddr>,
     state_path: String,
     probe: ProbeSpec,
+    /// `Some(cover)` when carrier padding is on (global on the client side).
+    padding: Option<bool>,
     groups: Vec<GroupSpec>,
 }
 
@@ -413,8 +441,16 @@ impl ClientConfig {
             metrics: None,
             state_path: path_str(state_path),
             probe,
+            padding: None,
             groups: Vec::new(),
         }
+    }
+
+    /// Enable carrier padding (global). `cover` toggles idle cover frames with
+    /// a fast 50–100 ms jitter to keep tests quick.
+    pub fn with_padding(mut self, cover: bool) -> Self {
+        self.padding = Some(cover);
+        self
     }
 
     pub fn with_control(mut self, listen: SocketAddr, token: &str) -> Self {
@@ -436,6 +472,16 @@ impl ClientConfig {
         let mut s = String::new();
         // Top-level keys must precede every [table] header in TOML.
         let _ = writeln!(s, "state_path = \"{}\"", self.state_path);
+
+        if let Some(cover) = self.padding {
+            let _ = writeln!(s, "\n[padding]");
+            let _ = writeln!(s, "enabled = true");
+            let _ = writeln!(s, "min_bytes = 16");
+            let _ = writeln!(s, "max_bytes = 256");
+            let _ = writeln!(s, "cover = {cover}");
+            let _ = writeln!(s, "cover_jitter_min_ms = 50");
+            let _ = writeln!(s, "cover_jitter_max_ms = 100");
+        }
 
         let _ = writeln!(s, "\n[socks5]");
         let _ = writeln!(s, "listen = \"{}\"", self.socks5);

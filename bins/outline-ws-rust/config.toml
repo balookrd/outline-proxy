@@ -4,6 +4,24 @@
 # Override when the config directory is not writable by the process, e.g.:
 # state_path = "/var/lib/outline-ws-rust/state.toml"
 
+# ── Carrier padding (anti TLS-in-TLS record-size correlation) ────────────────
+# Wraps each Shadowsocks chunk on every WS / XHTTP dial in a length-delimited
+# padding frame so the outer TLS record size no longer tracks the payload size,
+# breaking the record-size correlation TLS-in-TLS classifiers key on.
+#
+# Config-synchronised with the server, NOT negotiated: the server must enable
+# `[padding]` on the matching carrier path (`outline-ss-rust` `[padding] paths`)
+# or the padded frames break its decoder. This client knob is global — when
+# enabled, every WS / XHTTP dial is padded. Disabled by default (wire unchanged).
+#
+# [padding]
+# enabled = true
+# min_bytes = 0
+# max_bytes = 256              # max pad per frame (0 = no framing)
+# cover = false                # idle pad-only cover frames (uplink)
+# cover_jitter_min_ms = 250
+# cover_jitter_max_ms = 1500
+
 # ── TCP session timeouts ─────────────────────────────────────────────────────
 # post_client_eof_downstream_secs: after the client half-closes (sent full
 # request body), how long the downstream half-flow is allowed to keep

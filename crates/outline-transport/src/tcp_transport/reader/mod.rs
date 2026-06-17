@@ -7,11 +7,13 @@ mod tests;
 pub use transport::WsReadDiag;
 
 use crate::UpstreamTransportGuard;
+use crate::carrier_padding;
 use crate::downlink_replay::{
     self, DownlinkReplayOutcome, FLAG_REPLAY_TRUNCATED,
     FRAME_HEADER_LEN_V1 as DOWNLINK_REPLAY_HEADER_LEN_V1,
 };
 use anyhow::{Result, anyhow, bail};
+use outline_wire::padding::PaddingDecoder;
 use outline_wire::resume::{FRAME_LEN_V1, ParseResult, parse_v1};
 use shadowsocks_crypto::{
     AeadCipher, CipherKind, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce,
@@ -107,6 +109,10 @@ impl TcpShadowsocksReader<WsReadTransport> {
                 ctrl_tx,
                 buffer: Vec::new(),
                 diag: WsReadDiag::default(),
+                padding: carrier_padding::carrier_padding()
+                    .scheme
+                    .is_enabled()
+                    .then(PaddingDecoder::new),
             },
             cipher,
             master_key: mk,

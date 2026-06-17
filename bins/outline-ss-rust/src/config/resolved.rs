@@ -299,9 +299,6 @@ impl Default for PaddingConfig {
     }
 }
 
-// `scheme` / `cover_enabled` are consumed by the WS/XHTTP data plane in the
-// follow-up integration commit; `from_section` is already used by the loader.
-#[allow(dead_code)]
 impl PaddingConfig {
     pub(super) fn from_section(section: PaddingSection) -> Self {
         let d = Self::default();
@@ -346,6 +343,18 @@ impl PaddingConfig {
     /// clients) stays on the plain wire.
     pub fn applies_to(&self, path: &str) -> bool {
         self.enabled && self.paths.iter().any(|p| p == path)
+    }
+
+    /// The padding scheme a connection on `path` should use: the configured
+    /// range when padding [`Self::applies_to`] this path, otherwise
+    /// [`PaddingScheme::disabled`] (no framing — the plain wire). This is the
+    /// per-path resolver the transport handlers call at handshake time.
+    pub fn scheme_for_path(&self, path: &str) -> outline_wire::padding::PaddingScheme {
+        if self.applies_to(path) {
+            self.scheme()
+        } else {
+            outline_wire::padding::PaddingScheme::disabled()
+        }
     }
 }
 

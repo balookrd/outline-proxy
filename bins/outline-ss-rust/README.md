@@ -165,6 +165,16 @@ When `[server.h3]` advertises additional ALPN protocols, the same QUIC endpoint 
 
 Configure with `alpn = ["h3", "vless", "ss"]` under `[server.h3]`. Datagrams must be enabled on the QUIC endpoint (the server enables them automatically when `h3_listen` is set).
 
+## Carrier Padding
+
+Optional application-layer padding for the WebSocket / XHTTP carriers that breaks the TLS-record-size correlation "proxy-inside-TLS" (TLS-in-TLS) classifiers key on. Each Shadowsocks chunk on a padded path is wrapped in a `real_len | pad_len | real | pad` frame before it reaches the outer TLS record layer, so the encrypted record size no longer tracks the Shadowsocks payload size — the same idea as AnyTLS's padding, hardened into the carriers already shipped here instead of adopting a second proxy protocol.
+
+- **Per-path.** Only the carrier paths listed in `[padding] paths` are padded; every other path keeps the plain Shadowsocks-over-WS / XHTTP wire, so third-party clients (Happ, Outline, xray, sing-box) on other paths are unaffected.
+- **Config-synchronised, not negotiated.** There is no on-wire capability bit — the matching `outline-ws-rust` client must enable `[padding]` too, or its plain frames are fed into the padding decoder and the session fails. Off by default, so the wire stays byte-for-byte identical until both ends opt in.
+- **Cover traffic.** With `cover = true` the downlink emits pad-only frames on an idle connection at a jittered interval (`cover_jitter_min_ms` … `cover_jitter_max_ms`), so silence does not leak timing.
+
+Covers SS-over-WebSocket (h1/h2/h3) and SS-over-XHTTP alike; UDP carriers are not padded. See the `[padding]` block in `config.toml` for the knobs.
+
 ## User Model
 
 Each user can define:

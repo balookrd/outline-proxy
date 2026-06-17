@@ -275,6 +275,9 @@ async fn handle_h3_request(
             path: Arc::from(ws_req.path.as_str()),
             candidate_users: Arc::clone(&route.candidate_users),
             peer_user_cache: Arc::clone(&route.peer_user_cache),
+            padding: crate::server::transport::carrier_padding::scheme_for_path(
+                ws_req.path.as_str(),
+            ),
         };
         let result = handle_tcp_h3_connection(
             socket,

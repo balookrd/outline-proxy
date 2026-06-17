@@ -210,6 +210,28 @@ ws_path_udp = "/udp"
 # backend = "127.0.0.1:11443"     # catch-all for SNIs outside *.example.com
 # proxy_protocol = "v1"
 
+# ── Carrier padding (anti TLS-in-TLS record-size correlation) ────────────────
+# Wraps each Shadowsocks chunk on the listed WS / XHTTP carrier paths in a
+# length-delimited padding frame, so the size of the buffer handed to the outer
+# TLS record no longer tracks the Shadowsocks payload size. This breaks the
+# record-size correlation that "proxy-inside-TLS" / TLS-in-TLS classifiers key
+# on (the goal AnyTLS's padding pursues, done in-house on the carriers we ship).
+#
+# Config-synchronised, NOT negotiated on the wire: enable the matching client
+# (`outline-ws-rust` `[padding]`) too, or its plain frames get fed into the
+# padding decoder and the session fails. Only the listed `paths` are padded;
+# every other path keeps the plain wire, so third-party clients (Happ, Outline,
+# xray, sing-box) on other paths are unaffected. Disabled by default.
+#
+# [padding]
+# enabled = true
+# paths = ["/SECRET/tcp", "/SECRET/ss"]   # WS/XHTTP carrier paths to pad
+# min_bytes = 0                            # min pad drawn per frame
+# max_bytes = 256                          # max pad per frame (0 = no framing)
+# cover = false                            # idle pad-only cover frames (downlink)
+# cover_jitter_min_ms = 250                # idle-gap floor before a cover frame
+# cover_jitter_max_ms = 1500               # idle-gap ceiling
+
 [access_keys]
 # Used for generated Outline access keys.
 # For IPv6 hosts, use brackets:

@@ -2,13 +2,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use bytes::Bytes;
 use tokio::sync::mpsc;
 
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 
 use super::super::constants::WS_CONTROL_FLUSH_INTERVAL_SECS;
+use super::carrier_padding::CoverParams;
 use super::ws_socket::WsSocket;
 
+/// Far-future deadline parked on the cover timer when cover is disabled (the
+/// `if cover.is_some()` select guard keeps the arm inert; this just avoids an
+/// `Option<Sleep>` dance). One day is comfortably beyond any real session.
+const COVER_DISABLED_PARK: Duration = Duration::from_secs(86_400);
+
+// The metrics-context args (transport/protocol/app_protocol) are a cohesive
+// group already threaded this way across the transport layer; cover adds one
+// more. Grouping them would be a cross-cutting refactor beyond this change.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_ws_writer<T: WsSocket>(
     mut writer: T::Writer,
     mut outbound_ctrl_rx: mpsc::Receiver<T::Msg>,
@@ -17,6 +28,7 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
     transport_kind: Transport,
     protocol: Protocol,
     app_protocol: AppProtocol,
+    cover: Option<CoverParams>,
 ) -> Result<()> {
     let result = async {
         // Periodically drain any control-frame responses the transport
@@ -35,6 +47,20 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
         flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         flush_tick.tick().await; // skip the immediate first tick
 
+        // Idle cover timer. Parked far in the future when cover is off (the
+        // `if cover.is_some()` guard keeps the arm inert); when on, it is armed
+        // to the next jittered gap and reset after every real data write, so a
+        // cover frame fires only on a genuinely quiet channel — never
+        // interleaved with live traffic. A cover frame is a `Binary` message
+        // (`real_len = 0`), so it is H3-safe: unlike a server-originated Ping
+        // it cannot escalate to `H3_INTERNAL_ERROR`, and the peer's decoder
+        // drops it transparently.
+        let cover_sleep = tokio::time::sleep(COVER_DISABLED_PARK);
+        tokio::pin!(cover_sleep);
+        if let Some(c) = &cover {
+            cover_sleep.as_mut().reset(tokio::time::Instant::now() + c.next_gap());
+        }
+
         let mut ctrl_open = true;
         loop {
             if ctrl_open {
@@ -45,23 +71,41 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
                         None => ctrl_open = false,
                     },
                     msg = outbound_data_rx.recv() => match msg {
-                        Some(m) => send_data::<T>(
-                            &mut writer, m, &metrics, transport_kind, protocol, app_protocol,
-                        ).await?,
+                        Some(m) => {
+                            send_data::<T>(
+                                &mut writer, m, &metrics, transport_kind, protocol, app_protocol,
+                            ).await?;
+                            arm_cover(cover_sleep.as_mut(), &cover);
+                        },
                         None => break,
                     },
                     _ = flush_tick.tick() => T::flush(&mut writer).await?,
+                    _ = cover_sleep.as_mut(), if cover.is_some() => {
+                        send_cover::<T>(
+                            &mut writer, &metrics, transport_kind, protocol, app_protocol, &cover,
+                        ).await?;
+                        arm_cover(cover_sleep.as_mut(), &cover);
+                    },
                 }
             } else {
                 tokio::select! {
                     biased;
                     msg = outbound_data_rx.recv() => match msg {
-                        Some(m) => send_data::<T>(
-                            &mut writer, m, &metrics, transport_kind, protocol, app_protocol,
-                        ).await?,
+                        Some(m) => {
+                            send_data::<T>(
+                                &mut writer, m, &metrics, transport_kind, protocol, app_protocol,
+                            ).await?;
+                            arm_cover(cover_sleep.as_mut(), &cover);
+                        },
                         None => break,
                     },
                     _ = flush_tick.tick() => T::flush(&mut writer).await?,
+                    _ = cover_sleep.as_mut(), if cover.is_some() => {
+                        send_cover::<T>(
+                            &mut writer, &metrics, transport_kind, protocol, app_protocol, &cover,
+                        ).await?;
+                        arm_cover(cover_sleep.as_mut(), &cover);
+                    },
                 }
             }
         }
@@ -70,6 +114,39 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
     .await;
     T::finish(&mut writer).await;
     result
+}
+
+/// Re-arms the cover timer to the next jittered idle gap. No-op when cover is
+/// off (the timer stays parked and the select guard inert).
+fn arm_cover(sleep: std::pin::Pin<&mut tokio::time::Sleep>, cover: &Option<CoverParams>) {
+    if let Some(c) = cover {
+        sleep.reset(tokio::time::Instant::now() + c.next_gap());
+    }
+}
+
+/// Emits one pad-only cover frame on the downlink. Routed through `send_data`
+/// so it shows up in the binary-frame "out" metric exactly like real traffic.
+async fn send_cover<T: WsSocket>(
+    writer: &mut T::Writer,
+    metrics: &Metrics,
+    transport_kind: Transport,
+    protocol: Protocol,
+    app_protocol: AppProtocol,
+    cover: &Option<CoverParams>,
+) -> Result<()> {
+    if let Some(c) = cover {
+        let frame = Bytes::from(c.frame());
+        send_data::<T>(
+            writer,
+            T::binary_msg(frame),
+            metrics,
+            transport_kind,
+            protocol,
+            app_protocol,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Records the binary-frame metric (when applicable) and writes a single

@@ -167,6 +167,16 @@ NAT-записи вытесняются через `tuning.udp_nat_idle_timeout_
 
 Включается через `alpn = ["h3", "vless", "ss"]` в секции `[server.h3]`. Datagram'ы должны быть включены на QUIC-эндпоинте — сервер делает это автоматически, когда `h3_listen` сконфигурирован.
 
+## Carrier-padding
+
+Опциональный application-layer padding для WebSocket / XHTTP носителей, ломающий корреляцию по размеру TLS-записей, на которую опираются классификаторы «proxy-inside-TLS» (TLS-in-TLS). Каждый Shadowsocks-chunk на padded-пути оборачивается в кадр `real_len | pad_len | real | pad` до попадания во внешний TLS-record, поэтому размер зашифрованной записи больше не повторяет размер Shadowsocks-payload — та же идея, что у padding AnyTLS, но встроенная в уже имеющиеся носители вместо внедрения второго прокси-протокола.
+
+- **Per-path.** Padding'уются только carrier-пути, перечисленные в `[padding] paths`; остальные пути сохраняют чистый Shadowsocks-over-WS / XHTTP wire, поэтому сторонние клиенты (Happ, Outline, xray, sing-box) на других путях не затронуты.
+- **Config-синхронизация, без согласования.** Нет on-wire capability-бита — соответствующий клиент `outline-ws-rust` тоже обязан включить `[padding]`, иначе его обычные кадры попадут в padding-декодер и сессия упадёт. По умолчанию выключено, поэтому wire байт-в-байт неизменен, пока обе стороны не включат опцию.
+- **Cover-трафик.** При `cover = true` downlink отправляет pad-only кадры на простаивающем соединении со случайным интервалом (`cover_jitter_min_ms` … `cover_jitter_max_ms`), чтобы тишина не выдавала тайминг.
+
+Покрывает SS-over-WebSocket (h1/h2/h3) и SS-over-XHTTP одинаково; UDP-носители не padding'уются. Параметры — в блоке `[padding]` в `config.toml`.
+
 ## Модель пользователей
 
 Каждый пользователь может задать:

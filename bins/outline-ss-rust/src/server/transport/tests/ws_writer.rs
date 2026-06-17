@@ -20,8 +20,10 @@ use crate::server::tests::sample_config;
 
 use crate::server::constants::WS_CONTROL_FLUSH_INTERVAL_SECS;
 
+use super::super::carrier_padding::CoverParams;
 use super::super::ws_socket::{WsFrame, WsSocket};
 use super::super::ws_writer::run_ws_writer;
+use outline_wire::padding::PaddingScheme;
 
 #[derive(Default)]
 struct Counters {
@@ -140,6 +142,7 @@ async fn writer_flushes_periodically_without_sending_on_quiet_channel() {
         Transport::Udp,
         Protocol::Http1,
         AppProtocol::Shadowsocks,
+        None,
     ));
 
     // Advance virtual time past three flush intervals.
@@ -158,6 +161,52 @@ async fn writer_flushes_periodically_without_sending_on_quiet_channel() {
 
     // Closing both channels lets the writer task observe end-of-stream and
     // return cleanly.
+    drop(ctrl_tx);
+    drop(data_tx);
+    let _ = task.await;
+}
+
+/// With cover enabled, a quiet channel must emit pad-only cover frames on the
+/// jittered idle timer — `send` fires repeatedly even though no real data is
+/// ever queued. (Contrast the test above, where cover is `None` and `send`
+/// stays at zero.)
+#[tokio::test(start_paused = true)]
+async fn writer_emits_cover_frames_on_quiet_channel_when_enabled() {
+    let counters = Arc::new(Counters::default());
+    let writer = MockWriter(Arc::clone(&counters));
+
+    let (ctrl_tx, ctrl_rx) = mpsc::channel::<MockMsg>(8);
+    let (data_tx, data_rx) = mpsc::channel::<MockMsg>(8);
+
+    // Fixed 100 ms gap (min == max) makes the cadence deterministic under
+    // paused virtual time.
+    let cover = Some(CoverParams {
+        scheme: PaddingScheme::new(8, 8),
+        jitter_min_ms: 100,
+        jitter_max_ms: 100,
+    });
+
+    let task = tokio::spawn(run_ws_writer::<MockWs>(
+        writer,
+        ctrl_rx,
+        data_rx,
+        test_metrics(),
+        Transport::Tcp,
+        Protocol::Http1,
+        AppProtocol::Shadowsocks,
+        cover,
+    ));
+
+    // Five 100 ms gaps should fire roughly five cover frames; assert a safe
+    // lower bound to stay robust against scheduling slop.
+    tokio::time::sleep(Duration::from_millis(550)).await;
+
+    assert!(
+        counters.send.load(Ordering::SeqCst) >= 3,
+        "cover frames must be sent on an idle channel when cover is enabled (got {})",
+        counters.send.load(Ordering::SeqCst),
+    );
+
     drop(ctrl_tx);
     drop(data_tx);
     let _ = task.await;
