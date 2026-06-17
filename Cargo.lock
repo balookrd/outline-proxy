@@ -1825,6 +1825,7 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "quinn",
+ "quinn-proto",
  "rand",
  "ring",
  "rustls",
