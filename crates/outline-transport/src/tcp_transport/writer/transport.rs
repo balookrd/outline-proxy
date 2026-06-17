@@ -51,7 +51,7 @@ impl WsWriteTransport {
     pub(super) fn spawn(sink: WsSink) -> (Self, mpsc::Sender<Message>) {
         let (data_tx, mut data_rx) = mpsc::channel::<Message>(WS_DATA_CHANNEL_CAPACITY);
         let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(WS_CTRL_CHANNEL_CAPACITY);
-        let padding = carrier_padding::carrier_padding();
+        let padding = carrier_padding::effective_carrier_padding();
         // Idle cover traffic on the uplink, when enabled. `None` keeps the
         // task on its legacy data/ctrl-only path. SS-over-WS and
         // SS-over-XHTTP (stream-one) both ride this writer, so cover covers

@@ -97,6 +97,12 @@ struct WsVlessUdpDialer {
     /// per mux instance regardless of how many per-target sessions are
     /// dialed during the H3 outage.
     downgrade_reported: AtomicBool,
+    /// Per-uplink carrier-padding override applied around every per-target
+    /// dial. The mux dials lazily (on the first packet to a target), outside
+    /// the manager's acquire scope, so a dial-scoped task-local would not
+    /// survive — the override is captured here and re-applied per dial.
+    /// `None` inherits the global `[padding]` default.
+    padding_override: Option<bool>,
 }
 
 impl VlessUdpMuxDial for WsVlessUdpDialer {
@@ -108,7 +114,7 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
         // re-attach its parked `Arc<UdpSocket>` instead of binding a
         // fresh source port.
         let resume_request = self.resume_ids.read().get(target).copied();
-        let (raw_transport, issued, downgraded_from) = VlessUdpWsTransport::connect_with_resume(
+        let connect = VlessUdpWsTransport::connect_with_resume(
             &self.dns_cache,
             &self.url,
             self.mode,
@@ -119,11 +125,19 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
             self.source,
             self.keepalive_interval,
             resume_request,
-        )
-        .await
-        .with_context(|| TransportOperation::Connect {
-            target: format!("vless udp session to {target}"),
-        })?;
+        );
+        // Apply the per-uplink padding override around the dial + transport
+        // build (VLESS-UDP pads per-datagram, and `connect_with_resume` builds
+        // the transport, which reads `effective_carrier_padding`). `None`
+        // inherits the global default.
+        let dial_result = match self.padding_override {
+            Some(on) => crate::carrier_padding::with_uplink_padding_override(on, connect).await,
+            None => connect.await,
+        };
+        let (raw_transport, issued, downgraded_from) =
+            dial_result.with_context(|| TransportOperation::Connect {
+                target: format!("vless udp session to {target}"),
+            })?;
         if let Some(id) = issued {
             self.resume_ids.write().insert(target.clone(), id);
         }
@@ -211,6 +225,7 @@ impl VlessUdpSessionMux {
             resume_ids: SyncRwLock::new(HashMap::new()),
             on_downgrade: None,
             downgrade_reported: AtomicBool::new(false),
+            padding_override: None,
         };
         Self {
             core: VlessUdpMuxCore::new(dialer, limits, "vless udp", source),
@@ -227,6 +242,17 @@ impl VlessUdpSessionMux {
     /// is silently clamped to H2 — the "vless/ws/h3 stays put" symptom.
     pub fn with_on_downgrade(mut self, hook: Option<VlessUdpDowngradeNotifier>) -> Self {
         self.core.dial.on_downgrade = hook;
+        self
+    }
+
+    /// Set the per-uplink carrier-padding override applied around every
+    /// per-target dial. `None` (default) inherits the global `[padding]`
+    /// default; `Some(true)`/`Some(false)` force padding on/off for this
+    /// uplink's VLESS-UDP sessions. The uplink manager sets this from the
+    /// uplink's `padding` config so a lazy per-target dial — which runs
+    /// outside the dial-scoped override — still pads correctly.
+    pub fn with_padding_override(mut self, padding: Option<bool>) -> Self {
+        self.core.dial.padding_override = padding;
         self
     }
 

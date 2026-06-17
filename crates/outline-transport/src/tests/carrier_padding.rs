@@ -119,3 +119,57 @@ fn cover_requires_enabled_scheme() {
     let p = CarrierPadding { scheme: PaddingScheme::new(0, 256), ..p };
     assert!(p.cover_enabled());
 }
+
+/// VLESS-UDP frames each datagram independently: one `frame_payload_into`
+/// call per packet, one `Message::Binary` on the wire. The receiver decodes
+/// each datagram on its own and must recover the exact record — packet
+/// boundaries survive because the sender never splits a record across
+/// datagrams. A single shared streaming decoder (as `VlessUdpTransport` and
+/// the server's `run_vless_relay` hold) lands on a clean frame boundary after
+/// every datagram, so the next datagram starts a fresh frame.
+#[test]
+fn per_datagram_framing_round_trips() {
+    let scheme = PaddingScheme::new(0, 64);
+    let mut rng = seeded();
+    let datagrams: Vec<Vec<u8>> = vec![
+        b"\x00\x05hello".to_vec(), // len-prefixed VLESS-UDP record
+        b"\x00\x03abc".to_vec(),
+        vec![0x42; 1400], // a full-size packet
+    ];
+    let mut dec = PaddingDecoder::new();
+    for dg in &datagrams {
+        let mut framed = Vec::new();
+        frame_payload_into(scheme, dg, &mut rng, &mut framed);
+        let mut decoded = Vec::new();
+        dec.push(&framed, &mut decoded);
+        assert_eq!(&decoded, dg, "each datagram round-trips on its own");
+        assert!(dec.is_at_frame_boundary(), "one whole frame per datagram → clean boundary");
+    }
+}
+
+/// A pad-only cover frame interleaved between real datagrams decodes to
+/// nothing; the surrounding read loop skips it. Both `VlessUdpTransport`
+/// (`read_packet`) and the WS frame source treat an empty decode as "read the
+/// next datagram", so a cover frame never surfaces as a spurious empty packet.
+#[test]
+fn cover_datagram_decodes_to_nothing() {
+    let scheme = PaddingScheme::new(8, 8);
+    let mut rng = seeded();
+    let mut dec = PaddingDecoder::new();
+
+    // Real record decodes back verbatim.
+    let real = b"\x00\x04data".to_vec();
+    let mut framed = Vec::new();
+    frame_payload_into(scheme, &real, &mut rng, &mut framed);
+    let mut decoded = Vec::new();
+    dec.push(&framed, &mut decoded);
+    assert_eq!(decoded, real);
+
+    // Cover frame (empty payload → real_len = 0) yields no real bytes.
+    let mut cover = Vec::new();
+    frame_payload_into(scheme, &[], &mut rng, &mut cover);
+    let mut cover_decoded = Vec::new();
+    dec.push(&cover, &mut cover_decoded);
+    assert!(cover_decoded.is_empty(), "cover frame yields no real bytes");
+    assert!(dec.is_at_frame_boundary());
+}

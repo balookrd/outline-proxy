@@ -70,16 +70,23 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     // in via the top-level `fingerprint_profile` config key.
     outline_transport::init_fingerprint_profile_strategy(config.fingerprint_profile);
 
-    // Wire process-wide carrier padding (anti TLS-in-TLS record-size
-    // correlation). Default disabled, so this is a no-op unless the
-    // top-level `[padding]` block opted in. The server must enable it on the
-    // matching path too — the gate is config-synchronised, not on-wire.
-    outline_transport::init_carrier_padding(outline_transport::CarrierPadding {
-        scheme: config.padding.scheme(),
-        cover: config.padding.cover,
-        cover_jitter_min_ms: config.padding.cover_jitter_min_ms,
-        cover_jitter_max_ms: config.padding.cover_jitter_max_ms,
-    });
+    // Wire the carrier-padding parameters + global default (anti TLS-in-TLS
+    // record-size correlation). The scheme params are built from the range
+    // regardless of `enabled`, and `enabled` is passed as the default on/off —
+    // a per-uplink `padding = true/false` override (resolved per dial in
+    // `dial_in_uplink_scope`) supersedes it. Default off, so this is a no-op
+    // unless the `[padding]` block or an uplink opts in. The server must enable
+    // it on the matching path too — the gate is config-synchronised, not
+    // on-wire.
+    outline_transport::init_carrier_padding(
+        outline_transport::CarrierPadding {
+            scheme: config.padding.scheme_params(),
+            cover: config.padding.cover,
+            cover_jitter_min_ms: config.padding.cover_jitter_min_ms,
+            cover_jitter_max_ms: config.padding.cover_jitter_max_ms,
+        },
+        config.padding.enabled,
+    );
 
     // Hold a clone so `/control/apply` can rebuild the registry against
     // the same on-disk persistence layer.

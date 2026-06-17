@@ -8,7 +8,7 @@ This changelog covers the git release tags `v1.0.0` through `1.5.1` (the monorep
 
 ## Unreleased
 ### Added
-- Adaptive carrier padding for the WS/XHTTP carriers (anti TLS-in-TLS record-size correlation): each Shadowsocks chunk is wrapped in a length-delimited padding frame so the outer TLS record size no longer tracks the payload size. Configured per-path on the server (`[padding]` paths) and config-synchronised as a gate — there is no on-wire bit, and it is off by default, so third-party clients stay compatible. Optional idle cover traffic emits dummy frames on a quiet carrier. Covers SS-over-WS (h1/h2/h3) and SS-over-XHTTP; UDP and raw-QUIC are out of scope.
+- Adaptive carrier padding for the WS/XHTTP carriers (anti TLS-in-TLS record-size correlation): each Shadowsocks chunk or VLESS frame is wrapped in a length-delimited padding frame so the outer TLS record size no longer tracks the payload size. Configured per-path on the server (`[padding]` paths) and config-synchronised as a gate — there is no on-wire bit, and it is off by default, so third-party clients stay compatible. Optional idle cover traffic emits dummy frames on a quiet carrier. Covers SS- and VLESS-over-WS (h1/h2/h3) and -over-XHTTP. VLESS-UDP is padded per-datagram because VLESS multiplexes TCP and UDP on one path; SS-UDP (a separate path) and raw-QUIC are out of scope.
 
 ## 1.5.1 - 2026-06-15
 ### Added

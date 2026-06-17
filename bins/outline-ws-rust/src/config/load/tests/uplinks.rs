@@ -43,6 +43,7 @@ fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> 
         fallbacks: if fallbacks.is_empty() { None } else { Some(fallbacks) },
         shuffle_wires: None,
         carrier_downgrade: None,
+        padding: None,
         shuffle_timer: None,
     }
 }
@@ -79,6 +80,7 @@ fn vless_uplink_section(
         fallbacks: if fallbacks.is_empty() { None } else { Some(fallbacks) },
         shuffle_wires: None,
         carrier_downgrade: None,
+        padding: None,
         shuffle_timer: None,
     }
 }
@@ -685,6 +687,7 @@ fn ss_xhttp_uplink_section(name: &str, xhttp_url: &str, mode: TransportMode) -> 
         fallbacks: None,
         shuffle_wires: None,
         carrier_downgrade: None,
+        padding: None,
         shuffle_timer: None,
     }
 }

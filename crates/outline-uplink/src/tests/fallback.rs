@@ -36,6 +36,7 @@ fn vless_xhttp_primary() -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }
@@ -69,6 +70,7 @@ fn ws_tcp_only_primary() -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }
@@ -141,6 +143,7 @@ fn ws_floor_primary(udp: bool) -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }
@@ -1477,6 +1480,7 @@ fn ws_h3_primary() -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }
@@ -1612,6 +1616,7 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     };
     // min_failures=1 so each probe failure crosses both the

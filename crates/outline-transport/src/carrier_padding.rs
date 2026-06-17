@@ -1,18 +1,25 @@
-//! Process-wide carrier-padding configuration for the client's WS / XHTTP
-//! dials, plus the framing helper the transports call on the hot path.
+//! Carrier-padding configuration for the client's WS / XHTTP dials, plus the
+//! framing helper the transports call on the hot path.
 //!
-//! The client is always "ours", so unlike the server (which pads per-path so
-//! third-party clients on other paths keep the plain wire) the knob here is a
-//! single process-wide value: padding is either on for every dial or off for
-//! all of them. That mirrors [`crate::fingerprint_profile`] — wired once at
-//! startup via [`init_carrier_padding`], read back by the transport layers via
-//! [`carrier_padding`]. Default is disabled, so a build that never calls
-//! `init` leaves the wire byte-for-byte identical to the unpadded carrier.
+//! Padding is resolved per dial. A global `[padding]` block sets the scheme
+//! parameters (range, cover, jitter) and a default on/off flag; each
+//! `[[outline.uplinks]]` may override the on/off decision with
+//! `padding = true/false`. The effective value for a dial is the per-uplink
+//! override when present, else the global default — exactly the
+//! override/fallback shape of [`crate::fingerprint_profile`]'s per-uplink
+//! strategy. Parameters are wired once at startup via [`init_carrier_padding`];
+//! the per-uplink override is a dial-scoped task-local set by
+//! [`with_uplink_padding_override`] (the uplink manager wraps each dial). The
+//! transports read the resolved value via [`effective_carrier_padding`].
+//! Default is off, so a build that never opts in leaves the wire byte-for-byte
+//! identical to the unpadded carrier.
 //!
 //! Gating is config-synchronised, like session resumption: there is no on-wire
 //! capability bit. The server must enable padding on the matching path or it
-//! will feed our padded frames straight into its Shadowsocks decryptor and
-//! fail — so both ends opt in together (see `outline-wire`'s `padding` module).
+//! will feed our padded frames straight into its decryptor and fail — so both
+//! ends opt in together (see `outline-wire`'s `padding` module). Because the
+//! client knob is per-uplink, an operator can pad their own servers while
+//! leaving a VLESS uplink to a third-party server unpadded.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -87,20 +94,68 @@ impl Default for CarrierPadding {
     }
 }
 
+/// Process-wide padding *parameters* (scheme range, cover, jitter). Held
+/// independently of the on/off decision so a per-uplink override can turn
+/// padding on for one uplink even when the global default is off — the scheme
+/// here is always built from `min_bytes..max_bytes`, never collapsed to
+/// disabled just because the global default is off.
 static PADDING: OnceLock<CarrierPadding> = OnceLock::new();
 
-/// Wire the process-wide padding config at startup. First call wins;
-/// subsequent calls are silently ignored, mirroring
-/// [`crate::init_fingerprint_profile_strategy`] and `init_h2_window_sizes`.
-pub fn init_carrier_padding(padding: CarrierPadding) {
-    let _ = PADDING.set(padding);
+/// Whether padding is on by default — the global `[padding] enabled`. A dial
+/// without a per-uplink override falls back to this (mirrors how
+/// `fingerprint_profile` falls back to the process-wide strategy).
+static DEFAULT_ON: OnceLock<bool> = OnceLock::new();
+
+tokio::task_local! {
+    /// Per-uplink padding on/off for the current dial, set by
+    /// [`with_uplink_padding_override`]. When a dial runs inside this scope,
+    /// [`effective_carrier_padding`] reads it instead of [`DEFAULT_ON`], so a
+    /// single uplink can opt in (or out) without flipping the process-wide
+    /// default. Same propagation as `fingerprint_profile`'s overrides: it
+    /// follows the awaited dial future but not freshly-spawned tasks — and the
+    /// transport reads it inline while constructing the connection.
+    static UPLINK_PADDING_OVERRIDE: bool;
 }
 
-/// The process-wide padding config set by [`init_carrier_padding`], or the
-/// disabled default when nothing was wired (tests, deployments that never opt
-/// in). Read by the WS / XHTTP transports when they construct a connection.
-pub fn carrier_padding() -> CarrierPadding {
-    PADDING.get().copied().unwrap_or_default()
+/// Wire the process-wide padding parameters and default at startup. First call
+/// wins; subsequent calls are silently ignored, mirroring
+/// [`crate::init_fingerprint_profile_strategy`] and `init_h2_window_sizes`.
+/// `padding` carries the scheme range / cover / jitter (built from the config
+/// regardless of `enabled`); `default_on` is the global `enabled` flag used
+/// when a dial pins no per-uplink override.
+pub fn init_carrier_padding(padding: CarrierPadding, default_on: bool) {
+    let _ = PADDING.set(padding);
+    let _ = DEFAULT_ON.set(default_on);
+}
+
+/// Run `f` with `on` as the per-uplink padding decision for every dial inside
+/// it. Wrap the whole dial future so the transport sees it while building the
+/// connection. Used by the uplink manager (`dial_in_uplink_scope`) to honour a
+/// `[[outline.uplinks]] padding = true/false` knob; when the uplink pins no
+/// value the manager does not enter this scope and the dial inherits
+/// [`DEFAULT_ON`].
+pub async fn with_uplink_padding_override<F>(on: bool, f: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    UPLINK_PADDING_OVERRIDE.scope(on, f).await
+}
+
+/// The padding config the current dial should use: the per-uplink override
+/// when one is in scope, else the global default ([`DEFAULT_ON`]). Returns the
+/// stored parameters when on, [`CarrierPadding::disabled`] when off — so a
+/// disabled dial leaves the wire byte-for-byte identical. Read by the WS /
+/// XHTTP transports (and the VLESS-UDP transport) when they construct a
+/// connection.
+pub(crate) fn effective_carrier_padding() -> CarrierPadding {
+    let on = UPLINK_PADDING_OVERRIDE
+        .try_with(|v| *v)
+        .unwrap_or_else(|_| DEFAULT_ON.get().copied().unwrap_or(false));
+    if on {
+        PADDING.get().copied().unwrap_or_default()
+    } else {
+        CarrierPadding::disabled()
+    }
 }
 
 /// Frames `data` into `out` as one or more padding frames, drawing pad from

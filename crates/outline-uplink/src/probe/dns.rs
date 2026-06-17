@@ -281,7 +281,13 @@ pub(super) async fn run_dns_probe(
                     let (t, downgraded) = {
                         let _permit =
                             dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
-                        let (t, _issued, downgraded) = VlessUdpWsTransport::connect_with_resume(
+                        // Scope the per-uplink padding override over the
+                        // dial + build so a probe to a padded per-uplink VLESS
+                        // path frames its datagrams (the transport reads
+                        // `effective_carrier_padding` at build). raw-QUIC and
+                        // the global default are unaffected by an absent
+                        // override.
+                        let connect = VlessUdpWsTransport::connect_with_resume(
                             cache,
                             udp_ws_url,
                             effective_udp_mode,
@@ -292,11 +298,16 @@ pub(super) async fn run_dns_probe(
                             "probe_dns",
                             None,
                             None,
-                        )
-                        .await
-                        .with_context(|| TransportOperation::Connect {
-                            target: format!("DNS probe VLESS websocket for uplink {}", uplink.name),
-                        })?;
+                        );
+                        let (t, _issued, downgraded) =
+                            crate::dial::with_uplink_padding_scope(uplink, connect)
+                                .await
+                                .with_context(|| TransportOperation::Connect {
+                                    target: format!(
+                                        "DNS probe VLESS websocket for uplink {}",
+                                        uplink.name
+                                    ),
+                                })?;
                         (t, downgraded)
                     };
                     (t, downgraded, true)

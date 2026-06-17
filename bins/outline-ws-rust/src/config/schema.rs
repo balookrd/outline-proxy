@@ -403,6 +403,14 @@ pub(crate) struct UplinkSection {
     /// `mode_downgrade_secs` window per rank before rotating is pure
     /// latency and wasted dial attempts.
     pub(crate) carrier_downgrade: Option<bool>,
+    /// Per-uplink carrier-padding override. `None` (default) inherits the
+    /// global `[padding] enabled`; `Some(true)` pads every dial on this uplink
+    /// — even when the global default is off — using the scheme parameters
+    /// (range / cover / jitter) from the global `[padding]` block; `Some(false)`
+    /// keeps this uplink's wire plain even when the global default is on. Lets
+    /// an operator pad their own servers while leaving a VLESS uplink to a
+    /// third-party server (xray / sing-box) unpadded. TOML-only.
+    pub(crate) padding: Option<bool>,
     /// Periodic active-wire reroll interval. Accepts human-readable
     /// duration strings: `"30s"`, `"5m"`, `"1h"`, `"1h30m"`, `"2d"`.
     /// When set, a background tokio task rerolls `active_wire` on TCP
