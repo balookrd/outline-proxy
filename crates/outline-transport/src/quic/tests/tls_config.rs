@@ -203,10 +203,13 @@ fn decrypt_client_initial(dgram: &[u8]) -> DecodedInitial {
     }
 }
 
-/// Reassemble the CRYPTO stream (offset 0) from an Initial payload and count
-/// the PADDING/PING frames around it. Client Initials carry only CRYPTO +
-/// PADDING (+ the odd PING), so the frame grammar here is intentionally tiny.
-fn parse_initial_frames(payload: &[u8]) -> (Vec<u8>, usize, usize) {
+/// Split an Initial payload into its CRYPTO segments (offset + bytes) and count
+/// the PADDING/PING frames. Client Initials carry only CRYPTO + PADDING (+ the
+/// odd PING), so the frame grammar here is intentionally tiny. A large
+/// ClientHello — a post-quantum key share pushes it past the 1200-byte Initial
+/// — is split across several Initials, so CRYPTO is returned per-segment and
+/// reassembled by the caller rather than assumed contiguous in one packet.
+fn parse_initial_frames(payload: &[u8]) -> (Vec<(u64, Vec<u8>)>, usize, usize) {
     let mut r = Reader::new(payload);
     let mut crypto = Vec::new();
     let mut padding = 0usize;
@@ -216,14 +219,46 @@ fn parse_initial_frames(payload: &[u8]) -> (Vec<u8>, usize, usize) {
             0x00 => padding += 1,
             0x01 => ping += 1,
             0x06 => {
-                let _offset = r.varint();
+                let offset = r.varint();
                 let len = r.varint() as usize;
-                crypto.extend_from_slice(r.take(len));
+                crypto.push((offset, r.take(len).to_vec()));
             },
             other => panic!("unexpected frame type 0x{other:02x} in client Initial"),
         }
     }
     (crypto, padding, ping)
+}
+
+/// Concatenate CRYPTO segments (collected across one or more Initials) into the
+/// handshake byte stream, ordered by offset. Outline's first flight is a single
+/// in-order CRYPTO stream, so contiguous concatenation is sufficient.
+fn reassemble_crypto(segments: &[(u64, Vec<u8>)]) -> Vec<u8> {
+    let mut ordered = segments.to_vec();
+    ordered.sort_by_key(|(offset, _)| *offset);
+    let mut out: Vec<u8> = Vec::new();
+    for (offset, data) in ordered {
+        let offset = offset as usize;
+        if offset <= out.len() {
+            let already = out.len() - offset;
+            if already < data.len() {
+                out.extend_from_slice(&data[already..]);
+            }
+        }
+        // A gap (offset > out.len()) cannot occur for an in-order first flight;
+        // leaving it unfilled keeps `crypto_complete` false so the capture loop
+        // polls for the next Initial.
+    }
+    out
+}
+
+/// True once `ch` holds a complete handshake message: the 4-byte header plus
+/// the 24-bit declared body length.
+fn crypto_complete(ch: &[u8]) -> bool {
+    if ch.len() < 4 {
+        return false;
+    }
+    let body = ((ch[1] as usize) << 16) | ((ch[2] as usize) << 8) | ch[3] as usize;
+    ch.len() >= 4 + body
 }
 
 /// Human name for a QUIC transport parameter id (RFC 9000 §18.2 + RFC 9221),
@@ -262,13 +297,12 @@ fn is_integer_param(id: u64) -> bool {
     )
 }
 
-/// Extract the `quic_transport_parameters` extension (0x0039) from a
-/// ClientHello and split it into ordered `(id, value)` pairs.
-fn transport_params_from_clienthello(ch: &[u8]) -> Vec<(u64, Vec<u8>)> {
+/// Return the raw data of ClientHello extension `want_type`, if present.
+fn clienthello_extension(ch: &[u8], want_type: u16) -> Option<&[u8]> {
     let mut r = Reader::new(ch);
     assert_eq!(r.u8(), 0x01, "expected ClientHello handshake");
-    let _len = r.take(3); // 24-bit handshake length
-    let _legacy_version = r.u16();
+    r.take(3); // 24-bit handshake length
+    r.take(2); // legacy_version
     r.take(32); // random
     let sid_len = r.u8() as usize;
     r.take(sid_len); // session id (empty for QUIC)
@@ -282,33 +316,68 @@ fn transport_params_from_clienthello(ch: &[u8]) -> Vec<(u64, Vec<u8>)> {
         let ext_type = r.u16();
         let ext_len = r.u16() as usize;
         let ext_data = r.take(ext_len);
-        if ext_type == 0x0039 {
-            let mut pr = Reader::new(ext_data);
-            let mut params = Vec::new();
-            while pr.remaining() > 0 {
-                let id = pr.varint();
-                let len = pr.varint() as usize;
-                params.push((id, pr.take(len).to_vec()));
-            }
-            return params;
+        if ext_type == want_type {
+            return Some(ext_data);
         }
     }
-    panic!("no quic_transport_parameters (0x0039) extension in ClientHello");
+    None
+}
+
+/// Ordered `(id, value)` pairs from the `quic_transport_parameters` extension
+/// (0x0039).
+fn transport_params_from_clienthello(ch: &[u8]) -> Vec<(u64, Vec<u8>)> {
+    let data = clienthello_extension(ch, 0x0039)
+        .expect("no quic_transport_parameters (0x0039) extension in ClientHello");
+    let mut pr = Reader::new(data);
+    let mut params = Vec::new();
+    while pr.remaining() > 0 {
+        let id = pr.varint();
+        let len = pr.varint() as usize;
+        params.push((id, pr.take(len).to_vec()));
+    }
+    params
+}
+
+/// Named groups offered in the `key_share` extension (0x0033), in order. Used
+/// to confirm the post-quantum `X25519MLKEM768` (0x11ec) share is on the wire.
+fn key_share_groups(ch: &[u8]) -> Vec<u16> {
+    let Some(data) = clienthello_extension(ch, 0x0033) else {
+        return Vec::new();
+    };
+    let mut r = Reader::new(data);
+    let list_len = r.u16() as usize; // client_shares vector length
+    let end = r.i + list_len;
+    let mut groups = Vec::new();
+    while r.i < end {
+        let group = r.u16();
+        let ke_len = r.u16() as usize;
+        r.take(ke_len);
+        groups.push(group);
+    }
+    groups
 }
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-#[test]
-fn dump_quic_initial_wire() {
-    // Production raw-QUIC client config (jitter + initial_mtu 1400), dialed
-    // outside any fingerprint scope exactly like the real raw-QUIC path.
-    let config = super::quic_client_config(ALPN_VLESS);
+/// One captured client first flight: the reassembled ClientHello plus the
+/// shape of the Initial(s) that carried it.
+struct CapturedInitial {
+    clienthello: Vec<u8>,
+    first: DecodedInitial,
+    datagrams: usize,
+    first_datagram_len: usize,
+    padding: usize,
+    ping: usize,
+}
 
-    // Sans-IO QUIC client: no socket is bound. A fixed endpoint rng seed keeps
-    // the DCID/SCID stable run-to-run (the transport-param jitter still varies
-    // per process — that is the thing we want to observe).
+/// Drive `config` through a sans-IO `quinn` client and capture the whole client
+/// Initial flight (no socket bound), decrypting each Initial with the v1 salt
+/// and reassembling the CRYPTO stream into the ClientHello. A fixed endpoint rng
+/// seed keeps the DCID stable run-to-run; the transport-param jitter still
+/// varies per process (that is the thing we want to observe).
+fn capture_initial(config: quinn::ClientConfig) -> CapturedInitial {
     let endpoint_config = Arc::new(quinn_proto::EndpointConfig::default());
     let mut endpoint = quinn_proto::Endpoint::new(endpoint_config, None, false, Some([0x11; 32]));
     let now = Instant::now();
@@ -317,35 +386,83 @@ fn dump_quic_initial_wire() {
         .connect(now, config, remote, "www.example.com")
         .expect("sans-IO connect");
 
-    let mut buf = Vec::new();
-    let transmit = conn
-        .poll_transmit(now, 1, &mut buf)
-        .expect("client must emit a first Initial");
-    let dgram = &buf[..transmit.size];
+    let mut segments: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut first: Option<DecodedInitial> = None;
+    let mut first_datagram_len = 0usize;
+    let mut datagrams = 0usize;
+    let mut padding = 0usize;
+    let mut ping = 0usize;
+    // A post-quantum ClientHello spans two Initials; eight is ample headroom.
+    for _ in 0..8 {
+        let mut buf = Vec::new();
+        let Some(transmit) = conn.poll_transmit(now, 1, &mut buf) else {
+            break;
+        };
+        let dgram = &buf[..transmit.size];
+        // Stop at the first non-Initial long-header packet.
+        if dgram[0] & 0xf0 != 0xc0 {
+            break;
+        }
+        let decoded = decrypt_client_initial(dgram);
+        let (segs, pad, pg) = parse_initial_frames(&decoded.payload);
+        padding += pad;
+        ping += pg;
+        segments.extend(segs);
+        if first.is_none() {
+            first_datagram_len = dgram.len();
+            first = Some(decoded);
+        }
+        datagrams += 1;
+        if crypto_complete(&reassemble_crypto(&segments)) {
+            break;
+        }
+    }
 
-    let decoded = decrypt_client_initial(dgram);
-    assert_eq!(decoded.version, 0x0000_0001, "expected QUIC v1");
-    let (clienthello, padding, ping) = parse_initial_frames(&decoded.payload);
-    let params = transport_params_from_clienthello(&clienthello);
+    let clienthello = reassemble_crypto(&segments);
+    assert!(
+        crypto_complete(&clienthello),
+        "captured ClientHello CRYPTO is incomplete after {datagrams} Initial(s)"
+    );
+    CapturedInitial {
+        clienthello,
+        first: first.expect("at least one Initial datagram"),
+        datagrams,
+        first_datagram_len,
+        padding,
+        ping,
+    }
+}
+
+#[test]
+fn dump_quic_initial_wire() {
+    // Production raw-QUIC client config (jitter + initial_mtu 1400), dialed
+    // outside any fingerprint scope exactly like the real raw-QUIC path.
+    let cap = capture_initial(super::quic_client_config(ALPN_VLESS));
+    assert_eq!(cap.first.version, 0x0000_0001, "expected QUIC v1");
+    let params = transport_params_from_clienthello(&cap.clienthello);
 
     eprintln!("QUIC-INITIAL rawquic-vless");
     eprintln!(
-        "  datagram: {} bytes (padded for anti-amplification), version=0x{:08x}",
-        dgram.len(),
-        decoded.version
+        "  first datagram: {} bytes (padded), {} Initial(s), version=0x{:08x}",
+        cap.first_datagram_len, cap.datagrams, cap.first.version
     );
     eprintln!(
         "  dcid={} ({}B)  scid={} ({}B)",
-        hex(&decoded.dcid),
-        decoded.dcid.len(),
-        hex(&decoded.scid),
-        decoded.scid.len()
+        hex(&cap.first.dcid),
+        cap.first.dcid.len(),
+        hex(&cap.first.scid),
+        cap.first.scid.len()
     );
     eprintln!(
         "  length_field={}  pn_len={}  pn={}",
-        decoded.length_field, decoded.pn_len, decoded.pn
+        cap.first.length_field, cap.first.pn_len, cap.first.pn
     );
-    eprintln!("  frames: crypto={}B  padding={padding}  ping={ping}", clienthello.len());
+    eprintln!(
+        "  frames: crypto={}B  padding={}  ping={}",
+        cap.clienthello.len(),
+        cap.padding,
+        cap.ping
+    );
     eprintln!("  transport_parameters ({} in wire order):", params.len());
     for (id, value) in &params {
         let name = transport_param_name(*id);
@@ -359,5 +476,37 @@ fn dump_quic_initial_wire() {
         }
     }
     // The decrypted ClientHello, for the same external JA3/JA4 parser as step 1.
-    eprintln!("  clienthello_hex: {}", hex(&clienthello));
+    eprintln!("  clienthello_hex: {}", hex(&cap.clienthello));
+}
+
+/// Regression for the raw-QUIC fingerprint scope (level A): with a browser
+/// fingerprint in scope, the raw-QUIC ClientHello offers the X25519MLKEM768
+/// post-quantum key share (0x11ec) like the H3 carrier; with no scope it falls
+/// back to the default provider, whose key share is x25519-only. Proven on the
+/// real decrypted Initial — covering the full `with_dial_fingerprint` ->
+/// `quic_client_config` -> quinn handshake path, not just the rustls layer.
+#[tokio::test]
+async fn raw_quic_fingerprint_scope_offers_pq_key_share() {
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+
+    let baseline = capture_initial(super::quic_client_config(ALPN_VLESS)).clienthello;
+    let baseline_groups = key_share_groups(&baseline);
+    assert!(
+        !baseline_groups.contains(&0x11ec),
+        "default provider must not offer an MLKEM768 key share, got {baseline_groups:04x?}"
+    );
+
+    let chromium = with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
+        capture_initial(super::quic_client_config(ALPN_VLESS)).clienthello
+    })
+    .await;
+    let chromium_groups = key_share_groups(&chromium);
+    assert!(
+        chromium_groups.contains(&0x11ec),
+        "fingerprint scope must offer an MLKEM768 key share, got {chromium_groups:04x?}"
+    );
+    assert!(
+        chromium_groups.contains(&0x001d),
+        "x25519 key share must still accompany the PQ share, got {chromium_groups:04x?}"
+    );
 }
