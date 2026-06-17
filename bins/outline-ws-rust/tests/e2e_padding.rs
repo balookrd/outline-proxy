@@ -395,6 +395,153 @@ fn padding_vless_ws_h1_udp_roundtrip() -> Result<(), BoxError> {
     Ok(())
 }
 
+/// SS-UDP-over-WS, split paths. The TCP and UDP legs are *separate* paths, so
+/// the operator lists BOTH in `[padding] paths`; the UDP leg now frames each
+/// datagram (one frame per SS-AEAD packet) exactly like the TCP stream and
+/// VLESS-UDP, closing the old "SS-UDP stays plain" asymmetry. Idle cover frames
+/// on the UDP downlink (`cover = true`) must be dropped transparently by the
+/// client's datagram decoder and never corrupt the echo. Drives a UDP echo
+/// through SOCKS5 UDP ASSOCIATE on the padded SS-UDP path.
+#[test]
+fn padding_ss_udp_split_roundtrip_with_cover() -> Result<(), BoxError> {
+    if !e2e_enabled() {
+        skip_notice("padding_ss_udp_split_roundtrip_with_cover");
+        return Ok(());
+    }
+
+    let dir = TestDir::new()?;
+    let echo = EchoUpstream::start()?;
+
+    // ── Server: pad BOTH SS-over-WS split legs (tcp + udp), idle cover on ──
+    let server_addr = reserve_addr()?;
+    let server_cfg = ServerConfig::new(server_addr)
+        .all_paths()
+        .with_padding(&[PATH_SS_TCP, PATH_SS_UDP], true)
+        .render();
+    let server_cfg_path = write_file(dir.path(), "server.toml", &server_cfg)?;
+    let server_log = dir.path().join("server.log");
+    let mut server = ServerProcess::start(&server_cfg_path, &server_log, server_addr)?;
+    server.wait_ready(Duration::from_secs(15))?;
+
+    // ── Client: padding on (global), one SS-over-WS-h1 uplink with a UDP leg ──
+    let socks = reserve_addr()?;
+    let state_path = dir.path().join("client.state.toml");
+    let uplink = UplinkSpec::new(
+        "up-su",
+        Wire::SsWs {
+            tcp_url: format!("ws://{server_addr}{PATH_SS_TCP}"),
+            udp_url: Some(format!("ws://{server_addr}{PATH_SS_UDP}")),
+            mode: "ws_h1".into(),
+        },
+        Creds::ss(),
+    );
+    let client_cfg = ClientConfig::new(socks, &state_path, ProbeSpec::disabled())
+        .with_padding(true)
+        .group(GroupSpec::new("active_active", "per_flow").uplink(uplink))
+        .render();
+    let client_cfg_path = write_file(dir.path(), "client.toml", &client_cfg)?;
+    let client_log = dir.path().join("client.log");
+    let mut client = ProxyProcess::start(&client_cfg_path, &client_log)?;
+    client
+        .wait_ready(socks.port(), Duration::from_secs(15))
+        .map_err(|e| format!("{e}\nclient log:\n{}", client.logs().unwrap_or_default()))?;
+
+    // The round-trip survives only if the client frames each uplink datagram,
+    // the server decodes it before SS-UDP decrypt, frames the encrypted
+    // downlink back, and the client decodes that — i.e. the per-datagram
+    // framing is symmetric on the UDP leg.
+    let payload = b"padded-ss-udp-split-roundtrip";
+    let echoed = socks5_udp_echo(socks.port(), echo.udp_addr(), payload).map_err(|e| {
+        format!(
+            "padded SS-UDP split round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+            client.logs().unwrap_or_default(),
+            server.logs().unwrap_or_default()
+        )
+    })?;
+    assert_eq!(echoed, payload, "SS-UDP echo payload must survive padding both ways");
+
+    client.stop()?;
+    server.kill()?;
+    Ok(())
+}
+
+/// Combined-SS: the TCP and UDP legs share ONE path ([`PATH_SS_WS_COMBINED`]),
+/// split by a hidden token bit the server decodes at upgrade time. Padding the
+/// combined base path pads BOTH legs uniformly — the UDP leg's `run_udp_relay`
+/// resolves the same per-path scheme as the TCP leg's `run_tcp_relay`. Drives a
+/// TCP echo AND a UDP echo over the one padded combined uplink; both must
+/// survive, proving the combined UDP leg is no longer routed to an unpadded
+/// relay.
+#[test]
+fn padding_ss_combined_roundtrip_both_legs() -> Result<(), BoxError> {
+    if !e2e_enabled() {
+        skip_notice("padding_ss_combined_roundtrip_both_legs");
+        return Ok(());
+    }
+
+    let dir = TestDir::new()?;
+    let echo = EchoUpstream::start()?;
+
+    // ── Server: a combined SS-over-WS base path, padded (both legs) ──
+    let server_addr = reserve_addr()?;
+    let server_cfg = ServerConfig::new(server_addr)
+        .all_paths()
+        .with_combined_ss_ws_path()
+        .with_padding(&[PATH_SS_WS_COMBINED], true)
+        .render();
+    let server_cfg_path = write_file(dir.path(), "server.toml", &server_cfg)?;
+    let server_log = dir.path().join("server.log");
+    let mut server = ServerProcess::start(&server_cfg_path, &server_log, server_addr)?;
+    server.wait_ready(Duration::from_secs(15))?;
+
+    // ── Client: padding on, ONE combined-SS uplink (single URL, both legs) ──
+    let socks = reserve_addr()?;
+    let state_path = dir.path().join("client.state.toml");
+    let uplink = UplinkSpec::new(
+        "up-sc",
+        Wire::SsWsCombined {
+            url: format!("ws://{server_addr}{PATH_SS_WS_COMBINED}"),
+            mode: "ws_h1".into(),
+        },
+        Creds::ss(),
+    );
+    let client_cfg = ClientConfig::new(socks, &state_path, ProbeSpec::disabled())
+        .with_padding(true)
+        .group(GroupSpec::new("active_active", "per_flow").uplink(uplink))
+        .render();
+    let client_cfg_path = write_file(dir.path(), "client.toml", &client_cfg)?;
+    let client_log = dir.path().join("client.log");
+    let mut client = ProxyProcess::start(&client_cfg_path, &client_log)?;
+    client
+        .wait_ready(socks.port(), Duration::from_secs(15))
+        .map_err(|e| format!("{e}\nclient log:\n{}", client.logs().unwrap_or_default()))?;
+
+    // TCP leg: combined path, tcp bit in the token → padded run_tcp_relay.
+    socks5_echo_roundtrip(socks.port(), echo.tcp_addr(), b"padded-combined-tcp").map_err(|e| {
+        format!(
+            "combined-SS TCP leg round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+            client.logs().unwrap_or_default(),
+            server.logs().unwrap_or_default()
+        )
+    })?;
+
+    // UDP leg: same combined path, udp bit in the token → padded run_udp_relay.
+    let payload = b"padded-combined-udp";
+    let echoed = socks5_udp_echo(socks.port(), echo.udp_addr(), payload).map_err(|e| {
+        format!(
+            "combined-SS UDP leg round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+            client.logs().unwrap_or_default(),
+            server.logs().unwrap_or_default()
+        )
+    })?;
+    assert_eq!(echoed, payload, "combined-SS UDP leg must survive padding both ways");
+    assert!(echo.tcp_connections() >= 1, "server never reached the echo upstream over TCP");
+
+    client.stop()?;
+    server.kill()?;
+    Ok(())
+}
+
 #[test]
 fn padding_vless_xhttp_h1_roundtrip() -> Result<(), BoxError> {
     if !e2e_enabled() {

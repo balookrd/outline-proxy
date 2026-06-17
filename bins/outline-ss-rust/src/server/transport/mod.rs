@@ -278,11 +278,17 @@ async fn udp_upgrade_for_path(
     // TCP-stream features and are not confirmed on datagram paths.
     let echo = resume.session_echo();
     let mut response = ws.on_upgrade(move |socket| async move {
+        // Resolve the per-path padding scheme before `path` is moved into the
+        // ctx. For a combined-SS base this is the base path (the combined UDP
+        // leg reaches here via `udp_upgrade_for_path(base_path)`), so it pads
+        // iff the base path is listed — the same scheme as the TCP leg.
+        let padding = carrier_padding::scheme_for_path(&path);
         let route_ctx = Arc::new(UdpRouteCtx {
             users: Arc::clone(&route.users),
             protocol,
             path,
             candidate_users: Arc::clone(&route.candidate_users),
+            padding,
         });
         let result = udp::handle_udp_connection(socket, server, route_ctx, resume).await;
         finish_ws_session(session, result, "udp");

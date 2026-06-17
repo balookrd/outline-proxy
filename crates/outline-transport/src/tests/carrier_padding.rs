@@ -120,13 +120,16 @@ fn cover_requires_enabled_scheme() {
     assert!(p.cover_enabled());
 }
 
-/// VLESS-UDP frames each datagram independently: one `frame_payload_into`
-/// call per packet, one `Message::Binary` on the wire. The receiver decodes
-/// each datagram on its own and must recover the exact record — packet
-/// boundaries survive because the sender never splits a record across
-/// datagrams. A single shared streaming decoder (as `VlessUdpTransport` and
-/// the server's `run_vless_relay` hold) lands on a clean frame boundary after
-/// every datagram, so the next datagram starts a fresh frame.
+/// SS-UDP and VLESS-UDP both frame each datagram independently: one
+/// `frame_payload_into` call per packet, one `Message::Binary` on the wire.
+/// The receiver decodes each datagram on its own and must recover the exact
+/// bytes — packet boundaries survive because the sender never splits a record
+/// across datagrams. A single shared streaming decoder (`UdpWsTransport` and
+/// `VlessUdpTransport` on the client, `run_udp_relay` / `run_vless_relay` on
+/// the server) lands on a clean frame boundary after every datagram, so the
+/// next datagram starts a fresh frame. SS-UDP wraps an opaque AEAD packet
+/// (no inner length prefix); VLESS-UDP wraps a `len||payload` record — the
+/// codec treats both as raw bytes.
 #[test]
 fn per_datagram_framing_round_trips() {
     let scheme = PaddingScheme::new(0, 64);
@@ -134,6 +137,7 @@ fn per_datagram_framing_round_trips() {
     let datagrams: Vec<Vec<u8>> = vec![
         b"\x00\x05hello".to_vec(), // len-prefixed VLESS-UDP record
         b"\x00\x03abc".to_vec(),
+        vec![0xAB; 91],   // an opaque SS-AEAD UDP packet (no inner prefix)
         vec![0x42; 1400], // a full-size packet
     ];
     let mut dec = PaddingDecoder::new();
@@ -148,9 +152,10 @@ fn per_datagram_framing_round_trips() {
 }
 
 /// A pad-only cover frame interleaved between real datagrams decodes to
-/// nothing; the surrounding read loop skips it. Both `VlessUdpTransport`
-/// (`read_packet`) and the WS frame source treat an empty decode as "read the
-/// next datagram", so a cover frame never surfaces as a spurious empty packet.
+/// nothing; the surrounding read loop skips it. `UdpWsTransport` and
+/// `VlessUdpTransport` (`read_packet`) and the WS frame source all treat an
+/// empty decode as "read the next datagram", so a cover frame never surfaces
+/// as a spurious empty packet.
 #[test]
 fn cover_datagram_decodes_to_nothing() {
     let scheme = PaddingScheme::new(8, 8);

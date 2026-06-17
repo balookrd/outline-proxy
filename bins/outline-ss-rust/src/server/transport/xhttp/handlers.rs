@@ -724,11 +724,16 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
         },
         XhttpRoute::SsUdp(route) => {
             let server = Arc::clone(&services.udp_server);
+            // Combined-SS base resolves the same scheme as the TCP leg (both
+            // reach here via the shared base path), so listing the base path
+            // pads both legs uniformly.
+            let padding = crate::server::transport::carrier_padding::scheme_for_path(&base_path);
             let route_ctx = Arc::new(UdpRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
                 path: base_path,
                 candidate_users: Arc::clone(&route.candidate_users),
+                padding,
             });
             let metrics_session = server.metrics.open_websocket_session(
                 Transport::Udp,

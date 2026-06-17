@@ -31,6 +31,7 @@ use shadowsocks_crypto::CipherKind;
 use socks5_proto::TargetAddr;
 use url::Url;
 
+use crate::carrier_padding::CarrierPadding;
 use crate::frame_io_quic::{QuicDatagramChannel, open_quic_frame_pair};
 use crate::quic::vless_udp::VlessUdpQuicSession;
 use crate::quic::{ALPN_SS, ALPN_VLESS, connect_quic_uplink};
@@ -244,5 +245,7 @@ pub fn ss_udp_over_connection(
     source: &'static str,
 ) -> Result<UdpWsTransport> {
     let chan: Arc<dyn crate::frame_io::DatagramChannel> = Arc::new(QuicDatagramChannel::new(conn));
-    UdpWsTransport::from_channel(chan, cipher, password, source)
+    // Raw QUIC is not a WS carrier — never padded (QUIC has its own fingerprint
+    // surface; same scope boundary as VLESS-UDP over QUIC).
+    UdpWsTransport::from_channel(chan, cipher, password, source, CarrierPadding::disabled())
 }

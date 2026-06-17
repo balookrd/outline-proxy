@@ -199,7 +199,7 @@ where
         // its parser past the handshake before receiving payload.
         outbound
             .data_tx
-            .send((outbound.make_binary)(carrier_padding::frame_vless_downlink(
+            .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
                 route.padding,
                 Bytes::from_static(&[vless::VERSION, 0x00]),
             )))
@@ -229,7 +229,7 @@ where
             let make_binary = outbound.make_binary;
             outbound
                 .data_tx
-                .send(make_binary(carrier_padding::frame_vless_downlink(
+                .send(make_binary(carrier_padding::frame_downlink_message(
                     route.padding,
                     Bytes::copy_from_slice(&payload),
                 )))
@@ -297,7 +297,7 @@ where
             let make_binary = outbound.make_binary;
             outbound
                 .data_tx
-                .send(make_binary(carrier_padding::frame_vless_downlink(
+                .send(make_binary(carrier_padding::frame_downlink_message(
                     route.padding,
                     Bytes::copy_from_slice(&frame),
                 )))
@@ -444,7 +444,7 @@ where
     let (upstream_reader, writer) = stream.into_split();
     outbound
         .data_tx
-        .send((outbound.make_binary)(carrier_padding::frame_vless_downlink(
+        .send((outbound.make_binary)(carrier_padding::frame_downlink_message(
             route.padding,
             Bytes::from_static(&[vless::VERSION, 0x00]),
         )))
@@ -625,7 +625,7 @@ where
                     crate::metrics::AppProtocol::Vless,
                     used,
                 );
-                let frame = carrier_padding::frame_vless_downlink(
+                let frame = carrier_padding::frame_downlink_message(
                     padding,
                     Bytes::copy_from_slice(&buffer[..total]),
                 );

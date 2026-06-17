@@ -8,8 +8,10 @@ use futures_util::{
     future::BoxFuture,
     stream::{SplitSink, SplitStream},
 };
+use outline_wire::padding::PaddingScheme;
 use tokio::sync::mpsc;
 
+use super::carrier_padding;
 use crate::{
     metrics::Protocol,
     server::h3::vendored::{
@@ -77,10 +79,15 @@ pub(super) trait WsSocket: Send + Sized + 'static {
     /// ever tripping the cap. Frame-header overhead is intentionally not
     /// included — the cap is a coarse safety bound, not a billing meter.
     fn msg_len(msg: &Self::Msg) -> usize;
+    /// Build the per-session UDP downlink sender. `scheme` is the carrier
+    /// padding resolved for the path: when enabled, the sender frames every
+    /// downlink datagram (so the encrypted SS packet size no longer leaks);
+    /// disabled keeps the plain wire. Mirrors the per-path TCP padding.
     fn make_udp_response_sender(
         tx: mpsc::Sender<Self::Msg>,
         protocol: Protocol,
         app_protocol: crate::metrics::AppProtocol,
+        scheme: PaddingScheme,
     ) -> UdpResponseSender;
 }
 
@@ -171,8 +178,14 @@ impl WsSocket for AxumWs {
         tx: mpsc::Sender<Message>,
         protocol: Protocol,
         app_protocol: crate::metrics::AppProtocol,
+        scheme: PaddingScheme,
     ) -> UdpResponseSender {
-        UdpResponseSender::new(Arc::new(WebSocketResponseSender { tx, protocol, app_protocol }))
+        UdpResponseSender::new(Arc::new(WebSocketResponseSender {
+            tx,
+            protocol,
+            app_protocol,
+            padding: scheme,
+        }))
     }
 }
 
@@ -267,8 +280,9 @@ impl WsSocket for H3Ws {
         tx: mpsc::Sender<H3Message>,
         _protocol: Protocol,
         app_protocol: crate::metrics::AppProtocol,
+        scheme: PaddingScheme,
     ) -> UdpResponseSender {
-        UdpResponseSender::new(Arc::new(Http3ResponseSender { tx, app_protocol }))
+        UdpResponseSender::new(Arc::new(Http3ResponseSender { tx, app_protocol, padding: scheme }))
     }
 }
 
@@ -276,11 +290,16 @@ struct WebSocketResponseSender {
     tx: mpsc::Sender<Message>,
     protocol: Protocol,
     app_protocol: crate::metrics::AppProtocol,
+    /// Carrier-padding scheme for this path. When enabled, each downlink
+    /// datagram is framed before it goes on the wire; disabled passes it
+    /// through unchanged (plain wire).
+    padding: PaddingScheme,
 }
 
 impl ResponseSender for WebSocketResponseSender {
     fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
-        Box::pin(async move { self.tx.send(Message::Binary(data)).await.is_ok() })
+        let framed = carrier_padding::frame_downlink_message(self.padding, data);
+        Box::pin(async move { self.tx.send(Message::Binary(framed)).await.is_ok() })
     }
 
     fn protocol(&self) -> Protocol {
@@ -295,11 +314,15 @@ impl ResponseSender for WebSocketResponseSender {
 struct Http3ResponseSender {
     tx: mpsc::Sender<H3Message>,
     app_protocol: crate::metrics::AppProtocol,
+    /// Carrier-padding scheme for this path; see [`WebSocketResponseSender`].
+    /// A framed cover/data datagram is a Binary frame, safe on the H3 carrier.
+    padding: PaddingScheme,
 }
 
 impl ResponseSender for Http3ResponseSender {
     fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
-        Box::pin(async move { self.tx.send(H3Message::Binary(data)).await.is_ok() })
+        let framed = carrier_padding::frame_downlink_message(self.padding, data);
+        Box::pin(async move { self.tx.send(H3Message::Binary(framed)).await.is_ok() })
     }
 
     fn protocol(&self) -> Protocol {

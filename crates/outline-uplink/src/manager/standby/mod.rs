@@ -510,15 +510,21 @@ impl UplinkManager {
         // pooling) so we never hand a dead transport to the caller.
         let ctx = self.standby_ctx(candidate.index, TransportKind::Udp).await;
         if let Some(ws) = ctx.try_take_alive(&candidate.uplink.name).await {
-            return UdpWsTransport::from_websocket(
-                ws,
-                candidate.uplink.cipher,
-                &candidate.uplink.password,
-                source,
-                self.inner.load_balancing.udp_ws_keepalive_interval,
-            )
-            .map(|t| t.with_uplink_binding(binding()))
-            .map(UdpSessionTransport::Ss);
+            // `from_websocket` reads the carrier padding at build time, which on
+            // the hot path runs after the dial returns — outside any dial scope.
+            // Wrap the build in the per-uplink padding scope so a padded uplink's
+            // reused standby stream frames its datagrams (mirrors VLESS-UDP).
+            let transport = crate::dial::with_uplink_padding_scope(&candidate.uplink, async {
+                UdpWsTransport::from_websocket(
+                    ws,
+                    candidate.uplink.cipher,
+                    &candidate.uplink.password,
+                    source,
+                    self.inner.load_balancing.udp_ws_keepalive_interval,
+                )
+            })
+            .await?;
+            return Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())));
         }
 
         metrics::record_warm_standby_acquire(
@@ -587,7 +593,11 @@ impl UplinkManager {
         // doesn't steal the UDP-side Session ID and vice versa.
         let udp_resume_key = resume_cache_key(&candidate.uplink.name, "udp");
         let udp_resume_request = global_resume_cache().get(&udp_resume_key);
-        let (transport, udp_issued, udp_downgraded_from) = UdpWsTransport::connect_with_resume(
+        // Scope the per-uplink padding override over the dial + build: padding
+        // is read when `from_websocket` builds the transport (after the dial
+        // returns), so the scope must wrap the whole future. raw QUIC (handled
+        // above) and the global default are unaffected by an absent override.
+        let connect = UdpWsTransport::connect_with_resume(
             cache,
             udp_ws_url,
             mode,
@@ -599,9 +609,13 @@ impl UplinkManager {
             self.inner.load_balancing.udp_ws_keepalive_interval,
             udp_resume_request,
             candidate.uplink.combined_ss_kind(SsPathKind::Udp),
-        )
-        .await
-        .with_context(|| TransportOperation::Connect { target: format!("to {}", udp_ws_url) })?;
+        );
+        let (transport, udp_issued, udp_downgraded_from) =
+            crate::dial::with_uplink_padding_scope(&candidate.uplink, connect)
+                .await
+                .with_context(|| TransportOperation::Connect {
+                    target: format!("to {}", udp_ws_url),
+                })?;
         global_resume_cache().store_if_issued(udp_resume_key, udp_issued);
         self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
             .await;

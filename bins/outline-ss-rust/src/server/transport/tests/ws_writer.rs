@@ -110,6 +110,7 @@ impl WsSocket for MockWs {
         _tx: mpsc::Sender<Self::Msg>,
         _protocol: Protocol,
         _app_protocol: AppProtocol,
+        _scheme: outline_wire::padding::PaddingScheme,
     ) -> UdpResponseSender {
         unimplemented!("not exercised by the writer-only path")
     }
