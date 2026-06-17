@@ -9,7 +9,7 @@
 
 use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use hashbrown::HashMap;
@@ -17,6 +17,7 @@ use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
 
 use crate::bind_udp_socket;
+use crate::fingerprint_profile::TlsFingerprint;
 
 // ── Per-process QUIC transport parameter jitter ─────────────────────────────
 //
@@ -79,11 +80,18 @@ pub(crate) fn shared_quic_endpoint(bind_addr: SocketAddr) -> Result<quinn::Endpo
 
 // ── Per-ALPN client configs ─────────────────────────────────────────────────
 
-/// Cache of `(ClientConfig, QuicClientConfig)` keyed by ALPN bytes. Built
-/// once per ALPN at first use. Sealed behind a single mutex because
-/// builds are rare (once per ALPN, ever) and cheap.
-static QUIC_CLIENT_CONFIGS: OnceLock<Mutex<HashMap<Vec<u8>, quinn::ClientConfig>>> =
-    OnceLock::new();
+/// Cache of `quinn::ClientConfig` keyed by `(dial fingerprint, ALPN bytes)`,
+/// each entry stamped with its build time. The fingerprint is the dial-scoped
+/// value set by [`crate::fingerprint_profile::with_dial_fingerprint`] — keying
+/// on it (instead of ALPN alone) is what lets raw-QUIC pick up the browser
+/// family the dial advertises, and stops the first dial's fingerprint from
+/// sticking to every later one. After
+/// [`crate::tls::SESSION_TICKET_ROTATION_INTERVAL`] an entry is rebuilt so the
+/// QUIC path rotates its session-ticket store on the same cadence as the TLS
+/// path. Sealed behind a single mutex because builds are rare and cheap.
+static QUIC_CLIENT_CONFIGS: OnceLock<
+    Mutex<HashMap<(Option<TlsFingerprint>, Vec<u8>), (quinn::ClientConfig, Instant)>>,
+> = OnceLock::new();
 
 /// Returns a cloned QUIC client config for `alpn`. Keepalive / idle
 /// timeout match the H3 path: PING every 10s, drop after 30s of silence.
@@ -98,9 +106,13 @@ static QUIC_CLIENT_CONFIGS: OnceLock<Mutex<HashMap<Vec<u8>, quinn::ClientConfig>
 /// the connection behaves exactly as before. Caller branches via
 /// [`super::SharedQuicConnection::supports_oversize_stream`].
 pub(crate) fn quic_client_config(alpn: &[u8]) -> quinn::ClientConfig {
+    let fp = crate::fingerprint_profile::current_dial_fingerprint();
     let cache = QUIC_CLIENT_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (fp, alpn.to_vec());
     let mut guard = cache.lock();
-    if let Some(existing) = guard.get(alpn) {
+    if let Some((existing, created_at)) = guard.get(&key)
+        && created_at.elapsed() < crate::tls::SESSION_TICKET_ROTATION_INTERVAL
+    {
         return existing.clone();
     }
     // Build the offered-ALPN list: MTU-aware sibling first (server
@@ -145,7 +157,7 @@ pub(crate) fn quic_client_config(alpn: &[u8]) -> quinn::ClientConfig {
     mtu.upper_bound(1452);
     transport.mtu_discovery_config(Some(mtu));
     config.transport_config(Arc::new(transport));
-    guard.insert(alpn.to_vec(), config.clone());
+    guard.insert(key, (config.clone(), Instant::now()));
     config
 }
 
