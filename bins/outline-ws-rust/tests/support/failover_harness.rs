@@ -27,9 +27,9 @@ pub mod tls_fixture;
 pub mod traffic;
 
 pub use config_builder::{
-    ClientConfig, Creds, GroupSpec, PATH_SS_TCP, PATH_SS_UDP, PATH_SS_XHTTP, PATH_VLESS_WS,
-    PATH_VLESS_XHTTP, ProbeSpec, ServerConfig, TEST_METHOD, TEST_PASSWORD, TEST_VLESS_ID,
-    UplinkSpec, Wire,
+    ClientConfig, Creds, GroupSpec, PATH_SS_TCP, PATH_SS_UDP, PATH_SS_WS_COMBINED, PATH_SS_XHTTP,
+    PATH_VLESS_WS, PATH_VLESS_XHTTP, ProbeSpec, ServerConfig, TEST_METHOD, TEST_PASSWORD,
+    TEST_VLESS_ID, UplinkSpec, Wire,
 };
 pub use control_client::{Metrics, Topology, get_topology, metrics_scrape};
 pub use echo_upstream::EchoUpstream;

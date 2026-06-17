@@ -26,6 +26,10 @@ pub const PATH_SS_UDP: &str = "/udp";
 pub const PATH_SS_XHTTP: &str = "/ssx";
 pub const PATH_VLESS_WS: &str = "/vlessws";
 pub const PATH_VLESS_XHTTP: &str = "/vlessx";
+/// Combined SS-over-WS base path: TCP and UDP legs share it, the server splits
+/// them by a hidden token bit. Distinct from every split / vless path so it can
+/// coexist with `all_paths()`.
+pub const PATH_SS_WS_COMBINED: &str = "/sscomb";
 
 // ── Server config ────────────────────────────────────────────────────────────
 
@@ -34,6 +38,7 @@ pub struct ServerConfig {
     method: String,
     ws_path_tcp: Option<String>,
     ws_path_udp: Option<String>,
+    ws_path_ss: Option<String>,
     ws_path_vless: Option<String>,
     xhttp_path_tcp: Option<String>,
     xhttp_path_vless: Option<String>,
@@ -54,6 +59,7 @@ impl ServerConfig {
             method: TEST_METHOD.to_string(),
             ws_path_tcp: None,
             ws_path_udp: None,
+            ws_path_ss: None,
             ws_path_vless: None,
             xhttp_path_tcp: None,
             xhttp_path_vless: None,
@@ -98,6 +104,16 @@ impl ServerConfig {
         self
     }
 
+    /// Add a combined SS-over-WS base path ([`PATH_SS_WS_COMBINED`]): TCP and
+    /// UDP legs share it, the server splits them by a hidden token bit. Distinct
+    /// from every `all_paths()` path so the two coexist (validation only
+    /// requires the combined path differ from the split / vless ones). Pad both
+    /// legs by listing the combined path in [`Self::with_padding`].
+    pub fn with_combined_ss_ws_path(mut self) -> Self {
+        self.ws_path_ss = Some(PATH_SS_WS_COMBINED.into());
+        self
+    }
+
     /// Enable carrier padding on the given carrier paths. `cover` toggles idle
     /// cover frames (with a fast 50–100 ms jitter so tests do not wait long).
     pub fn with_padding(mut self, paths: &[&str], cover: bool) -> Self {
@@ -124,6 +140,7 @@ impl ServerConfig {
         for (key, val) in [
             ("ws_path_tcp", &self.ws_path_tcp),
             ("ws_path_udp", &self.ws_path_udp),
+            ("ws_path_ss", &self.ws_path_ss),
             ("ws_path_vless", &self.ws_path_vless),
             ("xhttp_path_tcp", &self.xhttp_path_tcp),
             ("xhttp_path_vless", &self.xhttp_path_vless),
@@ -189,6 +206,14 @@ pub enum Wire {
         tcp_url: String,
         mode: String,
     },
+    /// Combined SS-over-WS: ONE URL carries both the TCP and UDP legs (the
+    /// client encodes the leg in a hidden token bit; the server splits them).
+    /// Renders `ss_ws_url` + `ss_mode`; mutually exclusive with the split
+    /// `tcp_*` / `udp_*` fields.
+    SsWsCombined {
+        url: String,
+        mode: String,
+    },
     VlessWs {
         url: String,
         mode: String,
@@ -202,7 +227,7 @@ pub enum Wire {
 impl Wire {
     pub fn transport(&self) -> &'static str {
         match self {
-            Wire::SsWs { .. } | Wire::SsXhttp { .. } => "ss",
+            Wire::SsWs { .. } | Wire::SsXhttp { .. } | Wire::SsWsCombined { .. } => "ss",
             Wire::VlessWs { .. } | Wire::VlessXhttp { .. } => "vless",
         }
     }
@@ -220,6 +245,10 @@ impl Wire {
             Wire::SsXhttp { tcp_url, mode } => {
                 let _ = writeln!(out, "tcp_xhttp_url = \"{tcp_url}\"");
                 let _ = writeln!(out, "tcp_mode = \"{mode}\"");
+            },
+            Wire::SsWsCombined { url, mode } => {
+                let _ = writeln!(out, "ss_ws_url = \"{url}\"");
+                let _ = writeln!(out, "ss_mode = \"{mode}\"");
             },
             Wire::VlessWs { url, mode } => {
                 let _ = writeln!(out, "vless_ws_url = \"{url}\"");
