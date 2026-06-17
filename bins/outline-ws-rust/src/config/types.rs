@@ -100,6 +100,16 @@ impl PaddingConfig {
         }
     }
 
+    /// The scheme parameters (range), built from `min_bytes..max_bytes`
+    /// REGARDLESS of `enabled`. The on/off decision is resolved per dial in
+    /// `carrier_padding` (global `enabled` default + per-uplink override), so
+    /// the parameters must stay available even when the global default is off —
+    /// otherwise a per-uplink `padding = true` would have no scheme to apply.
+    /// `max_bytes = 0` still collapses to disabled (explicit "no framing").
+    pub fn scheme_params(&self) -> outline_wire::padding::PaddingScheme {
+        outline_wire::padding::PaddingScheme::new(self.min_bytes, self.max_bytes)
+    }
+
     /// Whether to emit idle cover frames: padding on *and* cover requested.
     pub fn cover_enabled(&self) -> bool {
         self.enabled && self.cover

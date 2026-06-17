@@ -42,6 +42,38 @@ pub(super) async fn connect_probe_tcp(
     effective_tcp_mode: TransportMode,
     dial_limit: Arc<Semaphore>,
 ) -> Result<(TcpWriter, TcpReader, Option<TransportMode>)> {
+    // Scope the per-uplink padding override over the whole probe dial + build:
+    // the probe transport reads `effective_carrier_padding` when it splits and
+    // builds the reader/writer (after `dial_in_uplink_scope` hands back the
+    // stream), so the build must run inside the override too — otherwise a
+    // probe to a padded per-uplink path would dial plain, get rejected, and
+    // flap the uplink unhealthy. raw-QUIC is never padded, so the QUIC arm
+    // inside is a no-op under the scope.
+    crate::dial::with_uplink_padding_scope(
+        uplink,
+        connect_probe_tcp_inner(
+            cache,
+            uplink,
+            target,
+            source,
+            probe_label,
+            effective_tcp_mode,
+            dial_limit,
+        ),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn connect_probe_tcp_inner(
+    cache: &DnsCache,
+    uplink: &UplinkConfig,
+    target: &TargetAddr,
+    source: &'static str,
+    probe_label: &str,
+    effective_tcp_mode: TransportMode,
+    dial_limit: Arc<Semaphore>,
+) -> Result<(TcpWriter, TcpReader, Option<TransportMode>)> {
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
     let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");

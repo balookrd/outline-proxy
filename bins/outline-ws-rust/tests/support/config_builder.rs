@@ -277,6 +277,7 @@ pub struct UplinkSpec {
     pub weight: f64,
     pub shuffle_wires: Option<bool>,
     pub carrier_downgrade: Option<bool>,
+    pub padding: Option<bool>,
 }
 
 impl UplinkSpec {
@@ -289,11 +290,18 @@ impl UplinkSpec {
             weight: 1.0,
             shuffle_wires: None,
             carrier_downgrade: None,
+            padding: None,
         }
     }
 
     pub fn with_fallback(mut self, wire: Wire, creds: Creds) -> Self {
         self.fallbacks.push((wire, creds));
+        self
+    }
+
+    /// Per-uplink carrier-padding override (`[[outline.uplinks]] padding`).
+    pub fn padding(mut self, on: bool) -> Self {
+        self.padding = Some(on);
         self
     }
 
@@ -310,6 +318,9 @@ impl UplinkSpec {
         }
         if let Some(b) = self.carrier_downgrade {
             let _ = writeln!(out, "carrier_downgrade = {b}");
+        }
+        if let Some(b) = self.padding {
+            let _ = writeln!(out, "padding = {b}");
         }
         for (wire, creds) in &self.fallbacks {
             let _ = writeln!(out, "\n[[outline.uplinks.fallbacks]]");
@@ -428,8 +439,11 @@ pub struct ClientConfig {
     metrics: Option<SocketAddr>,
     state_path: String,
     probe: ProbeSpec,
-    /// `Some(cover)` when carrier padding is on (global on the client side).
-    padding: Option<bool>,
+    /// `Some((enabled, cover))` when the global `[padding]` block is emitted.
+    /// `enabled` is the global default on/off; scheme params are always written
+    /// so a per-uplink `padding = true` override has a scheme even when the
+    /// global default is off.
+    padding: Option<(bool, bool)>,
     groups: Vec<GroupSpec>,
 }
 
@@ -449,7 +463,16 @@ impl ClientConfig {
     /// Enable carrier padding (global). `cover` toggles idle cover frames with
     /// a fast 50–100 ms jitter to keep tests quick.
     pub fn with_padding(mut self, cover: bool) -> Self {
-        self.padding = Some(cover);
+        self.padding = Some((true, cover));
+        self
+    }
+
+    /// Emit the global `[padding]` block with an explicit `enabled` default.
+    /// Used to test the per-uplink override path: `enabled = false` globally
+    /// (scheme params still present) while a specific uplink sets
+    /// `padding = true`.
+    pub fn with_padding_default(mut self, enabled: bool, cover: bool) -> Self {
+        self.padding = Some((enabled, cover));
         self
     }
 
@@ -473,9 +496,9 @@ impl ClientConfig {
         // Top-level keys must precede every [table] header in TOML.
         let _ = writeln!(s, "state_path = \"{}\"", self.state_path);
 
-        if let Some(cover) = self.padding {
+        if let Some((enabled, cover)) = self.padding {
             let _ = writeln!(s, "\n[padding]");
-            let _ = writeln!(s, "enabled = true");
+            let _ = writeln!(s, "enabled = {enabled}");
             let _ = writeln!(s, "min_bytes = 16");
             let _ = writeln!(s, "max_bytes = 256");
             let _ = writeln!(s, "cover = {cover}");

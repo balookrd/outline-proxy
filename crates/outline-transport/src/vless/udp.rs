@@ -9,10 +9,16 @@ use parking_lot::Mutex as SyncMutex;
 use socks5_proto::TargetAddr;
 use url::Url;
 
+use outline_wire::padding::PaddingDecoder;
+
 use crate::{
     DialNetworkOptions, DialResumeOptions, DnsCache, TransportDialOptions, TransportOperation,
     TransportStream, UplinkConnectionBinding, UpstreamTransportGuard, WsClosed,
-    config::TransportMode, connect_transport, frame_io_ws::carrier_liveness, resumption::SessionId,
+    carrier_padding::{self, CarrierPadding},
+    config::TransportMode,
+    connect_transport,
+    frame_io_ws::carrier_liveness,
+    resumption::SessionId,
 };
 
 use super::header::{MAX_VLESS_UDP_PAYLOAD, VLESS_CMD_UDP, VLESS_VERSION, build_request_header};
@@ -33,12 +39,27 @@ pub struct VlessUdpTransport {
     /// are touched together and `read_packet` is serialized by the caller
     /// (one outstanding read at a time per session).
     recv_state: SyncMutex<VlessUdpRecvState>,
+    /// Process-wide carrier padding read at construction. When enabled, each
+    /// outbound datagram is wrapped in padding frames (`real` = the VLESS-UDP
+    /// `len||payload` record, plus a random pad tail) before `send_datagram`,
+    /// and inbound datagrams are decoded before record parsing. Disabled by
+    /// default → plain wire (matches SS-UDP). Per-datagram with no cover
+    /// frames, since UDP preserves packet boundaries. Unlike SS-UDP, VLESS-UDP
+    /// must pad here because VLESS multiplexes tcp/udp on one path and the
+    /// server cannot tell the legs apart before reading data (see PADDING.md).
+    padding: CarrierPadding,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
 struct VlessUdpRecvState {
     pending_header: bool,
     buf: BytesMut,
+    /// `Some` iff [`VlessUdpTransport::padding`] is enabled: inbound datagrams
+    /// are run through this decoder before record parsing. Held on the recv
+    /// state so `read_packet` (the only reader) owns it under the same lock as
+    /// `buf`. A padding frame never spans datagrams (the sender emits one per
+    /// `send_packet`), but the streaming decoder handles either shape.
+    padding_decoder: Option<PaddingDecoder>,
 }
 
 /// Public alias kept for backwards compatibility with the previous
@@ -71,13 +92,16 @@ impl VlessUdpTransport {
         source: &'static str,
     ) -> Self {
         let header = build_request_header(uuid, VLESS_CMD_UDP, target, &[]);
+        let padding = carrier_padding::effective_carrier_padding();
         Self {
             chan,
             pending_header: SyncMutex::new(Some(header)),
             recv_state: SyncMutex::new(VlessUdpRecvState {
                 pending_header: true,
                 buf: BytesMut::new(),
+                padding_decoder: padding.scheme.is_enabled().then(PaddingDecoder::new),
             }),
+            padding,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         }
     }
@@ -185,7 +209,23 @@ impl VlessUdpTransport {
         frame.reserve(need);
         frame.put_u16(payload.len() as u16);
         frame.extend_from_slice(payload);
-        self.chan.send_datagram(Bytes::from(frame)).await
+        // When padding is on, wrap the whole `[header]||len||payload` record in
+        // one padding frame so the datagram size no longer tracks the payload;
+        // the server decodes it back before VLESS-UDP record parsing. Otherwise
+        // hand it through unchanged (plain wire, like SS-UDP).
+        let datagram: Bytes = if self.padding.scheme.is_enabled() {
+            let mut out = Vec::with_capacity(frame.len() + 8);
+            carrier_padding::frame_payload_into(
+                self.padding.scheme,
+                &frame,
+                &mut rand::rng(),
+                &mut out,
+            );
+            Bytes::from(out)
+        } else {
+            Bytes::from(frame)
+        };
+        self.chan.send_datagram(datagram).await
     }
 
     pub async fn read_packet(&self) -> Result<Bytes> {
@@ -207,7 +247,21 @@ impl VlessUdpTransport {
                 .await?
                 .ok_or_else(|| anyhow::Error::from(WsClosed))?;
             let mut state = self.recv_state.lock();
-            state.buf.extend_from_slice(&next);
+            {
+                // Strip carrier padding before reassembly when this session
+                // pads. A cover frame (real_len = 0) decodes to nothing, so the
+                // surrounding loop reads the next datagram. Reborrow to split
+                // the `padding_decoder` / `buf` field borrows under the guard.
+                let st = &mut *state;
+                match st.padding_decoder.as_mut() {
+                    Some(decoder) => {
+                        let mut decoded = Vec::with_capacity(next.len());
+                        decoder.push(&next, &mut decoded);
+                        st.buf.extend_from_slice(&decoded);
+                    },
+                    None => st.buf.extend_from_slice(&next),
+                }
+            }
             if state.pending_header {
                 if state.buf.len() < 2 {
                     continue;

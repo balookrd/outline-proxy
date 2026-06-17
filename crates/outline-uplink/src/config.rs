@@ -284,6 +284,18 @@ pub struct UplinkConfig {
     /// `UplinkSection::carrier_downgrade` in the TOML schema for the
     /// operator-facing description.
     pub carrier_downgrade: bool,
+    /// Per-uplink carrier-padding override. `None` inherits the global
+    /// `[padding] enabled` default; `Some(true)` pads every dial on this
+    /// uplink (using the global `[padding]` scheme params) even when the
+    /// global default is off; `Some(false)` keeps this uplink's wire plain
+    /// even when the global default is on. Lets an operator pad their own
+    /// servers while leaving a VLESS uplink to a third-party server (xray /
+    /// sing-box) unpadded. Applies to the whole uplink — primary and every
+    /// fallback wire — since they share one server identity, so the manager
+    /// scopes each dial through [`crate::dial::dial_in_uplink_scope`]. See
+    /// `UplinkSection::padding` in the TOML schema for the operator-facing
+    /// description.
+    pub padding: Option<bool>,
     /// Periodic active-wire reroll interval. `Some(d)` enables the
     /// background timer that rerolls `active_wire` for both TCP and
     /// UDP transports every `d`; `None` keeps the active wire sticky
@@ -441,6 +453,11 @@ impl UplinkConfig {
             // wire being probed should observe the same descent /
             // no-descent policy the parent uplink configured.
             carrier_downgrade: self.carrier_downgrade,
+            // Padding is a per-UPLINK identity property (our server vs a
+            // third-party one), so every wire of the uplink — primary and
+            // fallbacks — pads or stays plain together. The synthetic
+            // wire view inherits the parent's setting.
+            padding: self.padding,
             // Timer-driven wire rotation acts on the *parent's*
             // active_wire state — the synthetic single-wire view
             // probes use is never the target of a rotation, so the

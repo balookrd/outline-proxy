@@ -766,13 +766,13 @@ Warm-standby соединения учитывают активное состо
 
 ## Carrier-padding
 
-Опциональный application-layer padding для WebSocket / XHTTP дайлов — клиентская половина серверной опции `[padding]`. Каждый Shadowsocks-chunk оборачивается в length-delimited кадр `real_len | pad_len | real | pad`, поэтому размер внешней TLS-записи больше не повторяет размер payload — это ломает корреляцию по размеру записей, на которую опираются TLS-in-TLS классификаторы.
+Опциональный application-layer padding для WebSocket / XHTTP дайлов — клиентская половина серверной опции `[padding]`. Каждый Shadowsocks-chunk или VLESS-кадр оборачивается в length-delimited кадр `real_len | pad_len | real | pad`, поэтому размер внешней TLS-записи больше не повторяет размер payload — это ломает корреляцию по размеру записей, на которую опираются TLS-in-TLS классификаторы.
 
-- **Глобально.** В отличие от per-path-настройки сервера, этот клиент всегда «наш», поэтому `[padding]` здесь padding'ует каждый WS / XHTTP дайл при включении.
+- **Глобальный дефолт + per-uplink override.** Блок `[padding]` задаёт параметры схемы и дефолтный on/off (`enabled`); каждый `[[outline.uplinks]]` может переопределить его через `padding = true` / `padding = false`. Эффективное решение для дайла — per-uplink значение, если задано, иначе глобальный дефолт (та же схема override/fallback, что у per-uplink `fingerprint_profile`). Оставьте глобальный дефолт выключенным и ставьте `padding = true` на аплинках, ведущих на ваши padded-серверы; либо оставьте включённым и ставьте `padding = false` на VLESS-аплинке к стороннему серверу (xray / sing-box), чтобы он остался чистым. Padded-дайл (и SS, и VLESS, и TCP, и VLESS-UDP) обязан указывать на серверный путь, который тоже паддится.
 - **Config-синхронизация, без согласования.** Сервер обязан включить `[padding]` на соответствующем carrier-пути (`outline-ss-rust` `[padding] paths`), иначе padded-кадры сломают его декодер. По умолчанию выключено (wire неизменен).
 - **Cover-трафик.** При `cover = true` uplink отправляет pad-only кадры на простаивающем соединении со случайным интервалом (`cover_jitter_min_ms` … `cover_jitter_max_ms`).
 
-Покрывает SS-over-WebSocket (h1/h2/h3) и SS-over-XHTTP одинаково; UDP-носители не padding'уются. Полный справочник: [`docs/PADDING.ru.md`](../../docs/PADDING.ru.md); параметры — в блоке `[padding]` в `config.toml`.
+Покрывает SS- и VLESS-over-WebSocket (h1/h2/h3) и -over-XHTTP одинаково; VLESS-UDP паддится по датаграмме (делит единый путь VLESS), а SS-UDP остаётся чистым. Полный справочник: [`docs/PADDING.ru.md`](../../docs/PADDING.ru.md); параметры — в блоке `[padding]` в `config.toml`.
 
 ## Выбор аплинка и runtime-поведение
 

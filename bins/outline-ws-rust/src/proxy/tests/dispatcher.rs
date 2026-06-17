@@ -42,6 +42,7 @@ fn uplink(name: &str) -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }

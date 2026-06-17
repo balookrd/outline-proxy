@@ -78,6 +78,7 @@ fn dead_uplink(name: &str, weight: f64) -> UplinkConfig {
         fallbacks: vec![ss_fallback("fb1"), ss_fallback("fb2")],
         shuffle_wires: true,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }

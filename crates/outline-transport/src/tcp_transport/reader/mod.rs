@@ -109,7 +109,7 @@ impl TcpShadowsocksReader<WsReadTransport> {
                 ctrl_tx,
                 buffer: Vec::new(),
                 diag: WsReadDiag::default(),
-                padding: carrier_padding::carrier_padding()
+                padding: carrier_padding::effective_carrier_padding()
                     .scheme
                     .is_enabled()
                     .then(PaddingDecoder::new),

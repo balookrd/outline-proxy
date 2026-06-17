@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Duration};
 use anyhow::{Result, anyhow};
 use axum::extract::ws::WebSocket;
 use bytes::Bytes;
+use outline_wire::padding::PaddingDecoder;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -18,6 +19,7 @@ use super::super::{
     },
     resumption::{Parked, ResumeOutcome, SessionId},
 };
+use super::carrier_padding;
 use super::resume_headers::ResumeContext;
 use super::sink;
 use super::vless_mux::{self, MuxRouteCtx, MuxServerCtx, MuxState};
@@ -57,9 +59,11 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
         Transport::Tcp,
         route.protocol,
         AppProtocol::Vless,
-        // Carrier padding currently targets the Shadowsocks carriers only;
-        // VLESS keeps the plain wire, so no cover traffic.
-        None,
+        // Idle cover traffic on the downlink when this path opts into padding.
+        // Covers VLESS-over-WS and VLESS-over-XHTTP alike (both ride this
+        // writer); a cover frame is a `Binary` message the client's decoder
+        // drops transparently.
+        carrier_padding::cover_for_path(&route.path),
     ));
 
     let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);
@@ -70,6 +74,11 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
 
     let mut state = VlessRelayState::new(resume);
     let mut client_closed = false;
+    // Carrier-padding decoder for the uplink, allocated only when this path
+    // pads. Held across the loop because a padding frame may span WS/h2/h3 DATA
+    // frame boundaries. Covers VLESS-TCP and VLESS-UDP uplink alike — the
+    // client frames both legs on a padded path (config-synchronised gate).
+    let mut padding_decoder = route.padding.is_enabled().then(PaddingDecoder::new);
     // Last instant any inbound WS frame was observed; reset on every recv.
     // The keepalive tick checks this against `pong_deadline` and tears the
     // session down if the peer has gone silent (mobile in tunnel, NAT
@@ -89,6 +98,22 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
                 last_inbound = std::time::Instant::now();
                 match T::classify(msg) {
                     WsFrame::Binary(data) => {
+                        // Strip carrier padding before VLESS parsing/relaying
+                        // when this path pads. A cover frame (real_len = 0)
+                        // decodes to nothing and is skipped; a padding frame may
+                        // span DATA frames, so the decoder state lives across
+                        // the loop.
+                        let data = match padding_decoder.as_mut() {
+                            Some(decoder) => {
+                                let mut out = Vec::with_capacity(data.len());
+                                decoder.push(&data, &mut out);
+                                if out.is_empty() {
+                                    continue;
+                                }
+                                Bytes::from(out)
+                            },
+                            None => data,
+                        };
                         if let Err(frame_err) = handle_vless_binary_frame(
                             &mut state,
                             data,

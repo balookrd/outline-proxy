@@ -769,13 +769,13 @@ When a timeout fires, the error is treated as an upstream runtime failure: the s
 
 ## Carrier Padding
 
-Optional application-layer padding for the WebSocket / XHTTP dials — the client half of the server's `[padding]` feature. Each Shadowsocks chunk is wrapped in a length-delimited `real_len | pad_len | real | pad` frame so the outer TLS record size no longer tracks the payload size, defeating the record-size correlation TLS-in-TLS classifiers key on.
+Optional application-layer padding for the WebSocket / XHTTP dials — the client half of the server's `[padding]` feature. Each Shadowsocks chunk or VLESS frame is wrapped in a length-delimited `real_len | pad_len | real | pad` frame so the outer TLS record size no longer tracks the payload size, defeating the record-size correlation TLS-in-TLS classifiers key on.
 
-- **Global.** Unlike the server's per-path knob, this client is always "ours", so `[padding]` here pads every WS / XHTTP dial when enabled.
+- **Global default + per-uplink override.** The `[padding]` block sets the scheme parameters and a default on/off (`enabled`); each `[[outline.uplinks]]` may override it with `padding = true` / `padding = false`. The effective decision for a dial is the per-uplink value when set, else the global default (same override/fallback shape as the per-uplink `fingerprint_profile`). Leave the global default off and set `padding = true` on the uplinks pointing at your own padded servers; or leave it on and set `padding = false` on a VLESS uplink aimed at a third-party server (xray / sing-box) so it stays plain. A padded dial (SS and VLESS, TCP and VLESS-UDP) must point at a server path that is also padded.
 - **Config-synchronised, not negotiated.** The server must enable `[padding]` on the matching carrier path (`outline-ss-rust` `[padding] paths`) or the padded frames break its decoder. Off by default (wire unchanged).
 - **Cover traffic.** With `cover = true` the uplink emits pad-only frames on an idle connection at a jittered interval (`cover_jitter_min_ms` … `cover_jitter_max_ms`).
 
-Covers SS-over-WebSocket (h1/h2/h3) and SS-over-XHTTP alike; UDP carriers are not padded. Full reference: [`docs/PADDING.md`](../../docs/PADDING.md); the `[padding]` block in `config.toml` lists the knobs.
+Covers SS- and VLESS-over-WebSocket (h1/h2/h3) and -over-XHTTP alike; VLESS-UDP is padded per-datagram (it shares VLESS's single path), while SS-UDP stays plain. Full reference: [`docs/PADDING.md`](../../docs/PADDING.md); the `[padding]` block in `config.toml` lists the knobs.
 
 ## Uplink Selection and Runtime Behavior
 

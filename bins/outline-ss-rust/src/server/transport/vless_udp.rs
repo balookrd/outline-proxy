@@ -8,6 +8,8 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
+use outline_wire::padding::PaddingScheme;
+
 use crate::{
     fwmark::apply_fwmark_if_needed,
     metrics::{AppProtocol, Metrics, PerUserCounters, Protocol},
@@ -15,6 +17,7 @@ use crate::{
     protocol::vless::{self, VlessUser},
 };
 
+use super::carrier_padding;
 use super::{
     super::{
         abort::AbortOnDrop,
@@ -65,7 +68,10 @@ where
                 );
                 outbound
                     .data_tx
-                    .send((outbound.make_binary)(Bytes::from_static(&[vless::VERSION, 0x00])))
+                    .send((outbound.make_binary)(carrier_padding::frame_vless_downlink(
+                        route.padding,
+                        Bytes::from_static(&[vless::VERSION, 0x00]),
+                    )))
                     .await
                     .map_err(|error| {
                         anyhow!("failed to queue vless udp response header on resume: {error}")
@@ -76,6 +82,7 @@ where
                 let metrics = Arc::clone(&server.metrics);
                 let user_id = parked.user.label_arc();
                 let protocol = route.protocol;
+                let padding = route.padding;
                 let cancel = Arc::new(Notify::new());
                 let cancel_for_task = Arc::clone(&cancel);
                 let reader_task = AbortOnDrop::new(tokio::spawn(async move {
@@ -88,6 +95,7 @@ where
                         protocol,
                         user_id,
                         Some(cancel_for_task),
+                        padding,
                     )
                     .await
                 }));
@@ -184,7 +192,10 @@ where
 
     outbound
         .data_tx
-        .send((outbound.make_binary)(Bytes::from_static(&[vless::VERSION, 0x00])))
+        .send((outbound.make_binary)(carrier_padding::frame_vless_downlink(
+            route.padding,
+            Bytes::from_static(&[vless::VERSION, 0x00]),
+        )))
         .await
         .map_err(|error| anyhow!("failed to queue vless response header: {error}"))?;
 
@@ -192,6 +203,7 @@ where
     let metrics = Arc::clone(&server.metrics);
     let user_id = user.label_arc();
     let protocol = route.protocol;
+    let padding = route.padding;
     let reader_socket = Arc::clone(&socket);
     // Cancel-notify is registered unconditionally so park-on-drop can
     // ask the reader to stop and (for UDP) signal `UdpCancelled`. When
@@ -208,6 +220,7 @@ where
             protocol,
             user_id,
             Some(cancel_for_task),
+            padding,
         )
         .await
     }));
@@ -316,6 +329,8 @@ async fn relay_vless_udp_upstream_to_client<Msg>(
     protocol: Protocol,
     user_id: Arc<str>,
     cancel: Option<Arc<Notify>>,
+    // Carrier-padding scheme for this path; disabled → plain wire.
+    padding: PaddingScheme,
 ) -> Result<VlessRelayOutcome>
 where
     Msg: Send + 'static,
@@ -362,7 +377,8 @@ where
                 let mut framed = BytesMut::with_capacity(2 + read);
                 framed.put_u16(read as u16);
                 framed.extend_from_slice(&buffer[..read]);
-                tx.send(make_binary(framed.freeze())).await.map_err(|error| {
+                let datagram = carrier_padding::frame_vless_downlink(padding, framed.freeze());
+                tx.send(make_binary(datagram)).await.map_err(|error| {
                     anyhow!("failed to queue vless udp websocket frame: {error}")
                 })?;
             }

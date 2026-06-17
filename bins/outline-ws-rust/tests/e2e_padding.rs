@@ -80,6 +80,139 @@ fn padding_ss_ws_h1_roundtrip_with_cover() -> Result<(), BoxError> {
     Ok(())
 }
 
+/// Per-uplink override: the global `[padding]` default is OFF
+/// (`enabled = false`), but the uplink pins `padding = true`, so its dials are
+/// padded anyway. Proves the override/fallback resolution end-to-end —
+/// `effective_carrier_padding` reads the per-uplink task-local that
+/// `dial_in_uplink_scope` sets, not the global default. The server pads the
+/// matching path, so the round-trip survives ONLY if the override actually
+/// turned padding on for this uplink (a plain dial would desync the decoder).
+#[test]
+fn padding_per_uplink_override_with_global_default_off() -> Result<(), BoxError> {
+    if !e2e_enabled() {
+        skip_notice("padding_per_uplink_override_with_global_default_off");
+        return Ok(());
+    }
+
+    let dir = TestDir::new()?;
+    let echo = EchoUpstream::start()?;
+
+    // ── Server: pad the SS-over-WS path ──
+    let server_addr = reserve_addr()?;
+    let server_cfg = ServerConfig::new(server_addr)
+        .all_paths()
+        .with_padding(&[PATH_SS_TCP], false)
+        .render();
+    let server_cfg_path = write_file(dir.path(), "server.toml", &server_cfg)?;
+    let server_log = dir.path().join("server.log");
+    let mut server = ServerProcess::start(&server_cfg_path, &server_log, server_addr)?;
+    server.wait_ready(Duration::from_secs(15))?;
+
+    // ── Client: GLOBAL default OFF (scheme params still present), but the
+    // uplink pins `padding = true`. Without a working override the dial would
+    // be plain and the padded server would reject it. ──
+    let socks = reserve_addr()?;
+    let state_path = dir.path().join("client.state.toml");
+    let uplink = UplinkSpec::new(
+        "up-a",
+        Wire::SsWs {
+            tcp_url: format!("ws://{server_addr}{PATH_SS_TCP}"),
+            udp_url: None,
+            mode: "ws_h1".into(),
+        },
+        Creds::ss(),
+    )
+    .padding(true);
+    let client_cfg = ClientConfig::new(socks, &state_path, ProbeSpec::disabled())
+        .with_padding_default(false, false)
+        .group(GroupSpec::new("active_active", "per_flow").uplink(uplink))
+        .render();
+    let client_cfg_path = write_file(dir.path(), "client.toml", &client_cfg)?;
+    let client_log = dir.path().join("client.log");
+    let mut client = ProxyProcess::start(&client_cfg_path, &client_log)?;
+    client
+        .wait_ready(socks.port(), Duration::from_secs(15))
+        .map_err(|e| format!("{e}\nclient log:\n{}", client.logs().unwrap_or_default()))?;
+
+    socks5_echo_roundtrip(socks.port(), echo.tcp_addr(), b"per-uplink-override-padding").map_err(
+        |e| {
+            format!(
+                "per-uplink override round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+                client.logs().unwrap_or_default(),
+                server.logs().unwrap_or_default()
+            )
+        },
+    )?;
+    assert!(echo.tcp_connections() >= 1, "server never reached the echo upstream");
+
+    client.stop()?;
+    server.kill()?;
+    Ok(())
+}
+
+/// Per-uplink override on the VLESS-UDP path. Global default OFF, the VLESS
+/// uplink pins `padding = true`. VLESS-UDP dials lazily inside the session mux
+/// — outside the dial scope — so this exercises the mux `with_padding_override`
+/// plumbing that captures the override on the dialer and re-applies it per
+/// per-target dial. Without it the UDP datagram would be unframed and the
+/// padded server would corrupt it.
+#[test]
+fn padding_vless_udp_per_uplink_override() -> Result<(), BoxError> {
+    if !e2e_enabled() {
+        skip_notice("padding_vless_udp_per_uplink_override");
+        return Ok(());
+    }
+
+    let dir = TestDir::new()?;
+    let echo = EchoUpstream::start()?;
+
+    let server_addr = reserve_addr()?;
+    let server_cfg = ServerConfig::new(server_addr)
+        .all_paths()
+        .with_padding(&[PATH_VLESS_WS], false)
+        .render();
+    let server_cfg_path = write_file(dir.path(), "server.toml", &server_cfg)?;
+    let server_log = dir.path().join("server.log");
+    let mut server = ServerProcess::start(&server_cfg_path, &server_log, server_addr)?;
+    server.wait_ready(Duration::from_secs(15))?;
+
+    let socks = reserve_addr()?;
+    let state_path = dir.path().join("client.state.toml");
+    let uplink = UplinkSpec::new(
+        "up-v",
+        Wire::VlessWs {
+            url: format!("ws://{server_addr}{PATH_VLESS_WS}"),
+            mode: "ws_h1".into(),
+        },
+        Creds::vless(),
+    )
+    .padding(true);
+    let client_cfg = ClientConfig::new(socks, &state_path, ProbeSpec::disabled())
+        .with_padding_default(false, false)
+        .group(GroupSpec::new("active_active", "per_flow").uplink(uplink))
+        .render();
+    let client_cfg_path = write_file(dir.path(), "client.toml", &client_cfg)?;
+    let client_log = dir.path().join("client.log");
+    let mut client = ProxyProcess::start(&client_cfg_path, &client_log)?;
+    client
+        .wait_ready(socks.port(), Duration::from_secs(15))
+        .map_err(|e| format!("{e}\nclient log:\n{}", client.logs().unwrap_or_default()))?;
+
+    let payload = b"vless-udp-per-uplink-override";
+    let echoed = socks5_udp_echo(socks.port(), echo.udp_addr(), payload).map_err(|e| {
+        format!(
+            "VLESS-UDP per-uplink override round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+            client.logs().unwrap_or_default(),
+            server.logs().unwrap_or_default()
+        )
+    })?;
+    assert_eq!(echoed, payload, "VLESS-UDP echo must survive padding under per-uplink override");
+
+    client.stop()?;
+    server.kill()?;
+    Ok(())
+}
+
 #[test]
 fn padding_ss_xhttp_h1_roundtrip() -> Result<(), BoxError> {
     if !e2e_enabled() {
@@ -127,6 +260,188 @@ fn padding_ss_xhttp_h1_roundtrip() -> Result<(), BoxError> {
         |e| {
             format!(
                 "padded XHTTP round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+                client.logs().unwrap_or_default(),
+                server.logs().unwrap_or_default()
+            )
+        },
+    )?;
+    assert!(echo.tcp_connections() >= 1, "server never reached the echo upstream");
+
+    client.stop()?;
+    server.kill()?;
+    Ok(())
+}
+
+#[test]
+fn padding_vless_ws_h1_roundtrip_with_cover() -> Result<(), BoxError> {
+    if !e2e_enabled() {
+        skip_notice("padding_vless_ws_h1_roundtrip_with_cover");
+        return Ok(());
+    }
+
+    let dir = TestDir::new()?;
+    let echo = EchoUpstream::start()?;
+
+    // ── Server: pad the VLESS-over-WS path, idle cover on the downlink ──
+    let server_addr = reserve_addr()?;
+    let server_cfg = ServerConfig::new(server_addr)
+        .all_paths()
+        .with_padding(&[PATH_VLESS_WS], true)
+        .render();
+    let server_cfg_path = write_file(dir.path(), "server.toml", &server_cfg)?;
+    let server_log = dir.path().join("server.log");
+    let mut server = ServerProcess::start(&server_cfg_path, &server_log, server_addr)?;
+    server.wait_ready(Duration::from_secs(15))?;
+
+    // ── Client: padding on (global), one VLESS-over-WS-h1 uplink on that path ──
+    let socks = reserve_addr()?;
+    let state_path = dir.path().join("client.state.toml");
+    let uplink = UplinkSpec::new(
+        "up-v",
+        Wire::VlessWs {
+            url: format!("ws://{server_addr}{PATH_VLESS_WS}"),
+            mode: "ws_h1".into(),
+        },
+        Creds::vless(),
+    );
+    let client_cfg = ClientConfig::new(socks, &state_path, ProbeSpec::disabled())
+        .with_padding(true)
+        .group(GroupSpec::new("active_active", "per_flow").uplink(uplink))
+        .render();
+    let client_cfg_path = write_file(dir.path(), "client.toml", &client_cfg)?;
+    let client_log = dir.path().join("client.log");
+    let mut client = ProxyProcess::start(&client_cfg_path, &client_log)?;
+    client
+        .wait_ready(socks.port(), Duration::from_secs(15))
+        .map_err(|e| format!("{e}\nclient log:\n{}", client.logs().unwrap_or_default()))?;
+
+    // A VLESS round-trip only succeeds if the padded uplink frames decode
+    // server-side (before VLESS parsing) and the padded downlink decodes
+    // client-side (in the WS frame source) — i.e. framing is symmetric.
+    socks5_echo_roundtrip(socks.port(), echo.tcp_addr(), b"padded-vless-ws-roundtrip").map_err(
+        |e| {
+            format!(
+                "padded VLESS-WS round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+                client.logs().unwrap_or_default(),
+                server.logs().unwrap_or_default()
+            )
+        },
+    )?;
+    assert!(echo.tcp_connections() >= 1, "server never reached the echo upstream");
+
+    client.stop()?;
+    server.kill()?;
+    Ok(())
+}
+
+/// VLESS-UDP-over-WS rides the datagram channel, padded per-datagram inside
+/// `VlessUdpTransport` (the SS-UDP path stays plain). Because VLESS multiplexes
+/// tcp/udp on one path, the server cannot tell the legs apart before reading
+/// data — so the UDP leg MUST pad too, or a padded path would corrupt it. This
+/// drives a UDP echo through SOCKS5 UDP ASSOCIATE on the same padded VLESS path.
+#[test]
+fn padding_vless_ws_h1_udp_roundtrip() -> Result<(), BoxError> {
+    if !e2e_enabled() {
+        skip_notice("padding_vless_ws_h1_udp_roundtrip");
+        return Ok(());
+    }
+
+    let dir = TestDir::new()?;
+    let echo = EchoUpstream::start()?;
+
+    let server_addr = reserve_addr()?;
+    let server_cfg = ServerConfig::new(server_addr)
+        .all_paths()
+        .with_padding(&[PATH_VLESS_WS], true)
+        .render();
+    let server_cfg_path = write_file(dir.path(), "server.toml", &server_cfg)?;
+    let server_log = dir.path().join("server.log");
+    let mut server = ServerProcess::start(&server_cfg_path, &server_log, server_addr)?;
+    server.wait_ready(Duration::from_secs(15))?;
+
+    let socks = reserve_addr()?;
+    let state_path = dir.path().join("client.state.toml");
+    let uplink = UplinkSpec::new(
+        "up-v",
+        Wire::VlessWs {
+            url: format!("ws://{server_addr}{PATH_VLESS_WS}"),
+            mode: "ws_h1".into(),
+        },
+        Creds::vless(),
+    );
+    let client_cfg = ClientConfig::new(socks, &state_path, ProbeSpec::disabled())
+        .with_padding(true)
+        .group(GroupSpec::new("active_active", "per_flow").uplink(uplink))
+        .render();
+    let client_cfg_path = write_file(dir.path(), "client.toml", &client_cfg)?;
+    let client_log = dir.path().join("client.log");
+    let mut client = ProxyProcess::start(&client_cfg_path, &client_log)?;
+    client
+        .wait_ready(socks.port(), Duration::from_secs(15))
+        .map_err(|e| format!("{e}\nclient log:\n{}", client.logs().unwrap_or_default()))?;
+
+    let payload = b"padded-vless-udp-roundtrip";
+    let echoed = socks5_udp_echo(socks.port(), echo.udp_addr(), payload).map_err(|e| {
+        format!(
+            "padded VLESS-UDP round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+            client.logs().unwrap_or_default(),
+            server.logs().unwrap_or_default()
+        )
+    })?;
+    assert_eq!(echoed, payload, "VLESS-UDP echo payload must survive padding both ways");
+
+    client.stop()?;
+    server.kill()?;
+    Ok(())
+}
+
+#[test]
+fn padding_vless_xhttp_h1_roundtrip() -> Result<(), BoxError> {
+    if !e2e_enabled() {
+        skip_notice("padding_vless_xhttp_h1_roundtrip");
+        return Ok(());
+    }
+
+    let dir = TestDir::new()?;
+    let echo = EchoUpstream::start()?;
+
+    // ── Server: pad the VLESS-over-XHTTP path (rides run_vless_relay::<XhttpDuplex>) ──
+    let server_addr = reserve_addr()?;
+    let server_cfg = ServerConfig::new(server_addr)
+        .all_paths()
+        .with_padding(&[PATH_VLESS_XHTTP], false)
+        .render();
+    let server_cfg_path = write_file(dir.path(), "server.toml", &server_cfg)?;
+    let server_log = dir.path().join("server.log");
+    let mut server = ServerProcess::start(&server_cfg_path, &server_log, server_addr)?;
+    server.wait_ready(Duration::from_secs(15))?;
+
+    // ── Client: padding on, one VLESS-over-XHTTP-h1 uplink on the padded path ──
+    let socks = reserve_addr()?;
+    let state_path = dir.path().join("client.state.toml");
+    let uplink = UplinkSpec::new(
+        "up-vx",
+        Wire::VlessXhttp {
+            url: format!("http://{server_addr}{PATH_VLESS_XHTTP}"),
+            mode: "xhttp_h1".into(),
+        },
+        Creds::vless(),
+    );
+    let client_cfg = ClientConfig::new(socks, &state_path, ProbeSpec::disabled())
+        .with_padding(false)
+        .group(GroupSpec::new("active_active", "per_flow").uplink(uplink))
+        .render();
+    let client_cfg_path = write_file(dir.path(), "client.toml", &client_cfg)?;
+    let client_log = dir.path().join("client.log");
+    let mut client = ProxyProcess::start(&client_cfg_path, &client_log)?;
+    client
+        .wait_ready(socks.port(), Duration::from_secs(15))
+        .map_err(|e| format!("{e}\nclient log:\n{}", client.logs().unwrap_or_default()))?;
+
+    socks5_echo_roundtrip(socks.port(), echo.tcp_addr(), b"padded-vless-xhttp-roundtrip").map_err(
+        |e| {
+            format!(
+                "padded VLESS-XHTTP round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
                 client.logs().unwrap_or_default(),
                 server.logs().unwrap_or_default()
             )
@@ -203,6 +518,78 @@ fn padding_ss_ws_h3_roundtrip_with_cover() -> Result<(), BoxError> {
         |e| {
             format!(
                 "padded WS-H3 round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
+                client.logs().unwrap_or_default(),
+                server.logs().unwrap_or_default()
+            )
+        },
+    )?;
+    assert!(echo.tcp_connections() >= 1, "server never reached the echo upstream over H3");
+
+    client.stop()?;
+    server.kill()?;
+    Ok(())
+}
+
+/// VLESS-over-H3: same QUIC carrier as the SS-H3 case, but through
+/// `run_vless_relay::<H3Ws>`. Confirms the VLESS frame source/sink padding and
+/// cover frames ride the real H3 stream untouched. Requires `test-tls`.
+#[cfg(feature = "test-tls")]
+#[test]
+fn padding_vless_ws_h3_roundtrip_with_cover() -> Result<(), BoxError> {
+    if !e2e_enabled() {
+        skip_notice("padding_vless_ws_h3_roundtrip_with_cover");
+        return Ok(());
+    }
+
+    let dir = TestDir::new()?;
+    let echo = EchoUpstream::start()?;
+    let tls = harness::tls_fixture::TlsFixture::generate_into(dir.path())?;
+
+    // ── Server: TLS + H3, padding the VLESS-over-WS path with idle cover ──
+    let tcp_addr = reserve_addr()?;
+    let h3_addr = reserve_udp_addr()?;
+    let server_cfg = ServerConfig::new(tcp_addr)
+        .all_paths()
+        .with_tls(&tls.leaf_pem, &tls.key_pem)
+        .with_h3(h3_addr, &["h3", "vless", "ss"])
+        .with_padding(&[PATH_VLESS_WS], true)
+        .render();
+    let server_cfg_path = write_file(dir.path(), "server.toml", &server_cfg)?;
+    let server_log = dir.path().join("server.log");
+    let mut server = ServerProcess::start(&server_cfg_path, &server_log, tcp_addr)?;
+    server.wait_ready(Duration::from_secs(15))?;
+
+    // ── Client: padding on, single VLESS-over-H3 uplink on the QUIC port ──
+    let socks = reserve_addr()?;
+    let state_path = dir.path().join("client.state.toml");
+    let uplink = UplinkSpec::new(
+        "up-vh3",
+        Wire::VlessWs {
+            url: format!("wss://127.0.0.1:{}{PATH_VLESS_WS}", h3_addr.port()),
+            mode: "ws_h3".into(),
+        },
+        Creds::vless(),
+    );
+    let client_cfg = ClientConfig::new(socks, &state_path, ProbeSpec::disabled())
+        .with_padding(true)
+        .group(GroupSpec::new("active_passive", "global").uplink(uplink))
+        .render();
+    let client_cfg_path = write_file(dir.path(), "client.toml", &client_cfg)?;
+    let client_log = dir.path().join("client.log");
+    let ca = tls.ca_der.to_string_lossy().to_string();
+    let mut client = ProxyProcess::start_with_env(
+        &client_cfg_path,
+        &client_log,
+        &[("OUTLINE_WS_TEST_TLS_CA_DER", &ca)],
+    )?;
+    client
+        .wait_ready(socks.port(), Duration::from_secs(15))
+        .map_err(|e| format!("{e}\nclient log:\n{}", client.logs().unwrap_or_default()))?;
+
+    socks5_echo_roundtrip(socks.port(), echo.tcp_addr(), b"padded-vless-h3-roundtrip").map_err(
+        |e| {
+            format!(
+                "padded VLESS-H3 round-trip failed: {e}\nclient log:\n{}\nserver log:\n{}",
                 client.logs().unwrap_or_default(),
                 server.logs().unwrap_or_default()
             )

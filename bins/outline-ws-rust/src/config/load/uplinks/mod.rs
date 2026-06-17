@@ -50,6 +50,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             fallbacks: _,
             shuffle_wires,
             carrier_downgrade,
+            padding,
             shuffle_timer,
         } = input;
 
@@ -115,6 +116,10 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             fallbacks: Vec::new(),
             shuffle_wires,
             carrier_downgrade,
+            // Per-uplink padding override stays `Option<bool>` here: the
+            // on/off fallback to the global `[padding] enabled` happens per
+            // dial in `effective_carrier_padding`, not at load time.
+            padding,
             shuffle_timer,
         };
 

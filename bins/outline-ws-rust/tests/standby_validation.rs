@@ -94,6 +94,7 @@ async fn build_manager(
             fallbacks: Vec::new(),
             shuffle_wires: false,
             carrier_downgrade: true,
+            padding: None,
             shuffle_timer: None,
         }],
         ProbeConfig {

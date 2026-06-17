@@ -446,6 +446,7 @@ impl UplinkManager {
                         );
                     });
                 let factory_binding = binding();
+                let factory_padding = candidate.uplink.padding;
                 let ws_factory: outline_transport::WsFallbackFactory = Box::new(move || {
                     VlessUdpSessionMux::new_with_limits(
                         dns_cache,
@@ -459,6 +460,7 @@ impl UplinkManager {
                         limits,
                     )
                     .with_on_downgrade(Some(factory_on_downgrade))
+                    .with_padding_override(factory_padding)
                     .with_uplink_binding(factory_binding)
                 });
                 let manager = self.clone();
@@ -498,6 +500,7 @@ impl UplinkManager {
                 self.inner.load_balancing.vless_udp_mux_limits,
             )
             .with_on_downgrade(Some(on_downgrade))
+            .with_padding_override(candidate.uplink.padding)
             .with_uplink_binding(binding());
             return Ok(UdpSessionTransport::Vless(mux));
         }

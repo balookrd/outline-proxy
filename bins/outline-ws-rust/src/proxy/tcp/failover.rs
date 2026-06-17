@@ -124,6 +124,24 @@ pub(super) async fn connect_tcp_uplink(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<ConnectedTcpUplink> {
+    // Scope the per-uplink padding override over the whole dial + build. The
+    // transport reads `effective_carrier_padding` when it splits/spawns the
+    // writer (`do_tcp_ss_setup` / `vless_tcp_pair_from_ws`), which runs AFTER
+    // the dial future returns — so the scope must wrap this entire call, not
+    // just the dial (the manager's `dial_in_uplink_scope` covers only the dial,
+    // which is enough for the TLS fingerprint but not for padding).
+    outline_uplink::dial::with_uplink_padding_scope(
+        &candidate.uplink,
+        connect_tcp_uplink_inner(uplinks, candidate, target),
+    )
+    .await
+}
+
+async fn connect_tcp_uplink_inner(
+    uplinks: &UplinkManager,
+    candidate: &UplinkCandidate,
+    target: &TargetAddr,
+) -> Result<ConnectedTcpUplink> {
     let total_wires = 1 + candidate.uplink.fallbacks.len();
     let dial_order = uplinks.wire_dial_order(candidate.index, TransportKind::Tcp, total_wires);
 
@@ -222,23 +240,27 @@ pub(super) async fn connect_tcp_specific_wire(
     target: &TargetAddr,
     wire_index: u8,
 ) -> Result<ConnectedTcpUplink> {
-    if wire_index == 0 {
-        connect_tcp_uplink_primary(uplinks, candidate, target).await
-    } else {
-        let idx = (wire_index - 1) as usize;
-        let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
-            anyhow!("uplink {} has no fallback at index {}", candidate.uplink.name, idx,)
-        })?;
-        connect_tcp_fallback_fresh(
-            uplinks,
-            candidate,
-            fallback,
-            target,
-            wire_index,
-            FallbackDialOptions::default(),
-        )
-        .await
-    }
+    // Padding scope wraps the dial + transport build (see `connect_tcp_uplink`).
+    outline_uplink::dial::with_uplink_padding_scope(&candidate.uplink, async move {
+        if wire_index == 0 {
+            connect_tcp_uplink_primary(uplinks, candidate, target).await
+        } else {
+            let idx = (wire_index - 1) as usize;
+            let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
+                anyhow!("uplink {} has no fallback at index {}", candidate.uplink.name, idx,)
+            })?;
+            connect_tcp_fallback_fresh(
+                uplinks,
+                candidate,
+                fallback,
+                target,
+                wire_index,
+                FallbackDialOptions::default(),
+            )
+            .await
+        }
+    })
+    .await
 }
 
 /// Dial a specific wire on `candidate` *bypassing* the warm-standby pool —
@@ -254,23 +276,27 @@ pub(super) async fn connect_tcp_specific_wire_fresh(
     target: &TargetAddr,
     wire_index: u8,
 ) -> Result<ConnectedTcpUplink> {
-    if wire_index == 0 {
-        connect_tcp_uplink_fresh(uplinks, candidate, target).await
-    } else {
-        let idx = (wire_index - 1) as usize;
-        let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
-            anyhow!("uplink {} has no fallback at index {}", candidate.uplink.name, idx,)
-        })?;
-        connect_tcp_fallback_fresh(
-            uplinks,
-            candidate,
-            fallback,
-            target,
-            wire_index,
-            FallbackDialOptions::default(),
-        )
-        .await
-    }
+    // Padding scope wraps the dial + transport build (see `connect_tcp_uplink`).
+    outline_uplink::dial::with_uplink_padding_scope(&candidate.uplink, async move {
+        if wire_index == 0 {
+            connect_tcp_uplink_fresh(uplinks, candidate, target).await
+        } else {
+            let idx = (wire_index - 1) as usize;
+            let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
+                anyhow!("uplink {} has no fallback at index {}", candidate.uplink.name, idx,)
+            })?;
+            connect_tcp_fallback_fresh(
+                uplinks,
+                candidate,
+                fallback,
+                target,
+                wire_index,
+                FallbackDialOptions::default(),
+            )
+            .await
+        }
+    })
+    .await
 }
 
 async fn connect_tcp_uplink_primary(
@@ -393,6 +419,29 @@ pub(super) async fn connect_tcp_uplink_fresh(
 /// and pushing replay bytes through the writer before resuming the
 /// relay.
 pub(super) async fn redial_for_mid_session_retry(
+    uplinks: &UplinkManager,
+    candidate: &UplinkCandidate,
+    target: &TargetAddr,
+    wire_index: u8,
+    symmetric_replay_enabled: bool,
+    client_acked_offset: u64,
+) -> Result<ConnectedTcpUplink> {
+    // Padding scope wraps the dial + transport build (see `connect_tcp_uplink`).
+    outline_uplink::dial::with_uplink_padding_scope(
+        &candidate.uplink,
+        redial_for_mid_session_retry_inner(
+            uplinks,
+            candidate,
+            target,
+            wire_index,
+            symmetric_replay_enabled,
+            client_acked_offset,
+        ),
+    )
+    .await
+}
+
+async fn redial_for_mid_session_retry_inner(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
     target: &TargetAddr,

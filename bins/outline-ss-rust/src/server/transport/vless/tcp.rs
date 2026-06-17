@@ -8,6 +8,8 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
+use outline_wire::padding::PaddingScheme;
+
 use crate::{
     metrics::{AppProtocol, Metrics, Protocol, TcpUpstreamGuard},
     protocol::vless::{self, VlessUser},
@@ -20,6 +22,7 @@ use super::super::super::{
     resumption::{Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext},
     scratch::TcpRelayBuf,
 };
+use super::super::carrier_padding;
 use super::ctx::{
     TcpUpstream, UpstreamSession, VlessFrameError, VlessRelayOutcome, VlessRelayState,
     VlessRelayTaskOutput, VlessWsOutbound, VlessWsRouteCtx, VlessWsServerCtx,
@@ -196,7 +199,10 @@ where
         // its parser past the handshake before receiving payload.
         outbound
             .data_tx
-            .send((outbound.make_binary)(Bytes::from_static(&[vless::VERSION, 0x00])))
+            .send((outbound.make_binary)(carrier_padding::frame_vless_downlink(
+                route.padding,
+                Bytes::from_static(&[vless::VERSION, 0x00]),
+            )))
             .await
             .map_err(|error| anyhow!("failed to queue vless response header on resume: {error}"))?;
 
@@ -223,7 +229,10 @@ where
             let make_binary = outbound.make_binary;
             outbound
                 .data_tx
-                .send(make_binary(Bytes::copy_from_slice(&payload)))
+                .send(make_binary(carrier_padding::frame_vless_downlink(
+                    route.padding,
+                    Bytes::copy_from_slice(&payload),
+                )))
                 .await
                 .map_err(|error| {
                     anyhow!("failed to queue vless ack-prefix control frame on resume: {error}")
@@ -288,7 +297,10 @@ where
             let make_binary = outbound.make_binary;
             outbound
                 .data_tx
-                .send(make_binary(Bytes::copy_from_slice(&frame)))
+                .send(make_binary(carrier_padding::frame_vless_downlink(
+                    route.padding,
+                    Bytes::copy_from_slice(&frame),
+                )))
                 .await
                 .map_err(|error| {
                     anyhow!("failed to queue vless v2 downlink replay frame on resume: {error}")
@@ -327,6 +339,7 @@ where
         let metrics = Arc::clone(&server.metrics);
         let user_id_for_relay = Arc::clone(&user_id_for_resume);
         let protocol = route.protocol;
+        let padding = route.padding;
         let cancel = Arc::new(Notify::new());
         let cancel_for_task = Arc::clone(&cancel);
         let parked_reader = parked.upstream_reader;
@@ -343,6 +356,7 @@ where
                 user_id_for_relay,
                 Some(cancel_for_task),
                 ring_for_task,
+                padding,
             )
             .await
         }));
@@ -430,7 +444,10 @@ where
     let (upstream_reader, writer) = stream.into_split();
     outbound
         .data_tx
-        .send((outbound.make_binary)(Bytes::from_static(&[vless::VERSION, 0x00])))
+        .send((outbound.make_binary)(carrier_padding::frame_vless_downlink(
+            route.padding,
+            Bytes::from_static(&[vless::VERSION, 0x00]),
+        )))
         .await
         .map_err(|error| anyhow!("failed to queue vless response header: {error}"))?;
 
@@ -438,6 +455,7 @@ where
     let metrics = Arc::clone(&server.metrics);
     let user_id = user.label_arc();
     let protocol = route.protocol;
+    let padding = route.padding;
     // Cancel-notify is registered unconditionally so park-on-drop can
     // harvest the reader. When resumption is disabled the notify is
     // simply never fired and the relay loop runs in its single-arm
@@ -468,6 +486,7 @@ where
             user_id,
             Some(cancel_for_task),
             ring_for_task,
+            padding,
         )
         .await
     }));
@@ -533,6 +552,8 @@ async fn relay_vless_upstream_to_client<Msg>(
     downlink_ring: Option<
         Arc<parking_lot::Mutex<crate::server::resumption::downlink_ring::DownlinkRing>>,
     >,
+    // Carrier-padding scheme for this path; disabled → plain wire.
+    padding: PaddingScheme,
 ) -> VlessRelayTaskOutput
 where
     Msg: Send + 'static,
@@ -604,7 +625,11 @@ where
                     crate::metrics::AppProtocol::Vless,
                     used,
                 );
-                tx.send(make_binary(Bytes::copy_from_slice(&buffer[..total])))
+                let frame = carrier_padding::frame_vless_downlink(
+                    padding,
+                    Bytes::copy_from_slice(&buffer[..total]),
+                );
+                tx.send(make_binary(frame))
                     .await
                     .map_err(|error| anyhow!("failed to queue vless websocket frame: {error}"))?;
             }

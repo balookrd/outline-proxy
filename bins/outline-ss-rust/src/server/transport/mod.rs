@@ -164,12 +164,15 @@ pub(super) async fn vless_websocket_upgrade(
     // matching note in `tcp_websocket_upgrade`. VLESS-WS echoes the same
     // v1/v2 capabilities as the SS-WS path (v1.1).
     let echo = resume.response_echo();
+    // Resolve the carrier-padding scheme before `path` moves into the closure.
+    let padding = carrier_padding::scheme_for_path(&path);
     let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),
             protocol,
             path,
             candidate_users: Arc::clone(&route.candidate_users),
+            padding,
         };
         let result = vless::handle_vless_connection(socket, server, route_ctx, resume).await;
         finish_ws_session(session, result, "vless");
