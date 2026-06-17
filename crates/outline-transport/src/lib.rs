@@ -286,7 +286,7 @@ pub use fingerprint_profile::{
 // carriers (anti TLS-in-TLS). Wired once at startup; default disabled keeps the
 // wire byte-for-byte identical to pre-padding builds. Config-synchronised with
 // the server, which enables it per-path.
-pub use carrier_padding::{CarrierPadding, carrier_padding, init_carrier_padding};
+pub use carrier_padding::{CarrierPadding, init_carrier_padding};
 
 // Transport lifetime guards — published because the uplink crate pairs a
 // `UpstreamTransportGuard` to every connection it hands out.

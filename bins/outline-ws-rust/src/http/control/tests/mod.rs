@@ -286,6 +286,7 @@ fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }

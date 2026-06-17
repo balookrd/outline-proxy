@@ -140,6 +140,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }
@@ -1853,6 +1854,7 @@ fn make_ws_uplink_with_modes(
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }
@@ -1883,6 +1885,7 @@ fn make_vless_h3_uplink(name: &str, url: &str) -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }
@@ -1917,6 +1920,7 @@ fn make_ss_over_ws_uplink(name: &str) -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }
@@ -2043,6 +2047,7 @@ fn make_vless_xhttp_uplink_with_mode(
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }

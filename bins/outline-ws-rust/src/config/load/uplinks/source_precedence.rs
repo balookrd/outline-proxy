@@ -51,6 +51,10 @@ pub(in crate::config::load) struct ResolvedUplinkInput {
     /// `Some(true)` both keep the legacy descent. See
     /// `UplinkSection::carrier_downgrade` for the full semantics.
     pub(super) carrier_downgrade: Option<bool>,
+    /// Per-uplink carrier-padding override. `None` inherits the global
+    /// `[padding] enabled`; `Some(true)`/`Some(false)` force it on/off for
+    /// this uplink. See `UplinkSection::padding` for the full semantics.
+    pub(super) padding: Option<bool>,
     /// Periodic active-wire reroll interval, parsed at TryFrom time
     /// (`"1h"`, `"30m"`, …). `None` keeps the active wire sticky
     /// between failures. See `UplinkSection::shuffle_timer` for the
@@ -127,6 +131,8 @@ impl ResolvedUplinkInput {
             shuffle_wires: None,
             // Same TOML-only stance for the carrier_downgrade switch.
             carrier_downgrade: None,
+            // Padding is per-uplink and TOML-only too; no CLI/env toggle.
+            padding: None,
             // shuffle_timer is per-uplink only, so no CLI surface either.
             shuffle_timer: None,
         }
@@ -159,6 +165,7 @@ impl ResolvedUplinkInput {
             fallbacks: uplink.fallbacks.clone().unwrap_or_default(),
             shuffle_wires: uplink.shuffle_wires,
             carrier_downgrade: uplink.carrier_downgrade,
+            padding: uplink.padding,
             shuffle_timer: uplink.shuffle_timer.clone(),
         }
     }

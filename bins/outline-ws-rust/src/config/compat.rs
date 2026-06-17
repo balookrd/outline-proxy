@@ -160,6 +160,9 @@ fn synthesize_default_uplink(mut outline: OutlineSection) -> OutlineSection {
         // Same: carrier_downgrade is per-uplink fine-grained policy,
         // omitted from the inline shorthand.
         carrier_downgrade: None,
+        // Padding is per-uplink too; omitted from the inline shorthand
+        // (inherits the global `[padding]` default).
+        padding: None,
         shuffle_timer: None,
     }]);
     outline

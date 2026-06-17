@@ -661,11 +661,15 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
     match route {
         XhttpRoute::Vless(route) => {
             let server = Arc::clone(&services.vless_server);
+            // Resolve the carrier-padding scheme before `base_path` moves into
+            // the route context (mirrors the SS-over-XHTTP arm below).
+            let padding = crate::server::transport::carrier_padding::scheme_for_path(&base_path);
             let route_ctx = VlessWsRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
                 path: base_path,
                 candidate_users: Arc::clone(&route.candidate_users),
+                padding,
             };
             let metrics_session =
                 server

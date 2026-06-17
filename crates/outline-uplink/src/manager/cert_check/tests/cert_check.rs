@@ -31,6 +31,7 @@ fn ws_uplink(name: &str, tcp_url: &str, udp_url: &str) -> UplinkConfig {
         fallbacks: Vec::new(),
         shuffle_wires: false,
         carrier_downgrade: true,
+        padding: None,
         shuffle_timer: None,
     }
 }
