@@ -140,3 +140,59 @@ fn dump_clienthello_wire() {
         eprintln!("CLIENTHELLO {name} {hex}");
     }
 }
+
+/// Diagnostic (QUIC): emit the ClientHello as it rides inside a QUIC Initial —
+/// i.e. what a censor sees after deriving Initial keys from the well-known v1
+/// salt and decrypting the packet. Unlike the TCP dump above, this ClientHello
+/// is TLS 1.3-only and carries the `quic_transport_parameters` extension
+/// (0x39), so its JA3/JA4 surface differs from the TCP ClientHello of the same
+/// family. `write_hs` serialises the handshake as the bare CRYPTO-frame payload
+/// (no TLS record header, no network I/O).
+///
+/// The transport-parameters bytes are an empty placeholder here: this step
+/// measures only the TLS layer. The real quinn-encoded transport-parameter set
+/// (ids, values, order, jitter, padding) is dumped by the full-Initial
+/// diagnostic that drives a real `quinn` handshake.
+///
+/// The cases mirror the real dial paths: H3 carriers run under a browser
+/// fingerprint and offer `h3`; raw-QUIC (vless/ss) currently dials outside any
+/// fingerprint scope (`fp = None` → default provider) and offers the tell-tale
+/// `vless` ALPN. Run with `--nocapture` to see the `QUIC-CLIENTHELLO` lines.
+///
+/// No feature gate: `rustls::quic` is unconditionally available (rustls 0.23
+/// has no `quic` feature), so the diagnostic builds in the default test set.
+#[test]
+fn dump_quic_clienthello_wire() {
+    use rustls::RootCertStore;
+    use rustls::pki_types::ServerName;
+    use rustls::quic::{ClientConnection, Version};
+
+    let cases: &[(&str, Option<TlsFingerprint>, &[&[u8]])] = &[
+        ("h3-chromium", Some(TlsFingerprint::Chromium), &[b"h3"]),
+        ("h3-firefox", Some(TlsFingerprint::Firefox), &[b"h3"]),
+        ("h3-safari", Some(TlsFingerprint::Safari), &[b"h3"]),
+        ("rawquic-default-vless", None, &[b"vless-mtu", b"vless"]),
+    ];
+    for (label, fp, alpn) in cases {
+        let provider = match fp {
+            Some(fp) => provider_for(*fp),
+            None => Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+        };
+        let mut config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("aws-lc-rs provider supports TLS 1.2 + 1.3")
+            .with_root_certificates(RootCertStore::empty())
+            .with_no_client_auth();
+        config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+        let name = ServerName::try_from("www.example.com").unwrap();
+        let mut conn =
+            ClientConnection::new(Arc::new(config), Version::V1, name, Vec::new()).unwrap();
+        let mut buf = Vec::new();
+        conn.write_hs(&mut buf);
+        // QUIC handshake bytes are the bare CRYPTO payload: byte 0 is the
+        // handshake type (0x01 = ClientHello), with no 0x16 TLS record wrapper.
+        assert_eq!(buf[0], 0x01, "{label}: expected a ClientHello handshake");
+        let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+        eprintln!("QUIC-CLIENTHELLO {label} {hex}");
+    }
+}
