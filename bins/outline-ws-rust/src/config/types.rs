@@ -57,6 +57,53 @@ pub struct AppConfig {
     /// pooled under [`ReverseListenerConfig::group`]. `None` keeps the
     /// dial-only client model. See `docs/REVERSE-TUNNEL.md`.
     pub reverse_listener: Option<ReverseListenerConfig>,
+    /// Adaptive carrier-padding knobs applied to WS / XHTTP dials. Default
+    /// disabled (wire unchanged); opt in via the `[padding]` config block.
+    /// Config-synchronised with the server.
+    pub padding: PaddingConfig,
+}
+
+/// Resolved carrier-padding config (client side). POD mirror of the
+/// server's `PaddingConfig`; copied cheaply into each dial's options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaddingConfig {
+    pub enabled: bool,
+    pub min_bytes: u16,
+    pub max_bytes: u16,
+    pub cover: bool,
+    pub cover_jitter_min_ms: u64,
+    pub cover_jitter_max_ms: u64,
+}
+
+impl Default for PaddingConfig {
+    fn default() -> Self {
+        // Disabled by default; light profile (0..256) once enabled.
+        Self {
+            enabled: false,
+            min_bytes: 0,
+            max_bytes: 256,
+            cover: false,
+            cover_jitter_min_ms: 250,
+            cover_jitter_max_ms: 1500,
+        }
+    }
+}
+
+impl PaddingConfig {
+    /// The wire-codec scheme this resolves to. Disabled → no framing, the
+    /// carrier stays byte-for-byte unchanged.
+    pub fn scheme(&self) -> outline_wire::padding::PaddingScheme {
+        if self.enabled {
+            outline_wire::padding::PaddingScheme::new(self.min_bytes, self.max_bytes)
+        } else {
+            outline_wire::padding::PaddingScheme::disabled()
+        }
+    }
+
+    /// Whether to emit idle cover frames: padding on *and* cover requested.
+    pub fn cover_enabled(&self) -> bool {
+        self.enabled && self.cover
+    }
 }
 
 /// Resolved reverse-tunnel listener config. Cert paths and pin strings are

@@ -53,6 +53,7 @@ fn test_config() -> Config {
         access_key: Default::default(),
         tuning: Default::default(),
         session_resumption: Default::default(),
+        padding: Default::default(),
         http_fallback: None,
         sni_fallback: None,
         reverse_tunnel: None,

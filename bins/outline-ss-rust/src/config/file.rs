@@ -38,6 +38,8 @@ pub(super) struct FileConfig {
     #[serde(default)]
     pub session_resumption: Option<SessionResumptionSection>,
     #[serde(default)]
+    pub padding: Option<PaddingSection>,
+    #[serde(default)]
     pub http_fallback: Option<HttpFallbackSection>,
     #[serde(default)]
     pub sni_fallback: Option<SniFallbackSection>,
@@ -373,6 +375,38 @@ pub(super) struct SessionResumptionSection {
     /// are never allocated. See `docs/SESSION-RESUMPTION.md`
     /// § Symmetric Downlink Replay (v2).
     pub downlink_buffer_bytes: Option<usize>,
+}
+
+/// `[padding]` block. Adaptive application-layer padding on the WS / XHTTP
+/// carriers: each Shadowsocks chunk is wrapped in a length-delimited frame so
+/// the bytes handed to the outer TLS record layer stop tracking the payload
+/// size, blunting record-size ("proxy-inside-TLS") fingerprinting. Absent or
+/// `enabled = false` keeps the wire byte-for-byte identical to the unpadded
+/// carrier. Config-synchronised, like `[session_resumption]`: there is no
+/// on-wire capability bit, so both ends must enable it together.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PaddingSection {
+    /// Master switch. Default `false`.
+    pub enabled: Option<bool>,
+    /// Minimum pad bytes drawn per frame. Default 0.
+    pub min_bytes: Option<u16>,
+    /// Maximum pad bytes drawn per frame (clamped up to `min_bytes` if
+    /// smaller). Default 256 — the light profile: breaks exact size
+    /// correlation at minimal traffic overhead.
+    pub max_bytes: Option<u16>,
+    /// Emit cover frames (pad-only, `real_len = 0`) while the connection is
+    /// idle, so silence does not leak timing. Default `false`.
+    pub cover: Option<bool>,
+    /// Idle gap before a cover frame, randomised in
+    /// `[cover_jitter_min_ms, cover_jitter_max_ms]`. Defaults 250 / 1500.
+    pub cover_jitter_min_ms: Option<u64>,
+    pub cover_jitter_max_ms: Option<u64>,
+    /// Carrier paths to pad. Only connections whose matched path is listed
+    /// are padded; third-party clients (Happ, Outline, xray, sing-box) on
+    /// other paths keep the plain SS-over-WS/XHTTP wire. Required (non-empty)
+    /// when `enabled`.
+    pub paths: Option<Vec<String>>,
 }
 
 pub(super) fn load_file_config(path: &Path) -> Result<FileConfig> {

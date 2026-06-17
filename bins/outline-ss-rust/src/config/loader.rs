@@ -12,7 +12,7 @@ use super::{
         load_file_config,
     },
     resolved::{
-        AccessKeyConfig, Config, H3Alpn, ReverseProtocol, ReverseTunnelConfig,
+        AccessKeyConfig, Config, H3Alpn, PaddingConfig, ReverseProtocol, ReverseTunnelConfig,
         ReverseTunnelEndpoint, SessionResumptionConfig,
     },
     sni::{SniFallbackConfig, TlsCertEntry},
@@ -182,6 +182,7 @@ impl AppMode {
             session_resumption: SessionResumptionConfig::from_section(
                 file.session_resumption.unwrap_or_default(),
             ),
+            padding: PaddingConfig::from_section(file.padding.unwrap_or_default()),
             http_fallback: HttpFallbackConfig::from_section(
                 file.http_fallback.unwrap_or_default(),
             )?,
