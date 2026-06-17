@@ -148,3 +148,7 @@ pub(crate) fn quic_client_config(alpn: &[u8]) -> quinn::ClientConfig {
     guard.insert(alpn.to_vec(), config.clone());
     config
 }
+
+#[cfg(test)]
+#[path = "tests/tls_config.rs"]
+mod tests;
