@@ -510,3 +510,29 @@ async fn raw_quic_fingerprint_scope_offers_pq_key_share() {
         "x25519 key share must still accompany the PQ share, got {chromium_groups:04x?}"
     );
 }
+
+/// Regression for the H3 carrier config (level A). The H3 QUIC config picks up
+/// the dial fingerprint (PQ key share on the wire) like raw-QUIC, but — unlike
+/// raw-QUIC, which needs QUIC datagrams for UDP — leaves QUIC datagrams off, so
+/// the H3 Initial does not advertise `max_datagram_frame_size` (0x20), a
+/// transport-parameter tell a browser's HTTP/3 stack would not emit.
+#[tokio::test]
+async fn h3_config_carries_fingerprint_without_datagram_param() {
+    use crate::fingerprint_profile::{TlsFingerprint, with_dial_fingerprint};
+
+    let chromium = with_dial_fingerprint(Some(TlsFingerprint::Chromium), async {
+        capture_initial(super::h3_quic_client_config()).clienthello
+    })
+    .await;
+    assert!(
+        key_share_groups(&chromium).contains(&0x11ec),
+        "fingerprint scope must reach the H3 config (MLKEM768 key share)"
+    );
+    let has_datagram_param = transport_params_from_clienthello(&chromium)
+        .iter()
+        .any(|(id, _)| *id == 0x20);
+    assert!(
+        !has_datagram_param,
+        "H3 config must not advertise max_datagram_frame_size (0x20) — datagrams stay off"
+    );
+}

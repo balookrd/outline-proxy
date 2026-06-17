@@ -10,7 +10,7 @@
 //! already depends on.
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -41,37 +41,11 @@ use super::{
 /// uniform across carriers.
 const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Cached TLS config with `h3` ALPN. Built once per process.
-static XHTTP_H3_TLS_CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
-
-fn h3_tls_config() -> Arc<rustls::ClientConfig> {
-    // `build_client_config` reads the test override slot, so a fresh
-    // process that installs the override before the first dial
-    // captures it inside this OnceLock.
-    Arc::clone(XHTTP_H3_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"h3"])))
-}
-
-fn h3_quic_client_config() -> quinn::ClientConfig {
-    let tls = h3_tls_config();
-    let quic = quinn::crypto::rustls::QuicClientConfig::try_from((*tls).clone())
-        .expect("xhttp h3 TLS config is always QUIC-compatible");
-    let mut config = quinn::ClientConfig::new(Arc::new(quic));
-    let mut transport = quinn::TransportConfig::default();
-    // Match the rest of the H3 client: 30 s idle, 10 s keepalive.
-    // The XHTTP session is long-lived (the GET stays open for the
-    // lifetime of the VLESS upstream), so the keepalive timer is
-    // primarily defending NAT mappings rather than detecting peer
-    // death — the GET response body itself doubles as a liveness
-    // signal once data starts flowing.
-    transport.keep_alive_interval(Some(Duration::from_secs(10)));
-    transport.max_idle_timeout(Some(
-        Duration::from_secs(30)
-            .try_into()
-            .expect("valid xhttp h3 QUIC idle timeout"),
-    ));
-    config.transport_config(Arc::new(transport));
-    config
-}
+// The H3 QUIC client config is shared with the WS-over-H3 carrier in
+// `crate::quic` (`h3_quic_client_config`): keyed by dial fingerprint so the
+// XHTTP-over-H3 ClientHello mimics the same browser family as the other
+// carriers, with the same per-process keep-alive / idle jitter and QUIC
+// datagrams left off (a browser HTTP/3 stack does not enable them).
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn connect_xhttp_h3(
@@ -285,7 +259,7 @@ async fn h3_handshake(
         _ => host.to_string(),
     };
     let connecting = endpoint
-        .connect_with(h3_quic_client_config(), server_addr, &server_name_str)
+        .connect_with(crate::quic::h3_quic_client_config(), server_addr, &server_name_str)
         .with_context(|| format!("failed to initiate xhttp/h3 QUIC connection to {server_addr}"))?;
     let connection = connecting
         .await
