@@ -91,46 +91,69 @@ pub async fn connect_quic_uplink(
     source: &'static str,
     alpn: &'static [u8],
 ) -> Result<Arc<SharedQuicConnection>> {
-    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| anyhow!("URL is missing port"))?;
-    let registry = registry_for(alpn);
-    let metric_label = metric_label_for(alpn);
+    // Pick the dial's TLS fingerprint once and scope it over the whole dial,
+    // so the raw-QUIC ClientHello mimics the same browser family the WS / XHTTP
+    // carriers advertise. Without this, raw QUIC dials outside any fingerprint
+    // scope — `quic_client_config` reads `None` and falls back to the default
+    // provider (default cipher order, no PQ key share). Mirrors the single
+    // scope `dial_plan::connect` establishes for the HTTP-family carriers;
+    // `Box::pin` keeps the scope frame off the (already deep) dial future.
+    // Connection reuse short-circuits before any handshake, so the scope only
+    // affects fresh dials — exactly the ones that emit a ClientHello.
+    let fp = crate::fingerprint_profile::select(url).map(|p| p.tls);
+    crate::fingerprint_profile::with_dial_fingerprint(
+        fp,
+        Box::pin(async move {
+            let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
+            let port = url
+                .port_or_known_default()
+                .ok_or_else(|| anyhow!("URL is missing port"))?;
+            let registry = registry_for(alpn);
+            let metric_label = metric_label_for(alpn);
 
-    if should_reuse_connection(source) {
-        let key = QuicConnectionKey::new(host, port, fwmark);
-        with_reuse(
-            registry,
-            key.clone(),
-            |shared| async move {
-                if shared.is_open() {
-                    outline_metrics::record_transport_connect(source, metric_label, "reused");
-                    Ok(shared)
-                } else {
-                    Err(anyhow!("cached quic connection is closed"))
-                }
-            },
-            || async move {
-                let conn = resolve_and_dial(
-                    cache,
-                    host,
-                    port,
-                    fwmark,
-                    ipv6_first,
-                    source,
-                    alpn,
-                    Some(key),
+            if should_reuse_connection(source) {
+                let key = QuicConnectionKey::new(host, port, fwmark);
+                with_reuse(
                     registry,
+                    key.clone(),
+                    |shared| async move {
+                        if shared.is_open() {
+                            outline_metrics::record_transport_connect(
+                                source,
+                                metric_label,
+                                "reused",
+                            );
+                            Ok(shared)
+                        } else {
+                            Err(anyhow!("cached quic connection is closed"))
+                        }
+                    },
+                    || async move {
+                        let conn = resolve_and_dial(
+                            cache,
+                            host,
+                            port,
+                            fwmark,
+                            ipv6_first,
+                            source,
+                            alpn,
+                            Some(key),
+                            registry,
+                        )
+                        .await?;
+                        Ok((Arc::clone(&conn), conn))
+                    },
                 )
-                .await?;
-                Ok((Arc::clone(&conn), conn))
-            },
-        )
-        .await
-    } else {
-        resolve_and_dial(cache, host, port, fwmark, ipv6_first, source, alpn, None, registry).await
-    }
+                .await
+            } else {
+                resolve_and_dial(
+                    cache, host, port, fwmark, ipv6_first, source, alpn, None, registry,
+                )
+                .await
+            }
+        }),
+    )
+    .await
 }
 
 fn metric_label_for(alpn: &'static [u8]) -> &'static str {

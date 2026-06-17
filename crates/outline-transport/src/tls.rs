@@ -49,7 +49,7 @@ static CLIENT_CONFIG_CACHE: OnceLock<Mutex<HashMap<ClientConfigKey, ClientConfig
 /// retained before being replaced with a fresh one. Chosen to be shorter
 /// than the typical TLS 1.3 session-ticket lifetime (often 24 h) so that
 /// an observer cannot link two connections that are more than this apart.
-const SESSION_TICKET_ROTATION_INTERVAL: Duration = Duration::from_secs(10 * 60);
+pub(crate) const SESSION_TICKET_ROTATION_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 /// Build (or return a cached) rustls `ClientConfig` with no client auth and
 /// the given ALPN protocol list (order = preference). When a dial-scoped
