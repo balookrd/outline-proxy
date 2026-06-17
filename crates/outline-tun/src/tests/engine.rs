@@ -42,6 +42,7 @@ fn icmp_gate_manager(suppress_when_down: bool, bypass_when_down: bool) -> Uplink
             fallbacks: Vec::new(),
             shuffle_wires: false,
             carrier_downgrade: true,
+            padding: None,
             shuffle_timer: None,
         }],
         ProbeConfig {
