@@ -376,6 +376,15 @@ impl UplinkManager {
             .await;
         self.run_h3_recovery_probes(h3_udp_recovery_needed, TransportKind::Udp)
             .await;
+
+        // Probe-driven failover: the cycle above may have flipped the strict
+        // active uplink's health to Some(false), but strict selection otherwise
+        // only re-runs on a client dial. Re-run it here so a healthy standby is
+        // promoted as soon as the probe confirms the active is down, instead of
+        // waiting for traffic — an idle TUN client right after a restart that
+        // restored a now-dead active uplink would otherwise never fail over.
+        // No-op for active_active and for a still-healthy active.
+        self.reselect_strict_active_after_probe().await;
     }
 }
 
