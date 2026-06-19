@@ -299,6 +299,52 @@ async fn global_active_fails_over_when_probe_passes_but_data_path_is_dead() {
     );
 }
 
+/// Probe-driven failover WITHOUT client traffic: when the probe cycle marks the
+/// strict active uplink unhealthy, the active slot must move to a healthy
+/// standby at the END of that cycle — not only when a client dial happens to
+/// re-run selection. Models an idle TUN client right after a restart that
+/// restored a now-dead active uplink from the state store: nothing dials, so the
+/// per-probe-cycle re-selection (`reselect_strict_active_after_probe`) is the
+/// only failover driver. Regression for "the dead active uplink never fails
+/// over" on an idle client.
+#[tokio::test]
+async fn strict_active_fails_over_on_probe_cycle_without_client_traffic() {
+    let manager = manager();
+
+    // Both healthy; up-a (higher weight) wins the initial global selection.
+    manager.test_apply_probe_outcome_for_test(0, probe_ok());
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(manager.global_active_uplink_index().await, Some(0));
+
+    // The probe cycle confirms up-a dead on both legs (unhealthy + cooldown, the
+    // state a runtime/probe failure leaves behind) while up-b stays healthy.
+    // Crucially, NO `tcp_candidates` / client dial happens here.
+    manager.test_set_tcp_health(0, false, 0).await;
+    manager.test_set_udp_health(0, false, 0).await;
+    manager.inner.with_status_mut(0, |s| {
+        let until = tokio::time::Instant::now() + Duration::from_secs(10);
+        s.tcp.cooldown_until = Some(until);
+        s.udp.cooldown_until = Some(until);
+    });
+    manager.test_set_tcp_health(1, true, 30).await;
+    manager.test_set_udp_health(1, true, 30).await;
+
+    // The end-of-probe-cycle re-selection (the fix) must promote the healthy
+    // standby with no client traffic. Before the fix, selection only re-ran on a
+    // dial, so an idle client kept the dead active pinned indefinitely.
+    manager.reselect_strict_active_after_probe().await;
+    assert_eq!(
+        manager.global_active_uplink_index().await,
+        Some(1),
+        "probe-driven failover must promote healthy up-b without any client dial; \
+         tcp_healthy(0)={:?}",
+        manager.test_tcp_healthy(0).await,
+    );
+}
+
 /// Operator on/off: administratively disabling the active uplink must take it
 /// out of selection immediately (failing over to the enabled standby) and keep
 /// it out of the candidate set until it is re-enabled.
