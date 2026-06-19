@@ -516,6 +516,13 @@ pub(super) struct UplinkGroupSection {
     pub(super) tcp_active_keepalive_secs: Option<u64>,
     pub(super) warm_probe_keepalive_secs: Option<u64>,
     pub(super) auto_failback: Option<bool>,
+    /// Rank wire / carrier-family selection by liveness (weighted-random with
+    /// a decaying penalty). Default: `true`. Set to `false` to restore the
+    /// legacy fixed cyclic wire order + binary carrier downgrade cap.
+    pub(super) health_weighted_selection: Option<bool>,
+    /// Floor on the per-candidate selection weight, in `[0, 1]`, when
+    /// `health_weighted_selection` is on. Default: `0.05`.
+    pub(super) health_weight_floor: Option<f64>,
     pub(super) vless_udp_max_sessions: Option<usize>,
     pub(super) vless_udp_session_idle_secs: Option<u64>,
     pub(super) vless_udp_janitor_interval_secs: Option<u64>,
@@ -706,6 +713,13 @@ pub(super) struct LoadBalancingSection {
     pub(super) tcp_active_keepalive_secs: Option<u64>,
     pub(super) warm_probe_keepalive_secs: Option<u64>,
     pub(super) auto_failback: Option<bool>,
+    /// Rank wire / carrier-family selection by liveness (weighted-random with
+    /// a decaying penalty). Default: `true`. Set to `false` to restore the
+    /// legacy fixed cyclic wire order + binary carrier downgrade cap.
+    pub(super) health_weighted_selection: Option<bool>,
+    /// Floor on the per-candidate selection weight, in `[0, 1]`, when
+    /// `health_weighted_selection` is on. Default: `0.05`.
+    pub(super) health_weight_floor: Option<f64>,
     pub(super) vless_udp_max_sessions: Option<usize>,
     pub(super) vless_udp_session_idle_secs: Option<u64>,
     pub(super) vless_udp_janitor_interval_secs: Option<u64>,

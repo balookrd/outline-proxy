@@ -7,19 +7,15 @@
 //! cap of the other when several uplinks share the same `(host, port)`
 //! but use different transports.
 //!
-//! When a higher-level XHTTP mode fails (e.g. UDP-blocked path drops
-//! `xhttp_h3`, or a CDN strips ALPN h2 forcing `xhttp_h2` to fail),
-//! the failure is recorded for the target host and clamps subsequent
-//! dial requests to the next supported XHTTP mode for `DOWNGRADE_TTL`.
-//! Without this, every new VLESS-XHTTP connection to that host would
-//! re-pay the cost of the doomed handshake before falling back —
-//! exactly the symptom the WS cache solves for the WS chain.
+//! Like the WS cache, two strategies share this store, selected once at startup
+//! by [`crate::init_health_weighting`]: the legacy binary downgrade cap, and the
+//! default-on liveness weighting (decaying per-rank penalties; see
+//! [`crate::mode_health`]) that picks the start rank probabilistically so a
+//! flaky carrier is preferred less but still retried and recovers over time.
 //!
-//! The cap is per `(host, port)` and decays by TTL so that a transient
-//! outage (server restart, route flap) does not permanently pin the
-//! host to `xhttp_h1`. Entries are cleared early by [`record_success`]
-//! when the originally-requested mode succeeds, mirroring the WS
-//! cache's recovery behaviour.
+//! The cap / penalty is per `(host, port)` and decays by TTL so that a
+//! transient outage (server restart, route flap) does not permanently pin the
+//! host to `xhttp_h1`.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -29,6 +25,7 @@ use tokio::sync::RwLock;
 use url::Url;
 
 use crate::config::TransportMode;
+use crate::mode_health::{self, ModePenalty};
 
 /// Default TTL applied when [`init_downgrade_ttl`] has not been
 /// called. Matches `ws_mode_cache::DEFAULT_DOWNGRADE_TTL` and the
@@ -61,7 +58,13 @@ pub fn init_downgrade_ttl(ttl: Duration) {
 
 #[derive(Clone, Copy)]
 struct Entry {
+    /// Legacy binary downgrade cap. Authoritative only when weighting is
+    /// disabled; left at the topmost mode (no clamp) when weighting drives
+    /// selection.
     max_mode: TransportMode,
+    /// Per-rank decaying liveness penalty, indexed by [`rank`] (`0` = XhttpH1,
+    /// `1` = XhttpH2, `2` = XhttpH3). Authoritative only when weighting is on.
+    penalty: [ModePenalty; 3],
     expires_at: Instant,
 }
 
@@ -91,6 +94,15 @@ fn rank(mode: TransportMode) -> u8 {
     }
 }
 
+/// Inverse of [`rank`] for the XHTTP chain: maps a rank back to its mode.
+fn mode_for_rank(rank: u8) -> TransportMode {
+    match rank {
+        0 => TransportMode::XhttpH1,
+        1 => TransportMode::XhttpH2,
+        _ => TransportMode::XhttpH3,
+    }
+}
+
 fn host_key(url: &Url) -> Option<String> {
     let host = url.host_str()?;
     let port = url.port_or_known_default().unwrap_or(0);
@@ -102,15 +114,79 @@ fn cache() -> &'static RwLock<HashMap<String, Entry>> {
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-/// Clamp the requested mode to the cached XHTTP cap for this host.
-/// Returns the requested mode unchanged when there is no cap, when
-/// the cap has expired, or when the requested mode is already at
-/// or below the cap. No-op for non-XHTTP modes — the dispatcher
-/// can call this unconditionally on every dial.
+/// Resolve the XHTTP mode a dial to `url` should start at, honouring whichever
+/// strategy is active. No-op for non-XHTTP modes — the dispatcher can call this
+/// unconditionally on every dial.
 pub(crate) async fn effective_mode(url: &Url, requested: TransportMode) -> TransportMode {
     if !is_xhttp(requested) {
         return requested;
     }
+    let params = mode_health::weighting();
+    if !params.enabled {
+        return effective_mode_legacy(url, requested).await;
+    }
+    let req_rank = rank(requested);
+    let Some(key) = host_key(url) else { return requested };
+    let now = Instant::now();
+    let penalties = {
+        let map = cache().read().await;
+        match map.get(&key) {
+            Some(entry) if now < entry.expires_at => entry.penalty,
+            _ => return requested,
+        }
+    };
+    let mut rng = rand::rng();
+    let chosen = mode_health::descend_start_rank(req_rank, &penalties, now, &params, &mut rng);
+    mode_for_rank(chosen)
+}
+
+/// Record that `failed` did not work for this host, updating whichever strategy
+/// is active. No-op for modes outside the XHTTP fallback chain.
+pub(crate) async fn record_failure(url: &Url, failed: TransportMode) {
+    let params = mode_health::weighting();
+    if !params.enabled {
+        return record_failure_legacy(url, failed).await;
+    }
+    let r = rank(failed);
+    // Only H2 / H3 failures matter: H1 is the floor rank, non-XHTTP rank > 2.
+    if !(1..=2).contains(&r) {
+        return;
+    }
+    let Some(key) = host_key(url) else { return };
+    let now = Instant::now();
+    let mut map = cache().write().await;
+    let expires_at = now + downgrade_ttl();
+    let entry = map.entry(key).or_insert_with(|| Entry {
+        max_mode: TransportMode::XhttpH3,
+        penalty: <[ModePenalty; 3]>::default(),
+        expires_at,
+    });
+    entry.penalty[r as usize].add(now, &params);
+    entry.expires_at = expires_at;
+}
+
+/// Note a successful dial at `succeeded`, updating whichever strategy is active.
+/// No-op for non-XHTTP modes.
+pub(crate) async fn record_success(url: &Url, succeeded: TransportMode) {
+    if !is_xhttp(succeeded) {
+        return;
+    }
+    let params = mode_health::weighting();
+    if !params.enabled {
+        return record_success_legacy(url, succeeded).await;
+    }
+    let r = rank(succeeded);
+    let Some(key) = host_key(url) else { return };
+    let mut map = cache().write().await;
+    if let Some(entry) = map.get_mut(&key) {
+        // Clear only the succeeded rank — a working H2 must not re-arm a broken
+        // H3 (same invariant the WS cache documents).
+        entry.penalty[r as usize].reset();
+    }
+}
+
+/// Legacy binary-cap clamp for the XHTTP chain.
+async fn effective_mode_legacy(url: &Url, requested: TransportMode) -> TransportMode {
     let Some(key) = host_key(url) else { return requested };
     let map = cache().read().await;
     let Some(entry) = map.get(&key) else { return requested };
@@ -124,12 +200,9 @@ pub(crate) async fn effective_mode(url: &Url, requested: TransportMode) -> Trans
     }
 }
 
-/// Record that `failed` did not work for this host; future dials
-/// are clamped to the next-lower XHTTP mode for `DOWNGRADE_TTL`.
-/// No-op for modes outside the XHTTP fallback chain — the WS chain
-/// has its own cache in [`crate::ws_mode_cache`] and the two are
-/// deliberately independent.
-pub(crate) async fn record_failure(url: &Url, failed: TransportMode) {
+/// Legacy `record_failure`: clamp future dials to the next-lower XHTTP mode for
+/// `DOWNGRADE_TTL`.
+async fn record_failure_legacy(url: &Url, failed: TransportMode) {
     let new_max = match failed {
         TransportMode::XhttpH3 => TransportMode::XhttpH2,
         TransportMode::XhttpH2 => TransportMode::XhttpH1,
@@ -154,19 +227,16 @@ pub(crate) async fn record_failure(url: &Url, failed: TransportMode) {
                 e.expires_at = expires_at;
             }
         })
-        .or_insert(Entry { max_mode: new_max, expires_at });
+        .or_insert(Entry {
+            max_mode: new_max,
+            penalty: <[ModePenalty; 3]>::default(),
+            expires_at,
+        });
 }
 
-/// Drop the per-host XHTTP cap once a dial actually succeeded at a
-/// mode that meets-or-exceeds the cached cap. Without this the cache
-/// would only clear when the entry naturally expires, so concurrent
-/// dials hitting the same host during the recovery window keep
-/// clamping to the lower mode even though the higher carrier is
-/// already healthy again. Non-XHTTP modes pass through silently.
-pub(crate) async fn record_success(url: &Url, succeeded: TransportMode) {
-    if !is_xhttp(succeeded) {
-        return;
-    }
+/// Legacy `record_success`: drop the per-host XHTTP cap once a dial succeeded at
+/// a mode that meets-or-exceeds the cached cap.
+async fn record_success_legacy(url: &Url, succeeded: TransportMode) {
     let Some(key) = host_key(url) else { return };
     let mut map = cache().write().await;
     if let Some(entry) = map.get(&key)

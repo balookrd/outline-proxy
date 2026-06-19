@@ -717,6 +717,27 @@ pub struct LoadBalancingConfig {
     /// When true, traffic returns to the highest-priority healthy uplink once it
     /// has been stable for `min_failures` consecutive probe cycles.
     pub auto_failback: bool,
+    /// When `true` (default), the two *sub*-uplink choices — which wire
+    /// (`[[outline.uplinks.fallbacks]]` leg) a session starts on / dials next,
+    /// and which H3/H2/H1 carrier family the transport starts with — are ranked
+    /// by liveness instead of a fixed order. A wire / family that disconnects
+    /// often accumulates a decaying penalty (the shared `failure_penalty*`
+    /// curve, so `0.5^(elapsed/failure_penalty_halflife)`) which lowers its
+    /// selection weight, so it is dialed *less* often while still being retried
+    /// occasionally (see `health_weight_floor`) and recovering fully once the
+    /// penalty decays. Selection is probabilistic (weighted-random), so load is
+    /// spread and the anti-DPI wire reroll keeps its randomness.
+    ///
+    /// When `false`, the legacy behaviour is restored exactly: a fixed cyclic
+    /// `wire_dial_order` and a binary per-host carrier-family downgrade cap.
+    pub health_weighted_selection: bool,
+    /// Floor on the per-candidate selection weight, in `[0, 1]`, used when
+    /// `health_weighted_selection` is enabled. Guarantees that even a
+    /// persistently-failing wire / carrier family keeps a non-zero probability
+    /// of being chosen — so real traffic keeps re-probing it and a recovered
+    /// path is noticed — and stops the anti-DPI wire reroll from *never*
+    /// touching a given wire (itself a detectable signature). Default `0.05`.
+    pub health_weight_floor: f64,
     /// Bounds on the per-uplink VLESS UDP session mux: max concurrent sessions
     /// (LRU-evicted beyond the cap), per-session idle timeout, and janitor
     /// scan interval. Ignored for non-VLESS uplinks.

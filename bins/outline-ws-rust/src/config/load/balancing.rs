@@ -109,6 +109,17 @@ pub(super) fn load_balancing_config(
             }
         },
         auto_failback: lb.and_then(|l| l.auto_failback).unwrap_or(false),
+        // Default: `true` — rank wire / carrier-family selection by liveness
+        // (see `LoadBalancingConfig::health_weighted_selection`). Set to
+        // `false` to restore the legacy fixed cyclic order + binary cap.
+        health_weighted_selection: lb.and_then(|l| l.health_weighted_selection).unwrap_or(true),
+        health_weight_floor: {
+            let floor = lb.and_then(|l| l.health_weight_floor).unwrap_or(0.05);
+            if !(floor.is_finite() && (0.0..=1.0).contains(&floor)) {
+                bail!("load_balancing.health_weight_floor must be in the range [0, 1]");
+            }
+            floor
+        },
         // Default: 256 KiB — large enough to absorb typical HTTP
         // request bodies and idempotent RPC payloads, small enough
         // that holding it for N concurrent pinned sessions stays
