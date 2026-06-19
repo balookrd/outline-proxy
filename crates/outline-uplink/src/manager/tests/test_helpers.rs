@@ -151,6 +151,51 @@ impl UplinkManager {
         });
     }
 
+    /// Test helper: accumulate `count` liveness penalties on `wire` for
+    /// `(index, transport)`, the same effect a failed dial has. Lets the
+    /// weighted-selection tests stage a wire as "frequently disconnecting"
+    /// without driving the full active-wire / shuffle state machine.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn test_add_wire_penalty(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+        wire: u8,
+        count: usize,
+    ) {
+        let now = tokio::time::Instant::now();
+        let lb = self.inner.load_balancing.clone();
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                crate::types::TransportKind::Tcp => &mut status.tcp,
+                crate::types::TransportKind::Udp => &mut status.udp,
+            };
+            for _ in 0..count {
+                crate::penalty::add_penalty(per.wire_penalty_slot_mut(wire), now, &lb);
+            }
+        });
+    }
+
+    /// Test helper: directly set the sticky `active_wire` index for
+    /// `(index, transport)` without going through the dial / probe state
+    /// machine.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn test_set_active_wire(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+        wire: u8,
+    ) {
+        self.inner.with_status_mut(index, |status| {
+            match transport {
+                crate::types::TransportKind::Tcp => status.tcp.active_wire = wire,
+                crate::types::TransportKind::Udp => status.udp.active_wire = wire,
+            };
+        });
+    }
+
     /// Test helper: directly seed the primary mode-downgrade window for
     /// `(index, transport)` with `cap` and a fresh deadline. Lets tests
     /// pre-stage the system into "previously degraded" state without

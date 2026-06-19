@@ -28,6 +28,7 @@ use tokio::time::{Instant, sleep};
 use tracing::{debug, info, warn};
 
 use super::standby::resume_cache_key;
+use crate::penalty::{add_penalty, weighted_permutation_with_rng, weighted_pick_with_rng};
 use crate::types::{TransportKind, UplinkManager};
 
 impl UplinkManager {
@@ -131,6 +132,34 @@ impl UplinkManager {
         if total_wires <= 1 {
             return vec![0];
         }
+        if self.inner.load_balancing.health_weighted_selection {
+            // Weighted dial order: rank wires by liveness weight (healthier
+            // wires statistically first) while still returning a *complete*
+            // permutation, so the fallback cascade still reaches every wire in
+            // the same session. The sticky `active_wire` is deliberately not
+            // consulted here — a pinned-but-healthy wire keeps a high weight and
+            // lands first on its own, so the pin becomes soft rather than
+            // absolute.
+            let floor = self.inner.load_balancing.health_weight_floor;
+            let now = Instant::now();
+            let weights: Vec<f64> = self.inner.with_status_mut(uplink_index, |status| {
+                let st = match transport {
+                    TransportKind::Tcp => &status.tcp,
+                    TransportKind::Udp => &status.udp,
+                };
+                (0..total_wires as u8)
+                    .map(|w| st.wire_weight(w, now, &self.inner.load_balancing, floor))
+                    .collect()
+            });
+            let mut rng = rand::rng();
+            let order: Vec<u8> = weighted_permutation_with_rng(&weights, &mut rng)
+                .into_iter()
+                .map(|i| i as u8)
+                .collect();
+            debug_assert_eq!(order.len(), total_wires);
+            debug_assert!(order.iter().all(|&i| (i as usize) < total_wires));
+            return order;
+        }
         let active = self.active_wire(uplink_index, transport) as usize;
         let active = active.min(total_wires - 1); // defensive cap
         let total = total_wires as u8;
@@ -177,6 +206,10 @@ impl UplinkManager {
         let min_failures = self.inner.probe.min_failures.max(1) as u32;
         let pin_window = self.inner.load_balancing.mode_downgrade_duration;
         let failure_cooldown = self.inner.load_balancing.failure_cooldown;
+        // Cloned for the per-wire liveness penalty fed below (the closure cannot
+        // borrow `self.inner` while it holds the status lock). Mirrors the same
+        // clone in `report_runtime_failure_inner`.
+        let load_balancing = self.inner.load_balancing.clone();
         let now = Instant::now();
         let group_name = self.inner.group_name.clone();
         let uplink_name = self.inner.uplinks[uplink_index].name.clone();
@@ -220,6 +253,16 @@ impl UplinkManager {
                 }
                 return;
             }
+            // Liveness penalty for weighted wire selection: a failed dial on
+            // *any* wire lowers that wire's selection weight. Recorded for
+            // non-active wires too — unlike the `active_wire_streak` below,
+            // which only tracks the active wire — so the weighted
+            // `wire_dial_order` / `rotate_active_wire` see the health of every
+            // wire, not just the one new sessions currently land on. The
+            // penalty decays via the shared half-life, so a wire that stops
+            // failing recovers its weight on its own. No-op effect when
+            // `health_weighted_selection` is off (the weight is never read).
+            add_penalty(st.wire_penalty_slot_mut(attempted_wire), now, &load_balancing);
             // Failure on a non-active wire is session-local churn — the
             // active wire's sticky state machine is driven only by failures
             // on the wire that *new sessions* land on.
@@ -381,6 +424,15 @@ impl UplinkManager {
             st.last_any_wire_success = Some(now);
             st.active_wire_streak = 0;
             st.wires_failed_in_round = 0;
+            // Proven end-to-end delivery clears the active wire's liveness
+            // penalty outright (not just decay): real traffic is stronger
+            // evidence of health than a bare dial handshake, so the wire
+            // immediately regains full selection weight for the weighted
+            // `wire_dial_order` / `rotate_active_wire`.
+            let active = st.active_wire;
+            let slot = st.wire_penalty_slot_mut(active);
+            slot.value_secs = 0.0;
+            slot.updated_at = None;
         });
     }
 
@@ -415,7 +467,30 @@ impl UplinkManager {
             return None;
         }
         let total = total_wires as u8;
-        let (tcp_wire, udp_wire) = {
+        let (tcp_wire, udp_wire) = if self.inner.load_balancing.health_weighted_selection {
+            // Weighted reroll: still random (anti-DPI rotation), but biased
+            // toward the healthier wires. The non-zero `health_weight_floor`
+            // keeps every wire reachable, so the rotation never *completely*
+            // avoids a wire (a "never wire X" pattern would itself be a
+            // detectable signature) — it just lands on dead wires less often.
+            let floor = self.inner.load_balancing.health_weight_floor;
+            let now = Instant::now();
+            let (tcp_weights, udp_weights): (Vec<f64>, Vec<f64>) =
+                self.inner.with_status_mut(uplink_index, |status| {
+                    let tcp = (0..total)
+                        .map(|w| status.tcp.wire_weight(w, now, &self.inner.load_balancing, floor))
+                        .collect();
+                    let udp = (0..total)
+                        .map(|w| status.udp.wire_weight(w, now, &self.inner.load_balancing, floor))
+                        .collect();
+                    (tcp, udp)
+                });
+            let mut rng = rand::rng();
+            (
+                weighted_pick_with_rng(&tcp_weights, &mut rng).unwrap_or(0) as u8,
+                weighted_pick_with_rng(&udp_weights, &mut rng).unwrap_or(0) as u8,
+            )
+        } else {
             let mut rng = rand::rng();
             (rng.random_range(0..total), rng.random_range(0..total))
         };
@@ -515,3 +590,7 @@ impl UplinkManager {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/active_wire.rs"]
+mod tests;

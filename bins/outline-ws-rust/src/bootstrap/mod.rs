@@ -65,6 +65,40 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
         outline_transport::init_downgrade_ttl(max_ttl);
     }
 
+    // Wire liveness-weighted carrier-family selection (the WS / XHTTP
+    // H3→H2→H1 start-rank choice) from the per-group `health_weighted_selection`
+    // / `health_weight_floor` knobs plus the shared `failure_penalty` curve.
+    // The cache is global per `host:port`, so aggregate across groups: enable
+    // if any group asks for it, and take the most forgiving (largest) floor /
+    // half-life / penalty scale so the shared cache is at least as lenient as
+    // the most lenient group expects. Default-on per group, so this is the
+    // normal path; all-disabled leaves the legacy binary-cap behaviour.
+    let weighted_enabled = config
+        .groups
+        .iter()
+        .any(|g| g.load_balancing.health_weighted_selection);
+    if weighted_enabled {
+        let floor = config
+            .groups
+            .iter()
+            .filter(|g| g.load_balancing.health_weighted_selection)
+            .map(|g| g.load_balancing.health_weight_floor)
+            .fold(0.0_f64, f64::max);
+        let halflife = config
+            .groups
+            .iter()
+            .map(|g| g.load_balancing.failure_penalty_halflife)
+            .max()
+            .unwrap_or(std::time::Duration::from_secs(60));
+        let scale = config
+            .groups
+            .iter()
+            .map(|g| g.load_balancing.failure_penalty)
+            .max()
+            .unwrap_or(std::time::Duration::from_millis(500));
+        outline_transport::init_health_weighting(true, floor, halflife, scale);
+    }
+
     // Wire the browser fingerprint profile strategy. Default is
     // `None`, so the call is a no-op for deployments that did not opt
     // in via the top-level `fingerprint_profile` config key.
