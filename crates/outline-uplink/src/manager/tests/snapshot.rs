@@ -39,6 +39,30 @@ fn uplink() -> UplinkConfig {
     }
 }
 
+fn ss_fallback() -> crate::config::FallbackTransport {
+    crate::config::FallbackTransport {
+        transport: UplinkTransport::Ss,
+        tcp_ws_url: Some(Url::parse("wss://fb.example.com/tcp").unwrap()),
+        tcp_xhttp_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: Some(Url::parse("wss://fb.example.com/udp").unwrap()),
+        udp_xhttp_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: None,
+        vless_mode: TransportMode::WsH1,
+        ss_ws_url: None,
+        ss_xhttp_url: None,
+        ss_mode: None,
+        vless_id: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "Secret0".to_string(),
+        fwmark: None,
+        ipv6_first: false,
+        fingerprint_profile: None,
+    }
+}
+
 fn probe_disabled() -> ProbeConfig {
     ProbeConfig {
         interval: Duration::from_secs(30),
@@ -157,4 +181,40 @@ async fn snapshot_combined_ss_surfaces_ss_mode_not_split_default() {
     let want = TransportMode::XhttpH3.to_string();
     assert_eq!(up.tcp_mode.as_deref(), Some(want.as_str()), "combined tcp mode must be ss_mode");
     assert_eq!(up.udp_mode.as_deref(), Some(want.as_str()), "combined udp mode must be ss_mode");
+}
+
+#[tokio::test]
+async fn snapshot_reports_probed_dead_multiwire_uplink_as_down_not_ready() {
+    // Regression: a fully-dead multi-wire uplink sat as a green "Ready" row on
+    // the dashboard because `health_effective` reported `None` (the
+    // shuffle_wires round-gate holds `status.healthy` at `None` while a dead
+    // chain rotates) and the frontend treats `None` as live. A multi-wire
+    // uplink that HAS been probed but has no live wire must read
+    // `Some(false)` — down — while a never-probed uplink stays `None`
+    // (genuinely unknown) so the two remain distinguishable.
+    let mut u = uplink();
+    u.fallbacks = vec![ss_fallback()];
+    let manager =
+        UplinkManager::new_for_test("main", vec![u], probe_disabled(), lb(false)).unwrap();
+
+    // Never probed: health stays unknown (None), not down.
+    let snap = manager.snapshot().await;
+    assert_eq!(
+        snap.uplinks[0].tcp_health_effective, None,
+        "never-probed multi-wire uplink must stay unknown (None)",
+    );
+
+    // Probed, but no verdict flipped it (round-gate) and no wire ever
+    // delivered: the uplink is dead and must read down for the dashboard.
+    manager.inner.with_status_mut(0, |s| {
+        s.last_checked = Some(tokio::time::Instant::now());
+        s.tcp.healthy = None;
+        s.tcp.last_any_wire_success = None;
+    });
+    let snap = manager.snapshot().await;
+    assert_eq!(
+        snap.uplinks[0].tcp_health_effective,
+        Some(false),
+        "probed multi-wire uplink with no live wire must read down, not Ready",
+    );
 }
