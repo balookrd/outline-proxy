@@ -100,6 +100,20 @@ pub(crate) struct PerTransportStatus {
     /// [`crate::manager::probe::wire`], so scoring of an uplink whose
     /// `active_wire` is non-zero uses that wire's measured RTT.
     pub(crate) fallback_rtt_ewma: Vec<Option<Duration>>,
+    /// Per-wire liveness penalty for weighted wire selection, decaying via the
+    /// shared `0.5^(t/halflife)` curve (see [`crate::penalty::penalty_weight`]).
+    /// Indexed by **wire index directly**: `[0]` is the primary wire, `[i]` is
+    /// `fallbacks[i-1]`. Unlike [`Self::fallback_rtt_ewma`] /
+    /// [`Self::fallback_mode_downgrades`], which exclude primary, the primary is
+    /// included here — otherwise a primary that disconnects often would keep the
+    /// top selection weight forever and never yield to a healthier fallback.
+    /// Lazily extended on first write; reads of an out-of-range slot are treated
+    /// as a default (zero penalty → full weight). Fed by dial / probe failures
+    /// in [`super::UplinkManager::record_wire_outcome`] and cleared on proven
+    /// delivery in [`super::UplinkManager::mark_wire_data_proven`]; consumed by
+    /// the weighted `wire_dial_order` / `rotate_active_wire` when
+    /// `health_weighted_selection` is enabled.
+    pub(crate) wire_penalty: Vec<PenaltyState>,
     /// Timestamp of the most recent real data transfer on this transport.
     /// Used to skip probe cycles when the uplink is actively carrying traffic.
     pub(crate) last_active: Option<Instant>,
@@ -242,6 +256,34 @@ impl PerTransportStatus {
         let mut current = self.fallback_rtt_ewma[slot_idx];
         crate::penalty::update_rtt_ewma(&mut current, sample, alpha);
         self.fallback_rtt_ewma[slot_idx] = current;
+    }
+
+    /// Mutable per-wire penalty slot for `wire` (`0` = primary, `i` = fallback
+    /// `i-1`), lazily extending [`Self::wire_penalty`] so a wire that has never
+    /// failed is materialised as a default (zero-penalty) slot.
+    pub(crate) fn wire_penalty_slot_mut(&mut self, wire: u8) -> &mut PenaltyState {
+        let idx = wire as usize;
+        if self.wire_penalty.len() <= idx {
+            self.wire_penalty.resize(idx + 1, PenaltyState::default());
+        }
+        &mut self.wire_penalty[idx]
+    }
+
+    /// Selection weight in `(0, 1]` for `wire`, derived from its decaying
+    /// penalty (see [`crate::penalty::penalty_weight`]). A wire with no recorded
+    /// penalty — including any wire past the end of [`Self::wire_penalty`] —
+    /// scores the full `1.0`.
+    pub(crate) fn wire_weight(
+        &self,
+        wire: u8,
+        now: Instant,
+        config: &crate::config::LoadBalancingConfig,
+        floor: f64,
+    ) -> f64 {
+        match self.wire_penalty.get(wire as usize) {
+            Some(state) => crate::penalty::penalty_weight(state, now, config, floor),
+            None => 1.0,
+        }
     }
 }
 

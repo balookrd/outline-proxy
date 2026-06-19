@@ -142,6 +142,7 @@ mod vless_quic_mux;
 #[cfg(feature = "quic")]
 mod vless_udp_hybrid;
 // Note: protocol-agnostic socket helpers now live in the `outline-net` crate.
+mod mode_health;
 mod url_utils;
 mod ws_mode_cache;
 mod ws_stream;
@@ -261,6 +262,22 @@ pub fn init_downgrade_ttl(ttl: std::time::Duration) {
     ws_mode_cache::init_downgrade_ttl(ttl);
     xhttp_mode_cache::init_downgrade_ttl(ttl);
     xhttp_submode_cache::init_downgrade_ttl(ttl);
+}
+
+/// Enable / configure liveness-weighted carrier-family selection — the
+/// `WsH3 → H2 → H1` and `XhttpH3 → H2 → H1` *start-rank* choice. Called once at
+/// startup from the client bootstrap, fed from the `health_weighted_selection`
+/// and `health_weight_floor` config knobs plus the shared `failure_penalty`
+/// half-life. When `enabled` is `false` the WS / XHTTP caches keep their legacy
+/// binary-cap behaviour. Both caches read one shared config, so a single call
+/// governs both families. First call wins.
+pub fn init_health_weighting(
+    enabled: bool,
+    floor: f64,
+    halflife: std::time::Duration,
+    scale: std::time::Duration,
+) {
+    mode_health::init(enabled, floor, halflife, scale);
 }
 
 /// Time remaining on the per-host XHTTP stream-one block for this dial

@@ -83,6 +83,8 @@ fn icmp_gate_manager(suppress_when_down: bool, bypass_when_down: bool) -> Uplink
             tcp_active_keepalive_interval: None,
             warm_probe_keepalive_interval: None,
             auto_failback: false,
+            health_weighted_selection: false,
+            health_weight_floor: 0.05,
             vless_udp_mux_limits: outline_uplink::VlessUdpMuxLimits::default(),
             tcp_mid_session_retry_buffer_bytes: 256 * 1024,
             tcp_mid_session_retry_budget: 1,

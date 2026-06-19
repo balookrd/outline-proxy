@@ -492,6 +492,8 @@ fields are optional; omitted fields fall back to the defaults below.
 | `failure_cooldown_secs`              | `10`               | s     | how long after a failure the uplink is excluded from selection                                    |
 | `tcp_chunk0_failover_timeout_secs`   | `10`               | s     | wait for the first response byte from origin before failing over to the next uplink               |
 | `auto_failback`                      | `false`            | bool  | return to the originally-preferred uplink once it recovers                                        |
+| `health_weighted_selection`          | `true`             | bool  | rank the wire (sub-uplink) and carrier-family (H3/H2/H1) choices by liveness — weighted-random with a decaying penalty so a flaky candidate is dialed less but still retried and recovers over time; `false` restores the legacy fixed cyclic wire order + binary carrier downgrade cap |
+| `health_weight_floor`                | `0.05`             | [0,1] | minimum selection weight under `health_weighted_selection`, so a persistently-failing wire / carrier keeps a small retry probability and the anti-DPI reroll never *fully* avoids a wire |
 | `warm_standby_tcp`                   | `0`                | int   | pre-warmed TCP connections to keep on standby uplinks                                             |
 | `warm_standby_udp`                   | `0`                | int   | same for UDP                                                                                      |
 | `warm_probe_keepalive_secs`          | `20`               | s     | keepalive cadence for cached warm-probe pipes (`0` disables)                                      |
