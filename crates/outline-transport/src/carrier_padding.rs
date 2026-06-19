@@ -128,6 +128,15 @@ pub fn init_carrier_padding(padding: CarrierPadding, default_on: bool) {
     let _ = DEFAULT_ON.set(default_on);
 }
 
+/// The global `[padding] enabled` default an uplink inherits when it pins no
+/// per-uplink override. Mirrors the fallback inside [`effective_carrier_padding`]
+/// — the control/topology layer reads it to render each uplink's *effective*
+/// padding state on the dashboard (`per-uplink override` ?? this default).
+/// `false` before [`init_carrier_padding`] runs.
+pub fn carrier_padding_default_on() -> bool {
+    DEFAULT_ON.get().copied().unwrap_or(false)
+}
+
 /// Run `f` with `on` as the per-uplink padding decision for every dial inside
 /// it. Wrap the whole dial future so the transport sees it while building the
 /// connection. Used by the uplink manager (`dial_in_uplink_scope`) to honour a

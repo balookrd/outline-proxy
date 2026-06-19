@@ -140,6 +140,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_active_wire_pin_remaining_ms: None,
                 shuffle_wires: false,
                 carrier_downgrade: true,
+                padding_override: None,
                 shuffle_timer_secs: None,
                 tcp_wires_failed_in_round: 0,
                 udp_wires_failed_in_round: 0,
@@ -238,6 +239,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 udp_active_wire_pin_remaining_ms: None,
                 shuffle_wires: false,
                 carrier_downgrade: true,
+                padding_override: None,
                 shuffle_timer_secs: None,
                 tcp_wires_failed_in_round: 0,
                 udp_wires_failed_in_round: 0,
@@ -398,6 +400,25 @@ fn topology_serialises_non_default_fingerprint_profile_strategy() {
     let json: Value = serde_json::to_value(topology).unwrap();
     let u1 = &json["instance"]["groups"][0]["uplinks"][1];
     assert_eq!(u1["fingerprint_profile_strategy"], "per_host_stable");
+}
+
+#[test]
+fn topology_resolves_effective_padding_from_per_uplink_override() {
+    // `padding_enabled` is the per-uplink `padding` override resolved against
+    // the global `[padding] enabled` default (override ?? global) — the same
+    // fallback the dial path takes, and the boolean the dashboard's paddingChip
+    // keys on. The global-default OnceLock is unset in tests (reads false), so
+    // the override branches are asserted directly.
+    let mut snaps = snapshot_fixture();
+    snaps[0].uplinks[0].padding_override = Some(true);
+    snaps[0].uplinks[1].padding_override = Some(false);
+    let topology = ControlTopologyResponse {
+        instance: build_instance_topology(&snaps, Vec::new()),
+    };
+    let json: Value = serde_json::to_value(topology).unwrap();
+    let uplinks = &json["instance"]["groups"][0]["uplinks"];
+    assert_eq!(uplinks[0]["padding_enabled"], true, "Some(true) override -> padding on");
+    assert_eq!(uplinks[1]["padding_enabled"], false, "Some(false) override -> padding off");
 }
 
 #[test]

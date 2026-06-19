@@ -187,6 +187,8 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .cfg-chip.bypass-active { background: var(--amber-soft); color: #b45309; border-color: rgba(180, 83, 9, .45); font-weight: 800; }
 .cfg-chip.fp-stable { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
 .cfg-chip.fp-random { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
+.cfg-chip.pad-chip { background: rgba(13, 148, 136, .14); color: #5eead4; border-color: rgba(13, 148, 136, .4); }
+[data-theme="light"] .cfg-chip.pad-chip { color: #0f766e; }
 .cfg-active { color: var(--green-strong); font-weight: 600; white-space: nowrap; }
 .rows { width: 100%; }
 .rows-head,.row { display: grid; grid-template-columns: minmax(80px, max-content) minmax(110px, .9fr) minmax(80px, .7fr) minmax(170px, 1.5fr) minmax(170px, 1.5fr) minmax(80px, .7fr) minmax(120px, 1fr) 100px; gap: 12px; align-items: center; padding: 13px 18px; }
@@ -621,6 +623,18 @@ function fingerprintChip(uplink) {
   const name = uplink && uplink.fingerprint_profile_name;
   if (!name) return "";
   return renderFingerprintChip(name, uplink.fingerprint_profile_strategy || "");
+}
+// Padding chip: shown when carrier padding is effective on this uplink — the
+// per-uplink `[[outline.uplinks]] padding` override, else the global
+// `[padding] enabled` default (resolved server-side in `build_uplink_topology`,
+// so the chip matches the dial-time decision). Padding wraps each Shadowsocks
+// chunk / VLESS frame in a length-delimited padding frame so the outer TLS
+// record size no longer tracks the payload — anti TLS-in-TLS record-size
+// correlation, the same family as the fingerprint chip, so it sits in the same
+// Status-column slot.
+function paddingChip(uplink) {
+  if (!uplink || !uplink.padding_enabled) return "";
+  return `<span class="cfg-chip pad-chip" data-tip="Carrier padding on — each Shadowsocks chunk / VLESS frame is wrapped in a length-delimited padding frame so the outer TLS record size does not track the payload size (anti TLS-in-TLS record-size correlation)"><span>▦</span><span>pad</span></span>`;
 }
 // `process_stable` / `random` produce one identity for the whole
 // process, so every uplink in the group reports the same name —
@@ -1197,7 +1211,7 @@ function renderInstanceBody(panel, instance, groups) {
         row.innerHTML = `
           <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
           <div>${primaryProtocolCell(uplink)}</div>
-          <div><span class="status-pill ${rowTone}">${label}</span>${errChip}${certChip(uplink)}${fpHomogeneous ? '' : fingerprintChip(uplink)}</div>
+          <div><span class="status-pill ${rowTone}">${label}</span>${errChip}${certChip(uplink)}${fpHomogeneous ? '' : fingerprintChip(uplink)}${paddingChip(uplink)}</div>
           <div>${legWireChainCell(uplink, 'tcp')}</div>
           <div>${legWireChainCell(uplink, 'udp')}</div>
           <div class="muted-cell">${weightCell(uplink)}</div>
