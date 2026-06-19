@@ -3003,6 +3003,12 @@ fn shuffle_timer_rotate_active_wire_resets_per_wire_state() {
         status.udp.active_wire = 2;
         status.udp.consecutive_failures = 2;
         status.udp.wires_failed_in_round = 1;
+        // Recently-proven delivery: the reroll takes the "healthy uplink →
+        // fresh budget" path that zeroes the per-wire accounting below. A
+        // dead uplink (no proven wire) keeps its accounting instead — covered
+        // by `shuffle_timer_reroll_preserves_failure_accounting_when_uplink_is_dead`.
+        status.tcp.last_any_wire_success = Some(tokio::time::Instant::now());
+        status.udp.last_any_wire_success = Some(tokio::time::Instant::now());
     });
 
     let (tcp_wire, udp_wire) = manager
@@ -3039,6 +3045,58 @@ fn shuffle_timer_rotate_active_wire_resets_per_wire_state() {
     } else {
         assert!(snap.udp.active_wire_pinned_until.is_some());
     }
+}
+
+#[test]
+fn shuffle_timer_reroll_preserves_failure_accounting_when_uplink_is_dead() {
+    // Regression: a fully-dead `shuffle_wires` uplink was rendered as a green
+    // "Ready" row on the dashboard AND stayed an eligible failover candidate
+    // (`fallback_bootstrap_allowed`), because the periodic anti-DPI reroll
+    // zeroed `wires_failed_in_round` (and the other failure counters) on every
+    // tick — faster than the carrier cascade could reach chain-exhaustion. So
+    // `healthy` never flipped to `Some(false)` and no cooldown ever engaged.
+    //
+    // With NO wire proving delivery inside `runtime_failure_window`, the reroll
+    // must PRESERVE the accounting so the cascade can exhaust the chain across
+    // ticks and finally flip the uplink unhealthy. The active-wire change (the
+    // actual anti-DPI effect) still happens.
+    let mut cfg = ws_floor_primary(true);
+    cfg.fallbacks = vec![ws_alt_floor_fallback(true), ws_floor_fallback(true)];
+    cfg.shuffle_timer = Some(std::time::Duration::from_secs(60));
+    let manager = manager_with_uplink(cfg, 2);
+
+    // Steady state of a dead uplink whose edge never answers: death-progress
+    // mid-accumulation, no proven wire delivery.
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.active_wire = 1;
+        status.tcp.active_wire_streak = 5;
+        status.tcp.wires_failed_in_round = 2;
+        status.tcp.consecutive_failures = 3;
+        status.tcp.last_any_wire_success = None;
+        status.udp.active_wire = 2;
+        status.udp.wires_failed_in_round = 1;
+        status.udp.consecutive_failures = 2;
+        status.udp.last_any_wire_success = None;
+    });
+
+    manager
+        .rotate_active_wire(0)
+        .expect("3-wire uplink must report the new wire pair");
+
+    let snap = manager.read_status_for_test(0);
+    // Death-progress survives the reroll so chain-exhaustion stays reachable.
+    assert_eq!(
+        snap.tcp.wires_failed_in_round, 2,
+        "dead uplink: reroll must NOT erase chain-exhaustion progress",
+    );
+    assert_eq!(
+        snap.tcp.consecutive_failures, 3,
+        "dead uplink: reroll must NOT erase the probe failure streak",
+    );
+    assert_eq!(
+        snap.udp.wires_failed_in_round, 1,
+        "dead uplink: reroll must NOT erase chain-exhaustion progress",
+    );
 }
 
 #[test]
