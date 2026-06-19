@@ -498,29 +498,53 @@ impl UplinkManager {
         let uplink_name = uplink.name.clone();
         let now = Instant::now();
         let pin_window = self.inner.load_balancing.mode_downgrade_duration;
+        let runtime_failure_window = self.inner.load_balancing.runtime_failure_window;
         self.inner.with_status_mut(uplink_index, |status| {
             let apply = |st: &mut super::status::PerTransportStatus, new_wire: u8| {
-                // Reset every per-wire counter so the freshly-rotated
-                // wire is judged on its own dial / probe / runtime
-                // failures from this point forward, not on whatever
-                // streak the previous wire had accumulated.
+                // The anti-DPI reroll always changes which wire new sessions
+                // start on. Whether it ALSO clears the failure-accounting
+                // depends on whether the uplink is currently proving delivery.
+                //
+                // Recently-proven (some wire delivered within
+                // `runtime_failure_window`): the uplink is alive and we are
+                // merely rotating its active wire, so give the freshly-rolled
+                // wire a clean failure budget — the rotation itself must not be
+                // counted against it.
+                //
+                // NOT proven (no wire delivered within the window — a dying or
+                // dead uplink): KEEP the accumulated failure-accounting.
+                // Zeroing it on every shuffle_timer tick is what let a
+                // fully-dead `shuffle_wires` uplink dodge chain-exhaustion
+                // forever: `wires_failed_in_round` reset to 0 before the
+                // carrier cascade could exhaust it, so `healthy` never flipped
+                // to `Some(false)`, no cooldown engaged, and the uplink stayed
+                // a green "Ready" row on the dashboard AND an eligible failover
+                // candidate (`fallback_bootstrap_allowed`). Preserving the
+                // counters lets the cascade reach chain-exhaustion across
+                // reroll ticks and finally flip the uplink unhealthy. The
+                // active-wire change (the actual anti-DPI effect) still happens.
+                let recently_proven = !runtime_failure_window.is_zero()
+                    && st
+                        .last_any_wire_success
+                        .is_some_and(|t| now.saturating_duration_since(t) < runtime_failure_window);
                 st.active_wire = new_wire;
-                st.active_wire_streak = 0;
-                st.wires_failed_in_round = 0;
-                st.consecutive_failures = 0;
-                st.consecutive_runtime_failures = 0;
-                st.chunk0_consecutive_failures = 0;
-                // Pin the freshly-rolled wire for the standard
-                // mode-downgrade duration window, except when we
-                // happen to roll back to primary — primary is never
-                // pinned (matches the dial-path / probe-path advance
-                // semantics).
+                if recently_proven {
+                    st.active_wire_streak = 0;
+                    st.wires_failed_in_round = 0;
+                    st.consecutive_failures = 0;
+                    st.consecutive_runtime_failures = 0;
+                    st.chunk0_consecutive_failures = 0;
+                    // Wipe any in-flight mode-downgrade cap left over from the
+                    // previous wire — a healthy uplink's new wire starts its
+                    // carrier stack fresh at the configured rank.
+                    st.descent.reset_window_for_wire_change();
+                }
+                // Pin the freshly-rolled wire for the standard mode-downgrade
+                // duration window, except when we happen to roll back to
+                // primary — primary is never pinned (matches the dial-path /
+                // probe-path advance semantics).
                 st.active_wire_pinned_until =
                     if new_wire == 0 { None } else { Some(now + pin_window) };
-                // Wipe any in-flight mode-downgrade cap left over from
-                // the previous wire — the new wire's carrier stack is
-                // independent and starts at the configured rank.
-                st.descent.reset_window_for_wire_change();
             };
             apply(&mut status.tcp, tcp_wire);
             apply(&mut status.udp, udp_wire);

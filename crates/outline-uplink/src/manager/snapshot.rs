@@ -28,9 +28,14 @@ fn load_balancing_mode_name(mode: LoadBalancingMode) -> &'static str {
 /// dashboard reading this field and a router making a candidate choice
 /// agree on whether the uplink is delivering traffic.
 ///
-/// Returns `None` when neither the probe verdict nor any-wire-success is
-/// set yet (e.g. an instance that just started and hasn't completed its
-/// first probe cycle).
+/// Returns `None` only when the uplink genuinely has no verdict to report:
+/// a freshly started instance that has not completed its first probe cycle,
+/// or a single-wire uplink whose probe has not rendered a verdict yet — so
+/// the consumer can still tell "down" from "not yet probed". A multi-wire
+/// uplink that HAS been probed but has no live wire reports `Some(false)`
+/// even while the `shuffle_wires` round-gate holds `status.healthy` at `None`
+/// (a dead chain rotating), so a fully-dead uplink is not rendered as a live
+/// "Ready" row.
 fn compute_health_effective(
     status: &super::status::UplinkStatus,
     uplink: &super::super::types::Uplink,
@@ -44,10 +49,24 @@ fn compute_health_effective(
     if any_wire_recent_success(status, uplink, transport, now, config) {
         return Some(true);
     }
-    // Surface the negative probe verdict only when one exists; otherwise
-    // leave the snapshot field empty so the consumer can distinguish "we
-    // know this wire is down" from "we haven't probed it yet".
-    status.of(transport).healthy.map(|_| false)
+    // No positive signal. An explicit probe verdict is reported as-is (the
+    // `Some(true)` case was already caught by `effective_health`, so a present
+    // verdict here is a negative one).
+    if status.of(transport).healthy.is_some() {
+        return Some(false);
+    }
+    // `healthy == None`: no probe verdict has flipped the uplink. For a
+    // multi-wire uplink that has already been probed (`last_checked` set) but
+    // where neither the primary probe nor any fallback wire is currently alive
+    // (both checks above failed), the round-gate is merely holding the
+    // uplink-level flip back while a dead chain rotates — surface it as down
+    // so a fully-dead uplink is not painted "Ready". Probe state survives the
+    // anti-DPI reroll, so this verdict is stable. A never-probed or single-wire
+    // uplink stays `None` (genuinely unknown).
+    if status.last_checked.is_some() && !uplink.fallbacks.is_empty() {
+        return Some(false);
+    }
+    None
 }
 
 fn routing_scope_name(scope: RoutingScope) -> &'static str {
