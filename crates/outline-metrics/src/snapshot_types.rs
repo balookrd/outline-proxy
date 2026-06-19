@@ -215,6 +215,14 @@ pub struct UplinkSnapshot {
     /// clients reading the JSON would have to assume one of the two
     /// settings; making the field explicit removes the guess.
     pub carrier_downgrade: bool,
+    /// Per-uplink carrier-padding *override* (`[[outline.uplinks]] padding`):
+    /// `Some(true)`/`Some(false)` force padding on/off for this uplink, `None`
+    /// inherits the global `[padding] enabled` default. Surfaced so the
+    /// control/topology layer can resolve the *effective* padding state
+    /// (`override ?? global_default`) for the dashboard. `None` is the common
+    /// case (inherit), so it is omitted from the JSON when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding_override: Option<bool>,
     /// Configured `shuffle_timer` interval in seconds, or `None` when
     /// the periodic active-wire reroll is disabled on this uplink.
     /// Surfaced so the dashboard can show "rotates every 1h" next to

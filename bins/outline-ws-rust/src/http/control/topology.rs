@@ -228,6 +228,12 @@ struct ControlUplinkTopology {
     /// no URL-based dial path that would engage the fingerprint module.
     #[serde(skip_serializing_if = "Option::is_none")]
     fingerprint_profile_name: Option<String>,
+    /// Effective carrier-padding state for this uplink: the per-uplink
+    /// `[[outline.uplinks]] padding` override if set, otherwise the global
+    /// `[padding] enabled` default (`override ?? global_default`, mirroring the
+    /// dial-time `effective_carrier_padding`). Always serialised so the
+    /// dashboard renders the padding chip from an explicit value.
+    padding_enabled: bool,
     /// Operator on/off state: `true` when the uplink has been administratively
     /// disabled via `/control/uplink_enabled` and is out of every automatic
     /// check (probe / selection / failover / standby). Always serialised (no
@@ -433,6 +439,11 @@ fn build_uplink_topology(
         udp_wires_failed_in_round: uplink.udp_wires_failed_in_round,
         fingerprint_profile_strategy: uplink.fingerprint_profile_strategy.clone(),
         fingerprint_profile_name: uplink.fingerprint_profile_name.clone(),
+        // Effective padding = per-uplink override, else the global default —
+        // the same fallback the dial path takes in `effective_carrier_padding`.
+        padding_enabled: uplink
+            .padding_override
+            .unwrap_or_else(outline_transport::carrier_padding_default_on),
         admin_disabled: uplink.admin_disabled,
     }
 }
