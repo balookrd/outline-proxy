@@ -95,6 +95,40 @@ impl UplinkManager {
         }
     }
 
+    /// Probe-driven failover for strict (global / per-uplink) active selection.
+    ///
+    /// `probe_all` flips the active uplink's health but does NOT re-run
+    /// selection — strict selection otherwise only re-evaluates when a client
+    /// dial arrives (or once at startup, which skips a restored-from-state
+    /// active uplink because it is already chosen). An idle strict client —
+    /// e.g. a TUN client right after a restart that restored a now-dead active
+    /// uplink — would therefore keep the probe-dead active pinned until traffic
+    /// happens to flow, the "dead active uplink never fails over" symptom.
+    ///
+    /// Re-running strict selection at the end of each probe cycle promotes a
+    /// healthy standby as soon as the probe confirms the active is down:
+    /// `should_keep` is false for an unhealthy active, so the candidate sort
+    /// switches away from it. A still-healthy active is kept (no-op) — with
+    /// `auto_failback` off selection never leaves a healthy active, and with it
+    /// on the existing min_failures-gated failback rules apply unchanged. No-op
+    /// for `active_active` (no single strict active to re-evaluate).
+    pub(crate) async fn reselect_strict_active_after_probe(&self) {
+        if self.strict_global_active_uplink() {
+            // Global gates on TCP and folds UDP into the same decision, so a
+            // single re-selection pass covers both legs.
+            let _ = self
+                .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+                .await;
+        } else if self.strict_per_uplink_active_uplink() {
+            let _ = self
+                .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+                .await;
+            let _ = self
+                .strict_transport_candidates(TransportKind::Udp, None, None, true)
+                .await;
+        }
+    }
+
     pub fn new(
         group_name: impl Into<String>,
         uplinks: Vec<UplinkConfig>,
