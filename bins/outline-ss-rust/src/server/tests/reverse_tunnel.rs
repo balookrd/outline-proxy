@@ -288,7 +288,7 @@ fn raw_vless_ctx(uuid_str: &str) -> Result<Arc<RawVlessConnectionCtx>> {
         None,
         16,
     ));
-    let user = VlessUser::new(uuid_str.to_string(), Arc::from("test-vless"), None)?;
+    let user = VlessUser::new(uuid_str.to_string(), Arc::from("test-vless"), None, None)?;
     Ok(Arc::new(RawVlessConnectionCtx {
         vless_server: Arc::clone(&services.vless_server),
         raw_vless_route: Arc::new(RawQuicVlessRouteCtx {

@@ -18,6 +18,7 @@ fn sample_users() -> Vec<UserEntry> {
             xhttp_path_udp: None,
             xhttp_path_ss: None,
             enabled: None,
+            aliases: None,
         },
         UserEntry {
             id: "bob".to_owned(),
@@ -34,6 +35,7 @@ fn sample_users() -> Vec<UserEntry> {
             xhttp_path_udp: None,
             xhttp_path_ss: None,
             enabled: Some(false),
+            aliases: None,
         },
     ]
 }

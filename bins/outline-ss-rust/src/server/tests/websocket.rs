@@ -332,6 +332,7 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
                 xhttp_path_udp: None,
                 xhttp_path_ss: None,
                 enabled: None,
+                aliases: None,
             },
             UserEntry {
                 id: "bob".into(),
@@ -348,6 +349,7 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
                 xhttp_path_udp: None,
                 xhttp_path_ss: None,
                 enabled: None,
+                aliases: None,
             },
         ],
     );

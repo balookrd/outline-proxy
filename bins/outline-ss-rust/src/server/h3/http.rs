@@ -335,6 +335,7 @@ async fn handle_h3_request(
             path: Arc::from(ws_req.path.as_str()),
             candidate_users: Arc::clone(&route.candidate_users),
             padding: crate::server::transport::carrier_padding::scheme_for_path(&ws_req.path),
+            peer: Some(peer_addr.ip()),
         };
         let result =
             handle_vless_h3_connection(socket, Arc::clone(&ctx.vless_server), route_ctx, resume)

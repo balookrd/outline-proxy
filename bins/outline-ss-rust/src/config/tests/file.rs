@@ -38,6 +38,55 @@ ws_path_udp = "/alice-udp"
 }
 
 #[test]
+fn parses_user_ip_aliases_scalar_and_array() {
+    let config: FileConfig = toml::from_str(
+        r#"
+[server]
+listen = "0.0.0.0:3000"
+
+[[users]]
+id = "team"
+password = "secret"
+
+[users.aliases]
+office = "192.0.2.0/24"
+mobile = ["10.0.0.0/8", "2001:db8::/48"]
+"#,
+    )
+    .unwrap();
+
+    let users = config.users.unwrap();
+    let aliases = users[0].aliases.as_ref().unwrap();
+    // Scalar value and array value both parse.
+    assert_eq!(aliases["office"].as_slice(), &["192.0.2.0/24".to_string()][..]);
+    assert_eq!(
+        aliases["mobile"].as_slice(),
+        &["10.0.0.0/8".to_string(), "2001:db8::/48".to_string()][..]
+    );
+    // The runtime table resolves a v4 and a v6 member of the array alias.
+    let table = users[0].build_ip_aliases().unwrap().unwrap();
+    assert_eq!(table.resolve("10.1.2.3".parse().unwrap()).as_deref(), Some("mobile"));
+    assert_eq!(table.resolve("2001:db8::1".parse().unwrap()).as_deref(), Some("mobile"));
+    assert_eq!(table.resolve("192.0.2.9".parse().unwrap()).as_deref(), Some("office"));
+}
+
+#[test]
+fn user_without_aliases_parses_to_none() {
+    let config: FileConfig = toml::from_str(
+        r#"
+[server]
+listen = "0.0.0.0:3000"
+
+[[users]]
+id = "team"
+password = "secret"
+"#,
+    )
+    .unwrap();
+    assert!(config.users.unwrap()[0].aliases.is_none());
+}
+
+#[test]
 fn parses_server_sections() {
     let config: FileConfig = toml::from_str(
         r#"

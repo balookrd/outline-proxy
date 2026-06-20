@@ -36,7 +36,7 @@ fn hinted_udp_packet_decrypt_falls_back_to_matching_user() {
 #[test]
 fn encrypts_ss2022_udp_response() {
     let psk = "MDEyMzQ1Njc4OWFiY2RlZg==";
-    let user = UserKey::new("alice", psk, None, CipherKind::Aes128Gcm2022).unwrap();
+    let user = UserKey::new("alice", psk, None, CipherKind::Aes128Gcm2022, None).unwrap();
     let packet = encrypt_udp_packet_for_response(
         &user,
         &TargetAddr::from(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 53))),
@@ -52,7 +52,7 @@ fn encrypts_ss2022_udp_response() {
 #[test]
 fn encrypts_ss2022_chacha_udp_response() {
     let psk = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
-    let user = UserKey::new("alice", psk, None, CipherKind::Chacha20Poly13052022).unwrap();
+    let user = UserKey::new("alice", psk, None, CipherKind::Chacha20Poly13052022, None).unwrap();
     let packet = encrypt_udp_packet_for_response(
         &user,
         &TargetAddr::from(SocketAddr::from((Ipv4Addr::new(1, 0, 0, 1), 5353))),

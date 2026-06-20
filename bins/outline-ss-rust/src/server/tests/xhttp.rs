@@ -66,7 +66,7 @@ pub(super) async fn setup_xhttp_server_with_resumption_v2(
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
     let xhttp_routes = Arc::new(build_xhttp_vless_route_map(&[VlessXhttpUserRoute {
         user: vless_user,
         xhttp_path: Arc::from(base_path),

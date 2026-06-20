@@ -185,6 +185,7 @@ Each user can define:
 - `fwmark`
 - `ws_path_tcp`
 - `ws_path_udp`
+- `aliases` (source-IP → accounting alias map)
 
 If a user does not specify `method`, `ws_path_tcp`, or `ws_path_udp`, the server falls back to the top-level defaults.
 
@@ -193,6 +194,7 @@ This allows deployments such as:
 - different users on different WebSocket paths
 - different users on different ciphers
 - different users with different Linux routing policy via `fwmark`
+- splitting one credential into several accounting identities by source IP via `aliases` (see [Per-source-IP aliases](#per-source-ip-aliases))
 
 ## Configuration
 
@@ -284,6 +286,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `users[].xhttp_path_udp` | Optional per-user split SS-UDP-over-XHTTP path; falls back to top-level `xhttp_path_udp` |
 | `users[].xhttp_path_ss` | Optional per-user combined SS-over-XHTTP path; falls back to top-level `xhttp_path_ss` |
 | `users[].ws_path_ss` | Optional per-user combined SS-over-WS path; falls back to top-level `ws_path_ss` |
+| `users[].aliases` | Optional source-IP → alias map for **accounting** relabeling (metrics/NAT/logs) — `{ alias = "cidr-or-ip" \| ["cidr", ...] }`. Longest-prefix match, IPv4+IPv6. Alias names must be globally unique vs ids/aliases. Direct connections only. See [Per-source-IP aliases](#per-source-ip-aliases) |
 | `users[].enabled` | Optional `bool` toggle. `false` blocks the user (no routes, no auth) without deleting the entry. Default: `true` |
 | `[control]` | Optional runtime user-management HTTP endpoint (feature `control`, on by default). See [Control Plane](#control-plane) |
 | `control.listen` | Socket address for the control listener, e.g. `127.0.0.1:7001`. Bound on its own socket — keep it off the public internet |
@@ -310,9 +313,38 @@ ws_path_udp = "/alice/udp"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
 ws_path_vless = "/alice/vless"
 xhttp_path_vless = "/alice/xh"
+
+[users.aliases]
+alice-mobile = ["10.0.0.0/8", "203.0.113.5"]
+alice-office = "192.0.2.0/24"
 ```
 
 For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`, `password` must be a base64-encoded raw PSK of exactly 16, 32, and 32 bytes respectively, for example `openssl rand -base64 32`.
+
+### Per-source-IP aliases
+
+`[users.aliases]` splits one credential into several **accounting** identities by
+client source IP. After normal authentication (by Shadowsocks key or VLESS UUID)
+the server picks an effective label — the matching alias when the source IP falls
+into one of the listed subnets, otherwise the base `id` — and uses it for
+per-user metrics, the UDP NAT key, and logs. It never changes authentication, the
+key, or access control.
+
+```toml
+[[users]]
+id = "team"
+password = "shared-secret"
+
+[users.aliases]
+home   = "203.0.113.0/24"
+mobile = ["10.0.0.0/8", "2001:db8::/48"]
+```
+
+- **Value shape:** one CIDR/IP string or a list. A bare address is a host route (`/32` or `/128`). Overlapping subnets are allowed; the most specific (longest-prefix) match wins.
+- **Uniqueness:** alias names must not collide with any user `id` or another alias — each becomes a distinct `user="…"` time series, so a collision would silently merge accounting. Config that violates this is rejected at startup and by the control plane.
+- **Cardinality:** every alias adds one label value across the per-user metric families, bounded by the number of aliases you configure.
+- **Coverage:** honored wherever the server sees the real client IP — SS-over-WS/XHTTP TCP, all VLESS carriers (WS/XHTTP/H3/raw-QUIC), and all raw-QUIC SS carriers (TCP and UDP). SS-UDP-over-WebSocket falls back to the base `id` (the relay layer does not carry the peer).
+- **CDN caveat:** the source IP is the directly-connected peer. Behind a CDN or L4 proxy that is the CDN's IP, not the client's, so aliasing is only meaningful on direct connections — the server does not read inbound PROXY-protocol or `X-Forwarded-For`.
 
 ### VLESS over XHTTP
 

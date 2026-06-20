@@ -259,6 +259,17 @@ fwmark = 1001
 method = "aes-128-gcm"
 ws_path_tcp = "/alice/tcp"
 ws_path_udp = "/alice/udp"
+# Per-user source-IP aliases (ACCOUNTING ONLY). After normal authentication a
+# client whose source IP falls into one of these subnets is relabeled to the
+# matching alias in metrics / NAT / logs; otherwise it stays `alice`. Never
+# affects authentication, keys, or access control. Longest-prefix match,
+# IPv4 + IPv6; each value is one CIDR/IP or a list. Alias names must be unique
+# across all user ids and aliases. Only meaningful on direct connections —
+# behind a CDN the peer is the CDN's IP, not the client's.
+# [users.aliases]
+# alice-mobile = ["10.0.0.0/8", "203.0.113.5"]
+# alice-office = "192.0.2.0/24"
+# alice-v6     = "2001:db8::/48"
 
 [[users]]
 id = "bob"

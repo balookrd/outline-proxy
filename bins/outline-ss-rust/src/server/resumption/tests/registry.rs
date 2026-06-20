@@ -58,6 +58,7 @@ fn test_config() -> Config {
             xhttp_path_udp: None,
             xhttp_path_ss: None,
             enabled: None,
+            aliases: None,
         }],
         method: CipherKind::Chacha20IetfPoly1305,
         access_key: Default::default(),
@@ -91,7 +92,7 @@ async fn loopback_tcp_pair() -> (TcpStream, TcpStream) {
 }
 
 fn make_user(id: &str) -> UserKey {
-    UserKey::new(id, "secret-pass", None, CipherKind::Chacha20IetfPoly1305).unwrap()
+    UserKey::new(id, "secret-pass", None, CipherKind::Chacha20IetfPoly1305, None).unwrap()
 }
 
 async fn make_parked_tcp(metrics: &Arc<Metrics>, owner: &str) -> Parked {

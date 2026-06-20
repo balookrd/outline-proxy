@@ -50,6 +50,7 @@ fn sample_config() -> Config {
                 xhttp_path_udp: None,
                 xhttp_path_ss: None,
                 enabled: None,
+                aliases: None,
             },
             UserEntry {
                 id: "bob".into(),
@@ -66,6 +67,7 @@ fn sample_config() -> Config {
                 xhttp_path_udp: None,
                 xhttp_path_ss: None,
                 enabled: None,
+                aliases: None,
             },
             UserEntry {
                 id: "carol vless".into(),
@@ -82,6 +84,7 @@ fn sample_config() -> Config {
                 xhttp_path_udp: None,
                 xhttp_path_ss: None,
                 enabled: None,
+                aliases: None,
             },
         ],
         method: CipherKind::Chacha20IetfPoly1305,
@@ -222,6 +225,7 @@ fn emits_xhttp_packet_up_and_stream_one_artifacts() {
         xhttp_path_udp: None,
         xhttp_path_ss: None,
         enabled: None,
+        aliases: None,
     });
 
     let artifacts = build_access_key_artifacts(&config, &sample_ak_config()).unwrap();
@@ -326,6 +330,7 @@ fn vless_uris_alpn_prefers_h3_when_quic_listener_enabled() {
         xhttp_path_udp: None,
         xhttp_path_ss: None,
         enabled: None,
+        aliases: None,
     });
 
     let artifacts = build_access_key_artifacts(&config, &sample_ak_config()).unwrap();
@@ -408,6 +413,7 @@ fn vless_uris_skip_alpn_for_plain_http_scheme() {
         xhttp_path_udp: None,
         xhttp_path_ss: None,
         enabled: None,
+        aliases: None,
     });
 
     let artifacts = build_access_key_artifacts(&config, &ak).unwrap();

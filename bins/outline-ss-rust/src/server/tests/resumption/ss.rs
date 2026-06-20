@@ -71,6 +71,7 @@ async fn spawn_ss_two_user_server() -> Result<(ResumptionTestServer, UserKey, Us
                 xhttp_path_udp: None,
                 xhttp_path_ss: None,
                 enabled: None,
+                aliases: None,
             },
             UserEntry {
                 id: "bob".into(),
@@ -87,6 +88,7 @@ async fn spawn_ss_two_user_server() -> Result<(ResumptionTestServer, UserKey, Us
                 xhttp_path_udp: None,
                 xhttp_path_ss: None,
                 enabled: None,
+                aliases: None,
             },
         ],
     );
