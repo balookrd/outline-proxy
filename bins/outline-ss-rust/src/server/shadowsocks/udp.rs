@@ -1,4 +1,7 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
@@ -29,6 +32,16 @@ impl std::fmt::Display for SsUdpClientId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::QuicConnection(addr) => write!(f, "quic://{addr}"),
+        }
+    }
+}
+
+impl SsUdpClientId {
+    /// Source IP of this client, used to relabel per-source-IP accounting
+    /// aliases.
+    fn peer_ip(&self) -> Option<IpAddr> {
+        match self {
+            Self::QuicConnection(addr) => Some(addr.ip()),
         }
     }
 }
@@ -70,7 +83,9 @@ where
         },
         Err(error) => return Err(anyhow!(error)),
     };
-    let user_id = packet.user.id_arc();
+    // Accounting label: the per-source-IP alias when the client's IP matches a
+    // configured subnet, else the base id (metrics / NAT / logs only).
+    let user_id = packet.user.effective_label(client_id.peer_ip());
     if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id) {
         match ctx.services.udp_server.replay_store.check_and_mark(csid, pid) {
             ReplayCheck::Fresh => {},

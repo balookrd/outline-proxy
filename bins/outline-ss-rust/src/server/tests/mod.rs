@@ -95,6 +95,7 @@ pub(in crate::server) fn sample_config(listen: SocketAddr) -> Config {
             xhttp_path_udp: None,
             xhttp_path_ss: None,
             enabled: None,
+            aliases: None,
         }],
     )
 }

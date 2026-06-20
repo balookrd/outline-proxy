@@ -48,6 +48,7 @@ fn test_config() -> Config {
             xhttp_path_udp: None,
             xhttp_path_ss: None,
             enabled: None,
+            aliases: None,
         }],
         method: crate::config::CipherKind::Chacha20IetfPoly1305,
         access_key: Default::default(),

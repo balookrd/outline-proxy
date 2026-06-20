@@ -85,7 +85,7 @@ async fn drops_oversized_socket_udp_response_and_records_metric() -> Result<()> 
         dashboard: None,
     };
     let metrics = Metrics::new(&config);
-    let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305)?;
+    let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305, None)?;
     let sender = test_sender(Protocol::Socket);
 
     assert!(record_oversized_socket_response_drop(
@@ -147,7 +147,7 @@ fn ignores_non_socket_or_in_range_udp_response_sizes() -> Result<()> {
         dashboard: None,
     };
     let metrics = Metrics::new(&config);
-    let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305)?;
+    let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305, None)?;
     let ws_sender = test_sender(Protocol::Http2);
 
     assert!(!record_oversized_socket_response_drop(
@@ -212,7 +212,7 @@ async fn deduplicates_concurrent_nat_entry_creation() -> Result<()> {
     };
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(Duration::from_secs(300));
-    let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305)?;
+    let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305, None)?;
     let key = NatKey {
         user_id: user.id_arc(),
         fwmark: None,
@@ -294,7 +294,7 @@ async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
     let metrics = Metrics::new(&config);
     // Cap of 2 live entries; `0` would disable the cap.
     let nat_table = NatTable::with_outbound_ipv6(Duration::from_secs(300), 2, None);
-    let user = UserKey::new("cap", "secret-c", None, CipherKind::Chacha20IetfPoly1305)?;
+    let user = UserKey::new("cap", "secret-c", None, CipherKind::Chacha20IetfPoly1305, None)?;
 
     // Two distinct targets fill the table to capacity.
     for port in [6001u16, 6002] {

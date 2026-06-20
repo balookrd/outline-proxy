@@ -1,5 +1,6 @@
 //! HTTP handlers for the control plane.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::{
@@ -11,7 +12,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::config::{CipherKind, UserEntry};
+use crate::config::{CipherKind, OneOrManyCidr, UserEntry};
 
 use super::manager::{AccessUrlError, FieldPatch, UserManager, UserPatch, UserView};
 
@@ -60,6 +61,8 @@ pub(super) struct CreateRequest {
     pub xhttp_path_ss: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    #[serde(default)]
+    pub aliases: Option<BTreeMap<String, OneOrManyCidr>>,
 }
 
 impl From<CreateRequest> for UserEntry {
@@ -79,6 +82,7 @@ impl From<CreateRequest> for UserEntry {
             xhttp_path_udp: req.xhttp_path_udp,
             xhttp_path_ss: req.xhttp_path_ss,
             enabled: req.enabled,
+            aliases: req.aliases,
         }
     }
 }
@@ -111,6 +115,8 @@ pub(super) struct UpdateRequest {
     pub xhttp_path_ss: FieldPatch<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
+    #[serde(default)]
+    pub aliases: FieldPatch<BTreeMap<String, OneOrManyCidr>>,
 }
 
 impl From<UpdateRequest> for UserPatch {
@@ -129,6 +135,7 @@ impl From<UpdateRequest> for UserPatch {
             xhttp_path_udp: req.xhttp_path_udp,
             xhttp_path_ss: req.xhttp_path_ss,
             enabled: req.enabled,
+            aliases: req.aliases,
         }
     }
 }

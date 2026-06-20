@@ -864,6 +864,10 @@
           <span class="label">VLESS path</span>
           <input class="input mono" name="ws_path_vless" placeholder="/vless">
         </label>
+        <label class="field">
+          <span class="label">IP aliases</span>
+          <textarea class="input mono" name="aliases" rows="2" placeholder="mobile = 10.0.0.0/8, 203.0.113.5&#10;office = 192.0.2.0/24"></textarea>
+        </label>
         <div class="two">
           <label class="field">
             <span class="label">fwmark</span>
@@ -871,7 +875,7 @@
           </label>
           <label class="check"><input name="enabled" type="checkbox" checked>enabled</label>
         </div>
-        <div class="help" id="formHelp">password or vless_id is required. New paths must already be registered when the target server starts.</div>
+        <div class="help" id="formHelp">password or vless_id is required. New paths must already be registered when the target server starts. IP aliases relabel accounting (metrics/NAT/logs) by client source IP — one per line, <code>alias = cidr, cidr</code>; direct connections only (not behind a CDN).</div>
         <div class="drawer-actions">
           <button class="btn secondary" id="cancelCreateButton" type="button">Cancel</button>
           <button class="btn" id="submitUserButton" type="submit">Create</button>
@@ -966,7 +970,31 @@
     }
 
     function searchText(user){
-      return [user.id,user.method,user.ws_path_tcp,user.ws_path_udp,user.ws_path_vless,user.fwmark].filter(Boolean).join(" ").toLowerCase();
+      const aliasNames = user.aliases ? Object.keys(user.aliases).join(" ") : "";
+      return [user.id,user.method,user.ws_path_tcp,user.ws_path_udp,user.ws_path_vless,user.fwmark,aliasNames].filter(Boolean).join(" ").toLowerCase();
+    }
+
+    // IP aliases <-> textarea text. Wire shape is { alias: "cidr" | ["cidr", ...] };
+    // the textarea is one line per alias: `alias = cidr, cidr`.
+    function aliasesToText(aliases){
+      if(!aliases) return "";
+      return Object.entries(aliases).map(([name, val]) =>
+        name + " = " + (Array.isArray(val) ? val : [val]).join(", ")
+      ).join("\n");
+    }
+
+    function parseAliases(text){
+      const out = {};
+      for(const line of String(text).split(/[\n;]+/)){
+        const t = line.trim();
+        if(!t) continue;
+        const eq = t.indexOf("=");
+        if(eq < 0) continue;
+        const name = t.slice(0, eq).trim();
+        const cidrs = t.slice(eq + 1).split(",").map(s => s.trim()).filter(Boolean);
+        if(name && cidrs.length) out[name] = cidrs;
+      }
+      return Object.keys(out).length ? out : null;
     }
 
     function filtered(){
@@ -1019,7 +1047,7 @@
         return `<tr>
           <td>
             <div class="user-id"><span class="table-dot" style="width:10px;height:10px;box-shadow:none;background:${user.enabled ? "var(--ok)" : "var(--warn)"}"></span>${esc(user.id)}</div>
-            <div class="subtle">${user.fwmark == null ? "default fwmark" : "fwmark " + esc(user.fwmark)}</div>
+            <div class="subtle">${user.fwmark == null ? "default fwmark" : "fwmark " + esc(user.fwmark)}${user.aliases ? " · " + Object.keys(user.aliases).length + " ip-alias" + (Object.keys(user.aliases).length > 1 ? "es" : "") : ""}</div>
           </td>
           <td><div class="chips">${transportButtons}</div></td>
           <td><span class="mono">${user.method ? esc(user.method) : '<span class="subtle">default</span>'}</span></td>
@@ -1081,6 +1109,12 @@
       for(const [key, value] of fd.entries()){
         if(key === "enabled" || key === "id") continue;
         const text = String(value).trim();
+        if(key === "aliases"){
+          const parsed = parseAliases(text);
+          if(parsed) out.aliases = parsed;
+          else if(editing) out.aliases = null; // reset to none on edit
+          continue;
+        }
         if(!text){
           if(editing && ["password","vless_id","method","fwmark","ws_path_tcp","ws_path_udp","ws_path_vless"].includes(key)){
             if(["method","fwmark","ws_path_tcp","ws_path_udp","ws_path_vless"].includes(key)) out[key] = null;
@@ -1191,7 +1225,7 @@
       state.editingId = id;
       el.drawerTitle.textContent = "Edit user";
       el.submitUserButton.textContent = "Save";
-      el.formHelp.textContent = "Leave Password and VLESS UUID empty to keep them unchanged. Empty method, fwmark, and path reset to default.";
+      el.formHelp.textContent = "Leave Password and VLESS UUID empty to keep them unchanged. Empty method, fwmark, path, and IP aliases reset to default.";
       el.createForm.reset();
       el.createForm.elements.id.value = user.id;
       el.createForm.elements.id.disabled = true;
@@ -1201,6 +1235,7 @@
       el.createForm.elements.ws_path_tcp.value = user.ws_path_tcp || "";
       el.createForm.elements.ws_path_udp.value = user.ws_path_udp || "";
       el.createForm.elements.ws_path_vless.value = user.ws_path_vless || "";
+      el.createForm.elements.aliases.value = aliasesToText(user.aliases);
       el.createForm.elements.fwmark.value = user.fwmark == null ? "" : user.fwmark;
       el.createForm.elements.enabled.checked = user.enabled;
       el.drawerBackdrop.classList.add("open");

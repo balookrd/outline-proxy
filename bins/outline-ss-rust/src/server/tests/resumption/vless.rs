@@ -43,6 +43,7 @@ async fn spawn_vless_resumption_server() -> Result<(ResumptionTestServer, VlessU
         "550e8400-e29b-41d4-a716-446655440000".into(),
         std::sync::Arc::from("test"),
         None,
+        None,
     )?;
     let vless_route = VlessUserRoute {
         user: vless_user.clone(),

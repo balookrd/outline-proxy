@@ -134,7 +134,7 @@ pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
         config
             .user_entries()?
             .into_iter()
-            .map(|entry| {
+            .map(|entry| -> Result<UserRoute> {
                 let method = entry.effective_method(config.method);
                 // A combined `ws_path_ss` puts both legs on one path: tcp and
                 // udp resolve to the same base, so it lands in both WS route
@@ -148,14 +148,12 @@ pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
                             Arc::from(entry.effective_ws_path_udp(&config.ws_path_udp)),
                         ),
                     };
+                let aliases = entry.build_ip_aliases()?;
                 let password = entry.password.expect("user_entries filters passwordless users");
-                UserKey::new(entry.id, &password, entry.fwmark, method).map(|user| UserRoute {
-                    user,
-                    ws_path_tcp,
-                    ws_path_udp,
-                })
+                let user = UserKey::new(entry.id, &password, entry.fwmark, method, aliases)?;
+                Ok(UserRoute { user, ws_path_tcp, ws_path_udp })
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>>>()?
             .into_boxed_slice(),
     ))
 }
@@ -173,10 +171,16 @@ pub(super) fn build_raw_vless_users(config: &Config) -> Result<Arc<[VlessUser]>>
             .users
             .iter()
             .filter_map(|entry| entry.vless_id.as_ref().map(|vless_id| (entry, vless_id)))
-            .map(|(entry, vless_id)| {
-                VlessUser::new(vless_id.clone(), Arc::from(entry.id.as_str()), entry.fwmark)
+            .map(|(entry, vless_id)| -> Result<VlessUser> {
+                let aliases = entry.build_ip_aliases()?;
+                Ok(VlessUser::new(
+                    vless_id.clone(),
+                    Arc::from(entry.id.as_str()),
+                    entry.fwmark,
+                    aliases,
+                )?)
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>>>()?
             .into_boxed_slice(),
     ))
 }
@@ -194,11 +198,17 @@ pub(super) fn build_vless_user_routes(config: &Config) -> Result<Arc<[VlessUserR
                     .effective_ws_path_vless(config.ws_path_vless.as_deref())
                     .map(|path| (entry, vless_id, path))
             })
-            .map(|(entry, vless_id, ws_path)| {
-                VlessUser::new(vless_id.clone(), Arc::from(entry.id.as_str()), entry.fwmark)
-                    .map(|user| VlessUserRoute { user, ws_path: Arc::from(ws_path) })
+            .map(|(entry, vless_id, ws_path)| -> Result<VlessUserRoute> {
+                let aliases = entry.build_ip_aliases()?;
+                let user = VlessUser::new(
+                    vless_id.clone(),
+                    Arc::from(entry.id.as_str()),
+                    entry.fwmark,
+                    aliases,
+                )?;
+                Ok(VlessUserRoute { user, ws_path: Arc::from(ws_path) })
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>>>()?
             .into_boxed_slice(),
     ))
 }
@@ -220,11 +230,17 @@ pub(super) fn build_vless_xhttp_user_routes(config: &Config) -> Result<Arc<[Vles
                     .effective_xhttp_path_vless(config.xhttp_path_vless.as_deref())
                     .map(|path| (entry, vless_id, path))
             })
-            .map(|(entry, vless_id, xhttp_path)| {
-                VlessUser::new(vless_id.clone(), Arc::from(entry.id.as_str()), entry.fwmark)
-                    .map(|user| VlessXhttpUserRoute { user, xhttp_path: Arc::from(xhttp_path) })
+            .map(|(entry, vless_id, xhttp_path)| -> Result<VlessXhttpUserRoute> {
+                let aliases = entry.build_ip_aliases()?;
+                let user = VlessUser::new(
+                    vless_id.clone(),
+                    Arc::from(entry.id.as_str()),
+                    entry.fwmark,
+                    aliases,
+                )?;
+                Ok(VlessXhttpUserRoute { user, xhttp_path: Arc::from(xhttp_path) })
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>>>()?
             .into_boxed_slice(),
     ))
 }
@@ -297,17 +313,17 @@ pub(super) fn build_ss_xhttp_user_routes(config: &Config) -> Result<Arc<[SsXhttp
                     .to_owned();
                 Some((entry, path))
             })
-            .map(|(entry, xhttp_path)| {
+            .map(|(entry, xhttp_path)| -> Result<SsXhttpUserRoute> {
                 let method = entry.effective_method(config.method);
+                let aliases = entry.build_ip_aliases()?;
                 let password = entry.password.expect("user_entries filters passwordless users");
-                UserKey::new(entry.id, &password, entry.fwmark, method).map(|user| {
-                    SsXhttpUserRoute {
-                        user,
-                        xhttp_path: Arc::from(xhttp_path.as_str()),
-                    }
+                let user = UserKey::new(entry.id, &password, entry.fwmark, method, aliases)?;
+                Ok(SsXhttpUserRoute {
+                    user,
+                    xhttp_path: Arc::from(xhttp_path.as_str()),
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>>>()?
             .into_boxed_slice(),
     ))
 }
@@ -330,17 +346,17 @@ pub(super) fn build_ss_xhttp_udp_user_routes(config: &Config) -> Result<Arc<[SsX
                     .to_owned();
                 Some((entry, path))
             })
-            .map(|(entry, xhttp_path)| {
+            .map(|(entry, xhttp_path)| -> Result<SsXhttpUserRoute> {
                 let method = entry.effective_method(config.method);
+                let aliases = entry.build_ip_aliases()?;
                 let password = entry.password.expect("user_entries filters passwordless users");
-                UserKey::new(entry.id, &password, entry.fwmark, method).map(|user| {
-                    SsXhttpUserRoute {
-                        user,
-                        xhttp_path: Arc::from(xhttp_path.as_str()),
-                    }
+                let user = UserKey::new(entry.id, &password, entry.fwmark, method, aliases)?;
+                Ok(SsXhttpUserRoute {
+                    user,
+                    xhttp_path: Arc::from(xhttp_path.as_str()),
                 })
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>>>()?
             .into_boxed_slice(),
     ))
 }

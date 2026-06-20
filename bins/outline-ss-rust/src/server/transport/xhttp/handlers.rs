@@ -670,6 +670,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 path: base_path,
                 candidate_users: Arc::clone(&route.candidate_users),
                 padding,
+                peer: Some(peer_addr.ip()),
             };
             let metrics_session =
                 server

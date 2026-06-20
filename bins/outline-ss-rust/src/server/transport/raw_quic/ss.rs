@@ -80,6 +80,7 @@ pub(in crate::server) async fn handle_raw_ss_quic_stream_with_prefix(
     mut recv: quinn::RecvStream,
     prefix: Vec<u8>,
     ctx: Arc<RawQuicSsCtx>,
+    peer: std::net::SocketAddr,
 ) -> Result<()> {
     let session = ctx.services.tcp_server.metrics.open_websocket_session(
         crate::metrics::Transport::Tcp,
@@ -87,7 +88,7 @@ pub(in crate::server) async fn handle_raw_ss_quic_stream_with_prefix(
         crate::metrics::AppProtocol::Shadowsocks,
     );
 
-    let outcome = run_stream(&mut send, &mut recv, prefix, &ctx).await;
+    let outcome = run_stream(&mut send, &mut recv, prefix, &ctx, peer).await;
     let outcome_for_metrics = match &outcome {
         Ok(()) => crate::metrics::DisconnectReason::Normal,
         Err(error) if sink::is_handshake_rejected(error) => {
@@ -104,6 +105,7 @@ async fn run_stream(
     recv: &mut quinn::RecvStream,
     prefix: Vec<u8>,
     ctx: &RawQuicSsCtx,
+    peer: std::net::SocketAddr,
 ) -> Result<()> {
     // If the caller pre-read bytes off the recv stream (the 8-byte
     // oversize-magic peek that turned out NOT to match), splice them
@@ -114,11 +116,11 @@ async fn run_stream(
     // back so the subsequent client→upstream relay still drives recv
     // (no copy through chain wrapping after handshake).
     let outcome = if prefix.is_empty() {
-        ss_tcp_handshake(recv, ctx.users.clone(), None).await?
+        ss_tcp_handshake(recv, ctx.users.clone(), Some(peer)).await?
     } else {
         use tokio::io::AsyncReadExt;
         let mut chained = std::io::Cursor::new(prefix).chain(&mut *recv);
-        ss_tcp_handshake(&mut chained, ctx.users.clone(), None).await?
+        ss_tcp_handshake(&mut chained, ctx.users.clone(), Some(peer)).await?
     };
     let Some(handshake) = outcome else {
         debug!("ss raw-quic stream closed before handshake completed");
@@ -134,6 +136,10 @@ async fn run_stream(
         );
     };
 
+    // Accounting label: the per-source-IP alias when the QUIC peer matches a
+    // configured subnet, else the base id (metrics / NAT / logs only — never
+    // authentication, which already matched the decrypting key).
+    let user_id = handshake.user.effective_label(Some(peer.ip()));
     let target_display = handshake.target.to_string();
     let connect_started = std::time::Instant::now();
     debug!(user = handshake.user.id(), target = %target_display, "ss raw-quic upstream connect");
@@ -149,7 +155,7 @@ async fn run_stream(
     {
         Ok(stream) => {
             ctx.services.tcp_server.metrics.record_tcp_connect(
-                handshake.user.id_arc(),
+                Arc::clone(&user_id),
                 Protocol::QuicRaw,
                 crate::metrics::AppProtocol::Shadowsocks,
                 "success",
@@ -159,7 +165,7 @@ async fn run_stream(
         },
         Err(error) => {
             ctx.services.tcp_server.metrics.record_tcp_connect(
-                handshake.user.id_arc(),
+                Arc::clone(&user_id),
                 Protocol::QuicRaw,
                 crate::metrics::AppProtocol::Shadowsocks,
                 "error",
@@ -180,7 +186,6 @@ async fn run_stream(
     let mut encryptor =
         AeadStreamEncryptor::new(&handshake.user, handshake.decryptor.response_context())?;
 
-    let user_id = handshake.user.id_arc();
     let sink = QuicSsSink {
         send,
         user_id: Arc::clone(&user_id),

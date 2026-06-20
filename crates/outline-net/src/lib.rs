@@ -8,6 +8,9 @@
 //! `anyhow::Error`.
 
 pub mod dns_cache;
+pub mod ip_alias;
+
+pub use ip_alias::{IpAliasError, IpAliasTable};
 
 #[cfg(not(target_os = "linux"))]
 use anyhow::bail;

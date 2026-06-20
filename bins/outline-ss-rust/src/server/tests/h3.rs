@@ -298,6 +298,7 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
         "550e8400-e29b-41d4-a716-446655440000".into(),
         std::sync::Arc::from("test"),
         None,
+        None,
     )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
@@ -605,6 +606,7 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
         "550e8400-e29b-41d4-a716-446655440000".into(),
         std::sync::Arc::from("test"),
         None,
+        None,
     )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
@@ -753,6 +755,7 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
         "550e8400-e29b-41d4-a716-446655440000".into(),
         std::sync::Arc::from("test"),
         None,
+        None,
     )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
@@ -894,6 +897,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
     let vless_user = VlessUser::new(
         "550e8400-e29b-41d4-a716-446655440000".into(),
         std::sync::Arc::from("test"),
+        None,
         None,
     )?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {

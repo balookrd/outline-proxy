@@ -54,6 +54,7 @@ fn vless_only_entry() -> UserEntry {
         xhttp_path_udp: None,
         xhttp_path_ss: None,
         enabled: None,
+        aliases: None,
     }
 }
 
@@ -79,4 +80,51 @@ fn vless_id_without_any_transport_is_rejected() {
         manager.validate_new(&vless_only_entry()).is_err(),
         "vless_id with no ws/xhttp path and no raw-QUIC ALPN must be rejected"
     );
+}
+
+fn ss_entry_with_aliases(pairs: &[(&str, &str)]) -> UserEntry {
+    let aliases = pairs
+        .iter()
+        .map(|(name, cidr)| (name.to_string(), crate::config::OneOrManyCidr::One(cidr.to_string())))
+        .collect();
+    UserEntry {
+        id: "ss".into(),
+        password: Some("secret".into()),
+        fwmark: None,
+        method: None,
+        ws_path_tcp: None,
+        ws_path_udp: None,
+        ws_path_ss: None,
+        vless_id: None,
+        ws_path_vless: None,
+        xhttp_path_vless: None,
+        xhttp_path_tcp: None,
+        xhttp_path_udp: None,
+        xhttp_path_ss: None,
+        enabled: None,
+        aliases: Some(aliases),
+    }
+}
+
+#[test]
+fn validate_new_accepts_valid_aliases() {
+    let manager = manager_with_alpn(vec![H3Alpn::H3]);
+    let entry = ss_entry_with_aliases(&[("mobile", "10.0.0.0/8")]);
+    assert!(manager.validate_new(&entry).is_ok());
+}
+
+#[test]
+fn validate_new_rejects_malformed_alias_cidr() {
+    // Control-plane parity with startup `config::validation`.
+    let manager = manager_with_alpn(vec![H3Alpn::H3]);
+    let entry = ss_entry_with_aliases(&[("mobile", "not-a-cidr")]);
+    assert!(manager.validate_new(&entry).is_err());
+}
+
+#[test]
+fn user_view_exposes_aliases() {
+    let entry = ss_entry_with_aliases(&[("mobile", "10.0.0.0/8")]);
+    let view = UserView::from(&entry);
+    let aliases = view.aliases.expect("aliases should be exposed in the view");
+    assert_eq!(aliases["mobile"].as_slice(), &["10.0.0.0/8".to_string()][..]);
 }

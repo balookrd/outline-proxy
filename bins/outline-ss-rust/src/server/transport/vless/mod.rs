@@ -425,7 +425,13 @@ where
         },
     };
 
-    let user = match vless::find_user(route.users.as_ref(), &request.user_id).cloned() {
+    // Relabel by the client's source IP: downstream establishers read the
+    // (now effective) accounting label off the instance, so no further
+    // plumbing is needed. Accounting only — auth already matched the UUID.
+    let user = match vless::find_user(route.users.as_ref(), &request.user_id)
+        .cloned()
+        .map(|u| u.with_effective_label(route.peer))
+    {
         Some(user) => {
             info!(
                 user = user.label(),

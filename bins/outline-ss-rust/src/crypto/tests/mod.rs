@@ -13,8 +13,8 @@ use crate::config::CipherKind;
 pub(super) fn users(cipher: CipherKind, password_a: &str, password_b: &str) -> Arc<[UserKey]> {
     Arc::from(
         vec![
-            UserKey::new("alice", password_a, Some(1001), cipher).unwrap(),
-            UserKey::new("bob", password_b, Some(1002), cipher).unwrap(),
+            UserKey::new("alice", password_a, Some(1001), cipher, None).unwrap(),
+            UserKey::new("bob", password_b, Some(1002), cipher, None).unwrap(),
         ]
         .into_boxed_slice(),
     )

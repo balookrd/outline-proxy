@@ -97,7 +97,7 @@ async fn setup_vless_ws_server(
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from(ws_path),
@@ -164,7 +164,7 @@ async fn setup_vless_raw_quic_server() -> Result<(SocketAddr, JoinHandle<Result<
 
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
     let raw_vless_users: Arc<[VlessUser]> = Arc::from(vec![vless_user.clone()].into_boxed_slice());
     let raw_vless_candidates: Arc<[Arc<str>]> =
         Arc::from(vec![vless_user.label_arc()].into_boxed_slice());
@@ -350,7 +350,7 @@ async fn setup_vless_ws_h3_server(
 
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from(ws_path),
@@ -547,7 +547,7 @@ async fn setup_vless_ws_server_with_resumption_inner(
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from(ws_path),
@@ -1058,7 +1058,7 @@ async fn setup_vless_raw_quic_server_with_resumption()
 
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
     let raw_vless_users: Arc<[VlessUser]> = Arc::from(vec![vless_user.clone()].into_boxed_slice());
     let raw_vless_candidates: Arc<[Arc<str>]> =
         Arc::from(vec![vless_user.label_arc()].into_boxed_slice());
@@ -1228,7 +1228,7 @@ async fn setup_vless_ws_h3_server_with_resumption(
 
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from(ws_path),
@@ -1408,7 +1408,7 @@ async fn setup_vless_ws_h2_tls_server_with_resumption(
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from(ws_path),
@@ -1578,7 +1578,7 @@ async fn setup_vless_ws_h1_only_server_with_resumption(
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from(ws_path),
