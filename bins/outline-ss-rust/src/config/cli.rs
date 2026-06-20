@@ -181,5 +181,6 @@ pub(super) fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
         xhttp_path_udp: None,
         xhttp_path_ss: None,
         enabled: None,
+        aliases: None,
     })
 }

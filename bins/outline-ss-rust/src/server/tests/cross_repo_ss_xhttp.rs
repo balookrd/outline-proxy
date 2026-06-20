@@ -56,7 +56,7 @@ async fn setup_ss_xhttp_server(
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let user = UserKey::new("ss-xhttp-user".to_string(), TEST_PASSWORD, None, TEST_CIPHER)?;
+    let user = UserKey::new("ss-xhttp-user".to_string(), TEST_PASSWORD, None, TEST_CIPHER, None)?;
     let ss_routes = Arc::new(build_xhttp_ss_route_map(&[SsXhttpUserRoute {
         user,
         xhttp_path: Arc::from(base_path),
@@ -256,7 +256,8 @@ async fn setup_ss_combined_xhttp_server(
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
     let metrics = Metrics::new(&config);
-    let user = UserKey::new("ss-combined-user".to_string(), TEST_PASSWORD, None, TEST_CIPHER)?;
+    let user =
+        UserKey::new("ss-combined-user".to_string(), TEST_PASSWORD, None, TEST_CIPHER, None)?;
     let ss_routes = Arc::new(build_xhttp_ss_route_map(&[SsXhttpUserRoute {
         user,
         xhttp_path: Arc::from(base_path),

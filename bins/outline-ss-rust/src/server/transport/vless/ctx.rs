@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
@@ -94,6 +95,11 @@ pub(in crate::server) struct VlessWsRouteCtx {
     /// multiplexes them on one path. Config-synchronised: the client on this
     /// path must match.
     pub(in crate::server) padding: outline_wire::padding::PaddingScheme,
+    /// Source IP of the client carrier, used to relabel per-source-IP
+    /// accounting aliases (metrics/NAT/logs only). `None` when the transport
+    /// does not surface a peer. Behind a CDN this is the CDN's IP, so aliasing
+    /// is only meaningful on direct connections.
+    pub(in crate::server) peer: Option<IpAddr>,
 }
 
 /// Return type of the VLESS-TCP relay task. Carries either a closed

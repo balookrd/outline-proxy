@@ -139,11 +139,13 @@ pub(super) async fn vless_websocket_upgrade(
     method: Method,
     version: Version,
     headers: HeaderMap,
+    connect_info: ConnectInfo<SocketAddr>,
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
         Err(_) => return build_not_found_response(Body::empty()),
     };
+    let ConnectInfo(peer_addr) = connect_info;
     let protocol = protocol_from_http_version(version);
     let path: Arc<str> = Arc::from(uri.path());
     let routes_snap = state.routes.load();
@@ -173,6 +175,7 @@ pub(super) async fn vless_websocket_upgrade(
             path,
             candidate_users: Arc::clone(&route.candidate_users),
             padding,
+            peer: Some(peer_addr.ip()),
         };
         let result = vless::handle_vless_connection(socket, server, route_ctx, resume).await;
         finish_ws_session(session, result, "vless");

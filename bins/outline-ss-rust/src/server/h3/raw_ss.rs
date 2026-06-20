@@ -25,6 +25,9 @@ pub(in crate::server) async fn handle_raw_ss_connection(
         .and_then(|d| d.protocol)
         .is_some_and(|bytes| bytes == b"ss-mtu");
     let connection = Arc::new(connection);
+    // Source IP of this QUIC carrier; relabels per-source-IP accounting
+    // aliases. Stable for the connection — every stream shares one peer.
+    let remote = connection.remote_address();
     let conn_state = Arc::new(SsQuicConn::new());
 
     // Spawn the QUIC datagram pump for SS-UDP packets. It terminates when the
@@ -95,7 +98,8 @@ pub(in crate::server) async fn handle_raw_ss_connection(
                 tokio::spawn(async move {
                     let _permit = stream_permit;
                     if let Err(error) =
-                        handle_raw_ss_quic_stream_with_prefix(send, recv, prefix, raw_ctx).await
+                        handle_raw_ss_quic_stream_with_prefix(send, recv, prefix, raw_ctx, remote)
+                            .await
                         && !is_normal_h3_shutdown(&error)
                     {
                         if is_handshake_rejected(&error) {

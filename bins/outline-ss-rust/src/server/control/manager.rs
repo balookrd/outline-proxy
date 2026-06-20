@@ -13,7 +13,8 @@ use tokio::sync::Mutex;
 
 use crate::{
     config::{
-        CipherKind, Config, H3Alpn, UserEntry, access_key::build_access_key_artifacts_for_user,
+        CipherKind, Config, H3Alpn, OneOrManyCidr, UserEntry,
+        access_key::build_access_key_artifacts_for_user,
     },
     crypto::UserKey,
     metrics::Transport,
@@ -97,6 +98,10 @@ pub(super) struct UserView {
     pub xhttp_path_udp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xhttp_path_ss: Option<String>,
+    /// Source-IP → alias map. Exposed in full (not a `has_*` flag) — it is
+    /// accounting/routing policy, not a secret.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aliases: Option<BTreeMap<String, OneOrManyCidr>>,
     pub has_password: bool,
     pub has_vless_id: bool,
 }
@@ -134,6 +139,7 @@ impl From<&UserEntry> for UserView {
             xhttp_path_tcp: entry.xhttp_path_tcp.clone(),
             xhttp_path_udp: entry.xhttp_path_udp.clone(),
             xhttp_path_ss: entry.xhttp_path_ss.clone(),
+            aliases: entry.aliases.clone(),
             has_password: entry.password.is_some(),
             has_vless_id: entry.vless_id.is_some(),
         }
@@ -450,6 +456,11 @@ impl UserManager {
                 );
             }
         }
+        // Per-user alias CIDRs must parse (global uniqueness is enforced in
+        // `rebuild_snapshots`, which sees the full user set).
+        entry
+            .build_ip_aliases()
+            .map_err(|e| anyhow!("invalid ip aliases: {e}"))?;
         Ok(())
     }
 
@@ -480,6 +491,12 @@ impl UserManager {
                 bail!("duplicate user id: {}", user.id);
             }
         }
+        // Per-source-IP aliases: CIDRs parse and alias names are globally
+        // unique vs ids — mirrors the startup `Config::validate` check so a
+        // control-plane mutation cannot install config the server would reject
+        // on restart. Runs on the full set (enabled users are the ones whose
+        // aliases become live labels).
+        crate::config::validate_ip_aliases(enabled.iter().copied())?;
 
         let mut user_routes: Vec<UserRoute> = Vec::new();
         let mut ss_xhttp_routes: Vec<crate::server::setup::SsXhttpUserRoute> = Vec::new();
@@ -497,7 +514,10 @@ impl UserManager {
                         Arc::from(user.effective_ws_path_udp(&self.default_ws_path_udp)),
                     ),
                 };
-            let user_key = UserKey::new(user.id.clone(), password, user.fwmark, method)
+            let aliases = user
+                .build_ip_aliases()
+                .with_context(|| format!("invalid ip aliases for user {}", user.id))?;
+            let user_key = UserKey::new(user.id.clone(), password, user.fwmark, method, aliases)
                 .with_context(|| format!("failed to derive key for user {}", user.id))?;
             if let Some(path) = user
                 .effective_xhttp_path_ss(self.default_xhttp_path_ss.as_deref())
@@ -530,8 +550,11 @@ impl UserManager {
             if ws_path.is_none() && xhttp_path.is_none() {
                 bail!("vless user {} requires at least ws_path_vless or xhttp_path_vless", user.id);
             }
+            let aliases = user
+                .build_ip_aliases()
+                .with_context(|| format!("invalid ip aliases for user {}", user.id))?;
             let vless_user =
-                VlessUser::new(vless_id.clone(), Arc::from(user.id.as_str()), user.fwmark)
+                VlessUser::new(vless_id.clone(), Arc::from(user.id.as_str()), user.fwmark, aliases)
                     .with_context(|| format!("failed to parse vless_id for user {}", user.id))?;
             if let Some(path) = ws_path {
                 vless_routes.push(VlessUserRoute {
@@ -595,6 +618,7 @@ pub(super) struct UserPatch {
     pub xhttp_path_tcp: FieldPatch<String>,
     pub xhttp_path_udp: FieldPatch<String>,
     pub xhttp_path_ss: FieldPatch<String>,
+    pub aliases: FieldPatch<BTreeMap<String, OneOrManyCidr>>,
     pub enabled: Option<bool>,
 }
 
@@ -635,6 +659,9 @@ impl UserPatch {
         }
         if let FieldPatch::Set(xhttp_path_ss) = self.xhttp_path_ss {
             entry.xhttp_path_ss = xhttp_path_ss;
+        }
+        if let FieldPatch::Set(aliases) = self.aliases {
+            entry.aliases = aliases;
         }
         if let Some(enabled) = self.enabled {
             entry.enabled = Some(enabled);

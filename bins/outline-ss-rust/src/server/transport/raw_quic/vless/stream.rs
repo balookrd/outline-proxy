@@ -81,7 +81,13 @@ pub(super) async fn run_stream(
         header_buf.extend_from_slice(&chunk[..read]);
     };
 
-    let user = match vless::find_user(route.users.as_ref(), &request.user_id).cloned() {
+    // Relabel the resolved user by the QUIC peer's source IP: downstream
+    // handle_tcp/handle_udp read the (now effective) accounting label off the
+    // instance, so no further plumbing is needed. Accounting only.
+    let user = match vless::find_user(route.users.as_ref(), &request.user_id)
+        .cloned()
+        .map(|u| u.with_effective_label(Some(connection.remote_address().ip())))
+    {
         Some(user) => user,
         None => {
             warn!(

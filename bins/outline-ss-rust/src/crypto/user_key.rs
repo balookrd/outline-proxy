@@ -1,11 +1,13 @@
 use std::{
     fmt,
+    net::IpAddr,
     sync::{Arc, OnceLock},
 };
 
 use aes::{Aes128, Aes256, cipher::KeyInit};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chacha20poly1305::XChaCha20Poly1305;
+use outline_net::IpAliasTable;
 use outline_wire::MasterKeyError;
 use subtle::ConstantTimeEq;
 
@@ -30,6 +32,9 @@ pub struct UserKey {
     cipher: CipherKind,
     master_key: Arc<[u8]>,
     fwmark: Option<u32>,
+    /// Source-IP → alias table for accounting relabeling (metrics/NAT/logs).
+    /// `None` for the common case of no aliases. See [`Self::effective_label`].
+    aliases: Option<Arc<IpAliasTable>>,
     ciphers: Arc<CachedCiphers>,
 }
 
@@ -45,6 +50,7 @@ impl UserKey {
         password: &str,
         fwmark: Option<u32>,
         cipher: CipherKind,
+        aliases: Option<Arc<IpAliasTable>>,
     ) -> Result<Self, CryptoError> {
         let id: Arc<str> = Arc::from(id.into());
         let log_label: Arc<str> = Arc::from(format!("{}:{}", &id, cipher.as_str()).as_str());
@@ -54,6 +60,7 @@ impl UserKey {
             cipher,
             master_key: Arc::from(password_to_master_key(password, cipher)?),
             fwmark,
+            aliases,
             ciphers: Arc::new(CachedCiphers {
                 xchacha: OnceLock::new(),
                 aes_header: OnceLock::new(),
@@ -92,6 +99,16 @@ impl UserKey {
 
     pub fn id_arc(&self) -> Arc<str> {
         Arc::clone(&self.id)
+    }
+
+    /// Effective accounting label for a client whose source IP is `peer`: the
+    /// matching alias when `peer` falls into one of this user's configured
+    /// subnets, otherwise the base config id. A `None` peer or no match falls
+    /// back to the base id. Accounting only (metrics/NAT/logs) — never
+    /// authentication, which always keys on the decrypting [`Self::id`].
+    pub fn effective_label(&self, peer: Option<IpAddr>) -> Arc<str> {
+        peer.and_then(|ip| self.aliases.as_ref().and_then(|t| t.resolve(ip)))
+            .unwrap_or_else(|| self.id_arc())
     }
 
     pub fn log_label(&self) -> Arc<str> {

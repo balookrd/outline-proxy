@@ -639,7 +639,13 @@ where
             path = %route.path,
             "tcp shadowsocks user authenticated"
         );
-        let user_id = user.id_arc();
+        // Accounting label = the per-source-IP alias when the peer matches a
+        // configured subnet, else the base id. Drives metrics, NAT keying,
+        // logging, AND resume owner-matching below — all keyed on the same
+        // effective label. Safe for resume: a parked session resumes from the
+        // same peer, so the alias is identical across the park boundary; do
+        // not "simplify" this back to `user.id_arc()`.
+        let user_id = user.effective_label(peer_addr.map(|a| a.ip()));
         let target_display: Arc<str> = Arc::from(target.to_string());
 
         // Resume attempt: if the client offered a Session ID and the
@@ -969,11 +975,11 @@ where
             AppProtocol::Shadowsocks,
         );
         state.upstream_guard = Some(server.metrics.open_tcp_upstream_connection(
-            user_id,
+            Arc::clone(&user_id),
             route.protocol,
             AppProtocol::Shadowsocks,
         ));
-        state.user_counters = Some(server.metrics.user_counters(&user.id_arc()));
+        state.user_counters = Some(server.metrics.user_counters(&user_id));
         state.authenticated_user = Some(user);
         state.upstream_writer = Some(writer);
         state.upstream_target_display = Some(target_display);

@@ -83,8 +83,9 @@ fn legacy_stream_encryptor_splits_large_responses() {
 fn decryptor_matches_user_with_different_cipher() {
     let users: Arc<[UserKey]> = Arc::from(
         vec![
-            UserKey::new("alice", "secret-a", Some(1001), CipherKind::Aes256Gcm).unwrap(),
-            UserKey::new("bob", "secret-b", Some(1002), CipherKind::Chacha20IetfPoly1305).unwrap(),
+            UserKey::new("alice", "secret-a", Some(1001), CipherKind::Aes256Gcm, None).unwrap(),
+            UserKey::new("bob", "secret-b", Some(1002), CipherKind::Chacha20IetfPoly1305, None)
+                .unwrap(),
         ]
         .into_boxed_slice(),
     );

@@ -1,4 +1,11 @@
-use super::super::{CipherKind, Config, default_http_root_realm};
+use super::super::{CipherKind, Config, OneOrManyCidr, default_http_root_realm};
+
+fn aliases(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, OneOrManyCidr> {
+    pairs
+        .iter()
+        .map(|(name, cidr)| (name.to_string(), OneOrManyCidr::One(cidr.to_string())))
+        .collect()
+}
 
 fn base_config() -> Config {
     Config {
@@ -47,6 +54,7 @@ fn base_config() -> Config {
             xhttp_path_udp: None,
             xhttp_path_ss: None,
             enabled: None,
+            aliases: None,
         }],
         method: CipherKind::Chacha20IetfPoly1305,
         access_key: Default::default(),
@@ -297,6 +305,7 @@ fn allows_vless_reverse_user_without_ws_path() {
             xhttp_path_udp: None,
             xhttp_path_ss: None,
             enabled: None,
+            aliases: None,
         }],
         reverse_tunnel: Some(ReverseTunnelConfig { endpoints: vec![endpoint] }),
         ..base_config()
@@ -328,6 +337,7 @@ fn allows_vless_only_users() {
             xhttp_path_udp: None,
             xhttp_path_ss: None,
             enabled: None,
+            aliases: None,
         }],
         ..base_config()
     }
@@ -359,6 +369,7 @@ fn rejects_vless_path_conflict_with_tcp_path() {
                 xhttp_path_udp: None,
                 xhttp_path_ss: None,
                 enabled: None,
+                aliases: None,
             },
             super::super::UserEntry {
                 id: "550e8400-e29b-41d4-a716-446655440000".into(),
@@ -375,6 +386,7 @@ fn rejects_vless_path_conflict_with_tcp_path() {
                 xhttp_path_udp: None,
                 xhttp_path_ss: None,
                 enabled: None,
+                aliases: None,
             },
         ],
         ..base_config()
@@ -409,6 +421,7 @@ fn allows_per_user_vless_path_without_global_default() {
             xhttp_path_udp: None,
             xhttp_path_ss: None,
             enabled: None,
+            aliases: None,
         }],
         ..base_config()
     }
@@ -440,6 +453,7 @@ fn allows_vless_id_without_path_when_raw_quic_alpn_enabled() {
             xhttp_path_udp: None,
             xhttp_path_ss: None,
             enabled: None,
+            aliases: None,
         }],
         ..base_config()
     }
@@ -470,6 +484,7 @@ fn rejects_vless_id_without_any_path() {
             xhttp_path_udp: None,
             xhttp_path_ss: None,
             enabled: None,
+            aliases: None,
         }],
         ..base_config()
     }
@@ -520,4 +535,29 @@ fn rejects_http_root_realm_with_control_characters() {
     .to_string();
 
     assert!(error.contains("http_root_realm must not contain control characters"));
+}
+
+#[test]
+fn valid_user_aliases_pass_validation() {
+    let mut cfg = base_config();
+    cfg.users[0].aliases = Some(aliases(&[("mobile", "10.0.0.0/8"), ("office", "192.0.2.0/24")]));
+    assert!(cfg.validate().is_ok());
+}
+
+#[test]
+fn user_alias_with_malformed_cidr_is_rejected() {
+    let mut cfg = base_config();
+    cfg.users[0].aliases = Some(aliases(&[("mobile", "not-a-cidr")]));
+    let error = cfg.validate().unwrap_err().to_string();
+    assert!(error.contains("ip/cidr") || error.contains("alias"), "got: {error}");
+}
+
+#[test]
+fn alias_colliding_with_a_user_id_is_rejected() {
+    // An alias name must not equal any user id (here, the user's own id) — that
+    // would silently merge accounting under one label.
+    let mut cfg = base_config();
+    cfg.users[0].aliases = Some(aliases(&[("default", "192.0.2.0/24")]));
+    let error = cfg.validate().unwrap_err().to_string();
+    assert!(error.contains("collides") || error.contains("unique"), "got: {error}");
 }

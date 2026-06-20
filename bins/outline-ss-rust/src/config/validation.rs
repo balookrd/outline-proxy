@@ -150,6 +150,9 @@ impl Config {
                 bail!("duplicate vless_id for user {}", user.id);
             }
         }
+        // Per-user source-IP aliases (accounting relabeling): every alias's
+        // CIDRs must parse and alias names must be globally unique vs ids.
+        super::validate_ip_aliases(&self.users)?;
         // Split tcp/udp must be distinct — a path carrying both legs uses the
         // combined `ws_path_ss` instead (tracked in `ws_ss_paths`).
         if let Some(conflict) = tcp_paths.intersection(&udp_paths).next() {
