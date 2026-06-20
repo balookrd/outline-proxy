@@ -109,6 +109,28 @@ async fn connect_tcp_uplink(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<(TcpWriter, TcpReader)> {
+    // Scope the per-uplink padding override over the whole dial + build. The
+    // transport reads `effective_carrier_padding` when it splits/spawns the
+    // writer (`do_tcp_ss_setup` / `vless_tcp_pair_from_ws`), which runs AFTER
+    // the dial future returns — so the scope must wrap this entire call, not
+    // just the dial (the manager's `dial_in_uplink_scope` covers only the dial:
+    // enough for the TLS fingerprint, not for padding). Without this the hot
+    // path falls back to the global `[padding] enabled` default, so a padded
+    // per-uplink dials plain and the padded server path drops it while the
+    // (correctly scoped) probe stays green. Mirrors the SOCKS path in
+    // `outline-ws-rust`'s `proxy/tcp/failover.rs::connect_tcp_uplink`.
+    outline_uplink::dial::with_uplink_padding_scope(
+        &candidate.uplink,
+        connect_tcp_uplink_inner(uplinks, candidate, target),
+    )
+    .await
+}
+
+async fn connect_tcp_uplink_inner(
+    uplinks: &UplinkManager,
+    candidate: &UplinkCandidate,
+    target: &TargetAddr,
+) -> Result<(TcpWriter, TcpReader)> {
     // Raw QUIC (VLESS-over-QUIC or SS-over-QUIC) is shared via the per-ALPN
     // connection registry, not the warm-standby pool. Dispatch directly to
     // the QUIC dial helper which already returns a ready-to-use writer/reader
