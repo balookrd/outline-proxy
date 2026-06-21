@@ -162,6 +162,7 @@ pub(super) async fn connect_xhttp_h1(
                 out_tx,
                 AbortOnDrop::new(driver),
                 XhttpSubmode::PacketUp,
+                false,
             ),
             issued_session_id,
             ack_prefix_echo,

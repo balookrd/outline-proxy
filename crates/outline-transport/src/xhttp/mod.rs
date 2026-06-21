@@ -56,6 +56,10 @@ mod tests_packet_up_h1;
 #[path = "tests/sink_backpressure.rs"]
 mod tests_sink_backpressure;
 
+#[cfg(test)]
+#[path = "tests/carrier_h3.rs"]
+mod tests_carrier_h3;
+
 // Re-exports kept at the previous `super::*` paths so sibling carrier
 // modules (`h1`, `h2`, `h3`) and the rest of the crate keep working
 // after the file split — h1 still does `use super::{XhttpStream, …}`.

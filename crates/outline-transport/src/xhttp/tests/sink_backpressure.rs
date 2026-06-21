@@ -30,7 +30,7 @@ async fn full_outbound_channel_pends_instead_of_erroring() {
         std::future::pending::<()>().await;
     }));
     let mut stream =
-        XhttpStream::from_channels(in_rx, out_tx, dummy_driver, XhttpSubmode::PacketUp);
+        XhttpStream::from_channels(in_rx, out_tx, dummy_driver, XhttpSubmode::PacketUp, false);
 
     stream.send(Message::Binary(Bytes::from_static(&[1]))).await.unwrap();
     stream.send(Message::Binary(Bytes::from_static(&[2]))).await.unwrap();
@@ -66,7 +66,7 @@ async fn closed_receiver_surfaces_as_sink_error() {
         std::future::pending::<()>().await;
     }));
     let mut stream =
-        XhttpStream::from_channels(in_rx, out_tx, dummy_driver, XhttpSubmode::PacketUp);
+        XhttpStream::from_channels(in_rx, out_tx, dummy_driver, XhttpSubmode::PacketUp, false);
 
     let err = stream
         .send(Message::Binary(Bytes::from_static(&[1])))

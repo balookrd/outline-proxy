@@ -362,18 +362,26 @@ impl TransportStream {
         }
     }
 
-    /// Whether the carrier is HTTP/3 — a WebSocket riding a QUIC stream.
+    /// Whether the carrier rides a QUIC stream — the native `ws_h3`
+    /// carrier or XHTTP-over-h3 (`xhttp_h3`).
     ///
     /// The QUIC connection underneath runs its own keep-alive and
-    /// `max_idle_timeout` liveness check, so a UDP datagram channel on this
-    /// carrier can skip the WS-level read-idle watchdog and the client
-    /// keepalive Ping: not only are they redundant, the Ping is unsafe to
-    /// rely on here. On a quiet H3 datagram channel the server cannot emit a
-    /// reactive Pong without risking a connection-level `H3_INTERNAL_ERROR`,
-    /// so proving liveness from inbound WS frames would spuriously tear down
-    /// a healthy-but-quiet session. Callers trust the QUIC layer instead.
+    /// `max_idle_timeout` liveness check, so a channel on this carrier can
+    /// skip the WS-level read-idle watchdog and the client keepalive Ping:
+    /// not only are they redundant, the Ping is unsafe to rely on here. On a
+    /// quiet H3 channel the server cannot emit a reactive Pong without
+    /// risking a connection-level `H3_INTERNAL_ERROR`, so proving liveness
+    /// from inbound WS frames would spuriously tear down a healthy-but-quiet
+    /// session. Callers trust the QUIC layer instead.
+    ///
+    /// `xhttp_h2`/`xhttp_h1` ride TCP and must keep the watchdog, so this is
+    /// driven by the XHTTP stream's actual carrier, not by the enum variant.
     pub fn is_h3(&self) -> bool {
-        matches!(self, TransportStream::H3 { .. })
+        match self {
+            TransportStream::H3 { .. } => true,
+            TransportStream::Xhttp { inner, .. } => inner.carrier_is_h3(),
+            TransportStream::Http1 { .. } | TransportStream::H2 { .. } => false,
+        }
     }
 
     /// XHTTP submode the dialer actually landed on (after any inline
