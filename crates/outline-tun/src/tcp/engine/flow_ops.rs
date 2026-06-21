@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::{Result, bail};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, Notify, watch};
 use tracing::debug;
 
 use outline_metrics as metrics;
@@ -85,7 +85,12 @@ impl TunTcpEngine {
                 route: route.clone(),
                 upstream_writer: None,
             },
-            signals: FlowControlSignals { close_signal, scheduler, idle_timeout },
+            signals: FlowControlSignals {
+                close_signal,
+                upstream_pump: Arc::new(Notify::new()),
+                scheduler,
+                idle_timeout,
+            },
             status: TcpFlowStatus::SynReceived,
             rcv_nxt: packet.sequence_number.wrapping_add(1),
             client_window_scale: packet.window_scale.unwrap_or(0),
