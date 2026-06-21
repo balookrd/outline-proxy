@@ -219,7 +219,7 @@ pub(super) async fn connect_xhttp_h3(
             "xhttp h3 session opened"
         );
         Ok::<_, anyhow::Error>((
-            XhttpStream::from_channels(in_rx, out_tx, AbortOnDrop::new(driver), active_submode),
+            XhttpStream::from_channels(in_rx, out_tx, AbortOnDrop::new(driver), active_submode, true),
             issued_session_id,
             ack_prefix_echo,
             symmetric_replay_echo,

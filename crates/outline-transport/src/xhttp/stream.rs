@@ -34,6 +34,13 @@ pub(crate) struct XhttpStream {
     /// so the uplink layer can surface the actual carrier shape on
     /// dashboards instead of the originally-requested one.
     pub(super) active_submode: XhttpSubmode,
+    /// Whether the carrier underneath is HTTP/3 (a QUIC stream).
+    /// `true` only for `xhttp_h3`; `false` for `xhttp_h1`/`xhttp_h2`,
+    /// which ride TCP. Surfaced via [`XhttpStream::carrier_is_h3`] so
+    /// the liveness layer can skip the WS-level read-idle watchdog on
+    /// QUIC carriers (which run their own keep-alive / `max_idle_timeout`),
+    /// exactly as it does for the native `ws_h3` carrier.
+    pub(super) carrier_is_h3: bool,
     // The driver task owns the h2 SendRequest, the GET reader
     // sub-task and the POST fan-out sub-tasks. Dropping the stream
     // aborts the driver, which cancels every sub-task and frees the
@@ -59,6 +66,15 @@ impl XhttpStream {
         self.active_submode
     }
 
+    /// Whether the carrier underneath is HTTP/3 (a QUIC stream).
+    /// Lets `TransportStream::is_h3` treat `xhttp_h3` like the native
+    /// `ws_h3` carrier so the read-idle watchdog / keepalive Ping are
+    /// skipped on QUIC, where they are redundant and unsafe (see
+    /// `TransportStream::is_h3`).
+    pub fn carrier_is_h3(&self) -> bool {
+        self.carrier_is_h3
+    }
+
     /// Constructor used by the h3 sibling module: it builds the
     /// driver task and the channel pair on its own and hands the
     /// finished triple here. Keeps the field-level details of
@@ -69,12 +85,14 @@ impl XhttpStream {
         outgoing: mpsc::Sender<Message>,
         driver: AbortOnDrop,
         active_submode: XhttpSubmode,
+        carrier_is_h3: bool,
     ) -> Self {
         Self {
             incoming,
             outgoing: PollSender::new(outgoing),
             closed: false,
             active_submode,
+            carrier_is_h3,
             _driver: driver,
         }
     }
