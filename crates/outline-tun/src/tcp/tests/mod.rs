@@ -1716,6 +1716,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         },
         signals: super::state_machine::FlowControlSignals {
             close_signal,
+            upstream_pump: Arc::new(tokio::sync::Notify::new()),
             scheduler: Arc::new(super::engine::scheduler::FlowScheduler::new()),
             idle_timeout: std::time::Duration::from_secs(60),
         },

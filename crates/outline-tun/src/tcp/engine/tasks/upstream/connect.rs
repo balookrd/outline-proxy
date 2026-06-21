@@ -11,7 +11,7 @@ use socks5_proto::TargetAddr;
 use super::super::super::super::TcpFlowKey;
 use super::super::super::super::maintenance::commit_flow_changes;
 use super::super::super::super::state_machine::{
-    TcpFlowState, TcpFlowStatus, UpstreamWriter, clear_flow_metrics, client_fin_seen,
+    TcpFlowState, TcpFlowStatus, UpstreamWriter, clear_flow_metrics,
 };
 use super::super::super::connect::select_tcp_candidate_and_connect;
 use super::super::super::{TunTcpEngine, close_upstream_writer, target_socket_addr};
@@ -90,7 +90,7 @@ impl TunTcpEngine {
                 };
                 let (read_half, write_half) = stream.into_split();
                 let upstream_writer = Arc::new(Mutex::new(UpstreamWriter::Direct(write_half)));
-                {
+                let (group_name, uplink_name, notify) = {
                     let mut state = flow.lock().await;
                     if matches!(state.status, TcpFlowStatus::Closed) {
                         metrics::record_tun_tcp_async_connect("discarded_closed_flow");
@@ -99,26 +99,33 @@ impl TunTcpEngine {
                     clear_flow_metrics(&mut state);
                     state.routing.uplink_name = Arc::from("direct");
                     state.routing.upstream_writer = Some(Arc::clone(&upstream_writer));
-                    let pending = std::mem::take(&mut state.pending_client_data);
-                    let should_close = client_fin_seen(state.status);
+                    let notify = state.signals.upstream_pump.clone();
                     commit_flow_changes(&mut state, &engine.inner.tcp);
-                    // Send pending data.
-                    for payload in pending {
-                        let mut w = upstream_writer.lock().await;
-                        if let Err(error) = w.send_chunk(&payload).await {
-                            drop(w);
-                            warn!(flow_id, error = %format!("{error:#}"), "direct TUN TCP send error");
-                            engine.abort_flow_with_rst(&key, "send_error").await;
-                            return;
-                        }
-                    }
-                    if should_close {
-                        close_upstream_writer(Some(Arc::clone(&upstream_writer))).await;
-                    }
-                }
+                    let group_name = state.routing.group_name.clone();
+                    let uplink_name = state.routing.uplink_name.clone();
+                    (group_name, uplink_name, notify)
+                };
                 metrics::record_tun_tcp_async_connect("connected");
-                // Spawn a plain reader for the direct stream.
-                engine.spawn_direct_upstream_reader(key.clone(), flow.clone(), read_half, close_rx);
+                // Reader drains upstream→TUN; pump drains TUN→upstream
+                // (including any data/FIN buffered before connect completed),
+                // so the shared read-loop never blocks on this flow's send.
+                engine.spawn_direct_upstream_reader(
+                    key.clone(),
+                    flow.clone(),
+                    read_half,
+                    close_rx.clone(),
+                );
+                engine.spawn_upstream_pump(
+                    key.clone(),
+                    flow.clone(),
+                    upstream_writer,
+                    manager.clone(),
+                    usize::MAX,
+                    group_name,
+                    uplink_name,
+                    notify,
+                    close_rx,
+                );
                 metrics::record_uplink_selected(
                     "tcp",
                     metrics::DIRECT_GROUP_LABEL,
@@ -171,7 +178,7 @@ impl TunTcpEngine {
                 #[cfg(feature = "quic")]
                 TcpWriter::QuicSs(w) => UpstreamWriter::TunneledQuicSs(w),
             }));
-            let (pending_payloads, should_close_client_half) = {
+            let (group_name, uplink_name, notify) = {
                 let mut state = flow.lock().await;
                 if matches!(state.status, TcpFlowStatus::Closed) {
                     metrics::record_tun_tcp_async_connect("discarded_closed_flow");
@@ -183,49 +190,34 @@ impl TunTcpEngine {
                 state.routing.uplink_index = candidate.index;
                 state.routing.uplink_name = Arc::from(candidate.uplink.name.as_str());
                 state.routing.upstream_writer = Some(Arc::clone(&upstream_writer));
-                let pending_payloads = std::mem::take(&mut state.pending_client_data);
-                let should_close_client_half = client_fin_seen(state.status);
+                let notify = state.signals.upstream_pump.clone();
                 commit_flow_changes(&mut state, &engine.inner.tcp);
-                (pending_payloads, should_close_client_half)
+                let group_name = state.routing.group_name.clone();
+                let uplink_name = state.routing.uplink_name.clone();
+                (group_name, uplink_name, notify)
             };
             metrics::record_tun_tcp_async_connect("connected");
 
+            // Reader drains upstream→TUN; pump drains TUN→upstream (including
+            // data/FIN buffered before connect completed), so the shared
+            // read-loop never blocks on this flow's upstream back-pressure.
             engine.spawn_upstream_reader(
                 key.clone(),
                 flow.clone(),
                 upstream_reader,
                 close_rx.clone(),
             );
-
-            for payload in pending_payloads {
-                let send_result = {
-                    let mut writer = upstream_writer.lock().await;
-                    writer.send_chunk(&payload).await
-                };
-                if let Err(error) = send_result {
-                    engine
-                        .report_tcp_runtime_failure_and_abort(
-                            &key,
-                            &manager,
-                            candidate.index,
-                            &error,
-                            "send_error",
-                        )
-                        .await;
-                    return;
-                }
-                metrics::add_bytes(
-                    "tcp",
-                    "client_to_upstream",
-                    manager.group_name(),
-                    &candidate.uplink.name,
-                    payload.len(),
-                );
-            }
-
-            if should_close_client_half {
-                close_upstream_writer(Some(Arc::clone(&upstream_writer))).await;
-            }
+            engine.spawn_upstream_pump(
+                key.clone(),
+                flow.clone(),
+                upstream_writer,
+                manager.clone(),
+                candidate.index,
+                group_name,
+                uplink_name,
+                notify,
+                close_rx,
+            );
 
             metrics::record_uplink_selected("tcp", manager.group_name(), &candidate.uplink.name);
             info!(
