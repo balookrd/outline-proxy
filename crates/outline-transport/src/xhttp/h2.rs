@@ -222,6 +222,7 @@ pub(super) async fn connect_xhttp_h2(
                 outgoing: PollSender::new(out_tx),
                 closed: false,
                 active_submode,
+                carrier_is_h3: false,
                 _driver: AbortOnDrop::new(driver),
             },
             issued_session_id,
