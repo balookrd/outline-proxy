@@ -19,7 +19,7 @@ use super::super::state_machine::{
 use super::super::validation::{PacketValidation, validate_existing_packet};
 use super::super::wire::ParsedTcpPacket;
 use super::super::{TCP_FLAG_ACK, TCP_FLAG_FIN};
-use super::{TunTcpEngine, close_upstream_writer, ip_family_from_version, should_migrate_tcp_flow};
+use super::{TunTcpEngine, ip_family_from_version, should_migrate_tcp_flow};
 
 impl TunTcpEngine {
     pub(super) async fn handle_existing_flow(
@@ -204,41 +204,42 @@ impl TunTcpEngine {
         commit_flow_changes(&mut state, &self.inner.tcp);
 
         let key = state.key.clone();
-        let uplink_index = state.routing.uplink_index;
         let uplink_name = state.routing.uplink_name.clone();
         let group_name = state.routing.group_name.clone();
-        let flow_manager = state.routing.manager.clone();
-        let upstream_writer = state.routing.upstream_writer.clone();
+        let writer_ready = state.routing.upstream_writer.is_some();
 
-        // If there is no upstream writer yet (connect still in flight),
-        // queue the payload onto `pending_client_data` under the same
-        // lock we already hold rather than dropping and re-acquiring.
-        // `buffered_client_bytes` sums both pending_client_data and
-        // pending_client_segments, so this uses the same cap as the
-        // out-of-order reassembly path.
-        let abort_for_pending_limit =
-            if !outcome.pending_payload.is_empty() && upstream_writer.is_none() {
-                state
-                    .pending_client_data
-                    .push_back(std::mem::take(&mut outcome.pending_payload).into());
-                let over_limit = exceeds_client_reassembly_limits(&state, &self.inner.tcp);
-                if !over_limit {
-                    commit_flow_changes(&mut state, &self.inner.tcp);
-                }
-                over_limit
-            } else {
-                false
-            };
+        // Always queue client payload onto `pending_client_data` under the
+        // lock we already hold; the per-flow upstream pump drains it. This
+        // is the decoupling point — the read-loop never writes upstream
+        // inline, so it cannot block on this flow's upstream back-pressure.
+        // `buffered_client_bytes` sums pending_client_data and
+        // pending_client_segments, so this shares the reassembly cap and,
+        // through the advertised receive window, back-pressures the client.
+        let mut buffered_client_data = false;
+        let abort_for_pending_limit = if !outcome.pending_payload.is_empty() {
+            state
+                .pending_client_data
+                .push_back(std::mem::take(&mut outcome.pending_payload).into());
+            buffered_client_data = true;
+            let over_limit = exceeds_client_reassembly_limits(&state, &self.inner.tcp);
+            if !over_limit {
+                commit_flow_changes(&mut state, &self.inner.tcp);
+            }
+            over_limit
+        } else {
+            false
+        };
 
-        // Apply the client-FIN transition before releasing the lock so we
-        // don't re-acquire it just to mutate state after the async writes
-        // below. The actual upstream-writer close is async and stays past
-        // the drop point.
+        // Apply the client-FIN transition before releasing the lock. The
+        // upstream-writer half-close now happens in the pump task, after it
+        // drains any still-buffered client data, so a FIN can never race
+        // ahead of payload that has not yet been sent upstream.
         if outcome.should_close_client_half {
             transition_on_client_fin(&mut state);
             commit_flow_changes(&mut state, &self.inner.tcp);
         }
 
+        let pump_notify = state.signals.upstream_pump.clone();
         drop(state);
 
         if abort_for_pending_limit {
@@ -246,31 +247,12 @@ impl TunTcpEngine {
             return Ok(());
         }
 
-        if !outcome.pending_payload.is_empty()
-            && let Some(upstream_writer) = upstream_writer.clone()
-        {
-            let send_result = {
-                let mut upstream_writer = upstream_writer.lock().await;
-                upstream_writer.send_chunk(&outcome.pending_payload).await
-            };
-            if let Err(error) = send_result {
-                self.report_tcp_runtime_failure_and_abort(
-                    &key,
-                    &flow_manager,
-                    uplink_index,
-                    &error,
-                    "send_error",
-                )
-                .await;
-                return Ok(());
-            }
-            metrics::add_bytes(
-                "tcp",
-                "client_to_upstream",
-                flow_manager.group_name(),
-                &uplink_name,
-                outcome.pending_payload.len(),
-            );
+        // Hand off to the per-flow upstream pump instead of writing inline:
+        // the buffering above plus this wake keep the shared read-loop from
+        // ever blocking on upstream back-pressure. Before the writer exists
+        // the pump is not spawned yet; connect drains the buffer on start.
+        if writer_ready && (buffered_client_data || outcome.should_close_client_half) {
+            pump_notify.notify_one();
         }
 
         if let Some(ack) = outcome.pending_ack {
@@ -280,10 +262,6 @@ impl TunTcpEngine {
 
         self.write_server_flush_or_close(&key, outcome.server_flush, &group_name, &uplink_name)
             .await?;
-
-        if outcome.should_close_client_half {
-            close_upstream_writer(upstream_writer).await;
-        }
 
         Ok(())
     }

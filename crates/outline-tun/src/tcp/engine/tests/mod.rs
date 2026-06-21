@@ -130,6 +130,96 @@ async fn tun_tcp_reassembles_out_of_order_client_segments_end_to_end() {
 }
 
 #[tokio::test]
+async fn tun_tcp_pump_delivers_sequential_client_chunks_in_order() {
+    // After decoupling the read-loop from upstream sends, client payload is
+    // buffered into `pending_client_data` and drained by the per-flow pump.
+    // Verify that several separately-delivered in-order segments still reach
+    // the upstream in order across distinct pump wake/drain cycles (not just
+    // the single drain exercised by the reassembly test above).
+    let upstream = TestTcpUpstream::start().await;
+    let manager = build_test_manager(upstream.url()).await;
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = super::TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager),
+        128,
+        Duration::from_secs(60),
+        test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+    let client_port = 40020;
+    let remote_port = 80;
+
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            200,
+            0,
+            4096,
+            TCP_FLAG_SYN,
+            &[],
+        ))
+        .await
+        .unwrap();
+    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+    let _ = upstream.expect_target().await;
+
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            201,
+            server_next_seq,
+            4096,
+            TCP_FLAG_ACK,
+            &[],
+        ))
+        .await
+        .unwrap();
+
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            201,
+            server_next_seq,
+            4096,
+            TCP_FLAG_ACK,
+            b"ABC",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(upstream.recv_chunk().await, b"ABC");
+
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            204,
+            server_next_seq,
+            4096,
+            TCP_FLAG_ACK,
+            b"DEF",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(upstream.recv_chunk().await, b"DEF");
+}
+
+#[tokio::test]
 async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
     let upstream = TestTcpUpstream::start().await;
     let manager = build_test_manager(upstream.url()).await;
@@ -1233,6 +1323,7 @@ fn eviction_test_flow_state(
         },
         signals: super::super::state_machine::FlowControlSignals {
             close_signal,
+            upstream_pump: Arc::new(tokio::sync::Notify::new()),
             scheduler: Arc::clone(&engine.inner.scheduler),
             idle_timeout: engine.inner.idle_timeout,
         },

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, Notify, watch};
 
 use anyhow::{Context, Result};
 use tokio::io::AsyncWriteExt;
@@ -98,6 +98,12 @@ pub(in crate::tcp) struct FlowRouting {
 /// maintenance calls to avoid an Arc per flow.
 pub(in crate::tcp) struct FlowControlSignals {
     pub(in crate::tcp) close_signal: watch::Sender<bool>,
+    /// Wakes the per-flow upstream pump task after the read-loop appends
+    /// client payload to `pending_client_data` (or marks a half-close).
+    /// The pump is the sole writer to `upstream_writer` after connect, so
+    /// the read-loop hands work off through the buffer + this notify and
+    /// never blocks on upstream backpressure itself.
+    pub(in crate::tcp) upstream_pump: Arc<Notify>,
     pub(in crate::tcp) scheduler: Arc<FlowScheduler>,
     pub(in crate::tcp) idle_timeout: Duration,
 }
