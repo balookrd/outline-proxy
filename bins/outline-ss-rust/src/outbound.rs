@@ -401,7 +401,62 @@ impl std::fmt::Display for OutboundIpv6 {
 /// and other non-global ranges are filtered out. Duplicates are collapsed.
 /// Available on Linux and macOS; other platforms return an error at bind
 /// time (no way to enumerate without a parallel netlink/route-socket impl).
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// Linux: parse `/proc/net/if_inet6`, which (unlike `getifaddrs`) exposes the
+/// per-address `IFA_F_*` flags. Keep only live global-scope addresses and drop
+/// `deprecated` / `tentative` / `dadfailed` ones, so a rotating
+/// privacy-extension source is never pinned onto an address that is about to
+/// be removed (which would tear the flow down on rotation). Duplicates
+/// collapsed.
+#[cfg(target_os = "linux")]
+fn enumerate_ipv6_on_interface(iface: &str) -> std::io::Result<Vec<Ipv6Addr>> {
+    // IFA_F_* bits and the global scope value as exposed in if_inet6.
+    const IFA_F_DADFAILED: u32 = 0x08;
+    const IFA_F_DEPRECATED: u32 = 0x20;
+    const IFA_F_TENTATIVE: u32 = 0x40;
+    const SCOPE_GLOBAL: u32 = 0x00;
+
+    let content = std::fs::read_to_string("/proc/net/if_inet6")?;
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in content.lines() {
+        // Columns: <32-hex addr> <ifindex> <prefixlen> <scope> <flags> <dev>.
+        let mut cols = line.split_whitespace();
+        let (Some(addr_hex), Some(_idx), Some(_plen), Some(scope_hex), Some(flags_hex), Some(dev)) =
+            (cols.next(), cols.next(), cols.next(), cols.next(), cols.next(), cols.next())
+        else {
+            continue;
+        };
+        if dev != iface || addr_hex.len() != 32 {
+            continue;
+        }
+        if u32::from_str_radix(scope_hex, 16).unwrap_or(u32::MAX) != SCOPE_GLOBAL {
+            continue;
+        }
+        let flags = u32::from_str_radix(flags_hex, 16).unwrap_or(0);
+        if flags & (IFA_F_TENTATIVE | IFA_F_DADFAILED | IFA_F_DEPRECATED) != 0 {
+            continue;
+        }
+        let mut bytes = [0_u8; 16];
+        let parsed = (0..16).try_for_each(|i| {
+            u8::from_str_radix(&addr_hex[i * 2..i * 2 + 2], 16).map(|b| bytes[i] = b)
+        });
+        if parsed.is_err() {
+            continue;
+        }
+        let addr = Ipv6Addr::from(bytes);
+        // Defensive: scope already filtered to global, but keep the 2000::/3
+        // guard so non-global addresses can never slip through.
+        if (addr.segments()[0] & 0xe000) != 0x2000 {
+            continue;
+        }
+        if seen.insert(addr) {
+            out.push(addr);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(target_os = "macos")]
 fn enumerate_ipv6_on_interface(iface: &str) -> std::io::Result<Vec<Ipv6Addr>> {
     use std::ffi::CStr;
 

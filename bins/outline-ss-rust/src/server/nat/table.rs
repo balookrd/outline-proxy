@@ -60,11 +60,24 @@ pub(crate) fn bind_nat_udp_socket(
     };
 
     if source.is_none() {
-        let bind_addr: SocketAddr = if target.is_ipv4() {
-            "0.0.0.0:0".parse().unwrap()
-        } else {
-            "[::]:0".parse().unwrap()
-        };
+        if target.is_ipv6() {
+            // IPv6 wildcard: build via socket2 so we can request a stable
+            // public source (no-op under host rotation / when disabled) before
+            // the kernel picks one at send time. Mirrors the TCP outbound path.
+            let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(socket2::Protocol::UDP))
+                .context("failed to create NAT UDP socket")?;
+            outline_net::apply_prefer_public_ipv6_src(&socket);
+            let bind_addr: SocketAddr = "[::]:0".parse().unwrap();
+            socket
+                .bind(&SockAddr::from(bind_addr))
+                .with_context(|| format!("failed to bind NAT UDP socket on {bind_addr}"))?;
+            socket
+                .set_nonblocking(true)
+                .context("failed to set NAT UDP socket nonblocking")?;
+            let std_socket: std::net::UdpSocket = socket.into();
+            return UdpSocket::from_std(std_socket).context("failed to register NAT UDP socket");
+        }
+        let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
         let std_socket = std::net::UdpSocket::bind(bind_addr)
             .with_context(|| format!("failed to bind NAT UDP socket on {bind_addr}"))?;
         std_socket
