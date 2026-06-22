@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically sync ndppd proxied prefix with the current RA /64
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

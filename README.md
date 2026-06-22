@@ -98,6 +98,11 @@ Per-binary documentation lives next to each binary —
 [client README](bins/outline-ws-rust/README.md) — with deeper material under each
 `bins/*/docs/` (architecture, session resumption, uplink configuration, TUN PMTUD).
 
+Cross-cutting topics under [`docs/`](docs/):
+[carrier padding](docs/PADDING.md) ·
+[reverse tunnel](docs/REVERSE-TUNNEL.md) ·
+[outbound IPv6 source selection](docs/OUTBOUND-IPV6.md).
+
 ## Build
 
 Both binaries are Rust edition 2024.
