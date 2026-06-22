@@ -86,9 +86,10 @@ Requests `IPV6_PREFER_SRC_PUBLIC` (RFC 5014) on outbound IPv6 sockets so the
 kernel picks the **stable public/SLAAC address** instead of a rotating
 privacy-extension temporary. This stops direct IPv6 connections from breaking
 when the temporary address's `valid_lft` expires and the kernel removes it.
-**Auto-disables** when the host is deliberately rotating
-(`net.ipv6.conf.{all,default}.use_tempaddr ≥ 1`), so it never fights an operator
-who *wants* rotation. Linux only, best-effort.
+**Set `false`** to opt back into privacy-extension rotation as the source —
+i.e. to deliberately rotate, accepting that long flows break on `valid_lft`
+expiry. The host's `use_tempaddr` no longer changes this; the config switch is
+the single source of truth. Linux only, best-effort.
 
 ### `direct_ipv6_prefix_interface` — rotating /64 *(opt-in)*
 The client mirror of the server's `outbound_ipv6_prefix_interface`: each direct
@@ -191,6 +192,6 @@ Client (`outline-ws-rust`, top-level config):
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `prefer_public_ipv6_src` | `true` | stable public source for direct IPv6 (auto-off under rotation) |
+| `prefer_public_ipv6_src` | `true` | stable public source for direct IPv6; `false` → privacy-extension rotation |
 | `direct_ipv6_prefix_interface` | unset | rotating /64 source for direct IPv6 (needs ndppd) |
 | `direct_fwmark` | unset | SO_MARK for direct sockets (anti-loopback) |

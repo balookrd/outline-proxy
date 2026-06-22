@@ -29,13 +29,8 @@ static UDP_SEND_BUF_BYTES: OnceLock<usize> = OnceLock::new();
 /// Whether outbound IPv6 sockets should pin a stable public source address
 /// (RFC 5014 `IPV6_PREFER_SRC_PUBLIC`) instead of letting the OS pick a
 /// rotating privacy-extension *temporary* address (RFC 4941). Defaults to
-/// `true` when unset, but is auto-disabled when the host is rotating
-/// (see [`ipv6_rotation_active`]).
+/// `true`; set `false` to let privacy-extension rotation drive the source.
 static PREFER_PUBLIC_IPV6_SRC: OnceLock<bool> = OnceLock::new();
-
-/// Cached system-wide IPv6 privacy-extension rotation state.
-#[cfg(target_os = "linux")]
-static IPV6_ROTATION_ACTIVE: OnceLock<bool> = OnceLock::new();
 
 /// Configure whether outbound IPv6 sockets prefer a stable public source
 /// address over privacy-extension temporary addresses. Set once at startup.
@@ -47,42 +42,24 @@ static IPV6_ROTATION_ACTIVE: OnceLock<bool> = OnceLock::new();
 /// connection that used it (observed as Yandex Maps tiles / long direct
 /// flows breaking every couple of minutes). Requesting `IPV6_PREFER_SRC_PUBLIC`
 /// makes the kernel pick the stable SLAAC/public address instead, which is
-/// refreshed by RAs and does not rotate. Best-effort: ignored by kernels
+/// refreshed by RAs and does not rotate. Set `false` to opt back into
+/// privacy-extension rotation as the source. Best-effort: ignored by kernels
 /// that don't support the option, and a no-op on non-Linux.
 pub fn init_prefer_public_ipv6_src(enabled: bool) {
     let _ = PREFER_PUBLIC_IPV6_SRC.set(enabled);
 }
 
-/// Whether IPv6 privacy-extension rotation is enabled system-wide
-/// (`net.ipv6.conf.{all,default}.use_tempaddr >= 1`). Read once and cached:
-/// the sysctl is set at boot and we never want this to vary per connect.
-/// When rotation is on the host deliberately spreads outbound traffic across
-/// temporary source addresses, so pinning a stable public source would defeat
-/// it — `prefer_public_ipv6_src_enabled` backs off in that case.
-#[cfg(target_os = "linux")]
-fn ipv6_rotation_active() -> bool {
-    *IPV6_ROTATION_ACTIVE.get_or_init(|| {
-        ["all", "default"].iter().any(|scope| {
-            std::fs::read_to_string(format!("/proc/sys/net/ipv6/conf/{scope}/use_tempaddr"))
-                .ok()
-                .and_then(|s| s.trim().parse::<i32>().ok())
-                .is_some_and(|v| v >= 1)
-        })
-    })
-}
-
-/// Effective stable-source preference: the configured switch (default `true`)
-/// AND the host is not rotating temporary addresses. Auto-disabling under
-/// rotation keeps the operator's `use_tempaddr` intent intact.
+/// Effective stable-source preference: the configured switch, default `true`.
+/// `false` lets the OS use rotating privacy-extension temporaries as source.
 #[cfg(target_os = "linux")]
 fn prefer_public_ipv6_src_enabled() -> bool {
-    *PREFER_PUBLIC_IPV6_SRC.get().unwrap_or(&true) && !ipv6_rotation_active()
+    *PREFER_PUBLIC_IPV6_SRC.get().unwrap_or(&true)
 }
 
 /// Best-effort `setsockopt(IPV6_ADDR_PREFERENCES, IPV6_PREFER_SRC_PUBLIC)` on
 /// an IPv6 socket: prefer a stable public source over rotating
 /// privacy-extension temporary addresses. No-op when the preference is off
-/// (config opt-out or host rotation active) or on non-Linux. Errors are
+/// (config `prefer_public_ipv6_src = false`) or on non-Linux. Errors are
 /// ignored — an unsupported kernel just falls back to default selection.
 /// Shared by the client direct path and the server outbound path.
 #[cfg(target_os = "linux")]
