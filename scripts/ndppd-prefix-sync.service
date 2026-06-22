@@ -1,0 +1,11 @@
+[Unit]
+Description=Sync ndppd proxied prefix with the interface's current RA /64
+Documentation=file:///opt/outline-proxy/scripts/ndppd-prefix-sync.sh
+Wants=network-online.target
+After=network-online.target ndppd.service
+
+[Service]
+Type=oneshot
+# Adjust the path / IFACE to your deployment.
+Environment=IFACE=enp1s0
+ExecStart=/usr/local/sbin/ndppd-prefix-sync.sh
