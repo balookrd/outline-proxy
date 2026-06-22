@@ -86,9 +86,10 @@ Upstream-трафик клиента (uplink) туннелируется на в
 чтобы ядро выбрало **стабильный public/SLAAC-адрес** вместо ротируемого
 temporary privacy-extensions. Это не даёт direct-IPv6-соединениям рваться,
 когда у temporary-адреса истекает `valid_lft` и ядро его удаляет.
-**Авто-выключается**, когда хост намеренно ротирует
-(`net.ipv6.conf.{all,default}.use_tempaddr ≥ 1`), чтобы не мешать оператору,
-которому ротация *нужна*. Linux only, best-effort.
+**Поставьте `false`**, чтобы вернуться к ротации privacy-extensions как
+source — т.е. намеренно ротировать, принимая, что долгие flow рвутся при
+истечении `valid_lft`. Системный `use_tempaddr` больше на это не влияет —
+единственный источник истины это ключ конфига. Linux only, best-effort.
 
 ### `direct_ipv6_prefix_interface` — ротируемый /64 *(opt-in)*
 Клиентское зеркало серверного `outbound_ipv6_prefix_interface`: каждый
@@ -194,6 +195,6 @@ sysctl net.ipv6.conf.{all,default}.use_tempaddr   # включена ли рот
 
 | Ключ | По умолчанию | Значение |
 |------|--------------|----------|
-| `prefer_public_ipv6_src` | `true` | стабильный public source для direct-IPv6 (авто-off при ротации) |
+| `prefer_public_ipv6_src` | `true` | стабильный public source для direct-IPv6; `false` → ротация privacy-extensions |
 | `direct_ipv6_prefix_interface` | не задан | ротируемый /64 source для direct-IPv6 (нужен ndppd) |
 | `direct_fwmark` | не задан | SO_MARK для direct-сокетов (анти-loopback) |
