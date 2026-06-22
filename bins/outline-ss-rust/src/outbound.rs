@@ -1,6 +1,6 @@
 //! Outbound source-address selection for upstream TCP/UDP connections.
 //!
-//! Two modes are supported:
+//! Three modes are supported:
 //!
 //! - [`Ipv6Prefix`]: a CIDR configured statically; each new upstream socket
 //!   binds to a random address drawn from the prefix. Requires either
@@ -17,7 +17,14 @@
 //!   inbound return traffic works under ordinary SLAAC (no AnyIP route, no
 //!   NDP proxy, no IPV6_FREEBIND needed).
 //!
-//! At the call site the two modes are unified behind [`OutboundIpv6`].
+//! - [`InterfacePrefixSource`]: derive the current global prefix (/64) from a
+//!   named interface and draw random sources across the *whole* prefix, like
+//!   [`Ipv6Prefix`] but re-derived on refresh so it follows a dynamic upstream
+//!   prefix (provider PD that changes on reconnect, re-advertised via SLAAC).
+//!   Like the static prefix it needs the whole prefix routed back to the host
+//!   (NDP proxy / `ndppd`), since the random addresses are not configured.
+//!
+//! At the call site the three modes are unified behind [`OutboundIpv6`].
 
 use std::{
     net::{IpAddr, Ipv6Addr},
@@ -226,6 +233,87 @@ impl InterfaceSource {
     }
 }
 
+/// Derives the current global prefix (default /64) from a named interface and
+/// hands out random addresses drawn from it — the prefix equivalent of
+/// [`InterfaceSource`]. Unlike [`Ipv6Prefix`] (a static CIDR from config), the
+/// prefix is re-derived on every [`refresh`](Self::refresh), so it follows a
+/// dynamic upstream prefix (e.g. a provider PD that changes on reconnect and is
+/// re-advertised into the LAN by SLAAC). The whole prefix must be routed back
+/// to the host (NDP proxy / `ndppd`) since the random addresses are not
+/// configured on the interface — that is the difference from [`InterfaceSource`].
+pub(crate) struct InterfacePrefixSource {
+    name: String,
+    prefix_len: u8,
+    cache: RwLock<Option<Ipv6Prefix>>,
+}
+
+impl InterfacePrefixSource {
+    pub(crate) fn bind(name: String, prefix_len: u8) -> std::io::Result<Arc<Self>> {
+        let prefix = derive_interface_prefix(&name, prefix_len)?;
+        match &prefix {
+            Some(p) => tracing::info!(
+                interface = %name,
+                prefix = %p,
+                "derived outbound IPv6 prefix from interface"
+            ),
+            None => tracing::warn!(
+                interface = %name,
+                "no global IPv6 address on interface at startup; outbound prefix \
+                 selection is a no-op until one appears"
+            ),
+        }
+        Ok(Arc::new(Self {
+            name,
+            prefix_len,
+            cache: RwLock::new(prefix),
+        }))
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Re-derive the prefix from the interface and swap it in if it changed.
+    /// Logs at INFO on change — this is how a reconnect-driven prefix rotation
+    /// is picked up without a restart.
+    pub(crate) fn refresh(&self) {
+        match derive_interface_prefix(&self.name, self.prefix_len) {
+            Ok(prefix) => {
+                let current = *self.cache.read();
+                if prefix != current {
+                    tracing::info!(
+                        interface = %self.name,
+                        before = ?current,
+                        after = ?prefix,
+                        "refreshed outbound IPv6 prefix",
+                    );
+                    *self.cache.write() = prefix;
+                }
+            },
+            Err(error) => tracing::warn!(
+                interface = %self.name,
+                %error,
+                "failed to derive outbound IPv6 prefix; keeping previous",
+            ),
+        }
+    }
+
+    pub(crate) fn random_addr(&self) -> std::io::Result<Option<Ipv6Addr>> {
+        match *self.cache.read() {
+            Some(prefix) => prefix.random_addr().map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Pick the first live global address on `iface` and mask it to `prefix_len`,
+/// yielding the prefix the host currently sits in. All SLAAC addresses share
+/// the same /64, so any of them gives the same prefix.
+fn derive_interface_prefix(iface: &str, prefix_len: u8) -> std::io::Result<Option<Ipv6Prefix>> {
+    let addrs = enumerate_ipv6_on_interface(iface)?;
+    Ok(addrs.first().and_then(|addr| Ipv6Prefix::new(*addr, prefix_len).ok()))
+}
+
 // ── Sticky per-destination source cache ──────────────────────────────────────
 
 /// Default upper bound on distinct destinations pinned at once. ~64k entries ×
@@ -325,11 +413,13 @@ impl StickyIpv6Cache {
 
 // ── Unified selector ─────────────────────────────────────────────────────────
 
-/// How outbound IPv6 source addresses are drawn: a statically configured prefix
-/// or a live-refreshed interface address pool.
+/// How outbound IPv6 source addresses are drawn: a statically configured
+/// prefix, a live-refreshed interface address pool, or a prefix derived from
+/// (and refreshed off) an interface's current global address.
 pub(crate) enum OutboundIpv6Source {
     Prefix(Ipv6Prefix),
     Interface(Arc<InterfaceSource>),
+    PrefixFromInterface(Arc<InterfacePrefixSource>),
 }
 
 impl OutboundIpv6Source {
@@ -339,6 +429,7 @@ impl OutboundIpv6Source {
         match self {
             OutboundIpv6Source::Prefix(p) => p.random_addr().map(Some),
             OutboundIpv6Source::Interface(i) => i.random_addr(),
+            OutboundIpv6Source::PrefixFromInterface(p) => p.random_addr(),
         }
     }
 }
@@ -372,11 +463,25 @@ impl OutboundIpv6 {
         }
     }
 
-    /// The interface-address pool when in interface mode, for periodic refresh.
-    pub(crate) fn interface_source(&self) -> Option<&Arc<InterfaceSource>> {
+    /// Whether the source re-derives state from an interface and therefore
+    /// wants the periodic refresh task (interface address pool, or a prefix
+    /// derived from the interface). A static prefix never needs refreshing.
+    pub(crate) fn is_refreshable(&self) -> bool {
+        matches!(
+            self.source,
+            OutboundIpv6Source::Interface(_) | OutboundIpv6Source::PrefixFromInterface(_)
+        )
+    }
+
+    /// Re-enumerate / re-derive the source from its interface. No-op for a
+    /// static prefix. Driven by the periodic `ipv6_refresh` task so a dynamic
+    /// upstream prefix (provider PD changing on reconnect) is followed without
+    /// a restart.
+    pub(crate) fn refresh(&self) {
         match &self.source {
-            OutboundIpv6Source::Interface(i) => Some(i),
-            OutboundIpv6Source::Prefix(_) => None,
+            OutboundIpv6Source::Interface(i) => i.refresh(),
+            OutboundIpv6Source::PrefixFromInterface(p) => p.refresh(),
+            OutboundIpv6Source::Prefix(_) => {},
         }
     }
 }
@@ -386,6 +491,9 @@ impl std::fmt::Display for OutboundIpv6 {
         match &self.source {
             OutboundIpv6Source::Prefix(p) => write!(f, "prefix:{p}")?,
             OutboundIpv6Source::Interface(i) => write!(f, "interface:{}", i.name())?,
+            OutboundIpv6Source::PrefixFromInterface(p) => {
+                write!(f, "prefix-from-interface:{}", p.name())?
+            },
         }
         if let Some(cache) = &self.sticky {
             write!(f, "+sticky({}s)", cache.ttl_secs)?;
@@ -396,11 +504,10 @@ impl std::fmt::Display for OutboundIpv6 {
 
 // ── Interface enumeration ────────────────────────────────────────────────────
 
-/// Enumerate global-unicast IPv6 **addresses** assigned to `iface` via
-/// `getifaddrs(3)`. Link-local, loopback, unique-local, multicast, IPv4-mapped
-/// and other non-global ranges are filtered out. Duplicates are collapsed.
-/// Available on Linux and macOS; other platforms return an error at bind
-/// time (no way to enumerate without a parallel netlink/route-socket impl).
+/// Enumerate live global-unicast IPv6 addresses on `iface`. Available on Linux
+/// and macOS; other platforms return an error at bind time (no way to
+/// enumerate without a parallel netlink/route-socket impl).
+///
 /// Linux: parse `/proc/net/if_inet6`, which (unlike `getifaddrs`) exposes the
 /// per-address `IFA_F_*` flags. Keep only live global-scope addresses and drop
 /// `deprecated` / `tentative` / `dadfailed` ones, so a rotating
@@ -456,6 +563,9 @@ fn enumerate_ipv6_on_interface(iface: &str) -> std::io::Result<Vec<Ipv6Addr>> {
     Ok(out)
 }
 
+/// macOS: `getifaddrs(3)`, which exposes no per-address `IFA_F_*` flags, so
+/// this filters by scope only (no deprecated/tentative drop). Dev/fallback
+/// path — the server runs on Linux.
 #[cfg(target_os = "macos")]
 fn enumerate_ipv6_on_interface(iface: &str) -> std::io::Result<Vec<Ipv6Addr>> {
     use std::ffi::CStr;
