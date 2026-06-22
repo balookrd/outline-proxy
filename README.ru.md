@@ -100,6 +100,11 @@ outline-proxy/
 под каждым `bins/*/docs/` (архитектура, session resumption, настройка uplink'ов,
 TUN PMTUD).
 
+Сквозные темы под [`docs/`](docs/):
+[carrier-padding](docs/PADDING.ru.md) ·
+[reverse-tunnel](docs/REVERSE-TUNNEL.ru.md) ·
+[выбор исходящего IPv6](docs/OUTBOUND-IPV6.ru.md).
+
 ## Сборка
 
 Оба бинаря — Rust edition 2024.
