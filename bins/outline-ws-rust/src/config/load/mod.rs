@@ -110,6 +110,8 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     }
 
     let direct_fwmark = file.as_ref().and_then(|f| f.direct_fwmark);
+    let direct_ipv6_prefix_interface =
+        file.as_ref().and_then(|f| f.direct_ipv6_prefix_interface.clone());
     // Default = `Strategy::None`, which keeps WS / XHTTP wire shape
     // byte-identical to pre-knob builds. Opt-in via `fingerprint_profile`
     // in the top-level config; serde already turns the string aliases
@@ -159,6 +161,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         udp_send_buf_bytes,
         prefer_public_ipv6_src,
         direct_fwmark,
+        direct_ipv6_prefix_interface,
         state_path,
         tcp_timeouts,
         fingerprint_profile,

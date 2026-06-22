@@ -36,9 +36,11 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
         let bind_ip = client.local_addr()?.ip();
         let client_peer_ip = client.peer_addr()?.ip();
         let direct_socket = if direct_udp_possible(&config, &registry) {
-            let std_sock =
-                outline_net::bind_udp_socket(SocketAddr::new(bind_ip, 0), config.direct_fwmark)
-                    .with_context(|| format!("failed to bind direct UDP socket on {}", bind_ip))?;
+            let std_sock = outline_net::bind_udp_socket_direct(
+                SocketAddr::new(bind_ip, 0),
+                config.direct_fwmark,
+            )
+            .with_context(|| format!("failed to bind direct UDP socket on {}", bind_ip))?;
             Some(Arc::new(UdpSocket::from_std(std_sock)?))
         } else {
             None

@@ -68,6 +68,11 @@ pub(crate) struct ConfigFile {
     pub(super) prefer_public_ipv6_src: Option<bool>,
     /// SO_MARK for direct-route sockets. Linux only.
     pub(super) direct_fwmark: Option<u32>,
+    /// Interface whose current global /64 seeds random source addresses for
+    /// direct-route IPv6 dials (rotates the source across the prefix; follows
+    /// a dynamic prefix). Requires the /64 routed back via NDP proxy / ndppd.
+    /// Linux only. Client mirror of the server's `outbound_ipv6_prefix_interface`.
+    pub(super) direct_ipv6_prefix_interface: Option<String>,
     /// Explicit uplink groups with per-group LB + probe config.
     pub(super) uplink_group: Option<Vec<UplinkGroupSection>>,
     /// Policy routes mapping CIDR prefixes to groups or `direct`/`drop`.

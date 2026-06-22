@@ -46,6 +46,10 @@ pub struct AppConfig {
     /// back into the TUN device on hosts where all traffic is captured.
     /// Linux only; ignored on other platforms.
     pub direct_fwmark: Option<u32>,
+    /// Interface whose current global /64 seeds random source addresses for
+    /// direct-route IPv6 dials. `None` → disabled (kernel default source).
+    /// Linux only; requires the /64 routed back via NDP proxy (ndppd).
+    pub direct_ipv6_prefix_interface: Option<String>,
     /// Path to the uplink state file used to persist active-uplink selection
     /// across restarts.  Derived from the config path at startup; `None`
     /// disables persistence (e.g. in tests).

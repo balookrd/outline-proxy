@@ -384,9 +384,10 @@ impl TunUdpEngine {
                 SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0)
             },
         };
-        let std_sock = outline_net::bind_udp_socket(bind_addr, fwmark).with_context(|| {
-            format!("failed to bind direct UDP socket for TUN flow to {remote_target}")
-        })?;
+        let std_sock =
+            outline_net::bind_udp_socket_direct(bind_addr, fwmark).with_context(|| {
+                format!("failed to bind direct UDP socket for TUN flow to {remote_target}")
+            })?;
         let sock = Arc::new(UdpSocket::from_std(std_sock)?);
         sock.send_to(&packet.payload, target_addr)
             .await
