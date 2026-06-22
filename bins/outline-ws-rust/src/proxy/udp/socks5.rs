@@ -46,7 +46,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
         // Optional socket for direct UDP packets with fwmark to prevent
         // loopback through TUN when all traffic is captured.
         let direct_socket = if direct_udp_possible(&config, &registry) {
-            let std_sock = outline_net::bind_udp_socket(
+            let std_sock = outline_net::bind_udp_socket_direct(
                 SocketAddr::new(bind_ip, 0),
                 config.direct_fwmark,
             )

@@ -45,5 +45,6 @@ pub async fn run(args: Args) -> Result<()> {
     );
     outline_net::init_udp_socket_bufs(config.udp_recv_buf_bytes, config.udp_send_buf_bytes);
     outline_net::init_prefer_public_ipv6_src(config.prefer_public_ipv6_src.unwrap_or(true));
+    outline_net::init_direct_ipv6_prefix_iface(config.direct_ipv6_prefix_interface.clone());
     run_with_config(config, args).await
 }
