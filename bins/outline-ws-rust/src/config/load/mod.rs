@@ -57,6 +57,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let h2_section = file.as_ref().and_then(|f| f.h2.as_ref());
     let udp_recv_buf_bytes = file.as_ref().and_then(|f| f.udp_recv_buf_bytes);
     let udp_send_buf_bytes = file.as_ref().and_then(|f| f.udp_send_buf_bytes);
+    let prefer_public_ipv6_src = file.as_ref().and_then(|f| f.prefer_public_ipv6_src);
 
     let listen = args.listen.or_else(|| socks5.and_then(|s| s.listen));
     let socks5_auth = auth::load_socks5_auth_config(socks5, args)?;
@@ -156,6 +157,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         h2,
         udp_recv_buf_bytes,
         udp_send_buf_bytes,
+        prefer_public_ipv6_src,
         direct_fwmark,
         state_path,
         tcp_timeouts,

@@ -35,6 +35,12 @@ pub struct AppConfig {
     pub udp_recv_buf_bytes: Option<usize>,
     /// Override kernel UDP send buffer size (SO_SNDBUF). None = kernel default.
     pub udp_send_buf_bytes: Option<usize>,
+    /// Prefer a stable public IPv6 source over rotating privacy-extension
+    /// temporary addresses (RFC 5014 `IPV6_PREFER_SRC_PUBLIC`) for outbound
+    /// sockets. `None` → default `true`. Linux only; best-effort. Stops
+    /// direct IPv6 connections from being torn down when the host rotates
+    /// temporary source addresses.
+    pub prefer_public_ipv6_src: Option<bool>,
     /// SO_MARK applied to sockets used by `via = "direct"` routes (both TCP
     /// connect and UDP bind). Prevents direct traffic from being routed
     /// back into the TUN device on hosts where all traffic is captured.
