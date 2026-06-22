@@ -62,6 +62,10 @@ pub(crate) struct ConfigFile {
     pub(super) h2: Option<H2Section>,
     pub(super) udp_recv_buf_bytes: Option<usize>,
     pub(super) udp_send_buf_bytes: Option<usize>,
+    /// Prefer a stable public IPv6 source over privacy-extension temporary
+    /// addresses (RFC 5014 `IPV6_PREFER_SRC_PUBLIC`) for outbound sockets.
+    /// Default `true`. Linux only.
+    pub(super) prefer_public_ipv6_src: Option<bool>,
     /// SO_MARK for direct-route sockets. Linux only.
     pub(super) direct_fwmark: Option<u32>,
     /// Explicit uplink groups with per-group LB + probe config.
