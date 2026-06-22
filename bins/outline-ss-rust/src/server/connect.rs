@@ -230,6 +230,7 @@ async fn connect_tcp_addr(
     apply_fwmark_if_needed(&socket, fwmark)
         .with_context(|| format!("failed to apply fwmark {fwmark:?} to tcp socket"))?;
 
+    let mut pinned_source = false;
     if let Some(out) = outbound_ipv6
         && resolved.is_ipv6()
     {
@@ -244,6 +245,7 @@ async fn connect_tcp_addr(
                 socket
                     .bind(bind)
                     .with_context(|| format!("failed to bind outbound tcp source {bind}"))?;
+                pinned_source = true;
             },
             None => {
                 tracing::debug!(
@@ -253,6 +255,14 @@ async fn connect_tcp_addr(
                 );
             },
         }
+    }
+
+    // No explicit source pinned for this IPv6 dial → the kernel selects the
+    // source; prefer a stable public address over a rotating privacy-extension
+    // temporary one (no-op when the host is rotating or the preference is off).
+    // Mirrors the client direct path via the shared `outline_net` helper.
+    if resolved.is_ipv6() && !pinned_source {
+        outline_net::apply_prefer_public_ipv6_src(&socket);
     }
 
     match timeout(Duration::from_secs(TCP_CONNECT_TIMEOUT_SECS), socket.connect(resolved)).await {
