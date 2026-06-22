@@ -26,6 +26,87 @@ use tokio::net::TcpStream;
 static UDP_RECV_BUF_BYTES: OnceLock<usize> = OnceLock::new();
 static UDP_SEND_BUF_BYTES: OnceLock<usize> = OnceLock::new();
 
+/// Whether outbound IPv6 sockets should pin a stable public source address
+/// (RFC 5014 `IPV6_PREFER_SRC_PUBLIC`) instead of letting the OS pick a
+/// rotating privacy-extension *temporary* address (RFC 4941). Defaults to
+/// `true` when unset, but is auto-disabled when the host is rotating
+/// (see [`ipv6_rotation_active`]).
+static PREFER_PUBLIC_IPV6_SRC: OnceLock<bool> = OnceLock::new();
+
+/// Cached system-wide IPv6 privacy-extension rotation state.
+#[cfg(target_os = "linux")]
+static IPV6_ROTATION_ACTIVE: OnceLock<bool> = OnceLock::new();
+
+/// Configure whether outbound IPv6 sockets prefer a stable public source
+/// address over privacy-extension temporary addresses. Set once at startup.
+///
+/// Direct-route connections bind no explicit source, so the kernel runs RFC
+/// 6724 source selection and — with privacy extensions enabled on the host —
+/// picks the current *temporary* address. When that address rotates and its
+/// `valid_lft` expires the kernel removes it, tearing down every direct
+/// connection that used it (observed as Yandex Maps tiles / long direct
+/// flows breaking every couple of minutes). Requesting `IPV6_PREFER_SRC_PUBLIC`
+/// makes the kernel pick the stable SLAAC/public address instead, which is
+/// refreshed by RAs and does not rotate. Best-effort: ignored by kernels
+/// that don't support the option, and a no-op on non-Linux.
+pub fn init_prefer_public_ipv6_src(enabled: bool) {
+    let _ = PREFER_PUBLIC_IPV6_SRC.set(enabled);
+}
+
+/// Whether IPv6 privacy-extension rotation is enabled system-wide
+/// (`net.ipv6.conf.{all,default}.use_tempaddr >= 1`). Read once and cached:
+/// the sysctl is set at boot and we never want this to vary per connect.
+/// When rotation is on the host deliberately spreads outbound traffic across
+/// temporary source addresses, so pinning a stable public source would defeat
+/// it — `prefer_public_ipv6_src_enabled` backs off in that case.
+#[cfg(target_os = "linux")]
+fn ipv6_rotation_active() -> bool {
+    *IPV6_ROTATION_ACTIVE.get_or_init(|| {
+        ["all", "default"].iter().any(|scope| {
+            std::fs::read_to_string(format!("/proc/sys/net/ipv6/conf/{scope}/use_tempaddr"))
+                .ok()
+                .and_then(|s| s.trim().parse::<i32>().ok())
+                .is_some_and(|v| v >= 1)
+        })
+    })
+}
+
+/// Effective stable-source preference: the configured switch (default `true`)
+/// AND the host is not rotating temporary addresses. Auto-disabling under
+/// rotation keeps the operator's `use_tempaddr` intent intact.
+#[cfg(target_os = "linux")]
+fn prefer_public_ipv6_src_enabled() -> bool {
+    *PREFER_PUBLIC_IPV6_SRC.get().unwrap_or(&true) && !ipv6_rotation_active()
+}
+
+/// Best-effort `setsockopt(IPV6_ADDR_PREFERENCES, IPV6_PREFER_SRC_PUBLIC)` on
+/// an IPv6 socket: prefer a stable public source over rotating
+/// privacy-extension temporary addresses. No-op when the preference is off
+/// (config opt-out or host rotation active) or on non-Linux. Errors are
+/// ignored — an unsupported kernel just falls back to default selection.
+/// Shared by the client direct path and the server outbound path.
+#[cfg(target_os = "linux")]
+pub fn apply_prefer_public_ipv6_src<T: AsRawFd>(socket: &T) {
+    if !prefer_public_ipv6_src_enabled() {
+        return;
+    }
+    let value: libc::c_int = libc::IPV6_PREFER_SRC_PUBLIC;
+    // SAFETY: `socket` owns a valid IPv6 fd for the duration of this call;
+    // `value` outlives the syscall and its size matches a `c_int` option.
+    unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_IPV6,
+            libc::IPV6_ADDR_PREFERENCES,
+            &value as *const _ as *const libc::c_void,
+            std::mem::size_of_val(&value) as libc::socklen_t,
+        );
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn apply_prefer_public_ipv6_src<T>(_socket: &T) {}
+
 /// Initialise UDP socket buffer overrides from config. When set, every UDP
 /// socket created by `bind_udp_socket` will request the given buffer sizes
 /// from the kernel via `SO_RCVBUF` / `SO_SNDBUF`. The kernel may silently
@@ -41,29 +122,45 @@ pub fn init_udp_socket_bufs(recv: Option<usize>, send: Option<usize>) {
 }
 
 pub async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
-    // For connections without fwmark use tokio's async connector so we never
-    // block a Tokio worker thread waiting for the TCP handshake to complete.
-    if fwmark.is_none() {
+    // The raw socket2 path is required whenever we must touch the socket
+    // before connect: to set SO_MARK (fwmark) or to request a stable public
+    // IPv6 source (IPV6_PREFER_SRC_PUBLIC). Otherwise use tokio's async
+    // connector so we never block a Tokio worker thread on the handshake.
+    if fwmark.is_none() && !prefer_public_raw_needed(addr) {
         let stream = TcpStream::connect(addr)
             .await
             .with_context(|| format!("failed to connect TCP socket to {addr}"))?;
         configure_tcp_stream_low_latency(&stream, addr)?;
         return Ok(stream);
     }
-    connect_tcp_socket_with_fwmark(addr, fwmark).await
+    connect_tcp_socket_raw(addr, fwmark).await
 }
 
-/// fwmark variant: needs SO_MARK set on the raw socket before connect, which
-/// requires socket2.  Only supported on Linux; on other platforms apply_fwmark
-/// returns Err before we reach the connect logic.
+/// Whether the IPv6 stable-source preference forces the raw socket2 path.
+/// Linux-only: on other platforms the option is a no-op, so a plain
+/// fwmark-less connect keeps using tokio's fast path.
 #[cfg(target_os = "linux")]
-async fn connect_tcp_socket_with_fwmark(
-    addr: SocketAddr,
-    fwmark: Option<u32>,
-) -> Result<TcpStream> {
+fn prefer_public_raw_needed(addr: SocketAddr) -> bool {
+    addr.is_ipv6() && prefer_public_ipv6_src_enabled()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn prefer_public_raw_needed(_addr: SocketAddr) -> bool {
+    false
+}
+
+/// Raw socket2 path: lets us touch the socket before connect to set SO_MARK
+/// (fwmark) and/or request a stable public IPv6 source
+/// (`IPV6_PREFER_SRC_PUBLIC`). `fwmark` is Linux-only; the stable-IPv6
+/// preference is best-effort and applied only to IPv6 sockets.
+#[cfg(target_os = "linux")]
+async fn connect_tcp_socket_raw(addr: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
     let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(SocketProtocol::TCP))
         .context("failed to create TCP socket")?;
     apply_fwmark(&socket, fwmark)?;
+    if addr.is_ipv6() {
+        apply_prefer_public_ipv6_src(&socket);
+    }
     // Set non-blocking BEFORE connect so that the handshake is driven by tokio
     // instead of blocking the current thread.
     socket
@@ -99,10 +196,7 @@ async fn connect_tcp_socket_with_fwmark(
 }
 
 #[cfg(not(target_os = "linux"))]
-async fn connect_tcp_socket_with_fwmark(
-    _addr: SocketAddr,
-    _fwmark: Option<u32>,
-) -> Result<TcpStream> {
+async fn connect_tcp_socket_raw(_addr: SocketAddr, _fwmark: Option<u32>) -> Result<TcpStream> {
     bail!("fwmark is only supported on Linux")
 }
 
@@ -112,6 +206,10 @@ pub fn bind_udp_socket(bind_addr: SocketAddr, fwmark: Option<u32>) -> Result<std
             .context("failed to create UDP socket")?;
     if bind_addr.is_ipv6() {
         let _ = socket.set_only_v6(false);
+        // Same rationale as the TCP path: when binding the unspecified IPv6
+        // address the kernel picks the source at send time — prefer the
+        // stable public address over a rotating privacy-extension temporary.
+        apply_prefer_public_ipv6_src(&socket);
     }
     apply_fwmark(&socket, fwmark)?;
     if let Some(&size) = UDP_RECV_BUF_BYTES.get() {
@@ -216,3 +314,7 @@ pub fn bind_addr_for(server_addr: SocketAddr) -> SocketAddr {
         IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/lib.rs"]
+mod tests;
