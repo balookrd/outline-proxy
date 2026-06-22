@@ -62,6 +62,16 @@ pub(super) struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_OUTBOUND_IPV6_INTERFACE")]
     pub outbound_ipv6_interface: Option<String>,
 
+    /// Network interface whose current global /64 is used as the random
+    /// source *prefix*: addresses are generated across the whole prefix (not
+    /// just the configured ones), and the prefix is re-derived on refresh so
+    /// it follows a dynamic upstream prefix (provider PD changing on
+    /// reconnect, re-advertised via SLAAC). Requires the whole prefix routed
+    /// back to the host (NDP proxy / ndppd). Mutually exclusive with
+    /// `--outbound-ipv6-prefix` and `--outbound-ipv6-interface`.
+    #[arg(long, env = "OUTLINE_SS_OUTBOUND_IPV6_PREFIX_INTERFACE")]
+    pub outbound_ipv6_prefix_interface: Option<String>,
+
     /// Interval in seconds between re-enumerations of the outbound
     /// interface's IPv6 addresses. Ignored when `outbound_ipv6_interface`
     /// is not set. Default: 30.

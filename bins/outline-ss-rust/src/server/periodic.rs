@@ -6,7 +6,7 @@ use futures_util::FutureExt;
 use tokio::time::Duration;
 use tracing::{debug, error};
 
-use crate::{clock, config::Config, metrics::Metrics, outbound::OutboundIpv6};
+use crate::{clock, config::Config, metrics::Metrics};
 
 use super::{
     constants::{
@@ -77,14 +77,9 @@ pub(super) fn spawn_maintenance(
     }
 
     // Outbound IPv6 interface re-enumeration (interface mode only).
-    if let Some(source) = built
-        .services
-        .tcp_server
-        .outbound_ipv6
-        .as_deref()
-        .and_then(OutboundIpv6::interface_source)
+    if let Some(outbound) = built.services.tcp_server.outbound_ipv6.clone()
+        && outbound.is_refreshable()
     {
-        let source = Arc::clone(source);
         let period = Duration::from_secs(config.outbound_ipv6_refresh_secs);
         let mut sd = shutdown.clone();
         spawn_supervised(
@@ -94,12 +89,12 @@ pub(super) fn spawn_maintenance(
             async move {
                 let mut interval = tokio::time::interval(period);
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                interval.tick().await; // skip the immediate tick; initial pool came from bind()
+                interval.tick().await; // skip the immediate tick; initial state came from bind()
                 loop {
                     tokio::select! {
                         biased;
                         _ = sd.cancelled() => break,
-                        _ = interval.tick() => source.refresh(),
+                        _ = interval.tick() => outbound.refresh(),
                     }
                 }
             },

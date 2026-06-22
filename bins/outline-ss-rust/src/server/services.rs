@@ -9,7 +9,10 @@ use crate::{
     config::Config,
     crypto::UserKey,
     metrics::{Metrics, Transport},
-    outbound::{self, InterfaceSource, OutboundIpv6, OutboundIpv6Source, StickyIpv6Cache},
+    outbound::{
+        self, InterfacePrefixSource, InterfaceSource, OutboundIpv6, OutboundIpv6Source,
+        StickyIpv6Cache,
+    },
 };
 
 use super::{
@@ -96,6 +99,17 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
                 )
             })?;
             Some(OutboundIpv6Source::Interface(source))
+        } else if let Some(iface) = config.outbound_ipv6_prefix_interface.clone() {
+            let iface_for_err = iface.clone();
+            // /64 is the universal SLAAC prefix length; derive it from the
+            // interface's current global address and refresh it periodically.
+            let source = InterfacePrefixSource::bind(iface, 64).with_context(|| {
+                format!(
+                    "failed to derive outbound IPv6 prefix from interface {iface_for_err:?} \
+                     (reads /proc/net/if_inet6 on Linux)"
+                )
+            })?;
+            Some(OutboundIpv6Source::PrefixFromInterface(source))
         } else {
             None
         };

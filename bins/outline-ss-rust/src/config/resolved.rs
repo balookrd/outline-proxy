@@ -93,7 +93,14 @@ pub struct Config {
     /// sockets bind to a random one. Useful for DHCPv6/SLAAC deployments
     /// where the prefix/addresses are not known statically.
     pub outbound_ipv6_interface: Option<String>,
-    /// How often to re-enumerate the outbound interface's IPv6 addresses.
+    /// Alternative to [`Self::outbound_ipv6_interface`]: derive the current
+    /// global /64 from this interface and draw random sources across the whole
+    /// prefix (not just configured addresses). Re-derived on refresh, so it
+    /// follows a dynamic upstream prefix. Requires the prefix routed back to
+    /// the host (NDP proxy / ndppd).
+    pub outbound_ipv6_prefix_interface: Option<String>,
+    /// How often to re-enumerate the outbound interface's IPv6 addresses
+    /// (or re-derive the interface prefix).
     pub outbound_ipv6_refresh_secs: u64,
     /// Pin one outbound IPv6 source address per upstream destination IP for
     /// [`Self::outbound_ipv6_sticky_ttl_secs`] instead of drawing a fresh
