@@ -116,6 +116,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         prefer_ipv4_upstream: false,
         outbound_ipv6_prefix: None,
         outbound_ipv6_interface: None,
+        outbound_ipv6_prefix_interface: None,
         outbound_ipv6_refresh_secs: 30,
         outbound_ipv6_sticky: false,
         outbound_ipv6_sticky_ttl_secs: 1800,

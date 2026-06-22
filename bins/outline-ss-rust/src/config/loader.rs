@@ -137,6 +137,10 @@ impl AppMode {
                 .outbound_ipv6_interface
                 .clone()
                 .or(outbound.ipv6_interface),
+            outbound_ipv6_prefix_interface: args
+                .outbound_ipv6_prefix_interface
+                .clone()
+                .or(outbound.ipv6_prefix_interface),
             outbound_ipv6_refresh_secs: args
                 .outbound_ipv6_refresh_secs
                 .or(outbound.ipv6_refresh_secs)

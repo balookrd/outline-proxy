@@ -335,14 +335,29 @@ impl Config {
         if self.http_root_realm.chars().any(char::is_control) {
             bail!("http_root_realm must not contain control characters");
         }
-        if self.outbound_ipv6_prefix.is_some() && self.outbound_ipv6_interface.is_some() {
+        let v6_source_modes = [
+            self.outbound_ipv6_prefix.is_some(),
+            self.outbound_ipv6_interface.is_some(),
+            self.outbound_ipv6_prefix_interface.is_some(),
+        ]
+        .into_iter()
+        .filter(|&set| set)
+        .count();
+        if v6_source_modes > 1 {
             bail!(
-                "outbound_ipv6_prefix and outbound_ipv6_interface are mutually exclusive; \
-                 pick one"
+                "outbound_ipv6_prefix, outbound_ipv6_interface and \
+                 outbound_ipv6_prefix_interface are mutually exclusive; pick one"
             );
         }
         if self.outbound_ipv6_interface.as_deref().is_some_and(str::is_empty) {
             bail!("outbound_ipv6_interface must not be empty");
+        }
+        if self
+            .outbound_ipv6_prefix_interface
+            .as_deref()
+            .is_some_and(str::is_empty)
+        {
+            bail!("outbound_ipv6_prefix_interface must not be empty");
         }
         if self.outbound_ipv6_refresh_secs == 0 {
             bail!("outbound_ipv6_refresh_secs must be > 0");
