@@ -488,8 +488,20 @@ impl UplinkManager {
             }
         }
 
-        // Apply H3 → H2 downgrade for this transport kind.
-        self.extend_mode_downgrade(index, transport, ModeDowngradeTrigger::RuntimeFailure(error));
+        // Apply H3 → H2 downgrade for this transport kind — but NOT for a 1013
+        // "try again later". That is a per-target upstream failure, not a
+        // carrier fault: capping the carrier on routine per-destination 1013s
+        // flaps ws_h3 -> ws_h2 and tears down every flow on the wire (the
+        // observed Yandex/SFTP breakage). Cooldown/penalty are already
+        // suppressed above for the same reason; the consecutive-failure counter
+        // still ticks, so a backend that 1013s on everything still escalates.
+        if !is_try_again {
+            self.extend_mode_downgrade(
+                index,
+                transport,
+                ModeDowngradeTrigger::RuntimeFailure(error),
+            );
+        }
 
         self.clear_standby(index, transport).await;
 
