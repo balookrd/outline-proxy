@@ -111,9 +111,15 @@ impl CloseReason {
         }
     }
 
-    /// Check if the close code is valid per RFC 6455
+    /// Check if the close code is valid per RFC 6455 + the IANA WebSocket
+    /// Close Code Number Registry. Patched (outline-proxy): the upstream range
+    /// omitted 1012 (Service Restart), 1013 (Try Again Later) and 1014 (Bad
+    /// Gateway), so a server sending a routine `Close 1013` was rejected as
+    /// `InvalidCloseCode` on the HTTP/3 path — turning a per-target try-again
+    /// into a fatal carrier read error. 1015 stays excluded (TLS, never on the
+    /// wire).
     pub fn is_valid_code(code: u16) -> bool {
-        matches!(code, 1000..=1003 | 1007..=1011 | 3000..=4999)
+        matches!(code, 1000..=1003 | 1007..=1014 | 3000..=4999)
     }
 }
 
