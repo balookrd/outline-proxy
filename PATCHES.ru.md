@@ -81,6 +81,15 @@ vendored-копии.
    машины состояний `write_queued` / `shutdown_started`, дёргающие h3-методы
    `queue_send` / `poll_drain` / `queue_grease` / `poll_quic_finish` ровно
    один раз на логическую запись / shutdown.
+3. **valid-close-codes-1012-1014** (`src/error.rs`) — `Error::is_valid_code`
+   принимал только `1000..=1003 | 1007..=1011 | 3000..=4999`, отвергая
+   зарегистрированные IANA коды 1012 (Service Restart), 1013 (Try Again Later)
+   и 1014 (Bad Gateway). Сервер шлёт штатный `Close 1013` («try again later»)
+   на каждый недоступный upstream-таргет; на HTTP/3-пути это отвержение
+   превращало безобидный per-target close в фатальную read-ошибку несущей
+   (`Invalid close code: 1013`), дёргая `ws_h3 -> ws_h2` и рвя потоки на wire.
+   Диапазон расширен до `1007..=1014` (1015 не входит — TLS, на wire не
+   передаётся).
 
 **`Cargo.toml`** (в патч не входит): зависимости rustls-стека запинены с
 `default-features = false` и provider-фичей `aws_lc_rs`

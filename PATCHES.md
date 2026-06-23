@@ -81,6 +81,14 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
    fix: `write_queued` / `shutdown_started` state machines that drive h3's
    `queue_send` / `poll_drain` / `queue_grease` / `poll_quic_finish` exactly
    once per logical write / shutdown.
+3. **valid-close-codes-1012-1014** (`src/error.rs`) — `Error::is_valid_code`
+   accepted only `1000..=1003 | 1007..=1011 | 3000..=4999`, rejecting the
+   IANA-registered 1012 (Service Restart), 1013 (Try Again Later) and 1014
+   (Bad Gateway). The server sends a routine `Close 1013` ("try again later")
+   per upstream target; on the HTTP/3 path that rejection turned a benign
+   per-target close into a fatal carrier read error (`Invalid close code:
+   1013`), flapping `ws_h3 -> ws_h2` and tearing down flows on the wire. Range
+   widened to `1007..=1014` (1015 stays out — TLS, never on the wire).
 
 **`Cargo.toml`** (kept out of the patch): the rustls-stack dependencies are
 pinned with `default-features = false` and the `aws_lc_rs` provider feature
