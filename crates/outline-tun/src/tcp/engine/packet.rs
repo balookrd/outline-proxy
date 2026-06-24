@@ -240,6 +240,7 @@ impl TunTcpEngine {
         }
 
         let pump_notify = state.signals.upstream_pump.clone();
+        let server_drain = state.signals.server_drain.clone();
         drop(state);
 
         if abort_for_pending_limit {
@@ -260,8 +261,15 @@ impl TunTcpEngine {
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
         }
 
+        // This packet ACKed downlink data, so `flush_server_output` just shipped
+        // queued bytes out of `pending_server_data`. Wake the reader in case it
+        // is parked on downlink backpressure waiting for the client to make room.
+        let drained_downlink = !outcome.server_flush.data_packets.is_empty();
         self.write_server_flush_or_close(&key, outcome.server_flush, &group_name, &uplink_name)
             .await?;
+        if drained_downlink {
+            server_drain.notify_one();
+        }
 
         Ok(())
     }

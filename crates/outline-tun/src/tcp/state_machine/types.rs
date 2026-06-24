@@ -104,6 +104,14 @@ pub(in crate::tcp) struct FlowControlSignals {
     /// the read-loop hands work off through the buffer + this notify and
     /// never blocks on upstream backpressure itself.
     pub(in crate::tcp) upstream_pump: Arc<Notify>,
+    /// Wakes the per-flow upstream *reader* after the client ACKs and
+    /// `flush_server_output` drains `pending_server_data` below the soft
+    /// limit. The reader pauses draining the carrier while the downlink
+    /// buffer is over the limit (downlink backpressure), so a slow client
+    /// cannot grow the buffer into the hard-limit RST that used to tear down
+    /// healthy large downloads; this notify releases the reader once the
+    /// client has made room.
+    pub(in crate::tcp) server_drain: Arc<Notify>,
     pub(in crate::tcp) scheduler: Arc<FlowScheduler>,
     pub(in crate::tcp) idle_timeout: Duration,
 }

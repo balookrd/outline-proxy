@@ -1046,7 +1046,12 @@ async fn server_backlog_pressure_allows_brief_window_stall() {
 }
 
 #[tokio::test]
-async fn server_backlog_pressure_aborts_after_grace_even_without_window_stall() {
+async fn server_backlog_pressure_does_not_abort_throttled_flow_over_grace() {
+    // A merely slow flow — over the soft limit for longer than the (now
+    // informational) grace, but with the client window open and ACK progress
+    // fresh — must NOT be aborted. Downlink backpressure parks the reader on
+    // exactly this flow for the whole transfer; the dropped grace arm used to
+    // reap such a healthy large download after a few seconds.
     let mut state = tcp_flow_state_for_tests().await;
     state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
     let config = TunTcpConfig {
@@ -1059,11 +1064,14 @@ async fn server_backlog_pressure_aborts_after_grace_even_without_window_stall() 
         super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), false);
 
     assert!(pressure.exceeded);
-    assert!(pressure.should_abort);
+    assert!(!pressure.should_abort);
 }
 
 #[tokio::test]
-async fn server_backlog_pressure_aborts_after_grace_when_stalled() {
+async fn server_backlog_pressure_does_not_abort_stalled_flow_with_fresh_ack() {
+    // Window shut but the client is still making ACK progress (no_progress has
+    // not reached backlog_no_progress_abort): a brief stall, not a dead flow,
+    // so grace alone must not abort it — only a sustained no-progress stall does.
     let mut state = tcp_flow_state_for_tests().await;
     state.client_window = 0;
     state.client_window_end = state.server_seq;
@@ -1077,7 +1085,7 @@ async fn server_backlog_pressure_aborts_after_grace_when_stalled() {
     let pressure = super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), true);
 
     assert!(pressure.exceeded);
-    assert!(pressure.should_abort);
+    assert!(!pressure.should_abort);
 }
 
 #[tokio::test]
@@ -1717,6 +1725,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         signals: super::state_machine::FlowControlSignals {
             close_signal,
             upstream_pump: Arc::new(tokio::sync::Notify::new()),
+            server_drain: Arc::new(tokio::sync::Notify::new()),
             scheduler: Arc::new(super::engine::scheduler::FlowScheduler::new()),
             idle_timeout: std::time::Duration::from_secs(60),
         },

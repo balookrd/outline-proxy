@@ -3,7 +3,10 @@ mod flush;
 mod metrics;
 mod probes;
 
-pub(in crate::tcp) use buffer::{assess_server_backlog_pressure, retransmit_budget_exhausted};
+pub(in crate::tcp) use buffer::{
+    assess_server_backlog_pressure, pending_server_bytes, retransmit_budget_exhausted,
+    server_window_stalled,
+};
 pub(in crate::tcp) use flush::{flush_server_output, maybe_emit_zero_window_probe};
 pub(in crate::tcp) use metrics::{clear_flow_metrics, sync_flow_metrics};
 pub(in crate::tcp) use probes::{
