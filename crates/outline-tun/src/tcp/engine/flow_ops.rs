@@ -88,6 +88,7 @@ impl TunTcpEngine {
             signals: FlowControlSignals {
                 close_signal,
                 upstream_pump: Arc::new(Notify::new()),
+                server_drain: Arc::new(Notify::new()),
                 scheduler,
                 idle_timeout,
             },
