@@ -1324,6 +1324,7 @@ fn eviction_test_flow_state(
         signals: super::super::state_machine::FlowControlSignals {
             close_signal,
             upstream_pump: Arc::new(tokio::sync::Notify::new()),
+            server_drain: Arc::new(tokio::sync::Notify::new()),
             scheduler: Arc::clone(&engine.inner.scheduler),
             idle_timeout: engine.inner.idle_timeout,
         },

@@ -10,6 +10,7 @@ use super::super::congestion::{congestion_window_remaining, server_max_segment_p
 use super::super::packets::{build_flow_packet, send_window_remaining};
 use super::super::transitions::{reset_zero_window_persist, set_flow_status};
 use super::super::types::{ServerFlush, ServerSegment, TcpFlowState, TcpFlowStatus};
+use super::buffer::server_window_stalled;
 
 fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<Vec<u8>>> {
     let mut packets = Vec::new();
@@ -68,7 +69,7 @@ pub(in crate::tcp) fn flush_server_output(state: &mut TcpFlowState) -> Result<Se
         return Ok(ServerFlush::default());
     }
     let data_packets = flush_server_data(state)?;
-    let window_stalled = send_window_remaining(state) == 0 && !state.pending_server_data.is_empty();
+    let window_stalled = server_window_stalled(state);
     let fin_packet = maybe_emit_server_fin(state)?;
     let probe_packet = maybe_emit_zero_window_probe(state)?;
     Ok(ServerFlush {
