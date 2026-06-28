@@ -80,6 +80,7 @@ pub async fn spawn_tun_loop(
         max_flows,
         idle_timeout,
         config.pmtud_emit_below_quic_initial,
+        config.sniff_quic,
     );
     let tcp_engine = TunTcpEngine::new(
         writer.clone(),

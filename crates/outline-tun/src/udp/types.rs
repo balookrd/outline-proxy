@@ -11,6 +11,7 @@ use crate::utils::maybe_shrink_hash_map;
 use crate::wire::IpVersion;
 use outline_transport::{AbortOnDrop, UdpSessionTransport};
 use outline_uplink::UplinkManager;
+use socks5_proto::TargetAddr;
 
 /// Minimal view of a flow for table-level helpers: the per-flow `id`
 /// (generation counter) used to detect races against replacement, and the
@@ -42,6 +43,11 @@ pub(super) struct UdpFlowState {
     pub(super) manager: UplinkManager,
     pub(super) created_at: Instant,
     pub(super) last_seen: Instant,
+    /// Domain destination recovered by QUIC connection sniffing on the flow's
+    /// first datagram. When set, every datagram of this flow is framed for this
+    /// domain instead of the literal IP, so the exit node resolves the host.
+    /// `None` means no override (dial by IP, the default for non-QUIC flows).
+    pub(super) remote_target_override: Option<TargetAddr>,
     /// Wall-clock stamp of the last ICMP "Frag Needed" / "Packet Too Big"
     /// we synthesised for this flow after a transport oversize drop. Used
     /// to throttle PTB emission per-flow: RFC 4443 §2.4(f) makes ICMPv6

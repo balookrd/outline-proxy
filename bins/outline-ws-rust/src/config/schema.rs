@@ -291,6 +291,10 @@ pub(super) struct TunSection {
     /// clients onto a TCP fallback. Set `true` to restore unconditional
     /// emission for VoWiFi / IKE-only setups. See `docs/TUN-PMTUD.md`.
     pub(super) pmtud_emit_below_quic_initial: Option<bool>,
+    /// QUIC connection sniffing for the UDP path: recover the SNI from a QUIC
+    /// Initial's ClientHello and send the domain (not the IP) upstream so the
+    /// exit node resolves it. Default `true`. Mirrors `[tun.tcp] sniffing`.
+    pub(super) sniff_quic: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

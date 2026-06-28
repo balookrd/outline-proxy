@@ -115,6 +115,8 @@ impl Metrics {
             #[cfg(feature = "tun")]
             tun_tcp_sniff_total: tun.tun_tcp_sniff_total,
             #[cfg(feature = "tun")]
+            tun_udp_sniff_total: tun.tun_udp_sniff_total,
+            #[cfg(feature = "tun")]
             tun_tcp_async_connects_total: tun.tun_tcp_async_connects_total,
             #[cfg(feature = "tun")]
             tun_tcp_async_connects_active: tun.tun_tcp_async_connects_active,

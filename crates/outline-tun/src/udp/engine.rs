@@ -61,6 +61,9 @@ pub(super) struct TunUdpEngineInner {
     /// to `true` to restore the unconditional PTB emission and surface
     /// explicit PMTUD signals on every sub-1200/1280 drop.
     pub(super) pmtud_emit_below_quic_initial: bool,
+    /// QUIC connection sniffing for the UDP path. See
+    /// [`TunConfig::sniff_quic`](crate::TunConfig).
+    pub(super) sniff_quic: bool,
 }
 
 impl TunUdpEngine {
@@ -70,6 +73,7 @@ impl TunUdpEngine {
         max_flows: usize,
         idle_timeout: Duration,
         pmtud_emit_below_quic_initial: bool,
+        sniff_quic: bool,
     ) -> Self {
         let (close_tx, close_rx) = mpsc::unbounded_channel();
         let engine = Self {
@@ -83,6 +87,7 @@ impl TunUdpEngine {
                 idle_timeout,
                 close_tx,
                 pmtud_emit_below_quic_initial,
+                sniff_quic,
             }),
         };
         engine.spawn_cleanup_loop();
@@ -141,6 +146,7 @@ impl TunUdpEngine {
                 flow.uplink_index,
                 flow.uplink_name.clone(),
                 flow.manager.clone(),
+                flow.remote_target_override.clone(),
             ))
         } else {
             None
@@ -151,7 +157,7 @@ impl TunUdpEngine {
         // flow must follow or be torn down. The removal takes the write-lock
         // only if the flow is actually stale — common case is no-op.
         let existing_tuple = match &existing_tuple {
-            Some((_, _, flow_index, _, flow_manager))
+            Some((_, _, flow_index, _, flow_manager, _))
                 if super::should_migrate_flow(flow_manager, *flow_index).await =>
             {
                 if let Some(stale) = self.inner.flows.write().await.remove(&key) {
@@ -162,33 +168,42 @@ impl TunUdpEngine {
             _ => existing_tuple,
         };
 
-        let (flow_id, transport, uplink_index, uplink_name, manager) = match existing_tuple {
-            Some(existing) => existing,
-            None => {
-                let route = self.inner.dispatch.resolve_udp(&remote_target).await;
-                match route {
-                    TunRoute::Direct { fwmark } => {
-                        return self
-                            .handle_direct_packet(key, &remote_target, &packet, fwmark)
-                            .await;
-                    },
-                    TunRoute::Drop { reason } => {
-                        debug!(
-                            target = %remote_target,
-                            reason,
-                            "TUN UDP route: dropping flow"
-                        );
-                        return Ok(());
-                    },
-                    TunRoute::Group { manager, .. } => {
-                        let (id, t, index, name) = self.create_flow(key.clone(), &manager).await?;
-                        (id, t, index, name, manager)
-                    },
-                }
-            },
-        };
+        let (flow_id, transport, uplink_index, uplink_name, manager, target_override) =
+            match existing_tuple {
+                Some(existing) => existing,
+                None => {
+                    let route = self.inner.dispatch.resolve_udp(&remote_target).await;
+                    match route {
+                        TunRoute::Direct { fwmark } => {
+                            return self
+                                .handle_direct_packet(key, &remote_target, &packet, fwmark)
+                                .await;
+                        },
+                        TunRoute::Drop { reason } => {
+                            debug!(
+                                target = %remote_target,
+                                reason,
+                                "TUN UDP route: dropping flow"
+                            );
+                            return Ok(());
+                        },
+                        TunRoute::Group { manager, .. } => {
+                            // Connection sniffing: the first datagram of a new
+                            // flow may be a QUIC Initial — recover its SNI and
+                            // pin the flow to that domain so the exit resolves it.
+                            let override_target =
+                                self.sniff_quic_override(&packet.payload, key.remote_port);
+                            let (id, t, index, name) = self
+                                .create_flow(key.clone(), &manager, override_target.clone())
+                                .await?;
+                            (id, t, index, name, manager, override_target)
+                        },
+                    }
+                },
+            };
 
-        let payload = super::build_udp_payload(&remote_target, &packet.payload)?;
+        let effective_target = target_override.as_ref().unwrap_or(&remote_target);
+        let payload = super::build_udp_payload(effective_target, &packet.payload)?;
         if let Err(error) = transport.send_packet(&payload).await {
             if is_dropped_oversized_udp_error(&error) {
                 self.emit_pmtud_after_oversize_drop(&key, &packet, &error).await;
@@ -201,6 +216,7 @@ impl TunUdpEngine {
                     uplink_index,
                     &uplink_name,
                     &manager,
+                    target_override.clone(),
                     &error,
                 )
                 .await?;
@@ -233,6 +249,29 @@ impl TunUdpEngine {
         }
 
         Ok(())
+    }
+
+    /// Connection sniffing for the UDP path: if QUIC sniffing is enabled and
+    /// `payload` is a QUIC Initial whose ClientHello carries an SNI, return a
+    /// `TargetAddr::Domain` for `remote_port`. Returns `None` otherwise — most
+    /// first datagrams (DNS, STUN, plain UDP) are not QUIC Initials, so only
+    /// successful overrides are counted to keep the metric low-cardinality.
+    fn sniff_quic_override(&self, payload: &[u8], remote_port: u16) -> Option<TargetAddr> {
+        if !self.inner.sniff_quic {
+            return None;
+        }
+        match crate::quic_sniff::sniff_quic_sni(payload) {
+            crate::sniff::SniffOutcome::Found(host) => {
+                metrics::record_tun_udp_sniff("override");
+                debug!(
+                    host,
+                    port = remote_port,
+                    "TUN UDP sniff: QUIC destination overridden to domain"
+                );
+                Some(TargetAddr::Domain(host, remote_port))
+            },
+            crate::sniff::SniffOutcome::Incomplete | crate::sniff::SniffOutcome::NotMatched => None,
+        }
     }
 
     /// Send an ICMP "Fragmentation Needed" (IPv4) or ICMPv6 "Packet Too

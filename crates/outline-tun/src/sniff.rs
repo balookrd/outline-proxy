@@ -70,7 +70,10 @@ fn sniff_tls_sni(data: &[u8]) -> SniffOutcome {
     parse_client_hello(&data[5..5 + avail])
 }
 
-fn parse_client_hello(body: &[u8]) -> SniffOutcome {
+/// Parse a TLS `ClientHello` handshake message (starting at the handshake
+/// type byte) and return its SNI. Shared with the QUIC sniffer, whose
+/// decrypted CRYPTO stream carries exactly this message with no record layer.
+pub(crate) fn parse_client_hello(body: &[u8]) -> SniffOutcome {
     let mut c = Cursor::new(body);
     match c.u8() {
         Some(0x01) => {},                           // ClientHello
@@ -282,7 +285,7 @@ fn strip_host_port(value: &str) -> &str {
 /// A sniffed host is usable only if it is a real domain name: non-empty,
 /// length-bounded, made of host-legal characters, and not an IP literal
 /// (overriding an IP target with the same IP buys nothing).
-fn is_valid_sniffed_host(host: &str) -> bool {
+pub(crate) fn is_valid_sniffed_host(host: &str) -> bool {
     if host.is_empty() || host.len() > 253 {
         return false;
     }
