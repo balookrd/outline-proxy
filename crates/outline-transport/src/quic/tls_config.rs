@@ -112,6 +112,44 @@ static QUIC_CLIENT_CONFIGS: OnceLock<
     Mutex<HashMap<(Option<TlsFingerprint>, Vec<u8>), (quinn::ClientConfig, Instant)>>,
 > = OnceLock::new();
 
+// ── QUIC flow-control windows ───────────────────────────────────────────────
+
+// Per-stream / per-connection QUIC receive windows for the raw-QUIC and H3
+// carriers. quinn's defaults are sized for low-latency links; on a long-RTT
+// tunnel a single carrier stream is throughput-bound by `window / RTT`, which
+// caps one TUN flow (e.g. a video download) well below the link's capacity.
+// Generous defaults (8 MiB stream / 64 MiB connection) keep the BDP filled
+// even at ~1 s RTT; reducible via `[quic]` in config.toml on memory-tight hosts.
+static QUIC_STREAM_RECEIVE_WINDOW: OnceLock<u32> = OnceLock::new();
+static QUIC_RECEIVE_WINDOW: OnceLock<u32> = OnceLock::new();
+
+const DEFAULT_QUIC_STREAM_RECEIVE_WINDOW: u32 = 8 * 1024 * 1024;
+const DEFAULT_QUIC_RECEIVE_WINDOW: u32 = 64 * 1024 * 1024;
+
+/// Initialise the QUIC receive windows from config. Must be called before the
+/// first QUIC/H3 dial. Idempotent with equal values; later differing values are
+/// ignored (first-writer-wins), mirroring [`crate::init_h2_window_sizes`].
+pub fn init_quic_window_sizes(stream: u32, connection: u32) {
+    QUIC_STREAM_RECEIVE_WINDOW.get_or_init(|| stream);
+    QUIC_RECEIVE_WINDOW.get_or_init(|| connection);
+}
+
+fn quic_stream_receive_window() -> u32 {
+    *QUIC_STREAM_RECEIVE_WINDOW.get_or_init(|| DEFAULT_QUIC_STREAM_RECEIVE_WINDOW)
+}
+
+fn quic_receive_window() -> u32 {
+    *QUIC_RECEIVE_WINDOW.get_or_init(|| DEFAULT_QUIC_RECEIVE_WINDOW)
+}
+
+/// Apply the configured stream / connection receive windows to a QUIC transport
+/// config. Shared by the raw-QUIC and H3 carrier builders so both lift the
+/// single-stream `window / RTT` throughput ceiling identically.
+fn apply_quic_receive_windows(transport: &mut quinn::TransportConfig) {
+    transport.stream_receive_window(quinn::VarInt::from_u32(quic_stream_receive_window()));
+    transport.receive_window(quinn::VarInt::from_u32(quic_receive_window()));
+}
+
 /// Returns a cloned QUIC client config for `alpn` (raw VLESS / SS). Keep-alive
 /// and idle timeout carry the shared per-process jitter ([`apply_quic_jitter`]);
 /// QUIC datagrams are enabled (RFC 9221) — required by VLESS-UDP and SS-UDP over
@@ -148,6 +186,7 @@ pub(crate) fn quic_client_config(alpn: &[u8]) -> quinn::ClientConfig {
     let mut config = quinn::ClientConfig::new(Arc::new(quic_tls));
     let mut transport = quinn::TransportConfig::default();
     apply_quic_jitter(&mut transport);
+    apply_quic_receive_windows(&mut transport);
     transport.datagram_receive_buffer_size(Some(64 * 1024));
     transport.datagram_send_buffer_size(64 * 1024);
     // VLESS / SS UDP over QUIC carry application UDP datagrams as QUIC
@@ -201,6 +240,7 @@ pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
     let mut config = quinn::ClientConfig::new(Arc::new(quic_tls));
     let mut transport = quinn::TransportConfig::default();
     apply_quic_jitter(&mut transport);
+    apply_quic_receive_windows(&mut transport);
     // The H3 carrier's UDP rides QUIC *streams*, not datagrams, so disable
     // datagram receive — otherwise quinn's default advertises
     // `max_datagram_frame_size` in the Initial, a transport-parameter a browser

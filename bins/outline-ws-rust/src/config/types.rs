@@ -31,6 +31,7 @@ pub struct AppConfig {
     #[cfg(feature = "tun")]
     pub tun: Option<outline_tun::TunConfig>,
     pub h2: H2Config,
+    pub quic: QuicConfig,
     /// Override kernel UDP receive buffer size (SO_RCVBUF). None = kernel default.
     pub udp_recv_buf_bytes: Option<usize>,
     /// Override kernel UDP send buffer size (SO_SNDBUF). None = kernel default.
@@ -173,10 +174,18 @@ pub enum ReversePeerKind {
 /// HTTP/2 flow-control window sizes for WebSocket transports.
 #[derive(Debug, Clone)]
 pub struct H2Config {
-    /// Per-stream initial window size in bytes (default: 1 MiB).
+    /// Per-stream initial window size in bytes (default: 8 MiB).
     pub initial_stream_window_size: u32,
-    /// Per-connection initial window size in bytes (default: 2 MiB).
+    /// Per-connection initial window size in bytes (default: 32 MiB).
     pub initial_connection_window_size: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct QuicConfig {
+    /// Per-stream QUIC receive window in bytes (default: 8 MiB).
+    pub stream_receive_window: u32,
+    /// Per-connection QUIC receive window in bytes (default: 64 MiB).
+    pub receive_window: u32,
 }
 
 #[derive(Debug, Clone)]
