@@ -129,6 +129,111 @@ async fn tun_tcp_reassembles_out_of_order_client_segments_end_to_end() {
     assert_eq!(upstream.recv_chunk().await, b"ABCDEF");
 }
 
+/// Build a minimal TLS ClientHello record carrying a single `server_name`
+/// (host_name) extension, used to drive the connection-sniffing path.
+fn tls_client_hello_with_sni(sni: &str) -> Vec<u8> {
+    let name = sni.as_bytes();
+    let mut sni_ext = Vec::new();
+    let entry_len = 1 + 2 + name.len();
+    sni_ext.extend_from_slice(&(entry_len as u16).to_be_bytes());
+    sni_ext.push(0x00);
+    sni_ext.extend_from_slice(&(name.len() as u16).to_be_bytes());
+    sni_ext.extend_from_slice(name);
+
+    let mut extensions = Vec::new();
+    extensions.extend_from_slice(&0x0000u16.to_be_bytes());
+    extensions.extend_from_slice(&(sni_ext.len() as u16).to_be_bytes());
+    extensions.extend_from_slice(&sni_ext);
+
+    let mut hello = Vec::new();
+    hello.extend_from_slice(&[0x03, 0x03]);
+    hello.extend_from_slice(&[0x11; 32]);
+    hello.push(0x00);
+    hello.extend_from_slice(&2u16.to_be_bytes());
+    hello.extend_from_slice(&[0x13, 0x01]);
+    hello.push(0x01);
+    hello.push(0x00);
+    hello.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+    hello.extend_from_slice(&extensions);
+
+    let mut handshake = vec![0x01];
+    let l = hello.len();
+    handshake.extend_from_slice(&[(l >> 16) as u8, (l >> 8) as u8, l as u8]);
+    handshake.extend_from_slice(&hello);
+
+    let mut record = vec![0x16, 0x03, 0x01];
+    record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+    record.extend_from_slice(&handshake);
+    record
+}
+
+#[tokio::test]
+async fn tun_tcp_sniffs_tls_sni_and_overrides_target_with_domain() {
+    // Connection sniffing (default on): a TLS ClientHello arriving as the
+    // first client segment must rewrite the dialled destination from the
+    // literal IP into the SNI domain, so the exit node resolves it. The same
+    // ClientHello bytes are still forwarded upstream verbatim.
+    let upstream = TestTcpUpstream::start().await;
+    let manager = build_test_manager(upstream.url()).await;
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = super::TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager),
+        128,
+        Duration::from_secs(60),
+        test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+    let client_port = 40044;
+    let remote_port = 443;
+
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            300,
+            0,
+            4096,
+            TCP_FLAG_SYN,
+            &[],
+        ))
+        .await
+        .unwrap();
+    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    assert_eq!(syn_ack.flags, TCP_FLAG_SYN | TCP_FLAG_ACK);
+    let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+
+    // Deliver the ClientHello as the first client segment *before* draining the
+    // target, so the connect task sniffs it instead of timing out to the IP.
+    let hello = tls_client_hello_with_sni("example.com");
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            301,
+            server_next_seq,
+            4096,
+            TCP_FLAG_ACK,
+            &hello,
+        ))
+        .await
+        .unwrap();
+
+    let target = upstream.expect_target().await;
+    let (target, _) = TargetAddr::from_wire_bytes(&target).unwrap();
+    assert_eq!(target, TargetAddr::Domain("example.com".to_string(), remote_port));
+
+    // The ClientHello itself is still forwarded upstream unchanged.
+    assert_eq!(upstream.recv_chunk().await, hello);
+}
+
 #[tokio::test]
 async fn tun_tcp_pump_delivers_sequential_client_chunks_in_order() {
     // After decoupling the read-loop from upstream sends, client payload is

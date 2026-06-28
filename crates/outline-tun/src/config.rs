@@ -68,4 +68,19 @@ pub struct TunTcpConfig {
     /// Max unanswered keepalive probes before the flow is aborted with
     /// `keepalive_timeout`. Only consulted when `keepalive_idle` is `Some`.
     pub keepalive_max_probes: u32,
+    /// Connection sniffing (Xray-style). When `true` (default) the TCP engine
+    /// peeks the first client bytes of a tunnelled flow, extracts the
+    /// destination host from the TLS ClientHello SNI or the HTTP `Host`
+    /// header, and rewrites the dialled destination from the literal IP into a
+    /// `TargetAddr::Domain` — so the request leaves over VLESS/Shadowsocks
+    /// carrying the *domain* and the exit node resolves it. Direct flows are
+    /// never affected (they need a literal IP). UDP/QUIC sniffing is not yet
+    /// implemented.
+    pub sniffing: bool,
+    /// How long to wait for the first parseable client chunk before giving up
+    /// and dialling by IP. Sniffable flows (TLS/HTTP) complete almost
+    /// instantly because the TUN stack terminates the handshake locally; this
+    /// timeout only bounds the wait for server-speaks-first protocols that
+    /// never send a sniffable preface.
+    pub sniff_timeout: Duration,
 }

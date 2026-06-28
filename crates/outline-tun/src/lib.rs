@@ -14,6 +14,7 @@ pub(crate) mod error_classify;
 mod frag;
 mod icmp;
 mod routing;
+mod sniff;
 pub mod tcp;
 pub mod udp;
 mod utils;

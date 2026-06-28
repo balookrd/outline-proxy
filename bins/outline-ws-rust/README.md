@@ -433,6 +433,12 @@ listen = "[::1]:9090"
 # max_buffered_client_segments = 4096
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
+# Connection sniffing (Xray-style destOverride; default on). Peeks the first
+# client bytes, recovers the host from the TLS SNI / HTTP Host, and sends the
+# domain (not the IP) upstream so the exit node resolves it. Direct flows are
+# unaffected; UDP/QUIC sniffing is not yet implemented.
+# sniffing = true
+# sniff_timeout_ms = 300
 
 # [outline.probe] acts as a template inherited by every [[uplink_group]].
 # Individual groups can override any field via [uplink_group.probe].

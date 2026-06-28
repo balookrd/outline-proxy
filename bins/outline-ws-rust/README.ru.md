@@ -431,6 +431,12 @@ listen = "[::1]:9090"
 # max_buffered_client_segments = 4096
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
+# Sniffing соединений (как destOverride в Xray; по умолчанию включено).
+# Подсматривает первые байты клиента, достаёт хост из TLS SNI / HTTP Host и
+# отправляет наружу домен (а не IP), чтобы его резолвил выходной узел. Direct-
+# flow не затрагиваются; UDP/QUIC sniffing пока не реализован.
+# sniffing = true
+# sniff_timeout_ms = 300
 
 # [outline.probe] — шаблон, наследуемый каждой [[uplink_group]];
 # конкретные группы могут переопределить любое поле через [uplink_group.probe].

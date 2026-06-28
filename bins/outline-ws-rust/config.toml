@@ -138,6 +138,23 @@ listen = "[::1]:9090"
 # max_buffered_client_segments = 4096
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
+#
+# Connection sniffing (Xray-style destOverride). When true (default) the TCP
+# engine peeks the first client bytes of each tunnelled flow, recovers the
+# destination host from the TLS ClientHello SNI or the HTTP `Host` header, and
+# rewrites the dialled destination from the literal IP into that domain — so
+# the request leaves over VLESS/Shadowsocks carrying the *domain* and the exit
+# node (ss-rust) resolves it. This makes the exit's split-horizon / geo-correct
+# DNS authoritative and lets server-side routing match real hostnames. Direct
+# (`via = "direct"`) flows are never affected — they need a literal IP. UDP /
+# QUIC sniffing is not yet implemented. Set to false to always dial by IP.
+# sniffing = true
+# Max wait, in milliseconds, for the first sniffable client chunk before
+# falling back to dialling by IP. TLS/HTTP flows complete this almost instantly
+# (the TUN stack terminates the handshake locally, so the client's preface is
+# already in flight); the timeout only bounds the wait for server-speaks-first
+# protocols that never send a sniffable preface. Default 300.
+# sniff_timeout_ms = 300
 
 # ── Direct (bypass) routing ──────────────────────────────────────────────────
 # SO_MARK applied to sockets used by `via = "direct"` routes (both TCP connect
