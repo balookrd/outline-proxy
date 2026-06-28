@@ -3,6 +3,9 @@ use std::time::Duration;
 
 use crate::wire::IpVersion;
 
+#[cfg(test)]
+pub(crate) mod engine;
+#[cfg(not(test))]
 mod engine;
 mod maintenance;
 mod state_machine;

@@ -305,6 +305,116 @@ fn read_varint(buf: &[u8]) -> Option<(u64, usize)> {
     Some((value, len))
 }
 
+/// Test-only QUIC Initial packet construction, shared between this module's
+/// unit tests and the UDP-engine end-to-end sniffing tests.
+#[cfg(test)]
+pub(crate) mod test_vectors {
+    use aes::Aes128;
+    use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+    use aes_gcm::Aes128Gcm;
+    use aes_gcm::aead::{Aead, Payload};
+
+    use super::{VERSION_V2, derive_initial_secrets};
+
+    /// A bare TLS `ClientHello` handshake message (no record layer, as QUIC
+    /// CRYPTO carries it) advertising a single `server_name` extension.
+    pub(crate) fn client_hello(sni: &str) -> Vec<u8> {
+        let name = sni.as_bytes();
+        let mut sni_ext = Vec::new();
+        let entry_len = 1 + 2 + name.len();
+        sni_ext.extend_from_slice(&(entry_len as u16).to_be_bytes());
+        sni_ext.push(0x00);
+        sni_ext.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        sni_ext.extend_from_slice(name);
+
+        let mut extensions = Vec::new();
+        extensions.extend_from_slice(&0x0000u16.to_be_bytes());
+        extensions.extend_from_slice(&(sni_ext.len() as u16).to_be_bytes());
+        extensions.extend_from_slice(&sni_ext);
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x03, 0x03]);
+        body.extend_from_slice(&[0x11; 32]);
+        body.push(0x00);
+        body.extend_from_slice(&2u16.to_be_bytes());
+        body.extend_from_slice(&[0x13, 0x01]);
+        body.push(0x01);
+        body.push(0x00);
+        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+        body.extend_from_slice(&extensions);
+
+        let mut hs = vec![0x01];
+        let l = body.len();
+        hs.extend_from_slice(&[(l >> 16) as u8, (l >> 8) as u8, l as u8]);
+        hs.extend_from_slice(&body);
+        hs
+    }
+
+    pub(crate) fn push_varint(out: &mut Vec<u8>, value: u64) {
+        if value < 64 {
+            out.push(value as u8);
+        } else {
+            out.push(0x40 | (value >> 8) as u8);
+            out.push(value as u8);
+        }
+    }
+
+    pub(crate) fn push_crypto_frame(out: &mut Vec<u8>, offset: u64, data: &[u8]) {
+        out.push(0x06);
+        push_varint(out, offset);
+        push_varint(out, data.len() as u64);
+        out.extend_from_slice(data);
+    }
+
+    /// Build an encrypted QUIC Initial datagram carrying `handshake` in a single
+    /// CRYPTO frame.
+    pub(crate) fn build_initial(version: u32, dcid: &[u8], handshake: &[u8]) -> Vec<u8> {
+        let mut frames = Vec::new();
+        push_crypto_frame(&mut frames, 0, handshake);
+        build_initial_from_frames(version, dcid, &frames)
+    }
+
+    /// Build an encrypted QUIC Initial datagram from pre-assembled QUIC frames.
+    pub(crate) fn build_initial_from_frames(version: u32, dcid: &[u8], frames: &[u8]) -> Vec<u8> {
+        let keys = derive_initial_secrets(version, dcid).unwrap();
+
+        let mut plaintext = frames.to_vec();
+        if plaintext.len() < 64 {
+            plaintext.resize(64, 0x00); // PADDING frames
+        }
+
+        let first: u8 = if version == VERSION_V2 { 0xd0 } else { 0xc0 };
+        let mut header = vec![first];
+        header.extend_from_slice(&version.to_be_bytes());
+        header.push(dcid.len() as u8);
+        header.extend_from_slice(dcid);
+        header.push(0x00); // SCID length
+        header.push(0x00); // token length (varint 0)
+        let length = 1 + plaintext.len() + 16; // pn(1) + plaintext + tag
+        push_varint(&mut header, length as u64);
+        let pn_offset = header.len();
+        header.push(0x00); // packet number = 0 (1 byte)
+
+        let aad = header.clone();
+        let nonce = keys.iv; // pn = 0 → nonce = iv
+        let cipher = Aes128Gcm::new_from_slice(&keys.key).unwrap();
+        let ciphertext = cipher
+            .encrypt(aes_gcm::Nonce::from_slice(&nonce), Payload { msg: &plaintext, aad: &aad })
+            .unwrap();
+
+        let mut packet = header;
+        packet.extend_from_slice(&ciphertext);
+
+        let sample: [u8; 16] = packet[pn_offset + 4..pn_offset + 4 + 16].try_into().unwrap();
+        let aes = Aes128::new(GenericArray::from_slice(&keys.hp));
+        let mut block = GenericArray::clone_from_slice(&sample);
+        aes.encrypt_block(&mut block);
+        packet[0] ^= block[0] & 0x0f;
+        packet[pn_offset] ^= block[1];
+        packet
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/quic_sniff.rs"]
 mod tests;
