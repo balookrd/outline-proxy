@@ -1,3 +1,5 @@
+mod sniff;
+
 use super::parse_udp_packet;
 use super::wire::{build_ipv4_udp_packet, build_ipv6_udp_packet};
 use crate::wire::IpVersion;

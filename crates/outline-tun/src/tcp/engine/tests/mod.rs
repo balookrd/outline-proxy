@@ -234,6 +234,150 @@ async fn tun_tcp_sniffs_tls_sni_and_overrides_target_with_domain() {
     assert_eq!(upstream.recv_chunk().await, hello);
 }
 
+/// Drive SYN → SYN-ACK → ACK and return the server's next sequence number.
+async fn open_flow(
+    engine: &super::TunTcpEngine,
+    capture: &mut TunCapture,
+    client_ip: Ipv4Addr,
+    remote_ip: Ipv4Addr,
+    client_port: u16,
+    remote_port: u16,
+    client_isn: u32,
+) -> u32 {
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            client_isn,
+            0,
+            4096,
+            TCP_FLAG_SYN,
+            &[],
+        ))
+        .await
+        .unwrap();
+    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    assert_eq!(syn_ack.flags, TCP_FLAG_SYN | TCP_FLAG_ACK);
+    syn_ack.sequence_number.wrapping_add(1)
+}
+
+#[tokio::test]
+async fn tun_tcp_sniffs_http_host_and_overrides_target_with_domain() {
+    let upstream = TestTcpUpstream::start().await;
+    let manager = build_test_manager(upstream.url()).await;
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = super::TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager),
+        128,
+        Duration::from_secs(60),
+        test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+    let (client_port, remote_port) = (40046, 80);
+    let server_next_seq =
+        open_flow(&engine, &mut capture, client_ip, remote_ip, client_port, remote_port, 400).await;
+
+    let request = b"GET /index.html HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\n\r\n";
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            401,
+            server_next_seq,
+            4096,
+            TCP_FLAG_ACK,
+            request,
+        ))
+        .await
+        .unwrap();
+
+    let target = upstream.expect_target().await;
+    let (target, _) = TargetAddr::from_wire_bytes(&target).unwrap();
+    assert_eq!(target, TargetAddr::Domain("example.com".to_string(), remote_port));
+    assert_eq!(upstream.recv_chunk().await, request);
+}
+
+#[tokio::test]
+async fn tun_tcp_non_sniffable_first_chunk_dials_by_ip() {
+    // A first segment that is neither TLS nor HTTP is not sniffable: the connect
+    // task gives up immediately (no timeout wait) and dials the literal IP.
+    let upstream = TestTcpUpstream::start().await;
+    let manager = build_test_manager(upstream.url()).await;
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = super::TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager),
+        128,
+        Duration::from_secs(60),
+        test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+    let (client_port, remote_port) = (40048, 22);
+    let server_next_seq =
+        open_flow(&engine, &mut capture, client_ip, remote_ip, client_port, remote_port, 500).await;
+
+    let blob = b"\x00\x01\x02\x03 binary protocol, not TLS or HTTP";
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            501,
+            server_next_seq,
+            4096,
+            TCP_FLAG_ACK,
+            blob,
+        ))
+        .await
+        .unwrap();
+
+    let target = upstream.expect_target().await;
+    let (target, _) = TargetAddr::from_wire_bytes(&target).unwrap();
+    assert_eq!(target, TargetAddr::IpV4(remote_ip, remote_port));
+    assert_eq!(upstream.recv_chunk().await, blob);
+}
+
+#[tokio::test]
+async fn tun_tcp_sniffing_disabled_dials_by_ip() {
+    // With sniffing off the connect happens on SYN (no wait for client data),
+    // so even a TLS ClientHello leaves over the tunnel addressed to the IP.
+    let upstream = TestTcpUpstream::start().await;
+    let manager = build_test_manager(upstream.url()).await;
+    let (writer, mut capture) = TunCapture::new().await;
+    let config = crate::config::TunTcpConfig { sniffing: false, ..test_tun_tcp_config() };
+    let engine = super::TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager),
+        128,
+        Duration::from_secs(60),
+        config,
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+    let (client_port, remote_port) = (40050, 443);
+    let _ =
+        open_flow(&engine, &mut capture, client_ip, remote_ip, client_port, remote_port, 600).await;
+
+    // No client data sent: the IP target is dialled immediately on SYN.
+    let target = upstream.expect_target().await;
+    let (target, _) = TargetAddr::from_wire_bytes(&target).unwrap();
+    assert_eq!(target, TargetAddr::IpV4(remote_ip, remote_port));
+}
+
 #[tokio::test]
 async fn tun_tcp_pump_delivers_sequential_client_chunks_in_order() {
     // After decoupling the read-loop from upstream sends, client payload is
@@ -1479,15 +1623,24 @@ fn eviction_test_flow_state(
 }
 
 pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager {
+    build_test_manager_with_urls(Some(tcp_ws_url), None).await
+}
+
+/// Build a single-uplink test manager, setting whichever of the TCP / UDP WS
+/// dial URLs the caller supplies. Shared with the UDP-engine sniffing tests.
+pub(crate) async fn build_test_manager_with_urls(
+    tcp_ws_url: Option<Url>,
+    udp_ws_url: Option<Url>,
+) -> UplinkManager {
     UplinkManager::new_for_test(
         "test",
         vec![UplinkConfig {
             name: "test".to_string(),
             transport: UplinkTransport::Ss,
-            tcp_ws_url: Some(tcp_ws_url),
+            tcp_ws_url,
             tcp_xhttp_url: None,
             tcp_mode: TransportMode::WsH1,
-            udp_ws_url: None,
+            udp_ws_url,
             udp_xhttp_url: None,
             udp_mode: TransportMode::WsH1,
             vless_ws_url: None,

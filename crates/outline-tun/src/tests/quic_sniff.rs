@@ -1,8 +1,6 @@
-use aes::Aes128;
-use aes::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
-use aes_gcm::Aes128Gcm;
-use aes_gcm::aead::{Aead, Payload};
-
+use super::test_vectors::{
+    build_initial, build_initial_from_frames, client_hello, push_crypto_frame,
+};
 use super::{derive_initial_secrets, sniff_quic_sni};
 use crate::sniff::SniffOutcome;
 
@@ -62,124 +60,18 @@ fn non_quic_datagram_is_not_matched() {
 
 #[test]
 fn handshake_packet_is_not_an_initial() {
-    // Long header, v1, but type = Handshake (0b10 → bits 0x20).
     let packet = build_initial(VERSION_V1, &RFC_DCID, &client_hello("example.com"));
     let mut tampered = packet.clone();
-    // Flip the protected first byte so the unprotected type is no longer
-    // Initial is hard to do post-HP; instead assert a Handshake-typed packet
-    // built from scratch is rejected.
-    tampered[0] = 0xe0; // long+fixed, type 0b10
+    tampered[0] = 0xe0; // long+fixed, type 0b10 (Handshake)
     assert_eq!(sniff_quic_sni(&tampered), SniffOutcome::NotMatched);
 }
 
-// --- helpers ---------------------------------------------------------------
-
-fn client_hello(sni: &str) -> Vec<u8> {
-    let name = sni.as_bytes();
-    let mut sni_ext = Vec::new();
-    let entry_len = 1 + 2 + name.len();
-    sni_ext.extend_from_slice(&(entry_len as u16).to_be_bytes());
-    sni_ext.push(0x00);
-    sni_ext.extend_from_slice(&(name.len() as u16).to_be_bytes());
-    sni_ext.extend_from_slice(name);
-
-    let mut extensions = Vec::new();
-    extensions.extend_from_slice(&0x0000u16.to_be_bytes());
-    extensions.extend_from_slice(&(sni_ext.len() as u16).to_be_bytes());
-    extensions.extend_from_slice(&sni_ext);
-
-    let mut body = Vec::new();
-    body.extend_from_slice(&[0x03, 0x03]);
-    body.extend_from_slice(&[0x11; 32]);
-    body.push(0x00);
-    body.extend_from_slice(&2u16.to_be_bytes());
-    body.extend_from_slice(&[0x13, 0x01]);
-    body.push(0x01);
-    body.push(0x00);
-    body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
-    body.extend_from_slice(&extensions);
-
-    // Handshake message: type(1) + length(3) + body. No TLS record layer —
-    // QUIC CRYPTO carries the handshake messages directly.
-    let mut hs = vec![0x01];
-    let l = body.len();
-    hs.extend_from_slice(&[(l >> 16) as u8, (l >> 8) as u8, l as u8]);
-    hs.extend_from_slice(&body);
-    hs
-}
-
-fn push_varint(out: &mut Vec<u8>, value: u64) {
-    // Smallest encoding for the small values used in tests (< 2^14).
-    if value < 64 {
-        out.push(value as u8);
-    } else {
-        out.push(0x40 | (value >> 8) as u8);
-        out.push(value as u8);
-    }
-}
-
-fn push_crypto_frame(out: &mut Vec<u8>, offset: u64, data: &[u8]) {
-    out.push(0x06);
-    push_varint(out, offset);
-    push_varint(out, data.len() as u64);
-    out.extend_from_slice(data);
-}
-
-fn build_initial(version: u32, dcid: &[u8], handshake: &[u8]) -> Vec<u8> {
-    let mut frames = Vec::new();
-    push_crypto_frame(&mut frames, 0, handshake);
-    build_initial_from_frames(version, dcid, &frames)
-}
-
-fn build_initial_from_frames(version: u32, dcid: &[u8], frames: &[u8]) -> Vec<u8> {
-    let keys = derive_initial_secrets(version, dcid).unwrap();
-
-    // Pad the plaintext so there is always a full 16-byte HP sample.
-    let mut plaintext = frames.to_vec();
-    if plaintext.len() < 64 {
-        plaintext.resize(64, 0x00); // PADDING frames
-    }
-
-    let first: u8 = if version == VERSION_V2 { 0xd0 } else { 0xc0 };
-    let mut header = vec![first];
-    header.extend_from_slice(&version.to_be_bytes());
-    header.push(dcid.len() as u8);
-    header.extend_from_slice(dcid);
-    header.push(0x00); // SCID length
-    header.push(0x00); // token length (varint 0)
-    let length = 1 + plaintext.len() + 16; // pn(1) + plaintext + tag
-    push_varint(&mut header, length as u64);
-    let pn_offset = header.len();
-    header.push(0x00); // packet number = 0 (1 byte)
-
-    let aad = header.clone();
-    let nonce = keys.iv; // pn = 0 → nonce = iv
-    let cipher = Aes128Gcm::new_from_slice(&keys.key).unwrap();
-    let ciphertext = cipher
-        .encrypt(aes_gcm::Nonce::from_slice(&nonce), Payload { msg: &plaintext, aad: &aad })
-        .unwrap();
-
-    let mut packet = header;
-    packet.extend_from_slice(&ciphertext);
-
-    // Apply header protection (the inverse of what the sniffer removes).
-    let sample: [u8; 16] = packet[pn_offset + 4..pn_offset + 4 + 16].try_into().unwrap();
-    let aes = Aes128::new(GenericArray::from_slice(&keys.hp));
-    let mut block = GenericArray::clone_from_slice(&sample);
-    aes.encrypt_block(&mut block);
-    packet[0] ^= block[0] & 0x0f;
-    packet[pn_offset] ^= block[1];
-    packet
-}
-
 fn hex16(s: &str) -> [u8; 16] {
-    let v = hex(s);
-    v.try_into().unwrap()
+    hex(s).try_into().unwrap()
 }
 
 fn hex12(s: &str) -> [u8; 12] {
-    let v = hex(s);
-    v.try_into().unwrap()
+    hex(s).try_into().unwrap()
 }
 
 fn hex(s: &str) -> Vec<u8> {

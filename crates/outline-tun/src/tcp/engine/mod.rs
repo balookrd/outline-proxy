@@ -27,7 +27,7 @@ mod packet;
 pub(in crate::tcp) mod scheduler;
 mod tasks;
 #[cfg(test)]
-pub(in crate::tcp) mod tests;
+pub(crate) mod tests;
 
 #[derive(Clone)]
 pub struct TunTcpEngine {
