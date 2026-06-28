@@ -142,12 +142,19 @@ fn quic_receive_window() -> u32 {
     *QUIC_RECEIVE_WINDOW.get_or_init(|| DEFAULT_QUIC_RECEIVE_WINDOW)
 }
 
-/// Apply the configured stream / connection receive windows to a QUIC transport
-/// config. Shared by the raw-QUIC and H3 carrier builders so both lift the
-/// single-stream `window / RTT` throughput ceiling identically.
-fn apply_quic_receive_windows(transport: &mut quinn::TransportConfig) {
+/// Apply carrier throughput tuning (receive windows + congestion control) to a
+/// QUIC transport config. Shared by the raw-QUIC and H3 carrier builders so
+/// both lift the single-stream `window / RTT` ceiling and survive a lossy /
+/// throttled WAN path identically.
+fn apply_quic_carrier_tuning(transport: &mut quinn::TransportConfig) {
     transport.stream_receive_window(quinn::VarInt::from_u32(quic_stream_receive_window()));
     transport.receive_window(quinn::VarInt::from_u32(quic_receive_window()));
+    // BBR instead of quinn's default (Cubic): on a lossy / DPI-throttled
+    // international path Cubic reads loss as congestion and collapses the
+    // congestion window, capping a single flow far below the link — the bound
+    // that a larger receive window alone cannot lift. BBR is model-based and
+    // does not treat loss as a backoff signal, so it keeps the pipe full.
+    transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
 }
 
 /// Returns a cloned QUIC client config for `alpn` (raw VLESS / SS). Keep-alive
@@ -186,7 +193,7 @@ pub(crate) fn quic_client_config(alpn: &[u8]) -> quinn::ClientConfig {
     let mut config = quinn::ClientConfig::new(Arc::new(quic_tls));
     let mut transport = quinn::TransportConfig::default();
     apply_quic_jitter(&mut transport);
-    apply_quic_receive_windows(&mut transport);
+    apply_quic_carrier_tuning(&mut transport);
     transport.datagram_receive_buffer_size(Some(64 * 1024));
     transport.datagram_send_buffer_size(64 * 1024);
     // VLESS / SS UDP over QUIC carry application UDP datagrams as QUIC
@@ -240,7 +247,7 @@ pub(crate) fn h3_quic_client_config() -> quinn::ClientConfig {
     let mut config = quinn::ClientConfig::new(Arc::new(quic_tls));
     let mut transport = quinn::TransportConfig::default();
     apply_quic_jitter(&mut transport);
-    apply_quic_receive_windows(&mut transport);
+    apply_quic_carrier_tuning(&mut transport);
     // The H3 carrier's UDP rides QUIC *streams*, not datagrams, so disable
     // datagram receive — otherwise quinn's default advertises
     // `max_datagram_frame_size` in the Initial, a transport-parameter a browser
