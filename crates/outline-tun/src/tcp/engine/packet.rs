@@ -206,7 +206,6 @@ impl TunTcpEngine {
         let key = state.key.clone();
         let uplink_name = state.routing.uplink_name.clone();
         let group_name = state.routing.group_name.clone();
-        let writer_ready = state.routing.upstream_writer.is_some();
 
         // Always queue client payload onto `pending_client_data` under the
         // lock we already hold; the per-flow upstream pump drains it. This
@@ -252,7 +251,14 @@ impl TunTcpEngine {
         // the buffering above plus this wake keep the shared read-loop from
         // ever blocking on upstream back-pressure. Before the writer exists
         // the pump is not spawned yet; connect drains the buffer on start.
-        if writer_ready && (buffered_client_data || outcome.should_close_client_half) {
+        //
+        // We wake on the same `upstream_pump` Notify even when the writer is
+        // not ready yet: while a flow is in the pre-connect sniffing phase the
+        // connect task parks on this Notify waiting for the first client
+        // chunk (TLS ClientHello / HTTP request) to peek. A permit issued
+        // before the writer exists is harmless to the pump, which drains the
+        // buffer unconditionally on start.
+        if buffered_client_data || outcome.should_close_client_half {
             pump_notify.notify_one();
         }
 

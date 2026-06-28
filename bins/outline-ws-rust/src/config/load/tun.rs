@@ -92,6 +92,12 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         keepalive_max_probes: tcp_section
             .and_then(|section| section.keepalive_max_probes)
             .unwrap_or(6),
+        sniffing: tcp_section.and_then(|section| section.sniffing).unwrap_or(true),
+        sniff_timeout: Duration::from_millis(
+            tcp_section
+                .and_then(|section| section.sniff_timeout_ms)
+                .unwrap_or(300),
+        ),
     };
     if tcp.connect_timeout < Duration::from_secs(1) {
         bail!("tun.tcp.connect_timeout_secs must be at least 1");
@@ -125,6 +131,9 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
     }
     if tcp.max_retransmits == 0 {
         bail!("tun.tcp.max_retransmits must be greater than zero");
+    }
+    if tcp.sniffing && tcp.sniff_timeout < Duration::from_millis(10) {
+        bail!("tun.tcp.sniff_timeout_ms must be at least 10 when sniffing is enabled");
     }
     if let Some(idle) = tcp.keepalive_idle {
         if idle < Duration::from_secs(5) {

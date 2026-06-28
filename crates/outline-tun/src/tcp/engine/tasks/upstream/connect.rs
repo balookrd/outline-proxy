@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, watch};
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 use tracing::{debug, info, warn};
 
 use outline_metrics as metrics;
@@ -11,10 +11,11 @@ use socks5_proto::TargetAddr;
 use super::super::super::super::TcpFlowKey;
 use super::super::super::super::maintenance::commit_flow_changes;
 use super::super::super::super::state_machine::{
-    TcpFlowState, TcpFlowStatus, UpstreamWriter, clear_flow_metrics,
+    TcpFlowState, TcpFlowStatus, UpstreamWriter, clear_flow_metrics, client_fin_seen,
 };
 use super::super::super::connect::select_tcp_candidate_and_connect;
 use super::super::super::{TunTcpEngine, close_upstream_writer, target_socket_addr};
+use crate::sniff::{SNIFF_PEEK_CAP, SniffOutcome, sniff_host};
 
 impl TunTcpEngine {
     pub(in crate::tcp::engine) fn spawn_upstream_connect(
@@ -136,6 +137,29 @@ impl TunTcpEngine {
             }
 
             // Tunneled path (existing).
+            //
+            // Connection sniffing (Xray destOverride): before selecting an
+            // uplink, peek the first client bytes and, if they carry a TLS
+            // ClientHello SNI or an HTTP Host, rewrite the literal-IP target
+            // into a domain so the request leaves over VLESS/SS as a *domain*
+            // and the exit node resolves it. Sniffable flows resolve almost
+            // instantly (the TUN stack terminated the handshake locally, so
+            // the client already sent its preface); the bounded wait only
+            // affects server-speaks-first protocols, which fall back to
+            // dialling by IP. Cancellation during the wait aborts the connect.
+            let target = if engine.inner.tcp.sniffing {
+                match engine.sniff_and_override_target(&flow, target, &mut close_rx).await {
+                    Some(target) => target,
+                    None => {
+                        metrics::record_tun_tcp_async_connect("cancelled");
+                        debug!(flow_id, "TUN TCP flow closed during sniffing");
+                        return;
+                    },
+                }
+            } else {
+                target
+            };
+
             // Per-client affinity key: the LAN client's source IP. Consulted
             // only under routing_scope = "per_client"; ignored otherwise.
             let client_id = key.client_ip.to_string();
@@ -228,5 +252,86 @@ impl TunTcpEngine {
                 "created TUN TCP flow"
             );
         });
+    }
+
+    /// Peek the buffered client prefix and, if it carries a recoverable
+    /// destination host (TLS SNI / HTTP Host), return a domain target;
+    /// otherwise return the original IP target. Returns `None` if the flow is
+    /// torn down (or the connect cancelled) while waiting for the preface.
+    ///
+    /// The buffer is only peeked, never consumed — the same bytes are later
+    /// pumped upstream verbatim, so the server still receives the exact
+    /// ClientHello / request the client sent.
+    pub(in crate::tcp::engine) async fn sniff_and_override_target(
+        &self,
+        flow: &Arc<Mutex<TcpFlowState>>,
+        target: TargetAddr,
+        close_rx: &mut watch::Receiver<bool>,
+    ) -> Option<TargetAddr> {
+        let notify = {
+            let state = flow.lock().await;
+            state.signals.upstream_pump.clone()
+        };
+        let deadline = Instant::now() + self.inner.tcp.sniff_timeout;
+        loop {
+            let (peeked, client_done) = {
+                let state = flow.lock().await;
+                if matches!(state.status, TcpFlowStatus::Closed) {
+                    return None;
+                }
+                let mut buf = Vec::new();
+                for chunk in &state.pending_client_data {
+                    if buf.len() >= SNIFF_PEEK_CAP {
+                        break;
+                    }
+                    let take = (SNIFF_PEEK_CAP - buf.len()).min(chunk.len());
+                    buf.extend_from_slice(&chunk[..take]);
+                }
+                (buf, client_fin_seen(state.status))
+            };
+
+            match sniff_host(&peeked) {
+                SniffOutcome::Found(host) => {
+                    let port = target_port(&target);
+                    metrics::record_tun_tcp_sniff("override");
+                    debug!(host, port, original = %target, "TUN TCP sniff: destination overridden to domain");
+                    return Some(TargetAddr::Domain(host, port));
+                },
+                SniffOutcome::NotMatched => {
+                    metrics::record_tun_tcp_sniff("miss");
+                    return Some(target);
+                },
+                SniffOutcome::Incomplete => {
+                    if client_done || peeked.len() >= SNIFF_PEEK_CAP {
+                        // No more bytes will help (client half-closed, or we
+                        // have all we are willing to buffer): dial by IP.
+                        metrics::record_tun_tcp_sniff("miss");
+                        return Some(target);
+                    }
+                    tokio::select! {
+                        changed = close_rx.changed() => {
+                            // A send means the flow was closed; treat any other
+                            // outcome (sender dropped) as a teardown too.
+                            if changed.is_err() || *close_rx.borrow() {
+                                return None;
+                            }
+                        }
+                        _ = notify.notified() => {}
+                        _ = tokio::time::sleep_until(deadline) => {
+                            metrics::record_tun_tcp_sniff("timeout");
+                            return Some(target);
+                        }
+                    }
+                },
+            }
+        }
+    }
+}
+
+fn target_port(target: &TargetAddr) -> u16 {
+    match target {
+        TargetAddr::IpV4(_, port) | TargetAddr::IpV6(_, port) | TargetAddr::Domain(_, port) => {
+            *port
+        },
     }
 }
