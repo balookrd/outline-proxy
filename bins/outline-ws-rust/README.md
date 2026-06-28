@@ -421,6 +421,10 @@ listen = "[::1]:9090"
 # protects QUIC clients from being evicted to TCP; set true for VoWiFi /
 # IKE-only setups (`docs/TUN-PMTUD.md`).
 # pmtud_emit_below_quic_initial = false
+# QUIC connection sniffing (Xray-style destOverride; default on). Recovers the
+# SNI from the first datagram's QUIC Initial ClientHello and sends the domain
+# (not the IP) upstream so the exit node resolves it. Mirrors [tun.tcp] sniffing.
+# sniff_quic = true
 
 # [tun.tcp]
 # connect_timeout_secs = 10

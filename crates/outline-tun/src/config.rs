@@ -46,6 +46,15 @@ pub struct TunConfig {
     /// QUIC clients to protect are the canonical case. The full
     /// trade-off is documented in `docs/TUN-PMTUD.md`.
     pub pmtud_emit_below_quic_initial: bool,
+    /// QUIC connection sniffing (Xray-style destOverride for the UDP path).
+    /// When `true` (default) the first datagram of a new tunnelled UDP flow is
+    /// inspected: if it is a QUIC Initial, its (publicly decryptable)
+    /// ClientHello SNI is recovered and the per-flow destination is rewritten
+    /// from the literal IP into a `TargetAddr::Domain`, so subsequent datagrams
+    /// of the flow leave over the tunnel carrying the *domain* and the exit
+    /// node resolves it. Direct flows are never affected. Mirrors the TCP-path
+    /// `[tun.tcp] sniffing` for QUIC.
+    pub sniff_quic: bool,
 }
 
 #[derive(Debug, Clone)]

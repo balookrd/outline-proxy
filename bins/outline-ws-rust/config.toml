@@ -126,6 +126,15 @@ listen = "[::1]:9090"
 # deployments that need explicit PMTUD signalling on every sub-minimum
 # drop. See `docs/TUN-PMTUD.md` for the full contract.
 # pmtud_emit_below_quic_initial = false
+#
+# QUIC connection sniffing (Xray-style destOverride for the UDP path). When
+# true (default) the first datagram of a new tunnelled UDP flow is inspected:
+# if it is a QUIC Initial, its (publicly decryptable) ClientHello SNI is
+# recovered and the per-flow destination is rewritten from the literal IP into
+# that domain, so the flow leaves over the tunnel carrying the domain and the
+# exit node (ss-rust) resolves it. Mirrors `[tun.tcp] sniffing` for QUIC.
+# Direct flows are never affected. Set to false to always frame UDP by IP.
+# sniff_quic = true
 
 # [tun.tcp]
 # connect_timeout_secs = 10

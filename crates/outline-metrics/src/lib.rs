@@ -78,8 +78,8 @@ pub use self::tun::{
     add_tun_tcp_smoothed_rtt_seconds, add_tun_tcp_zero_window_flows, record_tun_flow_closed,
     record_tun_flow_created, record_tun_icmp_local_reply, record_tun_ip_fragment_received,
     record_tun_ip_reassembly, record_tun_packet, record_tun_tcp_async_connect,
-    record_tun_tcp_event, record_tun_tcp_sniff, record_tun_udp_forward_error, set_tun_config,
-    set_tun_ip_fragment_sets_active,
+    record_tun_tcp_event, record_tun_tcp_sniff, record_tun_udp_forward_error, record_tun_udp_sniff,
+    set_tun_config, set_tun_ip_fragment_sets_active,
 };
 
 #[cfg(feature = "prometheus")]
@@ -150,6 +150,8 @@ struct Metrics {
     tun_tcp_events_total: IntCounterVec,
     #[cfg(feature = "tun")]
     tun_tcp_sniff_total: IntCounterVec,
+    #[cfg(feature = "tun")]
+    tun_udp_sniff_total: IntCounterVec,
     #[cfg(feature = "tun")]
     tun_tcp_async_connects_total: IntCounterVec,
     #[cfg(feature = "tun")]

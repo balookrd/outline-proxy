@@ -78,6 +78,10 @@ pub fn record_tun_tcp_sniff(outcome: &'static str) {
     METRICS.tun_tcp_sniff_total.with_label_values(&[outcome]).inc();
 }
 
+pub fn record_tun_udp_sniff(outcome: &'static str) {
+    METRICS.tun_udp_sniff_total.with_label_values(&[outcome]).inc();
+}
+
 pub fn record_tun_tcp_async_connect(result: &'static str) {
     METRICS
         .tun_tcp_async_connects_total
