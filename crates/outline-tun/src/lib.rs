@@ -13,6 +13,7 @@ mod engine;
 pub(crate) mod error_classify;
 mod frag;
 mod icmp;
+mod quic_sniff;
 mod routing;
 mod sniff;
 pub mod tcp;

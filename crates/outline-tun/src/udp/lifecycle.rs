@@ -99,6 +99,7 @@ impl TunUdpEngine {
         &self,
         key: UdpFlowKey,
         manager: &UplinkManager,
+        remote_target_override: Option<TargetAddr>,
     ) -> Result<(u64, Arc<UdpSessionTransport>, usize, Arc<str>)> {
         let remote_target = ip_to_target(key.remote_ip, key.remote_port);
         // Per-client affinity key: the LAN client's source IP. Consulted only
@@ -145,6 +146,7 @@ impl TunUdpEngine {
             manager: manager.clone(),
             created_at: now,
             last_seen: now,
+            remote_target_override,
             last_ptb_sent: None,
             _reader_task: Some(reader_task),
         };
@@ -337,6 +339,7 @@ impl TunUdpEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn recreate_flow_after_send_error(
         &self,
         key: &UdpFlowKey,
@@ -344,11 +347,12 @@ impl TunUdpEngine {
         uplink_index: usize,
         uplink_name: &str,
         manager: &UplinkManager,
+        remote_target_override: Option<TargetAddr>,
         error: &anyhow::Error,
     ) -> Result<(u64, Arc<UdpSessionTransport>, usize, Arc<str>)> {
         report_udp_runtime_failure(manager, uplink_index, error).await;
         self.close_flow_if_current(key, flow_id, "send_error").await;
-        let replacement = self.create_flow(key.clone(), manager).await?;
+        let replacement = self.create_flow(key.clone(), manager, remote_target_override).await?;
         metrics::record_failover("udp", manager.group_name(), uplink_name, &replacement.3);
         Ok(replacement)
     }

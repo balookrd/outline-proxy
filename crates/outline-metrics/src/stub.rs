@@ -192,6 +192,7 @@ pub fn set_tun_ip_fragment_sets_active(_ip_family: &'static str, _count: usize) 
 pub fn set_tun_config(_max_flows: usize, _idle_timeout: Duration) {}
 pub fn record_tun_tcp_event(_group: &str, _uplink: &str, _event: &'static str) {}
 pub fn record_tun_tcp_sniff(_outcome: &'static str) {}
+pub fn record_tun_udp_sniff(_outcome: &'static str) {}
 pub fn record_tun_tcp_async_connect(_result: &'static str) {}
 pub fn add_tun_tcp_async_connects_active(_delta: i64) {}
 pub fn set_reverse_peers(_group: &str, _count: usize) {}

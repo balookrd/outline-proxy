@@ -419,6 +419,11 @@ listen = "[::1]:9090"
 # защищает QUIC-клиентов от вытеснения в TCP; true для VoWiFi /
 # IKE-only установок (`docs/TUN-PMTUD.ru.md`).
 # pmtud_emit_below_quic_initial = false
+# QUIC connection sniffing (как destOverride в Xray; по умолчанию включено).
+# Достаёт SNI из ClientHello в QUIC Initial первой датаграммы и отправляет
+# наружу домен (а не IP), чтобы его резолвил выходной узел. Зеркалит [tun.tcp]
+# sniffing для QUIC.
+# sniff_quic = true
 
 # [tun.tcp]
 # connect_timeout_secs = 10
