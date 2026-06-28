@@ -155,6 +155,13 @@ fn build_h3_transport_config(profile: &TuningProfile) -> Result<quinn::Transport
     let mut mtu = quinn::MtuDiscoveryConfig::default();
     mtu.upper_bound(1452);
     transport.mtu_discovery_config(Some(mtu));
+    // BBR instead of quinn's default (Cubic) for the server→client (downlink)
+    // sender. On a lossy / DPI-throttled international path Cubic treats loss as
+    // congestion and collapses the congestion window, capping one flow (e.g. a
+    // video download) far below the link and the negotiated flow-control window.
+    // BBR is model-based and does not back off on loss, keeping the pipe full —
+    // this is the sender-side half; the client mirrors it for the uplink.
+    transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     Ok(transport)
 }
 
