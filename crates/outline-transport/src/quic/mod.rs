@@ -38,6 +38,7 @@ pub use dial::connect_quic_uplink;
 pub(crate) use dial::gc_shared_quic_connections;
 pub use oversize::{OVERSIZE_STREAM_MAGIC, OversizeStream};
 pub(crate) use tls_config::h3_quic_client_config;
+pub use tls_config::init_quic_window_sizes;
 
 /// ALPN identifier for raw VLESS over QUIC.
 pub const ALPN_VLESS: &[u8] = b"vless";

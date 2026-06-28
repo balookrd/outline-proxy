@@ -60,6 +60,7 @@ pub(crate) struct ConfigFile {
     #[allow(dead_code)]
     pub(super) tun: Option<toml::Value>,
     pub(super) h2: Option<H2Section>,
+    pub(super) quic: Option<QuicSection>,
     pub(super) udp_recv_buf_bytes: Option<usize>,
     pub(super) udp_send_buf_bytes: Option<usize>,
     /// Prefer a stable public IPv6 source over privacy-extension temporary
@@ -302,6 +303,18 @@ pub(super) struct TunSection {
 pub(super) struct H2Section {
     pub(super) initial_stream_window_size: Option<u32>,
     pub(super) initial_connection_window_size: Option<u32>,
+}
+
+/// QUIC carrier flow-control windows (raw-QUIC and HTTP/3 carriers). Larger
+/// windows lift the single-stream `window / RTT` throughput ceiling on
+/// long-RTT tunnels; reduce on memory-tight hosts.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct QuicSection {
+    /// Per-stream receive window in bytes (default 8 MiB).
+    pub(super) stream_receive_window: Option<u32>,
+    /// Per-connection receive window in bytes (default 64 MiB).
+    pub(super) receive_window: Option<u32>,
 }
 
 #[cfg(feature = "tun")]

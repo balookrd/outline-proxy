@@ -18,6 +18,7 @@ mod balancing;
 mod groups;
 mod h2;
 mod probe;
+mod quic;
 mod routing;
 mod tcp_timeouts;
 #[cfg(feature = "tun")]
@@ -97,6 +98,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     #[cfg(feature = "tun")]
     let tun = tun::load_tun_config(tun_section, args)?;
     let h2 = h2::load_h2_config(h2_section);
+    let quic = quic::load_quic_config(file.as_ref().and_then(|f| f.quic.as_ref()));
     let tcp_timeouts =
         tcp_timeouts::load_tcp_timeouts(file.as_ref().and_then(|f| f.tcp_timeouts.as_ref()));
 
@@ -157,6 +159,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         #[cfg(feature = "tun")]
         tun,
         h2,
+        quic,
         udp_recv_buf_bytes,
         udp_send_buf_bytes,
         prefer_public_ipv6_src,
