@@ -74,6 +74,10 @@ pub fn record_tun_tcp_event(group: &str, uplink: &str, event: &'static str) {
         .inc();
 }
 
+pub fn record_tun_tcp_sniff(outcome: &'static str) {
+    METRICS.tun_tcp_sniff_total.with_label_values(&[outcome]).inc();
+}
+
 pub fn record_tun_tcp_async_connect(result: &'static str) {
     METRICS
         .tun_tcp_async_connects_total

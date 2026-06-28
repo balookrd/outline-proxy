@@ -317,6 +317,13 @@ pub(super) struct TunTcpSection {
     pub(super) keepalive_idle_secs: Option<u64>,
     pub(super) keepalive_interval_secs: Option<u64>,
     pub(super) keepalive_max_probes: Option<u32>,
+    /// Connection sniffing: extract the destination host from the first client
+    /// bytes (TLS SNI / HTTP Host) and send the domain (not the IP) upstream,
+    /// to be resolved by the exit node. Default `true`.
+    pub(super) sniffing: Option<bool>,
+    /// Max wait, in milliseconds, for the first sniffable client chunk before
+    /// dialling by IP. Default 300.
+    pub(super) sniff_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

@@ -1524,6 +1524,8 @@ pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
         keepalive_idle: None,
         keepalive_interval: Duration::from_secs(30),
         keepalive_max_probes: 6,
+        sniffing: true,
+        sniff_timeout: Duration::from_millis(300),
     }
 }
 #[allow(clippy::too_many_arguments)]
