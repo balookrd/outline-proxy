@@ -7,8 +7,8 @@ use super::super::super::{
     TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_PSH, TCP_ZERO_WINDOW_PROBE_MAX_INTERVAL,
 };
 use super::super::congestion::{
-    congestion_window_remaining, pacing_release_at, refill_pacing_credit,
-    server_max_segment_payload,
+    congestion_window_remaining, pacing_rate_bytes_per_sec, pacing_release_at,
+    refill_pacing_credit, server_max_segment_payload,
 };
 use super::super::packets::{build_flow_packet, send_window_remaining};
 use super::super::transitions::{reset_zero_window_persist, set_flow_status};
@@ -23,6 +23,7 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<Vec<u8>>> {
     // line rate (the burst that overran the path buffer and was dropped).
     let now = Instant::now();
     refill_pacing_credit(state, now);
+    let pacing_active = pacing_rate_bytes_per_sec(state).is_some();
     state.pacing_next_at = None;
 
     let mut packets = Vec::new();
@@ -46,8 +47,8 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<Vec<u8>>> {
 
         // Pacing gate: if this segment would exceed the available credit, stop
         // and schedule a wakeup for when enough credit will have refilled.
-        if (state.pacing_credit as usize) < payload_len {
-            state.pacing_next_at = Some(pacing_release_at(state, payload_len));
+        if pacing_active && (state.pacing_credit as usize) < payload_len {
+            state.pacing_next_at = pacing_release_at(state, payload_len);
             break;
         }
 
@@ -78,7 +79,9 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<Vec<u8>>> {
             fast_retransmit_epoch: 0,
         });
         reset_zero_window_persist(state);
-        state.pacing_credit = state.pacing_credit.saturating_sub(payload_len as u64);
+        if pacing_active {
+            state.pacing_credit = state.pacing_credit.saturating_sub(payload_len as u64);
+        }
         packets.push(packet);
         available_window =
             send_window_remaining(state).min(congestion_window_remaining(state) as u32);

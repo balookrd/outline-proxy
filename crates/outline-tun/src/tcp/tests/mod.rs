@@ -852,29 +852,24 @@ async fn downlink_pacing_caps_burst_and_schedules_resume() {
 }
 
 #[tokio::test]
-async fn pacing_is_active_at_the_ceiling_even_without_an_rtt_sample() {
-    // The very first burst — before any RTT sample — is exactly what overran
-    // the path, so the pacer must shape it too, at the hard ceiling rate
-    // (cwnd/RTT would be undefined / enormous on a small-RTT hop).
+async fn flush_is_unpaced_until_an_rtt_sample_exists() {
+    // Before the first RTT sample the pacer is inactive (early cwnd is tiny, so
+    // the burst is bounded anyway) — the flush drains the whole window.
     let mut state = tcp_flow_state_for_tests().await;
     state.client_window = 1_000_000;
     state.client_window_end = state.server_seq.wrapping_add(1_000_000);
     state.congestion_window = 1_000_000;
-    state.smoothed_rtt = None; // no RTT yet → pace at the ceiling, not "off"
-    state.pacing_credit = 4096;
-    state.pacing_refilled_at = Instant::now();
-    state.pending_server_data.push_back(vec![0u8; 64 * 1024].into());
+    state.smoothed_rtt = None; // no RTT yet → pacing off
+    state.pacing_credit = 0;
+    state.pending_server_data.push_back(vec![0u8; 32 * 1024].into());
 
     let seq_before = state.server_seq;
     let _ = super::flush_server_output(&mut state).unwrap();
     let sent = state.server_seq.wrapping_sub(seq_before);
 
-    assert!(sent <= 8192, "even without an RTT sample the burst is capped: sent {sent}");
-    assert!(!state.pending_server_data.is_empty(), "the rest stays queued");
-    assert!(
-        state.pacing_next_at.is_some(),
-        "a resume wakeup is scheduled at the ceiling rate"
-    );
+    assert_eq!(sent, 32 * 1024, "unpaced flush drains the full queued window");
+    assert!(state.pending_server_data.is_empty());
+    assert!(state.pacing_next_at.is_none());
 }
 
 #[tokio::test]
