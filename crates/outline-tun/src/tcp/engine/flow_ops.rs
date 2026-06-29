@@ -18,8 +18,8 @@ use super::super::state_machine::{
 use super::super::wire::{ParsedTcpPacket, build_reset_response};
 use super::super::{
     MAX_SERVER_SEGMENT_PAYLOAD, TCP_FLAG_ACK, TCP_FLAG_RST, TCP_FLAG_SYN,
-    TCP_INITIAL_CWND_SEGMENTS, TCP_INITIAL_RTO, TCP_PACING_MAX_BURST_BYTES,
-    TCP_SERVER_RECV_WINDOW_CAPACITY, TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL, TcpFlowKey,
+    TCP_INITIAL_CWND_SEGMENTS, TCP_INITIAL_RTO, TCP_SERVER_RECV_WINDOW_CAPACITY,
+    TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL, TcpFlowKey,
 };
 use super::{TunTcpEngine, close_upstream_writer, ip_family_from_version, ip_to_target};
 use crate::TunRoute;
@@ -111,9 +111,6 @@ impl TunTcpEngine {
             duplicate_ack_count: 0,
             fast_recovery_end: None,
             recovery_epoch: 0,
-            pacing_credit: TCP_PACING_MAX_BURST_BYTES as u64,
-            pacing_refilled_at: Instant::now(),
-            pacing_next_at: None,
             receive_window_capacity: self.inner.tcp.max_buffered_client_bytes,
             smoothed_rtt: None,
             rttvar: TCP_INITIAL_RTO / 2,
