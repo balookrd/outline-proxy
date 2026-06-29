@@ -88,6 +88,7 @@ pub(super) trait WsSocket: Send + Sized + 'static {
         protocol: Protocol,
         app_protocol: crate::metrics::AppProtocol,
         scheme: PaddingScheme,
+        monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
     ) -> UdpResponseSender;
 }
 
@@ -179,12 +180,14 @@ impl WsSocket for AxumWs {
         protocol: Protocol,
         app_protocol: crate::metrics::AppProtocol,
         scheme: PaddingScheme,
+        monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
     ) -> UdpResponseSender {
         UdpResponseSender::new(Arc::new(WebSocketResponseSender {
             tx,
             protocol,
             app_protocol,
             padding: scheme,
+            monitor,
         }))
     }
 }
@@ -281,8 +284,14 @@ impl WsSocket for H3Ws {
         _protocol: Protocol,
         app_protocol: crate::metrics::AppProtocol,
         scheme: PaddingScheme,
+        monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
     ) -> UdpResponseSender {
-        UdpResponseSender::new(Arc::new(Http3ResponseSender { tx, app_protocol, padding: scheme }))
+        UdpResponseSender::new(Arc::new(Http3ResponseSender {
+            tx,
+            app_protocol,
+            padding: scheme,
+            monitor,
+        }))
     }
 }
 
@@ -294,10 +303,17 @@ struct WebSocketResponseSender {
     /// datagram is framed before it goes on the wire; disabled passes it
     /// through unchanged (plain wire).
     padding: PaddingScheme,
+    /// Per-carrier downstream-throttle monitor; `Some` only on a padded path
+    /// with detection on. Fed inbound (from-internet) bytes + send backlog.
+    monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
 }
 
 impl ResponseSender for WebSocketResponseSender {
     fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
+        if let Some(m) = &self.monitor {
+            let used = self.tx.max_capacity().saturating_sub(self.tx.capacity());
+            m.note_datagram(data.len(), used, self.tx.max_capacity());
+        }
         let framed = carrier_padding::frame_downlink_message(self.padding, data);
         Box::pin(async move { self.tx.send(Message::Binary(framed)).await.is_ok() })
     }
@@ -317,10 +333,16 @@ struct Http3ResponseSender {
     /// Carrier-padding scheme for this path; see [`WebSocketResponseSender`].
     /// A framed cover/data datagram is a Binary frame, safe on the H3 carrier.
     padding: PaddingScheme,
+    /// Per-carrier downstream-throttle monitor; see [`WebSocketResponseSender`].
+    monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
 }
 
 impl ResponseSender for Http3ResponseSender {
     fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
+        if let Some(m) = &self.monitor {
+            let used = self.tx.max_capacity().saturating_sub(self.tx.capacity());
+            m.note_datagram(data.len(), used, self.tx.max_capacity());
+        }
         let framed = carrier_padding::frame_downlink_message(self.padding, data);
         Box::pin(async move { self.tx.send(H3Message::Binary(framed)).await.is_ok() })
     }

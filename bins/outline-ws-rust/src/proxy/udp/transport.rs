@@ -353,6 +353,16 @@ pub(super) async fn select_udp_transport(
                         candidate.index,
                     )
                     .await;
+                // Install the carrier control-signal handler so a server
+                // downstream-throttle notice on this UDP carrier penalises the
+                // uplink and migrates traffic away. No-op unless the client
+                // opted in; ignored by every non-padded datagram transport.
+                let transport =
+                    transport.with_throttle_handle(outline_uplink::dial::throttle_handle(
+                        uplinks,
+                        candidate.index,
+                        TransportKind::Udp,
+                    ));
                 return Ok(ActiveUdpTransport {
                     index: candidate.index,
                     uplink_name: Arc::from(candidate.uplink.name.as_str()),

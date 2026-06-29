@@ -103,6 +103,11 @@ struct WsVlessUdpDialer {
     /// survive — the override is captured here and re-applied per dial.
     /// `None` inherits the global `[padding]` default.
     padding_override: Option<bool>,
+    /// Carrier control-signal handler installed on every per-target VLESS-UDP
+    /// transport this mux dials, so a server downstream-throttle notice on any
+    /// target's carrier penalises the uplink. `None` keeps the transports
+    /// inert. Set via [`VlessUdpSessionMux::with_throttle_handle`].
+    throttle: Option<crate::ThrottleSignalHandle>,
 }
 
 impl VlessUdpMuxDial for WsVlessUdpDialer {
@@ -172,6 +177,12 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
                 self.downgrade_reported.store(false, Ordering::Release);
             },
         }
+        // Install the carrier control-signal handler before sharing the
+        // transport (no-op unless padding is on and a handle was set).
+        let raw_transport = match &self.throttle {
+            Some(handle) => raw_transport.with_throttle_handle(handle.clone()),
+            None => raw_transport,
+        };
         Ok(Arc::new(raw_transport))
     }
 }
@@ -226,6 +237,7 @@ impl VlessUdpSessionMux {
             on_downgrade: None,
             downgrade_reported: AtomicBool::new(false),
             padding_override: None,
+            throttle: None,
         };
         Self {
             core: VlessUdpMuxCore::new(dialer, limits, "vless udp", source),
@@ -253,6 +265,14 @@ impl VlessUdpSessionMux {
     /// outside the dial-scoped override — still pads correctly.
     pub fn with_padding_override(mut self, padding: Option<bool>) -> Self {
         self.core.dial.padding_override = padding;
+        self
+    }
+
+    /// Install a carrier control-signal handler on every per-target VLESS-UDP
+    /// transport this mux dials, so a server downstream-throttle notice nudges
+    /// the uplink switch. No-op at runtime unless padding is on.
+    pub fn with_throttle_handle(mut self, handle: Option<crate::ThrottleSignalHandle>) -> Self {
+        self.core.dial.throttle = handle;
         self
     }
 

@@ -48,6 +48,14 @@ pub struct VlessUdpTransport {
     /// must pad here because VLESS multiplexes tcp/udp on one path and the
     /// server cannot tell the legs apart before reading data (see PADDING.md).
     padding: CarrierPadding,
+    /// Reaction for a recognised carrier control signal (server-initiated
+    /// downstream throttle), set by the dispatch layer before the transport is
+    /// shared. `None` keeps the transport inert. Only meaningful when padding is
+    /// on (the signal rides a cover datagram).
+    throttle: Option<crate::ThrottleSignalHandle>,
+    /// Fires the throttle handler at most once per carrier. `read_packet` is
+    /// `&self`, so this is interior-mutable.
+    throttle_fired: std::sync::atomic::AtomicBool,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
@@ -102,7 +110,26 @@ impl VlessUdpTransport {
                 padding_decoder: padding.scheme.is_enabled().then(PaddingDecoder::new),
             }),
             padding,
+            throttle: None,
+            throttle_fired: std::sync::atomic::AtomicBool::new(false),
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
+        }
+    }
+
+    /// Installs a carrier control-signal handler (server-initiated downstream
+    /// throttle). Builder form, called before the transport is shared. No-op at
+    /// runtime unless padding is on (the signal rides a cover datagram).
+    pub fn with_throttle_handle(mut self, handle: crate::ThrottleSignalHandle) -> Self {
+        self.throttle = Some(handle);
+        self
+    }
+
+    /// Invokes the throttle handler for `signal`, once per carrier.
+    fn fire_throttle(&self, signal: outline_wire::padding::ControlSignal) {
+        if let Some(handle) = &self.throttle
+            && !self.throttle_fired.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            handle(signal);
         }
     }
 
@@ -253,13 +280,20 @@ impl VlessUdpTransport {
                 // surrounding loop reads the next datagram. Reborrow to split
                 // the `padding_decoder` / `buf` field borrows under the guard.
                 let st = &mut *state;
-                match st.padding_decoder.as_mut() {
+                let signal = match st.padding_decoder.as_mut() {
                     Some(decoder) => {
                         let mut decoded = Vec::with_capacity(next.len());
                         decoder.push(&next, &mut decoded);
                         st.buf.extend_from_slice(&decoded);
+                        decoder.take_control()
                     },
-                    None => st.buf.extend_from_slice(&next),
+                    None => {
+                        st.buf.extend_from_slice(&next);
+                        None
+                    },
+                };
+                if let Some(sig) = signal {
+                    self.fire_throttle(sig);
                 }
             }
             if state.pending_header {
