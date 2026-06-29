@@ -827,6 +827,36 @@ async fn rto_retransmit_bumps_the_rto_counter() {
 }
 
 #[tokio::test]
+async fn advertised_window_collapses_when_uplink_buffer_fills_and_reopens_on_drain() {
+    // Uplink back-pressure runs through the advertised receive window: as the
+    // pump-fed buffer fills, the window shrinks to 0 and the client stalls.
+    // The proactive window-update in the pump keys off exactly this transition
+    // (was 0, drain reopened it) to wake the client without waiting for its
+    // back-off-delayed zero-window probe — which had throttled uplink badly.
+    let mut state = tcp_flow_state_for_tests().await;
+    state.receive_window_capacity = 4096;
+    state.pending_client_data.clear();
+    state.pending_client_segments.clear();
+    assert!(
+        super::advertised_receive_window(&state) > 0,
+        "empty buffer advertises an open window"
+    );
+
+    state.pending_client_data.push_back(vec![0u8; 4096].into());
+    assert_eq!(
+        super::advertised_receive_window(&state),
+        0,
+        "a full uplink buffer must collapse the advertised window to 0",
+    );
+
+    state.pending_client_data.clear();
+    assert!(
+        super::advertised_receive_window(&state) > 0,
+        "draining the buffer must reopen the window (the proactive-update trigger)",
+    );
+}
+
+#[tokio::test]
 async fn update_client_send_window_uses_rfc_precedence_rules() {
     let mut state = tcp_flow_state_for_tests().await;
     state.client_window = 4096;
