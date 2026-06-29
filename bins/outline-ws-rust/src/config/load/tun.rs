@@ -114,6 +114,9 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
                 .unwrap_or(300),
         ),
         sniff_override_exclude: sniff_override_exclude.clone(),
+        sniff_direct_reresolve: tcp_section
+            .and_then(|section| section.sniff_direct_reresolve)
+            .unwrap_or(false),
     };
     if tcp.connect_timeout < Duration::from_secs(1) {
         bail!("tun.tcp.connect_timeout_secs must be at least 1");
