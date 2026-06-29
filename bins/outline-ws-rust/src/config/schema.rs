@@ -347,6 +347,11 @@ pub(super) struct TunTcpSection {
     /// Max wait, in milliseconds, for the first sniffable client chunk before
     /// dialling by IP. Default 300.
     pub(super) sniff_timeout_ms: Option<u64>,
+    /// SNI bypass for direct flows: re-resolve a sniffed domain through this
+    /// node's local resolver and dial that IP instead of the client's literal
+    /// IP. Fixes bypassed domains the client resolved (via a tunnelled / foreign
+    /// resolver) to a dead/unreachable IP. Requires `sniffing`. Default false.
+    pub(super) sniff_direct_reresolve: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

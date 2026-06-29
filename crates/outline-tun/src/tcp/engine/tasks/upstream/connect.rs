@@ -54,19 +54,62 @@ impl TunTcpEngine {
                     crate::TunRoute::Direct { fwmark } => fwmark,
                     _ => None,
                 };
-                // The TUN ingress always carries a literal IP target, so map it
-                // straight to a SocketAddr. Re-resolving it through the system
-                // resolver (the previous behaviour) stringified the IP back into
-                // "<ip>:<port>", which is not a valid host literal and forced a
-                // bogus getaddrinfo lookup that blocked on the resolver's
-                // multi-second timeout before falling back to this very address.
-                let addr = match target_socket_addr(&target) {
-                    Some(addr) => addr,
-                    None => {
-                        metrics::record_tun_tcp_async_connect("failed");
-                        warn!(flow_id, remote = %target, "direct TUN TCP: domain targets not supported");
-                        engine.abort_flow_with_rst(&key, "connect_failed").await;
-                        return;
+                // SNI bypass: when enabled, peek the first client bytes and, if
+                // they carry a TLS SNI / HTTP Host, re-resolve that domain
+                // through this node's own resolver and dial the IP *it* returns
+                // — not the (possibly dead / foreign-resolved) literal IP the
+                // client dialled. `sniff_and_override_target` reuses the peek +
+                // exclude-list logic and hands back a `Domain` target for a
+                // sniffed, non-excluded host; everything else stays the literal
+                // IP. Off by default, so direct keeps the zero-latency IP dial.
+                let target = if engine.inner.tcp.sniffing && engine.inner.tcp.sniff_direct_reresolve
+                {
+                    match engine.sniff_and_override_target(&flow, target, &mut close_rx).await {
+                        Some(target) => target,
+                        None => {
+                            metrics::record_tun_tcp_async_connect("cancelled");
+                            debug!(flow_id, "direct TUN TCP flow closed during sniffing");
+                            return;
+                        },
+                    }
+                } else {
+                    target
+                };
+
+                // The TUN ingress carries a literal IP target; map it straight
+                // to a SocketAddr. A `Domain` only appears via SNI bypass above —
+                // re-resolve it locally to an address this node can reach.
+                let addr = match &target {
+                    TargetAddr::Domain(host, port) => {
+                        match outline_transport::resolve_host_with_preference(
+                            engine.dns_cache(),
+                            host,
+                            *port,
+                            "tun_direct_sni",
+                            false,
+                        )
+                        .await
+                        {
+                            Ok(addrs) if !addrs.is_empty() => {
+                                debug!(flow_id, host, resolved = %addrs[0], "direct TUN TCP: SNI re-resolved via local resolver");
+                                addrs[0]
+                            },
+                            other => {
+                                metrics::record_tun_tcp_async_connect("failed");
+                                warn!(flow_id, host, error = ?other.err(), "direct TUN TCP: local SNI re-resolve failed");
+                                engine.abort_flow_with_rst(&key, "connect_failed").await;
+                                return;
+                            },
+                        }
+                    },
+                    _ => match target_socket_addr(&target) {
+                        Some(addr) => addr,
+                        None => {
+                            metrics::record_tun_tcp_async_connect("failed");
+                            warn!(flow_id, remote = %target, "direct TUN TCP: domain targets not supported");
+                            engine.abort_flow_with_rst(&key, "connect_failed").await;
+                            return;
+                        },
                     },
                 };
                 let stream = match timeout(
