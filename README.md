@@ -101,7 +101,8 @@ Per-binary documentation lives next to each binary —
 Cross-cutting topics under [`docs/`](docs/):
 [carrier padding](docs/PADDING.md) ·
 [reverse tunnel](docs/REVERSE-TUNNEL.md) ·
-[outbound IPv6 source selection](docs/OUTBOUND-IPV6.md).
+[outbound IPv6 source selection](docs/OUTBOUND-IPV6.md) ·
+[server mesh cluster](docs/CLUSTER.md).
 
 ## Build
 
