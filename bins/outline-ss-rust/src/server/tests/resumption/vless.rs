@@ -104,20 +104,16 @@ fn vless_udp_datagram(payload: &[u8]) -> Bytes {
     frame.freeze()
 }
 
-/// Builds the VLESS handshake bytes for the MUX command. Per mux.cool
-/// the request target is the literal `v1.mux.cool` with port 0 — real
-/// sub-connection targets ride inside the mux frames that follow.
+/// Builds the VLESS handshake bytes for the MUX command. Both Xray-core
+/// and sing-box omit the port/atyp/address for Mux and start the mux frame
+/// stream right after the command byte — real sub-connection targets ride
+/// inside the mux frames that follow.
 fn vless_mux_request(uuid: &str) -> Result<Bytes> {
-    let mut request = Vec::with_capacity(48);
+    let mut request = Vec::with_capacity(19);
     request.push(VLESS_VERSION);
     request.extend_from_slice(&parse_uuid(uuid)?);
     request.push(0);
     request.push(COMMAND_MUX);
-    request.extend_from_slice(&0_u16.to_be_bytes()); // port = 0
-    request.push(0x02); // atype: domain
-    let domain = b"v1.mux.cool";
-    request.push(domain.len() as u8);
-    request.extend_from_slice(domain);
     Ok(Bytes::from(request))
 }
 

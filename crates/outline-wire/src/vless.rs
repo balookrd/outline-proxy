@@ -119,7 +119,9 @@ pub fn parse_request(input: &[u8]) -> Result<Option<VlessRequest>, VlessError> {
 
     let opt_len = input[17] as usize;
     let command_offset = 18 + opt_len;
-    if input.len() < command_offset + 1 + 2 + 1 {
+    // Need the Addons block plus the command byte before we can decide
+    // how the rest of the header is shaped (Mux carries no address).
+    if input.len() < command_offset + 1 {
         return Ok(None);
     }
 
@@ -136,7 +138,27 @@ pub fn parse_request(input: &[u8]) -> Result<Option<VlessRequest>, VlessError> {
         other => return Err(VlessError::UnsupportedCommand(other)),
     };
 
+    // The Mux carrier (mux.cool / XUDP) has no per-carrier destination:
+    // both Xray-core and sing-box write `version | uuid | addons |
+    // command` and then start the mux frame stream immediately, skipping
+    // the port+atyp+address that TCP/UDP requests carry. The sub-stream
+    // targets travel inside each mux frame, so there is nothing to parse
+    // here — emit a placeholder target the Mux handler ignores and hand
+    // the remaining bytes (the first mux frame) back via `consumed`.
+    if command == VlessCommand::Mux {
+        return Ok(Some(VlessRequest {
+            user_id,
+            command,
+            target: TargetAddr::IpV4(std::net::Ipv4Addr::UNSPECIFIED, 0),
+            consumed: command_offset + 1,
+            addons,
+        }));
+    }
+
     let port_offset = command_offset + 1;
+    if input.len() < port_offset + 2 + 1 {
+        return Ok(None);
+    }
     let port = u16::from_be_bytes([input[port_offset], input[port_offset + 1]]);
     let atyp_offset = port_offset + 2;
     let atyp = input[atyp_offset];
@@ -290,7 +312,9 @@ pub fn parse_response_addons_session_id(block: &[u8]) -> Option<[u8; 16]> {
 }
 
 /// Client half: builds a request header (`version | uuid | addons | command
-/// | port | atyp | address`) in the VLESS ATYP numbering.
+/// | port | atyp | address`) in the VLESS ATYP numbering. The `port | atyp |
+/// address` tail is omitted for the Mux command, which carries no per-carrier
+/// destination (matching Xray-core and sing-box, and the parser above).
 pub fn build_request_header(
     uuid: &[u8; 16],
     command: u8,
@@ -303,6 +327,9 @@ pub fn build_request_header(
     out.push(addons.len() as u8); // addons_len
     out.extend_from_slice(addons);
     out.push(command);
+    if command == COMMAND_MUX {
+        return out;
+    }
     match target {
         TargetAddr::IpV4(addr, port) => {
             out.extend_from_slice(&port.to_be_bytes());
