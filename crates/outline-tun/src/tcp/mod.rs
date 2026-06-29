@@ -36,6 +36,8 @@ use self::state_machine::{
 };
 
 #[cfg(test)]
+use self::state_machine::{retransmit_budget_exhausted, retransmit_due_segment};
+#[cfg(test)]
 use outline_transport::UpstreamTransportGuard;
 
 pub(crate) const TCP_FLAG_FIN: u8 = 0x01;

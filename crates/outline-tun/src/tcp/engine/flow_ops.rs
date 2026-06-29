@@ -110,6 +110,7 @@ impl TunTcpEngine {
             last_client_ack: packet.sequence_number.wrapping_add(1),
             duplicate_ack_count: 0,
             fast_recovery_end: None,
+            recovery_epoch: 0,
             receive_window_capacity: self.inner.tcp.max_buffered_client_bytes,
             smoothed_rtt: None,
             rttvar: TCP_INITIAL_RTO / 2,
