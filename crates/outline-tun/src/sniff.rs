@@ -285,6 +285,29 @@ fn strip_host_port(value: &str) -> &str {
 /// A sniffed host is usable only if it is a real domain name: non-empty,
 /// length-bounded, made of host-legal characters, and not an IP literal
 /// (overriding an IP target with the same IP buys nothing).
+/// Whether `host` falls under any excluded domain suffix (case-insensitive).
+/// A suffix `s` matches when `host == s` or `host` ends with `.s`, so
+/// `strava.com` excludes `graphql.strava.com` / `cdn-1.strava.com` but not
+/// `notstrava.com`. Excluded hosts keep their literal IP (no override). Entries
+/// are pre-normalized (lowercased, leading dots stripped) at config load.
+pub(crate) fn host_is_excluded(host: &str, exclude: &[Box<str>]) -> bool {
+    if exclude.is_empty() {
+        return false;
+    }
+    let host = host.trim_end_matches('.');
+    exclude.iter().any(|suffix| {
+        let s: &str = suffix;
+        if host.len() == s.len() {
+            host.eq_ignore_ascii_case(s)
+        } else if host.len() > s.len() {
+            let at = host.len() - s.len();
+            host.as_bytes()[at - 1] == b'.' && host[at..].eq_ignore_ascii_case(s)
+        } else {
+            false
+        }
+    })
+}
+
 pub(crate) fn is_valid_sniffed_host(host: &str) -> bool {
     if host.is_empty() || host.len() > 253 {
         return false;

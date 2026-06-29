@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -55,6 +56,15 @@ pub struct TunConfig {
     /// node resolves it. Direct flows are never affected. Mirrors the TCP-path
     /// `[tun.tcp] sniffing` for QUIC.
     pub sniff_quic: bool,
+    /// Domain suffixes excluded from sniff destination-override (Xray
+    /// `domainsExcluded`). A sniffed host matching any suffix keeps the literal
+    /// IP the client dialled instead of being rewritten to a domain — for sites
+    /// where the client's own resolution is better than the exit's (the exit
+    /// re-resolving lands on a geo-wrong / broken CDN edge). Suffix match:
+    /// `strava.com` excludes `graphql.strava.com` and `cdn-1.strava.com`.
+    /// Applies to both the TCP and QUIC sniff paths. Entries are pre-normalized
+    /// (lowercased, leading dots stripped) at config load.
+    pub sniff_override_exclude: Arc<[Box<str>]>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,4 +102,7 @@ pub struct TunTcpConfig {
     /// timeout only bounds the wait for server-speaks-first protocols that
     /// never send a sniffable preface.
     pub sniff_timeout: Duration,
+    /// Domain suffixes excluded from sniff destination-override. Shared with the
+    /// QUIC path; see [`TunConfig::sniff_override_exclude`].
+    pub sniff_override_exclude: Arc<[Box<str>]>,
 }

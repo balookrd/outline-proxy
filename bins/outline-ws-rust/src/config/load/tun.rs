@@ -41,6 +41,21 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         bail!("tun idle_timeout_secs must be at least 5");
     }
 
+    // Normalize the override-exclude suffixes once: lowercase + strip leading
+    // dots / surrounding whitespace, drop empties. Shared by the TCP and QUIC
+    // sniff paths (cheap Arc clone into both configs).
+    let sniff_override_exclude: std::sync::Arc<[Box<str>]> = tun
+        .and_then(|section| section.sniff_override_exclude.as_ref())
+        .map(|list| {
+            list.iter()
+                .map(|s| s.trim().trim_start_matches('.').to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .map(String::into_boxed_str)
+                .collect::<Vec<_>>()
+                .into()
+        })
+        .unwrap_or_else(|| Vec::new().into());
+
     let tcp_section = tun.and_then(|section| section.tcp.as_ref());
     let tcp = TunTcpConfig {
         connect_timeout: Duration::from_secs(
@@ -98,6 +113,7 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
                 .and_then(|section| section.sniff_timeout_ms)
                 .unwrap_or(300),
         ),
+        sniff_override_exclude: sniff_override_exclude.clone(),
     };
     if tcp.connect_timeout < Duration::from_secs(1) {
         bail!("tun.tcp.connect_timeout_secs must be at least 1");
@@ -199,5 +215,6 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         ipsec_bypass,
         pmtud_emit_below_quic_initial,
         sniff_quic,
+        sniff_override_exclude,
     }))
 }

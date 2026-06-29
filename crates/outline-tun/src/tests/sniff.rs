@@ -1,4 +1,20 @@
-use super::{SniffOutcome, sniff_host};
+use super::{SniffOutcome, host_is_excluded, sniff_host};
+
+#[test]
+fn host_exclusion_matches_suffixes_case_insensitively() {
+    let ex: Vec<Box<str>> = vec!["strava.com".into(), "example.org".into()];
+    // Exact and subdomain matches.
+    assert!(host_is_excluded("strava.com", &ex));
+    assert!(host_is_excluded("graphql.strava.com", &ex));
+    assert!(host_is_excluded("cdn-1.strava.com", &ex));
+    assert!(host_is_excluded("GRAPHQL.STRAVA.COM", &ex));
+    assert!(host_is_excluded("a.b.example.org.", &ex)); // trailing dot tolerated
+    // Non-matches: not a dot-boundary, unrelated, empty list.
+    assert!(!host_is_excluded("notstrava.com", &ex));
+    assert!(!host_is_excluded("strava.com.evil.net", &ex));
+    assert!(!host_is_excluded("youtube.com", &ex));
+    assert!(!host_is_excluded("graphql.strava.com", &[]));
+}
 
 /// Build a minimal but well-formed TLS 1.2/1.3 ClientHello record carrying a
 /// single `server_name` (host_name) extension for `sni`.

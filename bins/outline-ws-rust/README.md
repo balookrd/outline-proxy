@@ -425,6 +425,10 @@ listen = "[::1]:9090"
 # SNI from the first datagram's QUIC Initial ClientHello and sends the domain
 # (not the IP) upstream so the exit node resolves it. Mirrors [tun.tcp] sniffing.
 # sniff_quic = true
+# Domains excluded from sniff override (TCP + QUIC): a sniffed host matching any
+# suffix keeps the literal IP instead of a domain. For sites where the client's
+# own DNS beats the exit re-resolving (geo-wrong CDN edge). Default empty.
+# sniff_override_exclude = ["strava.com"]
 
 # [tun.tcp]
 # connect_timeout_secs = 10
