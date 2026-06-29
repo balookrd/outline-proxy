@@ -1526,6 +1526,7 @@ pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
         keepalive_max_probes: 6,
         sniffing: true,
         sniff_timeout: Duration::from_millis(300),
+        sniff_override_exclude: Vec::new().into(),
     }
 }
 #[allow(clippy::too_many_arguments)]

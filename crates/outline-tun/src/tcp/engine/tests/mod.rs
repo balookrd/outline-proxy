@@ -350,6 +350,54 @@ async fn tun_tcp_non_sniffable_first_chunk_dials_by_ip() {
 }
 
 #[tokio::test]
+async fn tun_tcp_sniffed_excluded_host_dials_by_ip() {
+    // Sniffing is on and the ClientHello carries an SNI, but the host is in the
+    // override-exclude list → the flow keeps the literal IP (the client's own
+    // resolution), not the domain.
+    let upstream = TestTcpUpstream::start().await;
+    let manager = build_test_manager(upstream.url()).await;
+    let (writer, mut capture) = TunCapture::new().await;
+    let config = crate::config::TunTcpConfig {
+        sniff_override_exclude: vec!["example.com".into()].into(),
+        ..test_tun_tcp_config()
+    };
+    let engine = super::TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager),
+        128,
+        Duration::from_secs(60),
+        config,
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+    let (client_port, remote_port) = (40052, 443);
+    let server_next_seq =
+        open_flow(&engine, &mut capture, client_ip, remote_ip, client_port, remote_port, 700).await;
+
+    let hello = tls_client_hello_with_sni("example.com");
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            701,
+            server_next_seq,
+            4096,
+            TCP_FLAG_ACK,
+            &hello,
+        ))
+        .await
+        .unwrap();
+
+    let target = upstream.expect_target().await;
+    let (target, _) = TargetAddr::from_wire_bytes(&target).unwrap();
+    assert_eq!(target, TargetAddr::IpV4(remote_ip, remote_port));
+}
+
+#[tokio::test]
 async fn tun_tcp_sniffing_disabled_dials_by_ip() {
     // With sniffing off the connect happens on SYN (no wait for client data),
     // so even a TLS ClientHello leaves over the tunnel addressed to the IP.

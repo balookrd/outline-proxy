@@ -135,6 +135,16 @@ listen = "[::1]:9090"
 # exit node (ss-rust) resolves it. Mirrors `[tun.tcp] sniffing` for QUIC.
 # Direct flows are never affected. Set to false to always frame UDP by IP.
 # sniff_quic = true
+#
+# Domains excluded from sniff destination-override (TCP + QUIC), Xray-style
+# `domainsExcluded`. A sniffed host matching any suffix keeps the literal IP the
+# client dialled instead of being rewritten to a domain. Suffix match:
+# "strava.com" covers "graphql.strava.com" / "cdn-1.strava.com". Use this for
+# sites where the client's OWN DNS beats the exit re-resolving the domain (the
+# exit lands on a geo-wrong / broken CDN edge → the site works partially). Most
+# sites benefit from override (the exit's resolution reaches IPs the client's
+# can't); list only the few that regress. Default empty.
+# sniff_override_exclude = ["strava.com"]
 
 # [tun.tcp]
 # connect_timeout_secs = 10

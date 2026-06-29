@@ -296,6 +296,12 @@ pub(super) struct TunSection {
     /// Initial's ClientHello and send the domain (not the IP) upstream so the
     /// exit node resolves it. Default `true`. Mirrors `[tun.tcp] sniffing`.
     pub(super) sniff_quic: Option<bool>,
+    /// Domain suffixes excluded from sniff destination-override (TCP + QUIC):
+    /// a sniffed host matching any suffix keeps the literal IP instead of being
+    /// rewritten to a domain. Suffix match (`strava.com` covers
+    /// `graphql.strava.com`). Use for sites where the client's own DNS beats
+    /// the exit re-resolving (geo-wrong CDN edge). Default empty.
+    pub(super) sniff_override_exclude: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
