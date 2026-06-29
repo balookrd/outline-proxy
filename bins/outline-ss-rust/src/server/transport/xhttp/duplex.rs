@@ -179,11 +179,13 @@ impl WsSocket for XhttpDuplex {
         _protocol: Protocol,
         app_protocol: AppProtocol,
         scheme: PaddingScheme,
+        monitor: Option<Arc<crate::server::transport::throughput_monitor::ThroughputMonitor>>,
     ) -> UdpResponseSender {
         UdpResponseSender::new(Arc::new(XhttpUdpResponseSender {
             tx,
             app_protocol,
             padding: scheme,
+            monitor,
         }))
     }
 }
@@ -200,10 +202,17 @@ struct XhttpUdpResponseSender {
     /// Carrier-padding scheme for this path; when enabled each downlink
     /// datagram is framed before it goes on the wire (plain otherwise).
     padding: PaddingScheme,
+    /// Per-carrier downstream-throttle monitor; `Some` only on a padded path
+    /// with detection on. Fed inbound bytes + send backlog.
+    monitor: Option<Arc<crate::server::transport::throughput_monitor::ThroughputMonitor>>,
 }
 
 impl ResponseSender for XhttpUdpResponseSender {
     fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
+        if let Some(m) = &self.monitor {
+            let used = self.tx.max_capacity().saturating_sub(self.tx.capacity());
+            m.note_datagram(data.len(), used, self.tx.max_capacity());
+        }
         let framed = carrier_padding::frame_downlink_message(self.padding, data);
         Box::pin(async move { self.tx.send(XhttpMsg::Binary(framed)).await.is_ok() })
     }

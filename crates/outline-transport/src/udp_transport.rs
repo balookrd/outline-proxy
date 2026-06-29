@@ -68,6 +68,14 @@ pub struct UdpWsTransport {
     /// a frame boundary — a `real_len = 0` cover frame decodes to nothing and
     /// is skipped.
     recv_decoder: Option<SyncMutex<PaddingDecoder>>,
+    /// Reaction for a recognised carrier control signal (server-initiated
+    /// downstream throttle), set by the dispatch layer. `None` keeps the
+    /// transport inert. Only meaningful when `recv_decoder` is `Some`, since
+    /// the signal rides a padding cover datagram.
+    throttle: Option<crate::ThrottleSignalHandle>,
+    /// Fires the throttle handler at most once per carrier. `read_packet` is
+    /// `&self`, so this is interior-mutable.
+    throttle_fired: std::sync::atomic::AtomicBool,
     close_signal: watch::Sender<bool>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
@@ -146,10 +154,29 @@ impl UdpWsTransport {
                 .scheme
                 .is_enabled()
                 .then(|| SyncMutex::new(PaddingDecoder::new())),
+            throttle: None,
+            throttle_fired: std::sync::atomic::AtomicBool::new(false),
             padding,
             close_signal,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         })
+    }
+
+    /// Installs a carrier control-signal handler (server-initiated downstream
+    /// throttle). Builder form, called before the transport is shared. No-op at
+    /// runtime unless padding is on (the signal rides a cover datagram).
+    pub fn with_throttle_handle(mut self, handle: crate::ThrottleSignalHandle) -> Self {
+        self.throttle = Some(handle);
+        self
+    }
+
+    /// Invokes the throttle handler for `signal`, once per carrier.
+    fn fire_throttle(&self, signal: outline_wire::padding::ControlSignal) {
+        if let Some(handle) = &self.throttle
+            && !self.throttle_fired.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            handle(signal);
+        }
     }
 
     pub fn from_socket(
@@ -175,6 +202,8 @@ impl UdpWsTransport {
             // Raw socket is not a WS carrier — never framed.
             padding: CarrierPadding::disabled(),
             recv_decoder: None,
+            throttle: None,
+            throttle_fired: std::sync::atomic::AtomicBool::new(false),
             close_signal,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         })
@@ -386,7 +415,14 @@ impl UdpWsTransport {
                         // the decrypt await.
                         Some(decoder) => {
                             let mut decoded = Vec::with_capacity(bytes.len());
-                            decoder.lock().push(&bytes, &mut decoded);
+                            let signal = {
+                                let mut guard = decoder.lock();
+                                guard.push(&bytes, &mut decoded);
+                                guard.take_control()
+                            };
+                            if let Some(sig) = signal {
+                                self.fire_throttle(sig);
+                            }
                             if decoded.is_empty() {
                                 continue;
                             }
@@ -454,6 +490,24 @@ pub enum UdpSessionTransport {
 }
 
 impl UdpSessionTransport {
+    /// Installs a carrier control-signal handler (server-initiated downstream
+    /// throttle) on the underlying datagram transport. `None` leaves it inert.
+    /// Acts on the padded WS/XHTTP carriers — SS-UDP and VLESS-UDP — whose
+    /// decoders surface the control cover datagram; the raw-QUIC primary
+    /// (`VlessQuic`) is not a padded carrier and ignores it (its WS pivot leg
+    /// stays unmonitored — a follow-up).
+    pub fn with_throttle_handle(self, handle: Option<crate::ThrottleSignalHandle>) -> Self {
+        match self {
+            Self::Ss(t) => match handle {
+                Some(h) => Self::Ss(t.with_throttle_handle(h)),
+                None => Self::Ss(t),
+            },
+            Self::Vless(t) => Self::Vless(t.with_throttle_handle(handle)),
+            #[cfg(feature = "quic")]
+            Self::VlessQuic(t) => Self::VlessQuic(t),
+        }
+    }
+
     pub async fn send_packet(&self, socks5_payload: &[u8]) -> Result<()> {
         match self {
             Self::Ss(t) => t.send_packet(socks5_payload).await,
