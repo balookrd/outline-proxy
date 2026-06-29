@@ -161,6 +161,17 @@ impl UplinkManager {
             .await
     }
 
+    /// Records a server-initiated downstream-throttle signal on `index`: the
+    /// server observed sustained throttling on the carrier toward this client
+    /// and asked it to move uplinks. Routed through the ordinary runtime-
+    /// failure machine so the uplink takes a penalty + cooldown (unlike a 1013
+    /// try-again, which is suppressed) and health-weighted selection migrates
+    /// traffic to another uplink; recovery is automatic via the probe loop.
+    pub async fn report_downstream_throttle(&self, index: usize, transport: TransportKind) {
+        let error = anyhow::Error::new(outline_transport::DownstreamThrottle);
+        self.report_runtime_failure(index, transport, &error).await;
+    }
+
     async fn report_runtime_failure_inner(
         &self,
         index: usize,

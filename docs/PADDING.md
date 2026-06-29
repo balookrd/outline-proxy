@@ -132,6 +132,36 @@ channel are *not* WS carriers and stay plain (see *Out of scope*).
   The raw-QUIC datagram channel reaches the same `UdpWsTransport` as the WS
   carrier, but it is built with padding disabled, so it stays plain.
 
+## Downstream-throttle detection (server → client uplink switch)
+
+A padded carrier can optionally watch its own throughput and, when a provider
+starts shaping the path toward the client (e.g. a VPS throttling traffic toward
+Russia), nudge the client to move to another uplink — before the user notices
+the slowdown. It covers the TCP carriers on both transports: VLESS-over-WS /
+-XHTTP and SS-over-WS / -XHTTP (their relays share one monitor).
+
+The server measures, per carrier, the rate it pulls from the internet (inbound,
+destined for the client) versus the rate it hands to the carrier (outbound),
+plus whether a send backlog is present. When inbound keeps outrunning outbound
+by the configured ratio (default 2×) *with* a backlog, sustained over several
+windows, it emits one **control cover frame** — a `real_len = 0` frame whose pad
+begins with a magic `OCTL` prefix. A padding-unaware peer drops it like any
+cover frame; a client that opted in (`react_to_throttle = true`) decodes the
+signal, applies a temporary penalty + cooldown to the current uplink, and
+health-weighted selection migrates its traffic to another uplink. The cooldown
+is temporary — the uplink recovers automatically once its probe goes green.
+
+Because the signal rides a cover frame, the feature only works on a **padded
+carrier** — only your own clients on a path you listed in `[padding] paths` can
+receive it; third-party (unpadded) SS clients and the datagram / raw-QUIC paths
+are never monitored. Both detection (server) and reaction (client) are **off by
+default**. "Switch
+uplink" only helps when the other uplink takes a different network path (a
+different server / VPS) — that is the operator's uplink layout, not something
+the code can ensure. The server cannot perfectly tell provider throttling from a
+genuinely slow client last-mile; the ratio + backlog + sustain + minimum-rate
+gates keep false positives down, but tune them to your traffic.
+
 ## Configuration
 
 ### Server (`outline-ss-rust`)
@@ -148,6 +178,14 @@ max_bytes = 256                          # max pad per frame (0 = no framing)
 cover = false                            # idle pad-only cover frames (downlink)
 cover_jitter_min_ms = 250                # idle-gap floor before a cover frame
 cover_jitter_max_ms = 1500               # idle-gap ceiling
+
+# Downstream-throttle detection (padded VLESS-over-WS only). Off by default.
+throttle_detect_enabled = false          # watch throughput, nudge client to switch uplink
+throttle_ratio_percent = 200             # signal when inbound >= 2x outbound (200 = 2x)
+throttle_window_secs = 1                 # sampling window
+throttle_sustain_windows = 5             # consecutive over-threshold windows before signalling
+throttle_min_bytes_per_sec = 1000000     # inbound floor (~8 Mbit/s); below this not actionable
+throttle_signal_cooldown_secs = 30       # min gap between signals on one carrier
 ```
 
 Validation rejects `enabled = true` with an empty `paths`.
@@ -162,6 +200,7 @@ max_bytes = 256              # max pad per frame (0 = no framing)
 cover = false                # idle pad-only cover frames (uplink)
 cover_jitter_min_ms = 250
 cover_jitter_max_ms = 1500
+react_to_throttle = false    # act on a server throttle signal (penalise + switch uplink)
 
 # Pad only your own server, even with the global default off:
 [[outline.uplinks]]

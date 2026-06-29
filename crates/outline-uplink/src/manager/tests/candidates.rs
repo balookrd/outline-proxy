@@ -431,3 +431,23 @@ async fn try_again_1013_skips_cooldown_but_still_counts() {
         "a real transport error must still set the runtime cooldown",
     );
 }
+
+/// A server-initiated downstream-throttle signal is the OPPOSITE of a 1013: the
+/// tunnel itself is the problem (the carrier toward this client is throttled),
+/// so it MUST stamp an uplink cooldown and advance the streak — that is what
+/// drives health-weighted selection to migrate traffic to another uplink.
+#[tokio::test]
+async fn downstream_throttle_sets_cooldown_and_counts() {
+    let manager = manager();
+
+    manager.report_downstream_throttle(0, TransportKind::Tcp).await;
+    let st = manager.read_status_for_test(0);
+    assert!(
+        st.tcp.cooldown_until.is_some(),
+        "a downstream-throttle signal MUST set an uplink cooldown so selection migrates away",
+    );
+    assert_eq!(
+        st.tcp.consecutive_runtime_failures, 1,
+        "a downstream-throttle signal must advance the runtime-failure streak",
+    );
+}

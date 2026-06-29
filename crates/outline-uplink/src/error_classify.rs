@@ -3,8 +3,8 @@ use std::io::ErrorKind;
 
 use anyhow::Error;
 use outline_transport::{
-    OversizedUdpDatagram, TransportOperation, TryAgain, WsClosed, contains_any, find_io_error_kind,
-    find_typed, is_transport_level_disconnect, lower_error,
+    DownstreamThrottle, OversizedUdpDatagram, TransportOperation, TryAgain, WsClosed, contains_any,
+    find_io_error_kind, find_typed, is_transport_level_disconnect, lower_error,
 };
 use outline_wire::ss2022::Ss2022Error;
 use shadowsocks_crypto::CryptoError;
@@ -70,6 +70,10 @@ pub(crate) fn is_try_again_close(error: &Error) -> bool {
 /// Uses typed chain walking first; falls back to string matching for errors
 /// that originate from external libraries.
 pub(crate) fn classify_runtime_failure_cause(error: &Error) -> &'static str {
+    // Typed: server-initiated downstream-throttle signal.
+    if find_typed::<DownstreamThrottle>(error).is_some() {
+        return "throttle";
+    }
     // Typed: WebSocket close frame.
     if find_typed::<WsClosed>(error).is_some() {
         return "closed";
@@ -143,6 +147,10 @@ pub(crate) fn classify_runtime_failure_cause(error: &Error) -> &'static str {
 /// Uses typed chain walking first; falls back to string matching for errors
 /// that originate from external libraries.
 pub(crate) fn classify_runtime_failure_signature(error: &Error) -> &'static str {
+    // Typed: server-initiated downstream-throttle signal.
+    if find_typed::<DownstreamThrottle>(error).is_some() {
+        return "downstream_throttle";
+    }
     // Typed: WebSocket closed cleanly.
     if find_typed::<WsClosed>(error).is_some() {
         return "ws_closed";

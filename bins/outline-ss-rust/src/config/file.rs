@@ -408,6 +408,23 @@ pub(super) struct PaddingSection {
     /// other paths keep the plain SS-over-WS/XHTTP wire. Required (non-empty)
     /// when `enabled`.
     pub paths: Option<Vec<String>>,
+    /// Detect downstream throttling on a padded VLESS-over-WS carrier and nudge
+    /// the client (via a control cover frame) to switch uplinks. Default
+    /// `false`. Only padded paths can ever signal (the notice rides a cover
+    /// frame the unpadded wire never carries).
+    pub throttle_detect_enabled: Option<bool>,
+    /// Signal when inbound (from the internet) outruns delivery to the client
+    /// by this percentage, with a send backlog present. Default 200 (= 2×).
+    pub throttle_ratio_percent: Option<u32>,
+    /// Sampling window for the throughput rates, seconds. Default 1.
+    pub throttle_window_secs: Option<u64>,
+    /// Consecutive over-threshold windows required before signalling. Default 5.
+    pub throttle_sustain_windows: Option<u32>,
+    /// Inbound-rate floor (bytes/sec) below which the throttle verdict is not
+    /// actionable. Default 1_000_000 (~8 Mbit/s).
+    pub throttle_min_bytes_per_sec: Option<u64>,
+    /// Minimum gap between two signals on one carrier, seconds. Default 30.
+    pub throttle_signal_cooldown_secs: Option<u64>,
 }
 
 pub(super) fn load_file_config(path: &Path) -> Result<FileConfig> {

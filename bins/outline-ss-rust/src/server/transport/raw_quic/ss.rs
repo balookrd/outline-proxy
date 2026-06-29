@@ -209,6 +209,8 @@ async fn run_stream(
             relay_user_id,
             None,
             None,
+            // Raw-QUIC SS is not a padded WS carrier — no control channel.
+            None,
         )
         .await
         .map(|_| ())

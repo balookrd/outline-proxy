@@ -1,4 +1,7 @@
-use super::{MAX_PADDING_SEGMENT, PaddingDecoder, PaddingError, PaddingScheme, encode_frame_into};
+use super::{
+    ControlSignal, MAX_PADDING_SEGMENT, PaddingDecoder, PaddingError, PaddingScheme,
+    encode_control_frame_into, encode_frame_into,
+};
 
 /// Deterministic, position-dependent bytes so a misordered or truncated
 /// decode is caught, not just a length mismatch.
@@ -175,6 +178,81 @@ fn encode_rejects_oversized_segments() {
     );
     // A rejected encode must not have written a partial frame.
     assert!(wire.is_empty());
+}
+
+#[test]
+fn control_frame_round_trips_and_yields_no_payload() {
+    // A control frame is wire-identical to a cover frame: no payload surfaces,
+    // and the decoder hands back the signal out-of-band via take_control.
+    for &extra in &[0usize, 1, 64, 500] {
+        let mut wire = Vec::new();
+        encode_control_frame_into(
+            &mut wire,
+            ControlSignal::ThrottleSwitchUplink,
+            &ramp(extra, 0x42),
+        )
+        .unwrap();
+
+        let mut decoder = PaddingDecoder::new();
+        let mut out = Vec::new();
+        decoder.push(&wire, &mut out);
+        assert!(out.is_empty(), "control frame must yield no payload (extra={extra})");
+        assert_eq!(
+            decoder.take_control(),
+            Some(ControlSignal::ThrottleSwitchUplink),
+            "signal recognised (extra={extra})"
+        );
+        // Draining is one-shot.
+        assert_eq!(decoder.take_control(), None);
+        assert!(decoder.is_at_frame_boundary());
+    }
+}
+
+#[test]
+fn control_frame_is_recognised_when_split_across_pushes() {
+    let mut wire = Vec::new();
+    encode_control_frame_into(&mut wire, ControlSignal::ThrottleSwitchUplink, &ramp(20, 0x7))
+        .unwrap();
+
+    // Byte-by-byte feed: the magic straddles every possible push boundary.
+    let mut decoder = PaddingDecoder::new();
+    let mut out = Vec::new();
+    for byte in &wire {
+        decoder.push(std::slice::from_ref(byte), &mut out);
+    }
+    assert!(out.is_empty());
+    assert_eq!(decoder.take_control(), Some(ControlSignal::ThrottleSwitchUplink));
+}
+
+#[test]
+fn ordinary_cover_frame_is_not_mistaken_for_control() {
+    // Random pad that does not start with the magic must never be read as a
+    // signal — this is what an old (signal-unaware) sender's cover looks like.
+    let pad = ramp(64, 0x5C);
+    let mut wire = Vec::new();
+    encode_frame_into(&mut wire, &[], &pad).unwrap();
+
+    let mut decoder = PaddingDecoder::new();
+    let mut out = Vec::new();
+    decoder.push(&wire, &mut out);
+    assert!(out.is_empty());
+    assert_eq!(decoder.take_control(), None);
+}
+
+#[test]
+fn control_signal_does_not_leak_across_following_cover_frames() {
+    // A control frame followed by an ordinary cover frame: the probe buffer is
+    // re-armed per cover frame, so the stale signal is not re-reported.
+    let mut wire = Vec::new();
+    encode_control_frame_into(&mut wire, ControlSignal::ThrottleSwitchUplink, &[]).unwrap();
+    encode_frame_into(&mut wire, &[], &ramp(8, 0x99)).unwrap();
+
+    let mut decoder = PaddingDecoder::new();
+    let mut out = Vec::new();
+    decoder.push(&wire, &mut out);
+    assert!(out.is_empty());
+    assert_eq!(decoder.take_control(), Some(ControlSignal::ThrottleSwitchUplink));
+    assert_eq!(decoder.take_control(), None);
 }
 
 #[test]

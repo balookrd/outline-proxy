@@ -150,6 +150,14 @@ pub struct VlessTcpReader {
 }
 
 impl VlessTcpReader {
+    /// Installs a carrier control-signal handler on the underlying frame
+    /// source (no-op unless the source is a padding-aware WS source). Builder
+    /// form so it threads through `TcpReader`'s builder chain.
+    pub fn with_throttle_handle(mut self, handle: crate::ThrottleSignalHandle) -> Self {
+        self.source.set_throttle_handle(handle);
+        self
+    }
+
     pub fn with_source(
         source: Box<dyn crate::frame_io::FrameSource>,
         lifetime: Arc<UpstreamTransportGuard>,

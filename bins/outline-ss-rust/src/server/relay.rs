@@ -92,6 +92,10 @@ pub(in crate::server) async fn relay_upstream_to_client<S>(
     // negotiate v2 pass `None`. See `docs/SESSION-RESUMPTION.md`
     // § Symmetric Downlink Replay (v2).
     downlink_ring: Option<Arc<Mutex<DownlinkRing>>>,
+    // Per-carrier downstream-throttle monitor; `Some` only on a padded SS path
+    // with detection on. Fed inbound (from-internet) bytes here; the backlog
+    // and outbound side are fed by the `ChannelSink` and the writer.
+    monitor: Option<Arc<crate::server::transport::throughput_monitor::ThroughputMonitor>>,
 ) -> Result<UpstreamRelayOutcome<OwnedReadHalf>>
 where
     S: UpstreamSink,
@@ -167,6 +171,11 @@ where
                 }
 
                 target_to_client.increment(read as u64);
+                // Throttle detection: count plaintext bytes pulled from the
+                // internet (inbound) for this carrier.
+                if let Some(m) = monitor.as_ref() {
+                    m.add_inbound(read as u64);
+                }
                 // v2 capture: push plaintext into the per-session ring
                 // BEFORE encryption so `total_sent` always reflects
                 // what the server has committed to send. If the WS
