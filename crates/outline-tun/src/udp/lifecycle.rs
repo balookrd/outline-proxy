@@ -221,14 +221,7 @@ impl TunUdpEngine {
                         return Ok(());
                     }
                     let payload = transport.read_packet().await?;
-                    let (target, consumed) = TargetAddr::from_wire_bytes(&payload)?;
-                    let packet = build_response_packet(
-                        key.version,
-                        &target,
-                        key.local_ip,
-                        key.local_port,
-                        &payload[consumed..],
-                    )?;
+                    let packet = build_client_response_packet(&key, &payload)?;
                     let uplink_name: Arc<str> = {
                         let handle = engine.inner.flows.read().await.get(&key).map(Arc::clone);
                         match handle {
@@ -457,6 +450,27 @@ pub(crate) async fn close_udp_flow(flow: Arc<Mutex<UdpFlowState>>, reason: &'sta
             "failed to close TUN UDP transport"
         );
     }
+}
+
+/// Build the TUN packet that delivers an exit's UDP response back to the
+/// client. The wire prefix only tells us how many header bytes to skip; we
+/// always source the reply from the address the client actually dialled
+/// (`key.remote_*`), never the address the exit resolved/returned. With
+/// QUIC/UDP destination override the exit may resolve the sniffed domain to a
+/// different family (e.g. IPv6 for an IPv4 client) — echoing the exit's address
+/// produced an unbuildable family-mismatched packet (`unexpected response
+/// address family`, which tore down the whole flow and broke QUIC video) and
+/// would have spoofed a source the client never contacted.
+pub(super) fn build_client_response_packet(key: &UdpFlowKey, payload: &[u8]) -> Result<Vec<u8>> {
+    let (_exit_src, consumed) = TargetAddr::from_wire_bytes(payload)?;
+    let remote_target = ip_to_target(key.remote_ip, key.remote_port);
+    build_response_packet(
+        key.version,
+        &remote_target,
+        key.local_ip,
+        key.local_port,
+        &payload[consumed..],
+    )
 }
 
 #[cfg(test)]
