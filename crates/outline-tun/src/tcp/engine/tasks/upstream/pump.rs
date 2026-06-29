@@ -1,9 +1,16 @@
 use std::sync::Arc;
 
+use bytes::Bytes;
 use tokio::sync::{Mutex, Notify, watch};
 
 use outline_metrics as metrics;
 use outline_uplink::UplinkManager;
+
+/// Upper bound on bytes coalesced into a single upstream write by the pump.
+/// Caps the per-iteration buffer (and copy) while still amortizing the
+/// per-segment lock/await overhead across a full receive window's worth of
+/// uplink data. Matches the advertised receive-window capacity ceiling.
+const PUMP_BATCH_BYTES: usize = 256 * 1024;
 
 use super::super::super::super::state_machine::{
     TcpFlowState, TcpFlowStatus, UpstreamWriter, advertised_receive_window, build_flow_ack_packet,
@@ -56,21 +63,48 @@ impl TunTcpEngine {
                     advertised_receive_window(&state) == 0
                 };
 
-                // Drain everything currently buffered, in order. Popping
-                // under the flow lock and being the only writer keeps the
-                // upstream byte stream correctly ordered.
+                // Drain in batches: pull everything currently buffered under a
+                // single lock and ship it as one upstream write. The old
+                // pop-one/send-one loop paid two locks and an await per ~MSS
+                // segment; at line rate that per-segment overhead capped uplink
+                // throughput far below the link, so the buffer stayed full and
+                // the advertised window collapsed. Coalescing amortizes it (a
+                // lone chunk is forwarded without a copy for small interactive
+                // flows). Being the only writer keeps the byte stream ordered.
                 loop {
-                    let payload = {
+                    let batch = {
                         let mut state = flow.lock().await;
                         if matches!(state.status, TcpFlowStatus::Closed) {
                             return;
                         }
-                        state.pending_client_data.pop_front()
+                        let mut batch: Vec<Bytes> = Vec::new();
+                        let mut batch_bytes = 0usize;
+                        while batch_bytes < PUMP_BATCH_BYTES {
+                            match state.pending_client_data.pop_front() {
+                                Some(chunk) => {
+                                    batch_bytes += chunk.len();
+                                    batch.push(chunk);
+                                },
+                                None => break,
+                            }
+                        }
+                        batch
                     };
-                    let Some(payload) = payload else { break };
+                    if batch.is_empty() {
+                        break;
+                    }
+                    let sent_bytes: usize = batch.iter().map(Bytes::len).sum();
                     let send_result = {
                         let mut writer = upstream_writer.lock().await;
-                        writer.send_chunk(&payload).await
+                        if batch.len() == 1 {
+                            writer.send_chunk(&batch[0]).await
+                        } else {
+                            let mut combined = Vec::with_capacity(sent_bytes);
+                            for chunk in &batch {
+                                combined.extend_from_slice(chunk);
+                            }
+                            writer.send_chunk(&combined).await
+                        }
                     };
                     if let Err(error) = send_result {
                         engine
@@ -89,7 +123,7 @@ impl TunTcpEngine {
                         "client_to_upstream",
                         &group_name,
                         &uplink_name,
-                        payload.len(),
+                        sent_bytes,
                     );
                 }
 
