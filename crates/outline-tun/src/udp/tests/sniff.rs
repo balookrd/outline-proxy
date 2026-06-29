@@ -91,6 +91,7 @@ async fn build_engine(upstream_url: Url, sniff_quic: bool) -> TunUdpEngine {
         Duration::from_secs(60),
         false,
         sniff_quic,
+        Vec::new().into(),
     )
 }
 
@@ -146,6 +147,27 @@ async fn tun_udp_non_quic_first_datagram_keeps_ip_target() {
     // A plain (non-QUIC) datagram is not sniffable: the IP target stands.
     send_client_datagram(&engine, 40020, b"not a quic initial").await;
 
+    let (target, _) = upstream.expect_decoded().await;
+    assert_eq!(target, TargetAddr::IpV4(REMOTE_IP, REMOTE_PORT));
+}
+
+#[tokio::test]
+async fn tun_udp_quic_excluded_host_keeps_ip_target() {
+    let upstream = TestUdpUpstream::start().await;
+    let manager = build_test_manager_with_urls(None, Some(upstream.url.clone())).await;
+    let exclude: std::sync::Arc<[Box<str>]> = vec!["example.com".into()].into();
+    let engine = TunUdpEngine::new(
+        test_tun_writer(),
+        crate::TunRouting::from_single_manager(manager),
+        128,
+        Duration::from_secs(60),
+        false,
+        true,
+        exclude,
+    );
+
+    // Sniffing is on, but example.com is excluded → keep the literal IP.
+    send_client_datagram(&engine, 40040, &quic_initial("example.com")).await;
     let (target, _) = upstream.expect_decoded().await;
     assert_eq!(target, TargetAddr::IpV4(REMOTE_IP, REMOTE_PORT));
 }
