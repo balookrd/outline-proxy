@@ -391,7 +391,19 @@ async fn select_candidate_and_connect(
     };
     for candidate in iter {
         match manager.acquire_udp_standby_or_connect(&candidate, "tun_udp").await {
-            Ok(transport) => return Ok((candidate, transport)),
+            Ok(transport) => {
+                // Install the carrier control-signal handler so a server
+                // downstream-throttle notice on this UDP carrier penalises the
+                // uplink and migrates traffic away. No-op unless the client
+                // opted in; ignored by every non-padded datagram transport.
+                let transport =
+                    transport.with_throttle_handle(outline_uplink::dial::throttle_handle(
+                        manager,
+                        candidate.index,
+                        TransportKind::Udp,
+                    ));
+                return Ok((candidate, transport));
+            },
             Err(error) => {
                 report_udp_runtime_failure(manager, candidate.index, &error).await;
                 last_error = Some(format!("{}: {error:#}", candidate.uplink.name));

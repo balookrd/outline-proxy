@@ -111,6 +111,7 @@ impl WsSocket for MockWs {
         _protocol: Protocol,
         _app_protocol: AppProtocol,
         _scheme: outline_wire::padding::PaddingScheme,
+        _monitor: Option<std::sync::Arc<super::super::throughput_monitor::ThroughputMonitor>>,
     ) -> UdpResponseSender {
         unimplemented!("not exercised by the writer-only path")
     }

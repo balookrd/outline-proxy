@@ -85,6 +85,7 @@ where
                 let padding = route.padding;
                 let cancel = Arc::new(Notify::new());
                 let cancel_for_task = Arc::clone(&cancel);
+                let monitor_for_task = state.throttle_monitor.clone();
                 let reader_task = AbortOnDrop::new(tokio::spawn(async move {
                     relay_vless_udp_upstream_to_client(
                         reader_socket,
@@ -96,6 +97,7 @@ where
                         user_id,
                         Some(cancel_for_task),
                         padding,
+                        monitor_for_task,
                     )
                     .await
                 }));
@@ -210,6 +212,7 @@ where
     // resumption is disabled the notify is simply never fired.
     let cancel = Arc::new(Notify::new());
     let cancel_for_task = Arc::clone(&cancel);
+    let monitor_for_task = state.throttle_monitor.clone();
     let reader_task = AbortOnDrop::new(tokio::spawn(async move {
         relay_vless_udp_upstream_to_client(
             reader_socket,
@@ -221,6 +224,7 @@ where
             user_id,
             Some(cancel_for_task),
             padding,
+            monitor_for_task,
         )
         .await
     }));
@@ -331,6 +335,10 @@ async fn relay_vless_udp_upstream_to_client<Msg>(
     cancel: Option<Arc<Notify>>,
     // Carrier-padding scheme for this path; disabled → plain wire.
     padding: PaddingScheme,
+    // Per-carrier downstream-throttle monitor; `Some` only on a padded path
+    // with detection on. Fed inbound (from-internet) bytes + send backlog. The
+    // control frame + outbound side are fed by the shared `run_ws_writer`.
+    monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
 ) -> Result<VlessRelayOutcome>
 where
     Msg: Send + 'static,
@@ -374,6 +382,16 @@ where
                     continue;
                 }
                 target_to_client.increment(read as u64);
+                // Throttle detection: count bytes pulled from the internet
+                // (inbound) and note a send backlog (data channel past
+                // half-full) for this UDP carrier.
+                if let Some(m) = monitor.as_ref() {
+                    m.add_inbound(read as u64);
+                    let used = tx.max_capacity().saturating_sub(tx.capacity());
+                    if used.saturating_mul(2) >= tx.max_capacity() {
+                        m.note_backlog();
+                    }
+                }
                 let mut framed = BytesMut::with_capacity(2 + read);
                 framed.put_u16(read as u16);
                 framed.extend_from_slice(&buffer[..read]);

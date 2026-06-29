@@ -124,6 +124,19 @@ impl ThroughputMonitor {
         self.backlog_seen.store(true, Ordering::Relaxed);
     }
 
+    /// Feed one downlink datagram (UDP path): count its bytes as inbound and
+    /// mark a backlog when the data channel is past its half-full high-water
+    /// mark (`used` free-slots depth out of `max`). Convenience for the
+    /// datagram response senders, mirroring the streaming TCP relay's two
+    /// separate calls.
+    #[inline]
+    pub fn note_datagram(&self, data_len: usize, used: usize, max: usize) {
+        self.add_inbound(data_len as u64);
+        if used.saturating_mul(2) >= max {
+            self.note_backlog();
+        }
+    }
+
     /// The writer awaits this to learn a control frame should be sent.
     pub fn signal(&self) -> &Notify {
         &self.signal_request

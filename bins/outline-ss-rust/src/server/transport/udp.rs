@@ -195,6 +195,7 @@ async fn attempt_ss_udp_resume(
     reattached
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_udp_datagram_common<Msg>(
     server: &UdpServerCtx,
     route: &UdpRouteCtx,
@@ -206,7 +207,9 @@ async fn handle_udp_datagram_common<Msg>(
         Protocol,
         AppProtocol,
         PaddingScheme,
+        Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
     ) -> UdpResponseSender,
+    monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
 ) -> Result<()>
 where
     Msg: Send + 'static,
@@ -317,8 +320,13 @@ where
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
-    let response_sender =
-        make_response_sender(outbound_tx, route.protocol, AppProtocol::Shadowsocks, route.padding);
+    let response_sender = make_response_sender(
+        outbound_tx,
+        route.protocol,
+        AppProtocol::Shadowsocks,
+        route.padding,
+        monitor,
+    );
 
     // First-frame resume: if this stream advertised a pending
     // `X-Outline-Resume` ID, attempt the lookup and re-attach every
@@ -418,6 +426,12 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         resume_attempted: Arc::new(AtomicBool::new(false)),
     };
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
+    // Per-carrier downstream-throttle monitor: `Some` only on a padded SS-UDP
+    // path with detection enabled (the control notice rides a cover datagram,
+    // so only our own padded clients can receive it). `None` keeps the carrier
+    // byte-for-byte identical to today.
+    let throttle_monitor = carrier_padding::throttle_params_for_path(&route.path)
+        .map(super::throughput_monitor::ThroughputMonitor::new);
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
@@ -431,9 +445,15 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         // quiet datagram channel still produces random-sized writes. `None` on
         // an unpadded path keeps the plain wire unchanged.
         carrier_padding::cover_for_path(&route.path),
-        // Downstream-throttle detection does not apply to the datagram path.
-        None,
+        throttle_monitor.clone(),
     ));
+    // Detection tick. Bounded: aborted when this handle drops at carrier
+    // teardown, so it never outlives the carrier.
+    let _throttle_tick = throttle_monitor.clone().map(|m| {
+        crate::server::abort::AbortOnDrop::new(tokio::spawn(
+            super::throughput_monitor::run_throttle_tick(m),
+        ))
+    });
 
     // Strip carrier padding from inbound datagrams before SS decryption when
     // this path pads. One WS Binary frame carries exactly one padding frame
@@ -518,6 +538,7 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
                         let server = Arc::clone(&server);
                         let route = Arc::clone(&route);
                         let session = session.clone();
+                        let monitor = throttle_monitor.clone();
                         in_flight.push(async move {
                             if let Err(error) = handle_udp_datagram_common(
                                 &server,
@@ -526,6 +547,7 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
                                 data,
                                 tx,
                                 T::make_udp_response_sender,
+                                monitor,
                             )
                             .await
                             {

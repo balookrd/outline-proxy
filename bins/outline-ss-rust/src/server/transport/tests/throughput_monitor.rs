@@ -56,6 +56,23 @@ fn zero_outbound_with_backlog_and_inbound_triggers() {
 }
 
 #[test]
+fn note_datagram_feeds_inbound_and_backlog() {
+    let m = ThroughputMonitor::new(params_on());
+    // Channel half-full (used*2 >= max) → backlog noted, bytes counted.
+    m.note_datagram(1200, 8, 16);
+    assert_eq!(m.in_bytes.load(Ordering::Relaxed), 1200);
+    assert!(
+        m.backlog_seen.swap(false, Ordering::Relaxed),
+        "half-full channel marks a backlog"
+    );
+
+    // Channel nearly empty → bytes counted, no backlog.
+    m.note_datagram(800, 1, 16);
+    assert_eq!(m.in_bytes.load(Ordering::Relaxed), 2000);
+    assert!(!m.backlog_seen.load(Ordering::Relaxed), "near-empty channel is not a backlog");
+}
+
+#[test]
 fn counters_accumulate() {
     let m = ThroughputMonitor::new(params_on());
     m.add_inbound(100);

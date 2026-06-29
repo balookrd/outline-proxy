@@ -137,8 +137,11 @@ channel are *not* WS carriers and stay plain (see *Out of scope*).
 A padded carrier can optionally watch its own throughput and, when a provider
 starts shaping the path toward the client (e.g. a VPS throttling traffic toward
 Russia), nudge the client to move to another uplink — before the user notices
-the slowdown. It covers the TCP carriers on both transports: VLESS-over-WS /
--XHTTP and SS-over-WS / -XHTTP (their relays share one monitor).
+the slowdown. It covers **both TCP and UDP** carriers on both transports:
+VLESS and SS over WS / XHTTP. This matters for QUIC (HTTP/3) traffic such as
+YouTube, which rides the UDP carrier — a UDP-only throttle is detected on the
+UDP carrier and switches the UDP leg of the same uplink. Raw-QUIC carriers and
+the unpadded wire are never monitored.
 
 The server measures, per carrier, the rate it pulls from the internet (inbound,
 destined for the client) versus the rate it hands to the carrier (outbound),
