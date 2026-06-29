@@ -54,6 +54,8 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<Vec<u8>>> {
             last_sent: Instant::now(),
             first_sent: Instant::now(),
             retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         });
         reset_zero_window_persist(state);
         packets.push(packet);
@@ -119,6 +121,8 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
         last_sent: Instant::now(),
         first_sent: Instant::now(),
         retransmits: 0,
+        rto_retransmits: 0,
+        fast_retransmit_epoch: 0,
     });
     Ok(Some(packet))
 }

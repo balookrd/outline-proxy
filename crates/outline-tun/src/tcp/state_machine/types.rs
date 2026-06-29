@@ -147,6 +147,11 @@ pub(in crate::tcp) struct TcpFlowState {
     pub(in crate::tcp) last_client_ack: u32,
     pub(in crate::tcp) duplicate_ack_count: u8,
     pub(in crate::tcp) fast_recovery_end: Option<u32>,
+    /// Monotonic counter bumped on each entry into fast recovery. A segment's
+    /// `fast_retransmit_epoch` is matched against this to tell "already
+    /// fast-retransmitted in the current episode" apart from "first sent
+    /// during this episode", so each hole is resent at most once per episode.
+    pub(in crate::tcp) recovery_epoch: u64,
     pub(in crate::tcp) receive_window_capacity: usize,
     pub(in crate::tcp) smoothed_rtt: Option<Duration>,
     pub(in crate::tcp) rttvar: Duration,
@@ -226,7 +231,19 @@ pub(in crate::tcp) struct ServerSegment {
     pub(in crate::tcp) payload: Bytes,
     pub(in crate::tcp) last_sent: Instant,
     pub(in crate::tcp) first_sent: Instant,
+    /// Total times this segment was put back on the wire (fast-retransmit
+    /// *and* RTO). Used by Karn's algorithm to suppress RTT samples from
+    /// retransmitted segments — NOT a death signal.
     pub(in crate::tcp) retransmits: u32,
+    /// RTO-driven retransmits only. This is the genuine dead-path signal:
+    /// the budget abort (`retransmit_budget_exhausted`) keys off this, so a
+    /// burst of SACK-driven fast-retransmits cannot falsely reap a live flow.
+    pub(in crate::tcp) rto_retransmits: u32,
+    /// `recovery_epoch` in which this segment was last fast-retransmitted, or
+    /// 0 if never. Compared against the flow's current `recovery_epoch` so a
+    /// hole is fast-retransmitted at most once per recovery episode (RFC 6675
+    /// behaviour) instead of once per incoming partial SACK.
+    pub(in crate::tcp) fast_retransmit_epoch: u64,
 }
 
 #[derive(Debug, Default)]
