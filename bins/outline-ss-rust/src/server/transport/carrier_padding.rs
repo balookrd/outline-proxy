@@ -22,6 +22,7 @@ use bytes::Bytes;
 use outline_wire::padding::{MAX_PADDING_SEGMENT, PaddingScheme, encode_frame_into};
 use rand::{Rng, RngCore};
 
+use super::throughput_monitor::ThrottleDetectParams;
 use crate::config::PaddingConfig;
 
 static PADDING: OnceLock<PaddingConfig> = OnceLock::new();
@@ -80,6 +81,26 @@ pub(in crate::server) fn cover_for_path(path: &str) -> Option<CoverParams> {
         scheme: p.scheme(),
         jitter_min_ms: p.cover_jitter_min_ms,
         jitter_max_ms: p.cover_jitter_max_ms,
+    })
+}
+
+/// Resolves downstream-throttle detection parameters for `path`: `Some` only
+/// when the detector is enabled AND this path actually pads (the control notice
+/// rides a cover frame, which an unpadded path never carries, and a
+/// padding-unaware client could not decode anyway). `None` keeps the carrier
+/// unmonitored. Read once per VLESS carrier at relay start.
+pub(in crate::server) fn throttle_params_for_path(path: &str) -> Option<ThrottleDetectParams> {
+    let p = PADDING.get()?;
+    if !p.throttle_detect_enabled || !p.scheme_for_path(path).is_enabled() {
+        return None;
+    }
+    Some(ThrottleDetectParams {
+        enabled: true,
+        ratio: p.throttle_ratio_percent as f64 / 100.0,
+        window: Duration::from_secs(p.throttle_window_secs.max(1)),
+        sustain_windows: p.throttle_sustain_windows.max(1),
+        min_in_bytes_per_sec: p.throttle_min_bytes_per_sec,
+        signal_cooldown: Duration::from_secs(p.throttle_signal_cooldown_secs.max(1)),
     })
 }
 

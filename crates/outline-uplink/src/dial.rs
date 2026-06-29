@@ -69,3 +69,31 @@ where
         None => fut.await,
     }
 }
+
+/// Builds the carrier control-signal handler the dispatch layer installs on a
+/// freshly-dialled VLESS-over-WS reader. The handler captures `manager` (a
+/// cheap `Arc` clone) + the uplink `index` so that, when the server delivers a
+/// downstream-throttle notice on this carrier, it penalises the right uplink
+/// and lets selection migrate away.
+///
+/// Returns `None` when the client opted out
+/// ([`outline_transport::carrier_padding::react_to_throttle_enabled`] is
+/// `false`) so the hot path stays untouched by default. The handler itself is
+/// synchronous and merely spawns the async report — `recv_frame` must not block
+/// the read loop on it.
+pub fn throttle_handle(
+    manager: &crate::UplinkManager,
+    index: usize,
+    transport: crate::TransportKind,
+) -> Option<outline_transport::ThrottleSignalHandle> {
+    if !outline_transport::carrier_padding::react_to_throttle_enabled() {
+        return None;
+    }
+    let manager = manager.clone();
+    Some(std::sync::Arc::new(move |_signal| {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager.report_downstream_throttle(index, transport).await;
+        });
+    }))
+}

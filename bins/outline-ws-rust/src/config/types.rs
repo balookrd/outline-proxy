@@ -84,6 +84,11 @@ pub struct PaddingConfig {
     pub cover: bool,
     pub cover_jitter_min_ms: u64,
     pub cover_jitter_max_ms: u64,
+    /// React to a server-initiated downstream-throttle signal by penalising the
+    /// current uplink and migrating away. Default `false`. Independent of
+    /// `enabled`, but a signal only ever arrives on a carrier that has padding
+    /// on (it rides a cover frame).
+    pub react_to_throttle: bool,
 }
 
 impl Default for PaddingConfig {
@@ -96,6 +101,7 @@ impl Default for PaddingConfig {
             cover: false,
             cover_jitter_min_ms: 250,
             cover_jitter_max_ms: 1500,
+            react_to_throttle: false,
         }
     }
 }

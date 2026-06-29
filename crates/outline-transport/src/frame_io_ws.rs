@@ -287,6 +287,13 @@ pub struct WsFrameSource {
     /// State is held across frames because a padding frame may span multiple
     /// WS / h2 / h3 DATA frames.
     padding: Option<PaddingDecoder>,
+    /// Reaction for a recognised carrier control signal (set by the dispatch
+    /// layer). `None` keeps the source inert. Only meaningful when `padding`
+    /// is `Some`, since control signals ride cover frames.
+    throttle: Option<crate::ThrottleSignalHandle>,
+    /// Fires the throttle handler at most once per carrier: one notice is
+    /// enough to penalise the uplink, and the server rate-limits anyway.
+    throttle_fired: bool,
 }
 
 impl WsFrameSource {
@@ -294,6 +301,17 @@ impl WsFrameSource {
         self.diag_uplink = uplink.into();
         self.diag_target = target.into();
         self
+    }
+
+    /// Invokes the throttle handler for `signal`, once per carrier.
+    fn fire_throttle(&mut self, signal: outline_wire::padding::ControlSignal) {
+        if self.throttle_fired {
+            return;
+        }
+        if let Some(handle) = &self.throttle {
+            handle(signal);
+            self.throttle_fired = true;
+        }
     }
 }
 
@@ -327,10 +345,18 @@ impl FrameSource for WsFrameSource {
                     // A cover frame (real_len = 0) yields nothing — keep
                     // reading rather than surfacing an empty chunk to the
                     // VLESS parser. A padding frame may span multiple WS
-                    // frames, so the decoder state lives across calls.
+                    // frames, so the decoder state lives across calls. A cover
+                    // frame may also carry an out-of-band control signal, which
+                    // the decoder surfaces via `take_control`.
                     Some(decoder) => {
                         let mut out = Vec::with_capacity(bytes.len());
                         decoder.push(&bytes, &mut out);
+                        let signal = decoder.take_control();
+                        // `decoder`'s borrow of `self.padding` ends here (NLL),
+                        // freeing `self` for the throttle handler below.
+                        if let Some(sig) = signal {
+                            self.fire_throttle(sig);
+                        }
                         if out.is_empty() {
                             continue;
                         }
@@ -369,6 +395,10 @@ impl FrameSource for WsFrameSource {
     fn closed_cleanly(&self) -> bool {
         self.closed_cleanly
     }
+
+    fn set_throttle_handle(&mut self, handle: crate::ThrottleSignalHandle) {
+        self.throttle = Some(handle);
+    }
 }
 
 /// Build a paired [`WsFrameSink`] / [`WsFrameSource`] from a WS stream.
@@ -403,6 +433,8 @@ pub fn from_ws_frames(
         diag_uplink: String::new(),
         diag_target: String::new(),
         padding: padding.scheme.is_enabled().then(PaddingDecoder::new),
+        throttle: None,
+        throttle_fired: false,
     };
     (sink, source)
 }

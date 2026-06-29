@@ -194,6 +194,7 @@ fn resolve_padding(section: Option<&PaddingSection>) -> PaddingConfig {
         cover: s.cover.unwrap_or(d.cover),
         cover_jitter_min_ms,
         cover_jitter_max_ms,
+        react_to_throttle: s.react_to_throttle.unwrap_or(d.react_to_throttle),
     }
 }
 

@@ -113,6 +113,8 @@ impl TcpShadowsocksReader<WsReadTransport> {
                     .scheme
                     .is_enabled()
                     .then(PaddingDecoder::new),
+                throttle: None,
+                throttle_fired: false,
             },
             cipher,
             master_key: mk,
@@ -200,6 +202,14 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
             request_salt,
             response_header_read: false,
         });
+        self
+    }
+
+    /// Installs a carrier control-signal handler on the underlying transport
+    /// (no-op unless it is a padding-aware WS transport). Builder form so it
+    /// threads through `TcpReader`'s builder chain.
+    pub fn with_throttle_handle(mut self, handle: crate::ThrottleSignalHandle) -> Self {
+        self.transport.set_throttle_handle(handle);
         self
     }
 

@@ -45,6 +45,11 @@ const WS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 #[allow(async_fn_in_trait)]
 pub trait ReadTransport: Send + 'static {
     async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<Vec<u8>>;
+    /// Installs a handler for out-of-band carrier control signals (a
+    /// server-initiated downstream-throttle notice riding a padding cover
+    /// frame). Default no-op: only the padding-aware WS transport recognises
+    /// such signals; socket / raw-QUIC transports ignore the call.
+    fn set_throttle_handle(&mut self, _handle: crate::ThrottleSignalHandle) {}
 }
 
 /// Diagnostic context attached to a WebSocket reader so that stream-level EOF
@@ -81,9 +86,32 @@ pub struct WsReadTransport {
     /// plain path. Padding-frame boundaries are unrelated to WS/h2/h3 DATA
     /// boundaries, so the decoder state is held across frames here.
     pub(super) padding: Option<PaddingDecoder>,
+    /// Reaction for a recognised carrier control signal (set by the dispatch
+    /// layer). `None` keeps the transport inert. Only meaningful when `padding`
+    /// is `Some`, since control signals ride cover frames.
+    pub(super) throttle: Option<crate::ThrottleSignalHandle>,
+    /// Fires the throttle handler at most once per carrier.
+    pub(super) throttle_fired: bool,
+}
+
+impl WsReadTransport {
+    /// Invokes the throttle handler for `signal`, once per carrier.
+    fn fire_throttle(&mut self, signal: outline_wire::padding::ControlSignal) {
+        if self.throttle_fired {
+            return;
+        }
+        if let Some(handle) = &self.throttle {
+            handle(signal);
+            self.throttle_fired = true;
+        }
+    }
 }
 
 impl ReadTransport for WsReadTransport {
+    fn set_throttle_handle(&mut self, handle: crate::ThrottleSignalHandle) {
+        self.throttle = Some(handle);
+    }
+
     async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<Vec<u8>> {
         while self.buffer.len() < len {
             // On the H3 carrier the QUIC layer owns liveness (~120 s idle
@@ -161,12 +189,26 @@ impl ReadTransport for WsReadTransport {
             };
 
             match next {
-                Message::Binary(bytes) => match self.padding.as_mut() {
+                Message::Binary(bytes) => {
                     // Padding on: strip the framing, append recovered SS bytes.
                     // A cover frame (real_len = 0) yields nothing and is dropped
-                    // here transparently.
-                    Some(decoder) => decoder.push(&bytes, &mut self.buffer),
-                    None => self.buffer.extend_from_slice(&bytes),
+                    // here transparently; it may also carry an out-of-band
+                    // control signal, surfaced via `take_control`.
+                    let signal = match self.padding.as_mut() {
+                        Some(decoder) => {
+                            decoder.push(&bytes, &mut self.buffer);
+                            decoder.take_control()
+                        },
+                        None => {
+                            self.buffer.extend_from_slice(&bytes);
+                            None
+                        },
+                    };
+                    // `self.padding`'s borrow ends above (NLL), freeing `self`
+                    // for the throttle handler.
+                    if let Some(sig) = signal {
+                        self.fire_throttle(sig);
+                    }
                 },
                 Message::Close(frame) => {
                     // RFC 6455 code 1013 "Try Again Later" means the server

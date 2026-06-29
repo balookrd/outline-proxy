@@ -106,6 +106,12 @@ static PADDING: OnceLock<CarrierPadding> = OnceLock::new();
 /// `fingerprint_profile` falls back to the process-wide strategy).
 static DEFAULT_ON: OnceLock<bool> = OnceLock::new();
 
+/// Whether the client reacts to a server-initiated downstream-throttle signal
+/// by penalising the current uplink and migrating away. Off by default; gated
+/// independently of padding params (the signal still rides padding cover
+/// frames, so the carrier must also have padding on for one to ever arrive).
+static REACT_TO_THROTTLE: OnceLock<bool> = OnceLock::new();
+
 tokio::task_local! {
     /// Per-uplink padding on/off for the current dial, set by
     /// [`with_uplink_padding_override`]. When a dial runs inside this scope,
@@ -135,6 +141,19 @@ pub fn init_carrier_padding(padding: CarrierPadding, default_on: bool) {
 /// `false` before [`init_carrier_padding`] runs.
 pub fn carrier_padding_default_on() -> bool {
     DEFAULT_ON.get().copied().unwrap_or(false)
+}
+
+/// Wire the client's reaction to server downstream-throttle signals. First
+/// call wins, like [`init_carrier_padding`]. `false` (the default) keeps the
+/// client inert: signals are still decoded but ignored.
+pub fn init_react_to_throttle(enabled: bool) {
+    let _ = REACT_TO_THROTTLE.set(enabled);
+}
+
+/// Whether the client should act on a server downstream-throttle signal.
+/// `false` before [`init_react_to_throttle`] runs.
+pub fn react_to_throttle_enabled() -> bool {
+    REACT_TO_THROTTLE.get().copied().unwrap_or(false)
 }
 
 /// Run `f` with `on` as the per-uplink padding decision for every dial inside

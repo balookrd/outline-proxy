@@ -431,6 +431,8 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         // quiet datagram channel still produces random-sized writes. `None` on
         // an unpadded path keeps the plain wire unchanged.
         carrier_padding::cover_for_path(&route.path),
+        // Downstream-throttle detection does not apply to the datagram path.
+        None,
     ));
 
     // Strip carrier padding from inbound datagrams before SS decryption when

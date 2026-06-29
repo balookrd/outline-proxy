@@ -287,6 +287,17 @@ pub struct PaddingConfig {
     /// xray, sing-box) on other paths stay on the plain SS-over-WS/XHTTP wire.
     /// Empty when disabled.
     pub paths: Vec<String>,
+    /// Downstream-throttle detection on padded VLESS-over-WS carriers. Default
+    /// off. The remaining `throttle_*` fields are the detector tunables; see
+    /// `throughput_monitor::ThrottleDetectParams`.
+    pub throttle_detect_enabled: bool,
+    /// Trigger ratio as a percentage (200 = 2×). Integer to keep `PaddingConfig`
+    /// `Eq`; converted to a float when the detector is built.
+    pub throttle_ratio_percent: u32,
+    pub throttle_window_secs: u64,
+    pub throttle_sustain_windows: u32,
+    pub throttle_min_bytes_per_sec: u64,
+    pub throttle_signal_cooldown_secs: u64,
 }
 
 impl Default for PaddingConfig {
@@ -302,6 +313,12 @@ impl Default for PaddingConfig {
             cover_jitter_min_ms: 250,
             cover_jitter_max_ms: 1500,
             paths: Vec::new(),
+            throttle_detect_enabled: false,
+            throttle_ratio_percent: 200,
+            throttle_window_secs: 1,
+            throttle_sustain_windows: 5,
+            throttle_min_bytes_per_sec: 1_000_000,
+            throttle_signal_cooldown_secs: 30,
         }
     }
 }
@@ -326,6 +343,22 @@ impl PaddingConfig {
             cover_jitter_min_ms,
             cover_jitter_max_ms,
             paths: section.paths.unwrap_or_default(),
+            throttle_detect_enabled: section
+                .throttle_detect_enabled
+                .unwrap_or(d.throttle_detect_enabled),
+            throttle_ratio_percent: section
+                .throttle_ratio_percent
+                .unwrap_or(d.throttle_ratio_percent),
+            throttle_window_secs: section.throttle_window_secs.unwrap_or(d.throttle_window_secs),
+            throttle_sustain_windows: section
+                .throttle_sustain_windows
+                .unwrap_or(d.throttle_sustain_windows),
+            throttle_min_bytes_per_sec: section
+                .throttle_min_bytes_per_sec
+                .unwrap_or(d.throttle_min_bytes_per_sec),
+            throttle_signal_cooldown_secs: section
+                .throttle_signal_cooldown_secs
+                .unwrap_or(d.throttle_signal_cooldown_secs),
         }
     }
 

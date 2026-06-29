@@ -22,10 +22,12 @@ use super::super::{
 use super::carrier_padding;
 use super::resume_headers::ResumeContext;
 use super::sink;
+use super::throughput_monitor;
 use super::vless_mux::{self, MuxRouteCtx, MuxServerCtx, MuxState};
 use super::vless_udp::{self, forward_vless_udp_client_frames};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
+use crate::server::abort::AbortOnDrop;
 
 mod ctx;
 mod tcp;
@@ -51,6 +53,12 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     let (outbound_data_tx, outbound_data_rx) =
         mpsc::channel::<T::Msg>(server.ws_data_channel_capacity);
     let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
+    // Per-carrier downstream-throttle monitor: `Some` only on a padded path
+    // with detection enabled. The relay feeds it inbound bytes + backlog, the
+    // tick samples once per window, and the writer emits a control frame when
+    // it fires. `None` keeps the carrier byte-for-byte identical to today.
+    let throttle_monitor = carrier_padding::throttle_params_for_path(&route.path)
+        .map(throughput_monitor::ThroughputMonitor::new);
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
@@ -64,7 +72,13 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
         // writer); a cover frame is a `Binary` message the client's decoder
         // drops transparently.
         carrier_padding::cover_for_path(&route.path),
+        throttle_monitor.clone(),
     ));
+    // Detection tick. Bounded: aborted when this handle drops at carrier
+    // teardown, so it never outlives the carrier.
+    let _throttle_tick = throttle_monitor
+        .clone()
+        .map(|m| AbortOnDrop::new(tokio::spawn(throughput_monitor::run_throttle_tick(m))));
 
     let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);
     let pong_deadline = ping_interval * WS_PONG_DEADLINE_MULTIPLIER;
@@ -72,7 +86,7 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     keepalive.tick().await;
 
-    let mut state = VlessRelayState::new(resume);
+    let mut state = VlessRelayState::new(resume, throttle_monitor);
     let mut client_closed = false;
     // Carrier-padding decoder for the uplink, allocated only when this path
     // pads. Held across the loop because a padding frame may span WS/h2/h3 DATA

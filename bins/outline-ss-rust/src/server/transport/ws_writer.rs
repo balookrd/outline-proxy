@@ -5,10 +5,13 @@ use anyhow::Result;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
+use outline_wire::padding::{ControlSignal, encode_control_frame_into};
+
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 
 use super::super::constants::WS_CONTROL_FLUSH_INTERVAL_SECS;
 use super::carrier_padding::CoverParams;
+use super::throughput_monitor::ThroughputMonitor;
 use super::ws_socket::WsSocket;
 
 /// Far-future deadline parked on the cover timer when cover is disabled (the
@@ -29,6 +32,11 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
     protocol: Protocol,
     app_protocol: AppProtocol,
     cover: Option<CoverParams>,
+    // `Some` only on a padded carrier with downstream-throttle detection on
+    // (VLESS-over-WS): the writer counts outbound bytes into it and, when the
+    // tick pings `signal()`, emits one control frame nudging the client to
+    // switch uplinks. `None` keeps the legacy path byte-for-byte identical.
+    monitor: Option<Arc<ThroughputMonitor>>,
 ) -> Result<()> {
     let result = async {
         // Periodically drain any control-frame responses the transport
@@ -74,6 +82,7 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
                         Some(m) => {
                             send_data::<T>(
                                 &mut writer, m, &metrics, transport_kind, protocol, app_protocol,
+                                monitor.as_ref(),
                             ).await?;
                             arm_cover(cover_sleep.as_mut(), &cover);
                         },
@@ -85,6 +94,9 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
                             &mut writer, &metrics, transport_kind, protocol, app_protocol, &cover,
                         ).await?;
                         arm_cover(cover_sleep.as_mut(), &cover);
+                    },
+                    _ = throttle_signalled(&monitor), if monitor.is_some() => {
+                        send_control_frame::<T>(&mut writer).await?;
                     },
                 }
             } else {
@@ -94,6 +106,7 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
                         Some(m) => {
                             send_data::<T>(
                                 &mut writer, m, &metrics, transport_kind, protocol, app_protocol,
+                                monitor.as_ref(),
                             ).await?;
                             arm_cover(cover_sleep.as_mut(), &cover);
                         },
@@ -105,6 +118,9 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
                             &mut writer, &metrics, transport_kind, protocol, app_protocol, &cover,
                         ).await?;
                         arm_cover(cover_sleep.as_mut(), &cover);
+                    },
+                    _ = throttle_signalled(&monitor), if monitor.is_some() => {
+                        send_control_frame::<T>(&mut writer).await?;
                     },
                 }
             }
@@ -136,6 +152,8 @@ async fn send_cover<T: WsSocket>(
 ) -> Result<()> {
     if let Some(c) = cover {
         let frame = Bytes::from(c.frame());
+        // Cover frames are keepalive padding, not data toward the client, so
+        // they are not counted as outbound throughput (`None`).
         send_data::<T>(
             writer,
             T::binary_msg(frame),
@@ -143,6 +161,7 @@ async fn send_cover<T: WsSocket>(
             transport_kind,
             protocol,
             app_protocol,
+            None,
         )
         .await?;
     }
@@ -159,9 +178,36 @@ async fn send_data<T: WsSocket>(
     transport_kind: Transport,
     protocol: Protocol,
     app_protocol: AppProtocol,
+    monitor: Option<&Arc<ThroughputMonitor>>,
 ) -> Result<()> {
     if let Some(len) = T::binary_len(&msg) {
         metrics.record_websocket_binary_frame(transport_kind, protocol, app_protocol, "out", len);
+        if let Some(m) = monitor {
+            m.add_outbound(len as u64);
+        }
     }
     T::send(writer, msg).await
+}
+
+/// Awaits the throttle tick's wake-up. Parked forever when no monitor is set
+/// (the `if monitor.is_some()` select guard keeps the arm inert), so callers
+/// can wire it unconditionally.
+async fn throttle_signalled(monitor: &Option<Arc<ThroughputMonitor>>) {
+    match monitor {
+        Some(m) => m.signal().notified().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Emits one downstream-throttle control frame on the downlink. Wire-identical
+/// to a cover frame (`real_len = 0`), so it is H3-safe and a padding-unaware
+/// peer drops it transparently. The recognised client routes it to an uplink
+/// switch.
+async fn send_control_frame<T: WsSocket>(writer: &mut T::Writer) -> Result<()> {
+    let mut frame = Vec::new();
+    // The pad is the fixed 6-byte control prefix; `encode_control_frame_into`
+    // only errors on an oversized segment, which is impossible here.
+    encode_control_frame_into(&mut frame, ControlSignal::ThrottleSwitchUplink, &[])
+        .expect("control frame prefix never overflows the u16 pad length");
+    T::send(writer, T::binary_msg(Bytes::from(frame))).await
 }

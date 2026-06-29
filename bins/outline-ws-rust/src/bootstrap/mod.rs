@@ -121,6 +121,10 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
         },
         config.padding.enabled,
     );
+    // Whether the client acts on a server downstream-throttle signal. Default
+    // off; independent of padding params (the signal still rides a cover frame,
+    // so the carrier must also have padding on for one to ever arrive).
+    outline_transport::init_react_to_throttle(config.padding.react_to_throttle);
 
     // Hold a clone so `/control/apply` can rebuild the registry against
     // the same on-disk persistence layer.
