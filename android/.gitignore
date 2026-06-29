@@ -1,0 +1,16 @@
+# Rust
+rust/target/
+
+# Gradle / Android
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+
+# cargo-ndk output copied into the app
+app/src/main/jniLibs/
+
+# Generated UniFFI Kotlin bindings (regenerated from the built library)
+app/src/main/java/uniffi/

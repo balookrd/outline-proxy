@@ -1,0 +1,57 @@
+# Android JNI/UniFFI wrapper around the outline-ws-rust client.
+#
+# Standalone workspace (detached from the monorepo root workspace) so that a
+# plain `cargo build` at the repo root does not try to build the Android-only
+# cdylib for the host. Path dependencies still resolve upward into the
+# monorepo crates.
+[package]
+name = "outline-android"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Detach from the parent workspace.
+[workspace]
+
+# The HTTP/3 WebSocket carrier (vendored sockudo-ws) depends on a patched `h3`
+# fork. The root workspace applies this patch; a detached workspace must repeat
+# it or the upstream `h3` resolves and sockudo-ws fails to compile.
+[patch.crates-io]
+h3 = { path = "../../vendor/h3" }
+
+[lib]
+name = "outline_android"
+# cdylib  -> the .so loaded by the Android app via System.loadLibrary.
+# lib     -> lets `uniffi-bindgen` introspect the crate to emit Kotlin.
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# The ws-rust client, minus VM/server-only features (no mimalloc/metrics/
+# dashboard/desktop-tun). The `h3` feature pulls the QUIC + HTTP/3 carrier
+# stack (quinn + aws-lc-rs QUIC) so xhttp_h3 / ws_h3 uplinks work.
+outline-ws-rust = { path = "../../bins/outline-ws-rust", default-features = false, features = ["h3"] }
+
+uniffi = { version = "0.28", features = ["tokio", "cli"] }
+tokio = { version = "1.44", features = ["rt-multi-thread", "sync", "time"] }
+
+# TUN-fd → SOCKS5 bridge. Reads the VpnService TUN descriptor and forwards
+# captured flows into the local ws-rust SOCKS5 listener.
+tun2proxy = "0.8"
+clap = { version = "4.5", features = ["derive", "env"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+
+# A thin binary so `cargo run --bin uniffi-bindgen -- ...` can generate the
+# Kotlin bindings from the compiled library. See android/README.md.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[features]
+default = []
+
+# Route `tracing` into Android logcat. Android-only; the host build keeps the
+# plain fmt subscriber.
+[target.'cfg(target_os = "android")'.dependencies]
+paranoid-android = "0.2"
