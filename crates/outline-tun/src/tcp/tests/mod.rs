@@ -827,52 +827,6 @@ async fn rto_retransmit_bumps_the_rto_counter() {
 }
 
 #[tokio::test]
-async fn downlink_pacing_caps_burst_and_schedules_resume() {
-    // With a large window and cwnd, only the pacer should bound the flush. The
-    // regression: the stack dumped a whole congestion window at line rate,
-    // which overran the path buffer and was dropped in one block. Pacing must
-    // emit only a credit's worth and re-arm a wakeup for the rest.
-    let mut state = tcp_flow_state_for_tests().await;
-    state.client_window = 1_000_000;
-    state.client_window_end = state.server_seq.wrapping_add(1_000_000);
-    state.congestion_window = 1_000_000;
-    state.smoothed_rtt = Some(Duration::from_millis(20)); // pacing active
-    state.pacing_credit = 4096; // only 4 KiB of credit available now
-    state.pacing_refilled_at = Instant::now();
-    state.pending_server_data.push_back(vec![0u8; 64 * 1024].into());
-
-    let seq_before = state.server_seq;
-    let flush = super::flush_server_output(&mut state).unwrap();
-    let sent = state.server_seq.wrapping_sub(seq_before);
-
-    assert!(!flush.data_packets.is_empty(), "pacer still sends the credit it has");
-    assert!(sent <= 8192, "paced flush must not dump the whole window: sent {sent}");
-    assert!(!state.pending_server_data.is_empty(), "the rest stays queued");
-    assert!(state.pacing_next_at.is_some(), "a resume wakeup must be scheduled");
-}
-
-#[tokio::test]
-async fn flush_is_unpaced_until_an_rtt_sample_exists() {
-    // Before the first RTT sample the pacer is inactive (early cwnd is tiny, so
-    // the burst is bounded anyway) — the flush drains the whole window.
-    let mut state = tcp_flow_state_for_tests().await;
-    state.client_window = 1_000_000;
-    state.client_window_end = state.server_seq.wrapping_add(1_000_000);
-    state.congestion_window = 1_000_000;
-    state.smoothed_rtt = None; // no RTT yet → pacing off
-    state.pacing_credit = 0;
-    state.pending_server_data.push_back(vec![0u8; 32 * 1024].into());
-
-    let seq_before = state.server_seq;
-    let _ = super::flush_server_output(&mut state).unwrap();
-    let sent = state.server_seq.wrapping_sub(seq_before);
-
-    assert_eq!(sent, 32 * 1024, "unpaced flush drains the full queued window");
-    assert!(state.pending_server_data.is_empty());
-    assert!(state.pacing_next_at.is_none());
-}
-
-#[tokio::test]
 async fn advertised_window_collapses_when_uplink_buffer_fills_and_reopens_on_drain() {
     // Uplink back-pressure runs through the advertised receive window: as the
     // pump-fed buffer fills, the window shrinks to 0 and the client stalls.
@@ -1959,9 +1913,6 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         duplicate_ack_count: 0,
         fast_recovery_end: None,
         recovery_epoch: 0,
-        pacing_credit: 0,
-        pacing_refilled_at: Instant::now(),
-        pacing_next_at: None,
         receive_window_capacity: 262_144,
         smoothed_rtt: None,
         rttvar: super::TCP_INITIAL_RTO / 2,

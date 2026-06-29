@@ -37,8 +37,7 @@ use self::state_machine::{
 
 #[cfg(test)]
 use self::state_machine::{
-    advertised_receive_window, flush_server_output, retransmit_budget_exhausted,
-    retransmit_due_segment,
+    advertised_receive_window, retransmit_budget_exhausted, retransmit_due_segment,
 };
 #[cfg(test)]
 use outline_transport::UpstreamTransportGuard;
@@ -58,11 +57,6 @@ const TCP_INITIAL_RTO: Duration = Duration::from_secs(1);
 const TCP_MIN_RTO: Duration = Duration::from_millis(200);
 const TCP_MAX_RTO: Duration = Duration::from_secs(60);
 const TCP_INITIAL_CWND_SEGMENTS: usize = 10;
-/// Max bytes the downlink pacer lets the flush burst before it must wait for
-/// credit to refill at the pacing rate. Keeps the stack from dumping a whole
-/// (multi-hundred-KB) congestion window onto the wire at once — that burst
-/// overran the buffer on the path to the client and was dropped in one block.
-const TCP_PACING_MAX_BURST_BYTES: usize = MAX_SERVER_SEGMENT_PAYLOAD * 16;
 const TCP_MIN_SSTHRESH: usize = MAX_SERVER_SEGMENT_PAYLOAD * 2;
 const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Interval for the watchdog GC loop that sweeps the TCP flow table for
