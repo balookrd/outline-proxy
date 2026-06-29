@@ -144,6 +144,7 @@ async fn writer_flushes_periodically_without_sending_on_quiet_channel() {
         Protocol::Http1,
         AppProtocol::Shadowsocks,
         None,
+        None,
     ));
 
     // Advance virtual time past three flush intervals.
@@ -196,6 +197,7 @@ async fn writer_emits_cover_frames_on_quiet_channel_when_enabled() {
         Protocol::Http1,
         AppProtocol::Shadowsocks,
         cover,
+        None,
     ));
 
     // Five 100 ms gaps should fire roughly five cover frames; assert a safe

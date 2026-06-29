@@ -123,6 +123,9 @@ pub(super) struct PaddingSection {
     /// Defaults 250 / 1500.
     pub(super) cover_jitter_min_ms: Option<u64>,
     pub(super) cover_jitter_max_ms: Option<u64>,
+    /// React to a server downstream-throttle signal by penalising the current
+    /// uplink and migrating away. Default `false`.
+    pub(super) react_to_throttle: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

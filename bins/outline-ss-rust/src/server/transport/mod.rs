@@ -32,6 +32,7 @@ mod resume_headers;
 pub(in crate::server) mod sink;
 pub(in crate::server) mod sni_fallback;
 mod tcp;
+pub(in crate::server) mod throughput_monitor;
 mod udp;
 mod vless;
 mod vless_mux;

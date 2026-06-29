@@ -335,6 +335,7 @@ where
             });
         }
         let ring_for_task = state.downlink_ring.clone();
+        let monitor_for_task = state.throttle_monitor.clone();
         let tx = outbound.data_tx.clone();
         let metrics = Arc::clone(&server.metrics);
         let user_id_for_relay = Arc::clone(&user_id_for_resume);
@@ -357,6 +358,7 @@ where
                 Some(cancel_for_task),
                 ring_for_task,
                 padding,
+                monitor_for_task,
             )
             .await
         }));
@@ -475,6 +477,7 @@ where
         }
     }
     let ring_for_task = state.downlink_ring.clone();
+    let monitor_for_task = state.throttle_monitor.clone();
     let reader_task = AbortOnDrop::new(tokio::spawn(async move {
         relay_vless_upstream_to_client(
             upstream_reader,
@@ -487,6 +490,7 @@ where
             Some(cancel_for_task),
             ring_for_task,
             padding,
+            monitor_for_task,
         )
         .await
     }));
@@ -554,6 +558,9 @@ async fn relay_vless_upstream_to_client<Msg>(
     >,
     // Carrier-padding scheme for this path; disabled → plain wire.
     padding: PaddingScheme,
+    // Per-carrier downstream-throttle monitor; `Some` only on a padded path
+    // with detection on. Fed inbound (from-internet) bytes + send backlog.
+    monitor: Option<Arc<super::super::throughput_monitor::ThroughputMonitor>>,
 ) -> VlessRelayTaskOutput
 where
     Msg: Send + 'static,
@@ -613,6 +620,11 @@ where
                     }
                 }
                 target_to_client.increment(total as u64);
+                // Throttle detection: count bytes pulled from the internet
+                // (inbound) for this carrier.
+                if let Some(m) = monitor.as_ref() {
+                    m.add_inbound(total as u64);
+                }
                 // v2 capture: push plaintext into the ring BEFORE the
                 // WS Binary send so `total_sent` always reflects what
                 // the server has committed to send.
@@ -625,6 +637,14 @@ where
                     crate::metrics::AppProtocol::Vless,
                     used,
                 );
+                // Throttle detection: note a send backlog (data channel past
+                // its half-full high-water mark) so a low out-rate is read as
+                // genuine downstream backpressure, not just an idle client.
+                if let Some(m) = monitor.as_ref()
+                    && used.saturating_mul(2) >= tx.max_capacity()
+                {
+                    m.note_backlog();
+                }
                 let frame = carrier_padding::frame_downlink_message(
                     padding,
                     Bytes::copy_from_slice(&buffer[..total]),

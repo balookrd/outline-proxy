@@ -174,6 +174,11 @@ struct WsTcpRelayState {
     /// the plain path. State is held across frames because padding-frame
     /// boundaries are unrelated to WS / h2 / h3 DATA boundaries.
     padding_decoder: Option<PaddingDecoder>,
+    /// Per-carrier downstream-throttle monitor, `Some` only on a padded path
+    /// with detection enabled. Cloned into each relay-task spawn (fed inbound
+    /// bytes) and the `ChannelSink` (fed send backlog). The writer half is fed
+    /// by `run_ws_writer`.
+    throttle_monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
 }
 
 struct WsTcpFrameOutput<'a, Msg> {
@@ -183,7 +188,11 @@ struct WsTcpFrameOutput<'a, Msg> {
 }
 
 impl WsTcpRelayState {
-    fn new(resume: ResumeContext, padding: PaddingScheme) -> Self {
+    fn new(
+        resume: ResumeContext,
+        padding: PaddingScheme,
+        throttle_monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
+    ) -> Self {
         Self {
             upstream_writer: None,
             upstream_to_client: None,
@@ -210,6 +219,7 @@ impl WsTcpRelayState {
             // One decoder per connection direction, allocated only when the
             // path pads. Disabled scheme → no decoder → plain path.
             padding_decoder: padding.is_enabled().then(PaddingDecoder::new),
+            throttle_monitor,
         }
     }
 }
@@ -225,6 +235,9 @@ struct ChannelSink<Msg: Send + 'static> {
     /// WS writer, breaking the record-size correlation. The client decodes
     /// symmetrically (config-synchronised gate).
     padding: PaddingScheme,
+    /// Per-carrier downstream-throttle monitor; `Some` only on a padded path
+    /// with detection on. Fed the send backlog (data channel past half-full).
+    monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
 }
 
 impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg> {
@@ -237,6 +250,14 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
         let used = self.tx.max_capacity().saturating_sub(self.tx.capacity());
         self.metrics
             .observe_ws_data_channel_fill(Transport::Tcp, AppProtocol::Shadowsocks, used);
+        // Throttle detection: note a send backlog (data channel past its
+        // half-full high-water mark) so a low out-rate reads as genuine
+        // downstream backpressure, not just an idle client.
+        if let Some(m) = self.monitor.as_ref()
+            && used.saturating_mul(2) >= self.tx.max_capacity()
+        {
+            m.note_backlog();
+        }
         let payload: Bytes = if self.padding.is_enabled() {
             let mut out = Vec::with_capacity(ciphertext.len() + 8);
             carrier_padding::frame_payload_into(
@@ -271,6 +292,12 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     let (outbound_data_tx, outbound_data_rx) =
         mpsc::channel::<T::Msg>(server.ws_data_channel_capacity);
     let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
+    // Per-carrier downstream-throttle monitor: `Some` only on a padded path
+    // with detection enabled (the control notice rides a cover frame, so only
+    // a padded SS-over-WS / -XHTTP carrier — i.e. our own clients — can ever
+    // receive it). `None` keeps the carrier byte-for-byte identical to today.
+    let throttle_monitor = carrier_padding::throttle_params_for_path(&route.path)
+        .map(super::throughput_monitor::ThroughputMonitor::new);
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
@@ -282,7 +309,15 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
         // Idle cover traffic on the downlink when this path opts into it.
         // Covers SS-over-WS and SS-over-XHTTP alike (both ride this writer).
         carrier_padding::cover_for_path(&route.path),
+        throttle_monitor.clone(),
     ));
+    // Detection tick. Bounded: aborted when this handle drops at carrier
+    // teardown, so it never outlives the carrier.
+    let _throttle_tick = throttle_monitor.clone().map(|m| {
+        crate::server::abort::AbortOnDrop::new(tokio::spawn(
+            super::throughput_monitor::run_throttle_tick(m),
+        ))
+    });
 
     let mut decryptor = AeadStreamDecryptor::new(route.users.clone());
     // Try last-seen user first when this peer reconnects: cache hit avoids
@@ -294,7 +329,7 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
         decryptor.set_user_hint(Some(hint));
     }
     let mut plaintext_buffer = ScratchBuf::take();
-    let mut state = WsTcpRelayState::new(resume, route.padding);
+    let mut state = WsTcpRelayState::new(resume, route.padding, throttle_monitor);
     let mut client_closed = false;
 
     // Periodic WebSocket Ping sent from server to client.
@@ -815,6 +850,8 @@ where
                 });
             }
             let ring_for_task = state.downlink_ring.clone();
+            let monitor_for_sink = state.throttle_monitor.clone();
+            let monitor_for_relay = state.throttle_monitor.clone();
             let tx = outbound.data_tx.clone();
             let make_binary = outbound.make_binary;
             let make_close = outbound.make_close;
@@ -835,6 +872,7 @@ where
                         make_close,
                         metrics: sink_metrics,
                         padding: sink_padding,
+                        monitor: monitor_for_sink,
                     },
                     &mut encryptor,
                     relay_metrics,
@@ -843,6 +881,7 @@ where
                     relay_user_id,
                     Some(cancel_for_task),
                     ring_for_task,
+                    monitor_for_relay,
                 )
                 .await
             }));
@@ -948,6 +987,8 @@ where
             }
         }
         let ring_for_task = state.downlink_ring.clone();
+        let monitor_for_sink = state.throttle_monitor.clone();
+        let monitor_for_relay = state.throttle_monitor.clone();
         state.upstream_to_client = Some(tokio::spawn(async move {
             super::super::relay::relay_upstream_to_client(
                 upstream_reader,
@@ -957,6 +998,7 @@ where
                     make_close,
                     metrics: sink_metrics,
                     padding: sink_padding,
+                    monitor: monitor_for_sink,
                 },
                 &mut encryptor,
                 relay_metrics,
@@ -965,6 +1007,7 @@ where
                 relay_user_id,
                 Some(cancel_for_task),
                 ring_for_task,
+                monitor_for_relay,
             )
             .await
         }));

@@ -119,11 +119,21 @@ async fn connect_tcp_uplink(
     // per-uplink dials plain and the padded server path drops it while the
     // (correctly scoped) probe stays green. Mirrors the SOCKS path in
     // `outline-ws-rust`'s `proxy/tcp/failover.rs::connect_tcp_uplink`.
-    outline_uplink::dial::with_uplink_padding_scope(
+    let (writer, reader) = outline_uplink::dial::with_uplink_padding_scope(
         &candidate.uplink,
         connect_tcp_uplink_inner(uplinks, candidate, target),
     )
-    .await
+    .await?;
+    // Install the carrier control-signal handler so a server downstream-throttle
+    // notice on this carrier penalises the uplink and migrates traffic away.
+    // No-op (handle is `None`) unless the client opted in; ignored by every
+    // non-VLESS-over-WS reader.
+    let reader =
+        match outline_uplink::dial::throttle_handle(uplinks, candidate.index, TransportKind::Tcp) {
+            Some(handle) => reader.with_throttle_handle(handle),
+            None => reader,
+        };
+    Ok((writer, reader))
 }
 
 async fn connect_tcp_uplink_inner(

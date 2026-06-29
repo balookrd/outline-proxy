@@ -45,6 +45,11 @@ pub trait FrameSource: Send + Sync + 'static {
     /// Read by the proxy/uplink classifiers to decide whether to mark the
     /// uplink down.
     fn closed_cleanly(&self) -> bool;
+    /// Installs a handler for out-of-band carrier control signals (e.g. a
+    /// server-initiated downstream-throttle notice). Default no-op: only the
+    /// padding-aware WS source recognises such signals; every other source
+    /// ignores the call so callers can wire it unconditionally.
+    fn set_throttle_handle(&mut self, _handle: crate::ThrottleSignalHandle) {}
 }
 
 /// Bidirectional packet-oriented channel. Each `send_datagram` yields

@@ -101,6 +101,18 @@ impl TcpReader {
         }
     }
 
+    /// Installs a carrier control-signal handler (server-initiated downstream
+    /// throttle). Acts on the padded WS carriers — VLESS-over-WS and
+    /// SS-over-WS — whose readers decode the control cover frame; the
+    /// raw-socket / raw-QUIC variants ignore the call.
+    pub fn with_throttle_handle(self, handle: crate::ThrottleSignalHandle) -> Self {
+        match self {
+            Self::Vless(r) => Self::Vless(r.with_throttle_handle(handle)),
+            Self::Ws(r) => Self::Ws(r.with_throttle_handle(handle)),
+            other => other,
+        }
+    }
+
     /// Attach diagnostic context to a WebSocket reader; no-op for socket readers.
     /// VLESS reader takes its diag at construction (in `vless_tcp_pair_from_ws`),
     /// so this is a no-op for `Vless` here.

@@ -6,6 +6,32 @@
 //! to the configured uplink server.
 
 use std::fmt;
+use std::sync::Arc;
+
+/// Callback invoked when the peer delivers an out-of-band carrier control
+/// signal (recognised by the padding decoder) on a WS frame source. Kept as a
+/// plain `Fn` so the lower transport crate stays free of any dependency on the
+/// uplink manager: the dispatch layer constructs it with the manager + uplink
+/// index captured, and it spawns the actual (async) reaction itself.
+pub type ThrottleSignalHandle =
+    Arc<dyn Fn(outline_wire::padding::ControlSignal) + Send + Sync + 'static>;
+
+/// Typed marker placed in an `anyhow` error chain to represent a
+/// server-initiated downstream-throttle signal (the server observed sustained
+/// throttling on the carrier toward this client and asked it to move uplinks).
+/// Deliberately distinct from [`TryAgain`]: unlike a per-target 1013, this DOES
+/// warrant an uplink-level penalty + cooldown so the client migrates away. The
+/// uplink classifier matches it via `downcast_ref::<DownstreamThrottle>()`.
+#[derive(Debug)]
+pub struct DownstreamThrottle;
+
+impl fmt::Display for DownstreamThrottle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "server-initiated downstream throttle signal")
+    }
+}
+
+impl std::error::Error for DownstreamThrottle {}
 
 /// Typed marker placed in an `anyhow` error chain whenever a WebSocket
 /// connection closes cleanly (Close frame or EOF from the peer). Classifiers
@@ -307,7 +333,10 @@ pub use fingerprint_profile::{
 // carriers (anti TLS-in-TLS). Wired once at startup; default disabled keeps the
 // wire byte-for-byte identical to pre-padding builds. Config-synchronised with
 // the server, which enables it per-path.
-pub use carrier_padding::{CarrierPadding, carrier_padding_default_on, init_carrier_padding};
+pub use carrier_padding::{
+    CarrierPadding, carrier_padding_default_on, init_carrier_padding, init_react_to_throttle,
+    react_to_throttle_enabled,
+};
 
 // Transport lifetime guards — published because the uplink crate pairs a
 // `UpstreamTransportGuard` to every connection it hands out.

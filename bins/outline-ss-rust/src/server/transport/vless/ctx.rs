@@ -196,6 +196,12 @@ pub(in crate::server::transport) struct VlessRelayState {
     ///
     /// [Ack-Prefix Protocol v1]: ../../../../docs/SESSION-RESUMPTION.md
     pub(in crate::server::transport) upstream_bytes_acked: Arc<AtomicU64>,
+    /// Per-carrier downstream-throttle monitor, `Some` only on a padded path
+    /// with detection enabled. The upstream→client relay feeds it inbound
+    /// bytes and the send backlog; the writer emits a control frame when it
+    /// fires. Cloned into each relay task spawn.
+    pub(in crate::server::transport) throttle_monitor:
+        Option<Arc<crate::server::transport::throughput_monitor::ThroughputMonitor>>,
 }
 
 pub(in crate::server::transport) struct VlessWsOutbound<'a, Msg> {
@@ -205,7 +211,12 @@ pub(in crate::server::transport) struct VlessWsOutbound<'a, Msg> {
 }
 
 impl VlessRelayState {
-    pub(super) fn new(resume: ResumeContext) -> Self {
+    pub(super) fn new(
+        resume: ResumeContext,
+        throttle_monitor: Option<
+            Arc<crate::server::transport::throughput_monitor::ThroughputMonitor>,
+        >,
+    ) -> Self {
         Self {
             header_buffer: Vec::with_capacity(128),
             upstream: UpstreamSession::None,
@@ -220,6 +231,7 @@ impl VlessRelayState {
             // v2 ring is allocated lazily at upstream-handshake time.
             // On resume hit it is restored from `ParkedTcp::downlink_ring`.
             downlink_ring: None,
+            throttle_monitor,
         }
     }
 }

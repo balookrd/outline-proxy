@@ -32,6 +32,62 @@ pub const PADDING_FRAME_HEADER_LEN: usize = 4;
 /// ceiling). Exposed so the transport layers can chunk to it before framing.
 pub const MAX_PADDING_SEGMENT: usize = u16::MAX as usize;
 
+/// Magic prefix that marks a cover frame (`real_len = 0`) as carrying an
+/// out-of-band control signal in its pad segment rather than random filler.
+/// "OCTL" = Outline ConTroL.
+pub const CONTROL_MAGIC: [u8; 4] = *b"OCTL";
+
+/// Control-frame format version (the byte after the magic).
+pub const CONTROL_VERSION: u8 = 1;
+
+/// Bytes the decoder probes at the head of a cover frame's pad to recognise a
+/// control signal: `magic(4) | version(1) | opcode(1)`.
+const CONTROL_PREFIX_LEN: usize = CONTROL_MAGIC.len() + 2;
+
+/// Out-of-band control signals the server can piggyback on a cover frame.
+///
+/// A control frame is wire-identical to a cover frame (`real_len = 0`), so a
+/// peer that does not understand it drops the pad transparently — the signal
+/// is simply not delivered, nothing breaks. Both ends must opt in, exactly
+/// like the padding scheme itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlSignal {
+    /// The server observed sustained downstream throttling on this carrier and
+    /// asks the client to move its traffic to another uplink.
+    ThrottleSwitchUplink,
+}
+
+impl ControlSignal {
+    const OP_THROTTLE_SWITCH: u8 = 0x01;
+
+    /// The 1-byte opcode that identifies this signal on the wire.
+    pub const fn opcode(self) -> u8 {
+        match self {
+            ControlSignal::ThrottleSwitchUplink => Self::OP_THROTTLE_SWITCH,
+        }
+    }
+
+    const fn from_opcode(opcode: u8) -> Option<Self> {
+        match opcode {
+            Self::OP_THROTTLE_SWITCH => Some(ControlSignal::ThrottleSwitchUplink),
+            _ => None,
+        }
+    }
+}
+
+/// Parses a `CONTROL_PREFIX_LEN`-byte probe taken from the head of a cover
+/// frame's pad. Returns the signal only on an exact magic + known-version +
+/// known-opcode match; anything else is ordinary random pad.
+fn parse_control(probe: &[u8; CONTROL_PREFIX_LEN]) -> Option<ControlSignal> {
+    if probe[..CONTROL_MAGIC.len()] != CONTROL_MAGIC {
+        return None;
+    }
+    if probe[CONTROL_MAGIC.len()] != CONTROL_VERSION {
+        return None;
+    }
+    ControlSignal::from_opcode(probe[CONTROL_MAGIC.len() + 1])
+}
+
 /// Framing error. Only the encoder can fail, and only when a caller hands it
 /// a segment that overflows the `u16` length field — the streaming decoder
 /// reads nothing but lengths it wrote itself, so it is infallible by
@@ -84,6 +140,24 @@ impl PaddingScheme {
     }
 }
 
+/// Encodes a [`ControlSignal`] as a cover frame (`real_len = 0`) whose pad
+/// begins with `magic | version | opcode`, optionally followed by `extra_pad`
+/// (caller-drawn random bytes) so the frame's length still varies like an
+/// ordinary cover write. Wire-identical to a cover frame: a peer that does not
+/// recognise the magic drops the whole pad and never sees the signal.
+pub fn encode_control_frame_into(
+    out: &mut Vec<u8>,
+    signal: ControlSignal,
+    extra_pad: &[u8],
+) -> Result<(), PaddingError> {
+    let mut pad = Vec::with_capacity(CONTROL_PREFIX_LEN + extra_pad.len());
+    pad.extend_from_slice(&CONTROL_MAGIC);
+    pad.push(CONTROL_VERSION);
+    pad.push(signal.opcode());
+    pad.extend_from_slice(extra_pad);
+    encode_frame_into(out, &[], &pad)
+}
+
 /// Frames `real` with `pad` into `out`: `real_len | pad_len | real | pad`.
 /// `pad` is caller-drawn random bytes (length goes on the wire; contents are
 /// never inspected on decode). Appends to `out` so a caller can frame several
@@ -112,8 +186,9 @@ enum DecodeState {
     Header,
     /// Copying out the real segment; `pad` is the pad count that follows it.
     Real { real_rem: usize, pad: usize },
-    /// Discarding the pad segment.
-    Pad { pad_rem: usize },
+    /// Discarding the pad segment. `inspect` is set only for a cover frame
+    /// (`real_len == 0`), whose pad head is probed for a control signal.
+    Pad { pad_rem: usize, inspect: bool },
 }
 
 /// Streaming inverse of [`encode_frame_into`]: feed it whatever bytes arrive,
@@ -125,6 +200,12 @@ pub struct PaddingDecoder {
     state: DecodeState,
     header: [u8; PADDING_FRAME_HEADER_LEN],
     header_filled: usize,
+    /// Probe buffer for the head of a cover frame's pad, used to recognise a
+    /// control signal. Reset at the start of every cover frame.
+    ctrl_buf: [u8; CONTROL_PREFIX_LEN],
+    ctrl_filled: usize,
+    /// A control signal recognised since the last [`Self::take_control`] call.
+    pending_control: Option<ControlSignal>,
 }
 
 impl Default for PaddingDecoder {
@@ -139,7 +220,17 @@ impl PaddingDecoder {
             state: DecodeState::Header,
             header: [0; PADDING_FRAME_HEADER_LEN],
             header_filled: 0,
+            ctrl_buf: [0; CONTROL_PREFIX_LEN],
+            ctrl_filled: 0,
+            pending_control: None,
         }
+    }
+
+    /// Returns and clears any control signal recognised since the last call.
+    /// The transport drains this after every [`Self::push`] to route an
+    /// out-of-band signal without surfacing it as payload.
+    pub fn take_control(&mut self) -> Option<ControlSignal> {
+        self.pending_control.take()
     }
 
     /// Consumes all of `input`, appending recovered real payload to `out`.
@@ -157,6 +248,11 @@ impl PaddingDecoder {
                         self.header_filled = 0;
                         let real = u16::from_be_bytes([self.header[0], self.header[1]]) as usize;
                         let pad = u16::from_be_bytes([self.header[2], self.header[3]]) as usize;
+                        // A cover frame (real == 0) may carry a control signal
+                        // in its pad head: arm a fresh probe buffer for it.
+                        if real == 0 {
+                            self.ctrl_filled = 0;
+                        }
                         self.state = next_after_header(real, pad);
                     }
                 },
@@ -168,17 +264,29 @@ impl PaddingDecoder {
                     self.state = if real_rem > 0 {
                         DecodeState::Real { real_rem, pad }
                     } else if pad > 0 {
-                        DecodeState::Pad { pad_rem: pad }
+                        // Pad after real payload is never a control frame.
+                        DecodeState::Pad { pad_rem: pad, inspect: false }
                     } else {
                         DecodeState::Header
                     };
                 },
-                DecodeState::Pad { pad_rem } => {
+                DecodeState::Pad { pad_rem, inspect } => {
                     let take = pad_rem.min(input.len());
+                    if inspect && self.ctrl_filled < CONTROL_PREFIX_LEN {
+                        let want = (CONTROL_PREFIX_LEN - self.ctrl_filled).min(take);
+                        self.ctrl_buf[self.ctrl_filled..self.ctrl_filled + want]
+                            .copy_from_slice(&input[..want]);
+                        self.ctrl_filled += want;
+                        if self.ctrl_filled == CONTROL_PREFIX_LEN
+                            && let Some(sig) = parse_control(&self.ctrl_buf)
+                        {
+                            self.pending_control = Some(sig);
+                        }
+                    }
                     input = &input[take..];
                     let pad_rem = pad_rem - take;
                     self.state = if pad_rem > 0 {
-                        DecodeState::Pad { pad_rem }
+                        DecodeState::Pad { pad_rem, inspect }
                     } else {
                         DecodeState::Header
                     };
@@ -202,7 +310,8 @@ fn next_after_header(real: usize, pad: usize) -> DecodeState {
     if real > 0 {
         DecodeState::Real { real_rem: real, pad }
     } else if pad > 0 {
-        DecodeState::Pad { pad_rem: pad }
+        // Cover frame: probe its pad head for a control signal.
+        DecodeState::Pad { pad_rem: pad, inspect: true }
     } else {
         DecodeState::Header
     }

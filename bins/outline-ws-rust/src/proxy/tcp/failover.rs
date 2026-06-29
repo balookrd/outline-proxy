@@ -130,11 +130,21 @@ pub(super) async fn connect_tcp_uplink(
     // the dial future returns — so the scope must wrap this entire call, not
     // just the dial (the manager's `dial_in_uplink_scope` covers only the dial,
     // which is enough for the TLS fingerprint but not for padding).
-    outline_uplink::dial::with_uplink_padding_scope(
+    let mut connected = outline_uplink::dial::with_uplink_padding_scope(
         &candidate.uplink,
         connect_tcp_uplink_inner(uplinks, candidate, target),
     )
-    .await
+    .await?;
+    // Install the carrier control-signal handler so a server downstream-throttle
+    // notice on this carrier penalises the uplink and migrates traffic away.
+    // No-op (handle is `None`) unless the client opted in; ignored by every
+    // non-VLESS-over-WS reader.
+    if let Some(handle) =
+        outline_uplink::dial::throttle_handle(uplinks, candidate.index, TransportKind::Tcp)
+    {
+        connected.reader = connected.reader.with_throttle_handle(handle);
+    }
+    Ok(connected)
 }
 
 async fn connect_tcp_uplink_inner(
