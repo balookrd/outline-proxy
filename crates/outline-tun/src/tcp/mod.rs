@@ -36,7 +36,9 @@ use self::state_machine::{
 };
 
 #[cfg(test)]
-use self::state_machine::{retransmit_budget_exhausted, retransmit_due_segment};
+use self::state_machine::{
+    advertised_receive_window, retransmit_budget_exhausted, retransmit_due_segment,
+};
 #[cfg(test)]
 use outline_transport::UpstreamTransportGuard;
 

@@ -5,10 +5,11 @@ use tokio::sync::{Mutex, Notify, watch};
 use outline_metrics as metrics;
 use outline_uplink::UplinkManager;
 
-use super::super::super::super::TcpFlowKey;
 use super::super::super::super::state_machine::{
-    TcpFlowState, TcpFlowStatus, UpstreamWriter, client_fin_seen,
+    TcpFlowState, TcpFlowStatus, UpstreamWriter, advertised_receive_window, build_flow_ack_packet,
+    client_fin_seen,
 };
+use super::super::super::super::{TCP_FLAG_ACK, TcpFlowKey};
 use super::super::super::{TunTcpEngine, close_upstream_writer};
 
 impl TunTcpEngine {
@@ -40,6 +41,21 @@ impl TunTcpEngine {
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
+                // Snapshot whether we are currently advertising a *closed*
+                // receive window. If so the client has stalled its uplink: the
+                // drain below shrinks `buffered_client_bytes` and reopens the
+                // window, but without an explicit update the client only learns
+                // of it via its own zero-window probe — whose backoff grows and
+                // throttles uplink throughput to a fraction of the link. We send
+                // a proactive window update after draining to wake it at once.
+                let window_was_closed = {
+                    let state = flow.lock().await;
+                    if matches!(state.status, TcpFlowStatus::Closed) {
+                        return;
+                    }
+                    advertised_receive_window(&state) == 0
+                };
+
                 // Drain everything currently buffered, in order. Popping
                 // under the flow lock and being the only writer keeps the
                 // upstream byte stream correctly ordered.
@@ -87,6 +103,31 @@ impl TunTcpEngine {
                         drop(state);
                         close_upstream_writer(Some(upstream_writer)).await;
                         return;
+                    }
+                }
+
+                // Proactive window update: if we had advertised a closed window
+                // and the drain reopened it, tell the client now instead of
+                // waiting for its (back-off-delayed) zero-window probe.
+                if window_was_closed {
+                    let ack = {
+                        let state = flow.lock().await;
+                        if !matches!(state.status, TcpFlowStatus::Closed)
+                            && advertised_receive_window(&state) > 0
+                        {
+                            build_flow_ack_packet(
+                                &state,
+                                state.server_seq,
+                                state.rcv_nxt,
+                                TCP_FLAG_ACK,
+                            )
+                            .ok()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(ack) = ack {
+                        let _ = engine.inner.writer.write_packet(&ack).await;
                     }
                 }
 

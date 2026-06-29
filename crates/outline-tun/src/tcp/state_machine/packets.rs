@@ -236,7 +236,7 @@ fn max_sack_block_count(base_option_len: usize) -> usize {
         .unwrap_or(0)
 }
 
-fn advertised_receive_window(state: &TcpFlowState) -> u16 {
+pub(in crate::tcp) fn advertised_receive_window(state: &TcpFlowState) -> u16 {
     let buffered_bytes = buffered_client_bytes(state);
     let available = state.receive_window_capacity.saturating_sub(buffered_bytes);
     let scaled = available >> TCP_SERVER_WINDOW_SCALE;
