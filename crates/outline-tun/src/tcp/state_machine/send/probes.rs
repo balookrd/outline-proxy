@@ -4,7 +4,8 @@ use anyhow::Result;
 
 use super::super::super::TCP_FLAG_ACK;
 use super::super::congestion::{
-    current_retransmission_timeout, preferred_retransmit_index, server_segment_is_sacked,
+    current_retransmission_timeout, fast_retransmit_index, preferred_retransmit_index,
+    server_segment_is_sacked,
 };
 use super::super::packets::{build_flow_ack_packet, build_flow_packet};
 use super::super::types::{TcpFlowState, TcpFlowStatus};
@@ -61,14 +62,19 @@ pub(in crate::tcp) fn maybe_emit_keepalive_probe(
 pub(in crate::tcp) fn retransmit_oldest_unacked_packet(
     state: &mut TcpFlowState,
 ) -> Result<Option<Vec<u8>>> {
-    let index = preferred_retransmit_index(state);
+    let index = fast_retransmit_index(state);
     let Some(index) = index else {
         return Ok(None);
     };
+    let epoch = state.recovery_epoch;
     let (sequence_number, acknowledgement_number, flags, payload) = {
         let segment = &mut state.unacked_server_segments[index];
         segment.last_sent = Instant::now();
+        // Karn: count every wire put-back so RTT samples skip retransmits.
         segment.retransmits = segment.retransmits.saturating_add(1);
+        // Mark this hole as resent in the current episode so a follow-up
+        // partial SACK does not re-fire it; the RTO path covers a lost resend.
+        segment.fast_retransmit_epoch = epoch;
         (
             segment.sequence_number,
             segment.acknowledgement_number,
@@ -104,6 +110,9 @@ pub(in crate::tcp) fn retransmit_due_segment(state: &mut TcpFlowState) -> Result
         let segment = &mut state.unacked_server_segments[index];
         segment.last_sent = Instant::now();
         segment.retransmits = segment.retransmits.saturating_add(1);
+        // RTO-driven resend: this is the genuine dead-path signal the budget
+        // abort keys off (see `retransmit_budget_exhausted`).
+        segment.rto_retransmits = segment.rto_retransmits.saturating_add(1);
         (
             segment.sequence_number,
             segment.acknowledgement_number,

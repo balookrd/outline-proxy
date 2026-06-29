@@ -73,9 +73,14 @@ pub(in crate::tcp) fn retransmit_budget_exhausted(
     state: &TcpFlowState,
     config: &TunTcpConfig,
 ) -> bool {
+    // Key off RTO-driven retransmits only. SACK fast-retransmits (counted in
+    // `retransmits`) are recovery work, not a dead-path signal: a burst of
+    // partial SACKs on a lossy downlink must not falsely reap a live flow.
+    // A flow is dead only when an un-SACKed hole has been resent
+    // `max_retransmits` times by the RTO timer (tens of seconds of silence).
     state
         .unacked_server_segments
         .iter()
         .filter(|segment| !server_segment_is_sacked(state, segment))
-        .any(|segment| segment.retransmits >= config.max_retransmits)
+        .any(|segment| segment.rto_retransmits >= config.max_retransmits)
 }

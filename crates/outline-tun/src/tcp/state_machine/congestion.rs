@@ -141,6 +141,9 @@ fn enter_fast_recovery(state: &mut TcpFlowState) {
     );
     state.fast_recovery_end = Some(state.server_seq);
     state.duplicate_ack_count = TCP_FAST_RETRANSMIT_DUP_ACKS;
+    // New recovery episode: bump the epoch so holes carrying a stale
+    // `fast_retransmit_epoch` are eligible for one fresh fast-retransmit.
+    state.recovery_epoch = state.recovery_epoch.saturating_add(1);
 }
 
 fn exit_fast_recovery(state: &mut TcpFlowState) {
@@ -205,7 +208,7 @@ pub(in crate::tcp) fn process_server_ack(
                 state.congestion_window = state
                     .slow_start_threshold
                     .saturating_add(server_max_segment_payload(state));
-                retransmit_now = preferred_retransmit_index(state).is_some();
+                retransmit_now = fast_retransmit_index(state).is_some();
             }
         }
 
@@ -225,7 +228,7 @@ pub(in crate::tcp) fn process_server_ack(
                 bytes_acked: 0,
                 rtt_sample: None,
                 grow_congestion_window: false,
-                retransmit_now: scoreboard_advanced && preferred_retransmit_index(state).is_some(),
+                retransmit_now: scoreboard_advanced && fast_retransmit_index(state).is_some(),
             }
         } else if state.duplicate_ack_count >= TCP_FAST_RETRANSMIT_DUP_ACKS {
             enter_fast_recovery(state);
@@ -233,7 +236,7 @@ pub(in crate::tcp) fn process_server_ack(
                 bytes_acked: 0,
                 rtt_sample: None,
                 grow_congestion_window: false,
-                retransmit_now: preferred_retransmit_index(state).is_some(),
+                retransmit_now: fast_retransmit_index(state).is_some(),
             }
         } else {
             AckEffect::none()
@@ -265,6 +268,34 @@ pub(in crate::tcp) fn preferred_retransmit_index(state: &TcpFlowState) -> Option
         .unacked_server_segments
         .iter()
         .position(|segment| !server_segment_is_sacked(state, segment))
+}
+
+/// SACK-driven fast-retransmit candidate. Targets the first un-SACKed hole
+/// below the highest SACKed block — but, unlike [`preferred_retransmit_index`],
+/// it skips holes already fast-retransmitted in the *current* recovery episode
+/// (`fast_retransmit_epoch == recovery_epoch`). RFC 6675 resends each hole at
+/// most once per episode; a lost retransmit is recovered by the RTO path, not
+/// by re-firing on every incoming partial SACK. This is what stops a burst of
+/// duplicate ACKs from re-sending the same hole dozens of times.
+pub(in crate::tcp) fn fast_retransmit_index(state: &TcpFlowState) -> Option<usize> {
+    // A hole is fresh for this episode when it is neither SACKed nor already
+    // fast-retransmitted under the current `recovery_epoch`.
+    let fresh = |segment: &ServerSegment| {
+        !server_segment_is_sacked(state, segment)
+            && segment.fast_retransmit_epoch != state.recovery_epoch
+    };
+    if let Some(highest_sacked_end) = highest_sacked_end(state) {
+        // SACK is present: a hole is only data still missing *below* the
+        // highest SACKed block. Anything above it is the normal in-flight tail,
+        // not a loss, so there is no Reno fallback here — returning None lets
+        // the flow send new data instead of spuriously resending the tail.
+        return state.unacked_server_segments.iter().position(|segment| {
+            fresh(segment) && seq_lt(segment.sequence_number, highest_sacked_end)
+        });
+    }
+
+    // No SACK info (Reno): the oldest still-fresh segment is the presumed loss.
+    state.unacked_server_segments.iter().position(fresh)
 }
 
 pub(in crate::tcp) fn congestion_window_remaining(state: &TcpFlowState) -> usize {

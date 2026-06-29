@@ -594,6 +594,8 @@ async fn process_server_ack_marks_sacked_segments_without_cumulative_ack() {
             last_sent: Instant::now(),
             first_sent: Instant::now(),
             retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
         super::ServerSegment {
             sequence_number: 1004,
@@ -603,6 +605,8 @@ async fn process_server_ack_marks_sacked_segments_without_cumulative_ack() {
             last_sent: Instant::now(),
             first_sent: Instant::now(),
             retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
     ]);
 
@@ -620,6 +624,7 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
     state.slow_start_threshold = 2400;
     state.congestion_window = 4000;
     state.fast_recovery_end = Some(1016);
+    state.recovery_epoch = 1;
     state.sack_scoreboard = vec![SequenceRange { start: 1008, end: 1012 }];
     state.unacked_server_segments = VecDeque::from([
         super::ServerSegment {
@@ -630,6 +635,8 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             last_sent: Instant::now() - Duration::from_secs(2),
             first_sent: Instant::now() - Duration::from_millis(200),
             retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
         super::ServerSegment {
             sequence_number: 1004,
@@ -639,6 +646,8 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             last_sent: Instant::now() - Duration::from_secs(2),
             first_sent: Instant::now() - Duration::from_secs(2),
             retransmits: 1,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
         super::ServerSegment {
             sequence_number: 1008,
@@ -648,6 +657,8 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             last_sent: Instant::now() - Duration::from_secs(2),
             first_sent: Instant::now() - Duration::from_secs(2),
             retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
         super::ServerSegment {
             sequence_number: 1012,
@@ -657,6 +668,8 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             last_sent: Instant::now() - Duration::from_secs(2),
             first_sent: Instant::now() - Duration::from_secs(2),
             retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
     ]);
 
@@ -688,6 +701,8 @@ async fn process_server_ack_exits_fast_recovery_once_recovery_point_is_acked() {
             last_sent: Instant::now() - Duration::from_secs(2),
             first_sent: Instant::now() - Duration::from_millis(200),
             retransmits: 1,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
         super::ServerSegment {
             sequence_number: 1004,
@@ -697,6 +712,8 @@ async fn process_server_ack_exits_fast_recovery_once_recovery_point_is_acked() {
             last_sent: Instant::now() - Duration::from_secs(2),
             first_sent: Instant::now() - Duration::from_secs(2),
             retransmits: 1,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
     ]);
 
@@ -706,6 +723,107 @@ async fn process_server_ack_exits_fast_recovery_once_recovery_point_is_acked() {
     assert!(!effect.retransmit_now);
     assert!(state.fast_recovery_end.is_none());
     assert_eq!(state.congestion_window, state.slow_start_threshold);
+}
+
+// --- SACK fast-retransmit budget (regression: Kinopoisk direct-video RST) ---
+//
+// A burst-loss on the downlink makes the client send many duplicate ACKs whose
+// SACK islands keep growing. The old code fast-retransmitted the *same* hole on
+// every such partial SACK and counted each against `max_retransmits`, so a live
+// flow was reaped with `retransmit_budget_exhausted` in ~100 ms. These pin the
+// fix: a hole is fast-retransmitted at most once per recovery episode, and the
+// budget keys off RTO-driven retransmits only.
+
+fn unacked_segment(seq: u32, payload: &'static [u8]) -> super::ServerSegment {
+    super::ServerSegment {
+        sequence_number: seq,
+        acknowledgement_number: 500,
+        flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+        payload: payload.to_vec().into(),
+        last_sent: Instant::now(),
+        first_sent: Instant::now(),
+        retransmits: 0,
+        rto_retransmits: 0,
+        fast_retransmit_epoch: 0,
+    }
+}
+
+#[tokio::test]
+async fn fast_retransmit_resends_a_hole_at_most_once_per_episode() {
+    let mut state = tcp_flow_state_for_tests().await;
+    state.last_client_ack = 1000;
+    state.server_seq = 1020;
+    state.slow_start_threshold = 4000;
+    state.congestion_window = 8000;
+    // One hole at 1000; everything above it gets SACKed incrementally.
+    state.unacked_server_segments = VecDeque::from([
+        unacked_segment(1000, b"AAAA"),
+        unacked_segment(1004, b"BBBB"),
+        unacked_segment(1008, b"CCCC"),
+        unacked_segment(1012, b"DDDD"),
+        unacked_segment(1016, b"EEEE"),
+    ]);
+
+    // Three dup-ACKs (cum=1000) with SACK covering 1004..1012 enter fast
+    // recovery and request the first (and only) retransmit of the hole.
+    super::process_server_ack(&mut state, 1000, &[(1004, 1012)]);
+    super::process_server_ack(&mut state, 1000, &[(1004, 1012)]);
+    let third = super::process_server_ack(&mut state, 1000, &[(1004, 1012)]);
+    assert!(third.retransmit_now, "3rd dup-ACK enters recovery and retransmits the hole");
+
+    let pkt = super::retransmit_oldest_unacked_packet(&mut state).unwrap().unwrap();
+    assert_eq!(super::parse_tcp_packet(&pkt).unwrap().sequence_number, 1000);
+    let hole = &state.unacked_server_segments[0];
+    assert_eq!(hole.sequence_number, 1000);
+    assert_eq!(hole.retransmits, 1, "Karn counter bumps on every wire put-back");
+    assert_eq!(hole.rto_retransmits, 0, "fast-retransmit is not an RTO event");
+
+    // A 4th dup-ACK whose SACK now also covers 1012..1016 advances the
+    // scoreboard, leaving 1000 the only remaining hole — already resent this
+    // episode, so it must NOT be fast-retransmitted again.
+    let fourth = super::process_server_ack(&mut state, 1000, &[(1004, 1016)]);
+    assert!(
+        !fourth.retransmit_now,
+        "same hole must not be re-fast-retransmitted on a follow-up partial SACK"
+    );
+    assert!(super::retransmit_oldest_unacked_packet(&mut state).unwrap().is_none());
+    assert_eq!(state.unacked_server_segments[0].retransmits, 1);
+}
+
+#[tokio::test]
+async fn budget_keys_off_rto_retransmits_not_fast_retransmits() {
+    let config = TunTcpConfig {
+        max_retransmits: 3,
+        ..test_tun_tcp_config()
+    };
+    let mut state = tcp_flow_state_for_tests().await;
+    let mut segment = unacked_segment(1000, b"AAAA");
+    // A storm of SACK-driven fast-retransmits must not look like a dead path.
+    segment.retransmits = 100;
+    segment.rto_retransmits = 0;
+    state.unacked_server_segments = VecDeque::from([segment]);
+    assert!(
+        !super::retransmit_budget_exhausted(&state, &config),
+        "fast-retransmits alone never exhaust the budget"
+    );
+
+    // Only genuine RTO-driven resends count toward the dead-path budget.
+    state.unacked_server_segments[0].rto_retransmits = 3;
+    assert!(super::retransmit_budget_exhausted(&state, &config));
+}
+
+#[tokio::test]
+async fn rto_retransmit_bumps_the_rto_counter() {
+    let mut state = tcp_flow_state_for_tests().await;
+    state.retransmission_timeout = Duration::from_millis(200);
+    let mut segment = unacked_segment(1000, b"AAAA");
+    segment.last_sent = Instant::now() - Duration::from_secs(2);
+    state.unacked_server_segments = VecDeque::from([segment]);
+
+    let _ = super::retransmit_due_segment(&mut state).unwrap().unwrap();
+    let seg = &state.unacked_server_segments[0];
+    assert_eq!(seg.rto_retransmits, 1, "RTO resend is the dead-path signal");
+    assert_eq!(seg.retransmits, 1);
 }
 
 #[tokio::test]
@@ -839,6 +957,7 @@ async fn build_flow_ack_packet_limits_sack_blocks_when_timestamps_are_enabled() 
 async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
     let mut state = tcp_flow_state_for_tests().await;
     state.rcv_nxt = 500;
+    state.recovery_epoch = 1;
     state.sack_scoreboard = vec![SequenceRange { start: 1004, end: 1008 }];
     state.unacked_server_segments = VecDeque::from([
         super::ServerSegment {
@@ -849,6 +968,8 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
             last_sent: Instant::now() - Duration::from_secs(2),
             first_sent: Instant::now() - Duration::from_secs(2),
             retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
         super::ServerSegment {
             sequence_number: 1004,
@@ -858,6 +979,8 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
             last_sent: Instant::now() - Duration::from_secs(2),
             first_sent: Instant::now() - Duration::from_secs(2),
             retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
         super::ServerSegment {
             sequence_number: 1008,
@@ -867,6 +990,8 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
             last_sent: Instant::now() - Duration::from_secs(2),
             first_sent: Instant::now() - Duration::from_secs(2),
             retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
     ]);
 
@@ -902,6 +1027,8 @@ async fn timeout_congestion_event_reduces_cwnd_and_backs_off_rto() {
         last_sent: Instant::now() - Duration::from_secs(2),
         first_sent: Instant::now() - Duration::from_secs(2),
         retransmits: 0,
+        rto_retransmits: 0,
+        fast_retransmit_epoch: 0,
     }]);
 
     super::note_congestion_event(&mut state, true);
@@ -1281,6 +1408,8 @@ async fn process_server_ack_handles_snd_nxt_wrap() {
             last_sent: Instant::now(),
             first_sent: Instant::now(),
             retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
         super::ServerSegment {
             sequence_number: base.wrapping_add(4),
@@ -1290,6 +1419,8 @@ async fn process_server_ack_handles_snd_nxt_wrap() {
             last_sent: Instant::now(),
             first_sent: Instant::now(),
             retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
         },
     ]);
 
@@ -1318,6 +1449,8 @@ async fn process_server_ack_stale_ack_across_wrap_is_rejected() {
         last_sent: Instant::now(),
         first_sent: Instant::now(),
         retransmits: 0,
+        rto_retransmits: 0,
+        fast_retransmit_epoch: 0,
     }]);
 
     let stale = u32::MAX.wrapping_sub(5);
@@ -1749,6 +1882,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         last_client_ack: 1000,
         duplicate_ack_count: 0,
         fast_recovery_end: None,
+        recovery_epoch: 0,
         receive_window_capacity: 262_144,
         smoothed_rtt: None,
         rttvar: super::TCP_INITIAL_RTO / 2,
