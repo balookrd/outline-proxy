@@ -76,14 +76,30 @@ fn reject_unknown_command() {
 }
 
 #[test]
-fn parse_vless_mux_request() {
+fn parse_vless_mux_request_has_no_address() {
+    // Both Xray-core and sing-box omit the port/atyp/address for the Mux
+    // command and begin the mux frame stream immediately after the
+    // command byte. The parser must consume only the fixed header and
+    // leave the frame bytes untouched. The leading 0x00 of the tail is
+    // exactly the byte that the old address-parsing path mis-read as
+    // `atyp` and rejected as `UnsupportedAddressType(0x0)`.
     let mut bytes = request_prefix(COMMAND_MUX);
-    bytes.extend_from_slice(&666_u16.to_be_bytes());
-    bytes.push(0x02);
-    let domain = b"v1.mux.cool";
-    bytes.push(domain.len() as u8);
-    bytes.extend_from_slice(domain);
+    let mux_frame_tail = [0x00, 0x04, 0xde, 0xad, 0xbe, 0xef];
+    bytes.extend_from_slice(&mux_frame_tail);
 
+    let parsed = parse_request(&bytes).unwrap().unwrap();
+    assert_eq!(parsed.command, VlessCommand::Mux);
+    // version(1) | uuid(16) | opt_len(1) | command(1) = 19 bytes.
+    assert_eq!(parsed.consumed, 19);
+    assert_eq!(&bytes[parsed.consumed..], &mux_frame_tail);
+}
+
+#[test]
+fn parse_vless_mux_request_header_only() {
+    // A Mux carrier whose first WS frame carries only the VLESS header
+    // (the mux frames arrive in a later frame) must still parse, not
+    // stall waiting for a non-existent address.
+    let bytes = request_prefix(COMMAND_MUX);
     let parsed = parse_request(&bytes).unwrap().unwrap();
     assert_eq!(parsed.command, VlessCommand::Mux);
     assert_eq!(parsed.consumed, bytes.len());

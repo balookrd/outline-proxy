@@ -364,19 +364,15 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
 
     let (mut socket, _) = connect_async(format!("ws://{listen_addr}/vless")).await?;
 
-    // VLESS MUX request header. Per mux.cool, the target host is the literal
-    // "v1.mux.cool" with port 0; real sub-connection targets ride inside the
-    // mux New frames that follow.
+    // VLESS MUX request header. Both Xray-core and sing-box omit the
+    // port/atyp/address for the Mux command and start the mux frame stream
+    // right after the command byte; real sub-connection targets ride inside
+    // the mux New frames that follow.
     let mut request = Vec::new();
     request.push(VERSION);
     request.extend_from_slice(&parse_uuid("550e8400-e29b-41d4-a716-446655440000")?);
     request.push(0);
     request.push(COMMAND_MUX);
-    request.extend_from_slice(&0_u16.to_be_bytes());
-    request.push(0x02);
-    let domain = b"v1.mux.cool";
-    request.push(domain.len() as u8);
-    request.extend_from_slice(domain);
 
     let mut new_frame = BytesMut::new();
     let target =
