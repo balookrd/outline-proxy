@@ -6,12 +6,12 @@ use crate::config::TunTcpConfig;
 
 use super::TCP_TIME_WAIT_TIMEOUT;
 use super::state_machine::{
-    TcpFlowState, TcpFlowStatus, half_close_timed_out, handshake_timed_out, idle_timed_out,
-    is_half_closed_status, keepalive_probe_eligible, keepalive_probe_is_due,
-    keepalive_probes_exhausted, maybe_emit_keepalive_probe, maybe_emit_zero_window_probe,
-    next_keepalive_deadline, next_retransmission_deadline, note_congestion_event,
-    retransmit_budget_exhausted, retransmit_due_segment, retransmit_is_due, sync_flow_metrics,
-    time_wait_expired, zero_window_probe_is_due,
+    ServerFlush, TcpFlowState, TcpFlowStatus, flush_server_output, half_close_timed_out,
+    handshake_timed_out, idle_timed_out, is_half_closed_status, keepalive_probe_eligible,
+    keepalive_probe_is_due, keepalive_probes_exhausted, maybe_emit_keepalive_probe,
+    maybe_emit_zero_window_probe, next_keepalive_deadline, next_retransmission_deadline,
+    note_congestion_event, retransmit_budget_exhausted, retransmit_due_segment, retransmit_is_due,
+    sync_flow_metrics, time_wait_expired, zero_window_probe_is_due,
 };
 
 pub(super) enum FlowMaintenancePlan {
@@ -21,8 +21,21 @@ pub(super) enum FlowMaintenancePlan {
         packet_metric: &'static str,
         event: &'static str,
     },
+    /// Pacing wakeup: more downlink data became eligible to send. The engine
+    /// emits the flush packets exactly like the inbound path does.
+    FlushServer(ServerFlush),
     Abort(&'static str),
     Close(&'static str),
+}
+
+/// Deadline at which the pacer will release more downlink data, if a paced
+/// flush stopped with bytes still queued.
+fn next_pacing_deadline(state: &TcpFlowState) -> Option<Instant> {
+    if state.pending_server_data.is_empty() {
+        None
+    } else {
+        state.pacing_next_at
+    }
 }
 
 pub(super) fn commit_flow_changes(state: &mut TcpFlowState, tcp: &TunTcpConfig) {
@@ -80,6 +93,7 @@ pub(super) fn next_flow_deadline(
     let mut deadline = next_retransmission_deadline(state)
         .into_iter()
         .chain(next_zero_window_probe_deadline(state))
+        .chain(next_pacing_deadline(state))
         .chain(next_keepalive_deadline(state, tcp.keepalive_idle, tcp.keepalive_interval))
         .min();
 
@@ -168,6 +182,18 @@ pub(super) fn plan_flow_maintenance(
             packet_metric: "tcp_window_probe",
             event: "zero_window_probe",
         });
+    }
+
+    // Pacing wakeup: the pacer released credit for queued downlink data.
+    // Re-run the flush (which refills credit and emits as much as pacing now
+    // allows, re-arming `pacing_next_at` if more remains).
+    if next_pacing_deadline(state)
+        .map(|deadline| deadline <= now)
+        .unwrap_or(false)
+    {
+        let flush = flush_server_output(state)?;
+        commit_flow_changes(state, tcp);
+        return Ok(FlowMaintenancePlan::FlushServer(flush));
     }
 
     if tcp.keepalive_idle.is_some()

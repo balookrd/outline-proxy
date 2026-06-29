@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use super::super::{
     MAX_SERVER_SEGMENT_PAYLOAD, TCP_FAST_RETRANSMIT_DUP_ACKS, TCP_FLAG_FIN, TCP_FLAG_SYN,
-    TCP_MAX_RTO, TCP_MIN_RTO, TCP_MIN_SSTHRESH,
+    TCP_MAX_RTO, TCP_MIN_RTO, TCP_MIN_SSTHRESH, TCP_PACING_MAX_BURST_BYTES,
 };
 use super::seq::{seq_ge, seq_gt, seq_lt};
 use super::types::{AckEffect, SequenceRange, ServerSegment, TcpFlowState};
@@ -300,6 +300,48 @@ pub(in crate::tcp) fn fast_retransmit_index(state: &TcpFlowState) -> Option<usiz
 
 pub(in crate::tcp) fn congestion_window_remaining(state: &TcpFlowState) -> usize {
     state.congestion_window.saturating_sub(bytes_in_pipe(state))
+}
+
+/// Downlink pacing rate in bytes/sec, or `None` until the flow has an RTT
+/// sample. While `None` the pacer is inactive: early cwnd is tiny, so the
+/// unpaced burst is bounded anyway, and we avoid pacing off a guessed RTT.
+pub(in crate::tcp) fn pacing_rate_bytes_per_sec(state: &TcpFlowState) -> Option<u64> {
+    let srtt = state.smoothed_rtt?;
+    let srtt_secs = srtt.as_secs_f64().max(0.0001);
+    // Pace just ahead of cwnd (gain 5/4) so pacing only shapes the burst — it
+    // never throttles the flow below its congestion-controlled rate.
+    let rate = (state.congestion_window as f64 / srtt_secs) * 1.25;
+    Some(rate.max(1.0) as u64)
+}
+
+/// Add credit for the time elapsed since the last refill at the current pacing
+/// rate, capped at the burst ceiling. No-op while pacing is inactive.
+pub(in crate::tcp) fn refill_pacing_credit(state: &mut TcpFlowState, now: Instant) {
+    let Some(rate) = pacing_rate_bytes_per_sec(state) else {
+        return;
+    };
+    let elapsed = now.saturating_duration_since(state.pacing_refilled_at).as_secs_f64();
+    let added = (rate as f64 * elapsed) as u64;
+    state.pacing_credit = state
+        .pacing_credit
+        .saturating_add(added)
+        .min(TCP_PACING_MAX_BURST_BYTES as u64);
+    state.pacing_refilled_at = now;
+}
+
+/// Instant at which `byte_count` more bytes of pacing credit will be available,
+/// given the current rate. `None` when pacing is inactive (send immediately).
+pub(in crate::tcp) fn pacing_release_at(
+    state: &TcpFlowState,
+    byte_count: usize,
+) -> Option<Instant> {
+    let rate = pacing_rate_bytes_per_sec(state)?;
+    let deficit = (byte_count as u64).saturating_sub(state.pacing_credit);
+    if deficit == 0 {
+        return Some(state.pacing_refilled_at);
+    }
+    let wait = Duration::from_secs_f64(deficit as f64 / rate.max(1) as f64);
+    Some(state.pacing_refilled_at + wait)
 }
 
 pub(in crate::tcp) fn current_retransmission_timeout(state: &TcpFlowState) -> Duration {
