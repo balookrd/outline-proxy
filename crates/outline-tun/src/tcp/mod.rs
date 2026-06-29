@@ -59,10 +59,18 @@ const TCP_MIN_RTO: Duration = Duration::from_millis(200);
 const TCP_MAX_RTO: Duration = Duration::from_secs(60);
 const TCP_INITIAL_CWND_SEGMENTS: usize = 10;
 /// Max bytes the downlink pacer lets the flush burst before it must wait for
-/// credit to refill at the pacing rate. Keeps the stack from dumping a whole
-/// (multi-hundred-KB) congestion window onto the wire at once — that burst
-/// overran the buffer on the path to the client and was dropped in one block.
-const TCP_PACING_MAX_BURST_BYTES: usize = MAX_SERVER_SEGMENT_PAYLOAD * 16;
+/// credit to refill at the pacing rate. Kept small so the *instantaneous*
+/// burst stays tiny — a whole congestion window dumped at once overran the
+/// buffer on the path to the client (copper + WG hop to the TV) and was
+/// dropped in one block.
+const TCP_PACING_MAX_BURST_BYTES: usize = MAX_SERVER_SEGMENT_PAYLOAD * 4;
+/// Hard ceiling on the downlink pacing rate, independent of cwnd/RTT. On a
+/// small-RTT last hop `cwnd/RTT` is enormous, so credit refilled faster than
+/// the flush spent it and the pacer never actually throttled the burst. This
+/// cap makes the pacer effective regardless of RTT: ~200 Mbit/s sustained,
+/// which is well above any single video stream yet smooths the line-rate
+/// micro-bursts that the path could not absorb.
+const TCP_MAX_PACING_RATE_BYTES_PER_SEC: u64 = 25_000_000;
 const TCP_MIN_SSTHRESH: usize = MAX_SERVER_SEGMENT_PAYLOAD * 2;
 const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Interval for the watchdog GC loop that sweeps the TCP flow table for
