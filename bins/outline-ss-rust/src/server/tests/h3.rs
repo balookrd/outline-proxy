@@ -986,12 +986,9 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
     payload.push(VERSION);
     payload.extend_from_slice(&parse_uuid("550e8400-e29b-41d4-a716-446655440000")?);
     payload.push(0);
+    // Mux carriers omit the port/atyp/address (Xray-core and sing-box alike);
+    // the mux frame stream starts right after the command byte.
     payload.push(COMMAND_MUX);
-    payload.extend_from_slice(&0_u16.to_be_bytes());
-    payload.push(0x02);
-    let domain = b"v1.mux.cool";
-    payload.push(domain.len() as u8);
-    payload.extend_from_slice(domain);
 
     let mut new_frame = BytesMut::new();
     let target = TargetAddr::from(SocketAddr::from((Ipv4Addr::LOCALHOST, upstream_addr.port())));
