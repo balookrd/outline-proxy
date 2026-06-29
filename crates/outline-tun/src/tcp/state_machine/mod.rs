@@ -16,8 +16,8 @@ pub(super) use congestion::{
 pub(super) use deliver::{DeliverOutcome, apply_inbound_and_flush};
 #[allow(unused_imports)]
 pub(super) use packets::{
-    build_flow_ack_packet, build_flow_packet, build_flow_syn_ack_packet, decode_client_window,
-    packet_overlaps_receive_window, update_client_send_window,
+    advertised_receive_window, build_flow_ack_packet, build_flow_packet, build_flow_syn_ack_packet,
+    decode_client_window, packet_overlaps_receive_window, update_client_send_window,
 };
 #[allow(unused_imports)]
 pub(super) use policy::{
