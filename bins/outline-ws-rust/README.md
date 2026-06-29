@@ -443,10 +443,14 @@ listen = "[::1]:9090"
 # max_retransmits = 12
 # Connection sniffing (Xray-style destOverride; default on). Peeks the first
 # client bytes, recovers the host from the TLS SNI / HTTP Host, and sends the
-# domain (not the IP) upstream so the exit node resolves it. Direct flows are
-# unaffected; UDP/QUIC sniffing is not yet implemented.
+# domain (not the IP) upstream so the exit node resolves it. (QUIC sniffing is
+# the [tun] sniff_quic knob; per-domain opt-outs via [tun] sniff_override_exclude.)
 # sniffing = true
 # sniff_timeout_ms = 300
+# SNI bypass for DIRECT flows: re-resolve a sniffed domain via THIS node's local
+# resolver and dial that IP instead of the client's literal IP — fixes bypassed
+# domains the client resolved to a dead/unreachable IP. Default false.
+# sniff_direct_reresolve = false
 
 # [outline.probe] acts as a template inherited by every [[uplink_group]].
 # Individual groups can override any field via [uplink_group.probe].

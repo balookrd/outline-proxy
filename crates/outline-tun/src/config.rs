@@ -105,4 +105,14 @@ pub struct TunTcpConfig {
     /// Domain suffixes excluded from sniff destination-override. Shared with the
     /// QUIC path; see [`TunConfig::sniff_override_exclude`].
     pub sniff_override_exclude: Arc<[Box<str>]>,
+    /// SNI bypass for the *direct* (`via = "direct"`) path. When `true` and a
+    /// direct flow's first bytes carry a TLS SNI / HTTP Host, the host is
+    /// re-resolved through this node's own (local) resolver and the connection
+    /// is made to *that* IP instead of the literal IP the client dialled. Fixes
+    /// the case where the client resolved a bypassed domain (via a tunnelled /
+    /// foreign resolver) to an IP that is dead or unreachable from this node,
+    /// while the node's local resolver returns a healthy one. `sniffing` must
+    /// also be on. `sniff_override_exclude` still applies (excluded hosts keep
+    /// the client's IP). Default `false` — direct keeps dialling the literal IP.
+    pub sniff_direct_reresolve: bool,
 }

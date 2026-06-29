@@ -442,10 +442,14 @@ listen = "[::1]:9090"
 # max_retransmits = 12
 # Sniffing соединений (как destOverride в Xray; по умолчанию включено).
 # Подсматривает первые байты клиента, достаёт хост из TLS SNI / HTTP Host и
-# отправляет наружу домен (а не IP), чтобы его резолвил выходной узел. Direct-
-# flow не затрагиваются; UDP/QUIC sniffing пока не реализован.
+# отправляет наружу домен (а не IP), чтобы его резолвил выходной узел. (QUIC —
+# кноб [tun] sniff_quic; per-domain опт-ауты — [tun] sniff_override_exclude.)
 # sniffing = true
 # sniff_timeout_ms = 300
+# SNI bypass для DIRECT-флоу: ре-резолв sniff-домена ЛОКАЛЬНЫМ резолвером ЭТОГО
+# узла и коннект к его IP вместо литерального IP клиента — чинит bypass-домены,
+# которые клиент зарезолвил в мёртвый/недостижимый IP. По умолчанию false.
+# sniff_direct_reresolve = false
 
 # [outline.probe] — шаблон, наследуемый каждой [[uplink_group]];
 # конкретные группы могут переопределить любое поле через [uplink_group.probe].
