@@ -169,6 +169,56 @@ home unparks into that stream.
 | home dies | shard points at a dead server; edge cannot reach it over mesh → resume-miss → fresh session | lost (= today) |
 | shard unknown (server decommissioned) | edge treats it as home-down → fresh session | lost |
 
+## Interaction with downstream-throttle detection
+
+The padding-based downstream-throttle detection (server `ThroughputMonitor` →
+`OCTL` cover frame → client uplink switch) composes with the cluster, but with
+caveats worth stating explicitly.
+
+- **The signal passes the relay transparently — which validates the relay
+  boundary.** The padding layer (including cover / `OCTL` frames) lives on
+  **home**, on top of the SS/VLESS stream. The edge is a padding-unaware byte
+  relay, so the `OCTL` frame rides through it as ordinary bytes and reaches the
+  client intact. The client's `PaddingDecoder` is stream-oriented (it does not
+  depend on WS message boundaries), so re-framing on the edge does not break
+  it. This *requires* the relay to carry the stream byte-exact — the same
+  invariant the mesh data plane needs anyway.
+- **The client reaction is cluster-agnostic.** The client does not know about
+  the cluster; it receives `OCTL` over the carrier from the edge, penalises the
+  uplink (= that edge) and migrates to another edge — which relays to the same
+  home, so the session survives. No client-side change is needed.
+- **But the detector on home measures the wrong segment.** In the cluster,
+  `out`/backlog on home reflect the **home→mesh** segment, not home→client.
+  End-to-end backpressure (the client stalls → the edge stops draining the mesh
+  stream → the QUIC window closes → home sees backlog) makes a client-side
+  throttle propagate to the detector, but home **cannot tell the segments
+  apart**:
+  - throttle on `edge→client` (the last mile) → switching edge **helps**;
+  - throttle on `home→edge` (the cross-country interconnect) → switching edge
+    *may* help (a different mesh path);
+  - throttle on `home→target` (upstream) → switching edge **does not help**;
+    the client flaps between edges, all go on cooldown, and it eventually moves
+    to a new home — **losing the park**.
+- **False positives from a slow interconnect** are the main concern: a slow
+  mesh between countries (which this document calls normal) produces backlog on
+  home and so a spurious `OCTL`. The detector, written for a "VPS→Russia last
+  mile", would also fire on the interconnect.
+- **It overlaps the health budget.** Both react to a slow downstream, but
+  differently: throttle is *soft* (keep home, drain traffic away), the health
+  budget is *hard* (tear the carrier down, new home). Keep the budget a hard
+  floor that fires only on a full stall, and ensure it triggers later in
+  wall-clock than the throttle sustain window — otherwise the budget tears the
+  session down (losing the park) before the soft migration can run.
+
+**Follow-up (not MVP): detect the client segment on the edge.** The edge sees
+the raw bytes in both directions plus its own client-writer backlog, so it can
+detect an `edge→client` throttle by byte balance *without parsing padding*. It
+would then send home a new mesh control message (`THROTTLE_HINT`), and home
+(the padding-aware side) injects the `OCTL`. This cleanly separates the
+segments — throttle covers only the client mile, the interconnect is left to
+the health budget — and removes the false positives, at the cost of extending
+the mesh framing.
+
 ## Security
 
 - **Mesh auth:** mTLS between cluster members (shared CA / pinned certs); an
@@ -230,3 +280,8 @@ has an explicit limit:
    mesh, a separate phase.
 3. **VLESS mux** parks atomically; the relay must carry the whole multiplex on
    one mesh stream, never splitting it, or partial-resume breaks.
+4. **Downstream-throttle detection cannot tell the cluster segments apart**
+   (see the section above): the home detector conflates the interconnect with
+   the client last mile, risking spurious uplink switches and park loss on a
+   slow mesh. Mitigated by keeping the feature off until the edge-side detection
+   follow-up lands, or by tuning the budget vs sustain ordering.
