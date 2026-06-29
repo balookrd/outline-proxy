@@ -152,6 +152,18 @@ pub(in crate::tcp) struct TcpFlowState {
     /// fast-retransmitted in the current episode" apart from "first sent
     /// during this episode", so each hole is resent at most once per episode.
     pub(in crate::tcp) recovery_epoch: u64,
+    /// Downlink pacing: byte credit available to send right now. Refilled at
+    /// `pacing_rate` (≈ cwnd/RTT) and capped at a small burst so the flush
+    /// never dumps a whole congestion window at line rate — that burst
+    /// overran the receive buffer on the path to the client and was dropped
+    /// in one block. `None` rate (no RTT sample yet) disables pacing.
+    pub(in crate::tcp) pacing_credit: u64,
+    /// When the pacing credit was last refilled.
+    pub(in crate::tcp) pacing_refilled_at: Instant,
+    /// Deadline at which more paced data may be sent, set by the flush when it
+    /// stopped on an empty credit with data still queued. Drives a maintenance
+    /// wakeup that re-runs the flush.
+    pub(in crate::tcp) pacing_next_at: Option<Instant>,
     pub(in crate::tcp) receive_window_capacity: usize,
     pub(in crate::tcp) smoothed_rtt: Option<Duration>,
     pub(in crate::tcp) rttvar: Duration,
