@@ -75,8 +75,9 @@ falls back to WebSocket-over-H2 on a dial failure.
 > apps speak — the server emits an Outline access key (`$type: websocket`,
 > TCP + UDP) for it. Shadowsocks-over-XHTTP and Shadowsocks-over-QUIC are
 > standalone modes for the bundled `outline-ws-rust` client only and are not
-> exposed as Outline keys. VLESS is exposed as a `vless://…` share link
-> (`ws` / `xhttp` / `quic`).
+> exposed as Outline keys — but a combined-path Shadowsocks user also gets an
+> `ss://…` share link (`ws` / `xhttp`, SIP002 userinfo) for that client. VLESS
+> is exposed as a `vless://…` share link (`ws` / `xhttp` / `quic`).
 
 ## Layout
 
