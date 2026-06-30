@@ -354,6 +354,16 @@ impl UplinkManager {
                 standby_udp_ready,
                 tcp_consecutive_failures: status.tcp.consecutive_failures,
                 udp_consecutive_failures: status.udp.consecutive_failures,
+                tcp_downstream_throttle_count: status.tcp.downstream_throttle_count,
+                udp_downstream_throttle_count: status.udp.downstream_throttle_count,
+                tcp_throttle_ago_ms: status
+                    .tcp
+                    .last_downstream_throttle_at
+                    .map(|at| now.duration_since(at).as_millis()),
+                udp_throttle_ago_ms: status
+                    .udp
+                    .last_downstream_throttle_at
+                    .map(|at| now.duration_since(at).as_millis()),
                 h3_tcp_downgrade_until_ms: status
                     .tcp
                     .descent

@@ -168,6 +168,15 @@ pub(crate) struct PerTransportStatus {
     /// starts a fresh round forward from the wire that is currently
     /// working. Stays at `0` for uplinks without `shuffle_wires`.
     pub(crate) wires_failed_in_round: u32,
+    /// Cumulative count of server-initiated downstream-throttle signals received
+    /// on this transport over the manager's lifetime (a padded carrier's server
+    /// asked the client to switch uplinks because the path toward it was being
+    /// throttled). Surfaced on the dashboard so an operator can see which uplink
+    /// was nudged off by throttling and how often. Monotonic — never decayed.
+    pub(crate) downstream_throttle_count: u64,
+    /// Timestamp of the most recent downstream-throttle signal on this
+    /// transport, used to render a "recently throttled" badge on the dashboard.
+    pub(crate) last_downstream_throttle_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Default)]

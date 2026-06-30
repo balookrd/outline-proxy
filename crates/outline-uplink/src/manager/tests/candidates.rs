@@ -450,4 +450,17 @@ async fn downstream_throttle_sets_cooldown_and_counts() {
         st.tcp.consecutive_runtime_failures, 1,
         "a downstream-throttle signal must advance the runtime-failure streak",
     );
+    // The dashboard counter ticks on the signalled transport only.
+    assert_eq!(
+        st.tcp.downstream_throttle_count, 1,
+        "the throttle counter must tick for the dashboard chip",
+    );
+    assert!(
+        st.tcp.last_downstream_throttle_at.is_some(),
+        "the last-throttle timestamp is set"
+    );
+    assert_eq!(
+        st.udp.downstream_throttle_count, 0,
+        "the other transport's counter is untouched"
+    );
 }
