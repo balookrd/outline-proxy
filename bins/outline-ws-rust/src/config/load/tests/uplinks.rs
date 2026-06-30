@@ -875,3 +875,81 @@ fn combined_ss_xhttp_fallback_resolves() {
     assert_eq!(wire.tcp_dial_url(), Some(&expected));
     assert_eq!(wire.tcp_dial_mode(), TransportMode::XhttpH3);
 }
+
+// ── SS share-link (`link = "ss://…"`) ─────────────────────────────────────────
+
+// base64url of "chacha20-ietf-poly1305:secret" (SIP002 userinfo).
+const SS_USERINFO: &str = "Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpzZWNyZXQ";
+
+/// An uplink section carrying nothing but a share-link `link` field, mirroring
+/// the minimal `[[outline.uplinks]] link = "…"` shape.
+fn link_only_section(name: &str, link: &str) -> UplinkSection {
+    let mut section = ws_uplink_section(name, "wss://placeholder.example.com/ws", Vec::new());
+    section.transport = None;
+    section.tcp_ws_url = None;
+    section.tcp_mode = None;
+    section.udp_ws_url = None;
+    section.udp_mode = None;
+    section.method = None;
+    section.password = None;
+    section.link = Some(link.to_string());
+    section
+}
+
+#[test]
+fn ss_share_link_expands_into_combined_ws_uplink() {
+    let cfg = resolve(link_only_section(
+        "ss-share",
+        &format!(
+            "ss://{SS_USERINFO}@ss.example.com:443?type=ws&security=tls&path=%2Fsecret%2Fss&alpn=h2#edge"
+        ),
+    ))
+    .expect("ss share link should resolve");
+
+    assert_eq!(cfg.transport, UplinkTransport::Ss);
+    assert!(cfg.is_combined_ss());
+    assert_eq!(cfg.cipher, CipherKind::Chacha20IetfPoly1305);
+    assert_eq!(cfg.password, "secret");
+    assert_eq!(cfg.ss_mode, Some(TransportMode::WsH2));
+    let expected = Url::parse("wss://ss.example.com:443/secret/ss").unwrap();
+    assert_eq!(cfg.tcp_dial_url(), Some(&expected));
+    assert_eq!(cfg.udp_dial_url(), Some(&expected));
+    assert_eq!(cfg.tcp_dial_mode(), TransportMode::WsH2);
+}
+
+#[test]
+fn ss_share_link_xhttp_targets_ss_xhttp_url() {
+    let cfg = resolve(link_only_section(
+        "ss-share-xhttp",
+        &format!("ss://{SS_USERINFO}@ss.example.com:443?type=xhttp&security=tls&path=%2Fxhttp"),
+    ))
+    .expect("ss xhttp share link should resolve");
+
+    assert_eq!(cfg.transport, UplinkTransport::Ss);
+    assert!(cfg.is_combined_ss());
+    assert_eq!(cfg.ss_mode, Some(TransportMode::XhttpH2));
+    let expected = Url::parse("https://ss.example.com:443/xhttp").unwrap();
+    assert_eq!(cfg.tcp_dial_url(), Some(&expected));
+}
+
+#[test]
+fn ss_share_link_rejects_explicit_credentials() {
+    let mut section = link_only_section(
+        "ss-share",
+        &format!("ss://{SS_USERINFO}@ss.example.com:443?type=ws&security=tls"),
+    );
+    section.password = Some("override".to_string());
+    let err = resolve(section).expect_err("explicit password must conflict with ss:// link");
+    assert!(format!("{err:#}").contains("password"));
+}
+
+#[test]
+fn ss_share_link_rejects_transport_vless() {
+    let mut section = link_only_section(
+        "ss-share",
+        &format!("ss://{SS_USERINFO}@ss.example.com:443?type=ws&security=tls"),
+    );
+    section.transport = Some(UplinkTransport::Vless);
+    let err = resolve(section).expect_err("ss:// link with transport=vless must error");
+    assert!(format!("{err:#}").contains("transport=ss"));
+}

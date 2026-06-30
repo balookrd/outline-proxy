@@ -2,7 +2,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use url::Url;
 
 use outline_transport::TransportMode;
-use outline_uplink::{UplinkTransport, VlessShareLink};
+use outline_uplink::{SsShareLink, UplinkTransport, VlessShareLink};
+use shadowsocks_crypto::CipherKind;
 
 pub(super) struct PrimaryWireInput<'a> {
     pub(super) name: &'a str,
@@ -20,6 +21,12 @@ pub(super) struct PrimaryWireInput<'a> {
     pub(super) ss_xhttp_url: Option<Url>,
     pub(super) ss_mode: Option<TransportMode>,
     pub(super) vless_id: Option<String>,
+    /// SS cipher / password as configured explicitly (CLI / TOML). An
+    /// `ss://` share link populates these from its userinfo instead — the
+    /// two are mutually exclusive. Threaded through here (like `vless_id`)
+    /// so `resolve_primary_credentials` sees the link-derived values.
+    pub(super) cipher: Option<CipherKind>,
+    pub(super) password: Option<String>,
     pub(super) link: Option<String>,
 }
 
@@ -38,6 +45,10 @@ pub(super) struct PrimaryWireShape {
     pub(super) ss_xhttp_url: Option<Url>,
     pub(super) ss_mode: Option<TransportMode>,
     pub(super) vless_id: Option<String>,
+    /// SS credentials, resolved from either the explicit fields or an
+    /// `ss://` share link. Consumed by `resolve_primary_credentials`.
+    pub(super) cipher: Option<CipherKind>,
+    pub(super) password: Option<String>,
 }
 
 pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<PrimaryWireShape> {
@@ -53,43 +64,93 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
         mut vless_ws_url,
         mut vless_xhttp_url,
         mut vless_mode,
-        ss_ws_url,
-        ss_xhttp_url,
-        ss_mode,
+        mut ss_ws_url,
+        mut ss_xhttp_url,
+        mut ss_mode,
         mut vless_id,
+        mut cipher,
+        mut password,
         link,
     } = input;
 
-    // `link = "vless://..."` populates the VLESS fields from a single
-    // share-link URI. We do this before the transport-default fold so
-    // a bare `link` entry implies `transport = "vless"` without the
-    // user having to say so twice.
+    // `link = "vless://..."` / `"ss://..."` populates the matching transport
+    // fields from a single share-link URI. We do this before the
+    // transport-default fold so a bare `link` entry implies its transport
+    // (`vless` for `vless://`, `ss` for `ss://`) without the user saying so
+    // twice. The scheme picks the parser.
     let transport = if let Some(raw_link) = link.as_deref() {
-        let parsed = VlessShareLink::parse(raw_link)
-            .with_context(|| format!("uplink {name}: invalid vless share link"))?;
-        if vless_id.is_some() {
-            bail!("uplink {name}: `vless_id` is mutually exclusive with `link`; remove one");
+        let trimmed = raw_link.trim();
+        if trimmed.starts_with("ss://") {
+            let parsed = SsShareLink::parse(raw_link)
+                .with_context(|| format!("uplink {name}: invalid ss share link"))?;
+            // `ss://` carries credentials + a combined-path carrier, so it is
+            // mutually exclusive with every explicit SS / VLESS field.
+            for (set, field) in [
+                (vless_id.is_some(), "vless_id"),
+                (vless_ws_url.is_some(), "vless_ws_url"),
+                (vless_xhttp_url.is_some(), "vless_xhttp_url"),
+                (vless_mode.is_some(), "vless_mode"),
+                (ss_ws_url.is_some(), "ss_ws_url"),
+                (ss_xhttp_url.is_some(), "ss_xhttp_url"),
+                (ss_mode.is_some(), "ss_mode"),
+                (cipher.is_some(), "method"),
+                (password.is_some(), "password"),
+                (tcp_ws_url.is_some(), "tcp_ws_url"),
+                (tcp_xhttp_url.is_some(), "tcp_xhttp_url"),
+                (tcp_mode.is_some(), "tcp_mode"),
+                (udp_ws_url.is_some(), "udp_ws_url"),
+                (udp_xhttp_url.is_some(), "udp_xhttp_url"),
+                (udp_mode.is_some(), "udp_mode"),
+            ] {
+                if set {
+                    bail!(
+                        "uplink {name}: `{field}` is mutually exclusive with an `ss://` `link`; remove one"
+                    );
+                }
+            }
+            match transport {
+                None | Some(UplinkTransport::Ss) => {},
+                Some(other) => bail!(
+                    "uplink {name}: an `ss://` `link` only applies to transport=ss, but transport={other} was set"
+                ),
+            }
+            ss_ws_url = parsed.ss_ws_url;
+            ss_xhttp_url = parsed.ss_xhttp_url;
+            ss_mode = Some(parsed.mode);
+            cipher = Some(parsed.cipher);
+            password = Some(parsed.password);
+            UplinkTransport::Ss
+        } else {
+            let parsed = VlessShareLink::parse(raw_link)
+                .with_context(|| format!("uplink {name}: invalid vless share link"))?;
+            if vless_id.is_some() {
+                bail!("uplink {name}: `vless_id` is mutually exclusive with `link`; remove one");
+            }
+            if vless_ws_url.is_some() {
+                bail!(
+                    "uplink {name}: `vless_ws_url` is mutually exclusive with `link`; remove one"
+                );
+            }
+            if vless_xhttp_url.is_some() {
+                bail!(
+                    "uplink {name}: `vless_xhttp_url` is mutually exclusive with `link`; remove one"
+                );
+            }
+            if vless_mode.is_some() {
+                bail!("uplink {name}: `vless_mode` is mutually exclusive with `link`; remove one");
+            }
+            match transport {
+                None | Some(UplinkTransport::Vless) => {},
+                Some(other) => bail!(
+                    "uplink {name}: a `vless://` `link` only applies to transport=vless, but transport={other} was set"
+                ),
+            }
+            vless_id = Some(parsed.uuid);
+            vless_ws_url = parsed.vless_ws_url;
+            vless_xhttp_url = parsed.vless_xhttp_url;
+            vless_mode = Some(parsed.mode);
+            UplinkTransport::Vless
         }
-        if vless_ws_url.is_some() {
-            bail!("uplink {name}: `vless_ws_url` is mutually exclusive with `link`; remove one");
-        }
-        if vless_xhttp_url.is_some() {
-            bail!("uplink {name}: `vless_xhttp_url` is mutually exclusive with `link`; remove one");
-        }
-        if vless_mode.is_some() {
-            bail!("uplink {name}: `vless_mode` is mutually exclusive with `link`; remove one");
-        }
-        match transport {
-            None | Some(UplinkTransport::Vless) => {},
-            Some(other) => bail!(
-                "uplink {name}: `link` only applies to transport=vless, but transport={other} was set"
-            ),
-        }
-        vless_id = Some(parsed.uuid);
-        vless_ws_url = parsed.vless_ws_url;
-        vless_xhttp_url = parsed.vless_xhttp_url;
-        vless_mode = Some(parsed.mode);
-        UplinkTransport::Vless
     } else {
         transport.unwrap_or_default()
     };
@@ -308,5 +369,7 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
         ss_xhttp_url,
         ss_mode,
         vless_id,
+        cipher,
+        password,
     })
 }
