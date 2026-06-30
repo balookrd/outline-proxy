@@ -79,12 +79,15 @@ pub struct Args {
     )]
     pub vless_mode: Option<TransportMode>,
 
-    /// Configure a VLESS uplink from a single share-link URI
-    /// (`vless://UUID@HOST:PORT?type=ws|xhttp|quic&...`). Mutually
-    /// exclusive with `--vless-id` / `--vless-ws-url` /
-    /// `--vless-xhttp-url` / `--vless-mode`. Sets `transport = "vless"`
-    /// implicitly.
-    #[arg(long, env = "OUTLINE_VLESS_LINK")]
+    /// Configure an uplink from a single share-link URI. A `vless://…`
+    /// link (`vless://UUID@HOST:PORT?type=ws|xhttp|quic&...`) sets
+    /// `transport = "vless"` and is mutually exclusive with `--vless-id` /
+    /// `--vless-ws-url` / `--vless-xhttp-url` / `--vless-mode`. An `ss://…`
+    /// link (`ss://BASE64(method:password)@HOST:PORT?type=ws|xhttp&...`,
+    /// SIP002 userinfo) sets `transport = "ss"` (combined-path) and is
+    /// mutually exclusive with `--method` / `--password` and the SS URL
+    /// fields. The scheme selects which.
+    #[arg(long, visible_alias = "link", env = "OUTLINE_VLESS_LINK")]
     pub vless_link: Option<String>,
 
     #[arg(long, env = "SHADOWSOCKS_METHOD")]

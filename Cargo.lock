@@ -1880,6 +1880,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
+ "base64",
  "bytes",
  "futures-util",
  "outline-metrics",

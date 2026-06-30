@@ -166,6 +166,112 @@ the chosen carrier (an XHTTP `ss_mode` for `ss_xhttp_url`, a WS one for
 `tcp_*` / `udp_*` URLs — config load rejects mixing them. Raw QUIC never needs
 this, since it muxes TCP + UDP on one connection natively.
 
+### Share-link URI (`ss://`)
+
+The combined-path SS uplink above can also be configured through a single
+`ss://BASE64(method:password)@HOST:PORT?...#NAME` URI — the SS analogue of the
+VLESS share link (section 7). Set the `link` field instead of writing the
+`ss_*_url` / `ss_mode` / `method` / `password` fields by hand:
+
+```toml
+[[outline.uplinks]]
+name = "ss-share"
+group = "main"
+link = "ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpTZWNyZXQw@ss.example.com:443?type=ws&security=tls&path=%2Fsecret%2Fss&alpn=h2#edge"
+weight = 1.0
+```
+
+The userinfo is the SIP002 form — url-safe base64 of `method:password` (the
+same encoding Outline / Shadowsocks clients emit). The loader expands the URI
+into the combined-path fields, so dial / fallback / resume behaviour is
+identical to the long-form TOML above. Setting `transport` is optional — an
+`ss://` `link` implies `transport = "ss"`.
+
+#### Recognised query parameters
+
+| URI element / param                | Maps to                                           |
+|------------------------------------|---------------------------------------------------|
+| `BASE64(method:password)` (userinfo) | `method` + `password` (SIP002 url-safe base64)  |
+| `HOST:PORT` (authority)            | dial URL host + port (port is required)           |
+| `type=ws` (default)                | `ss_mode = ws_h1` (with `alpn`: `ws_h2`/`ws_h3`), URL → `ss_ws_url` |
+| `type=xhttp`                       | `ss_mode = xhttp_h2` (with `alpn=h3`: `xhttp_h3`; with `alpn=h1` / `http/1.1`: `xhttp_h1`), URL → `ss_xhttp_url` |
+| `security=tls` / `reality`         | URL scheme → `wss://` (ws) or `https://` (xhttp)  |
+| `security=none` (or absent)        | URL scheme → `ws://` / `http://`                  |
+| `path=...`                         | URL path (percent-decoded; leading `/` added if missing) |
+| `alpn=h3` / `h2` / `h1` / `h2,h3`  | picks the H1/H2/H3 mode variant; first token wins |
+| `mode=packet-up` / `stream-one`    | propagated as `?mode=` on the XHTTP dial URL      |
+| `#NAME`                            | uplink name (percent-decoded)                     |
+
+#### How the URI maps onto config fields (worked example)
+
+Take the link from the example above:
+
+```
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpTZWNyZXQw@ss.example.com:443?type=ws&security=tls&path=%2Fsecret%2Fss&alpn=h2#edge
+```
+
+It is decomposed piece by piece:
+
+| URI piece | Decoded value | Becomes |
+|-----------|---------------|---------|
+| userinfo `Y2hh…cmV0MA` | base64url-decode → `chacha20-ietf-poly1305:Secret0`, split on the first `:` | `method = chacha20-ietf-poly1305`, `password = Secret0` |
+| scheme `ss://` | — | `transport = "ss"` (combined-path) |
+| `type=ws` + `security=tls` | WS carrier, TLS | dial-URL scheme → `wss://`, URL → `ss_ws_url` |
+| `alpn=h2` | first token | `ss_mode = ws_h2` |
+| `ss.example.com:443` | authority | dial-URL host + port |
+| `path=%2Fsecret%2Fss` | percent-decode → `/secret/ss` | dial-URL path |
+| `#edge` | percent-decode | `name = edge` |
+
+The resulting `UplinkConfig` (and the long-form TOML it is **exactly
+equivalent** to):
+
+```toml
+[[outline.uplinks]]
+name = "edge"
+transport = "ss"
+ss_ws_url = "wss://ss.example.com:443/secret/ss"   # type=ws → ss_ws_url (ss_xhttp_url stays unset)
+ss_mode = "ws_h2"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
+```
+
+An XHTTP link (`…?type=xhttp&security=tls&path=%2Fxhttp&alpn=h3&mode=stream-one`)
+maps the URL into `ss_xhttp_url` instead, the scheme becomes `https://`, and the
+submode rides the dial-URL query:
+
+```toml
+ss_xhttp_url = "https://ss.example.com:443/xhttp?mode=stream-one"   # type=xhttp → ss_xhttp_url
+ss_mode = "xhttp_h3"
+```
+
+There is no dedicated dial logic for the link — it simply fills the same
+combined-path fields, which then flow through the identical `combined_ss`
+validation and `resolve_primary_credentials` path as a hand-written TOML uplink.
+
+#### Constraints and conflicts
+
+- The URI must have an explicit `:port` — there is no scheme default.
+- The userinfo must be SIP002 base64 of `method:password`; the legacy plaintext
+  `ss://method:password@host` form (a literal `:` in the authority) is rejected.
+- `method` must be one of the supported ciphers (`chacha20-ietf-poly1305`,
+  `aes-128-gcm`, `aes-256-gcm`, `2022-blake3-*`).
+- `link` is mutually exclusive with `method`, `password`, every `ss_*` /
+  `tcp_*` / `udp_*` field, and the `vless_*` fields. Mixing them errors at
+  config load; use the URI **or** the explicit fields.
+- `type=quic` is rejected for the share link — raw QUIC muxes TCP + UDP
+  natively, so it has no combined-path form; use the long-form `transport=ss`
+  config for raw QUIC.
+- `sni=` and `host=` are only accepted when they match the authority host
+  (the transport stack reuses the URL host for both SNI and the HTTP `Host`
+  header), mirroring the VLESS share link.
+
+The same `link` field is accepted by the CLI flag (`--link` / `--vless-link` /
+`OUTLINE_VLESS_LINK`) and the `/control/uplinks` REST endpoints (`link`, alias
+`share_link`) — the scheme (`ss://` vs `vless://`) selects the transport.
+
+For the **split** two-path SS layout (separate `tcp_*` and `udp_*` URLs) there
+is no single-URL share-link form — use the long-form TOML above.
+
 ## 4. VLESS over raw QUIC
 
 `vless_mode = "quic"` selects raw QUIC with ALPN `vless`. Multiple TCP
@@ -327,6 +433,57 @@ to the corresponding section above. Setting `transport` is optional —
 | `encryption=none` (or absent)      | accepted (VLESS has no other encryption modes)    |
 | `#NAME`                            | uplink name (percent-decoded)                     |
 
+### How the URI maps onto config fields (worked example)
+
+Take the link from the example above:
+
+```
+vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=ws&security=tls&path=%2Fsecret%2Fvless&alpn=h3&encryption=none#edge
+```
+
+It is decomposed piece by piece:
+
+| URI piece | Decoded value | Becomes |
+|-----------|---------------|---------|
+| userinfo `11111111-…-555555555555` | validated UUID | `vless_id = 11111111-2222-3333-4444-555555555555` |
+| scheme `vless://` | — | `transport = "vless"` |
+| `type=ws` + `security=tls` | WS carrier, TLS | dial-URL scheme → `wss://`, URL → `vless_ws_url` |
+| `alpn=h3` | first token | `vless_mode = ws_h3` |
+| `vless.example.com:443` | authority | dial-URL host + port |
+| `path=%2Fsecret%2Fvless` | percent-decode → `/secret/vless` | dial-URL path |
+| `encryption=none` | — | accepted, no field (VLESS has no other modes) |
+| `#edge` | percent-decode | `name = edge` |
+
+The resulting `UplinkConfig` (and the long-form TOML it is **exactly
+equivalent** to):
+
+```toml
+[[outline.uplinks]]
+name = "edge"
+transport = "vless"
+vless_ws_url = "wss://vless.example.com:443/secret/vless"   # type=ws → vless_ws_url (vless_xhttp_url stays unset)
+vless_mode = "ws_h3"
+vless_id = "11111111-2222-3333-4444-555555555555"
+```
+
+An XHTTP link (`…?type=xhttp&security=tls&path=%2Fxhttp&alpn=h3&mode=stream-one`)
+maps the URL into `vless_xhttp_url` instead, the scheme becomes `https://`, and
+the submode rides the dial-URL query:
+
+```toml
+vless_xhttp_url = "https://vless.example.com:443/xhttp?mode=stream-one"   # type=xhttp → vless_xhttp_url
+vless_mode = "xhttp_h3"
+```
+
+A `type=quic` link maps the URL into `vless_ws_url` with `vless_mode = "quic"`
+(only host + port matter; the path is ignored for raw QUIC). Unlike SS, VLESS
+muxes TCP + UDP on the **one** path, so there is a single dial URL regardless of
+carrier — there is no split / combined distinction to encode.
+
+There is no dedicated dial logic for the link — it simply fills the same
+`vless_*` fields, which then flow through the identical per-transport validation
+and `resolve_primary_credentials` path as a hand-written TOML uplink.
+
 ### Constraints and conflicts
 
 - The URI must have an explicit `:port` — there is no scheme default.
@@ -347,9 +504,13 @@ to the corresponding section above. Setting `transport` is optional —
 
 The same `link` field is accepted by:
 
-- The CLI flag `--vless-link <URI>` / `OUTLINE_VLESS_LINK` env var.
+- The CLI flag `--link <URI>` (alias `--vless-link`) / `OUTLINE_VLESS_LINK`
+  env var.
 - The `/control/uplinks` REST endpoints, as `link` (alias `share_link`)
   inside the `uplink` JSON payload.
+
+The `link` field also accepts an `ss://` Shadowsocks share link — see
+"Share-link URI (`ss://`)" under section 3. The scheme selects the transport.
 
 ### Submode: packet-up vs stream-one
 

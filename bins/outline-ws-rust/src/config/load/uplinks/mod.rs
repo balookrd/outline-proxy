@@ -86,10 +86,17 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             ss_xhttp_url,
             ss_mode,
             vless_id,
+            cipher,
+            password,
             link,
         })?;
-        let credentials =
-            resolve_primary_credentials(&name, wire.transport, cipher, password, wire.vless_id)?;
+        let credentials = resolve_primary_credentials(
+            &name,
+            wire.transport,
+            wire.cipher,
+            wire.password,
+            wire.vless_id,
+        )?;
 
         let parent = UplinkConfig {
             name,

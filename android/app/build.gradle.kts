@@ -53,5 +53,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     // JNA is required at runtime by the UniFFI-generated Kotlin bindings.
-    implementation("net.java.dev.jna:jna:5.14.0@aar")
+    // 5.16.0+ ships 16 KB-page-aligned native libs (libjnidispatch.so); older
+    // builds fail to dlopen on Android 15 / 16 KB-page devices and emulators
+    // ("program alignment (8192) cannot be smaller than system page size").
+    implementation("net.java.dev.jna:jna:5.17.0@aar")
 }
