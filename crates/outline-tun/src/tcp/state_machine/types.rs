@@ -126,6 +126,104 @@ pub(in crate::tcp) struct FlowTimestamps {
     pub(in crate::tcp) last_seen: Instant,
 }
 
+/// BBR operating mode. Drives the pacing/cwnd gains and the in-flight cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::tcp) enum BbrMode {
+    /// Exponential ramp to discover the bottleneck bandwidth.
+    Startup,
+    /// Drain the standing queue STARTUP created, down to the BDP.
+    Drain,
+    /// Steady state: cruise at BtlBw, periodically probe up/down for changes.
+    ProbeBw,
+    /// Hold the pipe near-empty briefly to observe an unqueued min-RTT.
+    ProbeRtt,
+}
+
+/// One entry in the BtlBw windowed-max filter: a delivery-rate sample tagged
+/// with the round it was taken in, so samples older than the window age out.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::tcp) struct BwSample {
+    pub(in crate::tcp) bytes_per_sec: u64,
+    pub(in crate::tcp) round: u64,
+}
+
+/// Per-flow BBR state. Estimates bottleneck bandwidth (windowed-max of the
+/// per-packet delivery rate) and min-RTT (windowed-min), then derives the
+/// pacing rate (`gain × BtlBw`) and in-flight cap (`cwnd_gain × BtlBw ×
+/// min_rtt`). The pacer is a token bucket refilled on each ACK-clocked flush,
+/// so timer granularity is not the throughput ceiling.
+#[derive(Debug, Clone)]
+pub(in crate::tcp) struct BbrState {
+    /// Cumulative client-acknowledged bytes (the BBR "delivered" counter).
+    pub(in crate::tcp) delivered: u64,
+    /// Wall-clock of the last `delivered` update — the time anchor for the
+    /// next rate sample.
+    pub(in crate::tcp) delivered_at: Instant,
+    /// Windowed-max filter over the last `BBR_BW_WINDOW_ROUNDS` rounds.
+    pub(in crate::tcp) bw_filter: [BwSample; 3],
+    /// Current BtlBw estimate in bytes/sec (max of the filter). 0 until the
+    /// first delivery-rate sample arrives.
+    pub(in crate::tcp) btlbw_bps: u64,
+    /// Round-trip counter; a round elapses when an ACK covers a segment sent
+    /// at or after the start of the current round.
+    pub(in crate::tcp) round_count: u64,
+    /// `delivered` snapshot marking the end of the current round.
+    pub(in crate::tcp) next_round_delivered: u64,
+    /// BtlBw at the start of the current STARTUP plateau check.
+    pub(in crate::tcp) full_bw: u64,
+    /// Consecutive rounds BtlBw failed to grow by `BBR_STARTUP_GROWTH_TARGET`.
+    pub(in crate::tcp) full_bw_count: u32,
+    /// Windowed-min RTT estimate; the basis for the BDP.
+    pub(in crate::tcp) min_rtt: Duration,
+    /// Wall-clock when `min_rtt` was last (re)seeded.
+    pub(in crate::tcp) min_rtt_stamp: Instant,
+    pub(in crate::tcp) mode: BbrMode,
+    pub(in crate::tcp) pacing_gain: f64,
+    pub(in crate::tcp) cwnd_gain: f64,
+    /// Index into `BBR_PROBE_BW_GAINS` for the current PROBE_BW phase.
+    pub(in crate::tcp) probe_bw_phase: usize,
+    /// Wall-clock when the current PROBE_BW phase began.
+    pub(in crate::tcp) cycle_stamp: Instant,
+    /// When set, the instant PROBE_RTT may end (pipe held empty until then).
+    pub(in crate::tcp) probe_rtt_done_at: Option<Instant>,
+    /// Token-bucket pacing credit in bytes.
+    pub(in crate::tcp) pacing_credit: u64,
+    /// Wall-clock of the last pacing-credit refill.
+    pub(in crate::tcp) pacing_refilled_at: Instant,
+    /// When the pacer stopped a flush with data still queued: the instant a
+    /// maintenance wakeup should resume it (timer fallback when ACKs stop).
+    pub(in crate::tcp) pacing_next_at: Option<Instant>,
+}
+
+impl BbrState {
+    /// Fresh BBR state for a new flow: STARTUP, no bandwidth/RTT samples yet,
+    /// pacing inactive (the small initial cwnd bounds the first burst until the
+    /// first sample arrives).
+    pub(in crate::tcp) fn new(now: Instant) -> Self {
+        Self {
+            delivered: 0,
+            delivered_at: now,
+            bw_filter: [BwSample { bytes_per_sec: 0, round: 0 }; 3],
+            btlbw_bps: 0,
+            round_count: 0,
+            next_round_delivered: 0,
+            full_bw: 0,
+            full_bw_count: 0,
+            min_rtt: Duration::ZERO,
+            min_rtt_stamp: now,
+            mode: BbrMode::Startup,
+            pacing_gain: super::super::BBR_STARTUP_GAIN,
+            cwnd_gain: super::super::BBR_STARTUP_GAIN,
+            probe_bw_phase: 0,
+            cycle_stamp: now,
+            probe_rtt_done_at: None,
+            pacing_credit: 0,
+            pacing_refilled_at: now,
+            pacing_next_at: None,
+        }
+    }
+}
+
 pub(in crate::tcp) struct TcpFlowState {
     pub(in crate::tcp) id: u64,
     pub(in crate::tcp) key: TcpFlowKey,
@@ -158,6 +256,10 @@ pub(in crate::tcp) struct TcpFlowState {
     pub(in crate::tcp) retransmission_timeout: Duration,
     pub(in crate::tcp) congestion_window: usize,
     pub(in crate::tcp) slow_start_threshold: usize,
+    /// BBR-style downlink rate/in-flight controller. Paces the server→client
+    /// send at the measured bottleneck bandwidth and caps in-flight at the BDP,
+    /// so the stack never bursts more onto the last hop than it can drain.
+    pub(in crate::tcp) bbr: BbrState,
     pub(in crate::tcp) pending_server_data: VecDeque<Bytes>,
     pub(in crate::tcp) backlog_limit_exceeded_since: Option<Instant>,
     pub(in crate::tcp) last_ack_progress_at: Instant,
@@ -244,6 +346,14 @@ pub(in crate::tcp) struct ServerSegment {
     /// hole is fast-retransmitted at most once per recovery episode (RFC 6675
     /// behaviour) instead of once per incoming partial SACK.
     pub(in crate::tcp) fast_retransmit_epoch: u64,
+    /// Value of `bbr.delivered` at the moment this segment was first sent. On
+    /// ACK, `(bbr.delivered_now - delivered_snapshot) / (now - first_sent)` is
+    /// the BBR delivery-rate sample for this segment.
+    pub(in crate::tcp) delivered_snapshot: u64,
+    /// Whether the flow was application-limited (downlink buffer drained, not
+    /// bandwidth-limited) when this segment was sent. Such a sample only raises
+    /// the BtlBw estimate, never lowers it — an idle gap is not a slow path.
+    pub(in crate::tcp) app_limited: bool,
 }
 
 #[derive(Debug, Default)]
@@ -264,12 +374,24 @@ pub(in crate::tcp) struct ServerBacklogPressure {
     pub(in crate::tcp) window_stalled: bool,
 }
 
+/// BBR delivery-rate sample, taken from the oldest cleanly-acked segment of an
+/// ACK (retransmitted segments are skipped, like RTT samples under Karn's
+/// algorithm). The rate is `(delivered_now - prior_delivered) / (now -
+/// sent_at)`.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::tcp) struct RateSample {
+    pub(in crate::tcp) prior_delivered: u64,
+    pub(in crate::tcp) sent_at: Instant,
+    pub(in crate::tcp) app_limited: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(in crate::tcp) struct AckEffect {
     pub(in crate::tcp) bytes_acked: usize,
     pub(in crate::tcp) rtt_sample: Option<Duration>,
     pub(in crate::tcp) grow_congestion_window: bool,
     pub(in crate::tcp) retransmit_now: bool,
+    pub(in crate::tcp) rate_sample: Option<RateSample>,
 }
 
 impl AckEffect {
@@ -279,6 +401,7 @@ impl AckEffect {
             rtt_sample: None,
             grow_congestion_window: false,
             retransmit_now: false,
+            rate_sample: None,
         }
     }
 
