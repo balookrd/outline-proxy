@@ -30,10 +30,12 @@ pub(crate) struct UplinkPayload {
     pub(crate) ss_ws_url: Option<String>,
     pub(crate) ss_xhttp_url: Option<String>,
     pub(crate) ss_mode: Option<String>,
-    /// VLESS share-link URI; expanded into the matching `vless_*` fields
-    /// at load time. Mutually exclusive with the explicit fields. The
-    /// `share_link` alias keeps API ergonomics close to other VPN tooling
-    /// where the field is commonly named that way.
+    /// Share-link URI (`vless://…` or `ss://…`); expanded into the matching
+    /// transport's fields at load time (`vless_*` for VLESS, combined-path
+    /// `ss_*` + `method`/`password` for SS). Mutually exclusive with the
+    /// matching transport's explicit fields. The `share_link` alias keeps API
+    /// ergonomics close to other VPN tooling where the field is commonly named
+    /// that way.
     #[serde(alias = "share_link")]
     pub(crate) link: Option<String>,
     pub(crate) method: Option<String>,

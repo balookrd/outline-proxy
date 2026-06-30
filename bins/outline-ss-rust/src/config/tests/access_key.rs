@@ -448,3 +448,79 @@ fn uses_custom_access_key_file_extension() {
     );
     assert_eq!(artifacts[2].config_filename, "carol_vless-vless.txt");
 }
+
+#[test]
+fn emits_ss_share_links_for_combined_path_user() {
+    use base64::Engine;
+
+    let mut config = sample_config();
+    // Global combined-path SS — both legs share one base path per carrier.
+    config.ws_path_ss = Some("/ss ws".into());
+    config.xhttp_path_ss = Some("/ss xhttp".into());
+
+    let artifacts = build_access_key_artifacts(&config, &sample_ak_config()).unwrap();
+
+    // bob pins no per-user split paths, so the global combined default applies
+    // to both carriers: Outline YAML + ss-ws + ss-xhttp packet-up + stream-one.
+    let bob: Vec<_> = artifacts.iter().filter(|a| a.user_id == "bob").collect();
+    assert_eq!(bob.len(), 4);
+
+    let ss_ws = artifacts
+        .iter()
+        .find(|a| a.config_filename == "bob-ss-ws.yaml")
+        .expect("ss-ws artifact");
+    let url = ss_ws.access_key_url.as_deref().unwrap();
+    assert!(url.starts_with("ss://"), "{url}");
+    assert!(url.contains("@vpn.example.com:443?"), "{url}");
+    assert!(url.contains("type=ws"), "{url}");
+    assert!(url.contains("security=tls"), "{url}");
+    assert!(url.contains("alpn=h2"), "{url}");
+    assert!(url.contains("path=%2Fss%20ws"), "{url}");
+    assert!(url.ends_with("#vpn:bob-ss"), "{url}");
+    assert_eq!(ss_ws.yaml, format!("{url}\n"));
+
+    // SIP002 userinfo decodes back to `method:password` (bob → global cipher).
+    let userinfo = url.trim_start_matches("ss://").split('@').next().unwrap();
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(userinfo)
+        .unwrap();
+    assert_eq!(String::from_utf8(decoded).unwrap(), "chacha20-ietf-poly1305:secret-b");
+
+    let ss_xhttp = artifacts
+        .iter()
+        .find(|a| a.config_filename == "bob-ss-xhttp.yaml")
+        .expect("ss-xhttp packet-up artifact");
+    let xhttp_url = ss_xhttp.access_key_url.as_deref().unwrap();
+    assert!(xhttp_url.contains("type=xhttp"), "{xhttp_url}");
+    assert!(xhttp_url.contains("mode=packet-up"), "{xhttp_url}");
+    assert!(xhttp_url.contains("path=%2Fss%20xhttp"), "{xhttp_url}");
+
+    let ss_xhttp_so = artifacts
+        .iter()
+        .find(|a| a.config_filename == "bob-ss-xhttp-stream-one.yaml")
+        .expect("ss-xhttp stream-one artifact");
+    assert!(
+        ss_xhttp_so
+            .access_key_url
+            .as_deref()
+            .unwrap()
+            .contains("mode=stream-one")
+    );
+
+    // alice pins per-user split `ws_path_tcp`/`ws_path_udp`, so "specific beats
+    // general" opts her WS leg out of the global combined path — no ss-ws — but
+    // her XHTTP leg (no per-user split) still picks up the combined default.
+    assert!(artifacts.iter().all(|a| a.config_filename != "alice-ss-ws.yaml"));
+    assert!(artifacts.iter().any(|a| a.config_filename == "alice-ss-xhttp.yaml"));
+}
+
+#[test]
+fn no_ss_share_link_without_combined_path() {
+    // sample_config has only split tcp/udp paths — no ws_path_ss / xhttp_path_ss
+    // — so SS users get just the Outline YAML, no ss:// link.
+    let artifacts = build_access_key_artifacts(&sample_config(), &sample_ak_config()).unwrap();
+    assert!(
+        artifacts.iter().all(|a| !a.config_filename.contains("-ss-")),
+        "no ss:// artifacts expected for split-path-only deployment"
+    );
+}

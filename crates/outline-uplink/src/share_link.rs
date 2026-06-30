@@ -235,19 +235,20 @@ fn pick_mode_and_scheme(
 
 /// Pick the first ALPN token. Xray writes `alpn=h2,h3` / `alpn=h3,h2` to
 /// indicate ordered preference; we honour the first one because our mode
-/// field is single-valued.
-fn first_alpn_token(raw: Option<&str>) -> Option<&str> {
+/// field is single-valued. Shared with the SS share-link parser.
+pub(crate) fn first_alpn_token(raw: Option<&str>) -> Option<&str> {
     raw?.split(',').map(str::trim).find(|s| !s.is_empty())
 }
 
 /// Lightweight wrapper around `Url::query_pairs` that lets us look up the
 /// first occurrence of a key without re-parsing the query for every lookup.
-struct QueryParams {
+/// Shared with the SS share-link parser.
+pub(crate) struct QueryParams {
     pairs: Vec<(String, String)>,
 }
 
 impl QueryParams {
-    fn from_url(url: &Url) -> Self {
+    pub(crate) fn from_url(url: &Url) -> Self {
         let pairs = url
             .query_pairs()
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
@@ -255,7 +256,7 @@ impl QueryParams {
         Self { pairs }
     }
 
-    fn first(&self, key: &str) -> Option<&str> {
+    pub(crate) fn first(&self, key: &str) -> Option<&str> {
         self.pairs
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(key))
@@ -263,7 +264,7 @@ impl QueryParams {
     }
 }
 
-fn percent_decode(input: &str) -> Result<String> {
+pub(crate) fn percent_decode(input: &str) -> Result<String> {
     percent_encoding::percent_decode_str(input)
         .decode_utf8()
         .map(|cow| cow.into_owned())
