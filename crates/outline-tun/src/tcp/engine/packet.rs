@@ -109,6 +109,7 @@ impl TunTcpEngine {
                 bytes_acked,
                 rtt_sample,
                 ack_effect.grow_congestion_window,
+                ack_effect.rate_sample,
             );
             commit_flow_changes(&mut state, &self.inner.tcp);
         }

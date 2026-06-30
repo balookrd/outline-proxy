@@ -11,7 +11,7 @@ use outline_metrics as metrics;
 
 use super::super::maintenance::commit_flow_changes;
 use super::super::state_machine::{
-    FlowControlSignals, FlowRouting, FlowTimestamps, TcpFlowState, TcpFlowStatus,
+    BbrState, FlowControlSignals, FlowRouting, FlowTimestamps, TcpFlowState, TcpFlowStatus,
     build_flow_packet, build_flow_syn_ack_packet, clear_flow_metrics, decode_client_window,
     set_flow_status,
 };
@@ -117,6 +117,7 @@ impl TunTcpEngine {
             retransmission_timeout: TCP_INITIAL_RTO,
             congestion_window: MAX_SERVER_SEGMENT_PAYLOAD * TCP_INITIAL_CWND_SEGMENTS,
             slow_start_threshold: TCP_SERVER_RECV_WINDOW_CAPACITY,
+            bbr: BbrState::new(now),
             pending_server_data: VecDeque::new(),
             backlog_limit_exceeded_since: None,
             last_ack_progress_at: now,

@@ -5,7 +5,7 @@ use super::super::{
     TCP_MAX_RTO, TCP_MIN_RTO, TCP_MIN_SSTHRESH,
 };
 use super::seq::{seq_ge, seq_gt, seq_lt};
-use super::types::{AckEffect, SequenceRange, ServerSegment, TcpFlowState};
+use super::types::{AckEffect, RateSample, SequenceRange, ServerSegment, TcpFlowState};
 
 pub(in crate::tcp) fn server_segment_len(segment: &ServerSegment) -> usize {
     segment.payload.len()
@@ -181,6 +181,7 @@ pub(in crate::tcp) fn process_server_ack(
         state.duplicate_ack_count = 0;
         let mut bytes_acked = 0usize;
         let mut rtt_sample = None;
+        let mut rate_sample = None;
         while let Some(segment) = state.unacked_server_segments.front() {
             let segment_end = segment
                 .sequence_number
@@ -190,6 +191,15 @@ pub(in crate::tcp) fn process_server_ack(
                 bytes_acked = bytes_acked.saturating_add(server_segment_len(&segment));
                 if segment.retransmits == 0 {
                     rtt_sample = Some(segment.first_sent.elapsed());
+                    // BBR delivery-rate sample from the oldest cleanly-acked
+                    // segment of this ACK (longest interval = least noisy).
+                    if rate_sample.is_none() {
+                        rate_sample = Some(RateSample {
+                            prior_delivered: segment.delivered_snapshot,
+                            sent_at: segment.first_sent,
+                            app_limited: segment.app_limited,
+                        });
+                    }
                 }
             } else {
                 break;
@@ -217,6 +227,7 @@ pub(in crate::tcp) fn process_server_ack(
             rtt_sample,
             grow_congestion_window,
             retransmit_now,
+            rate_sample,
         }
     } else if acknowledgement_number == state.last_client_ack {
         state.duplicate_ack_count = state.duplicate_ack_count.saturating_add(1);
@@ -229,6 +240,7 @@ pub(in crate::tcp) fn process_server_ack(
                 rtt_sample: None,
                 grow_congestion_window: false,
                 retransmit_now: scoreboard_advanced && fast_retransmit_index(state).is_some(),
+                rate_sample: None,
             }
         } else if state.duplicate_ack_count >= TCP_FAST_RETRANSMIT_DUP_ACKS {
             enter_fast_recovery(state);
@@ -237,6 +249,7 @@ pub(in crate::tcp) fn process_server_ack(
                 rtt_sample: None,
                 grow_congestion_window: false,
                 retransmit_now: fast_retransmit_index(state).is_some(),
+                rate_sample: None,
             }
         } else {
             AckEffect::none()
@@ -299,7 +312,15 @@ pub(in crate::tcp) fn fast_retransmit_index(state: &TcpFlowState) -> Option<usiz
 }
 
 pub(in crate::tcp) fn congestion_window_remaining(state: &TcpFlowState) -> usize {
-    state.congestion_window.saturating_sub(bytes_in_pipe(state))
+    // Effective send window is the smaller of the Reno congestion window and the
+    // BBR in-flight cap (BDP), minus what is already in flight. On the sub-ms
+    // hop to the client the Reno window inflates almost unbounded, so the BBR
+    // BDP cap is what actually binds — and what stops the stack from piling a
+    // whole segment past a hole on a slow last hop.
+    let pipe = bytes_in_pipe(state);
+    let reno_remaining = state.congestion_window.saturating_sub(pipe);
+    let bbr_remaining = super::bbr::inflight_cap(state).saturating_sub(pipe);
+    reno_remaining.min(bbr_remaining)
 }
 
 pub(in crate::tcp) fn current_retransmission_timeout(state: &TcpFlowState) -> Duration {
@@ -335,15 +356,25 @@ pub(in crate::tcp) fn note_ack_progress(
     bytes_acked: usize,
     rtt_sample: Option<Duration>,
     grow_congestion_window: bool,
+    rate_sample: Option<RateSample>,
 ) {
+    let now = Instant::now();
     if let Some(sample) = rtt_sample {
         update_rtt_estimator(state, sample);
     }
+
+    // BBR estimation advances on every delivery, independent of Reno's cwnd
+    // growth: even in fast recovery (where `grow_congestion_window` is false)
+    // the bytes acked still carry a delivery-rate/min-RTT signal.
+    if bytes_acked > 0 || rate_sample.is_some() {
+        super::bbr::on_ack(state, bytes_acked as u64, rate_sample, rtt_sample, now);
+    }
+
     if bytes_acked == 0 || !grow_congestion_window {
         return;
     }
 
-    state.last_ack_progress_at = Instant::now();
+    state.last_ack_progress_at = now;
 
     if state.congestion_window < state.slow_start_threshold {
         state.congestion_window = state.congestion_window.saturating_add(bytes_acked);
