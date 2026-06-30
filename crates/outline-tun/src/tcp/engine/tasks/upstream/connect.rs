@@ -1,4 +1,6 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{Mutex, watch};
 use tokio::time::{Instant, timeout};
@@ -16,6 +18,23 @@ use super::super::super::super::state_machine::{
 use super::super::super::connect::select_tcp_candidate_and_connect;
 use super::super::super::{TunTcpEngine, close_upstream_writer, target_socket_addr};
 use crate::sniff::{SNIFF_PEEK_CAP, SniffOutcome, sniff_host};
+
+/// Ordered direct-dial candidate list: locally re-resolved addresses first,
+/// then the client's literal IP as a fallback (deduplicated). The literal is
+/// what direct-by-IP would have dialled, so it rescues a flow whose SNI
+/// re-resolve returned nothing or only unreachable addresses.
+fn build_direct_dial_candidates(
+    resolved: &[SocketAddr],
+    literal: Option<SocketAddr>,
+) -> Vec<SocketAddr> {
+    let mut candidates: Vec<SocketAddr> = resolved.to_vec();
+    if let Some(lit) = literal
+        && !candidates.contains(&lit)
+    {
+        candidates.push(lit);
+    }
+    candidates
+}
 
 impl TunTcpEngine {
     pub(in crate::tcp::engine) fn spawn_upstream_connect(
@@ -54,6 +73,16 @@ impl TunTcpEngine {
                     crate::TunRoute::Direct { fwmark } => fwmark,
                     _ => None,
                 };
+                // Preserve the literal IP the client dialled. The TUN ingress
+                // always carries a literal IP; SNI re-resolve below may replace
+                // the target with a domain whose locally-resolved address is
+                // *different* (a geo-CDN can resolve to an unreachable region or
+                // AZ from this node). We keep the literal as a dial fallback so a
+                // bad re-resolve never black-holes a flow that direct-by-IP would
+                // have reached — the failure mode that left Kinopoisk's AWS init
+                // endpoints hanging while the client could reach them by IP.
+                let literal_addr = target_socket_addr(&target);
+
                 // SNI bypass: when enabled, peek the first client bytes and, if
                 // they carry a TLS SNI / HTTP Host, re-resolve that domain
                 // through this node's own resolver and dial the IP *it* returns
@@ -76,10 +105,11 @@ impl TunTcpEngine {
                     target
                 };
 
-                // The TUN ingress carries a literal IP target; map it straight
-                // to a SocketAddr. A `Domain` only appears via SNI bypass above —
-                // re-resolve it locally to an address this node can reach.
-                let addr = match &target {
+                // Build the dial-candidate list: re-resolved addresses first
+                // (when SNI bypass produced a domain), then the literal IP as a
+                // fallback. A plain IP target has no re-resolved set, so it just
+                // dials the literal.
+                let resolved: Vec<SocketAddr> = match &target {
                     TargetAddr::Domain(host, port) => {
                         match outline_transport::resolve_host_with_preference(
                             engine.dns_cache(),
@@ -90,45 +120,69 @@ impl TunTcpEngine {
                         )
                         .await
                         {
-                            Ok(addrs) if !addrs.is_empty() => {
-                                debug!(flow_id, host, resolved = %addrs[0], "direct TUN TCP: SNI re-resolved via local resolver");
-                                addrs[0]
+                            Ok(addrs) => {
+                                if let Some(first) = addrs.first() {
+                                    debug!(flow_id, host, resolved = %first, "direct TUN TCP: SNI re-resolved via local resolver");
+                                }
+                                addrs.iter().copied().collect()
                             },
                             other => {
-                                metrics::record_tun_tcp_async_connect("failed");
-                                warn!(flow_id, host, error = ?other.err(), "direct TUN TCP: local SNI re-resolve failed");
-                                engine.abort_flow_with_rst(&key, "connect_failed").await;
-                                return;
+                                debug!(flow_id, host, error = ?other.err(), "direct TUN TCP: local SNI re-resolve failed, falling back to literal IP");
+                                Vec::new()
                             },
                         }
                     },
-                    _ => match target_socket_addr(&target) {
-                        Some(addr) => addr,
-                        None => {
-                            metrics::record_tun_tcp_async_connect("failed");
-                            warn!(flow_id, remote = %target, "direct TUN TCP: domain targets not supported");
-                            engine.abort_flow_with_rst(&key, "connect_failed").await;
-                            return;
-                        },
-                    },
+                    _ => Vec::new(),
                 };
-                let stream = match timeout(
-                    engine.inner.tcp.connect_timeout,
-                    outline_net::connect_tcp_socket_direct(addr, fwmark),
-                )
-                .await
-                {
-                    Ok(Ok(stream)) => stream,
-                    Ok(Err(error)) => {
-                        metrics::record_tun_tcp_async_connect("failed");
-                        warn!(flow_id, remote = %target, error = %format!("{error:#}"), "failed to establish direct TUN TCP connection");
-                        engine.abort_flow_with_rst(&key, "connect_failed").await;
-                        return;
-                    },
-                    Err(_) => {
-                        metrics::record_tun_tcp_async_connect("timeout");
-                        warn!(flow_id, remote = %target, "timed out establishing direct TUN TCP connection");
-                        engine.abort_flow_with_rst(&key, "connect_timeout").await;
+                let candidates = build_direct_dial_candidates(&resolved, literal_addr);
+                if candidates.is_empty() {
+                    metrics::record_tun_tcp_async_connect("failed");
+                    warn!(flow_id, remote = %target, "direct TUN TCP: no dial candidates");
+                    engine.abort_flow_with_rst(&key, "connect_failed").await;
+                    return;
+                }
+
+                // Dial candidates in order, falling through on connect error or
+                // timeout. With more than one candidate, cap each attempt so the
+                // fallback to the literal IP is fast when a re-resolved address
+                // black-holes (a dead SYN otherwise eats the full connect
+                // timeout before the literal is even tried).
+                let per_try = if candidates.len() > 1 {
+                    engine.inner.tcp.connect_timeout.min(Duration::from_secs(3))
+                } else {
+                    engine.inner.tcp.connect_timeout
+                };
+                let mut stream = None;
+                let mut last_outcome = "failed";
+                for addr in &candidates {
+                    match timeout(per_try, outline_net::connect_tcp_socket_direct(*addr, fwmark))
+                        .await
+                    {
+                        Ok(Ok(s)) => {
+                            stream = Some(s);
+                            break;
+                        },
+                        Ok(Err(error)) => {
+                            last_outcome = "failed";
+                            debug!(flow_id, remote = %addr, error = %format!("{error:#}"), "direct TUN TCP: candidate connect failed");
+                        },
+                        Err(_) => {
+                            last_outcome = "timeout";
+                            debug!(flow_id, remote = %addr, "direct TUN TCP: candidate connect timed out");
+                        },
+                    }
+                }
+                let stream = match stream {
+                    Some(stream) => stream,
+                    None => {
+                        metrics::record_tun_tcp_async_connect(last_outcome);
+                        warn!(flow_id, remote = %target, "failed to establish direct TUN TCP connection to any candidate");
+                        let reason = if last_outcome == "timeout" {
+                            "connect_timeout"
+                        } else {
+                            "connect_failed"
+                        };
+                        engine.abort_flow_with_rst(&key, reason).await;
                         return;
                     },
                 };
@@ -384,3 +438,7 @@ fn target_port(target: &TargetAddr) -> u16 {
         },
     }
 }
+
+#[cfg(test)]
+#[path = "tests/connect.rs"]
+mod tests;
