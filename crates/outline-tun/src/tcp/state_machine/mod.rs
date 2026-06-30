@@ -1,3 +1,4 @@
+mod bbr;
 mod congestion;
 mod deliver;
 mod packets;
@@ -56,7 +57,7 @@ pub(super) use transitions::{
 pub(crate) use types::UpstreamWriter;
 #[allow(unused_imports)]
 pub(super) use types::{
-    AckEffect, BufferedClientSegment, ClientSegmentView, FlowControlSignals, FlowRouting,
-    FlowTimestamps, ReportedFlowMetrics, SequenceRange, ServerBacklogPressure, ServerFlush,
-    ServerSegment, TcpFlowState, TcpFlowStatus,
+    AckEffect, BbrMode, BbrState, BufferedClientSegment, ClientSegmentView, FlowControlSignals,
+    FlowRouting, FlowTimestamps, RateSample, ReportedFlowMetrics, SequenceRange,
+    ServerBacklogPressure, ServerFlush, ServerSegment, TcpFlowState, TcpFlowStatus,
 };

@@ -1649,6 +1649,7 @@ fn eviction_test_flow_state(
         congestion_window: super::super::MAX_SERVER_SEGMENT_PAYLOAD
             * super::super::TCP_INITIAL_CWND_SEGMENTS,
         slow_start_threshold: super::super::TCP_SERVER_RECV_WINDOW_CAPACITY,
+        bbr: super::super::state_machine::BbrState::new(last_seen),
         pending_server_data: VecDeque::new(),
         backlog_limit_exceeded_since: None,
         last_ack_progress_at: last_seen,

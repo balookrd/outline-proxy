@@ -105,6 +105,35 @@ impl TunTcpEngine {
                                 // this flow (e.g., back-to-back retransmissions).
                                 state = flow.lock().await;
                             },
+                            Ok(FlowMaintenancePlan::FlushServer(flush)) => {
+                                // BBR pacer released credit for queued downlink
+                                // data; ship it like the inbound path does.
+                                let server_drain = state.signals.server_drain.clone();
+                                let drained = !flush.data_packets.is_empty();
+                                drop(state);
+                                let (group_name, uplink_name) =
+                                    super::super::key_group_and_uplink(&flow).await;
+                                if let Err(error) = engine
+                                    .write_server_flush(&key, flush, &group_name, &uplink_name)
+                                    .await
+                                {
+                                    warn!(
+                                        error = %format!("{error:#}"),
+                                        "failed to write paced server flush"
+                                    );
+                                    engine.close_flow(&key, "write_tun_error").await;
+                                    continue 'flows;
+                                }
+                                // Draining `pending_server_data` may have freed
+                                // room under the downlink backpressure limit;
+                                // wake the reader in case it is parked.
+                                if drained {
+                                    server_drain.notify_one();
+                                }
+                                // Re-acquire to re-plan (pacing may have re-armed
+                                // for the next batch, or the flow is now idle).
+                                state = flow.lock().await;
+                            },
                             Err(error) => {
                                 warn!(
                                     error = %format!("{error:#}"),

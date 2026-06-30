@@ -596,6 +596,8 @@ async fn process_server_ack_marks_sacked_segments_without_cumulative_ack() {
             retransmits: 0,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
         super::ServerSegment {
             sequence_number: 1004,
@@ -607,6 +609,8 @@ async fn process_server_ack_marks_sacked_segments_without_cumulative_ack() {
             retransmits: 0,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
     ]);
 
@@ -637,6 +641,8 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             retransmits: 0,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
         super::ServerSegment {
             sequence_number: 1004,
@@ -648,6 +654,8 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             retransmits: 1,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
         super::ServerSegment {
             sequence_number: 1008,
@@ -659,6 +667,8 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             retransmits: 0,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
         super::ServerSegment {
             sequence_number: 1012,
@@ -670,6 +680,8 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             retransmits: 0,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
     ]);
 
@@ -703,6 +715,8 @@ async fn process_server_ack_exits_fast_recovery_once_recovery_point_is_acked() {
             retransmits: 1,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
         super::ServerSegment {
             sequence_number: 1004,
@@ -714,6 +728,8 @@ async fn process_server_ack_exits_fast_recovery_once_recovery_point_is_acked() {
             retransmits: 1,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
     ]);
 
@@ -745,6 +761,8 @@ fn unacked_segment(seq: u32, payload: &'static [u8]) -> super::ServerSegment {
         retransmits: 0,
         rto_retransmits: 0,
         fast_retransmit_epoch: 0,
+        delivered_snapshot: 0,
+        app_limited: false,
     }
 }
 
@@ -1000,6 +1018,8 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
             retransmits: 0,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
         super::ServerSegment {
             sequence_number: 1004,
@@ -1011,6 +1031,8 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
             retransmits: 0,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
         super::ServerSegment {
             sequence_number: 1008,
@@ -1022,6 +1044,8 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
             retransmits: 0,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
     ]);
 
@@ -1037,7 +1061,7 @@ async fn ack_progress_updates_rtt_and_grows_congestion_window() {
     state.congestion_window = super::MAX_SERVER_SEGMENT_PAYLOAD;
     state.slow_start_threshold = super::TCP_SERVER_RECV_WINDOW_CAPACITY;
 
-    super::note_ack_progress(&mut state, 600, Some(Duration::from_millis(120)), true);
+    super::note_ack_progress(&mut state, 600, Some(Duration::from_millis(120)), true, None);
     assert_eq!(state.smoothed_rtt, Some(Duration::from_millis(120)));
     assert!(state.retransmission_timeout >= Duration::from_millis(200));
     assert_eq!(state.congestion_window, super::MAX_SERVER_SEGMENT_PAYLOAD + 600);
@@ -1059,6 +1083,8 @@ async fn timeout_congestion_event_reduces_cwnd_and_backs_off_rto() {
         retransmits: 0,
         rto_retransmits: 0,
         fast_retransmit_epoch: 0,
+        delivered_snapshot: 0,
+        app_limited: false,
     }]);
 
     super::note_congestion_event(&mut state, true);
@@ -1440,6 +1466,8 @@ async fn process_server_ack_handles_snd_nxt_wrap() {
             retransmits: 0,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
         super::ServerSegment {
             sequence_number: base.wrapping_add(4),
@@ -1451,6 +1479,8 @@ async fn process_server_ack_handles_snd_nxt_wrap() {
             retransmits: 0,
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            app_limited: false,
         },
     ]);
 
@@ -1481,6 +1511,8 @@ async fn process_server_ack_stale_ack_across_wrap_is_rejected() {
         retransmits: 0,
         rto_retransmits: 0,
         fast_retransmit_epoch: 0,
+        delivered_snapshot: 0,
+        app_limited: false,
     }]);
 
     let stale = u32::MAX.wrapping_sub(5);
@@ -1919,6 +1951,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         retransmission_timeout: super::TCP_INITIAL_RTO,
         congestion_window: super::MAX_SERVER_SEGMENT_PAYLOAD * super::TCP_INITIAL_CWND_SEGMENTS,
         slow_start_threshold: super::TCP_SERVER_RECV_WINDOW_CAPACITY,
+        bbr: super::BbrState::new(Instant::now()),
         pending_server_data: VecDeque::new(),
         backlog_limit_exceeded_since: None,
         last_ack_progress_at: Instant::now(),
