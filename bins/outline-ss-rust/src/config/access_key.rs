@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
+use base64::Engine;
 use outline_wire::xhttp::XhttpSubmode;
 
 use super::{AccessKeyConfig, Config, UserEntry};
@@ -42,6 +43,7 @@ pub fn build_access_key_artifacts(
     for user in users {
         if user.password.is_some() {
             artifacts.push(build_shadowsocks_user_artifact(config, ak, &user, public_host)?);
+            push_ss_share_link_artifacts(&mut artifacts, config, ak, &user, public_host)?;
         }
         if user.vless_id.is_some() {
             push_vless_artifacts(&mut artifacts, config, ak, &user, public_host)?;
@@ -94,6 +96,49 @@ fn push_vless_artifacts(
     Ok(())
 }
 
+/// Emits an `ss://` share-link artifact per combined-path SS carrier (WS,
+/// XHTTP) configured for the user. These feed our own `outline-ws-rust`
+/// client's `link` field — the combined-path layout (one base path for TCP +
+/// UDP, the server splitting them by a hidden session-id / token bit) is the
+/// only SS shape with a single-URL form, so a split-path-only user keeps just
+/// the Outline YAML artifact. A user with neither `ws_path_ss` nor
+/// `xhttp_path_ss` is reachable only over raw SS / split WS-XHTTP, where there
+/// is no single-string link, so we emit nothing here.
+///
+/// XHTTP gets two URIs — one for `packet-up` and one for `stream-one` — for
+/// the same reason VLESS-XHTTP does (both wire modes share one base path).
+fn push_ss_share_link_artifacts(
+    artifacts: &mut Vec<AccessKeyArtifact>,
+    config: &Config,
+    ak: &AccessKeyConfig,
+    user: &UserEntry,
+    public_host: &str,
+) -> Result<()> {
+    if user.effective_ws_path_ss(config.ws_path_ss.as_deref()).is_some() {
+        artifacts.push(build_ss_ws_share_artifact(config, ak, user, public_host)?);
+    }
+    if user
+        .effective_xhttp_path_ss(config.xhttp_path_ss.as_deref())
+        .is_some()
+    {
+        artifacts.push(build_ss_xhttp_share_artifact(
+            config,
+            ak,
+            user,
+            public_host,
+            XhttpSubmode::PacketUp,
+        )?);
+        artifacts.push(build_ss_xhttp_share_artifact(
+            config,
+            ak,
+            user,
+            public_host,
+            XhttpSubmode::StreamOne,
+        )?);
+    }
+    Ok(())
+}
+
 /// Suffix appended to the per-user filename and URI fragment.
 /// Empty for `packet-up` so existing access-key URLs keep working
 /// after the upgrade — only the new `stream-one` artifact gets a
@@ -135,6 +180,7 @@ pub fn build_access_key_artifacts_for_user(
     let mut artifacts = Vec::new();
     if user.password.is_some() {
         artifacts.push(build_shadowsocks_user_artifact(config, ak, &user, public_host)?);
+        push_ss_share_link_artifacts(&mut artifacts, config, ak, &user, public_host)?;
     }
     if user.vless_id.is_some() {
         push_vless_artifacts(&mut artifacts, config, ak, &user, public_host)?;
@@ -325,6 +371,88 @@ fn build_vless_xhttp_user_artifact(
     })
 }
 
+fn build_ss_ws_share_artifact(
+    config: &Config,
+    ak: &AccessKeyConfig,
+    user: &UserEntry,
+    public_host: &str,
+) -> Result<AccessKeyArtifact> {
+    let method = user.effective_method(config.method);
+    let password = user.password.as_deref().expect("checked by caller");
+    let ss_path = user
+        .effective_ws_path_ss(config.ws_path_ss.as_deref())
+        .ok_or_else(|| anyhow!("ss share link for user {} requires ws_path_ss", user.id))?;
+    let config_filename =
+        format!("{}-ss-ws{}", sanitize_filename(&user.id), ak.access_key_file_extension);
+    let config_url = ak
+        .access_key_url_base
+        .as_deref()
+        .map(|base| join_url(base, &config_filename))
+        .transpose()?;
+    let alpn = preferred_alpn_list(config, &ak.public_scheme, AlpnCarrier::Ws);
+    let ss_url = ss_share_uri(
+        method.as_str(),
+        password,
+        public_host,
+        &ak.public_scheme,
+        ss_path,
+        &user.id,
+        alpn.as_deref(),
+    );
+
+    Ok(AccessKeyArtifact {
+        user_id: user.id.clone(),
+        config_filename,
+        config_url,
+        access_key_url: Some(ss_url.clone()),
+        yaml: format!("{ss_url}\n"),
+    })
+}
+
+fn build_ss_xhttp_share_artifact(
+    config: &Config,
+    ak: &AccessKeyConfig,
+    user: &UserEntry,
+    public_host: &str,
+    mode: XhttpSubmode,
+) -> Result<AccessKeyArtifact> {
+    let method = user.effective_method(config.method);
+    let password = user.password.as_deref().expect("checked by caller");
+    let ss_path = user
+        .effective_xhttp_path_ss(config.xhttp_path_ss.as_deref())
+        .ok_or_else(|| anyhow!("ss share link for user {} requires xhttp_path_ss", user.id))?;
+    let config_filename = format!(
+        "{}-ss-xhttp{}{}",
+        sanitize_filename(&user.id),
+        xhttp_artifact_suffix(mode),
+        ak.access_key_file_extension,
+    );
+    let config_url = ak
+        .access_key_url_base
+        .as_deref()
+        .map(|base| join_url(base, &config_filename))
+        .transpose()?;
+    let alpn = preferred_alpn_list(config, &ak.public_scheme, xhttp_alpn_carrier(mode));
+    let ss_url = ss_xhttp_share_uri(
+        method.as_str(),
+        password,
+        public_host,
+        &ak.public_scheme,
+        ss_path,
+        &user.id,
+        mode,
+        alpn.as_deref(),
+    );
+
+    Ok(AccessKeyArtifact {
+        user_id: user.id.clone(),
+        config_filename,
+        config_url,
+        access_key_url: Some(ss_url.clone()),
+        yaml: format!("{ss_url}\n"),
+    })
+}
+
 fn render_outline_yaml(method: &str, password: &str, tcp_url: &str, udp_url: &str) -> String {
     format!(
         concat!(
@@ -431,7 +559,72 @@ fn vless_uri(
     format!(
         "vless://{}@{}?type=ws&security={security}{alpn_segment}&path={}&encryption=none#{}",
         id,
-        vless_authority(host, default_port),
+        authority_with_default_port(host, default_port),
+        percent_encode_query_value(&normalize_path(path)),
+        percent_encode_fragment(&fragment),
+    )
+}
+
+/// SIP002 userinfo: url-safe base64 (no padding) of `method:password`. Mirrors
+/// what the `outline-ws-rust` `SsShareLink` parser decodes back.
+fn ss_userinfo(method: &str, password: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(format!("{method}:{password}"))
+}
+
+/// Builds an `ss://` share link for the combined-path SS WS carrier. `path` is
+/// the server's `ws_path_ss` base; the client appends the hidden TCP/UDP
+/// discriminator at dial time. Maps `wss`→`security=tls`, `ws`→`security=none`
+/// the same way the VLESS URIs do.
+fn ss_share_uri(
+    method: &str,
+    password: &str,
+    host: &str,
+    scheme: &str,
+    path: &str,
+    label: &str,
+    alpn: Option<&str>,
+) -> String {
+    let security = if scheme == "wss" { "tls" } else { "none" };
+    let default_port = if scheme == "wss" { 443 } else { 80 };
+    let fragment = format!("{}:{label}-ss", host_short_label(host));
+    let alpn_segment = alpn
+        .map(|value| format!("&alpn={}", percent_encode_query_value(value)))
+        .unwrap_or_default();
+    format!(
+        "ss://{}@{}?type=ws&security={security}{alpn_segment}&path={}#{}",
+        ss_userinfo(method, password),
+        authority_with_default_port(host, default_port),
+        percent_encode_query_value(&normalize_path(path)),
+        percent_encode_fragment(&fragment),
+    )
+}
+
+/// Builds an `ss://` share link for the combined-path SS XHTTP carrier in the
+/// requested wire mode. The submode rides the dial-URL `?mode=` query, mirroring
+/// the VLESS-XHTTP URI shape.
+#[allow(clippy::too_many_arguments)]
+fn ss_xhttp_share_uri(
+    method: &str,
+    password: &str,
+    host: &str,
+    scheme: &str,
+    path: &str,
+    label: &str,
+    mode: XhttpSubmode,
+    alpn: Option<&str>,
+) -> String {
+    let security = if scheme == "wss" { "tls" } else { "none" };
+    let default_port = if scheme == "wss" { 443 } else { 80 };
+    let fragment =
+        format!("{}:{label}-ss-xhttp{}", host_short_label(host), xhttp_artifact_suffix(mode));
+    let alpn_segment = alpn
+        .map(|value| format!("&alpn={}", percent_encode_query_value(value)))
+        .unwrap_or_default();
+    format!(
+        "ss://{}@{}?type=xhttp&mode={}&security={security}{alpn_segment}&path={}#{}",
+        ss_userinfo(method, password),
+        authority_with_default_port(host, default_port),
+        mode.as_wire_str(),
         percent_encode_query_value(&normalize_path(path)),
         percent_encode_fragment(&fragment),
     )
@@ -468,7 +661,7 @@ fn vless_xhttp_uri(
     format!(
         "vless://{}@{}?type=xhttp&mode={}&security={security}{alpn_segment}&path={}&encryption=none#{}",
         id,
-        vless_authority(host, default_port),
+        authority_with_default_port(host, default_port),
         mode.as_wire_str(),
         percent_encode_query_value(&normalize_path(path)),
         percent_encode_fragment(&fragment),
@@ -499,7 +692,7 @@ fn strip_host_port(host: &str) -> &str {
     host
 }
 
-fn vless_authority(host: &str, default_port: u16) -> String {
+fn authority_with_default_port(host: &str, default_port: u16) -> String {
     let host = normalize_host(host);
     if host_has_port(&host) {
         host
