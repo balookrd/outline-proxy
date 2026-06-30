@@ -215,6 +215,10 @@ impl UplinkManager {
 
         let failure_cause = classify_runtime_failure_cause(error);
         let failure_signature = classify_runtime_failure_signature(error);
+        // A server-initiated downstream-throttle signal — counted per transport
+        // for the dashboard so an operator can see which uplink was nudged off
+        // by throttling and how often.
+        let is_downstream_throttle = failure_cause == "throttle";
         // A 1013 "try again later" is a per-target upstream failure, not an
         // uplink/tunnel fault. The dispatch layer still retries the flow, but we
         // must NOT take an uplink cooldown for it — a routine per-destination
@@ -302,6 +306,11 @@ impl UplinkManager {
             status.last_error = Some(error_text.clone());
             match transport {
                 TransportKind::Tcp => {
+                    if is_downstream_throttle {
+                        status.tcp.downstream_throttle_count =
+                            status.tcp.downstream_throttle_count.saturating_add(1);
+                        status.tcp.last_downstream_throttle_at = Some(now);
+                    }
                     if !already_in_cooldown && !is_try_again {
                         if !probe_enabled {
                             add_penalty(&mut status.tcp.penalty, now, &load_balancing);
@@ -377,6 +386,11 @@ impl UplinkManager {
                     }
                 },
                 TransportKind::Udp => {
+                    if is_downstream_throttle {
+                        status.udp.downstream_throttle_count =
+                            status.udp.downstream_throttle_count.saturating_add(1);
+                        status.udp.last_downstream_throttle_at = Some(now);
+                    }
                     if !already_in_cooldown && !is_try_again {
                         // Same rationale as TCP above: when probe is enabled, defer
                         // penalty to the probe confirmation path to avoid inflating

@@ -185,6 +185,8 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
  * attention, but traffic still flows" reads consistently. */
 .cfg-chip.bypass-armed { background: var(--gray-soft); color: var(--muted); border-color: var(--line); }
 .cfg-chip.bypass-active { background: var(--amber-soft); color: #b45309; border-color: rgba(180, 83, 9, .45); font-weight: 800; }
+.cfg-chip.throttle-recent { background: var(--amber-soft); color: #b45309; border-color: rgba(180, 83, 9, .45); font-weight: 800; }
+.cfg-chip.throttle-idle { background: var(--gray-soft); color: var(--muted); border-color: var(--line); }
 .cfg-chip.fp-stable { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
 .cfg-chip.fp-random { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
 .cfg-chip.pad-chip { background: rgba(13, 148, 136, .14); color: #5eead4; border-color: rgba(13, 148, 136, .4); }
@@ -635,6 +637,35 @@ function fingerprintChip(uplink) {
 function paddingChip(uplink) {
   if (!uplink || !uplink.padding_enabled) return "";
   return `<span class="cfg-chip pad-chip" data-tip="Carrier padding on — each Shadowsocks chunk / VLESS frame is wrapped in a length-delimited padding frame so the outer TLS record size does not track the payload size (anti TLS-in-TLS record-size correlation)"><span>▦</span><span>pad</span></span>`;
+}
+// Below this age (ms) the last throttle signal is considered "recent" and the
+// chip is highlighted (amber) rather than idle (gray).
+const THROTTLE_RECENT_MS = 300000;
+function fmtAgoMs(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+// Downstream-throttle chip: shown when the server has signalled throttling on
+// this uplink's carrier (and the client switched away). Counts are cumulative
+// per transport; the chip is highlighted when the last signal was recent.
+function throttleChip(uplink) {
+  if (!uplink) return "";
+  const tcp = uplink.tcp_downstream_throttle_count || 0;
+  const udp = uplink.udp_downstream_throttle_count || 0;
+  const total = tcp + udp;
+  if (total === 0) return "";
+  const agos = [uplink.tcp_throttle_ago_ms, uplink.udp_throttle_ago_ms].filter(v => v != null);
+  const agoMs = agos.length ? Math.min(...agos) : null;
+  const recent = agoMs != null && agoMs < THROTTLE_RECENT_MS;
+  const agoTxt = agoMs != null ? `, last ${fmtAgoMs(agoMs)} ago` : "";
+  const tone = recent ? "throttle-recent" : "throttle-idle";
+  const tip = `Server detected downstream throttling on this carrier and asked the client to switch uplinks — TCP ${tcp} / UDP ${udp}${agoTxt}. Traffic was moved to another uplink (temporary cooldown + penalty).`;
+  return `<span class="cfg-chip ${tone}" data-tip="${escapeHtml(tip)}" data-tip-wrap><span>⧖</span><span>thr ${total}</span></span>`;
 }
 // `process_stable` / `random` produce one identity for the whole
 // process, so every uplink in the group reports the same name —
@@ -1211,7 +1242,7 @@ function renderInstanceBody(panel, instance, groups) {
         row.innerHTML = `
           <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
           <div>${primaryProtocolCell(uplink)}</div>
-          <div><span class="status-pill ${rowTone}">${label}</span>${errChip}${certChip(uplink)}${fpHomogeneous ? '' : fingerprintChip(uplink)}${paddingChip(uplink)}</div>
+          <div><span class="status-pill ${rowTone}">${label}</span>${errChip}${certChip(uplink)}${fpHomogeneous ? '' : fingerprintChip(uplink)}${paddingChip(uplink)}${throttleChip(uplink)}</div>
           <div>${legWireChainCell(uplink, 'tcp')}</div>
           <div>${legWireChainCell(uplink, 'udp')}</div>
           <div class="muted-cell">${weightCell(uplink)}</div>

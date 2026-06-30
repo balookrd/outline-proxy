@@ -124,6 +124,18 @@ pub struct UplinkSnapshot {
     pub standby_udp_ready: usize,
     pub tcp_consecutive_failures: u32,
     pub udp_consecutive_failures: u32,
+    /// Cumulative count of server-initiated downstream-throttle signals that
+    /// nudged traffic off this uplink (TCP / UDP), and how long ago the last
+    /// one arrived. Surfaced on the dashboard as a throttle chip. `0` / `None`
+    /// when the uplink has never been throttled.
+    #[serde(default)]
+    pub tcp_downstream_throttle_count: u64,
+    #[serde(default)]
+    pub udp_downstream_throttle_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_throttle_ago_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_throttle_ago_ms: Option<u128>,
     pub h3_tcp_downgrade_until_ms: Option<u128>,
     pub h3_udp_downgrade_until_ms: Option<u128>,
     /// Family-aware ceiling carrier the dispatcher returns from
