@@ -14,6 +14,7 @@ mod registry;
 mod routing_key;
 mod selection;
 pub mod share_link;
+pub mod ss_share_link;
 pub mod state;
 mod time;
 mod types;
@@ -25,6 +26,7 @@ pub use config::{
     UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
 };
 pub use share_link::VlessShareLink;
+pub use ss_share_link::SsShareLink;
 #[cfg(test)]
 mod tests;
 

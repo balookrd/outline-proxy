@@ -35,10 +35,13 @@ pub(crate) struct ConfigFile {
     pub(super) ss_ws_url: Option<Url>,
     pub(super) ss_xhttp_url: Option<Url>,
     pub(super) ss_mode: Option<TransportMode>,
-    /// VLESS share-link URI (`vless://UUID@HOST:PORT?...#NAME`). When set,
-    /// expands at load time into the matching `vless_id`, dial URL and
-    /// `vless_mode`. Mutually exclusive with explicitly-set `vless_*`
-    /// fields. See docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs".
+    /// Share-link URI. A `vless://UUID@HOST:PORT?...#NAME` link expands into
+    /// the matching `vless_id` / dial URL / `vless_mode` (`transport = "vless"`);
+    /// an `ss://BASE64(method:password)@HOST:PORT?...#NAME` link expands into
+    /// the combined-path `ss_*_url` / `ss_mode` / `method` / `password`
+    /// (`transport = "ss"`). The scheme selects which. Mutually exclusive with
+    /// the explicit fields of the matching transport. See
+    /// docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs" / "SS share-link URIs".
     pub(super) link: Option<String>,
     pub(super) method: Option<CipherKind>,
     pub(super) password: Option<String>,
@@ -223,8 +226,9 @@ pub(crate) struct OutlineSection {
     pub(super) ss_ws_url: Option<Url>,
     pub(super) ss_xhttp_url: Option<Url>,
     pub(super) ss_mode: Option<TransportMode>,
-    /// VLESS share-link URI. Same semantics as `ConfigFile::link`; provided
-    /// here so the inline-uplink shape can carry a one-line VLESS config.
+    /// Share-link URI (`vless://…` or `ss://…`). Same semantics as
+    /// `ConfigFile::link`; provided here so the inline-uplink shape can carry
+    /// a one-line VLESS or SS config.
     pub(super) link: Option<String>,
     pub(super) method: Option<CipherKind>,
     pub(super) password: Option<String>,
@@ -384,10 +388,13 @@ pub(crate) struct UplinkSection {
     pub(crate) ss_ws_url: Option<Url>,
     pub(crate) ss_xhttp_url: Option<Url>,
     pub(crate) ss_mode: Option<TransportMode>,
-    /// VLESS share-link URI (`vless://UUID@HOST:PORT?...#NAME`). When set,
-    /// expands at load time into the matching `vless_id`, dial URL and
-    /// `vless_mode`. Mutually exclusive with explicitly-set `vless_*`
-    /// fields. See docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs".
+    /// Share-link URI. A `vless://UUID@HOST:PORT?...#NAME` link expands into
+    /// the matching `vless_id` / dial URL / `vless_mode` (`transport = "vless"`);
+    /// an `ss://BASE64(method:password)@HOST:PORT?...#NAME` link expands into
+    /// the combined-path `ss_*_url` / `ss_mode` / `method` / `password`
+    /// (`transport = "ss"`). Mutually exclusive with the matching transport's
+    /// explicit fields. See docs/UPLINK-CONFIGURATIONS.md "VLESS share-link
+    /// URIs" / "SS share-link URIs".
     pub(crate) link: Option<String>,
     pub(crate) method: Option<CipherKind>,
     pub(crate) password: Option<String>,
