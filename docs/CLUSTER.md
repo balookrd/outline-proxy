@@ -56,9 +56,10 @@ SessionId = obfuscate_k( shard_id (4 bits) || nonce (124 bits) )
   enough against resume-id guessing.
 - **obfuscation** turns the structured value into a wire-random one. The shard
   is a *routing hint, not a secret*, but its structure must not be visible to
-  a DPI/fingerprint observer, so it is encrypted under a cluster-wide
-  `cluster_routing_key`. Any cluster member de-obfuscates and reads the shard
-  in O(1); there is no shared routing table for ids.
+  a DPI/fingerprint observer, so it is encrypted under a key derived from the
+  cluster-wide `cluster_psk` (`HKDF(psk, "shard-obfuscation")`). Any cluster
+  member de-obfuscates and reads the shard in O(1); there is no shared routing
+  table for ids.
 - Encode/decode live in `outline-wire` (a new `cluster` module) so the server
   binary and the mesh path use one implementation.
 
@@ -111,15 +112,32 @@ extracts the application bytes (the still-encrypted SS/VLESS stream as-is) and
 tunnels them to home. **Crypto and the upstream connection live only on home.**
 The edge never holds keys and never sees plaintext.
 
-- **Link:** long-lived **QUIC** connections between cluster members,
-  authenticated with mTLS (aws-lc-rs — the single crypto provider already in
-  the graph; quinn is already a dependency). One QUIC connection per peer
-  pair, multiplexing many sessions.
+- **Link:** long-lived **QUIC** connections between cluster members. QUIC
+  mandates a TLS 1.3 handshake (quinn on rustls, aws-lc-rs — the single crypto
+  provider already in the graph), which already gives exactly the crypto we
+  want: ephemeral ECDHE session keys with forward secrecy plus AES-GCM. One
+  QUIC connection per peer pair, multiplexing many sessions.
+- **Authentication is PSK-derived, no X.509 PKI.** Instead of a CA and
+  per-node certificates that must be signed, rotated and distributed to all 16
+  nodes, each node deterministically derives its keypair from the shared
+  `cluster_psk` (`HKDF(psk, "mesh-auth", shard)` → ed25519 → self-signed cert).
+  Any node knows the PSK, so it can derive the expected fingerprint of any peer
+  by its shard and verify the presented cert against it — a mutual pin. This
+  reuses the existing `PinnedServerCertVerifier` pattern
+  (`bootstrap/reverse_tls.rs`), generalised from one-way to mutual: signature
+  verification is still delegated to the provider, only path validation is
+  replaced by a constant-time pin compare. The only shared secret is the PSK
+  already in the config — nothing to deliver. rustls has no external-PSK API,
+  so a certificate is still the vehicle, but it carries no PKI weight.
+- **Forward secrecy holds:** a leaked PSK breaks *future* auth (peer
+  impersonation), but recorded past traffic stays protected by the ephemeral
+  ECDHE keys — the same properties a real external PSK would give.
 - **One QUIC stream per session.** This is the key reason QUIC was chosen over
-  a hand-rolled framing on top of mTLS-TCP: per-stream flow control gives
+  a hand-rolled AEAD framing on top of raw UDP: per-stream flow control gives
   honest backpressure for free and removes head-of-line blocking between
-  sessions — the exact failure class that bit the TUN pump. No blind
-  coalescing.
+  sessions — the exact failure class that bit the TUN pump. Rolling our own
+  PSK+AES transport would also mean re-implementing nonces, rekeying and
+  anti-replay that TLS 1.3 already gets right. No blind coalescing.
 
 Mesh stream control messages:
 
@@ -221,8 +239,9 @@ the mesh framing.
 
 ## Security
 
-- **Mesh auth:** mTLS between cluster members (shared CA / pinned certs); an
-  outsider cannot inject a relay stream.
+- **Mesh auth:** mutual PSK-derived pin between cluster members (see mesh
+  transport above); an outsider without the `cluster_psk` cannot derive a valid
+  keypair and cannot inject a relay stream.
 - **Topology is not revealed:** on home-down or foreign-owner the edge answers
   with an ordinary resume-miss (as the existing owner-mismatch path stays
   silent). An observer cannot distinguish "no such shard" from "home is down".
@@ -241,9 +260,8 @@ Server (`outline-ss-rust`):
 [cluster]
 enabled = true
 shard_id = 7                       # 0..15, unique within the cluster
-cluster_routing_key = "<base64>"   # shared key obfuscating the shard in the session id
-mesh_listen = "[::]:9443"          # mTLS QUIC listener for inbound relay
-mesh_ca = "..."; mesh_cert = "..."; mesh_key = "..."
+cluster_psk = "<base64>"           # one shared secret; HKDF-split into shard-obfuscation + mesh-auth keys
+mesh_listen = "[::]:9443"          # QUIC listener for inbound relay (PSK-derived mutual pin, no CA)
 mesh_relay_budget_ms = 4000        # progress budget: stalled longer → tear down
 peers = [
   { shard = 1, addr = "..." },
@@ -251,6 +269,11 @@ peers = [
   # ...
 ]
 ```
+
+The single `cluster_psk` is the only shared secret — no CA, no certificates to
+distribute. It is HKDF-split by domain (`"shard-obfuscation"` for the session
+id, `"mesh-auth"` for the interconnect keypair) so the same key is never reused
+across two crypto contexts.
 
 Client (`outline-ws-rust`): **ideally no changes.** The cluster is transparent
 to the client — it already resumes to the same uplink with the same session
