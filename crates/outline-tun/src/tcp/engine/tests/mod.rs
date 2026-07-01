@@ -868,6 +868,122 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
     assert_eq!(retransmitted.payload, b"AB"[..]);
 }
 
+/// Regression: a partial ACK that clears the *oldest* unacked segment moves the
+/// retransmission deadline out to the next segment's (later) `last_sent`.
+/// `reschedule_flow` does not push a heap entry for a later deadline, so the
+/// maintenance loop must still process the earlier (now-stale) entry and re-arm
+/// the flow — otherwise the flow falls off the scheduler and the surviving
+/// segment is never RTO-retransmitted. This is the split-TCP failure that left
+/// Kinopoisk's ~4 KB TLS init hung (its tail segments dropped on the last mile,
+/// never resent) until the TV reported "no internet".
+#[tokio::test]
+async fn tun_tcp_retransmits_after_partial_ack_moves_deadline_later() {
+    let upstream = TestTcpUpstream::start().await;
+    let manager = build_test_manager(upstream.url()).await;
+    let (writer, mut capture) = TunCapture::new().await;
+    let engine = super::TunTcpEngine::new(
+        writer,
+        crate::TunRouting::from_single_manager(manager),
+        128,
+        Duration::from_secs(60),
+        test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+    let client_port = 40044;
+    let remote_port = 443;
+
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            1000,
+            0,
+            4096,
+            TCP_FLAG_SYN,
+            &[],
+        ))
+        .await
+        .unwrap();
+    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+    let _ = upstream.expect_target().await;
+
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            1001,
+            server_next_seq,
+            4096,
+            TCP_FLAG_ACK,
+            &[],
+        ))
+        .await
+        .unwrap();
+
+    // Three separate downlink segments so there is an oldest to clear and a
+    // still-unacked tail whose deadline lands later.
+    upstream.send_chunk(b"AAAA").await;
+    let seg1 = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    upstream.send_chunk(b"BBBB").await;
+    let seg2 = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    upstream.send_chunk(b"CCCC").await;
+    let seg3 = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    assert_eq!(seg1.payload, b"AAAA"[..]);
+    assert_eq!(seg2.payload, b"BBBB"[..]);
+    assert_eq!(seg3.payload, b"CCCC"[..]);
+
+    // First partial ACK clears seg1 (and, via its RTT sample, drops RTO to the
+    // 200 ms floor) — the deadline moves *earlier* here, so it is pushed.
+    let ack_seg1 = seg1.sequence_number.wrapping_add(seg1.payload.len() as u32);
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            1001,
+            ack_seg1,
+            4096,
+            TCP_FLAG_ACK,
+            &[],
+        ))
+        .await
+        .unwrap();
+
+    // Second partial ACK clears seg2, moving the deadline out to seg3's later
+    // `last_sent`. `reschedule_flow` will NOT push a heap entry for it; only the
+    // maintenance loop's re-plan of the earlier stale entry re-arms it.
+    let ack_seg2 = seg2.sequence_number.wrapping_add(seg2.payload.len() as u32);
+    engine
+        .handle_packet(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            1001,
+            ack_seg2,
+            4096,
+            TCP_FLAG_ACK,
+            &[],
+        ))
+        .await
+        .unwrap();
+
+    // seg3 must still be RTO-retransmitted. Before the scheduler fix the flow
+    // fell off the scheduler here and this `next_packet` would never arrive.
+    let retransmitted = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    assert_eq!(retransmitted.sequence_number, seg3.sequence_number);
+    assert_eq!(retransmitted.payload, b"CCCC"[..]);
+}
+
 #[tokio::test]
 async fn tun_tcp_invalid_high_ack_triggers_challenge_ack() {
     let upstream = TestTcpUpstream::start().await;
