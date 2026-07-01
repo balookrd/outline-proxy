@@ -3,10 +3,14 @@ use bytes::Bytes;
 
 use super::super::{
     MAX_SERVER_SEGMENT_PAYLOAD, ParsedTcpPacket, TCP_FLAG_ACK, TCP_FLAG_SYN,
-    TCP_SERVER_WINDOW_SCALE, build_response_packet_custom,
+    TCP_SERVER_WINDOW_SCALE, build_gso_tcp_packet, build_response_packet_custom,
 };
 use super::seq::{packet_sequence_len, seq_ge, seq_gt, seq_lt};
 use super::types::TcpFlowState;
+use crate::vnet::{
+    VIRTIO_NET_HDR_F_NEEDS_CSUM, VIRTIO_NET_HDR_GSO_TCPV4, VIRTIO_NET_HDR_GSO_TCPV6, VirtioNetHdr,
+};
+use crate::wire::IpVersion;
 
 /// Stack-allocated buffer for TCP option bytes.
 ///
@@ -88,6 +92,49 @@ fn build_flow_packet_with_options(
         options,
         payload,
     )
+}
+
+/// Build a downlink TSO super-segment and its `virtio_net_hdr`. `payload` is up
+/// to ~64 KiB spanning many MSS worth of data; the kernel splits it into
+/// `mss`-sized segments, filling in each segment's sequence number and
+/// finalising the L4 checksum from the partial (pseudo-header) checksum this
+/// builder stores. Options mirror `build_flow_packet` (timestamps only — the
+/// per-segment header the kernel emits carries them on every segment).
+pub(in crate::tcp) fn build_gso_flow_packet(
+    state: &TcpFlowState,
+    sequence_number: u32,
+    acknowledgement_number: u32,
+    flags: u8,
+    mss: u16,
+    payload: &[u8],
+) -> Result<(Vec<u8>, VirtioNetHdr)> {
+    let options = default_packet_options(state);
+    let (bytes, l3_len, l4_len) = build_gso_tcp_packet(
+        state.key.version,
+        state.key.remote_ip,
+        state.key.client_ip,
+        state.key.remote_port,
+        state.key.client_port,
+        sequence_number,
+        acknowledgement_number,
+        flags,
+        advertised_receive_window(state),
+        options.as_slice(),
+        payload,
+    )?;
+    let gso_type = match state.key.version {
+        IpVersion::V4 => VIRTIO_NET_HDR_GSO_TCPV4,
+        IpVersion::V6 => VIRTIO_NET_HDR_GSO_TCPV6,
+    };
+    let header = VirtioNetHdr {
+        flags: VIRTIO_NET_HDR_F_NEEDS_CSUM,
+        gso_type,
+        hdr_len: l3_len + l4_len,
+        gso_size: mss,
+        csum_start: l3_len,
+        csum_offset: 16,
+    };
+    Ok((bytes, header))
 }
 
 pub(in crate::tcp) fn build_flow_ack_packet(

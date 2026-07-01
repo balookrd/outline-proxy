@@ -10,6 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 
 use crate::TunRoute;
+use crate::vnet::VirtioNetHdr;
 #[cfg(feature = "quic")]
 use outline_transport::QuicTcpWriter;
 use outline_transport::{SocketTcpWriter, VlessTcpWriter, WsTcpWriter};
@@ -247,6 +248,11 @@ impl BbrState {
 pub(in crate::tcp) struct TcpFlowState {
     pub(in crate::tcp) id: u64,
     pub(in crate::tcp) key: TcpFlowKey,
+    /// Whether the TUN fd negotiated TSO offload (`TunOffloadCaps::tso`). When
+    /// true, `flush_server_data` may coalesce the downlink into one super-segment
+    /// the kernel splits per MSS instead of building N per-MSS packets. Segment
+    /// tracking (`unacked_server_segments`) stays per-MSS regardless.
+    pub(in crate::tcp) gso_enabled: bool,
     pub(in crate::tcp) routing: FlowRouting,
     pub(in crate::tcp) signals: FlowControlSignals,
     pub(in crate::tcp) status: TcpFlowStatus,
@@ -376,9 +382,26 @@ pub(in crate::tcp) struct ServerSegment {
     pub(in crate::tcp) app_limited: bool,
 }
 
+/// One downlink packet to write to the TUN device.
+#[derive(Debug)]
+pub(in crate::tcp) struct ServerDataPacket {
+    pub(in crate::tcp) bytes: Vec<u8>,
+    /// `Some` when `bytes` is a TSO super-segment: the `virtio_net_hdr` the
+    /// writer prepends so the kernel splits it into `gso_size` MSS segments.
+    /// `None` is a single IP packet (writer emits a GSO_NONE header or a bare
+    /// write, depending on whether the fd carries a vnet header).
+    pub(in crate::tcp) vnet: Option<VirtioNetHdr>,
+}
+
+impl ServerDataPacket {
+    pub(in crate::tcp) fn single(bytes: Vec<u8>) -> Self {
+        Self { bytes, vnet: None }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(in crate::tcp) struct ServerFlush {
-    pub(in crate::tcp) data_packets: Vec<Vec<u8>>,
+    pub(in crate::tcp) data_packets: Vec<ServerDataPacket>,
     pub(in crate::tcp) fin_packet: Option<Vec<u8>>,
     pub(in crate::tcp) probe_packet: Option<Vec<u8>>,
     pub(in crate::tcp) window_stalled: bool,

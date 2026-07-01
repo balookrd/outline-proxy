@@ -579,6 +579,58 @@ async fn build_flow_syn_ack_advertises_mss_and_timestamps() {
 }
 
 #[tokio::test]
+async fn flush_server_data_emits_gso_super_segment_tracked_per_mss() {
+    let mut state = tcp_flow_state_for_tests().await;
+    state.gso_enabled = true;
+    state.client_max_segment_size = None;
+    state.server_seq = 1000;
+    state.rcv_nxt = 500;
+    state.client_window = 100_000;
+    state.client_window_end = state.server_seq.wrapping_add(100_000);
+    state.congestion_window = 100_000;
+    state.slow_start_threshold = 100_000;
+
+    let mss = super::MAX_SERVER_SEGMENT_PAYLOAD;
+    let payload_len = mss * 4 + 200; // 5000 bytes: spans 5 MSS segments (4×MSS + 200)
+    state.pending_server_data = std::collections::VecDeque::from([vec![7u8; payload_len].into()]);
+
+    let flush = super::state_machine::flush_server_output(&mut state).unwrap();
+
+    // One physical write (a TSO super-segment) instead of five MSS packets.
+    assert_eq!(flush.data_packets.len(), 1);
+    let packet = &flush.data_packets[0];
+    let vnet = packet.vnet.expect("TSO super-segment carries a virtio_net_hdr");
+    assert_eq!(vnet.gso_size as usize, mss);
+    assert_eq!(vnet.gso_type, crate::vnet::VIRTIO_NET_HDR_GSO_TCPV4);
+    assert_eq!(vnet.flags, crate::vnet::VIRTIO_NET_HDR_F_NEEDS_CSUM);
+    // IPv4 total_len covers the whole coalesced payload.
+    let total_len = u16::from_be_bytes([packet.bytes[2], packet.bytes[3]]) as usize;
+    assert_eq!(total_len, packet.bytes.len());
+    assert!(total_len > mss);
+
+    // The retransmit scoreboard is still per-MSS so a loss inside the
+    // super-segment recovers at MSS granularity.
+    assert_eq!(state.unacked_server_segments.len(), 5);
+    let sequence_numbers: Vec<u32> = state
+        .unacked_server_segments
+        .iter()
+        .map(|segment| segment.sequence_number)
+        .collect();
+    assert_eq!(
+        sequence_numbers,
+        vec![
+            1000,
+            1000 + mss as u32,
+            1000 + 2 * mss as u32,
+            1000 + 3 * mss as u32,
+            1000 + 4 * mss as u32,
+        ]
+    );
+    assert_eq!(state.unacked_server_segments.back().unwrap().payload.len(), 200);
+    assert_eq!(state.server_seq, 1000 + payload_len as u32);
+}
+
+#[tokio::test]
 async fn process_server_ack_marks_sacked_segments_without_cumulative_ack() {
     let mut state = tcp_flow_state_for_tests().await;
     state.last_client_ack = 1000;
@@ -1891,6 +1943,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
     let (close_signal, _close_rx) = tokio::sync::watch::channel(false);
     super::TcpFlowState {
         id: 1,
+        gso_enabled: false,
         key: super::TcpFlowKey {
             version: super::IpVersion::V4,
             client_ip: "10.0.0.2".parse().unwrap(),

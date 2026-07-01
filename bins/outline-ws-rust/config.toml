@@ -145,6 +145,16 @@ listen = "[::1]:9090"
 # sites benefit from override (the exit's resolution reaches IPs the client's
 # can't); list only the few that regress. Default empty.
 # sniff_override_exclude = ["strava.com"]
+#
+# Open the TUN device with IFF_VNET_HDR and write downlink data as TSO
+# super-segments (Linux only). Default false. The kernel splits one large
+# super-segment (up to ~60 KB) into MSS packets, so the per-packet routing /
+# nftables / conntrack / WireGuard cost is paid once per super-segment instead
+# of once per MSS — cutting CPU on the write-heavy downlink path. Retransmit
+# stays per-MSS and the read path is unchanged (no TUNSETOFFLOAD). Data-plane
+# core: verify a large download's sha256 after enabling. Ignored on non-Linux
+# targets. See `docs/TUN-GSO.md`.
+# gso = false
 
 # [tun.tcp]
 # connect_timeout_secs = 10

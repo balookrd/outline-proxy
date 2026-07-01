@@ -309,6 +309,11 @@ pub(super) struct TunSection {
     /// `graphql.strava.com`). Use for sites where the client's own DNS beats
     /// the exit re-resolving (geo-wrong CDN edge). Default empty.
     pub(super) sniff_override_exclude: Option<Vec<String>>,
+    /// Open the TUN device with `IFF_VNET_HDR` and write downlink data as TSO
+    /// super-segments the kernel splits per MSS (Linux). Default `false`. Cuts
+    /// the per-packet routing / nftables / conntrack / WireGuard cost on the
+    /// write-heavy downlink. See `docs/TUN-GSO.md`.
+    pub(super) gso: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
