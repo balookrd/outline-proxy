@@ -35,12 +35,27 @@ impl TunTcpEngine {
                     };
                     let mut state = flow.lock().await;
 
-                    // Filter stale heap entries: if the flow's canonical
-                    // deadline has moved (either re-scheduled earlier and
-                    // this is an orphan, or later and we're too early),
-                    // skip. The canonical entry will fire on its own.
+                    // Filter heap entries against the flow's canonical
+                    // deadline. Process an entry that fires at or before the
+                    // canonical deadline (`scheduled_at <= d`): the exact match
+                    // is the canonical wake-up, and an *earlier* entry re-plans
+                    // harmlessly (it just re-`Wait`s). Processing the earlier
+                    // one is essential, because `reschedule_flow` does NOT push
+                    // a heap entry when the deadline moves *later* (it only
+                    // `wake()`s) — e.g. a partial ACK that clears the oldest
+                    // unacked segment pushes the RTO deadline out to the next
+                    // segment's later `last_sent`. Without processing the
+                    // earlier (now-stale) entry, the later canonical deadline
+                    // would have no heap entry at all, the flow would fall off
+                    // the scheduler, and its RTO retransmit would never fire —
+                    // stalling a flow that lost a non-oldest segment (a small
+                    // TLS handshake whose tail is dropped on the last mile) until
+                    // the peer gives up. Re-planning the early entry re-arms the
+                    // canonical deadline via the `Wait` arm below. Skip only a
+                    // true orphan firing *after* the canonical deadline: a later
+                    // earlier-move already pushed the canonical entry.
                     match state.next_scheduled_deadline {
-                        Some(d) if d == scheduled_at => {},
+                        Some(d) if scheduled_at <= d => {},
                         Some(_) | None => continue 'flows,
                     }
 
