@@ -157,6 +157,13 @@ listen = "[::1]:9090"
 # max_buffered_client_segments = 4096
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
+# Hard ceiling on per-flow downlink send rate, in Mbit/s (caps the BBR pacing
+# rate, STARTUP overshoot included). The userspace stack terminates TCP ~1 ms
+# from the client, so BBR can over-estimate bandwidth from line-rate bursts and
+# overrun a small last-hop port buffer (observed: a 100 Mbit TV port stalling
+# mid-transfer). Set this a bit under the client link speed to shape the burst.
+# Omit / 0 = uncapped.
+# downlink_max_mbit = 90
 #
 # Connection sniffing (Xray-style destOverride). When true (default) the TCP
 # engine peeks the first client bytes of each tunnelled flow, recovers the

@@ -9,7 +9,7 @@ fn sample(prior_delivered: u64, sent_at: Instant, app_limited: bool) -> RateSamp
 
 #[test]
 fn no_estimate_means_pacing_inactive_and_uncapped() {
-    let bbr = BbrState::new(Instant::now());
+    let bbr = BbrState::new(Instant::now(), 0);
     assert_eq!(pacing_rate_from(&bbr), 0, "no sample yet → pacing inactive");
     assert_eq!(inflight_cap_from(&bbr, 1200), usize::MAX, "no sample yet → no BBR cap");
     assert_eq!(bdp_bytes(&bbr), None);
@@ -19,7 +19,7 @@ fn no_estimate_means_pacing_inactive_and_uncapped() {
 #[test]
 fn delivery_sample_sets_btlbw_min_rtt_and_activates_pacing() {
     let t0 = Instant::now();
-    let mut bbr = BbrState::new(t0);
+    let mut bbr = BbrState::new(t0, 0);
     // 12_000 bytes delivered over a 10 ms interval → 1.2 MB/s.
     let now = t0 + Duration::from_millis(10);
     record_delivery(
@@ -39,7 +39,7 @@ fn delivery_sample_sets_btlbw_min_rtt_and_activates_pacing() {
 #[test]
 fn bdp_and_inflight_cap_track_the_estimates() {
     let t0 = Instant::now();
-    let mut bbr = BbrState::new(t0);
+    let mut bbr = BbrState::new(t0, 0);
     // 1.2 MB/s with a 10 ms min-RTT → BDP ≈ 12_000 bytes.
     record_delivery(
         &mut bbr,
@@ -59,7 +59,7 @@ fn bdp_and_inflight_cap_track_the_estimates() {
 #[test]
 fn app_limited_sample_only_raises_never_lowers_btlbw() {
     let t0 = Instant::now();
-    let mut bbr = BbrState::new(t0);
+    let mut bbr = BbrState::new(t0, 0);
     let t1 = t0 + Duration::from_millis(10);
     record_delivery(
         &mut bbr,
@@ -81,7 +81,7 @@ fn app_limited_sample_only_raises_never_lowers_btlbw() {
 #[test]
 fn windowed_max_holds_btlbw_across_a_dip() {
     let t0 = Instant::now();
-    let mut bbr = BbrState::new(t0);
+    let mut bbr = BbrState::new(t0, 0);
     // Round 1: a high (bandwidth-limited) sample.
     let mut now = t0 + Duration::from_millis(10);
     record_delivery(
@@ -104,7 +104,7 @@ fn windowed_max_holds_btlbw_across_a_dip() {
 #[test]
 fn token_bucket_refills_at_rate_and_caps_the_burst() {
     let t0 = Instant::now();
-    let mut bbr = BbrState::new(t0);
+    let mut bbr = BbrState::new(t0, 0);
     bbr.btlbw_bps = 1_000_000; // 1 MB/s
     bbr.pacing_gain = 1.0;
     let rate = pacing_rate_from(&bbr);
@@ -123,7 +123,7 @@ fn token_bucket_refills_at_rate_and_caps_the_burst() {
 #[test]
 fn release_at_waits_only_for_the_deficit() {
     let t0 = Instant::now();
-    let mut bbr = BbrState::new(t0);
+    let mut bbr = BbrState::new(t0, 0);
     bbr.pacing_refilled_at = t0;
     bbr.pacing_credit = 500;
 
@@ -135,7 +135,7 @@ fn release_at_waits_only_for_the_deficit() {
 
 #[test]
 fn startup_plateau_counts_stalled_rounds_and_resets_on_growth() {
-    let mut bbr = BbrState::new(Instant::now());
+    let mut bbr = BbrState::new(Instant::now(), 0);
     bbr.full_bw = 1_000_000;
     bbr.btlbw_bps = 1_000_000; // no growth (< 1.25×)
     check_startup_full_pipe(&mut bbr);
@@ -150,7 +150,7 @@ fn startup_plateau_counts_stalled_rounds_and_resets_on_growth() {
 #[test]
 fn probe_rtt_floors_the_inflight_cap() {
     let t0 = Instant::now();
-    let mut bbr = BbrState::new(t0);
+    let mut bbr = BbrState::new(t0, 0);
     record_delivery(
         &mut bbr,
         120_000,
@@ -163,4 +163,29 @@ fn probe_rtt_floors_the_inflight_cap() {
     // ...but PROBE_RTT pins it to the small floor to drain the pipe.
     bbr.mode = BbrMode::ProbeRtt;
     assert_eq!(inflight_cap_from(&bbr, 1200), 1200 * BBR_MIN_PIPE_CWND_SEGMENTS);
+}
+
+#[test]
+fn downlink_ceiling_caps_pacing_and_bdp_including_startup_overshoot() {
+    let t0 = Instant::now();
+    // Ceiling = 1 MB/s (≈8 Mbit). BtlBw over-estimated at 10 MB/s from a
+    // line-rate burst, STARTUP gain 2.885 — without the cap this would pace at
+    // ~29 MB/s and overrun the port buffer.
+    let mut bbr = BbrState::new(t0, 1_000_000);
+    bbr.btlbw_bps = 10_000_000;
+    bbr.pacing_gain = 2.885;
+    bbr.min_rtt = Duration::from_millis(10);
+    assert_eq!(pacing_rate_from(&bbr), 1_000_000, "pacing clamped to ceiling");
+    // BDP uses the clamped bandwidth: 1 MB/s × 10 ms = 10 KB, not 100 KB.
+    let bdp = bdp_bytes(&bbr).expect("estimate present");
+    assert!((bdp as i64 - 10_000).abs() < 1_000, "bdp clamped: {bdp}");
+}
+
+#[test]
+fn zero_ceiling_leaves_bandwidth_uncapped() {
+    let t0 = Instant::now();
+    let mut bbr = BbrState::new(t0, 0); // 0 = uncapped
+    bbr.btlbw_bps = 10_000_000;
+    bbr.pacing_gain = 1.0;
+    assert_eq!(pacing_rate_from(&bbr), 10_000_000, "no ceiling → raw rate");
 }

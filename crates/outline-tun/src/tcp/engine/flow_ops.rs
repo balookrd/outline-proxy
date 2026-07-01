@@ -117,7 +117,7 @@ impl TunTcpEngine {
             retransmission_timeout: TCP_INITIAL_RTO,
             congestion_window: MAX_SERVER_SEGMENT_PAYLOAD * TCP_INITIAL_CWND_SEGMENTS,
             slow_start_threshold: TCP_SERVER_RECV_WINDOW_CAPACITY,
-            bbr: BbrState::new(now),
+            bbr: BbrState::new(now, self.inner.tcp.downlink_max_rate_bps),
             pending_server_data: VecDeque::new(),
             backlog_limit_exceeded_since: None,
             last_ack_progress_at: now,

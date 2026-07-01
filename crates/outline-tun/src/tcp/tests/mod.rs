@@ -812,6 +812,7 @@ async fn fast_retransmit_resends_a_hole_at_most_once_per_episode() {
 async fn budget_keys_off_rto_retransmits_not_fast_retransmits() {
     let config = TunTcpConfig {
         max_retransmits: 3,
+        downlink_max_rate_bps: 0,
         ..test_tun_tcp_config()
     };
     let mut state = tcp_flow_state_for_tests().await;
@@ -1716,6 +1717,7 @@ pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
         max_buffered_client_segments: 4096,
         max_buffered_client_bytes: 262_144,
         max_retransmits: 12,
+        downlink_max_rate_bps: 0,
         keepalive_idle: None,
         keepalive_interval: Duration::from_secs(30),
         keepalive_max_probes: 6,
@@ -1951,7 +1953,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         retransmission_timeout: super::TCP_INITIAL_RTO,
         congestion_window: super::MAX_SERVER_SEGMENT_PAYLOAD * super::TCP_INITIAL_CWND_SEGMENTS,
         slow_start_threshold: super::TCP_SERVER_RECV_WINDOW_CAPACITY,
-        bbr: super::BbrState::new(Instant::now()),
+        bbr: super::BbrState::new(Instant::now(), 0),
         pending_server_data: VecDeque::new(),
         backlog_limit_exceeded_since: None,
         last_ack_progress_at: Instant::now(),

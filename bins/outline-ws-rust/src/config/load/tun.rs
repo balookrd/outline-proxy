@@ -96,6 +96,10 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
             .and_then(|section| section.max_buffered_client_bytes)
             .unwrap_or(262_144),
         max_retransmits: tcp_section.and_then(|section| section.max_retransmits).unwrap_or(12),
+        downlink_max_rate_bps: tcp_section
+            .and_then(|section| section.downlink_max_mbit)
+            .map(|mbit| mbit.saturating_mul(1_000_000) / 8)
+            .unwrap_or(0),
         keepalive_idle: tcp_section
             .and_then(|section| section.keepalive_idle_secs)
             .map(Duration::from_secs),

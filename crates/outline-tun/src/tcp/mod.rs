@@ -100,8 +100,9 @@ const BBR_STARTUP_GROWTH_TARGET: f64 = 1.25;
 const BBR_STARTUP_FULL_BW_COUNT: u32 = 3;
 /// Token-bucket burst ceiling for the pacer, as a multiple of MSS: large
 /// enough that ACK-clocked refills are never the bottleneck, small enough that
-/// the instantaneous burst stays well under a typical port buffer.
-const BBR_PACING_MAX_BURST_SEGMENTS: usize = 64;
+/// the instantaneous burst (≈19 KB) stays well under a typical 100 Mbit-port
+/// buffer — a bigger burst was overrunning it and stalling delivery.
+const BBR_PACING_MAX_BURST_SEGMENTS: usize = 16;
 const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Fail-fast window for direct connects. A destination that failed to connect
 /// within this window is not re-dialed with a fresh (up to `connect_timeout`,
