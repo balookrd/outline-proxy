@@ -3,18 +3,22 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::udp::AllUdpUplinksFailed;
-use anyhow::{Result, bail};
+use anyhow::Result;
+use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
-use outline_transport::{AbortOnDrop, UdpSessionTransport, WsClosed};
+use outline_transport::{
+    AbortOnDrop, UdpSessionTransport, WsClosed, is_dropped_oversized_udp_error,
+};
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
 use socks5_proto::TargetAddr;
 
 use super::types::{
-    DirectUdpFlowState, FlowStamp, bump_last_seen_if_current, drain_idle_flows, flow_is_current,
+    DirectUdpFlowState, FlowStamp, UDP_OUTBOUND_QUEUE_CAP, bump_last_seen_if_current,
+    drain_idle_flows, flow_is_current,
 };
 use super::wire::build_response_packet;
 use super::{
@@ -95,113 +99,279 @@ impl TunUdpEngine {
         let _ = self.inner.close_tx.send(CloseWork::Direct { flow, reason });
     }
 
-    pub(super) async fn create_flow(
+    /// Register a new tunnelled UDP flow **without** blocking the caller (the
+    /// shared TUN read-loop) on the carrier dial. A pending flow record — with
+    /// its outbound queue — is inserted immediately and a per-flow uplink task
+    /// is spawned to dial the carrier, spawn the downlink reader, and drain the
+    /// queue. `first_payload` is buffered onto the queue and shipped once the
+    /// dial completes. This is the UDP mirror of the TCP path's async
+    /// `spawn_upstream_connect`: neither connect nor send ever runs inline in
+    /// the read-loop, so a slow/parked carrier can no longer head-of-line-block
+    /// the whole TUN.
+    pub(super) async fn spawn_tunnel_flow(
         &self,
         key: UdpFlowKey,
         manager: &UplinkManager,
         remote_target_override: Option<TargetAddr>,
-    ) -> Result<(u64, Arc<UdpSessionTransport>, usize, Arc<str>)> {
-        let remote_target = ip_to_target(key.remote_ip, key.remote_port);
-        // Per-client affinity key: the LAN client's source IP. Consulted only
-        // under routing_scope = "per_client"; ignored otherwise.
-        let client_id = key.local_ip.to_string();
-        let (candidate, transport) =
-            select_candidate_and_connect(manager, &remote_target, Some(&client_id)).await?;
-        manager
-            .confirm_selected_uplink_for(
-                TransportKind::Udp,
-                Some(&remote_target),
-                Some(&client_id),
-                candidate.index,
-            )
-            .await;
-        let transport = Arc::new(transport);
+        first_payload: Bytes,
+    ) {
         let now = Instant::now();
         let flow_id = self
             .inner
             .next_flow_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        // Spawn the reader before inserting into the flow table so the
-        // task is owned by the flow state from the very first moment it
-        // is reachable. Eviction / close paths drop the state, the
-        // `AbortOnDrop` field cancels the reader, and the `Arc<UdpSessionTransport>`
-        // it captured is released — closing the upstream socket promptly
-        // even when the peer goes silent and `read_packet` would
-        // otherwise block forever.
-        let reader_task = self.spawn_flow_reader(
-            key.clone(),
-            flow_id,
-            Arc::clone(&transport),
-            candidate.index,
-            manager.clone(),
-        );
-
-        let state = UdpFlowState {
-            id: flow_id,
-            transport: Arc::clone(&transport),
-            uplink_index: candidate.index,
-            uplink_name: Arc::from(candidate.uplink.name.as_str()),
-            group_name: Arc::from(manager.group_name()),
-            manager: manager.clone(),
-            created_at: now,
-            last_seen: now,
-            remote_target_override,
-            last_ptb_sent: None,
-            _reader_task: Some(reader_task),
-        };
-
         let mut evicted_flow = None;
-        {
+        let outbound_tx = {
             let mut guard = self.inner.flows.write().await;
             if let Some(existing) = guard.get(&key).map(Arc::clone) {
+                // Raced with an existing flow for the same 5-tuple: keep it and
+                // feed the datagram to its queue instead of replacing it.
                 drop(guard);
                 let mut existing = existing.lock().await;
                 existing.last_seen = now;
-                return Ok((
-                    existing.id,
-                    Arc::clone(&existing.transport),
-                    existing.uplink_index,
-                    existing.uplink_name.clone(),
-                ));
-            }
-            if guard.len() >= self.inner.max_flows {
-                if let Some(evicted_key) = oldest_flow_key(&guard).await {
-                    if let Some(evicted) = guard.remove(&evicted_key) {
-                        {
-                            let snapshot = evicted.lock().await;
-                            warn!(
-                                evicted_flow_id = snapshot.id,
-                                evicted_uplink = %snapshot.uplink_name,
-                                max_flows = self.inner.max_flows,
-                                "evicted oldest TUN UDP flow due to flow table limit"
-                            );
-                        }
-                        evicted_flow = Some(evicted);
+                existing.outbound_tx.clone()
+            } else {
+                if guard.len() >= self.inner.max_flows {
+                    match oldest_flow_key(&guard).await {
+                        Some(evicted_key) => {
+                            if let Some(evicted) = guard.remove(&evicted_key) {
+                                {
+                                    let snapshot = evicted.lock().await;
+                                    warn!(
+                                        evicted_flow_id = snapshot.id,
+                                        evicted_uplink = %snapshot.uplink_name,
+                                        max_flows = self.inner.max_flows,
+                                        "evicted oldest TUN UDP flow due to flow table limit"
+                                    );
+                                }
+                                evicted_flow = Some(evicted);
+                            }
+                        },
+                        None => {
+                            warn!("TUN UDP flow table limit reached and no flow could be evicted");
+                            return;
+                        },
                     }
-                } else {
-                    bail!("TUN flow table limit reached and no flow could be evicted");
                 }
+                let (outbound_tx, outbound_rx) = mpsc::channel::<Bytes>(UDP_OUTBOUND_QUEUE_CAP);
+                let uplink_task = self.spawn_udp_uplink(
+                    key.clone(),
+                    flow_id,
+                    manager.clone(),
+                    remote_target_override.clone(),
+                    outbound_rx,
+                );
+                let state = UdpFlowState {
+                    id: flow_id,
+                    uplink_index: usize::MAX,
+                    uplink_name: Arc::from("connecting"),
+                    group_name: Arc::from(manager.group_name()),
+                    created_at: now,
+                    last_seen: now,
+                    last_ptb_sent: None,
+                    outbound_tx: outbound_tx.clone(),
+                    _uplink_task: Some(uplink_task),
+                };
+                guard.insert(key.clone(), Arc::new(Mutex::new(state)));
+                outbound_tx
             }
-            guard.insert(key.clone(), Arc::new(Mutex::new(state)));
-        }
+        };
 
         if let Some(flow) = evicted_flow {
             self.enqueue_close(flow, "evicted");
         }
 
-        metrics::record_uplink_selected("udp", manager.group_name(), &candidate.uplink.name);
-        metrics::record_tun_flow_created(manager.group_name(), &candidate.uplink.name);
-        debug!(
-            flow_id,
-            group = %manager.group_name(),
-            uplink = %candidate.uplink.name,
-            local = %format!("{}:{}", key.local_ip, key.local_port),
-            remote = %format!("{}:{}", key.remote_ip, key.remote_port),
-            "created TUN UDP flow"
-        );
+        // Buffer the first datagram; the uplink task ships it after it dials.
+        queue_client_datagram(&outbound_tx, first_payload);
+    }
 
-        Ok((flow_id, transport, candidate.index, Arc::from(candidate.uplink.name.as_str())))
+    /// Per-flow uplink task: the sole owner of a tunnelled UDP flow's carrier.
+    /// Dials the uplink off the read-loop, publishes the resolved uplink onto
+    /// the flow record, spawns the downlink reader, then drains the outbound
+    /// queue into carrier sends — awaiting each send on this task so carrier
+    /// back-pressure parks here, never the read-loop. Reconnects (once) on a
+    /// send error and tears the flow down if the (re)dial fails.
+    fn spawn_udp_uplink(
+        &self,
+        key: UdpFlowKey,
+        flow_id: u64,
+        manager: UplinkManager,
+        remote_target_override: Option<TargetAddr>,
+        mut outbound_rx: mpsc::Receiver<Bytes>,
+    ) -> AbortOnDrop {
+        let engine = self.clone();
+        AbortOnDrop::new(tokio::spawn(async move {
+            let remote_target = ip_to_target(key.remote_ip, key.remote_port);
+            // Per-client affinity key: the LAN client's source IP. Consulted
+            // only under routing_scope = "per_client"; ignored otherwise.
+            let client_id = key.local_ip.to_string();
+
+            let (candidate, transport) = match select_candidate_and_connect(
+                &manager,
+                &remote_target,
+                Some(&client_id),
+            )
+            .await
+            {
+                Ok(connected) => connected,
+                Err(error) => {
+                    warn!(flow_id, error = %format!("{error:#}"), "failed to establish TUN UDP uplink");
+                    engine.close_flow_if_current(&key, flow_id, "connect_failed").await;
+                    return;
+                },
+            };
+            manager
+                .confirm_selected_uplink_for(
+                    TransportKind::Udp,
+                    Some(&remote_target),
+                    Some(&client_id),
+                    candidate.index,
+                )
+                .await;
+
+            let mut transport = Arc::new(transport);
+            let mut uplink_index = candidate.index;
+            let mut uplink_name: Arc<str> = Arc::from(candidate.uplink.name.as_str());
+
+            // Publish the resolved uplink onto the pending flow record. If the
+            // flow was already torn down (idle eviction / migration during the
+            // dial), stop — the transport drops here and its carrier closes.
+            if !engine
+                .bind_flow_uplink(&key, flow_id, uplink_index, &uplink_name)
+                .await
+            {
+                return;
+            }
+            metrics::record_uplink_selected("udp", manager.group_name(), &uplink_name);
+            metrics::record_tun_flow_created(manager.group_name(), &uplink_name);
+            debug!(
+                flow_id,
+                group = %manager.group_name(),
+                uplink = %uplink_name,
+                local = %format!("{}:{}", key.local_ip, key.local_port),
+                remote = %format!("{}:{}", key.remote_ip, key.remote_port),
+                "created TUN UDP flow"
+            );
+
+            // Downlink reader (upstream→client). Reassigned on reconnect so the
+            // previous carrier's reader — and the transport `Arc` it holds —
+            // drop and close.
+            let mut _reader = engine.spawn_flow_reader(
+                key.clone(),
+                flow_id,
+                Arc::clone(&transport),
+                uplink_index,
+                manager.clone(),
+            );
+
+            // Drain the outbound queue. `recv` yields `None` when the flow
+            // record (holding the sender) is removed — the flow's teardown
+            // signal — at which point the reader and transport drop here.
+            while let Some(raw) = outbound_rx.recv().await {
+                // Follow a strict-active repoint: tear down so the client's
+                // traffic re-homes onto the newly active uplink.
+                if super::should_migrate_flow(&manager, uplink_index).await {
+                    engine.close_flow_if_current(&key, flow_id, "global_switch").await;
+                    return;
+                }
+                let effective_target = remote_target_override.as_ref().unwrap_or(&remote_target);
+                let payload = match super::build_udp_payload(effective_target, &raw) {
+                    Ok(payload) => payload,
+                    Err(_) => continue,
+                };
+                match transport.send_packet(&payload).await {
+                    Ok(()) => super::record_udp_xfer(
+                        "client_to_upstream",
+                        manager.group_name(),
+                        &uplink_name,
+                        payload.len(),
+                    ),
+                    Err(error) if is_dropped_oversized_udp_error(&error) => {
+                        engine.emit_pmtud_after_oversize_drop(&key, &error).await;
+                    },
+                    Err(error) => {
+                        // Reconnect off the read-loop (was
+                        // `recreate_flow_after_send_error`): report the failure,
+                        // re-dial, respawn the reader, and retry once.
+                        report_udp_runtime_failure(&manager, uplink_index, &error).await;
+                        match select_candidate_and_connect(
+                            &manager,
+                            &remote_target,
+                            Some(&client_id),
+                        )
+                        .await
+                        {
+                            Ok((cand, new_transport)) => {
+                                metrics::record_failover(
+                                    "udp",
+                                    manager.group_name(),
+                                    &uplink_name,
+                                    cand.uplink.name.as_str(),
+                                );
+                                transport = Arc::new(new_transport);
+                                uplink_index = cand.index;
+                                uplink_name = Arc::from(cand.uplink.name.as_str());
+                                if !engine
+                                    .bind_flow_uplink(&key, flow_id, uplink_index, &uplink_name)
+                                    .await
+                                {
+                                    return;
+                                }
+                                _reader = engine.spawn_flow_reader(
+                                    key.clone(),
+                                    flow_id,
+                                    Arc::clone(&transport),
+                                    uplink_index,
+                                    manager.clone(),
+                                );
+                                if let Err(retry_error) = transport.send_packet(&payload).await {
+                                    warn!(flow_id, error = %format!("{retry_error:#}"), "TUN UDP resend after reconnect failed");
+                                } else {
+                                    super::record_udp_xfer(
+                                        "client_to_upstream",
+                                        manager.group_name(),
+                                        &uplink_name,
+                                        payload.len(),
+                                    );
+                                }
+                            },
+                            Err(error) => {
+                                warn!(flow_id, error = %format!("{error:#}"), "TUN UDP uplink reconnect failed");
+                                engine.close_flow_if_current(&key, flow_id, "send_error").await;
+                                return;
+                            },
+                        }
+                    },
+                }
+                // Keep an actively-sending flow from being idle-reaped.
+                bump_last_seen_if_current(&engine.inner.flows, &key, flow_id).await;
+            }
+        }))
+    }
+
+    /// Publish a freshly-dialled uplink (`index`, `name`) onto the flow record,
+    /// replacing the `usize::MAX` / `"connecting"` placeholders. Returns `false`
+    /// if the flow at `key` is gone or was replaced (a newer generation now
+    /// owns the slot), signalling the uplink task to stop.
+    async fn bind_flow_uplink(
+        &self,
+        key: &UdpFlowKey,
+        flow_id: u64,
+        uplink_index: usize,
+        uplink_name: &Arc<str>,
+    ) -> bool {
+        let handle = self.inner.flows.read().await.get(key).map(Arc::clone);
+        let Some(handle) = handle else {
+            return false;
+        };
+        let mut flow = handle.lock().await;
+        if flow.id != flow_id {
+            return false;
+        }
+        flow.uplink_index = uplink_index;
+        flow.uplink_name = Arc::clone(uplink_name);
+        true
     }
 
     fn spawn_flow_reader(
@@ -331,23 +501,22 @@ impl TunUdpEngine {
             self.enqueue_close_direct(flow, "idle_timeout");
         }
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn recreate_flow_after_send_error(
-        &self,
-        key: &UdpFlowKey,
-        flow_id: u64,
-        uplink_index: usize,
-        uplink_name: &str,
-        manager: &UplinkManager,
-        remote_target_override: Option<TargetAddr>,
-        error: &anyhow::Error,
-    ) -> Result<(u64, Arc<UdpSessionTransport>, usize, Arc<str>)> {
-        report_udp_runtime_failure(manager, uplink_index, error).await;
-        self.close_flow_if_current(key, flow_id, "send_error").await;
-        let replacement = self.create_flow(key.clone(), manager, remote_target_override).await?;
-        metrics::record_failover("udp", manager.group_name(), uplink_name, &replacement.3);
-        Ok(replacement)
+/// Enqueue a raw client datagram onto a flow's outbound queue without ever
+/// blocking. Called from the shared TUN read-loop; on a full queue (carrier
+/// back-pressured or still dialling) or a closed queue (flow torn down) the
+/// datagram is dropped and counted — the connectionless-correct response, and
+/// what keeps the read-loop free of carrier back-pressure.
+pub(super) fn queue_client_datagram(tx: &mpsc::Sender<Bytes>, payload: Bytes) {
+    match tx.try_send(payload) {
+        Ok(()) => {},
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            metrics::record_tun_udp_forward_error("outbound_queue_full");
+        },
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            metrics::record_tun_udp_forward_error("outbound_queue_closed");
+        },
     }
 }
 
@@ -436,17 +605,15 @@ where
 }
 
 pub(crate) async fn close_udp_flow(flow: Arc<Mutex<UdpFlowState>>, reason: &'static str) {
-    // Lock briefly to snapshot the fields we need, then release so the
-    // async `transport.close()` does not hold the per-flow Mutex.
-    let (id, transport, group, uplink, created_at) = {
+    // Record the close, then drop the flow state. The carrier is owned by the
+    // flow's uplink task (`_uplink_task`, an `AbortOnDrop`); dropping the state
+    // aborts that task, which releases the transport `Arc` it (and the downlink
+    // reader) captured, so the upstream UDP socket / TCP / QUIC connection
+    // closes promptly on drop — no explicit `transport.close()` is needed
+    // (mirrors the TCP path, where teardown is likewise drop-driven).
+    let (group, uplink, created_at) = {
         let guard = flow.lock().await;
-        (
-            guard.id,
-            Arc::clone(&guard.transport),
-            guard.group_name.clone(),
-            guard.uplink_name.clone(),
-            guard.created_at,
-        )
+        (guard.group_name.clone(), guard.uplink_name.clone(), guard.created_at)
     };
     metrics::record_tun_flow_closed(
         &group,
@@ -454,14 +621,7 @@ pub(crate) async fn close_udp_flow(flow: Arc<Mutex<UdpFlowState>>, reason: &'sta
         reason,
         Instant::now().saturating_duration_since(created_at),
     );
-    if let Err(error) = transport.close().await {
-        debug!(
-            flow_id = id,
-            reason,
-            error = %format!("{error:#}"),
-            "failed to close TUN UDP transport"
-        );
-    }
+    drop(flow);
 }
 
 /// Build the TUN packet that delivers an exit's UDP response back to the
