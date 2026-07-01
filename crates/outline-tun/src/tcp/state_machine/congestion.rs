@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use super::super::{
     MAX_SERVER_SEGMENT_PAYLOAD, TCP_FAST_RETRANSMIT_DUP_ACKS, TCP_FLAG_FIN, TCP_FLAG_SYN,
-    TCP_MAX_RTO, TCP_MIN_RTO, TCP_MIN_SSTHRESH,
+    TCP_MAX_RTO, TCP_MAX_RTO_BACKOFF, TCP_MIN_RTO, TCP_MIN_SSTHRESH,
 };
 use super::seq::{seq_ge, seq_gt, seq_lt};
 use super::types::{AckEffect, RateSample, SequenceRange, ServerSegment, TcpFlowState};
@@ -144,6 +144,9 @@ fn enter_fast_recovery(state: &mut TcpFlowState) {
     // New recovery episode: bump the epoch so holes carrying a stale
     // `fast_retransmit_epoch` are eligible for one fresh fast-retransmit.
     state.recovery_epoch = state.recovery_epoch.saturating_add(1);
+    // Loss signal for the BBR pacer: back the loss-driven rate cap off so the
+    // pacer stops driving the burst that overran the last hop.
+    super::bbr::note_loss(&mut state.bbr);
 }
 
 fn exit_fast_recovery(state: &mut TcpFlowState) {
@@ -396,8 +399,14 @@ pub(in crate::tcp) fn note_congestion_event(state: &mut TcpFlowState, timeout: b
         state.slow_start_threshold
     };
     if timeout {
+        // Cap the backoff (not at the 60 s dead-path ceiling): a lost
+        // retransmit on a lossy last mile must be re-sent promptly so media
+        // does not freeze for seconds. The dead-flow abort is by retransmit
+        // count, not timing, so this does not weaken it.
         state.retransmission_timeout = current_retransmission_timeout(state)
             .saturating_mul(2)
-            .clamp(TCP_MIN_RTO, TCP_MAX_RTO);
+            .clamp(TCP_MIN_RTO, TCP_MAX_RTO_BACKOFF);
+        // RTO is the strongest loss signal — back the BBR pacer's rate cap off.
+        super::bbr::note_loss(&mut state.bbr);
     }
 }

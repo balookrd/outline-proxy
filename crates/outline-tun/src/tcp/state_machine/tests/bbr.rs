@@ -189,3 +189,66 @@ fn zero_ceiling_leaves_bandwidth_uncapped() {
     bbr.pacing_gain = 1.0;
     assert_eq!(pacing_rate_from(&bbr), 10_000_000, "no ceiling → raw rate");
 }
+
+#[test]
+fn loss_backs_off_pacing_cap_and_relaxes_on_clean_rounds() {
+    let mut bbr = BbrState::new(Instant::now(), 0);
+    bbr.btlbw_bps = 10_000_000;
+    bbr.pacing_gain = 1.0;
+    assert_eq!(pacing_rate_from(&bbr), 10_000_000, "no loss → full BtlBw");
+
+    // One loss episode backs the effective rate off ~15%.
+    note_loss(&mut bbr);
+    assert_eq!(bbr.loss_cap_bps, 8_500_000);
+    assert_eq!(pacing_rate_from(&bbr), 8_500_000, "pacing follows the loss cap");
+
+    // A second episode compounds the back-off.
+    note_loss(&mut bbr);
+    assert_eq!(bbr.loss_cap_bps, 7_225_000);
+
+    // Loss-free rounds relax the cap back up; it catches BtlBw and clears,
+    // restoring full speed once the last hop stops dropping.
+    for _ in 0..200 {
+        relax_loss_cap(&mut bbr, false);
+        if bbr.loss_cap_bps == 0 {
+            break;
+        }
+    }
+    assert_eq!(bbr.loss_cap_bps, 0, "clean rounds restore full speed");
+    assert_eq!(pacing_rate_from(&bbr), 10_000_000);
+}
+
+#[test]
+fn loss_cap_is_floored_and_holds_on_a_lossy_round() {
+    let mut bbr = BbrState::new(Instant::now(), 0);
+    bbr.btlbw_bps = 200_000; // ~1.6 Mbit, close to the floor
+    bbr.pacing_gain = 1.0;
+    for _ in 0..20 {
+        note_loss(&mut bbr);
+    }
+    assert_eq!(
+        bbr.loss_cap_bps, BBR_LOSS_CAP_FLOOR_BPS,
+        "back-off cannot collapse below the floor"
+    );
+
+    // A round that saw loss must not grow the cap (the flag gates the relax).
+    let before = bbr.loss_cap_bps;
+    relax_loss_cap(&mut bbr, true);
+    assert_eq!(bbr.loss_cap_bps, before, "lossy round must not relax the cap");
+}
+
+#[test]
+fn loss_cap_shrinks_the_bdp_and_inflight() {
+    let mut bbr = BbrState::new(Instant::now(), 0);
+    bbr.btlbw_bps = 10_000_000; // 10 MB/s
+    bbr.min_rtt = Duration::from_millis(10);
+    let bdp_full = bdp_bytes(&bbr).expect("estimate present");
+    note_loss(&mut bbr); // cap → 8.5 MB/s
+    let bdp_capped = bdp_bytes(&bbr).expect("estimate present");
+    assert!(
+        bdp_capped < bdp_full,
+        "loss cap must shrink the BDP: {bdp_capped} vs {bdp_full}"
+    );
+    // 8.5 MB/s × 10 ms ≈ 85 KB.
+    assert!((bdp_capped as i64 - 85_000).abs() < 5_000, "bdp={bdp_capped}");
+}
