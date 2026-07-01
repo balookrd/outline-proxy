@@ -124,7 +124,7 @@ fn builds_outline_artifacts_for_all_users() {
     assert!(artifacts[0].yaml.contains("url: \"wss://vpn.example.com/alice/udp\""));
     assert!(artifacts[0].yaml.contains("cipher: \"aes-256-gcm\""));
     assert!(artifacts[1].yaml.contains("cipher: \"chacha20-ietf-poly1305\""));
-    assert_eq!(artifacts[2].config_filename, "carol_vless-vless.yaml");
+    assert_eq!(artifacts[2].config_filename, "carol_vless-vless-ws.yaml");
     // WS-VLESS URI carries `alpn=h2,http/1.1` — the Ws carrier
     // appends `http/1.1` as the last-resort fallback so old clients
     // that cannot speak h2 Extended CONNECT still match a transport.
@@ -135,12 +135,12 @@ fn builds_outline_artifacts_for_all_users() {
     assert_eq!(
         artifacts[2].access_key_url.as_deref(),
         Some(
-            "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&alpn=h2%2Chttp%2F1.1&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless"
+            "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&alpn=h2%2Chttp%2F1.1&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless-vless-ws"
         )
     );
     assert_eq!(
         artifacts[2].yaml,
-        "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&alpn=h2%2Chttp%2F1.1&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless\n"
+        "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&alpn=h2%2Chttp%2F1.1&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless-vless-ws\n"
     );
 }
 
@@ -203,7 +203,7 @@ fn builds_both_ss_and_vless_artifacts_for_combined_user() {
     assert!(
         artifacts
             .iter()
-            .any(|artifact| artifact.config_filename == "alice-vless.yaml")
+            .any(|artifact| artifact.config_filename == "alice-vless-ws.yaml")
     );
 }
 
@@ -233,7 +233,7 @@ fn emits_xhttp_packet_up_and_stream_one_artifacts() {
 
     let packet_up = artifacts
         .iter()
-        .find(|a| a.config_filename == "dave-vless-xhttp.yaml")
+        .find(|a| a.config_filename == "dave-vless-xhttp-packet-up.yaml")
         .expect("packet-up artifact emitted");
     assert!(
         packet_up
@@ -249,7 +249,7 @@ fn emits_xhttp_packet_up_and_stream_one_artifacts() {
             .access_key_url
             .as_deref()
             .unwrap()
-            .ends_with("#vpn:dave-xhttp")
+            .ends_with("#vpn:dave-vless-xhttp-packet-up")
     );
 
     let stream_one = artifacts
@@ -270,7 +270,7 @@ fn emits_xhttp_packet_up_and_stream_one_artifacts() {
             .access_key_url
             .as_deref()
             .unwrap()
-            .ends_with("#vpn:dave-xhttp-stream-one")
+            .ends_with("#vpn:dave-vless-xhttp-stream-one")
     );
 
     // Both URIs carry an `alpn=` preference list when the carrier
@@ -357,7 +357,7 @@ fn vless_uris_alpn_prefers_h3_when_quic_listener_enabled() {
 
     let packet_up = artifacts
         .iter()
-        .find(|a| a.config_filename == "eve-vless-xhttp.yaml")
+        .find(|a| a.config_filename == "eve-vless-xhttp-packet-up.yaml")
         .expect("packet-up artifact emitted");
     let packet_up_url = packet_up.access_key_url.as_deref().unwrap();
     // Packet-up URI lists `h3,h2,http/1.1` — each packet is its own
@@ -373,7 +373,7 @@ fn vless_uris_alpn_prefers_h3_when_quic_listener_enabled() {
 
     let ws = artifacts
         .iter()
-        .find(|a| a.config_filename == "eve-vless.yaml")
+        .find(|a| a.config_filename == "eve-vless-ws.yaml")
         .expect("WS-VLESS artifact emitted");
     let ws_url = ws.access_key_url.as_deref().unwrap();
     // WS-VLESS URI lists `h3,h2,http/1.1` — classic WS Upgrade
@@ -418,7 +418,7 @@ fn vless_uris_skip_alpn_for_plain_http_scheme() {
     });
 
     let artifacts = build_access_key_artifacts(&config, &ak).unwrap();
-    for filename in ["frank-vless-xhttp.yaml", "frank-vless.yaml"] {
+    for filename in ["frank-vless-xhttp-packet-up.yaml", "frank-vless-ws.yaml"] {
         let artifact = artifacts
             .iter()
             .find(|a| a.config_filename == filename)
@@ -446,7 +446,7 @@ fn uses_custom_access_key_file_extension() {
         artifacts[0].access_key_url.as_deref(),
         Some("ssconf://keys.example.com/outline/alice.txt")
     );
-    assert_eq!(artifacts[2].config_filename, "carol_vless-vless.txt");
+    assert_eq!(artifacts[2].config_filename, "carol_vless-vless-ws.txt");
 }
 
 #[test]
@@ -476,7 +476,7 @@ fn emits_ss_share_links_for_combined_path_user() {
     assert!(url.contains("security=tls"), "{url}");
     assert!(url.contains("alpn=h2"), "{url}");
     assert!(url.contains("path=%2Fss%20ws"), "{url}");
-    assert!(url.ends_with("#vpn:bob-ss"), "{url}");
+    assert!(url.ends_with("#vpn:bob-ss-ws"), "{url}");
     assert_eq!(ss_ws.yaml, format!("{url}\n"));
 
     // SIP002 userinfo decodes back to `method:password` (bob → global cipher).
@@ -488,7 +488,7 @@ fn emits_ss_share_links_for_combined_path_user() {
 
     let ss_xhttp = artifacts
         .iter()
-        .find(|a| a.config_filename == "bob-ss-xhttp.yaml")
+        .find(|a| a.config_filename == "bob-ss-xhttp-packet-up.yaml")
         .expect("ss-xhttp packet-up artifact");
     let xhttp_url = ss_xhttp.access_key_url.as_deref().unwrap();
     assert!(xhttp_url.contains("type=xhttp"), "{xhttp_url}");
@@ -511,7 +511,11 @@ fn emits_ss_share_links_for_combined_path_user() {
     // general" opts her WS leg out of the global combined path — no ss-ws — but
     // her XHTTP leg (no per-user split) still picks up the combined default.
     assert!(artifacts.iter().all(|a| a.config_filename != "alice-ss-ws.yaml"));
-    assert!(artifacts.iter().any(|a| a.config_filename == "alice-ss-xhttp.yaml"));
+    assert!(
+        artifacts
+            .iter()
+            .any(|a| a.config_filename == "alice-ss-xhttp-packet-up.yaml")
+    );
 }
 
 #[test]

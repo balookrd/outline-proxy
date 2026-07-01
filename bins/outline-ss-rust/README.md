@@ -761,7 +761,7 @@ For each Shadowsocks user the server prints:
 For each VLESS user the server prints:
 
 - a `vless://` URI suitable for Happ, v2rayNG, and Hiddify
-- a suggested filename such as `alice-vless.yaml`
+- a suggested filename such as `alice-vless-ws.yaml`
 - an optional `config_url` when `access_key_url_base` is set
 
 When `write_access_keys_dir` is set, the server writes the config files to that directory and prints the absolute file path for each generated client config. A user with both `password` and `vless_id` produces two files.
