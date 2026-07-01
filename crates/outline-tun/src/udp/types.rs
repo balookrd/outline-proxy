@@ -4,14 +4,23 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 
 use crate::utils::maybe_shrink_hash_map;
 use crate::wire::IpVersion;
-use outline_transport::{AbortOnDrop, UdpSessionTransport};
-use outline_uplink::UplinkManager;
-use socks5_proto::TargetAddr;
+use outline_transport::AbortOnDrop;
+
+/// Per-flow bound on client datagrams buffered toward the carrier before the
+/// uplink task has drained them. The shared TUN read-loop only ever
+/// `try_send`s onto this queue (never awaits it), so a slow/parked carrier
+/// send can no longer head-of-line-block the read-loop — the failure mode that
+/// froze the whole TUN (every TCP and UDP flow, local services) whenever one
+/// UDP flow's carrier back-pressured or was still dialling. On overflow the
+/// datagram is dropped, which is the correct connectionless response and keeps
+/// the queue (and its memory) bounded per flow.
+pub(super) const UDP_OUTBOUND_QUEUE_CAP: usize = 64;
 
 /// Minimal view of a flow for table-level helpers: the per-flow `id`
 /// (generation counter) used to detect races against replacement, and the
@@ -33,21 +42,16 @@ pub(super) struct UdpFlowKey {
 
 pub(super) struct UdpFlowState {
     pub(super) id: u64,
-    pub(super) transport: Arc<UdpSessionTransport>,
+    /// Current bound uplink index. `usize::MAX` while the flow's uplink task is
+    /// still dialling the carrier (the flow record is inserted before the
+    /// connect completes so datagrams buffer instead of parking the read-loop);
+    /// the uplink task overwrites it once connected and on every reconnect.
     pub(super) uplink_index: usize,
+    /// Uplink name; `"connecting"` until the uplink task finishes the dial.
     pub(super) uplink_name: Arc<str>,
     pub(super) group_name: Arc<str>,
-    /// The group's manager this flow was bound to at creation. All per-flow
-    /// operations (failover, strict-active checks, reconciliation) run
-    /// against this manager, not the engine's default group.
-    pub(super) manager: UplinkManager,
     pub(super) created_at: Instant,
     pub(super) last_seen: Instant,
-    /// Domain destination recovered by QUIC connection sniffing on the flow's
-    /// first datagram. When set, every datagram of this flow is framed for this
-    /// domain instead of the literal IP, so the exit node resolves the host.
-    /// `None` means no override (dial by IP, the default for non-QUIC flows).
-    pub(super) remote_target_override: Option<TargetAddr>,
     /// Wall-clock stamp of the last ICMP "Frag Needed" / "Packet Too Big"
     /// we synthesised for this flow after a transport oversize drop. Used
     /// to throttle PTB emission per-flow: RFC 4443 §2.4(f) makes ICMPv6
@@ -56,18 +60,22 @@ pub(super) struct UdpFlowState {
     /// (very common during IKE_AUTH retransmits with large certificates)
     /// would generate a matching ICMP storm.
     pub(super) last_ptb_sent: Option<Instant>,
-    /// Reader pump for this flow's upstream-to-client direction.
-    /// `AbortOnDrop` ensures that when the flow is removed from the
-    /// table (idle eviction, global switch, error close, send failure)
-    /// the reader stops on its own drop — the `Arc<UdpSessionTransport>`
-    /// it captured is then released, the underlying transport's own
-    /// `Drop` runs, and the upstream UDP socket / TCP / QUIC connection
-    /// is closed promptly. Without this, the reader would block on
-    /// `transport.read_packet().await` indefinitely (UDP/quinn have no
-    /// shutdown signal that fires when the peer goes silent), pinning
-    /// the socket and tracker buffers for the full transport idle
-    /// window — minutes, or never if keepalive is off.
-    pub(super) _reader_task: Option<AbortOnDrop>,
+    /// Client→carrier datagram queue. The shared TUN read-loop `try_send`s the
+    /// raw client payload here and returns immediately; the per-flow uplink
+    /// task drains it, frames each datagram, and awaits the carrier send on its
+    /// own task — so carrier back-pressure (or an in-progress dial) parks that
+    /// task, never the read-loop. Bounded by [`UDP_OUTBOUND_QUEUE_CAP`]; a full
+    /// queue drops the datagram (connectionless-correct) rather than blocking.
+    pub(super) outbound_tx: mpsc::Sender<Bytes>,
+    /// Per-flow uplink task: the sole owner of this flow's carrier. It dials the
+    /// uplink, spawns the downlink reader, drains `outbound_tx` into carrier
+    /// sends, and reconnects/fails-over on send error. `AbortOnDrop` ensures
+    /// that when the flow is removed from the table (idle eviction, global
+    /// switch, error close) the task stops on drop, releasing the transport it
+    /// captured so the upstream UDP socket / TCP / QUIC connection closes
+    /// promptly — even when the peer went silent and `read_packet` would
+    /// otherwise block forever (UDP/quinn have no peer-gone shutdown signal).
+    pub(super) _uplink_task: Option<AbortOnDrop>,
 }
 
 /// Flow map: `RwLock` on the map itself, `Arc<Mutex<_>>` per flow.

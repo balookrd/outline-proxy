@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use bytes::Bytes;
 use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::debug;
 
@@ -23,7 +24,7 @@ use crate::icmp::{
 };
 use crate::{SharedTunWriter, TunRoute, TunRouting};
 use outline_metrics as metrics;
-use outline_transport::{AbortOnDrop, OversizedUdpDatagram, is_dropped_oversized_udp_error};
+use outline_transport::{AbortOnDrop, OversizedUdpDatagram};
 use socks5_proto::TargetAddr;
 
 /// Upper bound for a single received UDP datagram (max UDP payload is 65 507
@@ -137,123 +138,44 @@ impl TunUdpEngine {
             return Ok(());
         }
 
-        // Tunnel-flow hot path: short read-lock, clone `Arc<Mutex<State>>`.
-        let existing_handle = self.inner.flows.read().await.get(&key).map(Arc::clone);
-
-        // If this flow exists, snapshot what we need under the per-flow lock,
-        // update last_seen, and drop the lock before any .await on the send.
-        let existing_tuple = if let Some(handle) = existing_handle.as_ref() {
-            let mut flow = handle.lock().await;
-            flow.last_seen = Instant::now();
-            Some((
-                flow.id,
-                Arc::clone(&flow.transport),
-                flow.uplink_index,
-                flow.uplink_name.clone(),
-                flow.manager.clone(),
-                flow.remote_target_override.clone(),
-            ))
-        } else {
-            None
-        };
-
-        // Check per-flow strict-active-uplink against the flow's own group.
-        // A group in active_passive / global scope may have repointed; the
-        // flow must follow or be torn down. The removal takes the write-lock
-        // only if the flow is actually stale — common case is no-op.
-        let existing_tuple = match &existing_tuple {
-            Some((_, _, flow_index, _, flow_manager, _))
-                if super::should_migrate_flow(flow_manager, *flow_index).await =>
-            {
-                if let Some(stale) = self.inner.flows.write().await.remove(&key) {
-                    self.enqueue_close(stale, "global_switch");
-                }
-                None
-            },
-            _ => existing_tuple,
-        };
-
-        let (flow_id, transport, uplink_index, uplink_name, manager, target_override) =
-            match existing_tuple {
-                Some(existing) => existing,
-                None => {
-                    let route = self.inner.dispatch.resolve_udp(&remote_target).await;
-                    match route {
-                        TunRoute::Direct { fwmark } => {
-                            return self
-                                .handle_direct_packet(key, &remote_target, &packet, fwmark)
-                                .await;
-                        },
-                        TunRoute::Drop { reason } => {
-                            debug!(
-                                target = %remote_target,
-                                reason,
-                                "TUN UDP route: dropping flow"
-                            );
-                            return Ok(());
-                        },
-                        TunRoute::Group { manager, .. } => {
-                            // Connection sniffing: the first datagram of a new
-                            // flow may be a QUIC Initial — recover its SNI and
-                            // pin the flow to that domain so the exit resolves it.
-                            let override_target =
-                                self.sniff_quic_override(&packet.payload, key.remote_port);
-                            let (id, t, index, name) = self
-                                .create_flow(key.clone(), &manager, override_target.clone())
-                                .await?;
-                            (id, t, index, name, manager, override_target)
-                        },
-                    }
-                },
+        // Existing tunnelled flow: hand the raw datagram to its outbound queue
+        // and return immediately. The per-flow uplink task drains the queue and
+        // awaits the carrier send on its own task, so carrier back-pressure
+        // never reaches this shared read-loop — the decoupling point that stops
+        // a slow/parked carrier from head-of-line-blocking every other flow.
+        // Strict-active migration is handled by the uplink task and the
+        // downlink reader, not on this hot path.
+        if let Some(handle) = self.inner.flows.read().await.get(&key).map(Arc::clone) {
+            let outbound_tx = {
+                let mut flow = handle.lock().await;
+                flow.last_seen = Instant::now();
+                flow.outbound_tx.clone()
             };
-
-        let effective_target = target_override.as_ref().unwrap_or(&remote_target);
-        let payload = super::build_udp_payload(effective_target, &packet.payload)?;
-        if let Err(error) = transport.send_packet(&payload).await {
-            if is_dropped_oversized_udp_error(&error) {
-                self.emit_pmtud_after_oversize_drop(&key, &packet, &error).await;
-                return Ok(());
-            }
-            let (replacement_flow_id, replacement_transport, replacement_index, replacement_name) =
-                self.recreate_flow_after_send_error(
-                    &key,
-                    flow_id,
-                    uplink_index,
-                    &uplink_name,
-                    &manager,
-                    target_override.clone(),
-                    &error,
-                )
-                .await?;
-            if let Err(error) = replacement_transport.send_packet(&payload).await {
-                if is_dropped_oversized_udp_error(&error) {
-                    self.emit_pmtud_after_oversize_drop(&key, &packet, &error).await;
-                    return Ok(());
-                }
-                return Err(error);
-            }
-            super::record_udp_xfer(
-                "client_to_upstream",
-                manager.group_name(),
-                &replacement_name,
-                payload.len(),
-            );
-            debug!(
-                flow_id = replacement_flow_id,
-                uplink = %replacement_name,
-                "recreated TUN UDP flow after send failure"
-            );
-            let _ = replacement_index;
-        } else {
-            super::record_udp_xfer(
-                "client_to_upstream",
-                manager.group_name(),
-                &uplink_name,
-                payload.len(),
-            );
+            super::lifecycle::queue_client_datagram(&outbound_tx, Bytes::from(packet.payload));
+            return Ok(());
         }
 
-        Ok(())
+        // New flow: resolve its route.
+        match self.inner.dispatch.resolve_udp(&remote_target).await {
+            TunRoute::Direct { fwmark } => {
+                self.handle_direct_packet(key, &remote_target, &packet, fwmark).await
+            },
+            TunRoute::Drop { reason } => {
+                debug!(target = %remote_target, reason, "TUN UDP route: dropping flow");
+                Ok(())
+            },
+            TunRoute::Group { manager, .. } => {
+                // Connection sniffing: the first datagram of a new flow may be a
+                // QUIC Initial — recover its SNI and pin the flow to that domain
+                // so the exit resolves it. Then register the flow and hand off
+                // to its uplink task, which dials the carrier off this read-loop
+                // (buffering datagrams meanwhile) instead of dialling inline.
+                let override_target = self.sniff_quic_override(&packet.payload, key.remote_port);
+                self.spawn_tunnel_flow(key, &manager, override_target, Bytes::from(packet.payload))
+                    .await;
+                Ok(())
+            },
+        }
     }
 
     /// Connection sniffing for the UDP path: if QUIC sniffing is enabled and
@@ -319,26 +241,22 @@ impl TunUdpEngine {
     /// logged at `debug!` and swallowed — the drop is already classified
     /// by the caller, the metric is already incremented at the transport
     /// boundary, and we must not turn an oversize drop into a hard error.
-    async fn emit_pmtud_after_oversize_drop(
+    pub(super) async fn emit_pmtud_after_oversize_drop(
         &self,
         key: &UdpFlowKey,
-        packet: &ParsedUdpPacket,
         error: &anyhow::Error,
     ) {
         let limit = error
             .chain()
             .find_map(|e| e.downcast_ref::<OversizedUdpDatagram>().map(|o| o.limit));
-        if !should_emit_ptb_for_limit(
-            limit,
-            packet.version,
-            self.inner.pmtud_emit_below_quic_initial,
-        ) {
+        if !should_emit_ptb_for_limit(limit, key.version, self.inner.pmtud_emit_below_quic_initial)
+        {
             return;
         }
         if !self.claim_ptb_emission_slot(key).await {
             return;
         }
-        if let Err(err) = self.write_pmtud_packet(packet, limit).await {
+        if let Err(err) = self.write_pmtud_packet(key, limit).await {
             debug!(
                 error = %format!("{err:#}"),
                 "failed to emit ICMP PTB after TUN UDP oversize drop"
@@ -374,12 +292,11 @@ impl TunUdpEngine {
         true
     }
 
-    async fn write_pmtud_packet(
-        &self,
-        packet: &ParsedUdpPacket,
-        limit: Option<usize>,
-    ) -> Result<()> {
-        let icmp = match (packet.version, packet.source_ip, packet.destination_ip) {
+    async fn write_pmtud_packet(&self, key: &UdpFlowKey, limit: Option<usize>) -> Result<()> {
+        // The offending datagram's 5-tuple lives entirely in the flow key
+        // (local = client source, remote = destination), so the PTB is rebuilt
+        // from the key — the pump no longer holds the parsed packet.
+        let icmp = match (key.version, key.local_ip, key.remote_ip) {
             (IpVersion::V4, std::net::IpAddr::V4(client_ip), std::net::IpAddr::V4(remote_ip)) => {
                 // Re-synthesise just the IP+UDP header of the offending
                 // packet (no payload bytes are needed for socket matching:
@@ -387,8 +304,8 @@ impl TunUdpEngine {
                 let original = build_ipv4_udp_packet(
                     client_ip,
                     remote_ip,
-                    packet.source_port,
-                    packet.destination_port,
+                    key.local_port,
+                    key.remote_port,
                     &[],
                 )?;
                 let mtu = limit
@@ -400,8 +317,8 @@ impl TunUdpEngine {
                 let original = build_ipv6_udp_packet(
                     client_ip,
                     remote_ip,
-                    packet.source_port,
-                    packet.destination_port,
+                    key.local_port,
+                    key.remote_port,
                     &[],
                 )?;
                 let mtu = limit
