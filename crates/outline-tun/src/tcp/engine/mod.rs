@@ -16,9 +16,12 @@ use outline_metrics as metrics;
 use outline_uplink::{TransportKind, UplinkManager};
 
 use self::eviction::FlowEvictionIndex;
+use self::tasks::upstream::connect::ConnectFailureCache;
 use super::state_machine::TcpFlowState;
 use super::wire::parse_tcp_packet;
-use super::{TCP_FLAG_ACK, TCP_FLAG_RST, TcpFlowKey};
+use super::{
+    TCP_CONNECT_FAILURE_CACHE_CAP, TCP_CONNECT_FAILURE_TTL, TCP_FLAG_ACK, TCP_FLAG_RST, TcpFlowKey,
+};
 
 mod connect;
 mod eviction;
@@ -40,6 +43,10 @@ pub(super) struct TunTcpEngineInner {
     pub(super) flows: DashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>,
     pub(in crate::tcp::engine) eviction_index: FlowEvictionIndex,
     pub(super) pending_connects: Mutex<HashSet<TcpFlowKey>>,
+    /// Negative cache of direct-connect destinations that recently failed, so a
+    /// reconnect storm to an unreachable origin fails fast instead of parking a
+    /// connect task per attempt.
+    pub(super) connect_failures: Mutex<ConnectFailureCache>,
     pub(super) next_flow_id: CounterU64,
     pub(super) max_flows: usize,
     pub(super) idle_timeout: Duration,
@@ -67,6 +74,10 @@ impl TunTcpEngine {
                 flows: DashMap::new(),
                 eviction_index: FlowEvictionIndex::new(),
                 pending_connects: Mutex::new(HashSet::new()),
+                connect_failures: Mutex::new(ConnectFailureCache::new(
+                    TCP_CONNECT_FAILURE_TTL,
+                    TCP_CONNECT_FAILURE_CACHE_CAP,
+                )),
                 next_flow_id: CounterU64::new(1),
                 max_flows,
                 idle_timeout,

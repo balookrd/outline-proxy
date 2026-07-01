@@ -1,3 +1,3 @@
 mod cleanup;
 mod maintenance;
-mod upstream;
+pub(in crate::tcp) mod upstream;
