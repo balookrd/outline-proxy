@@ -239,10 +239,7 @@ private fun ProfileEditorDialog(
     var name by remember { mutableStateOf(initial.name) }
     var transport by remember { mutableStateOf(initial.transport) }
     var vlessLink by remember { mutableStateOf(initial.vlessLink) }
-    var carrierUrl by remember { mutableStateOf(initial.carrierUrl) }
-    var mode by remember { mutableStateOf(initial.mode) }
-    var method by remember { mutableStateOf(initial.method) }
-    var password by remember { mutableStateOf(initial.password) }
+    var ssLink by remember { mutableStateOf(initial.ssLink) }
     var paddingEnabled by remember { mutableStateOf(initial.paddingEnabled) }
     var rawOverride by remember { mutableStateOf(initial.rawTomlOverride) }
 
@@ -255,10 +252,7 @@ private fun ProfileEditorDialog(
                         name = name,
                         transport = transport,
                         vlessLink = vlessLink,
-                        carrierUrl = carrierUrl,
-                        mode = mode,
-                        method = method,
-                        password = password,
+                        ssLink = ssLink,
                         paddingEnabled = paddingEnabled,
                         rawTomlOverride = rawOverride,
                     ),
@@ -285,10 +279,11 @@ private fun ProfileEditorDialog(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 } else {
-                    OutlinedTextField(carrierUrl, { carrierUrl = it }, label = { Text("Carrier URL (wss://…)") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(mode, { mode = it }, label = { Text("Mode (h1/h2/h3/xhttp_h2/xhttp_h3)") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(method, { method = it }, label = { Text("Cipher") }, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(password, { password = it }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(
+                        ssLink, { ssLink = it },
+                        label = { Text("ss:// share link") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
 
                 Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
