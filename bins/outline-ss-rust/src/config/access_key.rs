@@ -139,17 +139,6 @@ fn push_ss_share_link_artifacts(
     Ok(())
 }
 
-/// Suffix appended to the per-user filename and URI fragment.
-/// Empty for `packet-up` so existing access-key URLs keep working
-/// after the upgrade — only the new `stream-one` artifact gets a
-/// disambiguating tag.
-fn xhttp_artifact_suffix(mode: XhttpSubmode) -> &'static str {
-    match mode {
-        XhttpSubmode::PacketUp => "",
-        XhttpSubmode::StreamOne => "-stream-one",
-    }
-}
-
 /// ALPN-list flavour to advertise on this mode's URI. Per-mode
 /// because `packet-up` works on h1 (each packet is its own
 /// request/response — no full-duplex needed) while `stream-one`
@@ -310,7 +299,7 @@ fn build_vless_ws_user_artifact(
         .effective_ws_path_vless(config.ws_path_vless.as_deref())
         .ok_or_else(|| anyhow!("vless_id for user {} requires ws_path_vless", user.id))?;
     let config_filename =
-        format!("{}-vless{}", sanitize_filename(&user.id), ak.access_key_file_extension);
+        format!("{}-vless-ws{}", sanitize_filename(&user.id), ak.access_key_file_extension);
     let config_url = ak
         .access_key_url_base
         .as_deref()
@@ -341,9 +330,9 @@ fn build_vless_xhttp_user_artifact(
         .effective_xhttp_path_vless(config.xhttp_path_vless.as_deref())
         .ok_or_else(|| anyhow!("vless_id for user {} requires xhttp_path_vless", user.id))?;
     let config_filename = format!(
-        "{}-vless-xhttp{}{}",
+        "{}-vless-xhttp-{}{}",
         sanitize_filename(&user.id),
-        xhttp_artifact_suffix(mode),
+        mode.as_wire_str(),
         ak.access_key_file_extension,
     );
     let config_url = ak
@@ -422,9 +411,9 @@ fn build_ss_xhttp_share_artifact(
         .effective_xhttp_path_ss(config.xhttp_path_ss.as_deref())
         .ok_or_else(|| anyhow!("ss share link for user {} requires xhttp_path_ss", user.id))?;
     let config_filename = format!(
-        "{}-ss-xhttp{}{}",
+        "{}-ss-xhttp-{}{}",
         sanitize_filename(&user.id),
-        xhttp_artifact_suffix(mode),
+        mode.as_wire_str(),
         ak.access_key_file_extension,
     );
     let config_url = ak
@@ -552,7 +541,7 @@ fn vless_uri(
 ) -> String {
     let security = if scheme == "wss" { "tls" } else { "none" };
     let default_port = if scheme == "wss" { 443 } else { 80 };
-    let fragment = format!("{}:{label}", host_short_label(host));
+    let fragment = carrier_label(host, label, "vless-ws");
     let alpn_segment = alpn
         .map(|value| format!("&alpn={}", percent_encode_query_value(value)))
         .unwrap_or_default();
@@ -586,7 +575,7 @@ fn ss_share_uri(
 ) -> String {
     let security = if scheme == "wss" { "tls" } else { "none" };
     let default_port = if scheme == "wss" { 443 } else { 80 };
-    let fragment = format!("{}:{label}-ss", host_short_label(host));
+    let fragment = carrier_label(host, label, "ss-ws");
     let alpn_segment = alpn
         .map(|value| format!("&alpn={}", percent_encode_query_value(value)))
         .unwrap_or_default();
@@ -615,8 +604,7 @@ fn ss_xhttp_share_uri(
 ) -> String {
     let security = if scheme == "wss" { "tls" } else { "none" };
     let default_port = if scheme == "wss" { 443 } else { 80 };
-    let fragment =
-        format!("{}:{label}-ss-xhttp{}", host_short_label(host), xhttp_artifact_suffix(mode));
+    let fragment = carrier_label(host, label, &format!("ss-xhttp-{}", mode.as_wire_str()));
     let alpn_segment = alpn
         .map(|value| format!("&alpn={}", percent_encode_query_value(value)))
         .unwrap_or_default();
@@ -653,8 +641,7 @@ fn vless_xhttp_uri(
     // `vless://...` shape that survives copy/paste.
     let security = if scheme == "wss" { "tls" } else { "none" };
     let default_port = if scheme == "wss" { 443 } else { 80 };
-    let fragment =
-        format!("{}:{label}-xhttp{}", host_short_label(host), xhttp_artifact_suffix(mode));
+    let fragment = carrier_label(host, label, &format!("vless-xhttp-{}", mode.as_wire_str()));
     let alpn_segment = alpn
         .map(|value| format!("&alpn={}", percent_encode_query_value(value)))
         .unwrap_or_default();
@@ -666,6 +653,19 @@ fn vless_xhttp_uri(
         percent_encode_query_value(&normalize_path(path)),
         percent_encode_fragment(&fragment),
     )
+}
+
+/// Canonical protocol/subprotocol label baked into every generated
+/// share-link's URI `#fragment`: `<host-short>:<user>-<protocol>-<carrier>[-<submode>]`
+/// (e.g. `vpn:beerloga-vless-ws`, `vpn:beerloga-ss-xhttp-packet-up`,
+/// `vpn:beerloga-vless-xhttp-stream-one`). One consistent scheme across
+/// all six artifact shapes gives xray-family clients a self-describing
+/// name that keeps the `<host-short>:` prefix (so links from different
+/// servers stay distinguishable in the client) and spells out both the
+/// L7 protocol (`vless` / `ss`) and its carrier sub-protocol (`ws`, or
+/// `xhttp` in `packet-up` / `stream-one` mode).
+fn carrier_label(host: &str, user_id: &str, transport: &str) -> String {
+    format!("{}:{user_id}-{transport}", host_short_label(host))
 }
 
 fn host_short_label(host: &str) -> String {
