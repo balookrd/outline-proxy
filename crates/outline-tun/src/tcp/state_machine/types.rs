@@ -197,6 +197,18 @@ pub(in crate::tcp) struct BbrState {
     /// the in-flight cap; caps the STARTUP overshoot so a line-rate burst does
     /// not overrun a small last-hop buffer. `0` disables the cap.
     pub(in crate::tcp) max_rate_bps: u64,
+    /// Loss-driven soft ceiling on the effective bandwidth (bytes/sec), `0` when
+    /// inactive. Plain BBR keys BtlBw off the windowed-max delivery rate and
+    /// ignores loss, so on a sub-ms hop it locks onto the *peak burst* rate and
+    /// keeps pacing at line rate straight into a lossy last mile. This cap backs
+    /// off multiplicatively on each loss episode and relaxes back toward BtlBw on
+    /// loss-free rounds (AIMD), so the pacer converges on the rate the last hop
+    /// actually drains without dropping — recovering full speed once loss stops.
+    pub(in crate::tcp) loss_cap_bps: u64,
+    /// Whether a loss episode was recorded in the current BBR round; gates the
+    /// per-round relaxation of `loss_cap_bps` so the cap only grows on a clean
+    /// round.
+    pub(in crate::tcp) loss_in_round: bool,
 }
 
 impl BbrState {
@@ -226,6 +238,8 @@ impl BbrState {
             pacing_refilled_at: now,
             pacing_next_at: None,
             max_rate_bps,
+            loss_cap_bps: 0,
+            loss_in_round: false,
         }
     }
 }

@@ -30,7 +30,8 @@
 use std::time::{Duration, Instant};
 
 use super::super::{
-    BBR_BW_WINDOW_ROUNDS, BBR_CWND_GAIN, BBR_DRAIN_GAIN, BBR_MIN_PIPE_CWND_SEGMENTS,
+    BBR_BW_WINDOW_ROUNDS, BBR_CWND_GAIN, BBR_DRAIN_GAIN, BBR_LOSS_CAP_BACKOFF,
+    BBR_LOSS_CAP_FLOOR_BPS, BBR_LOSS_CAP_RECOVER_FRACTION, BBR_MIN_PIPE_CWND_SEGMENTS,
     BBR_MIN_RTT_WINDOW, BBR_PACING_MAX_BURST_SEGMENTS, BBR_PROBE_BW_GAINS,
     BBR_PROBE_RTT_CWND_SEGMENTS, BBR_PROBE_RTT_DURATION, BBR_STARTUP_FULL_BW_COUNT,
     BBR_STARTUP_GAIN, BBR_STARTUP_GROWTH_TARGET,
@@ -89,15 +90,19 @@ fn update_bw_filter(bbr: &mut BbrState, bytes_per_sec: u64) {
 // --- derived quantities (pure on BbrState) ---------------------------------
 
 /// BtlBw clamped to the configured downlink ceiling (`max_rate_bps`, 0 =
-/// uncapped). On a sub-ms hop BBR can over-estimate BtlBw from line-rate burst
-/// samples; clamping here caps both the BDP and the pacing rate at what the
-/// last hop can actually drain.
+/// uncapped) and to the loss-driven soft cap (`loss_cap_bps`, 0 = inactive). On
+/// a sub-ms hop BBR over-estimates BtlBw from line-rate burst samples; both
+/// caps pull the effective rate down to what the last hop actually drains, so
+/// this governs the BDP and the pacing rate alike.
 fn effective_btlbw(bbr: &BbrState) -> u64 {
+    let mut rate = bbr.btlbw_bps;
     if bbr.max_rate_bps > 0 {
-        bbr.btlbw_bps.min(bbr.max_rate_bps)
-    } else {
-        bbr.btlbw_bps
+        rate = rate.min(bbr.max_rate_bps);
     }
+    if bbr.loss_cap_bps > 0 {
+        rate = rate.min(bbr.loss_cap_bps);
+    }
+    rate
 }
 
 /// BDP in bytes from the current estimates, or `None` until both BtlBw and
@@ -125,18 +130,34 @@ fn inflight_cap_from(bbr: &BbrState, mss: usize) -> usize {
 }
 
 /// Pacing rate in bytes/sec, or 0 while inactive (no BtlBw sample yet). The
-/// final rate — STARTUP gain included — is clamped to the configured ceiling so
-/// the pacer never emits faster than the last hop can drain.
+/// gain is applied to raw BtlBw, then the *final* rate is clamped to both the
+/// configured ceiling and the loss-driven cap — so the pacer never emits faster
+/// than the last hop can drain, STARTUP overshoot included.
 fn pacing_rate_from(bbr: &BbrState) -> u64 {
     if bbr.btlbw_bps == 0 {
         return 0;
     }
-    let rate = ((bbr.btlbw_bps as f64 * bbr.pacing_gain) as u64).max(1);
+    let mut rate = ((bbr.btlbw_bps as f64 * bbr.pacing_gain) as u64).max(1);
     if bbr.max_rate_bps > 0 {
-        rate.min(bbr.max_rate_bps)
-    } else {
-        rate
+        rate = rate.min(bbr.max_rate_bps);
     }
+    if bbr.loss_cap_bps > 0 {
+        rate = rate.min(bbr.loss_cap_bps);
+    }
+    rate
+}
+
+/// Additive-increase the loss cap toward BtlBw on a clean (loss-free) round,
+/// clearing it once it catches up so the flow returns to full BBR speed. A
+/// no-op while the cap is inactive or the round saw loss.
+fn relax_loss_cap(bbr: &mut BbrState, had_loss: bool) {
+    if bbr.loss_cap_bps == 0 || had_loss {
+        return;
+    }
+    let step = ((bbr.btlbw_bps as f64) * BBR_LOSS_CAP_RECOVER_FRACTION) as u64;
+    let raised = bbr.loss_cap_bps.saturating_add(step.max(1));
+    // Caught up to BtlBw → drop the cap entirely (uncapped again).
+    bbr.loss_cap_bps = if raised >= bbr.btlbw_bps { 0 } else { raised };
 }
 
 fn pacing_burst_cap_bytes(mss: usize) -> u64 {
@@ -172,6 +193,27 @@ pub(in crate::tcp) fn inflight_cap(state: &TcpFlowState) -> usize {
 /// Whether pacing is currently shaping this flow (a BtlBw sample exists).
 pub(in crate::tcp) fn pacing_active(state: &TcpFlowState) -> bool {
     state.bbr.btlbw_bps > 0
+}
+
+/// Record a loss episode (fast-recovery entry or RTO): back the loss-driven
+/// bandwidth cap off one multiplicative step, down to a floor. Plain BBR would
+/// keep pacing at the burst-inflated BtlBw straight into a lossy last hop; this
+/// pulls the effective rate (pacing + in-flight) below it so the drops stop.
+/// The cap relaxes back toward BtlBw on subsequent loss-free rounds. No-op
+/// before BBR has a bandwidth estimate (the small initial Reno window bounds
+/// the burst until then).
+pub(in crate::tcp) fn note_loss(bbr: &mut BbrState) {
+    if bbr.btlbw_bps == 0 {
+        return;
+    }
+    let basis = if bbr.loss_cap_bps > 0 {
+        bbr.loss_cap_bps
+    } else {
+        effective_btlbw(bbr)
+    };
+    let backed_off = ((basis as f64) * BBR_LOSS_CAP_BACKOFF) as u64;
+    bbr.loss_cap_bps = backed_off.max(BBR_LOSS_CAP_FLOOR_BPS);
+    bbr.loss_in_round = true;
 }
 
 /// Refill the pacing token bucket for elapsed time at the current rate. Driven
@@ -248,6 +290,12 @@ fn record_delivery(
         if bbr.mode == BbrMode::Startup {
             check_startup_full_pipe(bbr);
         }
+        // AIMD relax of the loss cap: grow it back toward BtlBw only on a round
+        // that saw no loss; a round with loss just clears the flag (the
+        // multiplicative back-off already happened in `note_loss`).
+        let had_loss = bbr.loss_in_round;
+        bbr.loss_in_round = false;
+        relax_loss_cap(bbr, had_loss);
     }
 
     // Delivery-rate sample → BtlBw windowed-max. An app-limited sample (buffer
