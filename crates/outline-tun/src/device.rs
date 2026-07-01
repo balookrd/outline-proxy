@@ -31,10 +31,15 @@ pub(crate) fn set_nonblocking(file: &std::fs::File) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn open_tun_device_with_retry(config: &TunConfig) -> Result<std::fs::File> {
+/// Opens the TUN device, returning the file plus whether it was attached with
+/// `IFF_VNET_HDR` (so reads/writes carry a `virtio_net_hdr` prefix and the
+/// writer may emit TSO super-segments). Only `true` on Linux with `config.gso`.
+pub(crate) async fn open_tun_device_with_retry(
+    config: &TunConfig,
+) -> Result<(std::fs::File, bool)> {
     for attempt in 0..=TUN_OPEN_BUSY_RETRIES {
         match open_tun_device(config) {
-            Ok(file) => return Ok(file),
+            Ok(result) => return Ok(result),
             Err(error) if is_tun_device_busy_error(&error) && attempt < TUN_OPEN_BUSY_RETRIES => {
                 warn!(
                     name = config.name.as_deref().unwrap_or("n/a"),
@@ -66,9 +71,10 @@ pub(crate) fn is_tun_device_busy_error(error: &anyhow::Error) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn open_tun_device(config: &TunConfig) -> Result<std::fs::File> {
+fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, bool)> {
     const IFF_TUN: libc::c_short = 0x0001;
     const IFF_NO_PI: libc::c_short = 0x1000;
+    const IFF_VNET_HDR: libc::c_short = 0x4000;
     const TUNSETIFF: libc::c_ulong = 0x400454ca;
 
     #[repr(C)]
@@ -91,29 +97,38 @@ fn open_tun_device(config: &TunConfig) -> Result<std::fs::File> {
         .open(&config.path)
         .with_context(|| format!("failed to open {}", config.path.display()))?;
 
+    // TUN GSO: `IFF_VNET_HDR` makes every read/write carry a `virtio_net_hdr`
+    // prefix, which is all the kernel needs to accept a TSO super-segment on
+    // *write* (`tun_get_user` → `virtio_net_hdr_to_skb`). We deliberately do NOT
+    // request `TUNSETOFFLOAD`: that only affects the *read* side (it would let
+    // the kernel hand us GRO super-packets to resegment); without it the kernel
+    // segments to <=MSS before we read, so the read path never sees GSO.
+    let mut flags = IFF_TUN | IFF_NO_PI;
+    if config.gso {
+        flags |= IFF_VNET_HDR;
+    }
+
     let mut ifreq = IfReq { name: [0; libc::IFNAMSIZ], data: [0; 24] };
     for (index, byte) in name.as_bytes().iter().enumerate() {
         ifreq.name[index] = *byte as libc::c_char;
     }
     unsafe {
-        std::ptr::write_unaligned(
-            ifreq.data.as_mut_ptr() as *mut libc::c_short,
-            IFF_TUN | IFF_NO_PI,
-        );
+        std::ptr::write_unaligned(ifreq.data.as_mut_ptr() as *mut libc::c_short, flags);
     }
 
     let result = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETIFF as _, &ifreq) };
     if result < 0 {
         return Err(std::io::Error::last_os_error()).context("TUNSETIFF failed");
     }
-    Ok(file)
+    Ok((file, config.gso))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn open_tun_device(config: &TunConfig) -> Result<std::fs::File> {
-    OpenOptions::new()
+fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, bool)> {
+    let file = OpenOptions::new()
         .read(true)
         .write(true)
         .open(&config.path)
-        .with_context(|| format!("failed to open {}", config.path.display()))
+        .with_context(|| format!("failed to open {}", config.path.display()))?;
+    Ok((file, false))
 }

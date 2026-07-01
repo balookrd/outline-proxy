@@ -59,5 +59,6 @@ pub(crate) use types::UpstreamWriter;
 pub(super) use types::{
     AckEffect, BbrMode, BbrState, BufferedClientSegment, ClientSegmentView, FlowControlSignals,
     FlowRouting, FlowTimestamps, RateSample, ReportedFlowMetrics, SequenceRange,
-    ServerBacklogPressure, ServerFlush, ServerSegment, TcpFlowState, TcpFlowStatus,
+    ServerBacklogPressure, ServerDataPacket, ServerFlush, ServerSegment, TcpFlowState,
+    TcpFlowStatus,
 };

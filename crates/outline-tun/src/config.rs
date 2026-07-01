@@ -65,6 +65,15 @@ pub struct TunConfig {
     /// Applies to both the TCP and QUIC sniff paths. Entries are pre-normalized
     /// (lowercased, leading dots stripped) at config load.
     pub sniff_override_exclude: Arc<[Box<str>]>,
+    /// Open the TUN device with `IFF_VNET_HDR` so every `read(2)` / `write(2)`
+    /// carries a 10-byte `virtio_net_hdr` prefix (Linux only). Default `false`.
+    ///
+    /// Phase 0 of TUN GSO: the header is present but always `GSO_NONE` (no
+    /// checksum/segmentation offload), so on-wire behaviour is unchanged — this
+    /// only validates the vnet plumbing on the running kernel + WireGuard path
+    /// before TSO (writing MSS super-segments) is layered on. Ignored on
+    /// non-Linux targets.
+    pub gso: bool,
 }
 
 #[derive(Debug, Clone)]

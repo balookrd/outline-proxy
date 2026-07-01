@@ -10,7 +10,8 @@ use bytes::Bytes;
 
 use super::{TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_RST, TCP_FLAG_SYN};
 use crate::wire::{
-    checksum16, ipv4_payload_checksum, ipv6_payload_checksum, locate_ipv6_upper_layer,
+    checksum16, checksum16_parts, ipv4_payload_checksum, ipv6_payload_checksum,
+    locate_ipv6_upper_layer,
 };
 
 const TCP_HEADER_LEN: usize = 20;
@@ -315,6 +316,7 @@ pub(super) fn build_response_packet_custom(
                 window_size,
                 options,
                 payload,
+                TcpChecksumMode::Full,
             )
         },
         (IpVersion::V6, IpAddr::V6(source_ip), IpAddr::V6(destination_ip)) => {
@@ -329,10 +331,23 @@ pub(super) fn build_response_packet_custom(
                 window_size,
                 options,
                 payload,
+                TcpChecksumMode::Full,
             )
         },
         _ => bail!("unexpected address family in TUN TCP response"),
     }
+}
+
+/// How the emitted TCP checksum is computed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TcpChecksumMode {
+    /// Full RFC 793 checksum over pseudo-header + segment. Used for every
+    /// packet written as a single IP packet (the normal path).
+    Full,
+    /// Partial (pseudo-header only) checksum for kernel TSO offload
+    /// (`VIRTIO_NET_HDR_F_NEEDS_CSUM`): the kernel finalises the L4 checksum
+    /// for each MSS segment it splits the super-segment into.
+    Partial,
 }
 
 fn build_ipv4_tcp_packet(
@@ -346,6 +361,7 @@ fn build_ipv4_tcp_packet(
     window_size: u16,
     options: &[u8],
     payload: &[u8],
+    checksum_mode: TcpChecksumMode,
 ) -> Result<Vec<u8>> {
     if !options.len().is_multiple_of(4) {
         bail!("TCP options must be 32-bit aligned");
@@ -373,7 +389,12 @@ fn build_ipv4_tcp_packet(
         payload,
     );
 
-    let tcp_checksum = ipv4_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, tcp);
+    let tcp_checksum = match checksum_mode {
+        TcpChecksumMode::Full => {
+            ipv4_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, tcp)
+        },
+        TcpChecksumMode::Partial => ipv4_tcp_partial_checksum(source_ip, destination_ip, tcp.len()),
+    };
     tcp[16..18].copy_from_slice(&tcp_checksum.to_be_bytes());
     let header_checksum = checksum16(&packet[..IPV4_HEADER_LEN]);
     packet[10..12].copy_from_slice(&header_checksum.to_be_bytes());
@@ -391,6 +412,7 @@ fn build_ipv6_tcp_packet(
     window_size: u16,
     options: &[u8],
     payload: &[u8],
+    checksum_mode: TcpChecksumMode,
 ) -> Result<Vec<u8>> {
     if !options.len().is_multiple_of(4) {
         bail!("TCP options must be 32-bit aligned");
@@ -418,9 +440,92 @@ fn build_ipv6_tcp_packet(
         payload,
     );
 
-    let tcp_checksum = ipv6_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, tcp);
+    let tcp_checksum = match checksum_mode {
+        TcpChecksumMode::Full => {
+            ipv6_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, tcp)
+        },
+        TcpChecksumMode::Partial => ipv6_tcp_partial_checksum(source_ip, destination_ip, tcp.len()),
+    };
     tcp[16..18].copy_from_slice(&tcp_checksum.to_be_bytes());
     Ok(packet)
+}
+
+/// Partial (pseudo-header) TCP checksum for kernel TSO offload. Returns the
+/// folded one's-complement sum of the pseudo-header, *not* complemented — the
+/// kernel adds the checksum of the L4 bytes from `csum_start` and complements
+/// the result for each MSS segment it emits. `tcp_len` is the full TCP
+/// header+payload length of the super-segment (`tcp_gso_segment` corrects the
+/// per-segment length delta).
+fn ipv4_tcp_partial_checksum(source: Ipv4Addr, destination: Ipv4Addr, tcp_len: usize) -> u16 {
+    let source = source.octets();
+    let destination = destination.octets();
+    let protocol = [0u8, IPV6_NEXT_HEADER_TCP];
+    let length = (tcp_len as u16).to_be_bytes();
+    !checksum16_parts(&[&source[..], &destination[..], &protocol[..], &length[..]])
+}
+
+fn ipv6_tcp_partial_checksum(source: Ipv6Addr, destination: Ipv6Addr, tcp_len: usize) -> u16 {
+    let source = source.octets();
+    let destination = destination.octets();
+    let length = (tcp_len as u32).to_be_bytes();
+    let next_header = [0u8, 0, 0, IPV6_NEXT_HEADER_TCP];
+    !checksum16_parts(&[&source[..], &destination[..], &length[..], &next_header[..]])
+}
+
+/// Build a TCP/IP super-segment carrying a *partial* checksum for kernel TSO.
+/// Returns the packet, its L3 header length (the vnet `csum_start`) and its L4
+/// (TCP) header length, so the caller can fill a `virtio_net_hdr` whose
+/// `hdr_len = l3 + l4` and whose `gso_size` is the MSS the kernel splits
+/// `payload` into.
+pub(super) fn build_gso_tcp_packet(
+    version: IpVersion,
+    source_ip: IpAddr,
+    destination_ip: IpAddr,
+    source_port: u16,
+    destination_port: u16,
+    sequence_number: u32,
+    acknowledgement_number: u32,
+    flags: u8,
+    window_size: u16,
+    options: &[u8],
+    payload: &[u8],
+) -> Result<(Vec<u8>, u16, u16)> {
+    let l4_len = (TCP_HEADER_LEN + options.len()) as u16;
+    match (version, source_ip, destination_ip) {
+        (IpVersion::V4, IpAddr::V4(source_ip), IpAddr::V4(destination_ip)) => {
+            let packet = build_ipv4_tcp_packet(
+                source_ip,
+                destination_ip,
+                source_port,
+                destination_port,
+                sequence_number,
+                acknowledgement_number,
+                flags,
+                window_size,
+                options,
+                payload,
+                TcpChecksumMode::Partial,
+            )?;
+            Ok((packet, IPV4_HEADER_LEN as u16, l4_len))
+        },
+        (IpVersion::V6, IpAddr::V6(source_ip), IpAddr::V6(destination_ip)) => {
+            let packet = build_ipv6_tcp_packet(
+                source_ip,
+                destination_ip,
+                source_port,
+                destination_port,
+                sequence_number,
+                acknowledgement_number,
+                flags,
+                window_size,
+                options,
+                payload,
+                TcpChecksumMode::Partial,
+            )?;
+            Ok((packet, IPV6_HEADER_LEN as u16, l4_len))
+        },
+        _ => bail!("unexpected address family in TUN GSO response"),
+    }
 }
 
 fn build_tcp_segment(
@@ -451,3 +556,7 @@ fn build_tcp_segment(
 fn seq_lt(lhs: u32, rhs: u32) -> bool {
     (lhs.wrapping_sub(rhs) as i32) < 0
 }
+
+#[cfg(test)]
+#[path = "tests/wire.rs"]
+mod tests;

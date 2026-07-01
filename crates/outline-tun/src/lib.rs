@@ -19,6 +19,7 @@ mod sniff;
 pub mod tcp;
 pub mod udp;
 mod utils;
+mod vnet;
 pub(crate) mod wire;
 mod writer;
 

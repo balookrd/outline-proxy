@@ -77,6 +77,7 @@ impl TunTcpEngine {
         let state = Arc::new(Mutex::new(TcpFlowState {
             id: flow_id,
             key: key.clone(),
+            gso_enabled: self.inner.gso_enabled,
             routing: FlowRouting {
                 uplink_index: usize::MAX,
                 uplink_name: Arc::from("connecting"),
