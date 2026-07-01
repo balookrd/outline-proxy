@@ -56,6 +56,18 @@ const TCP_SERVER_WINDOW_SCALE: u8 = 2;
 const TCP_INITIAL_RTO: Duration = Duration::from_secs(1);
 const TCP_MIN_RTO: Duration = Duration::from_millis(200);
 const TCP_MAX_RTO: Duration = Duration::from_secs(60);
+/// Ceiling for the *exponential backoff* of the RTO on repeated timeout
+/// retransmits of the same hole. The generic `TCP_MAX_RTO` (60 s) is meant for
+/// dead-path detection, but this stack terminates the client locally and proxies
+/// media: on a lossy last mile a retransmit can itself be dropped, and letting
+/// the backoff balloon to multiple seconds freezes video for that long. Capping
+/// the backoff keeps a lost retransmit's re-send prompt (≤ this) so recovery is
+/// seconds, not tens of seconds. It does NOT change the dead-flow abort, which
+/// keys off the retransmit *count* (`retransmit_budget_exhausted`), not timing;
+/// a genuinely dead path is still reaped by that budget and the keepalive/idle
+/// timers. Only the backoff on `note_congestion_event` uses this; the RTT
+/// estimator still clamps to `TCP_MAX_RTO` (never reached on a sub-ms hop).
+const TCP_MAX_RTO_BACKOFF: Duration = Duration::from_secs(2);
 const TCP_INITIAL_CWND_SEGMENTS: usize = 10;
 const TCP_MIN_SSTHRESH: usize = MAX_SERVER_SEGMENT_PAYLOAD * 2;
 
@@ -103,6 +115,18 @@ const BBR_STARTUP_FULL_BW_COUNT: u32 = 3;
 /// the instantaneous burst (≈19 KB) stays well under a typical 100 Mbit-port
 /// buffer — a bigger burst was overrunning it and stalling delivery.
 const BBR_PACING_MAX_BURST_SEGMENTS: usize = 16;
+/// Multiplicative back-off applied to the loss-driven bandwidth cap on each loss
+/// episode (0.85 ≈ −15%). Repeated loss compounds it, driving the pacer down
+/// until the last hop stops dropping.
+const BBR_LOSS_CAP_BACKOFF: f64 = 0.85;
+/// Fraction of the current BtlBw the loss cap is raised by on each loss-free
+/// round (additive-increase), until it reaches BtlBw and clears. Small enough
+/// that recovery probes up gently rather than re-overrunning the last hop.
+const BBR_LOSS_CAP_RECOVER_FRACTION: f64 = 0.03125; // 1/32
+/// Floor for the loss-driven cap (bytes/sec) so a burst of loss episodes cannot
+/// collapse the pacer to a standstill; ≈1 Mbit/s, below which the last hop is
+/// unusable for media anyway.
+const BBR_LOSS_CAP_FLOOR_BPS: u64 = 125_000;
 const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Fail-fast window for direct connects. A destination that failed to connect
 /// within this window is not re-dialed with a fresh (up to `connect_timeout`,
