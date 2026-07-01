@@ -88,6 +88,18 @@ fn update_bw_filter(bbr: &mut BbrState, bytes_per_sec: u64) {
 
 // --- derived quantities (pure on BbrState) ---------------------------------
 
+/// BtlBw clamped to the configured downlink ceiling (`max_rate_bps`, 0 =
+/// uncapped). On a sub-ms hop BBR can over-estimate BtlBw from line-rate burst
+/// samples; clamping here caps both the BDP and the pacing rate at what the
+/// last hop can actually drain.
+fn effective_btlbw(bbr: &BbrState) -> u64 {
+    if bbr.max_rate_bps > 0 {
+        bbr.btlbw_bps.min(bbr.max_rate_bps)
+    } else {
+        bbr.btlbw_bps
+    }
+}
+
 /// BDP in bytes from the current estimates, or `None` until both BtlBw and
 /// min-RTT have a sample (before that the small initial Reno window bounds the
 /// burst).
@@ -95,7 +107,7 @@ fn bdp_bytes(bbr: &BbrState) -> Option<usize> {
     if bbr.btlbw_bps == 0 || bbr.min_rtt.is_zero() {
         return None;
     }
-    Some((bbr.btlbw_bps as f64 * bbr.min_rtt.as_secs_f64()) as usize)
+    Some((effective_btlbw(bbr) as f64 * bbr.min_rtt.as_secs_f64()) as usize)
 }
 
 /// In-flight cap (bytes), given the flow's MSS. `usize::MAX` until an estimate
@@ -112,12 +124,19 @@ fn inflight_cap_from(bbr: &BbrState, mss: usize) -> usize {
     }
 }
 
-/// Pacing rate in bytes/sec, or 0 while inactive (no BtlBw sample yet).
+/// Pacing rate in bytes/sec, or 0 while inactive (no BtlBw sample yet). The
+/// final rate — STARTUP gain included — is clamped to the configured ceiling so
+/// the pacer never emits faster than the last hop can drain.
 fn pacing_rate_from(bbr: &BbrState) -> u64 {
     if bbr.btlbw_bps == 0 {
         return 0;
     }
-    ((bbr.btlbw_bps as f64 * bbr.pacing_gain) as u64).max(1)
+    let rate = ((bbr.btlbw_bps as f64 * bbr.pacing_gain) as u64).max(1);
+    if bbr.max_rate_bps > 0 {
+        rate.min(bbr.max_rate_bps)
+    } else {
+        rate
+    }
 }
 
 fn pacing_burst_cap_bytes(mss: usize) -> u64 {

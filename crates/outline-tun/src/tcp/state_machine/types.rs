@@ -193,13 +193,18 @@ pub(in crate::tcp) struct BbrState {
     /// When the pacer stopped a flush with data still queued: the instant a
     /// maintenance wakeup should resume it (timer fallback when ACKs stop).
     pub(in crate::tcp) pacing_next_at: Option<Instant>,
+    /// Hard ceiling on the effective bandwidth (bytes/sec) used for pacing and
+    /// the in-flight cap; caps the STARTUP overshoot so a line-rate burst does
+    /// not overrun a small last-hop buffer. `0` disables the cap.
+    pub(in crate::tcp) max_rate_bps: u64,
 }
 
 impl BbrState {
     /// Fresh BBR state for a new flow: STARTUP, no bandwidth/RTT samples yet,
     /// pacing inactive (the small initial cwnd bounds the first burst until the
-    /// first sample arrives).
-    pub(in crate::tcp) fn new(now: Instant) -> Self {
+    /// first sample arrives). `max_rate_bps` is the configured downlink ceiling
+    /// (0 = uncapped).
+    pub(in crate::tcp) fn new(now: Instant, max_rate_bps: u64) -> Self {
         Self {
             delivered: 0,
             delivered_at: now,
@@ -220,6 +225,7 @@ impl BbrState {
             pacing_credit: 0,
             pacing_refilled_at: now,
             pacing_next_at: None,
+            max_rate_bps,
         }
     }
 }
