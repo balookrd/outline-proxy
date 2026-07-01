@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use tokio::sync::Mutex;
 
 use super::state_machine::{
-    ServerFlush, UpstreamWriter, build_flow_ack_packet, build_flow_syn_ack_packet,
+    ServerDataPacket, ServerFlush, UpstreamWriter, build_flow_ack_packet, build_flow_syn_ack_packet,
 };
 use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
@@ -50,6 +50,9 @@ pub(super) struct TunTcpEngineInner {
     pub(super) next_flow_id: CounterU64,
     pub(super) max_flows: usize,
     pub(super) idle_timeout: Duration,
+    /// TUN fd negotiated TSO offload — new flows inherit this into
+    /// `TcpFlowState::gso_enabled` to enable super-segment downlink writes.
+    pub(super) gso_enabled: bool,
     pub(super) tcp: Arc<TunTcpConfig>,
     pub(super) dns_cache: Arc<outline_transport::DnsCache>,
     /// Shared deadline priority queue for the central maintenance loop.
@@ -64,6 +67,7 @@ impl TunTcpEngine {
         dispatch: TunRouting,
         max_flows: usize,
         idle_timeout: Duration,
+        gso_enabled: bool,
         tcp: TunTcpConfig,
         dns_cache: Arc<outline_transport::DnsCache>,
     ) -> Self {
@@ -81,6 +85,7 @@ impl TunTcpEngine {
                 next_flow_id: CounterU64::new(1),
                 max_flows,
                 idle_timeout,
+                gso_enabled,
                 tcp: Arc::new(tcp),
                 dns_cache,
                 scheduler: Arc::new(scheduler::FlowScheduler::new()),
@@ -132,6 +137,28 @@ impl TunTcpEngine {
         Ok(())
     }
 
+    /// Write one downlink packet: a TSO super-segment when `vnet` is set,
+    /// otherwise a single IP packet.
+    async fn write_server_data_packet(&self, packet: &ServerDataPacket) -> Result<()> {
+        match packet.vnet {
+            Some(vnet) => self.inner.writer.write_gso_segment(&packet.bytes, vnet).await,
+            None => self.inner.writer.write_packet(&packet.bytes).await,
+        }
+    }
+
+    /// [`write_server_data_packet`] variant that closes the flow on write error.
+    async fn write_server_data_or_close_flow(
+        &self,
+        key: &TcpFlowKey,
+        packet: &ServerDataPacket,
+    ) -> Result<()> {
+        if let Err(error) = self.write_server_data_packet(packet).await {
+            self.close_flow(key, "write_tun_error").await;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     // Emit the packets produced by `flush_server_output` to the TUN,
     // recording per-stage metrics (window-stall, data, zero-window probe,
     // deferred FIN). On write failure the caller is expected to close the
@@ -149,7 +176,7 @@ impl TunTcpEngine {
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_stall");
         }
         for packet in flush.data_packets {
-            self.inner.writer.write_packet(&packet).await?;
+            self.write_server_data_packet(&packet).await?;
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_data");
         }
         if let Some(packet) = flush.probe_packet {
@@ -182,7 +209,7 @@ impl TunTcpEngine {
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_stall");
         }
         for packet in flush.data_packets {
-            self.write_tun_packet_or_close_flow(key, &packet).await?;
+            self.write_server_data_or_close_flow(key, &packet).await?;
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_data");
         }
         if let Some(packet) = flush.probe_packet {

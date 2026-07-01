@@ -22,7 +22,7 @@ pub(crate) use self::state_machine::UpstreamWriter;
 pub(crate) use self::wire::parse_tcp_packet as parse_tcp_packet_for_tests;
 #[cfg(test)]
 use self::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN, build_reset_response, parse_tcp_packet};
-use self::wire::{ParsedTcpPacket, build_response_packet_custom};
+use self::wire::{ParsedTcpPacket, build_gso_tcp_packet, build_response_packet_custom};
 
 #[cfg(test)]
 use self::state_machine::{
@@ -51,6 +51,10 @@ const TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL: Duration = Duration::from_secs(1);
 const TCP_ZERO_WINDOW_PROBE_MAX_INTERVAL: Duration = Duration::from_secs(30);
 const TCP_FAST_RETRANSMIT_DUP_ACKS: u8 = 3;
 const MAX_SERVER_SEGMENT_PAYLOAD: usize = 1200;
+/// Max payload coalesced into one downlink TSO super-segment (`[tun] gso`). The
+/// kernel splits it into MSS segments; kept well under 65535 − headers so the
+/// IPv4 `total_len` / IPv6 `payload_len` u16 fields never overflow.
+const GSO_MAX_SUPER_SEGMENT_PAYLOAD: usize = 61_440;
 const TCP_SERVER_RECV_WINDOW_CAPACITY: usize = 262_144;
 const TCP_SERVER_WINDOW_SCALE: u8 = 2;
 const TCP_INITIAL_RTO: Duration = Duration::from_secs(1);

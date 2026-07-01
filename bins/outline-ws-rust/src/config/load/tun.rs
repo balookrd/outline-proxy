@@ -180,6 +180,7 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         .and_then(|section| section.pmtud_emit_below_quic_initial)
         .unwrap_or(false);
     let sniff_quic = tun.and_then(|section| section.sniff_quic).unwrap_or(true);
+    let gso = tun.and_then(|section| section.gso).unwrap_or(false);
     let defrag_max_fragment_sets = tun
         .and_then(|section| section.defrag_max_fragment_sets)
         .unwrap_or(1024);
@@ -223,5 +224,6 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         pmtud_emit_below_quic_initial,
         sniff_quic,
         sniff_override_exclude,
+        gso,
     }))
 }

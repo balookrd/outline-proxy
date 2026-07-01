@@ -43,6 +43,7 @@ async fn tun_tcp_reassembles_out_of_order_client_segments_end_to_end() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -181,6 +182,7 @@ async fn tun_tcp_sniffs_tls_sni_and_overrides_target_with_domain() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -273,6 +275,7 @@ async fn tun_tcp_sniffs_http_host_and_overrides_target_with_domain() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -317,6 +320,7 @@ async fn tun_tcp_non_sniffable_first_chunk_dials_by_ip() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -366,6 +370,7 @@ async fn tun_tcp_sniffed_excluded_host_dials_by_ip() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         config,
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -410,6 +415,7 @@ async fn tun_tcp_sniffing_disabled_dials_by_ip() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         config,
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -441,6 +447,7 @@ async fn tun_tcp_pump_delivers_sequential_client_chunks_in_order() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -526,6 +533,7 @@ async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -624,6 +632,7 @@ async fn tun_tcp_sends_zero_window_probe_and_resumes_after_window_reopens() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -701,6 +710,7 @@ async fn tun_tcp_defers_fin_until_buffered_server_data_is_acked() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -798,6 +808,7 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -886,6 +897,7 @@ async fn tun_tcp_retransmits_after_partial_ack_moves_deadline_later() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -994,6 +1006,7 @@ async fn tun_tcp_invalid_high_ack_triggers_challenge_ack() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -1066,6 +1079,7 @@ async fn tun_tcp_invalid_rst_in_window_is_challenge_acked() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -1145,6 +1159,7 @@ async fn tun_tcp_flow_limit_uses_activity_eviction_index() {
         crate::TunRouting::from_single_manager(manager.clone()),
         2,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -1216,6 +1231,7 @@ async fn tun_tcp_unexpected_syn_in_established_flow_is_challenge_acked() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -1288,6 +1304,7 @@ async fn tun_tcp_paws_rejects_stale_timestamp_segment() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -1364,6 +1381,7 @@ async fn tun_tcp_respects_peer_mss_for_server_segments() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -1422,6 +1440,7 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -1539,6 +1558,7 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
         crate::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -1671,6 +1691,7 @@ async fn new_flow_is_removed_when_synack_write_fails() {
         ),
         128,
         Duration::from_secs(60),
+        false,
         test_tun_tcp_config(),
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
@@ -1722,6 +1743,7 @@ fn eviction_test_flow_state(
     let (close_signal, _close_rx) = tokio::sync::watch::channel(false);
     super::super::state_machine::TcpFlowState {
         id,
+        gso_enabled: false,
         key,
         routing: super::super::state_machine::FlowRouting {
             uplink_index: 0,

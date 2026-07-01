@@ -23,6 +23,7 @@ use crate::icmp::{build_icmp_echo_reply_packets, icmp_echo_destination};
 use crate::routing::{TunRoute, TunRouting};
 use crate::tcp::TunTcpEngine;
 use crate::udp::{TunUdpEngine, classify_tun_udp_forward_error, parse_udp_packet};
+use crate::vnet::{VIRTIO_NET_HDR_LEN, VirtioNetHdr};
 use crate::wire::ip_to_target;
 use crate::writer::SharedTunWriter;
 
@@ -58,7 +59,7 @@ pub async fn spawn_tun_loop(
     let tun_name = config.name.clone();
     let tun_mtu = config.mtu;
     let tun_path_for_task = tun_path.clone();
-    let device = open_tun_device_with_retry(&config)
+    let (device, gso_enabled) = open_tun_device_with_retry(&config)
         .await
         .with_context(|| format!("failed to open TUN device {}", config.path.display()))?;
     set_nonblocking(&device).context("failed to set O_NONBLOCK on TUN device")?;
@@ -66,7 +67,9 @@ pub async fn spawn_tun_loop(
         AsyncFd::with_interest(device, Interest::READABLE | Interest::WRITABLE)
             .context("failed to register TUN fd with tokio reactor")?,
     );
-    let writer = SharedTunWriter::from_async_fd(async_fd.clone());
+    // `gso_enabled` (fd opened with IFF_VNET_HDR) governs the read/write vnet
+    // framing and lets the TCP engine emit downlink TSO super-segments.
+    let writer = SharedTunWriter::from_async_fd(async_fd.clone(), gso_enabled);
 
     let idle_timeout = config.idle_timeout;
     let max_flows = config.max_flows;
@@ -88,6 +91,7 @@ pub async fn spawn_tun_loop(
         routing.clone(),
         max_flows,
         idle_timeout,
+        gso_enabled,
         config.tcp.clone(),
         dns_cache,
     );
@@ -100,6 +104,7 @@ pub async fn spawn_tun_loop(
             tcp_engine,
             routing,
             tun_mtu,
+            gso_enabled,
             defrag_max_total_bytes,
             defrag_max_bytes_per_set,
             defrag_max_fragment_sets,
@@ -130,6 +135,7 @@ async fn tun_read_loop(
     tcp_engine: TunTcpEngine,
     routing: TunRouting,
     mtu: usize,
+    gso_enabled: bool,
     defrag_max_total_bytes: usize,
     defrag_max_bytes_per_set: usize,
     defrag_max_fragment_sets: usize,
@@ -137,7 +143,8 @@ async fn tun_read_loop(
 ) -> Result<()> {
     use std::io::Read as _;
 
-    let mut buf = vec![0u8; mtu + 256];
+    // Extra headroom for the virtio_net_hdr prefix when IFF_VNET_HDR is on.
+    let mut buf = vec![0u8; mtu + 256 + VIRTIO_NET_HDR_LEN];
     let defragmenter = Arc::new(Mutex::new(TunDefragmenter::new(
         defrag_max_total_bytes,
         defrag_max_bytes_per_set,
@@ -156,7 +163,31 @@ async fn tun_read_loop(
         if read == 0 {
             bail!("TUN device returned EOF");
         }
-        let input_packet = &buf[..read];
+        // Strip the virtio_net_hdr prefix when IFF_VNET_HDR is enabled. We only
+        // use vnet for the *write* side (TSO super-segments); we never request
+        // TUNSETOFFLOAD, so the kernel segments to <=MSS before handing packets
+        // to us and reads always carry a GSO_NONE header. A segmented header
+        // here would be unexpected — drop it defensively rather than mis-parse a
+        // super-packet as one IP packet.
+        let input_packet = if gso_enabled {
+            if read <= VIRTIO_NET_HDR_LEN {
+                debug!(read, "dropping short TUN read (no packet after vnet header)");
+                continue;
+            }
+            let header = VirtioNetHdr::decode(&buf[..VIRTIO_NET_HDR_LEN])
+                .expect("read > VIRTIO_NET_HDR_LEN guarantees a full header");
+            if header.is_gso() {
+                metrics::record_tun_packet("tun_to_upstream", "unknown", "vnet_gso_unsupported");
+                debug!(
+                    gso_type = header.gso_type,
+                    "dropping unexpected GSO super-packet on TUN read"
+                );
+                continue;
+            }
+            &buf[VIRTIO_NET_HDR_LEN..read]
+        } else {
+            &buf[..read]
+        };
         let version_nibble = input_packet[0] >> 4;
         let owned_packet = {
             let mut defragmenter = defragmenter.lock().await;
