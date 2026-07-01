@@ -23,10 +23,7 @@ data class ServerProfile(
     // VLESS
     val vlessLink: String = "",
     // SS
-    val carrierUrl: String = "",
-    val mode: String = "h2", // h1 | h2 | h3 | xhttp_h1 | xhttp_h2 | xhttp_h3
-    val method: String = "chacha20-ietf-poly1305",
-    val password: String = "",
+    val ssLink: String = "",
     // Common
     val paddingEnabled: Boolean = false,
     val socksListen: String = "127.0.0.1:1080",
@@ -47,10 +44,8 @@ data class ServerProfile(
                 sb.append("link = \"").append(vlessLink).append("\"\n")
             }
             "ss" -> {
-                sb.append("tcp_ws_url = \"").append(carrierUrl).append("\"\n")
-                sb.append("tcp_mode = \"").append(mode).append("\"\n")
-                sb.append("method = \"").append(method).append("\"\n")
-                sb.append("password = \"").append(password).append("\"\n")
+                // ss:// share link carries carrier + cipher + password.
+                sb.append("link = \"").append(ssLink).append("\"\n")
             }
         }
         sb.append("\n[padding]\n")
@@ -63,10 +58,7 @@ data class ServerProfile(
         put("name", name)
         put("transport", transport)
         put("vlessLink", vlessLink)
-        put("carrierUrl", carrierUrl)
-        put("mode", mode)
-        put("method", method)
-        put("password", password)
+        put("ssLink", ssLink)
         put("paddingEnabled", paddingEnabled)
         put("socksListen", socksListen)
         put("rawTomlOverride", rawTomlOverride)
@@ -78,10 +70,7 @@ data class ServerProfile(
             name = o.optString("name", ""),
             transport = o.optString("transport", "vless"),
             vlessLink = o.optString("vlessLink", ""),
-            carrierUrl = o.optString("carrierUrl", ""),
-            mode = o.optString("mode", "h2"),
-            method = o.optString("method", "chacha20-ietf-poly1305"),
-            password = o.optString("password", ""),
+            ssLink = o.optString("ssLink", ""),
             paddingEnabled = o.optBoolean("paddingEnabled", false),
             socksListen = o.optString("socksListen", "127.0.0.1:1080"),
             rawTomlOverride = o.optString("rawTomlOverride", ""),
