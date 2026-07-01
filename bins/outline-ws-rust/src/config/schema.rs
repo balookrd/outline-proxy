@@ -344,6 +344,12 @@ pub(super) struct TunTcpSection {
     pub(super) max_buffered_client_segments: Option<usize>,
     pub(super) max_buffered_client_bytes: Option<usize>,
     pub(super) max_retransmits: Option<u32>,
+    /// Hard ceiling on the per-flow downlink send rate, in Mbit/s. Caps the BBR
+    /// pacing rate (including the STARTUP overshoot) so the stack never offers
+    /// the last hop more than it can drain — set it a bit under the client's
+    /// link speed (e.g. 90 for a 100 Mbit port) to stop line-rate bursts from
+    /// overrunning the port buffer. `None`/0 disables the cap.
+    pub(super) downlink_max_mbit: Option<u64>,
     pub(super) keepalive_idle_secs: Option<u64>,
     pub(super) keepalive_interval_secs: Option<u64>,
     pub(super) keepalive_max_probes: Option<u32>,
