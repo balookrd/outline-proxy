@@ -103,6 +103,17 @@ const BBR_STARTUP_FULL_BW_COUNT: u32 = 3;
 /// the instantaneous burst stays well under a typical port buffer.
 const BBR_PACING_MAX_BURST_SEGMENTS: usize = 64;
 const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Fail-fast window for direct connects. A destination that failed to connect
+/// within this window is not re-dialed with a fresh (up to `connect_timeout`,
+/// default 10 s) attempt — the flow is reset immediately. This stops an
+/// unreachable origin the client keeps re-dialing (e.g. a censored host such as
+/// a blocked Telegram DC) from parking a connect task per attempt: a reconnect
+/// storm to a blackhole otherwise piles up hundreds of 10 s dials and collapses
+/// the engine (observed: 12.5k pkt/s, stack SYN-ACK latency 1 ms → 187 ms).
+const TCP_CONNECT_FAILURE_TTL: Duration = Duration::from_secs(4);
+/// Upper bound on the negative-connect-cache size (bounded resource; expired
+/// entries are swept when the cap is hit).
+const TCP_CONNECT_FAILURE_CACHE_CAP: usize = 4096;
 /// Interval for the watchdog GC loop that sweeps the TCP flow table for
 /// entries whose per-flow maintenance task died without removing the flow.
 /// The per-flow maintenance task is the primary idle-cleanup path; this

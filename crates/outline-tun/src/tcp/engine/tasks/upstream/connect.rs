@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +19,52 @@ use super::super::super::super::state_machine::{
 use super::super::super::connect::select_tcp_candidate_and_connect;
 use super::super::super::{TunTcpEngine, close_upstream_writer, target_socket_addr};
 use crate::sniff::{SNIFF_PEEK_CAP, SniffOutcome, sniff_host};
+
+/// Bounded negative cache of direct-connect destinations that recently failed
+/// to connect. A destination present (within TTL) is not dialed again — the
+/// flow is reset immediately instead of parking a task on the full connect
+/// timeout. This isolates an unreachable origin the client keeps re-dialing
+/// (e.g. a censored host) so a reconnect storm cannot pile up connect tasks and
+/// starve the engine. Pure logic (no clock of its own) so it is unit-testable.
+pub(in crate::tcp) struct ConnectFailureCache {
+    failures: HashMap<SocketAddr, std::time::Instant>,
+    ttl: Duration,
+    cap: usize,
+}
+
+impl ConnectFailureCache {
+    pub(in crate::tcp) fn new(ttl: Duration, cap: usize) -> Self {
+        Self { failures: HashMap::new(), ttl, cap }
+    }
+
+    /// Whether `addr` failed to connect within the TTL as of `now`.
+    pub(in crate::tcp) fn recently_failed(
+        &self,
+        addr: &SocketAddr,
+        now: std::time::Instant,
+    ) -> bool {
+        self.failures
+            .get(addr)
+            .is_some_and(|&at| now.duration_since(at) < self.ttl)
+    }
+
+    /// Record a connect failure for `addr`. Sweeps expired entries when the cap
+    /// is hit and drops the record if still full (bounded resource).
+    pub(in crate::tcp) fn record_failure(&mut self, addr: SocketAddr, now: std::time::Instant) {
+        if self.failures.len() >= self.cap {
+            self.failures.retain(|_, &mut at| now.duration_since(at) < self.ttl);
+        }
+        if self.failures.len() < self.cap {
+            self.failures.insert(addr, now);
+        }
+    }
+
+    /// Clear `addr` after a successful connect, so a recovered origin is dialed
+    /// normally again.
+    pub(in crate::tcp) fn clear(&mut self, addr: &SocketAddr) {
+        self.failures.remove(addr);
+    }
+}
 
 /// Ordered direct-dial candidate list: locally re-resolved addresses first,
 /// then the client's literal IP as a fallback (deduplicated). The literal is
@@ -155,18 +202,45 @@ impl TunTcpEngine {
                 let mut stream = None;
                 let mut last_outcome = "failed";
                 for addr in &candidates {
+                    // Fail-fast: a destination that failed to connect within the
+                    // TTL is not re-dialed — skip it instead of parking this task
+                    // on the full connect timeout. This is what stops a reconnect
+                    // storm to a blackholed origin from piling up connect tasks.
+                    if engine
+                        .inner
+                        .connect_failures
+                        .lock()
+                        .await
+                        .recently_failed(addr, std::time::Instant::now())
+                    {
+                        last_outcome = "recent_failure";
+                        continue;
+                    }
                     match timeout(per_try, outline_net::connect_tcp_socket_direct(*addr, fwmark))
                         .await
                     {
                         Ok(Ok(s)) => {
+                            engine.inner.connect_failures.lock().await.clear(addr);
                             stream = Some(s);
                             break;
                         },
                         Ok(Err(error)) => {
+                            engine
+                                .inner
+                                .connect_failures
+                                .lock()
+                                .await
+                                .record_failure(*addr, std::time::Instant::now());
                             last_outcome = "failed";
                             debug!(flow_id, remote = %addr, error = %format!("{error:#}"), "direct TUN TCP: candidate connect failed");
                         },
                         Err(_) => {
+                            engine
+                                .inner
+                                .connect_failures
+                                .lock()
+                                .await
+                                .record_failure(*addr, std::time::Instant::now());
                             last_outcome = "timeout";
                             debug!(flow_id, remote = %addr, "direct TUN TCP: candidate connect timed out");
                         },
@@ -176,11 +250,11 @@ impl TunTcpEngine {
                     Some(stream) => stream,
                     None => {
                         metrics::record_tun_tcp_async_connect(last_outcome);
-                        warn!(flow_id, remote = %target, "failed to establish direct TUN TCP connection to any candidate");
-                        let reason = if last_outcome == "timeout" {
-                            "connect_timeout"
-                        } else {
-                            "connect_failed"
+                        warn!(flow_id, remote = %target, outcome = last_outcome, "failed to establish direct TUN TCP connection to any candidate");
+                        let reason = match last_outcome {
+                            "timeout" => "connect_timeout",
+                            "recent_failure" => "connect_recent_failure",
+                            _ => "connect_failed",
                         };
                         engine.abort_flow_with_rst(&key, reason).await;
                         return;
