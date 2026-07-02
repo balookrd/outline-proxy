@@ -195,5 +195,92 @@ pub(crate) fn locate_ipv6_upper_layer(packet: &[u8]) -> Result<(u8, usize, usize
     Ok((info.next_header, info.payload_offset, info.total_len))
 }
 
+/// Recompute a received packet's TCP/UDP checksum in place.
+///
+/// With `IFF_VNET_HDR`, the kernel may hand us packets whose L4 checksum field is
+/// not finalised — a locally-originated / forwarded packet often carries
+/// `CHECKSUM_PARTIAL` (TX-offload not completed on a loopback/forward path),
+/// flagged in the vnet header as `VIRTIO_NET_HDR_F_DATA_VALID` / `_NEEDS_CSUM`.
+/// The payload is intact but the field would fail our validating parsers, so
+/// this restores a valid checksum from the (trusted) payload. Only the 2-byte
+/// checksum field is touched; a no-op for non-TCP/UDP, fragmented, or malformed
+/// packets.
+pub(crate) fn recompute_transport_checksum(packet: &mut [u8]) {
+    match packet.first().map(|b| b >> 4) {
+        Some(4) => recompute_ipv4_transport_checksum(packet),
+        Some(6) => recompute_ipv6_transport_checksum(packet),
+        _ => {},
+    }
+}
+
+fn transport_checksum_field_offset(protocol: u8) -> Option<usize> {
+    match protocol {
+        IPV6_NEXT_HEADER_TCP => Some(16),
+        IPV6_NEXT_HEADER_UDP => Some(6),
+        _ => None,
+    }
+}
+
+fn recompute_ipv4_transport_checksum(packet: &mut [u8]) {
+    if packet.len() < IPV4_HEADER_LEN {
+        return;
+    }
+    let ihl = usize::from(packet[0] & 0x0f) * 4;
+    let total_len = usize::from(u16::from_be_bytes([packet[2], packet[3]]));
+    if ihl < IPV4_HEADER_LEN || total_len < ihl || total_len > packet.len() {
+        return;
+    }
+    // Fragments carry only part of the L4 payload — never recompute.
+    let fragment_field = u16::from_be_bytes([packet[6], packet[7]]);
+    if (fragment_field & 0x3fff) != 0 {
+        return;
+    }
+    let protocol = packet[9];
+    let Some(field) = transport_checksum_field_offset(protocol) else {
+        return;
+    };
+    if ihl + field + 2 > total_len {
+        return;
+    }
+    let source = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+    let destination = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+    packet[ihl + field..ihl + field + 2].fill(0);
+    let mut checksum =
+        ipv4_payload_checksum(source, destination, protocol, &packet[ihl..total_len]);
+    // A UDP checksum of 0 means "none"; the real value is transmitted as 0xffff.
+    if protocol == IPV6_NEXT_HEADER_UDP && checksum == 0 {
+        checksum = 0xffff;
+    }
+    packet[ihl + field..ihl + field + 2].copy_from_slice(&checksum.to_be_bytes());
+}
+
+fn recompute_ipv6_transport_checksum(packet: &mut [u8]) {
+    let Ok((next_header, l4_offset, total_len)) = locate_ipv6_upper_layer(packet) else {
+        return;
+    };
+    if next_header == IPV6_NEXT_HEADER_FRAGMENT {
+        return;
+    }
+    let Some(field) = transport_checksum_field_offset(next_header) else {
+        return;
+    };
+    if l4_offset + field + 2 > total_len || total_len > packet.len() {
+        return;
+    }
+    let mut source = [0u8; 16];
+    source.copy_from_slice(&packet[8..24]);
+    let mut destination = [0u8; 16];
+    destination.copy_from_slice(&packet[24..40]);
+    let source = Ipv6Addr::from(source);
+    let destination = Ipv6Addr::from(destination);
+    packet[l4_offset + field..l4_offset + field + 2].fill(0);
+    let mut checksum =
+        ipv6_payload_checksum(source, destination, next_header, &packet[l4_offset..total_len]);
+    if next_header == IPV6_NEXT_HEADER_UDP && checksum == 0 {
+        checksum = 0xffff;
+    }
+    packet[l4_offset + field..l4_offset + field + 2].copy_from_slice(&checksum.to_be_bytes());
+}
+
 #[cfg(test)]
 mod tests;
