@@ -163,12 +163,14 @@ async fn tun_read_loop(
         if read == 0 {
             bail!("TUN device returned EOF");
         }
-        // Strip the virtio_net_hdr prefix when IFF_VNET_HDR is enabled. We only
-        // use vnet for the *write* side (TSO super-segments); we never request
-        // TUNSETOFFLOAD, so the kernel segments to <=MSS before handing packets
-        // to us and reads always carry a GSO_NONE header. A segmented header
-        // here would be unexpected — drop it defensively rather than mis-parse a
-        // super-packet as one IP packet.
+        // Strip the virtio_net_hdr prefix when IFF_VNET_HDR is enabled. We use
+        // vnet only for the *write* side (TSO super-segments) and never request
+        // TUNSETOFFLOAD, so a segmented header on read is unexpected — drop it
+        // defensively. But the kernel can still hand us a GSO_NONE packet with an
+        // un-finalised L4 checksum (`F_DATA_VALID` / `F_NEEDS_CSUM`) when a
+        // locally-originated / forwarded packet arrived with CHECKSUM_PARTIAL;
+        // recompute it from the trusted payload so our validating parsers accept
+        // it instead of dropping with "invalid TCP checksum".
         let input_packet = if gso_enabled {
             if read <= VIRTIO_NET_HDR_LEN {
                 debug!(read, "dropping short TUN read (no packet after vnet header)");
@@ -183,6 +185,9 @@ async fn tun_read_loop(
                     "dropping unexpected GSO super-packet on TUN read"
                 );
                 continue;
+            }
+            if header.flags != 0 {
+                crate::wire::recompute_transport_checksum(&mut buf[VIRTIO_NET_HDR_LEN..read]);
             }
             &buf[VIRTIO_NET_HDR_LEN..read]
         } else {
