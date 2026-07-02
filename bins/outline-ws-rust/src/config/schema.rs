@@ -319,6 +319,12 @@ pub(super) struct TunSection {
     /// `gso`. Default `false`. The uplink mirror of the downlink `gso` win; UDP
     /// stays per-datagram (no `USO`). See `docs/TUN-GSO.md`.
     pub(super) gro: Option<bool>,
+    /// Enable UDP USO (`TUNSETOFFLOAD`, `TUN_F_CSUM|USO4|USO6`) so the writer
+    /// coalesces equal-sized downlink UDP datagrams of one flow into a
+    /// `GSO_UDP_L4` super-segment the kernel splits per datagram (Linux).
+    /// Requires `gso`. Default `false`. The UDP mirror of the downlink TCP TSO
+    /// win, aimed at bulk QUIC. See `docs/TUN-GSO.md`.
+    pub(super) uso: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

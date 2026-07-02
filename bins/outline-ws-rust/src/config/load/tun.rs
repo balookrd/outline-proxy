@@ -185,6 +185,10 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
     if gro && !gso {
         bail!("tun.gro requires tun.gso (GRO needs the vnet header)");
     }
+    let uso = tun.and_then(|section| section.uso).unwrap_or(false);
+    if uso && !gso {
+        bail!("tun.uso requires tun.gso (USO needs the vnet header)");
+    }
     let defrag_max_fragment_sets = tun
         .and_then(|section| section.defrag_max_fragment_sets)
         .unwrap_or(1024);
@@ -230,5 +234,6 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         sniff_override_exclude,
         gso,
         gro,
+        uso,
     }))
 }

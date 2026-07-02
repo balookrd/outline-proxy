@@ -19,6 +19,17 @@ pub(crate) const EBUSY_OS_ERROR: i32 = 16;
 const TUN_OPEN_BUSY_RETRIES: usize = 20;
 const TUN_OPEN_BUSY_RETRY_DELAY: Duration = Duration::from_millis(250);
 
+/// Which offload framing the TUN attach negotiated.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TunGso {
+    /// `IFF_VNET_HDR` — every read/write carries a `virtio_net_hdr` (write-side
+    /// TSO super-segments, read-side GRO framing).
+    pub(crate) vnet_hdr: bool,
+    /// `TUN_F_USO4 | TUN_F_USO6` accepted — the writer may coalesce downlink UDP
+    /// into `GSO_UDP_L4` super-segments.
+    pub(crate) udp_gso: bool,
+}
+
 pub(crate) fn set_nonblocking(file: &std::fs::File) -> Result<()> {
     let fd = file.as_raw_fd();
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
@@ -31,12 +42,13 @@ pub(crate) fn set_nonblocking(file: &std::fs::File) -> Result<()> {
     Ok(())
 }
 
-/// Opens the TUN device, returning the file plus whether it was attached with
-/// `IFF_VNET_HDR` (so reads/writes carry a `virtio_net_hdr` prefix and the
-/// writer may emit TSO super-segments). Only `true` on Linux with `config.gso`.
+/// Opens the TUN device, returning the file plus the active offload framing
+/// ([`TunGso`]): `vnet_hdr` when attached with `IFF_VNET_HDR` (write TSO / read
+/// GRO framing), and `udp_gso` when the kernel accepted `TUN_F_USO`. All-false
+/// on non-Linux.
 pub(crate) async fn open_tun_device_with_retry(
     config: &TunConfig,
-) -> Result<(std::fs::File, bool)> {
+) -> Result<(std::fs::File, TunGso)> {
     for attempt in 0..=TUN_OPEN_BUSY_RETRIES {
         match open_tun_device(config) {
             Ok(result) => return Ok(result),
@@ -71,7 +83,7 @@ pub(crate) fn is_tun_device_busy_error(error: &anyhow::Error) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, bool)> {
+fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
     const IFF_TUN: libc::c_short = 0x0001;
     const IFF_NO_PI: libc::c_short = 0x1000;
     const IFF_VNET_HDR: libc::c_short = 0x4000;
@@ -119,33 +131,57 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, bool)> {
         return Err(std::io::Error::last_os_error()).context("TUNSETIFF failed");
     }
 
-    // RX GRO: set the offload state EXPLICITLY on every attach — including to 0
-    // — so a persistent TUN interface never inherits a stale `TUNSETOFFLOAD`
-    // from a previous run. Enabling `gro` sets TSO/CSUM feature flags that
-    // survive our process exit on a persistent device; a later `gro = false`
-    // restart must clear them, or the kernel keeps handing us offloaded /
-    // aggregated packets and UDP breaks (observed: `ethtool -k` shows
-    // `tx-udp-segmentation: off [requested on]` lingering after `gro=false`).
+    // Offload: set the state EXPLICITLY on every attach — including to 0 — so a
+    // persistent TUN device never inherits a stale `TUNSETOFFLOAD` from a
+    // previous run (a lingering `tx-udp-segmentation: off [requested on]` after
+    // a restart with the flag disabled otherwise keeps breaking UDP).
     //
     // `gro` → `TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6`: the kernel may coalesce
-    // inbound TCP into >MSS GRO super-packets on read (gso_type TCPV4/6), which
-    // the read loop feeds whole into the TCP engine; `TUN_F_CSUM` is mandatory
-    // for TSO and also enables RX checksum offload, which the read loop
-    // recomputes. Otherwise `0` — clears any stale flags. `TUN_F_USO4/6` is
-    // never requested, so UDP stays per-datagram. On failure we log and carry
-    // on; the write-side TSO still works.
+    // inbound TCP into >MSS GRO super-packets on read (gso_type TCPV4/6), fed
+    // whole into the TCP engine. `uso` → `TUN_F_CSUM | TUN_F_USO4 | TUN_F_USO6`:
+    // the writer may hand the kernel `GSO_UDP_L4` super-segments (downlink UDP
+    // coalescing), and the kernel may hand us UDP GRO on read (the read loop
+    // re-segments it). `TUN_F_CSUM` is mandatory for any TSO/USO flag and also
+    // enables RX checksum offload, which the read loop recomputes. If the kernel
+    // rejects USO (< 5.18) we retry without it so TCP offload survives.
+    let mut gso = TunGso { vnet_hdr: config.gso, udp_gso: false };
     {
         const TUNSETOFFLOAD: libc::c_ulong = 0x400454d0;
         const TUN_F_CSUM: libc::c_uint = 0x01;
         const TUN_F_TSO4: libc::c_uint = 0x02;
         const TUN_F_TSO6: libc::c_uint = 0x04;
-        let offload = if config.gso && config.gro {
-            (TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6) as libc::c_ulong
-        } else {
-            0
+        const TUN_F_USO4: libc::c_uint = 0x20;
+        const TUN_F_USO6: libc::c_uint = 0x40;
+        let want_gro = config.gso && config.gro;
+        let want_uso = config.gso && config.uso;
+        let mut offload = 0u32;
+        if want_gro {
+            offload |= TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6;
+        }
+        if want_uso {
+            offload |= TUN_F_CSUM | TUN_F_USO4 | TUN_F_USO6;
+        }
+        let set = |value: u32| unsafe {
+            libc::ioctl(file.as_raw_fd(), TUNSETOFFLOAD as _, value as libc::c_ulong)
         };
-        let result = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETOFFLOAD as _, offload) };
-        if result < 0 {
+        if set(offload) == 0 {
+            gso.udp_gso = want_uso;
+        } else if want_uso {
+            // USO likely unsupported on this kernel: drop it, keep GRO/TSO.
+            let without_uso = offload & !(TUN_F_USO4 | TUN_F_USO6);
+            if set(without_uso) == 0 {
+                warn!(
+                    name = %name,
+                    "TUNSETOFFLOAD rejected USO; UDP GSO disabled, TCP offload kept"
+                );
+            } else {
+                warn!(
+                    name = %name,
+                    error = %std::io::Error::last_os_error(),
+                    "TUNSETOFFLOAD failed; TUN offload state may be stale"
+                );
+            }
+        } else {
             warn!(
                 name = %name,
                 offload,
@@ -155,15 +191,15 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, bool)> {
         }
     }
 
-    Ok((file, config.gso))
+    Ok((file, gso))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, bool)> {
+fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
         .open(&config.path)
         .with_context(|| format!("failed to open {}", config.path.display()))?;
-    Ok((file, false))
+    Ok((file, TunGso::default()))
 }
