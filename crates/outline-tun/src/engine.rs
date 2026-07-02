@@ -130,6 +130,9 @@ pub async fn spawn_tun_loop(
         mtu = tun_mtu,
         max_flows,
         idle_timeout_secs = idle_timeout.as_secs(),
+        gso = gso.vnet_hdr,
+        rx_gro = gso.tcp_gro,
+        udp_gso = gso.udp_gso,
         "TUN loop started"
     );
     Ok(())
