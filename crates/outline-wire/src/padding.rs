@@ -208,6 +208,28 @@ pub struct PaddingDecoder {
     pending_control: Option<ControlSignal>,
 }
 
+/// Sink for payload bytes recovered by [`PaddingDecoder::push`]. Implemented for
+/// `Vec<u8>` (the usual decode buffer) and `BytesMut`, so the SS server can
+/// decode straight into the AEAD decryptor's ciphertext buffer instead of
+/// allocating a throwaway per-frame `Vec` and copying it back in.
+pub trait PayloadSink {
+    fn push_bytes(&mut self, bytes: &[u8]);
+}
+
+impl PayloadSink for Vec<u8> {
+    #[inline]
+    fn push_bytes(&mut self, bytes: &[u8]) {
+        self.extend_from_slice(bytes);
+    }
+}
+
+impl PayloadSink for bytes::BytesMut {
+    #[inline]
+    fn push_bytes(&mut self, bytes: &[u8]) {
+        self.extend_from_slice(bytes);
+    }
+}
+
 impl Default for PaddingDecoder {
     fn default() -> Self {
         Self::new()
@@ -234,7 +256,9 @@ impl PaddingDecoder {
     }
 
     /// Consumes all of `input`, appending recovered real payload to `out`.
-    pub fn push(&mut self, mut input: &[u8], out: &mut Vec<u8>) {
+    /// `out` is any [`PayloadSink`] (`Vec<u8>` or `BytesMut`), so a caller can
+    /// decode straight into a downstream buffer without an intermediate `Vec`.
+    pub fn push<O: PayloadSink + ?Sized>(&mut self, mut input: &[u8], out: &mut O) {
         while !input.is_empty() {
             match self.state {
                 DecodeState::Header => {
@@ -258,7 +282,7 @@ impl PaddingDecoder {
                 },
                 DecodeState::Real { real_rem, pad } => {
                     let take = real_rem.min(input.len());
-                    out.extend_from_slice(&input[..take]);
+                    out.push_bytes(&input[..take]);
                     input = &input[take..];
                     let real_rem = real_rem - take;
                     self.state = if real_rem > 0 {
