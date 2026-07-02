@@ -622,9 +622,12 @@ where
     // dropped transparently here.
     match state.padding_decoder.as_mut() {
         Some(decoder) => {
-            let mut unpadded = Vec::with_capacity(data.len());
-            decoder.push(&data, &mut unpadded);
-            decryptor.feed_ciphertext(&unpadded);
+            // Recover the payload straight into the decryptor's ciphertext
+            // buffer: no throwaway per-frame Vec, and no second copy that
+            // feeding an intermediate buffer back through feed_ciphertext costs.
+            let buffer = decryptor.ciphertext_buffer_mut();
+            buffer.reserve(data.len());
+            decoder.push(&data, buffer);
         },
         None => decryptor.feed_ciphertext(&data),
     }
