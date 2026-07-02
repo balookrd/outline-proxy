@@ -89,6 +89,104 @@ fn parse_ipv6_udp_packet(packet: &[u8]) -> Result<ParsedUdpPacket> {
     })
 }
 
+/// Defensive ceiling on datagrams produced from one UDP GRO super-packet. The
+/// kernel caps a USO aggregate near 64 datagrams; this bound stops a single
+/// malformed read from spawning an unbounded fan-out of `handle_packet`.
+const MAX_UDP_GSO_SEGMENTS: usize = 128;
+
+/// Re-segment a UDP GRO super-packet (`gso_type` `GSO_UDP_L4`) back into the
+/// individual datagrams the kernel coalesced on read. The aggregate is one IP
+/// packet: a single 8-byte UDP header followed by N datagrams of one 4-tuple,
+/// each `gso_size` bytes (the last may be shorter).
+///
+/// The UDP header's `len` field spans the WHOLE aggregate here (not one
+/// datagram), so — unlike [`parse_udp_packet`] — we must NOT trust it: the L4
+/// payload region is bounded by the IP total length, and datagrams are cut from
+/// it at `gso_size`. Ports / addresses are shared by every datagram. Order is
+/// preserved front-to-back (per-flow NAT state depends on it). No checksum is
+/// recomputed — the engine reads the payload directly and never validates the
+/// UDP sum, so the output is byte-identical to the per-packet parse path.
+pub(crate) fn resegment_udp_gso(packet: &[u8], gso_size: u16) -> Result<Vec<ParsedUdpPacket>> {
+    if gso_size == 0 {
+        bail!("UDP GSO super-packet with zero gso_size");
+    }
+    let gso_size = usize::from(gso_size);
+    let version = packet.first().ok_or_else(|| anyhow!("empty TUN packet"))? >> 4;
+    let (version, source_ip, destination_ip, udp) = match version {
+        4 => {
+            if packet.len() < IPV4_HEADER_LEN + UDP_HEADER_LEN {
+                bail!("short IPv4 UDP GSO packet");
+            }
+            let header_len = usize::from(packet[0] & 0x0f) * 4;
+            let total_len = usize::from(u16::from_be_bytes([packet[2], packet[3]]));
+            if header_len < IPV4_HEADER_LEN
+                || total_len < header_len + UDP_HEADER_LEN
+                || packet.len() < total_len
+            {
+                bail!("invalid IPv4 UDP GSO lengths");
+            }
+            if packet[9] != IPV6_NEXT_HEADER_UDP {
+                bail!("expected IPv4 UDP GSO packet");
+            }
+            let src = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+            let dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+            (IpVersion::V4, IpAddr::V4(src), IpAddr::V4(dst), &packet[header_len..total_len])
+        },
+        6 => {
+            if packet.len() < IPV6_HEADER_LEN + UDP_HEADER_LEN {
+                bail!("short IPv6 UDP GSO packet");
+            }
+            let (next_header, udp_offset, total_len) = locate_ipv6_upper_layer(packet)?;
+            if next_header != IPV6_NEXT_HEADER_UDP {
+                bail!("expected IPv6 UDP GSO packet");
+            }
+            let mut src = [0u8; 16];
+            src.copy_from_slice(&packet[8..24]);
+            let mut dst = [0u8; 16];
+            dst.copy_from_slice(&packet[24..40]);
+            (
+                IpVersion::V6,
+                IpAddr::V6(Ipv6Addr::from(src)),
+                IpAddr::V6(Ipv6Addr::from(dst)),
+                &packet[udp_offset..total_len],
+            )
+        },
+        other => bail!("unsupported IP version in UDP GSO packet: {other}"),
+    };
+
+    if udp.len() < UDP_HEADER_LEN {
+        bail!("short UDP header in GSO super-packet");
+    }
+    let source_port = u16::from_be_bytes([udp[0], udp[1]]);
+    let destination_port = u16::from_be_bytes([udp[2], udp[3]]);
+    // Deliberately ignore udp[4..6] (`uh->len`): it spans the whole aggregate,
+    // not one datagram. The payload region is everything after the single UDP
+    // header, already bounded by the IP total length above.
+    let aggregate = &udp[UDP_HEADER_LEN..];
+    if aggregate.is_empty() {
+        bail!("empty UDP GSO aggregate");
+    }
+    let num_segments = aggregate.len().div_ceil(gso_size);
+    if num_segments > MAX_UDP_GSO_SEGMENTS {
+        bail!(
+            "UDP GSO super-packet splits into {num_segments} datagrams (> {MAX_UDP_GSO_SEGMENTS})"
+        );
+    }
+
+    let mut datagrams = Vec::with_capacity(num_segments);
+    for chunk in aggregate.chunks(gso_size) {
+        datagrams.push(ParsedUdpPacket {
+            version,
+            source_ip,
+            destination_ip,
+            source_port,
+            destination_port,
+            payload: chunk.to_vec(),
+        });
+    }
+    Ok(datagrams)
+}
+
 pub(super) fn build_response_packet(
     version: IpVersion,
     target: &TargetAddr,

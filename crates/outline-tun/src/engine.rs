@@ -22,8 +22,13 @@ use crate::device::{open_tun_device_with_retry, set_nonblocking};
 use crate::icmp::{build_icmp_echo_reply_packets, icmp_echo_destination};
 use crate::routing::{TunRoute, TunRouting};
 use crate::tcp::TunTcpEngine;
-use crate::udp::{TunUdpEngine, classify_tun_udp_forward_error, parse_udp_packet};
-use crate::vnet::{VIRTIO_NET_HDR_LEN, VirtioNetHdr};
+use crate::udp::{
+    TunUdpEngine, classify_tun_udp_forward_error, parse_udp_packet, resegment_udp_gso,
+};
+use crate::vnet::{
+    VIRTIO_NET_HDR_GSO_NONE, VIRTIO_NET_HDR_GSO_TCPV4, VIRTIO_NET_HDR_GSO_TCPV6,
+    VIRTIO_NET_HDR_GSO_UDP_L4, VIRTIO_NET_HDR_LEN, VirtioNetHdr,
+};
 use crate::wire::ip_to_target;
 use crate::writer::SharedTunWriter;
 
@@ -143,8 +148,12 @@ async fn tun_read_loop(
 ) -> Result<()> {
     use std::io::Read as _;
 
-    // Extra headroom for the virtio_net_hdr prefix when IFF_VNET_HDR is on.
-    let mut buf = vec![0u8; mtu + 256 + VIRTIO_NET_HDR_LEN];
+    // Sized to hold a full GRO super-packet (up to 64 KB) plus the
+    // virtio_net_hdr prefix and headroom: with RX offload the kernel can
+    // coalesce several inbound MSS segments / datagrams into one >MSS read, and
+    // a smaller buffer would truncate it. Without offload this is one larger
+    // one-off allocation for the single read buffer — negligible.
+    let mut buf = vec![0u8; mtu.max(65_535) + 256 + VIRTIO_NET_HDR_LEN];
     let defragmenter = Arc::new(Mutex::new(TunDefragmenter::new(
         defrag_max_total_bytes,
         defrag_max_bytes_per_set,
@@ -163,14 +172,14 @@ async fn tun_read_loop(
         if read == 0 {
             bail!("TUN device returned EOF");
         }
-        // Strip the virtio_net_hdr prefix when IFF_VNET_HDR is enabled. We use
-        // vnet only for the *write* side (TSO super-segments) and never request
-        // TUNSETOFFLOAD, so a segmented header on read is unexpected — drop it
-        // defensively. But the kernel can still hand us a GSO_NONE packet with an
-        // un-finalised L4 checksum (`F_DATA_VALID` / `F_NEEDS_CSUM`) when a
-        // locally-originated / forwarded packet arrived with CHECKSUM_PARTIAL;
-        // recompute it from the trusted payload so our validating parsers accept
-        // it instead of dropping with "invalid TCP checksum".
+        // Strip the virtio_net_hdr prefix when IFF_VNET_HDR is enabled and
+        // dispatch by gso_type. With RX offload (`TUNSETOFFLOAD`) the kernel may
+        // hand us TCP GRO super-packets (TCPV4/6) or UDP GRO super-packets
+        // (UDP_L4); without it, only GSO_NONE single packets (possibly with an
+        // un-finalised L4 checksum). The gso_type match MUST precede any
+        // recompute: `recompute_transport_checksum` sizes off the 16-bit IP
+        // total_len, so a UDP aggregate takes a separate re-segmentation path
+        // and never reaches recompute here.
         let input_packet = if gso_enabled {
             if read <= VIRTIO_NET_HDR_LEN {
                 debug!(read, "dropping short TUN read (no packet after vnet header)");
@@ -178,18 +187,61 @@ async fn tun_read_loop(
             }
             let header = VirtioNetHdr::decode(&buf[..VIRTIO_NET_HDR_LEN])
                 .expect("read > VIRTIO_NET_HDR_LEN guarantees a full header");
-            if header.is_gso() {
-                metrics::record_tun_packet("tun_to_upstream", "unknown", "vnet_gso_unsupported");
-                debug!(
-                    gso_type = header.gso_type,
-                    "dropping unexpected GSO super-packet on TUN read"
-                );
-                continue;
+            match header.gso_type {
+                VIRTIO_NET_HDR_GSO_UDP_L4 => {
+                    // UDP GRO: split the aggregate back into its datagrams and
+                    // dispatch each in order — behaviourally identical to the
+                    // per-packet path (the kernel merely batched the read).
+                    dispatch_udp_gso_superpacket(
+                        &udp_engine,
+                        &buf[VIRTIO_NET_HDR_LEN..read],
+                        header.gso_size,
+                    )
+                    .await;
+                    continue;
+                },
+                VIRTIO_NET_HDR_GSO_TCPV4 | VIRTIO_NET_HDR_GSO_TCPV6 => {
+                    // TCP GRO super-packet — the userspace TCP receive path
+                    // accepts an oversized segment whole (it sizes from IP
+                    // total_len, buffers as `Bytes`, and trims to the window).
+                    // Count it (the uplink GRO signal — how often the kernel
+                    // actually coalesced inbound TCP), recompute the checksum the
+                    // kernel may have left un-finalised, then hand the packet to
+                    // the normal classify / dispatch path below.
+                    metrics::record_tun_packet(
+                        "tun_to_upstream",
+                        ip_family_name(buf[VIRTIO_NET_HDR_LEN] >> 4),
+                        "tcp_gro_superpacket",
+                    );
+                    if header.flags != 0 {
+                        crate::wire::recompute_transport_checksum(
+                            &mut buf[VIRTIO_NET_HDR_LEN..read],
+                        );
+                    }
+                    &buf[VIRTIO_NET_HDR_LEN..read]
+                },
+                VIRTIO_NET_HDR_GSO_NONE => {
+                    // A single packet, possibly with an un-finalised L4 checksum
+                    // (F_NEEDS_CSUM / F_DATA_VALID from a CHECKSUM_PARTIAL local
+                    // / forwarded hop). Recompute, then hand it to the normal
+                    // classify / dispatch path below.
+                    if header.flags != 0 {
+                        crate::wire::recompute_transport_checksum(
+                            &mut buf[VIRTIO_NET_HDR_LEN..read],
+                        );
+                    }
+                    &buf[VIRTIO_NET_HDR_LEN..read]
+                },
+                other => {
+                    metrics::record_tun_packet(
+                        "tun_to_upstream",
+                        "unknown",
+                        "vnet_gso_unsupported",
+                    );
+                    debug!(gso_type = other, "dropping unsupported GSO super-packet on TUN read");
+                    continue;
+                },
             }
-            if header.flags != 0 {
-                crate::wire::recompute_transport_checksum(&mut buf[VIRTIO_NET_HDR_LEN..read]);
-            }
-            &buf[VIRTIO_NET_HDR_LEN..read]
         } else {
             &buf[..read]
         };
@@ -376,6 +428,54 @@ async fn tun_read_loop(
                 );
                 debug!(reason, packet_len = read, "ignoring unsupported TUN packet");
             },
+        }
+    }
+}
+
+/// Split a UDP GRO super-packet into its datagrams and forward each to the UDP
+/// engine, in order. Behaviourally identical to the per-packet path — the
+/// kernel merely coalesced several same-flow datagrams into one read. A
+/// malformed aggregate is dropped whole (never partially delivered).
+async fn dispatch_udp_gso_superpacket(udp_engine: &TunUdpEngine, packet: &[u8], gso_size: u16) {
+    let version_nibble = packet.first().map_or(0, |b| b >> 4);
+    let datagrams = match resegment_udp_gso(packet, gso_size) {
+        Ok(datagrams) => datagrams,
+        Err(error) => {
+            metrics::record_tun_packet(
+                "tun_to_upstream",
+                ip_family_name(version_nibble),
+                "udp_gso_resegment_error",
+            );
+            debug!(
+                error = %format!("{error:#}"),
+                gso_size,
+                "dropping malformed UDP GSO super-packet"
+            );
+            return;
+        },
+    };
+    // Counts UDP GRO super-packets the kernel actually delivered — the signal
+    // for whether `TUN_F_CSUM|TSO` (without USO) still yields UDP aggregates on
+    // this kernel, or UDP truly stays per-datagram (to confirm on the live host).
+    metrics::record_tun_packet(
+        "tun_to_upstream",
+        ip_family_name(version_nibble),
+        "udp_gso_superpacket",
+    );
+    debug!(count = datagrams.len(), gso_size, "re-segmented UDP GRO super-packet");
+    for parsed in datagrams {
+        metrics::record_tun_packet("tun_to_upstream", ip_family_name(version_nibble), "accepted");
+        if let Err(error) = udp_engine.handle_packet(parsed).await {
+            metrics::record_tun_udp_forward_error(classify_tun_udp_forward_error(&error));
+            metrics::record_tun_packet(
+                "tun_to_upstream",
+                ip_family_name(version_nibble),
+                "udp_error",
+            );
+            warn!(
+                error = %format!("{error:#}"),
+                "failed to forward UDP datagram from GSO super-packet"
+            );
         }
     }
 }

@@ -1,6 +1,7 @@
 mod sniff;
 
 use super::parse_udp_packet;
+use super::resegment_udp_gso;
 use super::wire::{build_ipv4_udp_packet, build_ipv6_udp_packet};
 use crate::wire::IpVersion;
 use crate::wire::test_utils::{
@@ -146,6 +147,114 @@ fn randomized_udp_packet_roundtrip_and_mutation_smoke() {
             assert!(parse_udp_packet(&corrupt_udp_length_field(&packet)).is_err());
         }
     }
+}
+
+// A UDP GRO super-packet is a single IP packet carrying one UDP header whose
+// `len` spans the WHOLE aggregate, followed by N gso_size-sized datagrams.
+// `build_ipv4/ipv6_udp_packet` with a multi-datagram payload produces exactly
+// that shape (one header, uh->len = 8 + full payload), so it doubles as a
+// super-packet fixture. `resegment_udp_gso` must cut it back into datagrams
+// using the IP total length — never the WHOLE `uh->len`.
+
+#[test]
+fn resegment_udp_gso_splits_ipv4_into_datagrams() {
+    let gso_size = 100u16;
+    // 3 full datagrams + a short 50-byte tail.
+    let payload: Vec<u8> = (0..350u32).map(|i| (i % 251) as u8).collect();
+    let packet = build_ipv4_udp_packet(
+        Ipv4Addr::new(8, 8, 8, 8),
+        Ipv4Addr::new(10, 0, 0, 2),
+        443,
+        50000,
+        &payload,
+    )
+    .unwrap();
+
+    let datagrams = resegment_udp_gso(&packet, gso_size).unwrap();
+    assert_eq!(datagrams.len(), 4);
+    for d in &datagrams {
+        assert_eq!(d.version, IpVersion::V4);
+        assert_eq!(d.source_ip, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)));
+        assert_eq!(d.destination_ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
+        assert_eq!(d.source_port, 443);
+        assert_eq!(d.destination_port, 50000);
+    }
+    assert_eq!(datagrams[0].payload.len(), 100);
+    assert_eq!(datagrams[3].payload.len(), 50);
+    // Front-to-back order preserved; concatenation is byte-identical.
+    let reassembled: Vec<u8> = datagrams.iter().flat_map(|d| d.payload.clone()).collect();
+    assert_eq!(reassembled, payload);
+}
+
+#[test]
+fn resegment_udp_gso_splits_ipv6_into_datagrams() {
+    let gso_size = 200u16;
+    let payload: Vec<u8> = (0..500u32).map(|i| (i % 251) as u8).collect();
+    let packet = build_ipv6_udp_packet(
+        Ipv6Addr::LOCALHOST,
+        Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2),
+        5353,
+        41000,
+        &payload,
+    )
+    .unwrap();
+
+    let datagrams = resegment_udp_gso(&packet, gso_size).unwrap();
+    assert_eq!(datagrams.len(), 3); // 200 + 200 + 100
+    for d in &datagrams {
+        assert_eq!(d.version, IpVersion::V6);
+        assert_eq!(d.source_port, 5353);
+        assert_eq!(d.destination_port, 41000);
+    }
+    let reassembled: Vec<u8> = datagrams.iter().flat_map(|d| d.payload.clone()).collect();
+    assert_eq!(reassembled, payload);
+}
+
+#[test]
+fn resegment_udp_gso_single_datagram_matches_parse() {
+    // payload <= gso_size → one datagram, identical to the per-packet parse.
+    let packet = build_ipv4_udp_packet(
+        Ipv4Addr::new(8, 8, 8, 8),
+        Ipv4Addr::new(10, 0, 0, 2),
+        443,
+        50000,
+        b"single",
+    )
+    .unwrap();
+    let via_parse = parse_udp_packet(&packet).unwrap();
+    let via_reseg = resegment_udp_gso(&packet, 1400).unwrap();
+    assert_eq!(via_reseg.len(), 1);
+    assert_eq!(via_reseg[0].payload, via_parse.payload);
+    assert_eq!(via_reseg[0].source_port, via_parse.source_port);
+    assert_eq!(via_reseg[0].destination_port, via_parse.destination_port);
+}
+
+#[test]
+fn resegment_udp_gso_rejects_zero_gso_size() {
+    let packet = build_ipv4_udp_packet(
+        Ipv4Addr::new(8, 8, 8, 8),
+        Ipv4Addr::new(10, 0, 0, 2),
+        443,
+        50000,
+        b"data",
+    )
+    .unwrap();
+    assert!(resegment_udp_gso(&packet, 0).is_err());
+}
+
+#[test]
+fn resegment_udp_gso_rejects_too_many_segments() {
+    // gso_size = 1 over a 200-byte aggregate → 200 datagrams > MAX (128): drop whole.
+    let payload = vec![0xabu8; 200];
+    let packet = build_ipv4_udp_packet(
+        Ipv4Addr::new(8, 8, 8, 8),
+        Ipv4Addr::new(10, 0, 0, 2),
+        443,
+        50000,
+        &payload,
+    )
+    .unwrap();
+    assert!(resegment_udp_gso(&packet, 1).is_err());
 }
 
 /// Eviction-selection logic shared by the tunnelled and direct UDP flow

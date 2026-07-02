@@ -74,6 +74,16 @@ pub struct TunConfig {
     /// before TSO (writing MSS super-segments) is layered on. Ignored on
     /// non-Linux targets.
     pub gso: bool,
+    /// Enable RX GRO for the uplink (`TUNSETOFFLOAD` with
+    /// `TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6`, Linux only). Requires `gso`.
+    /// With it the kernel coalesces inbound TCP into >MSS super-packets on
+    /// read, which the TCP engine accepts whole — the read-path mirror of the
+    /// downlink `gso` TSO win. `TUN_F_USO*` is deliberately NOT requested, so
+    /// UDP stays per-datagram (the kernel re-segments it before we read); a UDP
+    /// super-packet that does arrive is still handled (re-segmented) by the read
+    /// loop. Default `false`; the write-side TSO (`gso`) is unaffected when off,
+    /// so GRO rolls back on its own. Ignored on non-Linux targets.
+    pub gro: bool,
 }
 
 #[derive(Debug, Clone)]
