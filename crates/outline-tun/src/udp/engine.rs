@@ -68,9 +68,14 @@ pub(super) struct TunUdpEngineInner {
     /// Domain suffixes excluded from QUIC sniff destination-override. See
     /// [`TunConfig::sniff_override_exclude`](crate::TunConfig).
     pub(super) sniff_override_exclude: std::sync::Arc<[Box<str>]>,
+    /// `TUN_F_USO` accepted at attach — coalesce equal-sized downlink UDP
+    /// datagrams of one flow into a `GSO_UDP_L4` super-segment on write. See
+    /// [`TunConfig::uso`](crate::TunConfig).
+    pub(super) udp_gso: bool,
 }
 
 impl TunUdpEngine {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         writer: SharedTunWriter,
         dispatch: TunRouting,
@@ -79,6 +84,7 @@ impl TunUdpEngine {
         pmtud_emit_below_quic_initial: bool,
         sniff_quic: bool,
         sniff_override_exclude: std::sync::Arc<[Box<str>]>,
+        udp_gso: bool,
     ) -> Self {
         let (close_tx, close_rx) = mpsc::unbounded_channel();
         let engine = Self {
@@ -94,6 +100,7 @@ impl TunUdpEngine {
                 pmtud_emit_below_quic_initial,
                 sniff_quic,
                 sniff_override_exclude,
+                udp_gso,
             }),
         };
         engine.spawn_cleanup_loop();

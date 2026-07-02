@@ -164,6 +164,15 @@ listen = "[::1]:9090"
 # upload's sha256 after enabling. Ignored on non-Linux targets. See
 # `docs/TUN-GSO.md`.
 # gro = false
+#
+# UDP USO (TUNSETOFFLOAD, TUN_F_CSUM|USO4|USO6): coalesce equal-sized downlink
+# UDP datagrams of one flow into a GSO_UDP_L4 super-segment the kernel splits
+# per datagram — the UDP mirror of the downlink TCP TSO win, aimed at bulk QUIC
+# video. Requires gso = true. Default false. Independent of gro; the kernel may
+# reject USO on kernels < 5.18, in which case TCP offload is kept and UDP GSO is
+# disabled. Data-plane core: verify a large UDP transfer + UDP health (DNS/QUIC)
+# after enabling. Ignored on non-Linux targets. See `docs/TUN-GSO.md`.
+# uso = false
 
 # [tun.tcp]
 # connect_timeout_secs = 10

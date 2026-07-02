@@ -92,6 +92,7 @@ async fn build_engine(upstream_url: Url, sniff_quic: bool) -> TunUdpEngine {
         false,
         sniff_quic,
         Vec::new().into(),
+        false,
     )
 }
 
@@ -164,6 +165,7 @@ async fn tun_udp_quic_excluded_host_keeps_ip_target() {
         false,
         true,
         exclude,
+        false,
     );
 
     // Sniffing is on, but example.com is excluded → keep the literal IP.

@@ -20,7 +20,12 @@ use super::types::{
     DirectUdpFlowState, FlowStamp, UDP_OUTBOUND_QUEUE_CAP, bump_last_seen_if_current,
     drain_idle_flows, flow_is_current,
 };
-use super::wire::build_response_packet;
+use futures_util::FutureExt as _;
+
+use super::wire::{
+    GSO_MAX_UDP_SUPER_PAYLOAD, UDP_GSO_MIN_DATAGRAM, UDP_MAX_SEGMENTS, build_gso_udp_packet,
+    build_response_packet,
+};
 use super::{
     TUN_FLOW_CLEANUP_INTERVAL, TunUdpEngine, UdpFlowKey, UdpFlowState, ip_family_from_version,
     ip_to_target,
@@ -385,13 +390,52 @@ impl TunUdpEngine {
         let engine = self.clone();
         AbortOnDrop::new(tokio::spawn(async move {
             let result = async {
+                let mut carried_over: Option<Bytes> = None;
                 loop {
                     if super::should_migrate_flow(&manager, uplink_index).await {
                         engine.close_flow_if_current(&key, flow_id, "global_switch").await;
                         return Ok(());
                     }
-                    let payload = transport.read_packet().await?;
-                    let packet = build_client_response_packet(&key, &payload)?;
+                    // First datagram of a potential batch: the one carried over
+                    // from the previous iteration (a size change ended that
+                    // batch) or a fresh blocking read.
+                    let first_raw = match carried_over.take() {
+                        Some(raw) => raw,
+                        None => transport.read_packet().await?,
+                    };
+                    let first_payload = extract_udp_payload(&first_raw)?;
+                    let datagram_size = first_payload.len();
+
+                    // With USO, coalesce equal-sized datagrams of THIS flow (its
+                    // 4-tuple is fixed by `key`, so all reply to the same
+                    // destination) into one GSO_UDP_L4 super-segment. `now_or_never`
+                    // drains only datagrams already queued — no added latency, and
+                    // `read_packet` is left un-polled otherwise. A different-sized
+                    // datagram ends the batch and is carried over (zero-loss); the
+                    // kernel requires every segment but the last to be equal-sized.
+                    let mut batch: Vec<Bytes> = vec![first_payload];
+                    let mut total_payload = datagram_size;
+                    if engine.inner.udp_gso && datagram_size >= UDP_GSO_MIN_DATAGRAM {
+                        while batch.len() < UDP_MAX_SEGMENTS
+                            && total_payload + datagram_size <= GSO_MAX_UDP_SUPER_PAYLOAD
+                        {
+                            match transport.read_packet().now_or_never() {
+                                Some(Ok(next_raw)) => {
+                                    let next_payload = extract_udp_payload(&next_raw)?;
+                                    if next_payload.len() == datagram_size {
+                                        total_payload += next_payload.len();
+                                        batch.push(next_payload);
+                                    } else {
+                                        carried_over = Some(next_raw);
+                                        break;
+                                    }
+                                },
+                                Some(Err(error)) => return Err(error),
+                                None => break,
+                            }
+                        }
+                    }
+
                     let uplink_name: Arc<str> = {
                         let handle = engine.inner.flows.read().await.get(&key).map(Arc::clone);
                         match handle {
@@ -410,14 +454,42 @@ impl TunUdpEngine {
                         "upstream_to_client",
                         manager.group_name(),
                         &uplink_name,
-                        payload.len(),
+                        total_payload,
                     );
-                    engine.inner.writer.write_packet(&packet).await?;
-                    metrics::record_tun_packet(
-                        "upstream_to_tun",
-                        ip_family_from_version(key.version),
-                        "accepted",
-                    );
+
+                    let batch_len = batch.len();
+                    if batch_len > 1 {
+                        let mut coalesced = Vec::with_capacity(total_payload);
+                        for datagram in &batch {
+                            coalesced.extend_from_slice(datagram);
+                        }
+                        let (packet, vnet) = build_gso_udp_packet(
+                            key.version,
+                            key.remote_ip,
+                            key.local_ip,
+                            key.remote_port,
+                            key.local_port,
+                            datagram_size as u16,
+                            &coalesced,
+                        )?;
+                        engine.inner.writer.write_gso_segment(&packet, vnet).await?;
+                        metrics::record_tun_packet(
+                            "upstream_to_tun",
+                            ip_family_from_version(key.version),
+                            "uso_supersegment",
+                        );
+                    } else {
+                        let packet = build_client_response_packet(&key, &first_raw)?;
+                        engine.inner.writer.write_packet(&packet).await?;
+                    }
+                    // Per-datagram `accepted` parity with the non-USO path.
+                    for _ in 0..batch_len {
+                        metrics::record_tun_packet(
+                            "upstream_to_tun",
+                            ip_family_from_version(key.version),
+                            "accepted",
+                        );
+                    }
                     bump_last_seen_if_current(&engine.inner.flows, &key, flow_id).await;
                 }
                 #[allow(unreachable_code)]
@@ -643,6 +715,14 @@ pub(super) fn build_client_response_packet(key: &UdpFlowKey, payload: &[u8]) -> 
         key.local_port,
         &payload[consumed..],
     )
+}
+
+/// Strip the exit's `TargetAddr` wire prefix from a downlink datagram, leaving
+/// just the UDP payload — the bytes coalesced into a USO super-segment. Mirror
+/// of the skip in [`build_client_response_packet`]; a zero-copy `Bytes` slice.
+fn extract_udp_payload(raw: &Bytes) -> Result<Bytes> {
+    let (_exit_src, consumed) = TargetAddr::from_wire_bytes(raw)?;
+    Ok(raw.slice(consumed..))
 }
 
 #[cfg(test)]
