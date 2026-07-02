@@ -99,10 +99,8 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, bool)> {
 
     // TUN GSO: `IFF_VNET_HDR` makes every read/write carry a `virtio_net_hdr`
     // prefix, which is all the kernel needs to accept a TSO super-segment on
-    // *write* (`tun_get_user` → `virtio_net_hdr_to_skb`). We deliberately do NOT
-    // request `TUNSETOFFLOAD`: that only affects the *read* side (it would let
-    // the kernel hand us GRO super-packets to resegment); without it the kernel
-    // segments to <=MSS before we read, so the read path never sees GSO.
+    // *write* (`tun_get_user` → `virtio_net_hdr_to_skb`). RX GRO on the *read*
+    // side is opt-in via `TUNSETOFFLOAD` below.
     let mut flags = IFF_TUN | IFF_NO_PI;
     if config.gso {
         flags |= IFF_VNET_HDR;
@@ -120,6 +118,43 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, bool)> {
     if result < 0 {
         return Err(std::io::Error::last_os_error()).context("TUNSETIFF failed");
     }
+
+    // RX GRO: set the offload state EXPLICITLY on every attach — including to 0
+    // — so a persistent TUN interface never inherits a stale `TUNSETOFFLOAD`
+    // from a previous run. Enabling `gro` sets TSO/CSUM feature flags that
+    // survive our process exit on a persistent device; a later `gro = false`
+    // restart must clear them, or the kernel keeps handing us offloaded /
+    // aggregated packets and UDP breaks (observed: `ethtool -k` shows
+    // `tx-udp-segmentation: off [requested on]` lingering after `gro=false`).
+    //
+    // `gro` → `TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6`: the kernel may coalesce
+    // inbound TCP into >MSS GRO super-packets on read (gso_type TCPV4/6), which
+    // the read loop feeds whole into the TCP engine; `TUN_F_CSUM` is mandatory
+    // for TSO and also enables RX checksum offload, which the read loop
+    // recomputes. Otherwise `0` — clears any stale flags. `TUN_F_USO4/6` is
+    // never requested, so UDP stays per-datagram. On failure we log and carry
+    // on; the write-side TSO still works.
+    {
+        const TUNSETOFFLOAD: libc::c_ulong = 0x400454d0;
+        const TUN_F_CSUM: libc::c_uint = 0x01;
+        const TUN_F_TSO4: libc::c_uint = 0x02;
+        const TUN_F_TSO6: libc::c_uint = 0x04;
+        let offload = if config.gso && config.gro {
+            (TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6) as libc::c_ulong
+        } else {
+            0
+        };
+        let result = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETOFFLOAD as _, offload) };
+        if result < 0 {
+            warn!(
+                name = %name,
+                offload,
+                error = %std::io::Error::last_os_error(),
+                "TUNSETOFFLOAD failed; TUN offload state may be stale"
+            );
+        }
+    }
+
     Ok((file, config.gso))
 }
 

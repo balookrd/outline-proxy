@@ -1,22 +1,29 @@
-# TUN GSO offload (`[tun] gso`)
+# TUN GSO / GRO offload (`[tun] gso`, `[tun] gro`)
 
 *Русская версия: [TUN-GSO.ru.md](TUN-GSO.ru.md)*
 
 ## Why
 
 The TUN client terminates TCP in userspace, so every downlink segment it
-delivers to the client is written to the TUN device with a separate `write(2)`.
-On a busy link that is thousands of writes per second, and each one traverses
+delivers to the client is written to the TUN device with a separate `write(2)`,
+and every uplink segment the client sends arrives as a separate `read(2)`. On a
+busy link that is thousands of syscalls per second, and each packet traverses
 the full kernel networking path — routing, `nftables`, `conntrack`, and (when
 the client sits behind WireGuard) per-packet WG encryption — before reaching the
-NIC. Profiling a live client at ~40–60 Mbit showed CPU dominated not by crypto
-or the userspace stack but by this per-packet kernel work (`nft_do_chain`,
-`nf_conntrack_*`, `fib_*`, `tun_get_user`, `wg_xmit`), with `write(2)` the top
-syscall by count.
+NIC or our stack. Profiling a live client at ~40–60 Mbit showed CPU dominated
+not by crypto or the userspace stack but by this per-packet kernel work
+(`nft_do_chain`, `nf_conntrack_*`, `fib_*`, `tun_get_user`, `wg_xmit`), with
+`write(2)` the top syscall by count.
 
-GSO/TSO offload on the TUN device hands the kernel **one large super-segment
-(up to ~60 KB)** instead of N MSS-sized packets, so routing / `nftables` /
-`conntrack` / WG run **once per super-segment** rather than once per MSS.
+Offload batches packets so the kernel and our stack run **once per super-packet**
+rather than once per MSS:
+
+- **`gso` (downlink / write, TSO):** we hand the kernel one large super-segment
+  (up to ~60 KB) instead of N MSS packets; the kernel splits it per MSS *after*
+  routing / `nftables` / `conntrack` / WG have run once.
+- **`gro` (uplink / read, GRO):** the kernel coalesces several inbound MSS
+  segments of one flow into one >MSS super-packet (up to 64 KB) and hands it to
+  us whole, so our read / parse / TCP-stack work runs once instead of per MSS.
 
 ## What `gso = true` does
 
@@ -26,43 +33,70 @@ GSO/TSO offload on the TUN device hands the kernel **one large super-segment
   TCP super-segment (up to ~60 KB) with a `virtio_net_hdr` describing the MSS
   (`gso_size`) and a **partial (pseudo-header) checksum**; the kernel splits it
   into MSS segments, filling in each segment's sequence number and finalising
-  its L4 checksum. This is where the CPU win lands.
+  its L4 checksum. This is where the downlink CPU win lands.
 - **Retransmit stays per-MSS:** the send scoreboard tracks each MSS segment
   individually, so a loss inside a super-segment is recovered at MSS
   granularity (a lone MSS packet), exactly as without GSO.
-- **Read side is unchanged:** we deliberately do *not* request `TUNSETOFFLOAD`,
-  which only affects the read direction (it would make the kernel hand us GRO
-  super-packets to resegment). Without it the kernel segments to ≤MSS before we
-  read, so the uplink path is byte-for-byte as before.
+- On its own, `gso` does **not** request `TUNSETOFFLOAD`, so the read path is
+  byte-for-byte as before — the uplink is covered by the separate `gro`
+  opt-in.
+
+## What `gro = true` does (requires `gso`)
+
+- Requests `TUNSETOFFLOAD` with `TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6`, telling
+  the kernel it may coalesce inbound **TCP** into GRO super-packets (up to
+  64 KB, `gso_type` TCPV4/6) instead of pre-segmenting to ≤MSS.
+- **Uplink (read):** the read loop feeds the oversized TCP segment straight
+  into the userspace TCP engine, whose receive path already accepts segments far
+  larger than one MSS (it sizes from the IP total length, buffers as `Bytes`,
+  and trims to the receive window). `TUN_F_CSUM` also enables RX checksum
+  offload, so the kernel may leave the L4 checksum un-finalised; the read loop
+  recomputes it from the trusted payload.
+- **UDP stays per-datagram:** `TUN_F_USO4/6` is deliberately **not** requested,
+  so without `NETIF_F_GSO_UDP_L4` the kernel re-segments UDP GRO back into
+  datagrams before we read them. (Should a UDP super-packet arrive anyway, the
+  read loop re-segments it back into datagrams, so UDP behaviour is unchanged
+  either way.)
+- **Coalescing only happens on a burst:** GRO merges segments only when the
+  source actually bursts (bulk upload, or a forwarding path with
+  `generic-receive-offload` on the inbound NIC). ACK-only / interactive uplink
+  stays per-packet — that is expected.
+- If the kernel rejects `TUNSETOFFLOAD`, the client logs a warning and continues
+  without GRO; the write-side TSO still works.
 
 ## Enabling
 
 ```toml
 [tun]
-gso = true
+gso = true   # downlink TSO
+gro = true   # uplink GRO (requires gso)
 ```
 
-Linux only; ignored on other targets. Requires a kernel with `IFF_VNET_HDR`
-(present since 2.6.27) that forwards GSO super-packets into WireGuard (6.x — the
-kernel segments in software before WG if needed, but the per-packet routing /
-`nftables` / `conntrack` cost is already paid once per super-segment).
+Linux only; ignored on other targets. `gso` needs a kernel with `IFF_VNET_HDR`
+(since 2.6.27). `gro` additionally needs `TUNSETOFFLOAD` support (long-standing).
+`gro` can be toggled independently of `gso`.
 
 ## Validating
 
-The write path is data-plane core, so confirm **data integrity** first, then the
+Both paths are data-plane core, so confirm **data integrity** first, then the
 CPU win:
 
-1. Set `gso = true`, restart the client.
-2. Download a large file through the tunnel and check its `sha256sum` matches the
-   original — bytes must be identical (a wrong offload checksum would corrupt
-   silently, though TCP/QUIC checks downstream would usually break the transfer).
-3. Confirm normal browsing / streaming works.
-4. Compare CPU and `write(2)` rate against `gso = false` at the same throughput:
-   `sudo timeout 5 strace -f -c -p $(pidof outline-ws-rust)` — the `write` count
-   should drop sharply (one write per super-segment instead of per MSS), and
-   `perf top` should show less time in the kernel networking path.
+1. Enable the flag(s), restart the client.
+2. **Downlink (`gso`):** download a large file through the tunnel and check its
+   `sha256sum` matches the original — bytes must be identical.
+3. **Uplink (`gro`):** upload a large file through the tunnel and check its
+   `sha256sum` on the far end. Also confirm UDP is healthy (DNS resolves, QUIC /
+   YouTube plays) — UDP must stay per-datagram.
+4. Compare CPU and syscall rate against the disabled state at the same
+   throughput: `sudo timeout 5 strace -f -c -p $(pidof outline-ws-rust)` — with
+   `gso`, `write` should drop sharply; with `gro` on a bulk uplink, `read`
+   should. `ethtool -k` on the TUN device will still show `tcp-segmentation-offload:
+   off` — that is expected; our offload rides `virtio_net_hdr`, not the device
+   feature flag.
 
 ## Rollback
 
-`gso = false` (the default) restores the exact previous per-packet path; no
-rebuild is needed, only a restart.
+`gso = false` / `gro = false` (the defaults) restore the exact previous
+per-packet path; no rebuild is needed, only a restart. `gro = false` alone drops
+RX GRO while leaving the downlink TSO in place, so the two roll back
+independently.

@@ -5784,13 +5784,315 @@
     {
       "type": "row",
       "collapsed": false,
+      "title": "TUN Offload (GSO / GRO)",
+      "id": 240,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 109
+      },
+      "panels": []
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Downlink TSO super-segments written to the TUN device per second (`[tun] gso`). Each is one large TCP super-segment the kernel splits into MSS packets, so routing / nftables / conntrack / WireGuard run once per super-segment instead of per MSS. Rising under download means write-side TSO is active — this is the main CPU win. Zero with `gso = true` means the traffic is not coalescible (small / interactive) at that moment.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 110
+      },
+      "id": 241,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_rust_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"upstream_to_tun\",outcome=\"tso_supersegment\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{ip_family}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Downlink TSO super-segments/s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Uplink TCP GRO super-packets read from the TUN device per second (`[tun] gro`). Each is several inbound MSS segments the kernel coalesced into one >MSS packet, fed whole into the userspace TCP engine — the read-side offload win. Rises only under a bulk upload burst; near-zero on a light / ACK-only uplink is expected (nothing to coalesce). Compare against the downlink TSO rate to judge whether GRO earns its keep on this link.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 110
+      },
+      "id": 242,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_rust_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"tun_to_upstream\",outcome=\"tcp_gro_superpacket\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{ip_family}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Uplink TCP GRO super-packets/s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "UDP GRO super-packets read from the TUN device per second. Expected to stay at 0: `TUN_F_USO4/6` is never requested, so the kernel re-segments UDP GRO back to datagrams before we read them and UDP stays per-datagram. A sustained non-zero value means a stale `TUN_F_USO` offload lingered on a persistent TUN interface from a previous run (recreate `ws0` to clear it, or restart with `gro = false` which now resets offload to 0). The read loop re-segments these back into datagrams, so UDP keeps working — but non-zero here is the signal to investigate stale offload.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 0.001
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 110
+      },
+      "id": 243,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_rust_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"tun_to_upstream\",outcome=\"udp_gso_superpacket\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{ip_family}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "UDP GSO super-packets/s (expect 0)",
+      "type": "timeseries"
+    },
+    {
+      "type": "row",
+      "collapsed": false,
       "title": "Reverse Tunnel (topology A)",
       "id": 232,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 109
+        "y": 118
       },
       "panels": []
     },
@@ -5826,7 +6128,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 110
+        "y": 119
       },
       "id": 233,
       "options": {
@@ -5925,7 +6227,7 @@
         "h": 7,
         "w": 18,
         "x": 6,
-        "y": 110
+        "y": 119
       },
       "id": 234,
       "options": {
