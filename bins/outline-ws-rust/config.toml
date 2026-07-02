@@ -151,10 +151,19 @@ listen = "[::1]:9090"
 # super-segment (up to ~60 KB) into MSS packets, so the per-packet routing /
 # nftables / conntrack / WireGuard cost is paid once per super-segment instead
 # of once per MSS — cutting CPU on the write-heavy downlink path. Retransmit
-# stays per-MSS and the read path is unchanged (no TUNSETOFFLOAD). Data-plane
-# core: verify a large download's sha256 after enabling. Ignored on non-Linux
-# targets. See `docs/TUN-GSO.md`.
+# stays per-MSS. Data-plane core: verify a large download's sha256 after
+# enabling. Ignored on non-Linux targets. See `docs/TUN-GSO.md`.
 # gso = false
+#
+# RX GRO (TUNSETOFFLOAD, TUN_F_CSUM|TSO4|TSO6): let the kernel coalesce inbound
+# TCP into larger-than-MSS super-packets (up to 64 KB) on read, so the
+# per-packet read / parse / TCP-stack cost is paid once per super-packet — the
+# uplink mirror of the gso downlink win. Requires gso = true. UDP stays
+# per-datagram (no USO). Default false; gro = false leaves the write-side TSO
+# untouched, so it rolls back independently. Data-plane core: verify a large
+# upload's sha256 after enabling. Ignored on non-Linux targets. See
+# `docs/TUN-GSO.md`.
+# gro = false
 
 # [tun.tcp]
 # connect_timeout_secs = 10

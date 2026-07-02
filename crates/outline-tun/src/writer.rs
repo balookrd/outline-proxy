@@ -12,6 +12,8 @@ use anyhow::{Context, Result};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 
+use outline_metrics as metrics;
+
 use crate::vnet::VirtioNetHdr;
 
 /// A cheaply-cloneable handle for writing IP packets to a TUN device.
@@ -91,6 +93,9 @@ impl SharedTunWriter {
         packet: &[u8],
         header: VirtioNetHdr,
     ) -> Result<()> {
+        // Downlink TSO signal: one super-segment the kernel splits per MSS —
+        // how often the write path actually coalesced server→client data.
+        metrics::record_tun_packet("upstream_to_tun", ip_family_str(packet), "tso_supersegment");
         match &self.inner {
             SharedTunWriterInner::Async(fd) => fd
                 .async_io(Interest::WRITABLE, |f| write_tun_packet(f, packet, Some(header)))
@@ -110,6 +115,15 @@ impl SharedTunWriter {
             self.write_packet(packet).await?;
         }
         Ok(())
+    }
+}
+
+/// Prometheus IP-family label from the leading IP version nibble.
+fn ip_family_str(packet: &[u8]) -> &'static str {
+    match packet.first().map(|b| b >> 4) {
+        Some(4) => "ipv4",
+        Some(6) => "ipv6",
+        _ => "unknown",
     }
 }
 

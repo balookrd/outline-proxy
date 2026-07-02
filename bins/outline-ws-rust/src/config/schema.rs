@@ -314,6 +314,11 @@ pub(super) struct TunSection {
     /// the per-packet routing / nftables / conntrack / WireGuard cost on the
     /// write-heavy downlink. See `docs/TUN-GSO.md`.
     pub(super) gso: Option<bool>,
+    /// Enable RX GRO (`TUNSETOFFLOAD`, `TUN_F_CSUM|TSO4|TSO6`) so the kernel
+    /// coalesces inbound TCP into >MSS super-packets on read (Linux). Requires
+    /// `gso`. Default `false`. The uplink mirror of the downlink `gso` win; UDP
+    /// stays per-datagram (no `USO`). See `docs/TUN-GSO.md`.
+    pub(super) gro: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

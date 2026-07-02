@@ -36,6 +36,7 @@ pub(crate) use self::engine::{should_emit_ptb_for_limit, should_emit_ptb_now};
 #[cfg(test)]
 pub(crate) use self::wire::build_ipv4_udp_packet;
 pub(crate) use self::wire::parse_udp_packet;
+pub(crate) use self::wire::resegment_udp_gso;
 
 use self::types::{UdpFlowKey, UdpFlowState};
 

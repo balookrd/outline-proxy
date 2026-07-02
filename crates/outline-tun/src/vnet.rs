@@ -26,6 +26,11 @@ pub(crate) const VIRTIO_NET_HDR_GSO_NONE: u8 = 0;
 pub(crate) const VIRTIO_NET_HDR_GSO_TCPV4: u8 = 1;
 /// `gso_type`: TCP-over-IPv6 super-segment.
 pub(crate) const VIRTIO_NET_HDR_GSO_TCPV6: u8 = 4;
+/// `gso_type`: UDP segmentation offload (USO / `GSO_UDP_L4`). The payload is
+/// several `gso_size`-sized UDP datagrams of one flow coalesced behind a single
+/// UDP header, to be split by the receiver. Only handed to us on read when
+/// `TUNSETOFFLOAD` requested `TUN_F_USO4` / `TUN_F_USO6`.
+pub(crate) const VIRTIO_NET_HDR_GSO_UDP_L4: u8 = 5;
 
 /// Parsed / buildable `virtio_net_hdr`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -80,7 +85,10 @@ impl VirtioNetHdr {
     }
 
     /// Whether this header describes a segmented (GSO) super-packet rather than
-    /// a single IP packet.
+    /// a single IP packet. The read loop dispatches on `gso_type` directly (it
+    /// must distinguish TCP vs UDP super-packets), so this predicate is only a
+    /// test convenience.
+    #[cfg(test)]
     pub(crate) fn is_gso(&self) -> bool {
         self.gso_type != VIRTIO_NET_HDR_GSO_NONE
     }
