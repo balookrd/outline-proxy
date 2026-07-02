@@ -25,6 +25,9 @@ pub(crate) struct TunGso {
     /// `IFF_VNET_HDR` — every read/write carries a `virtio_net_hdr` (write-side
     /// TSO super-segments, read-side GRO framing).
     pub(crate) vnet_hdr: bool,
+    /// `TUN_F_TSO4 | TUN_F_TSO6` accepted — the kernel may hand the read loop
+    /// coalesced TCP GRO super-packets (RX GRO active on the uplink).
+    pub(crate) tcp_gro: bool,
     /// `TUN_F_USO4 | TUN_F_USO6` accepted — the writer may coalesce downlink UDP
     /// into `GSO_UDP_L4` super-segments.
     pub(crate) udp_gso: bool,
@@ -113,22 +116,47 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
     // prefix, which is all the kernel needs to accept a TSO super-segment on
     // *write* (`tun_get_user` → `virtio_net_hdr_to_skb`). RX GRO on the *read*
     // side is opt-in via `TUNSETOFFLOAD` below.
-    let mut flags = IFF_TUN | IFF_NO_PI;
-    if config.gso {
-        flags |= IFF_VNET_HDR;
-    }
+    //
+    // `TUNSETIFF` runs on a not-yet-bound fd: on failure the fd stays unbound, so
+    // we may retry with a reduced flag set. When `gso` requests `IFF_VNET_HDR`
+    // and the attach fails, retry ONCE without it — a kernel lacking vnet_hdr
+    // support would otherwise hard-fail here. Degrade to `vnet_hdr = false` only
+    // if the plain attach then succeeds; that isolates "kernel lacks
+    // IFF_VNET_HDR" from real failures (EBUSY/EPERM), which must propagate
+    // unchanged so the busy-retry loop in `open_tun_device_with_retry` still
+    // fires on the *original* error.
+    let attach = |vnet_hdr: bool| -> std::io::Result<()> {
+        let mut flags = IFF_TUN | IFF_NO_PI;
+        if vnet_hdr {
+            flags |= IFF_VNET_HDR;
+        }
+        let mut ifreq = IfReq { name: [0; libc::IFNAMSIZ], data: [0; 24] };
+        for (index, byte) in name.as_bytes().iter().enumerate() {
+            ifreq.name[index] = *byte as libc::c_char;
+        }
+        unsafe {
+            std::ptr::write_unaligned(ifreq.data.as_mut_ptr() as *mut libc::c_short, flags);
+        }
+        let result = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETIFF as _, &ifreq) };
+        if result < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    };
 
-    let mut ifreq = IfReq { name: [0; libc::IFNAMSIZ], data: [0; 24] };
-    for (index, byte) in name.as_bytes().iter().enumerate() {
-        ifreq.name[index] = *byte as libc::c_char;
-    }
-    unsafe {
-        std::ptr::write_unaligned(ifreq.data.as_mut_ptr() as *mut libc::c_short, flags);
-    }
-
-    let result = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETIFF as _, &ifreq) };
-    if result < 0 {
-        return Err(std::io::Error::last_os_error()).context("TUNSETIFF failed");
+    let mut vnet_hdr = config.gso;
+    if let Err(primary) = attach(config.gso) {
+        if config.gso && attach(false).is_ok() {
+            vnet_hdr = false;
+            warn!(
+                name = %name,
+                error = %primary,
+                "TUNSETIFF with IFF_VNET_HDR failed; attached without it — TUN GSO/GRO/USO disabled (kernel likely lacks vnet_hdr support)"
+            );
+        } else {
+            return Err(primary).context("TUNSETIFF failed");
+        }
     }
 
     // Offload: set the state EXPLICITLY on every attach — including to 0 — so a
@@ -144,7 +172,7 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
     // re-segments it). `TUN_F_CSUM` is mandatory for any TSO/USO flag and also
     // enables RX checksum offload, which the read loop recomputes. If the kernel
     // rejects USO (< 5.18) we retry without it so TCP offload survives.
-    let mut gso = TunGso { vnet_hdr: config.gso, udp_gso: false };
+    let mut gso = TunGso { vnet_hdr, tcp_gro: false, udp_gso: false };
     {
         const TUNSETOFFLOAD: libc::c_ulong = 0x400454d0;
         const TUN_F_CSUM: libc::c_uint = 0x01;
@@ -152,8 +180,12 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
         const TUN_F_TSO6: libc::c_uint = 0x04;
         const TUN_F_USO4: libc::c_uint = 0x20;
         const TUN_F_USO6: libc::c_uint = 0x40;
-        let want_gro = config.gso && config.gro;
-        let want_uso = config.gso && config.uso;
+        // Gate on the negotiated `vnet_hdr`, not the requested `config.gso`: if
+        // the attach degraded to a plain fd, offload must stay off (and the
+        // explicit `set(0)` below still clears any stale TUNSETOFFLOAD from a
+        // previous run on a persistent device).
+        let want_gro = vnet_hdr && config.gro;
+        let want_uso = vnet_hdr && config.uso;
         let mut offload = 0u32;
         if want_gro {
             offload |= TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6;
@@ -165,11 +197,13 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
             libc::ioctl(file.as_raw_fd(), TUNSETOFFLOAD as _, value as libc::c_ulong)
         };
         if set(offload) == 0 {
+            gso.tcp_gro = want_gro;
             gso.udp_gso = want_uso;
         } else if want_uso {
             // USO likely unsupported on this kernel: drop it, keep GRO/TSO.
             let without_uso = offload & !(TUN_F_USO4 | TUN_F_USO6);
             if set(without_uso) == 0 {
+                gso.tcp_gro = want_gro;
                 warn!(
                     name = %name,
                     "TUNSETOFFLOAD rejected USO; UDP GSO disabled, TCP offload kept"
