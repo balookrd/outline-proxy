@@ -6084,6 +6084,101 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Downlink UDP USO super-segments written to the TUN device per second (`outcome=\"uso_supersegment\"`). Each is one GSO_UDP_L4 aggregate of equal-sized datagrams the kernel splits per datagram — the write-side UDP offload from `[tun] uso`, aimed at bulk QUIC video. Non-zero means downlink UDP is coalescing; zero under heavy UDP means the source is not bursting equal-sized datagrams (or `uso` is off / unsupported).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 118
+      },
+      "id": 244,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_rust_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"upstream_to_tun\",outcome=\"uso_supersegment\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{ip_family}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Downlink UDP USO super-segments/s",
+      "type": "timeseries"
+    },
+    {
       "type": "row",
       "collapsed": false,
       "title": "Reverse Tunnel (topology A)",
@@ -6092,7 +6187,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 118
+        "y": 126
       },
       "panels": []
     },
@@ -6128,7 +6223,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 119
+        "y": 127
       },
       "id": 233,
       "options": {
@@ -6227,7 +6322,7 @@
         "h": 7,
         "w": 18,
         "x": 6,
-        "y": 119
+        "y": 127
       },
       "id": 234,
       "options": {

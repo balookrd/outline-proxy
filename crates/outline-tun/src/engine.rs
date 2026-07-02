@@ -64,16 +64,18 @@ pub async fn spawn_tun_loop(
     let tun_name = config.name.clone();
     let tun_mtu = config.mtu;
     let tun_path_for_task = tun_path.clone();
-    let (device, gso_enabled) = open_tun_device_with_retry(&config)
+    let (device, gso) = open_tun_device_with_retry(&config)
         .await
         .with_context(|| format!("failed to open TUN device {}", config.path.display()))?;
+    // `vnet_hdr` (fd opened with IFF_VNET_HDR) governs the read/write vnet
+    // framing and lets the TCP engine emit downlink TSO super-segments; `udp_gso`
+    // (TUN_F_USO accepted) lets the UDP engine coalesce downlink datagrams.
+    let gso_enabled = gso.vnet_hdr;
     set_nonblocking(&device).context("failed to set O_NONBLOCK on TUN device")?;
     let async_fd = Arc::new(
         AsyncFd::with_interest(device, Interest::READABLE | Interest::WRITABLE)
             .context("failed to register TUN fd with tokio reactor")?,
     );
-    // `gso_enabled` (fd opened with IFF_VNET_HDR) governs the read/write vnet
-    // framing and lets the TCP engine emit downlink TSO super-segments.
     let writer = SharedTunWriter::from_async_fd(async_fd.clone(), gso_enabled);
 
     let idle_timeout = config.idle_timeout;
@@ -90,6 +92,7 @@ pub async fn spawn_tun_loop(
         config.pmtud_emit_below_quic_initial,
         config.sniff_quic,
         config.sniff_override_exclude.clone(),
+        gso.udp_gso,
     );
     let tcp_engine = TunTcpEngine::new(
         writer.clone(),

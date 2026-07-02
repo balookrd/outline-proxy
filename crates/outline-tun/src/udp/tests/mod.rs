@@ -2,12 +2,12 @@ mod sniff;
 
 use super::parse_udp_packet;
 use super::resegment_udp_gso;
-use super::wire::{build_ipv4_udp_packet, build_ipv6_udp_packet};
-use crate::wire::IpVersion;
+use super::wire::{build_gso_udp_packet, build_ipv4_udp_packet, build_ipv6_udp_packet};
 use crate::wire::test_utils::{
     IP_PROTOCOL_UDP, assert_ipv4_header_checksum_valid, assert_transport_checksum_valid,
     corrupt_ip_length_field, corrupt_udp_length_field, random_payload, seeded_rng,
 };
+use crate::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN, IpVersion, checksum16};
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -255,6 +255,78 @@ fn resegment_udp_gso_rejects_too_many_segments() {
     )
     .unwrap();
     assert!(resegment_udp_gso(&packet, 1).is_err());
+}
+
+// A USO super-packet carries a *partial* (pseudo-header) UDP checksum; the
+// kernel finalises each split segment by adding the L4 byte checksum and
+// complementing. For a single (un-split) datagram that finalisation is exactly
+// `checksum16` over the UDP bytes, and it must equal the full checksum the
+// per-datagram builder computes for the same datagram. `uh->len` spans the
+// whole aggregate (WHOLE-super) — a wrong length here silently corrupts every
+// segment (the prior UDP-GSO bug).
+
+#[test]
+fn gso_udp_partial_checksum_finalizes_to_full_ipv4() {
+    let src = Ipv4Addr::new(8, 8, 8, 8);
+    let dst = Ipv4Addr::new(10, 0, 0, 2);
+    let payload = b"the quick brown fox jumps over the lazy udp gso datagram twice";
+
+    let full = build_ipv4_udp_packet(src, dst, 443, 50000, payload).unwrap();
+    let full_udp = &full[IPV4_HEADER_LEN..];
+    let full_csum = u16::from_be_bytes([full_udp[6], full_udp[7]]);
+
+    let (gso, vnet) = build_gso_udp_packet(
+        IpVersion::V4,
+        IpAddr::V4(src),
+        IpAddr::V4(dst),
+        443,
+        50000,
+        payload.len() as u16,
+        payload,
+    )
+    .unwrap();
+    assert_eq!(vnet.gso_type, 5); // VIRTIO_NET_HDR_GSO_UDP_L4
+    assert_eq!(vnet.csum_offset, 6);
+    assert_eq!(vnet.gso_size, payload.len() as u16);
+
+    let gso_udp = &gso[IPV4_HEADER_LEN..];
+    assert_eq!(
+        checksum16(gso_udp),
+        full_csum,
+        "kernel-finalised partial UDP checksum must equal the full checksum"
+    );
+    // IPv4 header checksum stays valid.
+    assert_eq!(checksum16(&gso[..IPV4_HEADER_LEN]), 0);
+}
+
+#[test]
+fn gso_udp_partial_checksum_finalizes_to_full_ipv6() {
+    let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+    let dst = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
+    let payload = b"an odd-length payload to exercise the udp gso checksum folding path!";
+
+    let full = build_ipv6_udp_packet(src, dst, 5353, 41000, payload).unwrap();
+    let full_udp = &full[IPV6_HEADER_LEN..];
+    let full_csum = u16::from_be_bytes([full_udp[6], full_udp[7]]);
+
+    let (gso, vnet) = build_gso_udp_packet(
+        IpVersion::V6,
+        IpAddr::V6(src),
+        IpAddr::V6(dst),
+        5353,
+        41000,
+        payload.len() as u16,
+        payload,
+    )
+    .unwrap();
+    assert_eq!(vnet.gso_type, 5);
+
+    let gso_udp = &gso[IPV6_HEADER_LEN..];
+    assert_eq!(
+        checksum16(gso_udp),
+        full_csum,
+        "kernel-finalised partial UDP checksum must equal the full checksum (v6)"
+    );
 }
 
 /// Eviction-selection logic shared by the tunnelled and direct UDP flow
