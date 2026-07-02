@@ -36,6 +36,17 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# Symbolized build for on-target `perf` profiling: identical codegen to release
+# (same opt-level / lto / codegen-units) but keeps symbols + line tables so
+# `perf report` resolves ws-rust frames instead of raw `0x...` addresses. Build
+# with `cargo build --profile perf-release -p outline-ws-rust` (or the musl
+# cross), profile with `perf record -g -F 999 -p $(pidof outline-ws-rust) --
+# sleep 30`, then discard — this profile is a measurement tool, not for release.
+[profile.perf-release]
+inherits = "release"
+strip = false
+debug = 1
+
 # HTTP/3 WebSocket path depends on these patched copies — do not drop.
 [patch.crates-io]
 h3 = { path = "vendor/h3" }
