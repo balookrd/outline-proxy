@@ -80,7 +80,13 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
    `src/stream/transport_stream.rs`) — the sockudo half of the poll-write
    fix: `write_queued` / `shutdown_started` state machines that drive h3's
    `queue_send` / `poll_drain` / `queue_grease` / `poll_quic_finish` exactly
-   once per logical write / shutdown.
+   once per logical write / shutdown. `poll_shutdown` additionally drains a
+   still-pending `poll_write` (`write_queued.is_some()`) to completion before
+   issuing `queue_grease`: otherwise a shutdown racing an un-drained downlink
+   write (relay teardown under a stream-open/close burst) calls `send_data`
+   while h3-quinn's send stream still has `writing = Some(..)`, which h3-quinn
+   escalates to a connection-level `H3_INTERNAL_ERROR` that collapses every
+   multiplexed session on the shared QUIC carrier.
 3. **valid-close-codes-1012-1014** (`src/error.rs`) — `Error::is_valid_code`
    accepted only `1000..=1003 | 1007..=1011 | 3000..=4999`, rejecting the
    IANA-registered 1012 (Service Restart), 1013 (Try Again Later) and 1014
