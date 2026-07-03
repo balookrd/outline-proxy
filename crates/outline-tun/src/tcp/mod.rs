@@ -49,6 +49,15 @@ const TCP_FLAG_PSH: u8 = 0x08;
 pub(crate) const TCP_FLAG_ACK: u8 = 0x10;
 const TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL: Duration = Duration::from_secs(1);
 const TCP_ZERO_WINDOW_PROBE_MAX_INTERVAL: Duration = Duration::from_secs(30);
+/// Delayed-ACK hold time: a lone in-order data segment defers its standalone
+/// ACK this long instead of eliciting one immediately, so a steady uplink ACKs
+/// roughly every 2nd segment (RFC 5681 §4.2) — halving pure-ACK TUN writes on
+/// the single read-loop, which is what caps uplink throughput when the kernel
+/// does not coalesce inbound segments (no GRO on the forward-to-TUN path). Kept
+/// far below `TCP_MIN_RTO` (200 ms) so it never trips the client's RTO, and
+/// short because the client terminates ~0 RTT away, so any ACK delay adds
+/// directly to its perceived RTT and would otherwise throttle its send window.
+const TCP_DELAYED_ACK_TIMEOUT: Duration = Duration::from_millis(5);
 const TCP_FAST_RETRANSMIT_DUP_ACKS: u8 = 3;
 const MAX_SERVER_SEGMENT_PAYLOAD: usize = 1200;
 /// Max payload coalesced into one downlink TSO super-segment (`[tun] gso`). The

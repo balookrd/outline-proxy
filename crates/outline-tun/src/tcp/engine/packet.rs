@@ -10,11 +10,11 @@ use super::super::state_machine::{
     InboundSegmentDisposition, QueueFutureSegmentOutcome, TcpFlowState, TcpFlowStatus,
     absorb_accepted_client_packet, ack_covers_server_fin, ack_is_stale_server_fin_retry,
     apply_inbound_and_flush, build_flow_ack_packet, build_flow_packet, classify_inbound_segment,
-    client_fin_seen, completes_syn_received_handshake, exceeds_client_reassembly_limits,
-    is_duplicate_syn, note_ack_progress, process_server_ack, queue_future_segment_with_recv_window,
-    retransmit_budget_exhausted, retransmit_oldest_unacked_packet, segment_requires_ack,
-    server_fin_awaiting_ack, set_flow_status, transition_on_client_fin,
-    transition_on_server_fin_ack,
+    clear_delayed_ack, client_fin_seen, completes_syn_received_handshake,
+    exceeds_client_reassembly_limits, is_duplicate_syn, note_ack_progress, process_server_ack,
+    queue_future_segment_with_recv_window, retransmit_budget_exhausted,
+    retransmit_oldest_unacked_packet, segment_requires_ack, server_fin_awaiting_ack,
+    set_flow_status, transition_on_client_fin, transition_on_server_fin_ack,
 };
 use super::super::validation::{PacketValidation, validate_existing_packet};
 use super::super::wire::ParsedTcpPacket;
@@ -190,10 +190,14 @@ impl TunTcpEngine {
                     QueueFutureSegmentOutcome::OutsideWindow
                     | QueueFutureSegmentOutcome::Queued => {},
                 }
+                // This dup-ACK covers the current rcv_nxt, so any deferred ACK
+                // is now satisfied — clear it before committing the schedule.
+                clear_delayed_ack(&mut state);
                 commit_flow_changes(&mut state, &self.inner.tcp);
                 return self.write_pure_ack_and_drop(state, ip_family).await;
             },
             InboundSegmentDisposition::OutsideReceiveWindow => {
+                clear_delayed_ack(&mut state);
                 commit_flow_changes(&mut state, &self.inner.tcp);
                 return self.write_pure_ack_and_drop(state, ip_family).await;
             },
