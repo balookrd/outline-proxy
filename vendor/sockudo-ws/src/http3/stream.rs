@@ -292,6 +292,24 @@ impl AsyncWrite for Http3ServerStream {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // Drain any queued-but-undrained write before greasing. A `poll_write`
+        // that returned `Pending` leaves the h3-quinn send stream with
+        // `writing = Some(..)`; issuing `queue_grease()` (another `send_data`)
+        // in that state makes h3-quinn treat it as misuse and escalate to a
+        // connection-level `H3_INTERNAL_ERROR`, which tears down every stream
+        // multiplexed on the shared QUIC connection — not just this one. This
+        // fires when relay teardown races an in-flight downlink write under a
+        // stream-open/close burst.
+        if self.write_queued.is_some() {
+            match self.stream.poll_drain(cx) {
+                Poll::Ready(Ok(())) => self.write_queued = None,
+                Poll::Ready(Err(e)) => {
+                    self.write_queued = None;
+                    return Poll::Ready(Err(io::Error::other(e.to_string())));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
         if !self.shutdown_started {
             match self.stream.queue_grease() {
                 Ok(()) => self.shutdown_started = true,
@@ -427,6 +445,24 @@ impl AsyncWrite for Http3ClientStream {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // Drain any queued-but-undrained write before greasing. A `poll_write`
+        // that returned `Pending` leaves the h3-quinn send stream with
+        // `writing = Some(..)`; issuing `queue_grease()` (another `send_data`)
+        // in that state makes h3-quinn treat it as misuse and escalate to a
+        // connection-level `H3_INTERNAL_ERROR`, which tears down every stream
+        // multiplexed on the shared QUIC connection — not just this one. This
+        // fires when relay teardown races an in-flight downlink write under a
+        // stream-open/close burst.
+        if self.write_queued.is_some() {
+            match self.stream.poll_drain(cx) {
+                Poll::Ready(Ok(())) => self.write_queued = None,
+                Poll::Ready(Err(e)) => {
+                    self.write_queued = None;
+                    return Poll::Ready(Err(io::Error::other(e.to_string())));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
         if !self.shutdown_started {
             match self.stream.queue_grease() {
                 Ok(()) => self.shutdown_started = true,
