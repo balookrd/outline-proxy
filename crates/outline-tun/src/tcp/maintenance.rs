@@ -4,15 +4,16 @@ use anyhow::Result;
 
 use crate::config::TunTcpConfig;
 
-use super::TCP_TIME_WAIT_TIMEOUT;
 use super::state_machine::{
-    ServerFlush, TcpFlowState, TcpFlowStatus, flush_server_output, half_close_timed_out,
-    handshake_timed_out, idle_timed_out, is_half_closed_status, keepalive_probe_eligible,
-    keepalive_probe_is_due, keepalive_probes_exhausted, maybe_emit_keepalive_probe,
-    maybe_emit_zero_window_probe, next_keepalive_deadline, next_retransmission_deadline,
-    note_congestion_event, retransmit_budget_exhausted, retransmit_due_segment, retransmit_is_due,
-    sync_flow_metrics, time_wait_expired, zero_window_probe_is_due,
+    ServerFlush, TcpFlowState, TcpFlowStatus, build_flow_ack_packet, clear_delayed_ack,
+    flush_server_output, half_close_timed_out, handshake_timed_out, idle_timed_out,
+    is_half_closed_status, keepalive_probe_eligible, keepalive_probe_is_due,
+    keepalive_probes_exhausted, maybe_emit_keepalive_probe, maybe_emit_zero_window_probe,
+    next_keepalive_deadline, next_retransmission_deadline, note_congestion_event,
+    retransmit_budget_exhausted, retransmit_due_segment, retransmit_is_due, sync_flow_metrics,
+    time_wait_expired, zero_window_probe_is_due,
 };
+use super::{TCP_FLAG_ACK, TCP_TIME_WAIT_TIMEOUT};
 
 pub(super) enum FlowMaintenancePlan {
     Wait(Option<Instant>),
@@ -97,6 +98,7 @@ pub(super) fn next_flow_deadline(
         .chain(next_zero_window_probe_deadline(state))
         .chain(next_pacing_deadline(state))
         .chain(next_keepalive_deadline(state, tcp.keepalive_idle, tcp.keepalive_interval))
+        .chain(state.delayed_ack_deadline)
         .min();
 
     if state.status == TcpFlowStatus::SynReceived {
@@ -220,6 +222,23 @@ pub(super) fn plan_flow_maintenance(
             packet,
             packet_metric: "tcp_keepalive_probe",
             event: "keepalive_probe",
+        });
+    }
+
+    // Delayed-ACK timer: a lone in-order segment deferred its ACK; the 2nd
+    // segment never arrived within the hold window, so flush the standalone ACK
+    // now. `build_flow_ack_packet` carries the current SACK blocks, so this is
+    // correct even if a hole opened after the segment was accepted.
+    if let Some(deadline) = state.delayed_ack_deadline
+        && deadline <= now
+    {
+        let packet = build_flow_ack_packet(state, state.server_seq, state.rcv_nxt, TCP_FLAG_ACK)?;
+        clear_delayed_ack(state);
+        commit_flow_changes(state, tcp);
+        return Ok(FlowMaintenancePlan::SendPacket {
+            packet,
+            packet_metric: "tcp_ack",
+            event: "delayed_ack",
         });
     }
 
