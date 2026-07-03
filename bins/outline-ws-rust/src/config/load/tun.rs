@@ -102,7 +102,7 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
             .unwrap_or(4096),
         max_buffered_client_bytes: tcp_section
             .and_then(|section| section.max_buffered_client_bytes)
-            .unwrap_or(262_144),
+            .unwrap_or(2_097_152),
         max_retransmits: tcp_section.and_then(|section| section.max_retransmits).unwrap_or(12),
         downlink_max_rate_bps: tcp_section
             .and_then(|section| section.downlink_max_mbit)
@@ -157,8 +157,8 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
     if tcp.max_buffered_client_bytes < 16_384 {
         bail!("tun.tcp.max_buffered_client_bytes must be at least 16384");
     }
-    if tcp.max_buffered_client_bytes > 262_144 {
-        bail!("tun.tcp.max_buffered_client_bytes must be at most 262144");
+    if tcp.max_buffered_client_bytes > 4_194_304 {
+        bail!("tun.tcp.max_buffered_client_bytes must be at most 4194304");
     }
     if tcp.max_retransmits == 0 {
         bail!("tun.tcp.max_retransmits must be greater than zero");

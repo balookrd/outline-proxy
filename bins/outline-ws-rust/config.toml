@@ -183,7 +183,7 @@ listen = "[::1]:9090"
 # backlog_hard_limit_multiplier = 2
 # backlog_no_progress_abort_secs = 8
 # max_buffered_client_segments = 4096
-# max_buffered_client_bytes = 262144
+# max_buffered_client_bytes = 2097152   # per-flow uplink receive-window/buffer soft limit (app→server); the app→TUN counterpart of max_pending_server_bytes. Raise only for high-BDP client links (max 4194304)
 # max_retransmits = 12
 # Hard ceiling on per-flow downlink send rate, in Mbit/s (caps the BBR pacing
 # rate, STARTUP overshoot included). The userspace stack terminates TCP ~1 ms
