@@ -56,7 +56,14 @@ const MAX_SERVER_SEGMENT_PAYLOAD: usize = 1200;
 /// IPv4 `total_len` / IPv6 `payload_len` u16 fields never overflow.
 const GSO_MAX_SUPER_SEGMENT_PAYLOAD: usize = 61_440;
 const TCP_SERVER_RECV_WINDOW_CAPACITY: usize = 262_144;
-const TCP_SERVER_WINDOW_SCALE: u8 = 2;
+/// Window-scale shift advertised to the client in the SYN-ACK. It must be large
+/// enough that the full `max_buffered_client_bytes` uplink window is
+/// representable on the wire: the advertised value is `available >> shift`
+/// clamped to `u16::MAX`, so the ceiling is `65535 << shift`. At shift 6 that is
+/// ~4 MiB, covering the config cap. A smaller shift (was 2 → 256 KiB ceiling)
+/// silently pinned the uplink receive window — and thus uplink throughput — far
+/// below a fast last-mile BDP, even after the buffer itself was enlarged.
+const TCP_SERVER_WINDOW_SCALE: u8 = 6;
 const TCP_INITIAL_RTO: Duration = Duration::from_secs(1);
 const TCP_MIN_RTO: Duration = Duration::from_millis(200);
 const TCP_MAX_RTO: Duration = Duration::from_secs(60);

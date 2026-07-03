@@ -438,7 +438,7 @@ listen = "[::1]:9090"
 # backlog_hard_limit_multiplier = 2
 # backlog_no_progress_abort_secs = 8
 # max_buffered_client_segments = 4096
-# max_buffered_client_bytes = 262144
+# max_buffered_client_bytes = 2097152
 # max_retransmits = 12
 # Sniffing соединений (как destOverride в Xray; по умолчанию включено).
 # Подсматривает первые байты клиента, достаёт хост из TLS SNI / HTTP Host и

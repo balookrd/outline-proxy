@@ -9,8 +9,10 @@ use outline_uplink::UplinkManager;
 /// Upper bound on bytes coalesced into a single upstream write by the pump.
 /// Caps the per-iteration buffer (and copy) while still amortizing the
 /// per-segment lock/await overhead across a full receive window's worth of
-/// uplink data. Matches the advertised receive-window capacity ceiling.
-const PUMP_BATCH_BYTES: usize = 256 * 1024;
+/// uplink data. Tracks the default `max_buffered_client_bytes` (uplink receive
+/// window) so one batch can drain a full window between upstream back-pressure
+/// parks — a smaller ceiling re-throttled uplink once the window was enlarged.
+const PUMP_BATCH_BYTES: usize = 2 * 1024 * 1024;
 
 use super::super::super::super::state_machine::{
     TcpFlowState, TcpFlowStatus, UpstreamWriter, advertised_receive_window, build_flow_ack_packet,
