@@ -17,8 +17,8 @@ use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
 use socks5_proto::TargetAddr;
 
 use super::types::{
-    DirectUdpFlowState, FlowStamp, UDP_OUTBOUND_QUEUE_CAP, bump_last_seen_if_current,
-    drain_idle_flows, flow_is_current,
+    DirectUdpFlowState, FlowStamp, UDP_OUTBOUND_QUEUE_CAP, UDP_PENDING_DIAL_BUFFER_CAP,
+    bump_last_seen_if_current, drain_idle_flows, flow_is_current,
 };
 use futures_util::FutureExt as _;
 
@@ -212,13 +212,39 @@ impl TunUdpEngine {
             // only under routing_scope = "per_client"; ignored otherwise.
             let client_id = key.local_ip.to_string();
 
-            let (candidate, transport) = match select_candidate_and_connect(
-                &manager,
-                &remote_target,
-                Some(&client_id),
-            )
-            .await
-            {
+            // Drain the outbound queue into a local buffer while the carrier
+            // dial is in flight. Nothing can send until we are connected, so the
+            // bounded outbound channel would otherwise fill during a slow dial
+            // (seconds under DPI) and start dropping datagrams — losing exactly
+            // the QUIC-handshake Initials / PTO retransmits the client sends
+            // before it gets a reply, stalling the handshake onto TCP. Draining
+            // here keeps the channel empty so the read-loop's `try_send` never
+            // hits a full queue during the handshake window.
+            let mut pending_datagrams: Vec<Bytes> = Vec::new();
+            let connected = {
+                let connect_fut =
+                    select_candidate_and_connect(&manager, &remote_target, Some(&client_id));
+                tokio::pin!(connect_fut);
+                loop {
+                    tokio::select! {
+                        biased;
+                        result = &mut connect_fut => break result,
+                        maybe = outbound_rx.recv() => match maybe {
+                            Some(raw) => {
+                                if pending_datagrams.len() < UDP_PENDING_DIAL_BUFFER_CAP {
+                                    pending_datagrams.push(raw);
+                                } else {
+                                    metrics::record_tun_udp_forward_error("pending_dial_buffer_full");
+                                }
+                            },
+                            // The flow record (and its sender) was removed while
+                            // dialling — idle eviction or a migration. Abandon.
+                            None => return,
+                        },
+                    }
+                }
+            };
+            let (candidate, transport) = match connected {
                 Ok(connected) => connected,
                 Err(error) => {
                     warn!(flow_id, error = %format!("{error:#}"), "failed to establish TUN UDP uplink");
@@ -273,7 +299,17 @@ impl TunUdpEngine {
             // Drain the outbound queue. `recv` yields `None` when the flow
             // record (holding the sender) is removed — the flow's teardown
             // signal — at which point the reader and transport drop here.
-            while let Some(raw) = outbound_rx.recv().await {
+            // Flush the datagrams buffered during the dial (the client's
+            // handshake preface) in order first, then resume the live drain.
+            let mut pending = pending_datagrams.into_iter();
+            loop {
+                let raw = match pending.next() {
+                    Some(raw) => raw,
+                    None => match outbound_rx.recv().await {
+                        Some(raw) => raw,
+                        None => break,
+                    },
+                };
                 // Follow a strict-active repoint: tear down so the client's
                 // traffic re-homes onto the newly active uplink.
                 if super::should_migrate_flow(&manager, uplink_index).await {

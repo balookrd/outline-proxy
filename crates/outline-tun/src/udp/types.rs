@@ -22,6 +22,17 @@ use outline_transport::AbortOnDrop;
 /// the queue (and its memory) bounded per flow.
 pub(super) const UDP_OUTBOUND_QUEUE_CAP: usize = 64;
 
+/// Cap on datagrams buffered on the uplink task *while the carrier is still
+/// being dialled*. Until the dial completes nothing can be sent, so the uplink
+/// task drains the outbound channel into a local buffer instead of letting it
+/// fill and drop — otherwise a slow dial (seconds under DPI) would lose the
+/// client's QUIC-handshake Initials / PTO retransmits and stall the handshake
+/// onto TCP. Generous because a handshake preface is only a handful of
+/// datagrams; the dial timeout bounds how long this can grow, and overflow (a
+/// flood during a hung dial) drops with a distinct `pending_dial_buffer_full`
+/// metric rather than blocking the read-loop.
+pub(super) const UDP_PENDING_DIAL_BUFFER_CAP: usize = 256;
+
 /// Minimal view of a flow for table-level helpers: the per-flow `id`
 /// (generation counter) used to detect races against replacement, and the
 /// `last_seen` stamp bumped from reader tasks.
