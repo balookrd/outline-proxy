@@ -51,7 +51,7 @@ pub(super) fn commit_flow_changes(state: &mut TcpFlowState, tcp: &TunTcpConfig) 
 /// ones.  To avoid unbounded heap growth we only push when the deadline
 /// moves earlier (or no entry exists); later deadlines just wake the loop
 /// so it can re-sleep against the updated horizon.
-pub(super) fn reschedule_flow(state: &mut TcpFlowState, tcp: &TunTcpConfig) {
+fn reschedule_flow(state: &mut TcpFlowState, tcp: &TunTcpConfig) {
     if state.status == TcpFlowStatus::Closed {
         state.next_scheduled_deadline = None;
         return;
