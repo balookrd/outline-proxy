@@ -9,7 +9,12 @@ use super::super::packets::send_window_remaining;
 use super::super::types::{ServerBacklogPressure, TcpFlowState};
 
 pub(in crate::tcp) fn pending_server_bytes(state: &TcpFlowState) -> usize {
-    state.pending_server_data.iter().map(Bytes::len).sum()
+    debug_assert_eq!(
+        state.pending_server_bytes_total,
+        state.pending_server_data.iter().map(Bytes::len).sum::<usize>(),
+        "pending_server_bytes_total drifted from the live pending_server_data sum"
+    );
+    state.pending_server_bytes_total
 }
 
 /// The client's advertised receive window is closed while data is still

@@ -120,6 +120,7 @@ impl TunTcpEngine {
             slow_start_threshold: TCP_SERVER_RECV_WINDOW_CAPACITY,
             bbr: BbrState::new(now, self.inner.tcp.downlink_max_rate_bps),
             pending_server_data: VecDeque::new(),
+            pending_server_bytes_total: 0,
             backlog_limit_exceeded_since: None,
             last_ack_progress_at: now,
             pending_client_data: VecDeque::new(),
