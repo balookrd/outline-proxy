@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 
 use outline_metrics as metrics;
 
-use super::super::maintenance::reschedule_flow;
+use super::super::maintenance::commit_flow_changes;
 use super::super::state_machine::{
     InboundSegmentDisposition, QueueFutureSegmentOutcome, TcpFlowState, TcpFlowStatus,
     absorb_accepted_client_packet, ack_covers_server_fin, ack_is_stale_server_fin_retry,
@@ -13,7 +13,7 @@ use super::super::state_machine::{
     client_fin_seen, completes_syn_received_handshake, exceeds_client_reassembly_limits,
     is_duplicate_syn, note_ack_progress, process_server_ack, queue_future_segment_with_recv_window,
     retransmit_budget_exhausted, retransmit_oldest_unacked_packet, segment_requires_ack,
-    server_fin_awaiting_ack, set_flow_status, sync_flow_metrics, transition_on_client_fin,
+    server_fin_awaiting_ack, set_flow_status, transition_on_client_fin,
     transition_on_server_fin_ack,
 };
 use super::super::validation::{PacketValidation, validate_existing_packet};
@@ -82,7 +82,6 @@ impl TunTcpEngine {
 
         absorb_accepted_client_packet(&mut state, &packet);
         self.record_flow_activity(&state);
-        reschedule_flow(&mut state, &self.inner.tcp);
 
         if state.status == TcpFlowStatus::SynReceived {
             if completes_syn_received_handshake(
@@ -93,9 +92,8 @@ impl TunTcpEngine {
                 state.rcv_nxt,
             ) {
                 set_flow_status(&mut state, TcpFlowStatus::Established);
-                reschedule_flow(&mut state, &self.inner.tcp);
             } else {
-                sync_flow_metrics(&mut state);
+                commit_flow_changes(&mut state, &self.inner.tcp);
                 return self.write_syn_ack_and_drop(state, ip_family).await;
             }
         }
@@ -112,19 +110,16 @@ impl TunTcpEngine {
                 ack_effect.grow_congestion_window,
                 ack_effect.rate_sample,
             );
-            reschedule_flow(&mut state, &self.inner.tcp);
         }
 
         if server_fin_awaiting_ack(state.status)
             && ack_covers_server_fin(packet.flags, packet.acknowledgement_number, state.server_seq)
+            && transition_on_server_fin_ack(&mut state)
         {
-            if transition_on_server_fin_ack(&mut state) {
-                let key = state.key.clone();
-                drop(state);
-                self.close_flow(&key, "last_ack_acked").await;
-                return Ok(());
-            }
-            reschedule_flow(&mut state, &self.inner.tcp);
+            let key = state.key.clone();
+            drop(state);
+            self.close_flow(&key, "last_ack_acked").await;
+            return Ok(());
         }
 
         if ack_effect.retransmit_now {
@@ -140,8 +135,7 @@ impl TunTcpEngine {
                     self.abort_flow_with_rst(&key, "retransmit_budget_exhausted").await;
                     return Ok(());
                 }
-                sync_flow_metrics(&mut state);
-                reschedule_flow(&mut state, &self.inner.tcp);
+                commit_flow_changes(&mut state, &self.inner.tcp);
                 let key = state.key.clone();
                 drop(state);
                 self.write_tun_packet_or_close_flow(&key, &packet).await?;
@@ -164,7 +158,7 @@ impl TunTcpEngine {
                 TCP_FLAG_FIN | TCP_FLAG_ACK,
                 &[],
             )?;
-            sync_flow_metrics(&mut state);
+            commit_flow_changes(&mut state, &self.inner.tcp);
             let key = state.key.clone();
             drop(state);
             self.write_tun_packet_or_close_flow(&key, &fin_ack).await?;
@@ -180,7 +174,7 @@ impl TunTcpEngine {
                 state.rcv_nxt,
             )
         {
-            sync_flow_metrics(&mut state);
+            commit_flow_changes(&mut state, &self.inner.tcp);
             return self.write_pure_ack_and_drop(state, ip_family).await;
         }
 
@@ -196,19 +190,17 @@ impl TunTcpEngine {
                     QueueFutureSegmentOutcome::OutsideWindow
                     | QueueFutureSegmentOutcome::Queued => {},
                 }
-                reschedule_flow(&mut state, &self.inner.tcp);
-                sync_flow_metrics(&mut state);
+                commit_flow_changes(&mut state, &self.inner.tcp);
                 return self.write_pure_ack_and_drop(state, ip_family).await;
             },
             InboundSegmentDisposition::OutsideReceiveWindow => {
-                sync_flow_metrics(&mut state);
+                commit_flow_changes(&mut state, &self.inner.tcp);
                 return self.write_pure_ack_and_drop(state, ip_family).await;
             },
             InboundSegmentDisposition::Deliver(trimmed) => trimmed,
         };
 
         let mut outcome = apply_inbound_and_flush(&mut state, &trimmed)?;
-        reschedule_flow(&mut state, &self.inner.tcp);
 
         let key = state.key.clone();
         let uplink_name = state.routing.uplink_name.clone();
@@ -227,11 +219,7 @@ impl TunTcpEngine {
                 .pending_client_data
                 .push_back(std::mem::take(&mut outcome.pending_payload).into());
             buffered_client_data = true;
-            let over_limit = exceeds_client_reassembly_limits(&state, &self.inner.tcp);
-            if !over_limit {
-                reschedule_flow(&mut state, &self.inner.tcp);
-            }
-            over_limit
+            exceeds_client_reassembly_limits(&state, &self.inner.tcp)
         } else {
             false
         };
@@ -242,18 +230,20 @@ impl TunTcpEngine {
         // ahead of payload that has not yet been sent upstream.
         if outcome.should_close_client_half {
             transition_on_client_fin(&mut state);
-            reschedule_flow(&mut state, &self.inner.tcp);
         }
 
         let pump_notify = state.signals.upstream_pump.clone();
         let server_drain = state.signals.server_drain.clone();
-        // Collapse the per-mutation metric syncs into one before releasing the
-        // lock: no `.await` runs between the mutations above and here, so a
-        // scraper can only ever observe the gauges at this release point. The
-        // `abort_for_pending_limit` path skips it — `abort_flow_with_rst` runs
-        // `clear_flow_metrics`, which reconciles from the last reported values.
+        // Collapse the per-mutation metric sync AND timer reschedule into a
+        // single commit before releasing the lock: no `.await` runs between the
+        // mutations above and here, and the flow stays locked, so neither the
+        // Prometheus gauges nor the scheduler deadline is observable until this
+        // release point — the maintenance loop cannot fire this flow meanwhile.
+        // The `abort_for_pending_limit` path skips it: `abort_flow_with_rst`
+        // runs `clear_flow_metrics` and removes the flow, so there is nothing to
+        // reschedule and the reported gauges reconcile from their last values.
         if !abort_for_pending_limit {
-            sync_flow_metrics(&mut state);
+            commit_flow_changes(&mut state, &self.inner.tcp);
         }
         drop(state);
 
