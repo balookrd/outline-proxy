@@ -80,7 +80,14 @@ vendored-копии.
    `src/stream/transport_stream.rs`) — sockudo-половина poll-write-фикса:
    машины состояний `write_queued` / `shutdown_started`, дёргающие h3-методы
    `queue_send` / `poll_drain` / `queue_grease` / `poll_quic_finish` ровно
-   один раз на логическую запись / shutdown.
+   один раз на логическую запись / shutdown. Дополнительно `poll_shutdown`
+   дренирует незавершённую запись `poll_write` (`write_queued.is_some()`) до
+   конца ПЕРЕД вызовом `queue_grease`: иначе shutdown, гонящийся с
+   недренированной downlink-записью (teardown релея под всплеском
+   открытий/закрытий стримов), вызвал бы `send_data`, когда у send-стрима
+   h3-quinn ещё `writing = Some(..)`, а h3-quinn эскалирует это в
+   connection-level `H3_INTERNAL_ERROR`, который роняет ВСЕ мультиплексированные
+   сессии на общей QUIC-несущей.
 3. **valid-close-codes-1012-1014** (`src/error.rs`) — `Error::is_valid_code`
    принимал только `1000..=1003 | 1007..=1011 | 3000..=4999`, отвергая
    зарегистрированные IANA коды 1012 (Service Restart), 1013 (Try Again Later)
