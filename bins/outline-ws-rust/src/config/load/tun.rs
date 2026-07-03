@@ -73,9 +73,17 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
                 .and_then(|section| section.half_close_timeout_secs)
                 .unwrap_or(60),
         ),
+        // Per-flow downlink buffer soft limit. Downlink backpressure parks the
+        // buffer here for the whole of a slow bulk download, so this is roughly
+        // the committed RAM per saturated flow; the hard limit is
+        // `backlog_hard_limit_multiplier`× it, so worst-case RSS is about
+        // `max_flows × this × multiplier`. 2 MiB comfortably covers a fast
+        // last-mile BDP (e.g. ~800 Mbit × 20 ms ≈ 2 MB) while keeping that
+        // ceiling in check; raise it only for a high-bandwidth *and*
+        // high-latency client link that cannot keep the pipe full otherwise.
         max_pending_server_bytes: tcp_section
             .and_then(|section| section.max_pending_server_bytes)
-            .unwrap_or(4_194_304),
+            .unwrap_or(2_097_152),
         backlog_abort_grace: Duration::from_secs(
             tcp_section
                 .and_then(|section| section.backlog_abort_grace_secs)
