@@ -593,6 +593,7 @@ async fn flush_server_data_emits_gso_super_segment_tracked_per_mss() {
     let mss = super::MAX_SERVER_SEGMENT_PAYLOAD;
     let payload_len = mss * 4 + 200; // 5000 bytes: spans 5 MSS segments (4×MSS + 200)
     state.pending_server_data = std::collections::VecDeque::from([vec![7u8; payload_len].into()]);
+    state.pending_server_bytes_total = state.pending_server_data.iter().map(|c| c.len()).sum();
 
     let flush = super::state_machine::flush_server_output(&mut state).unwrap();
 
@@ -975,6 +976,7 @@ async fn zero_window_persist_backoff_doubles_until_cap() {
     state.client_window = 0;
     state.client_window_end = state.server_seq;
     state.pending_server_data.push_back(b"ABC".to_vec().into());
+    state.pending_server_bytes_total = state.pending_server_data.iter().map(|c| c.len()).sum();
 
     let first = super::maybe_emit_zero_window_probe(&mut state).unwrap();
     assert!(first.is_some());
@@ -1254,6 +1256,7 @@ async fn queue_future_segment_accepts_within_limits() {
 async fn server_backlog_limit_detects_pending_bytes() {
     let mut state = tcp_flow_state_for_tests().await;
     state.pending_server_data = VecDeque::from([vec![1; 128].into(), vec![2; 128].into()]);
+    state.pending_server_bytes_total = state.pending_server_data.iter().map(|c| c.len()).sum();
     let config = TunTcpConfig {
         max_pending_server_bytes: 200,
         ..test_tun_tcp_config()
@@ -1269,6 +1272,7 @@ async fn server_backlog_pressure_allows_brief_window_stall() {
     state.client_window = 0;
     state.client_window_end = state.server_seq;
     state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
+    state.pending_server_bytes_total = state.pending_server_data.iter().map(|c| c.len()).sum();
     let config = TunTcpConfig {
         max_pending_server_bytes: 200,
         ..test_tun_tcp_config()
@@ -1290,6 +1294,7 @@ async fn server_backlog_pressure_does_not_abort_throttled_flow_over_grace() {
     // reap such a healthy large download after a few seconds.
     let mut state = tcp_flow_state_for_tests().await;
     state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
+    state.pending_server_bytes_total = state.pending_server_data.iter().map(|c| c.len()).sum();
     let config = TunTcpConfig {
         max_pending_server_bytes: 200,
         ..test_tun_tcp_config()
@@ -1312,6 +1317,7 @@ async fn server_backlog_pressure_does_not_abort_stalled_flow_with_fresh_ack() {
     state.client_window = 0;
     state.client_window_end = state.server_seq;
     state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
+    state.pending_server_bytes_total = state.pending_server_data.iter().map(|c| c.len()).sum();
     let config = TunTcpConfig {
         max_pending_server_bytes: 200,
         ..test_tun_tcp_config()
@@ -1330,6 +1336,7 @@ async fn server_backlog_pressure_aborts_after_no_ack_progress_timeout() {
     state.client_window = 0;
     state.client_window_end = state.server_seq;
     state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
+    state.pending_server_bytes_total = state.pending_server_data.iter().map(|c| c.len()).sum();
     let config = TunTcpConfig {
         max_pending_server_bytes: 200,
         backlog_abort_grace: Duration::from_secs(60),
@@ -1351,6 +1358,7 @@ async fn server_backlog_pressure_aborts_after_no_ack_progress_timeout() {
 async fn server_backlog_pressure_aborts_immediately_above_hard_limit() {
     let mut state = tcp_flow_state_for_tests().await;
     state.pending_server_data = VecDeque::from([vec![1; 512].into()]);
+    state.pending_server_bytes_total = state.pending_server_data.iter().map(|c| c.len()).sum();
     let config = TunTcpConfig {
         max_pending_server_bytes: 200,
         ..test_tun_tcp_config()
@@ -2008,6 +2016,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         slow_start_threshold: super::TCP_SERVER_RECV_WINDOW_CAPACITY,
         bbr: super::BbrState::new(Instant::now(), 0),
         pending_server_data: VecDeque::new(),
+        pending_server_bytes_total: 0,
         backlog_limit_exceeded_since: None,
         last_ack_progress_at: Instant::now(),
         pending_client_data: VecDeque::new(),

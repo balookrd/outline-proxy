@@ -126,6 +126,7 @@ impl TunTcpEngine {
                             }
                             state.timestamps.last_seen = Instant::now();
                             engine.record_flow_activity(&state);
+                            state.pending_server_bytes_total += chunk.len();
                             state.pending_server_data.push_back(chunk.into());
                             let flush = flush_server_output(&mut state);
                             let backlog_pressure = assess_server_backlog_pressure(

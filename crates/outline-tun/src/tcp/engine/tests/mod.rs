@@ -1789,6 +1789,7 @@ fn eviction_test_flow_state(
         slow_start_threshold: super::super::TCP_SERVER_RECV_WINDOW_CAPACITY,
         bbr: super::super::state_machine::BbrState::new(last_seen, 0),
         pending_server_data: VecDeque::new(),
+        pending_server_bytes_total: 0,
         backlog_limit_exceeded_since: None,
         last_ack_progress_at: last_seen,
         pending_client_data: VecDeque::new(),
