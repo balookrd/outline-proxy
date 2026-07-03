@@ -1799,6 +1799,8 @@ fn eviction_test_flow_state(
         server_fin_pending: false,
         zero_window_probe_backoff: super::super::TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL,
         next_zero_window_probe_at: None,
+        unacked_in_order_segments: 0,
+        delayed_ack_deadline: None,
         keepalive_probes_sent: 0,
         last_keepalive_probe_at: None,
         reported: super::super::state_machine::ReportedFlowMetrics::default(),

@@ -301,6 +301,16 @@ pub(in crate::tcp) struct TcpFlowState {
     pub(in crate::tcp) server_fin_pending: bool,
     pub(in crate::tcp) zero_window_probe_backoff: Duration,
     pub(in crate::tcp) next_zero_window_probe_at: Option<Instant>,
+    /// Delayed-ACK: count of in-order data segments accepted since we last sent
+    /// an ACK for the current `rcv_nxt`. A steady stream ACKs on the 2nd (RFC
+    /// 5681), so this only ever holds 0 or 1; a lone segment arms
+    /// `delayed_ack_deadline` instead of eliciting an immediate pure-ACK,
+    /// halving ACK writes on the read-loop.
+    pub(in crate::tcp) unacked_in_order_segments: u8,
+    /// When set, a delayed ACK is owed and the maintenance loop must emit it by
+    /// this instant. Cleared whenever any ACK covering the current `rcv_nxt` is
+    /// sent (immediate ACK, piggybacked downlink data, or the timer firing).
+    pub(in crate::tcp) delayed_ack_deadline: Option<Instant>,
     pub(in crate::tcp) keepalive_probes_sent: u32,
     pub(in crate::tcp) last_keepalive_probe_at: Option<Instant>,
     /// Last-emitted values for Prometheus gauges. Private to the metric

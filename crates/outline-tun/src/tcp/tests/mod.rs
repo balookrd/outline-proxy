@@ -929,6 +929,102 @@ async fn advertised_window_collapses_when_uplink_buffer_fills_and_reopens_on_dra
 }
 
 #[tokio::test]
+async fn delayed_ack_defers_lone_in_order_segment_then_acks_the_second() {
+    use crate::tcp::state_machine::apply_inbound_and_flush;
+    let mut state = tcp_flow_state_for_tests().await;
+
+    let first = TrimmedSegment {
+        sequence_number: state.rcv_nxt,
+        flags: TCP_FLAG_ACK,
+        payload: Bytes::from_static(b"hello"),
+    };
+    let out = apply_inbound_and_flush(&mut state, &first).unwrap();
+    assert!(out.pending_ack.is_none(), "a lone in-order segment defers its ACK");
+    assert!(state.delayed_ack_deadline.is_some(), "the delayed-ACK timer is armed");
+    assert_eq!(state.unacked_in_order_segments, 1);
+
+    let second = TrimmedSegment {
+        sequence_number: state.rcv_nxt,
+        flags: TCP_FLAG_ACK,
+        payload: Bytes::from_static(b"world"),
+    };
+    let out = apply_inbound_and_flush(&mut state, &second).unwrap();
+    assert!(
+        out.pending_ack.is_some(),
+        "the 2nd in-order segment ACKs immediately (RFC 5681)"
+    );
+    assert!(state.delayed_ack_deadline.is_none(), "the delay is cleared once acked");
+    assert_eq!(state.unacked_in_order_segments, 0);
+}
+
+#[tokio::test]
+async fn delayed_ack_is_immediate_for_a_fin() {
+    use crate::tcp::state_machine::apply_inbound_and_flush;
+    let mut state = tcp_flow_state_for_tests().await;
+    let fin = TrimmedSegment {
+        sequence_number: state.rcv_nxt,
+        flags: TCP_FLAG_ACK | TCP_FLAG_FIN,
+        payload: Bytes::new(),
+    };
+    let out = apply_inbound_and_flush(&mut state, &fin).unwrap();
+    assert!(out.pending_ack.is_some(), "a FIN must be acked immediately, never deferred");
+    assert!(state.delayed_ack_deadline.is_none());
+}
+
+#[tokio::test]
+async fn delayed_ack_is_immediate_while_a_reassembly_hole_is_buffered() {
+    use crate::tcp::state_machine::apply_inbound_and_flush;
+    let mut state = tcp_flow_state_for_tests().await;
+    // An out-of-order segment sits buffered ahead of rcv_nxt (a SACK hole): the
+    // peer needs a prompt ACK carrying SACK, so delaying is not allowed.
+    state.pending_client_segments.push_back(BufferedClientSegment {
+        sequence_number: state.rcv_nxt.wrapping_add(100),
+        flags: TCP_FLAG_ACK,
+        payload: b"future".to_vec().into(),
+    });
+    let seg = TrimmedSegment {
+        sequence_number: state.rcv_nxt,
+        flags: TCP_FLAG_ACK,
+        payload: Bytes::from_static(b"now"),
+    };
+    let out = apply_inbound_and_flush(&mut state, &seg).unwrap();
+    assert!(
+        out.pending_ack.is_some(),
+        "with a buffered hole, ACK immediately so the peer's SACK path sees progress",
+    );
+    assert!(state.delayed_ack_deadline.is_none());
+}
+
+#[tokio::test]
+async fn delayed_ack_timer_flushes_the_deferred_ack() {
+    use crate::tcp::maintenance::{FlowMaintenancePlan, plan_flow_maintenance};
+    use crate::tcp::state_machine::apply_inbound_and_flush;
+    let config = test_tun_tcp_config();
+    let mut state = tcp_flow_state_for_tests().await;
+
+    let seg = TrimmedSegment {
+        sequence_number: state.rcv_nxt,
+        flags: TCP_FLAG_ACK,
+        payload: Bytes::from_static(b"data"),
+    };
+    let out = apply_inbound_and_flush(&mut state, &seg).unwrap();
+    assert!(out.pending_ack.is_none(), "the lone segment deferred its ACK");
+    let deadline = state.delayed_ack_deadline.expect("timer armed");
+
+    // Fire maintenance exactly at the deadline: the deferred ACK must go out.
+    let plan = plan_flow_maintenance(&mut state, &config, Duration::from_secs(300), deadline)
+        .expect("plan");
+    match plan {
+        FlowMaintenancePlan::SendPacket { event, .. } => {
+            assert_eq!(event, "delayed_ack", "the fired timer emits the deferred ACK");
+        },
+        _ => panic!("expected a delayed_ack SendPacket from the fired timer"),
+    }
+    assert!(state.delayed_ack_deadline.is_none(), "timer state cleared after firing");
+    assert_eq!(state.unacked_in_order_segments, 0);
+}
+
+#[tokio::test]
 async fn update_client_send_window_uses_rfc_precedence_rules() {
     let mut state = tcp_flow_state_for_tests().await;
     state.client_window = 4096;
@@ -2026,6 +2122,8 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         server_fin_pending: false,
         zero_window_probe_backoff: super::TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL,
         next_zero_window_probe_at: None,
+        unacked_in_order_segments: 0,
+        delayed_ack_deadline: None,
         keepalive_probes_sent: 0,
         last_keepalive_probe_at: None,
         reported: super::state_machine::ReportedFlowMetrics::default(),
