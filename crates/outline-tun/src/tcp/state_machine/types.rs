@@ -287,6 +287,11 @@ pub(in crate::tcp) struct TcpFlowState {
     /// so the stack never bursts more onto the last hop than it can drain.
     pub(in crate::tcp) bbr: BbrState,
     pub(in crate::tcp) pending_server_data: VecDeque<Bytes>,
+    /// Running byte total of `pending_server_data`, kept in sync at the push /
+    /// split-to sites so `pending_server_bytes` is O(1) instead of summing the
+    /// whole deque on every downlink chunk and metric commit. A `debug_assert`
+    /// in `pending_server_bytes` cross-checks it against the live sum in tests.
+    pub(in crate::tcp) pending_server_bytes_total: usize,
     pub(in crate::tcp) backlog_limit_exceeded_since: Option<Instant>,
     pub(in crate::tcp) last_ack_progress_at: Instant,
     pub(in crate::tcp) pending_client_data: VecDeque<Bytes>,

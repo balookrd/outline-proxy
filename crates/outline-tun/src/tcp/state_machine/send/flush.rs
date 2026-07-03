@@ -128,6 +128,7 @@ fn take_pending_server_payload(state: &mut TcpFlowState, target: usize) -> Bytes
         if front.is_empty() {
             state.pending_server_data.pop_front();
         }
+        state.pending_server_bytes_total -= payload.len();
         return payload;
     }
     let mut buffer = Vec::with_capacity(target);
@@ -145,6 +146,7 @@ fn take_pending_server_payload(state: &mut TcpFlowState, target: usize) -> Bytes
         if front.is_empty() {
             state.pending_server_data.pop_front();
         }
+        state.pending_server_bytes_total -= take;
     }
     Bytes::from(buffer)
 }
