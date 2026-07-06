@@ -136,6 +136,19 @@ async fn disabled_registry_drops_park_silently() {
 }
 
 #[tokio::test]
+async fn mint_with_cluster_encodes_shard() {
+    let metrics = Metrics::new(&test_config());
+    let key = ObfuscationKey::derive_from_psk(b"registry-cluster-psk");
+    let shard = ShardId::new(7).unwrap();
+    let registry = OrphanRegistry::new(enabled_config(), metrics).with_cluster(key.clone(), shard);
+    // Every minted id round-trips to this server's own shard.
+    for _ in 0..8 {
+        let id = registry.mint_session_id().unwrap();
+        assert_eq!(id.shard(&key).get(), 7);
+    }
+}
+
+#[tokio::test]
 async fn park_then_take_returns_payload_for_owner() {
     let metrics = Metrics::new(&test_config());
     let registry = OrphanRegistry::new(enabled_config(), metrics.clone());
