@@ -15,6 +15,57 @@ fn checksum16_parts_matches_flat_buffer_for_odd_boundaries() {
     assert_eq!(checksum16_parts(&parts), checksum16(flat));
 }
 
+/// The pre-vectorization scalar internet-checksum, kept as an independent
+/// reference so the wide u64 implementation is cross-checked against it.
+fn checksum16_reference(parts: &[&[u8]]) -> u16 {
+    let mut sum = 0u32;
+    let mut pending = None;
+    for part in parts {
+        for &byte in *part {
+            match pending.take() {
+                Some(high) => sum = sum.wrapping_add(u32::from(u16::from_be_bytes([high, byte]))),
+                None => pending = Some(byte),
+            }
+        }
+    }
+    if let Some(high) = pending {
+        sum = sum.wrapping_add(u32::from(u16::from_be_bytes([high, 0])));
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+#[test]
+fn checksum16_parts_wide_matches_scalar_reference_across_layouts() {
+    // Deterministic pseudo-random data long enough to span several 8-byte
+    // chunks plus an odd remainder.
+    let mut data = vec![0u8; 71];
+    let mut state = 0x1234_5678u32;
+    for byte in data.iter_mut() {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        *byte = (state >> 24) as u8;
+    }
+
+    for total in 0..=data.len() {
+        let d = &data[..total];
+        assert_eq!(checksum16_parts(&[d]), checksum16_reference(&[d]), "whole len {total}");
+        // Split at every offset — odd splits exercise the cross-part word
+        // straddle; an empty middle part exercises the pending-byte carry.
+        for split in 0..=total {
+            let two = [&d[..split], &d[split..]];
+            assert_eq!(checksum16_parts(&two), checksum16_reference(&two), "split {split}/{total}");
+            let with_empty = [&d[..split], b"".as_slice(), &d[split..]];
+            assert_eq!(
+                checksum16_parts(&with_empty),
+                checksum16_reference(&with_empty),
+                "empty-middle {split}/{total}"
+            );
+        }
+    }
+}
+
 #[test]
 fn target_socket_addr_maps_ipv4_literal_without_resolution() {
     let target = TargetAddr::IpV4(Ipv4Addr::new(87, 250, 247, 181), 443);
