@@ -41,7 +41,7 @@ fn checksum16_reference(parts: &[&[u8]]) -> u16 {
 fn checksum16_parts_wide_matches_scalar_reference_across_layouts() {
     // Deterministic pseudo-random data long enough to span several 8-byte
     // chunks plus an odd remainder.
-    let mut data = vec![0u8; 71];
+    let mut data = [0u8; 71];
     let mut state = 0x1234_5678u32;
     for byte in data.iter_mut() {
         state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
