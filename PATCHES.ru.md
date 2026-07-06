@@ -76,18 +76,22 @@ vendored-копии.
    error` / `HTTP/3 connection error` при чистом shutdown. Также
    восстанавливает `WebSocketServer::into_parts`, нужный серверному
    accept-циклу `outline-ss-rust`.
-2. **fix-h3-poll-write** (`src/http3/stream.rs`,
-   `src/stream/transport_stream.rs`) — sockudo-половина poll-write-фикса:
-   машины состояний `write_queued` / `shutdown_started`, дёргающие h3-методы
-   `queue_send` / `poll_drain` / `queue_grease` / `poll_quic_finish` ровно
-   один раз на логическую запись / shutdown. Дополнительно `poll_shutdown`
-   дренирует незавершённую запись `poll_write` (`write_queued.is_some()`) до
-   конца ПЕРЕД вызовом `queue_grease`: иначе shutdown, гонящийся с
-   недренированной downlink-записью (teardown релея под всплеском
-   открытий/закрытий стримов), вызвал бы `send_data`, когда у send-стрима
-   h3-quinn ещё `writing = Some(..)`, а h3-quinn эскалирует это в
+2. **fix-h3-poll-write** (`src/stream/transport_stream.rs`) — sockudo-половина
+   poll-write-фикса, применённая к ЖИВОМУ H3 WebSocket-стриму `Stream<Http3>`
+   (`Http3StreamInner::{Server,Client}` — тип, получаемый через `from_h3_client`
+   / `from_h3_server`): машины состояний `write_queued` / `shutdown_started`,
+   дёргающие h3-методы `queue_send` / `poll_drain` / `queue_grease` /
+   `poll_quic_finish` ровно один раз на логическую запись / shutdown.
+   Дополнительно `poll_shutdown` дренирует незавершённую запись `poll_write`
+   (`write_queued.is_some()`) до конца ПЕРЕД вызовом `queue_grease`: иначе
+   shutdown, гонящийся с недренированной downlink-записью (teardown релея под
+   всплеском открытий/закрытий стримов), вызвал бы `send_data`, когда у
+   send-стрима h3-quinn ещё `writing = Some(..)`, а h3-quinn эскалирует это в
    connection-level `H3_INTERNAL_ERROR`, который роняет ВСЕ мультиплексированные
-   сессии на общей QUIC-несущей.
+   сессии на общей QUIC-несущей. (Примечание: неиспользуемые обёртки
+   `Http3ServerStream` / `Http3ClientStream` в `src/http3/stream.rs` оставлены в
+   upstream-vanilla — data plane их не инстанцирует, поэтому фикс живёт только в
+   одном живом типе стрима.)
 3. **valid-close-codes-1012-1014** (`src/error.rs`) — `Error::is_valid_code`
    принимал только `1000..=1003 | 1007..=1011 | 3000..=4999`, отвергая
    зарегистрированные IANA коды 1012 (Service Restart), 1013 (Try Again Later)
