@@ -636,9 +636,27 @@ impl AsyncWrite for Stream<Http3> {
             },
             StreamInner::Http3(Http3StreamInner::Server {
                 stream,
+                write_queued,
                 shutdown_started,
                 ..
             }) => {
+                // Phase 0: drain any un-drained prior `poll_write` before greasing.
+                // A `poll_write` that returned `Pending` leaves h3-quinn's send
+                // stream with `writing = Some(..)`; `queue_grease()` (another
+                // `send_data`) in that state is escalated to a connection-level
+                // `H3_INTERNAL_ERROR` that tears down every stream multiplexed on
+                // the shared QUIC connection. This fires when a relay teardown /
+                // task abort races an in-flight write.
+                if write_queued.is_some() {
+                    match stream.poll_drain(cx) {
+                        Poll::Ready(Ok(())) => *write_queued = None,
+                        Poll::Ready(Err(e)) => {
+                            *write_queued = None;
+                            return Poll::Ready(Err(io::Error::other(e.to_string())));
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
                 // Phase 1: queue the GREASE frame exactly once (no-op if disabled).
                 // Re-calling send_data while `writing` is occupied causes
                 // H3_INTERNAL_ERROR, so guard with `shutdown_started`.
@@ -664,9 +682,24 @@ impl AsyncWrite for Stream<Http3> {
             }
             StreamInner::Http3(Http3StreamInner::Client {
                 stream,
+                write_queued,
                 shutdown_started,
                 ..
             }) => {
+                // Phase 0: drain any un-drained prior `poll_write` before greasing
+                // (see the Server arm above) — a `queue_grease()` `send_data` while
+                // h3-quinn's `writing` is still occupied escalates to a
+                // connection-level `H3_INTERNAL_ERROR` that collapses the carrier.
+                if write_queued.is_some() {
+                    match stream.poll_drain(cx) {
+                        Poll::Ready(Ok(())) => *write_queued = None,
+                        Poll::Ready(Err(e)) => {
+                            *write_queued = None;
+                            return Poll::Ready(Err(io::Error::other(e.to_string())));
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
                 if !*shutdown_started {
                     match stream.queue_grease() {
                         Ok(()) => *shutdown_started = true,
