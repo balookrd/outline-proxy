@@ -48,7 +48,6 @@ impl SessionId {
     /// Decodes the cluster shard embedded in this id under `key`. Total: any
     /// id yields some shard, so an unknown/forged id simply routes to a shard
     /// that resume-misses. Only meaningful when the cluster is configured.
-    #[allow(dead_code)] // wired by phase 3 (edge routing decode on accept).
     pub(crate) fn shard(&self, key: &ObfuscationKey) -> ShardId {
         decode_shard(key, &self.0)
     }

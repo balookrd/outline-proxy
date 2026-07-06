@@ -24,6 +24,7 @@ use crate::config::Config;
 mod abort;
 mod auth;
 mod bootstrap;
+mod cluster;
 mod connect;
 mod constants;
 #[cfg(feature = "control")]

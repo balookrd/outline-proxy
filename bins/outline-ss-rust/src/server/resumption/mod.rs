@@ -21,5 +21,5 @@ pub(super) use parked::{
     Parked, ParkedMuxSubConn, ParkedMuxSubKind, ParkedSsUdpStream, ParkedTcp, ParkedVlessMux,
     ParkedVlessUdpSingle, TcpProtocolContext,
 };
-pub(super) use registry::{OrphanRegistry, ResumeOutcome};
+pub(super) use registry::{ClusterIdentity, OrphanRegistry, ResumeOutcome};
 pub(super) use session_id::SessionId;
