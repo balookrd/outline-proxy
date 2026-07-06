@@ -4,6 +4,7 @@
 
 use std::fmt;
 
+use outline_wire::cluster::{ObfuscationKey, ShardId, decode_shard, encode_session_id};
 use ring::rand::{SecureRandom, SystemRandom};
 
 /// Server-minted opaque token identifying a resumable session.
@@ -26,6 +27,30 @@ impl SessionId {
         rng.fill(&mut bytes)
             .map_err(|_| std::io::Error::other("csprng failure minting session id"))?;
         Ok(Self(bytes))
+    }
+
+    /// Draws a fresh identifier that carries the cluster `shard` (this home
+    /// server's id), obfuscated under `key` so the token stays wire-random.
+    /// Used instead of [`Self::random`] when the server runs in a cluster; a
+    /// resuming client's edge decodes the shard back with [`Self::shard`] to
+    /// route to this home. See `docs/CLUSTER.md`.
+    pub(crate) fn random_with_shard(
+        rng: &SystemRandom,
+        key: &ObfuscationKey,
+        shard: ShardId,
+    ) -> std::io::Result<Self> {
+        let mut entropy = [0u8; 16];
+        rng.fill(&mut entropy)
+            .map_err(|_| std::io::Error::other("csprng failure minting session id"))?;
+        Ok(Self(encode_session_id(key, shard, &entropy)))
+    }
+
+    /// Decodes the cluster shard embedded in this id under `key`. Total: any
+    /// id yields some shard, so an unknown/forged id simply routes to a shard
+    /// that resume-misses. Only meaningful when the cluster is configured.
+    #[allow(dead_code)] // wired by phase 3 (edge routing decode on accept).
+    pub(crate) fn shard(&self, key: &ObfuscationKey) -> ShardId {
+        decode_shard(key, &self.0)
     }
 
     /// Constructs from raw bytes. Used by Addons-decoding paths.
