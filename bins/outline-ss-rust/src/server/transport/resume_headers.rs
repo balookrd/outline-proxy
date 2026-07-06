@@ -13,6 +13,7 @@ pub(in crate::server) use outline_wire::resume::{
     SESSION_RESPONSE_HEADER, SYMMETRIC_REPLAY_HEADER,
 };
 
+use super::super::cluster::{RouteDecision, decide};
 use super::super::resumption::{OrphanRegistry, SessionId};
 
 /// Per-request resumption negotiation state, parsed once at WS Upgrade
@@ -67,7 +68,7 @@ impl ResumeContext {
         headers: &axum::http::HeaderMap,
         registry: &OrphanRegistry,
     ) -> Self {
-        let requested_resume = headers
+        let requested_resume_raw = headers
             .get(RESUME_REQUEST_HEADER)
             .and_then(|v| v.to_str().ok())
             .and_then(SessionId::parse_hex);
@@ -75,8 +76,25 @@ impl ResumeContext {
             .get(RESUME_CAPABLE_HEADER)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.trim() == "1");
+        // Cluster edge routing: a resume id whose shard is not ours belongs to
+        // another home. Until the mesh relay exists (phase 5) we cannot reach
+        // it, so drop the resume request and serve a fresh local session (this
+        // edge becomes the new home). Own-shard / unknown ids stay local.
+        let requested_resume = match decide(registry.cluster_identity(), requested_resume_raw) {
+            RouteDecision::Relay(shard) => {
+                debug!(
+                    shard = shard.get(),
+                    "resume id targets a foreign shard; relay not yet implemented \
+                     (phase 5), serving a fresh local session",
+                );
+                None
+            },
+            RouteDecision::Local => requested_resume_raw,
+        };
+        // Mint on the *original* resume attempt so a relayed-away client still
+        // gets a fresh session id to park under locally.
         let issued_session_id =
-            if registry.enabled() && (resume_capable || requested_resume.is_some()) {
+            if registry.enabled() && (resume_capable || requested_resume_raw.is_some()) {
                 registry.mint_session_id()
             } else {
                 None

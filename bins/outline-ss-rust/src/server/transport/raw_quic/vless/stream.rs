@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use tokio::time::{Duration, timeout};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::protocol::vless::{self, VlessCommand, mask_uuid};
 
 use super::super::super::super::{
+    cluster::{RouteDecision, decide},
     constants::SS_TCP_HANDSHAKE_TIMEOUT_SECS,
     resumption::SessionId,
     transport::{ResumeContext, VlessWsServerCtx, sink},
@@ -110,7 +111,23 @@ pub(super) async fn run_stream(
     } else {
         None
     };
-    let requested_resume = request.addons.resume_id.map(SessionId::from_bytes);
+    // Cluster edge routing: a resume id for a foreign shard belongs to another
+    // home; until the mesh relay exists (phase 5) drop it and serve a fresh
+    // local session. `issued_session_id` above already minted on the original
+    // resume attempt, so the client still gets a local id to park under.
+    let requested_resume_raw = request.addons.resume_id.map(SessionId::from_bytes);
+    let requested_resume =
+        match decide(server.orphan_registry.cluster_identity(), requested_resume_raw) {
+            RouteDecision::Relay(shard) => {
+                debug!(
+                    shard = shard.get(),
+                    "resume id targets a foreign shard; relay not yet implemented \
+                     (phase 5), serving a fresh local session",
+                );
+                None
+            },
+            RouteDecision::Local => requested_resume_raw,
+        };
     // Ack-Prefix Protocol negotiation is HTTP-header-based and therefore
     // does not apply to raw-QUIC VLESS sessions (no HTTP layer to carry
     // the capability advertisement). Always disabled on this path; v2

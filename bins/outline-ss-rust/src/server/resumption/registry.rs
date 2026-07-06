@@ -119,6 +119,13 @@ impl OrphanRegistry {
         self.config.enabled
     }
 
+    /// This server's cluster identity, if configured. Edge routing uses it to
+    /// decode the shard embedded in a resume id and decide local-vs-relay.
+    /// `None` when the server is not part of a cluster.
+    pub(crate) fn cluster_identity(&self) -> Option<&ClusterIdentity> {
+        self.cluster.as_ref()
+    }
+
     /// Whether the v2 Symmetric Downlink Replay protocol is enabled
     /// server-side: requires both the parent feature on and a
     /// non-zero ring capacity. Used by header-parsing + capability
