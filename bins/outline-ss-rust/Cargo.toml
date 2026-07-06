@@ -35,6 +35,10 @@ outline-wire = { path = "../../crates/outline-wire", features = ["clap"] }
 parking_lot = "0.12"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
 rand = "0.9"
+# rcgen on the aws_lc_rs backend, matching the workspace-wide single rustls
+# CryptoProvider (aws-lc-rs). Used both in tests and, in production, by the
+# cluster mesh to build its PSK-derived self-signed interconnect certificate.
+rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs"] }
 # ring stays for the Shadowsocks AEAD / SHA-256 paths in `src/crypto/*`; it is
 # NOT the rustls CryptoProvider (that is aws-lc-rs, see `rustls` below).
 ring = "0.17"
@@ -61,10 +65,6 @@ control = []
 
 [dev-dependencies]
 proptest = "1.5"
-# rcgen on the aws_lc_rs backend, matching the workspace-wide single rustls
-# CryptoProvider (aws-lc-rs); keeps the shared rustls graph on one provider so
-# implicit `ClientConfig::builder()` calls resolve a process-level default.
-rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs"] }
 # `test-util` enables tokio's paused virtual clock so timer-driven paths
 # (e.g. the WebSocket writer's control-flush cadence) can be tested without
 # real-time sleeps.

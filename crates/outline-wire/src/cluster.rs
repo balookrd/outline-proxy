@@ -50,8 +50,21 @@ const SEED_LEN: usize = 8;
 const PAYLOAD_LEN: usize = SESSION_ID_LEN - SEED_LEN;
 
 /// BLAKE3 `derive_key` context for the shard-obfuscation key. Distinct from
-/// the (future) mesh-auth context so one PSK yields independent keys.
+/// the mesh-auth context so one PSK yields independent keys.
 const SHARD_OBFUSCATION_CONTEXT: &str = "outline-proxy cluster shard-obfuscation v1";
+
+/// BLAKE3 `derive_key` context for the mesh-auth key seed. Distinct from the
+/// shard-obfuscation context so the two derivations never share key material.
+const MESH_AUTH_CONTEXT: &str = "outline-proxy cluster mesh-auth v1";
+
+/// Derives the mesh-auth seed from the shared cluster PSK. The interconnect
+/// TLS keypair is generated deterministically from this seed, so every cluster
+/// member arrives at the same keypair/certificate and can pin its peers by it
+/// without any CA or certificate distribution. Domain-separated from the
+/// shard-obfuscation key. See `docs/CLUSTER.md`.
+pub fn derive_mesh_auth_seed(psk: &[u8]) -> [u8; 32] {
+    blake3::derive_key(MESH_AUTH_CONTEXT, psk)
+}
 
 /// A cluster shard identifier — the home server a session is pinned to.
 ///

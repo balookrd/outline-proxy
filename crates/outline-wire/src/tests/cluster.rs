@@ -96,6 +96,12 @@ fn structure_is_hidden() {
 }
 
 #[test]
+fn mesh_auth_seed_deterministic_and_psk_sensitive() {
+    assert_eq!(derive_mesh_auth_seed(b"psk-a"), derive_mesh_auth_seed(b"psk-a"));
+    assert_ne!(derive_mesh_auth_seed(b"psk-a"), derive_mesh_auth_seed(b"psk-b"));
+}
+
+#[test]
 fn output_looks_random() {
     // Bit balance over many ids (varying shard and nonce) should sit near 50%.
     let k = key(b"cluster-psk-random");
