@@ -12,9 +12,15 @@
 | **Сервер** (`outline-ss-rust`) | [`bins/outline-ss-rust/CHANGELOG.ru.md`](bins/outline-ss-rust/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-ss-rust/CHANGELOG.md) |
 | **Клиент** (`outline-ws-rust`) | [`bins/outline-ws-rust/CHANGELOG.ru.md`](bins/outline-ws-rust/CHANGELOG.ru.md) | [`CHANGELOG.md`](bins/outline-ws-rust/CHANGELOG.md) |
 
-Оба бинаря сейчас на версии **1.5.1** (2026-06-15). Главное изменение в секции
-`Unreleased` с обеих сторон — **адаптивный carrier-padding** для носителей
-WS / XHTTP (против корреляции по размеру TLS-записей при TLS-in-TLS); серверную
-(per-path) и клиентскую (глобальную) половины см. в changelog'ах бинарей.
+**Сервер** (`outline-ss-rust`) сейчас на **1.6.0** (2026-07-01), **клиент**
+(`outline-ws-rust`) — на **1.6.1** (2026-07-02); адаптивный carrier-padding
+вышел в линейке 1.6. Главная недавняя работа — клиентский data-plane:
+**TUN GSO / GRO / USO offload** (`[tun] gso` / `gro` / `uso`) для срезания
+per-packet CPU и **connection sniffing с переопределением назначения**
+(TLS SNI / HTTP Host на TCP, QUIC ClientHello на UDP), чтобы exit-узел
+резолвил реальное имя хоста — плюс фиксы пропускной способности одиночного
+flow на больших RTT (поднятые приёмные окна носителей + congestion control
+BBR, зеркалимый сервером на его QUIC-листенере). Подробности — в changelog'ах
+бинарей.
 
 *English version: [CHANGELOG.md](CHANGELOG.md)*
