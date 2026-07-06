@@ -9,6 +9,7 @@ use std::{
 };
 
 use dashmap::DashMap;
+use outline_wire::cluster::{ObfuscationKey, ShardId};
 use parking_lot::Mutex;
 use ring::rand::SystemRandom;
 use tracing::{debug, warn};
@@ -16,6 +17,16 @@ use tracing::{debug, warn};
 use crate::metrics::Metrics;
 
 use super::{config::ResumptionConfig, parked::Parked, session_id::SessionId};
+
+/// This server's cluster identity: the shard it owns and the key that
+/// obfuscates it inside minted session ids. `None` when the server is not part
+/// of a cluster, in which case ids are plain random. Wired from `[cluster]`
+/// config in a later phase; see `docs/CLUSTER.md`.
+#[derive(Clone)]
+pub(crate) struct ClusterIdentity {
+    pub(crate) key: ObfuscationKey,
+    pub(crate) shard: ShardId,
+}
 
 /// Reason a `take_for_resume` call did not return parked state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +79,10 @@ pub(crate) struct OrphanRegistry {
     /// (4 by default), so a parking_lot mutex is preferred over a per-key
     /// async lock.
     per_user: DashMap<Arc<str>, Mutex<Vec<SessionId>>>,
+    /// This server's cluster identity, or `None` when not clustered. When set,
+    /// minted session ids carry this shard (obfuscated); otherwise they are
+    /// plain random and byte-compatible with the pre-cluster behaviour.
+    cluster: Option<ClusterIdentity>,
     metrics: Arc<Metrics>,
 }
 
@@ -78,8 +93,18 @@ impl OrphanRegistry {
             rng: SystemRandom::new(),
             by_id: DashMap::new(),
             per_user: DashMap::new(),
+            cluster: None,
             metrics,
         }
+    }
+
+    /// Attaches this server's cluster identity so minted session ids carry the
+    /// shard. Builder-style so existing constructor call sites are unchanged;
+    /// wired from `[cluster]` config in a later phase.
+    #[allow(dead_code)] // wired by phase 7 (cluster config → identity).
+    pub(crate) fn with_cluster(mut self, key: ObfuscationKey, shard: ShardId) -> Self {
+        self.cluster = Some(ClusterIdentity { key, shard });
+        self
     }
 
     /// Convenience constructor for production paths and test fixtures
@@ -117,7 +142,13 @@ impl OrphanRegistry {
         if !self.enabled() {
             return None;
         }
-        match SessionId::random(&self.rng) {
+        let minted = match &self.cluster {
+            Some(identity) => {
+                SessionId::random_with_shard(&self.rng, &identity.key, identity.shard)
+            },
+            None => SessionId::random(&self.rng),
+        };
+        match minted {
             Ok(id) => Some(id),
             Err(error) => {
                 warn!(?error, "csprng failure minting session id; resumption unavailable");

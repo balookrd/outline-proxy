@@ -1,3 +1,5 @@
+use outline_wire::cluster::MAX_SHARDS;
+
 use super::*;
 
 #[test]
@@ -47,4 +49,28 @@ fn random_ids_differ() {
     let a = SessionId::random(&rng).unwrap();
     let b = SessionId::random(&rng).unwrap();
     assert_ne!(a, b, "two consecutive random session IDs must differ");
+}
+
+#[test]
+fn random_with_shard_round_trips_every_shard() {
+    let rng = SystemRandom::new();
+    let key = ObfuscationKey::derive_from_psk(b"session-id-shard-psk");
+    for s in 0..MAX_SHARDS {
+        let shard = ShardId::new(s).unwrap();
+        let id = SessionId::random_with_shard(&rng, &key, shard).unwrap();
+        assert_eq!(id.shard(&key).get(), s, "shard {s} must round-trip");
+    }
+}
+
+#[test]
+fn random_with_shard_still_survives_hex_round_trip() {
+    // A sharded id is a plain 16-byte token on the wire: hex encode/decode
+    // must preserve it (and thus the embedded shard).
+    let rng = SystemRandom::new();
+    let key = ObfuscationKey::derive_from_psk(b"session-id-hex-psk");
+    let shard = ShardId::new(11).unwrap();
+    let id = SessionId::random_with_shard(&rng, &key, shard).unwrap();
+    let parsed = SessionId::parse_hex(&id.to_hex()).unwrap();
+    assert_eq!(parsed, id);
+    assert_eq!(parsed.shard(&key).get(), 11);
 }
