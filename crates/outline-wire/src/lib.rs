@@ -25,6 +25,7 @@ pub use cipher::{
     CipherKind, MasterKeyError, SS_SUBKEY_INFO, UnknownCipherError, evp_bytes_to_key,
 };
 pub use cluster::{
-    MAX_SHARDS, ObfuscationKey, SHARD_BITS, ShardId, decode_shard, encode_session_id,
+    MAX_SHARDS, ObfuscationKey, SHARD_BITS, ShardId, decode_shard, derive_mesh_auth_seed,
+    encode_session_id,
 };
 pub use target::{TargetAddr, TargetAddrError, parse_target_addr, socket_addr_to_target};

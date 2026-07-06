@@ -14,6 +14,11 @@ use outline_wire::cluster::ShardId;
 
 use super::resumption::{ClusterIdentity, SessionId};
 
+// The mesh transport is built out but not yet wired into the runtime (that
+// happens in phase 4c/5), so its items are dead in a non-test build until then.
+#[allow(dead_code)]
+mod mesh;
+
 /// Where a freshly accepted carrier's session should be served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::server) enum RouteDecision {
