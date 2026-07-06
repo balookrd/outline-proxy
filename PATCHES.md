@@ -76,17 +76,21 @@ Logical changes carried by `sockudo-ws-1.7.5.patch`:
    / `HTTP/3 connection error` `eprintln!`s on a clean shutdown. Also restores
    `WebSocketServer::into_parts`, which the `outline-ss-rust` accept loop
    needs.
-2. **fix-h3-poll-write** (`src/http3/stream.rs`,
-   `src/stream/transport_stream.rs`) — the sockudo half of the poll-write
-   fix: `write_queued` / `shutdown_started` state machines that drive h3's
-   `queue_send` / `poll_drain` / `queue_grease` / `poll_quic_finish` exactly
-   once per logical write / shutdown. `poll_shutdown` additionally drains a
-   still-pending `poll_write` (`write_queued.is_some()`) to completion before
+2. **fix-h3-poll-write** (`src/stream/transport_stream.rs`) — the sockudo half
+   of the poll-write fix, applied to the live H3 WebSocket stream `Stream<Http3>`
+   (`Http3StreamInner::{Server,Client}`, the type reached via `from_h3_client` /
+   `from_h3_server`): `write_queued` / `shutdown_started` state machines that
+   drive h3's `queue_send` / `poll_drain` / `queue_grease` / `poll_quic_finish`
+   exactly once per logical write / shutdown. `poll_shutdown` additionally drains
+   a still-pending `poll_write` (`write_queued.is_some()`) to completion before
    issuing `queue_grease`: otherwise a shutdown racing an un-drained downlink
    write (relay teardown under a stream-open/close burst) calls `send_data`
    while h3-quinn's send stream still has `writing = Some(..)`, which h3-quinn
    escalates to a connection-level `H3_INTERNAL_ERROR` that collapses every
-   multiplexed session on the shared QUIC carrier.
+   multiplexed session on the shared QUIC carrier. (Note: the unused
+   `Http3ServerStream` / `Http3ClientStream` wrappers in `src/http3/stream.rs`
+   are left at upstream vanilla — the data plane never instantiates them, so the
+   fix lives only in the one live stream type.)
 3. **valid-close-codes-1012-1014** (`src/error.rs`) — `Error::is_valid_code`
    accepted only `1000..=1003 | 1007..=1011 | 3000..=4999`, rejecting the
    IANA-registered 1012 (Service Restart), 1013 (Try Again Later) and 1014
