@@ -322,8 +322,12 @@ pub(super) struct TunSection {
     /// Enable UDP USO (`TUNSETOFFLOAD`, `TUN_F_CSUM|USO4|USO6`) so the writer
     /// coalesces equal-sized downlink UDP datagrams of one flow into a
     /// `GSO_UDP_L4` super-segment the kernel splits per datagram (Linux).
-    /// Requires `gso`. Default `false`. The UDP mirror of the downlink TCP TSO
-    /// win, aimed at bulk QUIC. See `docs/TUN-GSO.md`.
+    /// Requires `gso`. Defaults to the value of `gso`: with the vnet header the
+    /// kernel frames local UDP-GSO (QUIC/HTTP3 egress) as `GSO_UDP_L4`, only
+    /// delivered intact when `TUN_F_USO` is requested, so `gso`/`gro` without USO
+    /// breaks all UDP. Set to `false` explicitly to force it off (a diagnostic
+    /// escape hatch). The UDP mirror of the downlink TCP TSO win. See
+    /// `docs/TUN-GSO.md`.
     pub(super) uso: Option<bool>,
 }
 
