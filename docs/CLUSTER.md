@@ -112,6 +112,13 @@ extracts the application bytes (the still-encrypted SS/VLESS stream as-is) and
 tunnels them to home. **Crypto and the upstream connection live only on home.**
 The edge never holds keys and never sees plaintext.
 
+The "application bytes" include the **carrier padding layer**: the edge carries
+the padding-wrapped ciphertext through untouched, and home does both the
+padding decode and the AEAD (on the server the two are fused — the padding
+decoder recovers straight into the AEAD ciphertext buffer). This is why the
+edge can stay padding-unaware and why the throttle `OCTL` cover frame (below)
+survives the relay.
+
 - **Link:** long-lived **QUIC** connections between cluster members. QUIC
   mandates a TLS 1.3 handshake (quinn on rustls, aws-lc-rs — the single crypto
   provider already in the graph), which already gives exactly the crypto we
@@ -191,7 +198,12 @@ home unparks into that stream.
 
 The padding-based downstream-throttle detection (server `ThroughputMonitor` →
 `OCTL` cover frame → client uplink switch) composes with the cluster, but with
-caveats worth stating explicitly.
+caveats worth stating explicitly. It runs on **both** the TCP and the UDP
+padded WS/XHTTP carriers (SS and VLESS); only raw-QUIC datagram carriers stay
+unmonitored. In the cluster the UDP leg rides its own separate carrier on the
+same uplink index, so it relays over its own mesh stream to the same home and
+is subject to the same caveats below — a detected UDP throttle penalises the
+UDP leg and migrates just it.
 
 - **The signal passes the relay transparently — which validates the relay
   boundary.** The padding layer (including cover / `OCTL` frames) lives on
@@ -230,8 +242,9 @@ caveats worth stating explicitly.
 
 **Follow-up (not MVP): detect the client segment on the edge.** The edge sees
 the raw bytes in both directions plus its own client-writer backlog, so it can
-detect an `edge→client` throttle by byte balance *without parsing padding*. It
-would then send home a new mesh control message (`THROTTLE_HINT`), and home
+detect an `edge→client` throttle by byte balance *without parsing padding*,
+per mesh stream — so it covers the TCP and UDP legs uniformly. It would then
+send home a new mesh control message (`THROTTLE_HINT`), and home
 (the padding-aware side) injects the `OCTL`. This cleanly separates the
 segments — throttle covers only the client mile, the interconnect is left to
 the health budget — and removes the false positives, at the cost of extending
