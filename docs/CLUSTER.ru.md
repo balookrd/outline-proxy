@@ -106,6 +106,12 @@ Edge терминирует **только carrier** (WS-фреймы / H3-strea
 туннелирует их на home. **Crypto и upstream-соединение живут только на home.**
 Edge никогда не держит ключей и не видит plaintext.
 
+«Application-байты» включают **слой carrier-padding**: edge проносит
+padding-обёрнутый ciphertext нетронутым, а home делает и padding-decode, и AEAD
+(на сервере они сцеплены — padding-декодер восстанавливает прямо в AEAD
+ciphertext-буфер). Именно поэтому edge остаётся padding-unaware, и поэтому
+throttle-кадр `OCTL` (ниже) переживает релей.
+
 - **Канал:** длинноживущие **QUIC**-соединения между членами кластера. QUIC
   обязывает к TLS 1.3-хендшейку (quinn на rustls, aws-lc-rs — единственный
   crypto-provider в графе), а он уже даёт ровно ту крипту, что нужна:
@@ -184,7 +190,11 @@ home, и home делает unpark в этот стрим.
 
 Padding-детекция троттлинга (серверный `ThroughputMonitor` → cover-кадр `OCTL`
 → смена uplink на клиенте) совмещается с кластером, но с оговорками, которые
-стоит проговорить явно.
+стоит проговорить явно. Она работает на **обоих** padded WS/XHTTP-carrier'ах —
+TCP и UDP (SS и VLESS); немониторятся только raw-QUIC datagram-carrier'ы. В
+кластере UDP-нога едет отдельным carrier'ом на том же uplink index, поэтому
+релеится своим mesh-стримом на тот же home и подвержена тем же оговоркам ниже —
+обнаруженный UDP-throttle штрафует именно UDP-ногу и мигрирует только её.
 
 - **Сигнал проходит релей прозрачно — и это _подтверждает_ выбор границы
   релея.** Padding-слой (включая cover/`OCTL`-кадры) живёт на **home**, поверх
@@ -222,7 +232,8 @@ Padding-детекция троттлинга (серверный `ThroughputMon
 **Follow-up (не MVP): детект client-сегмента на edge.** Edge видит сырые байты
 обоих направлений плюс backlog собственного client-writer, поэтому может
 детектить throttle сегмента `edge→client` по байтовому балансу *без парсинга
-padding*. Затем он шлёт home новый mesh control-msg (`THROTTLE_HINT`), и home
+padding*, per mesh-стрим — то есть покрывает TCP- и UDP-ноги единообразно.
+Затем он шлёт home новый mesh control-msg (`THROTTLE_HINT`), и home
 (padding-aware сторона) инжектит `OCTL`. Это чисто разделяет сегменты — throttle
 покрывает только client-милю, интерконнект отдан health-budget — и убирает
 ложные срабатывания ценой расширения mesh-фрейминга.
