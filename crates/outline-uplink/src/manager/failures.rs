@@ -582,16 +582,19 @@ impl UplinkManager {
     /// accordingly.
     pub async fn report_active_traffic(&self, index: usize, transport: TransportKind) {
         let now = Instant::now();
-        // Fast path: skip the write lock when we recently reported for this transport.
-        {
-            let s = self.inner.read_status(index);
+        // Fast path: skip the write lock when we recently reported for this
+        // transport. Read `last_active` under the lock without cloning the whole
+        // status — it owns several Vecs + a String, and this runs per downlink
+        // chunk on the SOCKS relay.
+        let recently_active = self.inner.with_status(index, |s| {
             let last = match transport {
                 TransportKind::Tcp => s.tcp.last_active,
                 TransportKind::Udp => s.udp.last_active,
             };
-            if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5)) {
-                return;
-            }
+            last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5))
+        });
+        if recently_active {
+            return;
         }
         let uplink_name = self.inner.uplinks[index].name.clone();
         // Double-check after acquiring the write lock to avoid a race where

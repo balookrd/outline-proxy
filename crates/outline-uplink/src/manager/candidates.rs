@@ -295,15 +295,16 @@ impl UplinkManager {
             .filter(|(index, _)| self.inner.admin_enabled(*index))
             .filter(|(_, u)| supports_transport_for_scope(u, transport, scope))
             .any(|(index, _)| {
-                let status = self.inner.read_status(index);
-                selection_health(
-                    &status,
-                    &self.inner.uplinks[index],
-                    transport,
-                    now,
-                    scope,
-                    &self.inner.load_balancing,
-                )
+                self.inner.with_status(index, |status| {
+                    selection_health(
+                        status,
+                        &self.inner.uplinks[index],
+                        transport,
+                        now,
+                        scope,
+                        &self.inner.load_balancing,
+                    )
+                })
             })
     }
 
