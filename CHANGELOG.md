@@ -13,9 +13,14 @@ per-binary changelogs:
 | **Server** (`outline-ss-rust`) | [`bins/outline-ss-rust/CHANGELOG.md`](bins/outline-ss-rust/CHANGELOG.md) | [`CHANGELOG.ru.md`](bins/outline-ss-rust/CHANGELOG.ru.md) |
 | **Client** (`outline-ws-rust`) | [`bins/outline-ws-rust/CHANGELOG.md`](bins/outline-ws-rust/CHANGELOG.md) | [`CHANGELOG.ru.md`](bins/outline-ws-rust/CHANGELOG.ru.md) |
 
-Both binaries are currently at **1.5.1** (2026-06-15). The headline `Unreleased`
-change on both sides is **adaptive carrier padding** for the WS / XHTTP carriers
-(anti TLS-in-TLS record-size correlation) — see each binary's changelog for the
-server (per-path) and client (global) halves.
+The **server** (`outline-ss-rust`) is at **1.6.0** (2026-07-01) and the
+**client** (`outline-ws-rust`) at **1.6.1** (2026-07-02); adaptive carrier
+padding shipped in the 1.6 line. The headline recent work is on the client
+data plane — **TUN GSO / GRO / USO offload** (`[tun] gso` / `gro` / `uso`) to
+cut per-packet CPU, and **connection sniffing with destination override**
+(TLS SNI / HTTP Host on TCP, QUIC ClientHello on UDP) so the exit node
+resolves the real hostname — alongside long-RTT single-flow throughput fixes
+(raised carrier receive windows + BBR congestion control, mirrored by the
+server on its QUIC listener). See each binary's changelog for details.
 
 *Русская версия: [CHANGELOG.ru.md](CHANGELOG.ru.md)*
