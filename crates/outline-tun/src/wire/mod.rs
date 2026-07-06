@@ -75,22 +75,51 @@ pub(crate) fn checksum16(data: &[u8]) -> u16 {
 }
 
 pub(crate) fn checksum16_parts(parts: &[&[u8]]) -> u16 {
-    let mut sum = 0u32;
-    let mut pending = None;
+    let mut sum: u64 = 0;
+    // High byte of a 16-bit word straddling a part boundary: the internet
+    // checksum groups the concatenation of all parts into big-endian 16-bit
+    // words, so an odd-length part pairs its last byte with the first byte of
+    // the next non-empty part.
+    let mut pending: Option<u8> = None;
 
     for part in parts {
-        for &byte in *part {
-            match pending.take() {
-                Some(high) => {
-                    sum = sum.wrapping_add(u32::from(u16::from_be_bytes([high, byte])));
+        let mut bytes = *part;
+        if let Some(high) = pending {
+            match bytes.split_first() {
+                Some((&low, rest)) => {
+                    sum += u64::from(u16::from_be_bytes([high, low]));
+                    pending = None;
+                    bytes = rest;
                 },
-                None => pending = Some(byte),
+                // Empty part: carry the pending high byte to the next one.
+                None => continue,
             }
+        }
+        // `bytes` now begins on a 16-bit-word boundary. Fold eight bytes (four
+        // words) per step through a wide accumulator: the one's-complement sum
+        // is grouping-independent, so accumulating in u64 and folding the
+        // end-around carry once at the end is exact, and a u64 cannot overflow
+        // for any datagram size.
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            let word =
+                u64::from_be_bytes(chunk.try_into().expect("chunks_exact(8) yields 8 bytes"));
+            sum += word >> 32;
+            sum += word & 0xffff_ffff;
+        }
+        let rem = chunks.remainder();
+        let mut i = 0;
+        while i + 2 <= rem.len() {
+            sum += u64::from(u16::from_be_bytes([rem[i], rem[i + 1]]));
+            i += 2;
+        }
+        if i < rem.len() {
+            pending = Some(rem[i]);
         }
     }
 
     if let Some(high) = pending {
-        sum = sum.wrapping_add(u32::from(u16::from_be_bytes([high, 0])));
+        sum += u64::from(u16::from_be_bytes([high, 0]));
     }
 
     while (sum >> 16) != 0 {
