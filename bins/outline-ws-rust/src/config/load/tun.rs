@@ -193,7 +193,13 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
     if gro && !gso {
         bail!("tun.gro requires tun.gso (GRO needs the vnet header)");
     }
-    let uso = tun.and_then(|section| section.uso).unwrap_or(false);
+    // USO defaults to `gso`: with IFF_VNET_HDR the kernel frames a local app's
+    // UDP-GSO (UDP_SEGMENT — the egress batching every QUIC/HTTP3 stack uses on
+    // :443) as a GSO_UDP_L4 super-packet, only delivered intact when TUN_F_USO
+    // is requested. Enabling `gso`/`gro` without USO leaves that path malformed
+    // and breaks all UDP, so USO follows `gso` unless explicitly set to `false`
+    // (a diagnostic escape hatch).
+    let uso = tun.and_then(|section| section.uso).unwrap_or(gso);
     if uso && !gso {
         bail!("tun.uso requires tun.gso (USO needs the vnet header)");
     }
