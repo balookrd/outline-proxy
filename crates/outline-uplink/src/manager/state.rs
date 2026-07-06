@@ -119,6 +119,16 @@ impl UplinkManagerInner {
         f(&mut guard)
     }
 
+    /// Read a single uplink status under its own lock **without cloning it**.
+    /// Non-async: the critical section must not cross `.await` (mirrors
+    /// [`Self::with_status_mut`]). Prefer this over [`Self::read_status`] on hot
+    /// paths that only read a field or two — `UplinkStatus` owns several `Vec`s
+    /// and a `String`, so cloning it just to read a flag or timestamp is waste.
+    pub(crate) fn with_status<R>(&self, index: usize, f: impl FnOnce(&UplinkStatus) -> R) -> R {
+        let guard = self.statuses[index].lock();
+        f(&guard)
+    }
+
     /// Read-only snapshot of a single uplink status.
     pub(crate) fn read_status(&self, index: usize) -> UplinkStatus {
         self.statuses[index].lock().clone()
