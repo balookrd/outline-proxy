@@ -168,11 +168,20 @@ listen = "[::1]:9090"
 # UDP USO (TUNSETOFFLOAD, TUN_F_CSUM|USO4|USO6): coalesce equal-sized downlink
 # UDP datagrams of one flow into a GSO_UDP_L4 super-segment the kernel splits
 # per datagram — the UDP mirror of the downlink TCP TSO win, aimed at bulk QUIC
-# video. Requires gso = true. Default false. Independent of gro; the kernel may
-# reject USO on kernels < 5.18, in which case TCP offload is kept and UDP GSO is
-# disabled. Data-plane core: verify a large UDP transfer + UDP health (DNS/QUIC)
-# after enabling. Ignored on non-Linux targets. See `docs/TUN-GSO.md`.
-# uso = false
+# video. Requires gso = true.
+#
+# Defaults to the value of `gso` (USO follows GSO). This is deliberate: with
+# IFF_VNET_HDR the kernel frames a local app's UDP-GSO (UDP_SEGMENT — the egress
+# batching every QUIC/HTTP3 stack uses on :443) as a GSO_UDP_L4 super-packet only
+# delivered intact when TUN_F_USO is requested. Enabling gso/gro WITHOUT USO
+# leaves that path malformed and breaks all UDP, so leave this unset to let it
+# track gso. Set `uso = false` explicitly only as a diagnostic escape hatch. The
+# kernel may reject USO on kernels < 5.18, in which case TCP offload is kept and
+# UDP GSO is disabled (UDP-GSO traffic may again misbehave — prefer a >= 5.18
+# kernel when using gso). Data-plane core: verify a large UDP transfer + UDP
+# health (DNS/QUIC) after enabling. Ignored on non-Linux targets. See
+# `docs/TUN-GSO.md`.
+# uso = true   # (implied by gso; set = false to force off)
 
 # [tun.tcp]
 # connect_timeout_secs = 10
