@@ -26,8 +26,8 @@ use crate::udp::{
     TunUdpEngine, classify_tun_udp_forward_error, parse_udp_packet, resegment_udp_gso,
 };
 use crate::vnet::{
-    VIRTIO_NET_HDR_GSO_NONE, VIRTIO_NET_HDR_GSO_TCPV4, VIRTIO_NET_HDR_GSO_TCPV6,
-    VIRTIO_NET_HDR_GSO_UDP_L4, VIRTIO_NET_HDR_LEN, VirtioNetHdr,
+    VIRTIO_NET_HDR_GSO_ECN, VIRTIO_NET_HDR_GSO_NONE, VIRTIO_NET_HDR_GSO_TCPV4,
+    VIRTIO_NET_HDR_GSO_TCPV6, VIRTIO_NET_HDR_GSO_UDP_L4, VIRTIO_NET_HDR_LEN, VirtioNetHdr,
 };
 use crate::wire::ip_to_target;
 use crate::writer::SharedTunWriter;
@@ -193,7 +193,10 @@ async fn tun_read_loop(
             }
             let header = VirtioNetHdr::decode(&buf[..VIRTIO_NET_HDR_LEN])
                 .expect("read > VIRTIO_NET_HDR_LEN guarantees a full header");
-            match header.gso_type {
+            // Mask the ECN CE bit before matching the base GSO type: the kernel
+            // ORs `VIRTIO_NET_HDR_GSO_ECN` (0x80) onto the type for ECN-marked
+            // super-packets, which would otherwise miss every arm and be dropped.
+            match header.gso_type & !VIRTIO_NET_HDR_GSO_ECN {
                 VIRTIO_NET_HDR_GSO_UDP_L4 => {
                     // UDP GRO: split the aggregate back into its datagrams and
                     // dispatch each in order — behaviourally identical to the

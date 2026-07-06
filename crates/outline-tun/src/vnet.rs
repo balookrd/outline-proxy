@@ -31,6 +31,12 @@ pub(crate) const VIRTIO_NET_HDR_GSO_TCPV6: u8 = 4;
 /// UDP header, to be split by the receiver. Only handed to us on read when
 /// `TUNSETOFFLOAD` requested `TUN_F_USO4` / `TUN_F_USO6`.
 pub(crate) const VIRTIO_NET_HDR_GSO_UDP_L4: u8 = 5;
+/// `gso_type` high bit the kernel ORs onto the base GSO type when the
+/// (segmented) packet carries an ECN CE mark. It is NOT a distinct type, so it
+/// must be masked off before matching the base type — otherwise an ECN-marked
+/// super-packet (`GSO_TCPV4 | ECN` = `0x81`, etc.) fails every arm and is
+/// silently dropped.
+pub(crate) const VIRTIO_NET_HDR_GSO_ECN: u8 = 0x80;
 
 /// Parsed / buildable `virtio_net_hdr`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
