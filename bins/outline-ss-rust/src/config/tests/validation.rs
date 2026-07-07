@@ -65,6 +65,7 @@ fn base_config() -> Config {
         http_fallback: None,
         sni_fallback: None,
         reverse_tunnel: None,
+        cluster: None,
     }
 }
 

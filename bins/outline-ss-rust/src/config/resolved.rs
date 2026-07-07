@@ -1,6 +1,13 @@
-use std::{collections::HashSet, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    net::SocketAddr,
+    path::PathBuf,
+    time::Duration,
+};
 
 use anyhow::Result;
+use outline_wire::cluster::ShardId;
 
 use super::{
     CipherKind, ConfigError, ControlConfig, DashboardConfig, HttpFallbackConfig, SniFallbackConfig,
@@ -165,6 +172,47 @@ pub struct Config {
     /// serves raw Shadowsocks on the streams the peer opens. `None` keeps
     /// the listen-only model. See `docs/REVERSE-TUNNEL.md`.
     pub reverse_tunnel: Option<ReverseTunnelConfig>,
+    /// Mesh cluster membership. When `Some`, this server mints session ids
+    /// carrying its shard, binds the mesh listener and relays foreign-shard
+    /// sessions to their home. `None` keeps the standalone model. See
+    /// `docs/CLUSTER.md`.
+    #[allow(dead_code)] // consumed by the mesh startup wiring in phase 5.
+    pub cluster: Option<ClusterConfig>,
+}
+
+/// The shared cluster secret, wrapped so it never appears in `Debug` output.
+#[derive(Clone)]
+#[allow(dead_code)] // consumed by the mesh startup wiring in phase 5.
+pub struct ClusterPsk(Vec<u8>);
+
+impl ClusterPsk {
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    #[allow(dead_code)] // read by the mesh startup wiring in phase 5.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ClusterPsk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ClusterPsk(..)")
+    }
+}
+
+/// Resolved `[cluster]` config. The PSK stays raw here; the obfuscation key and
+/// the mesh-auth keypair are derived from it at startup.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fields consumed by the mesh startup wiring in phase 5.
+pub struct ClusterConfig {
+    pub shard: ShardId,
+    pub psk: ClusterPsk,
+    pub mesh_listen: SocketAddr,
+    pub mesh_relay_budget: Duration,
+    /// Peer homes by shard. Excludes this server's own shard.
+    pub peers: HashMap<ShardId, SocketAddr>,
 }
 
 /// Resolved reverse-tunnel dialer config: one or more public `ws`

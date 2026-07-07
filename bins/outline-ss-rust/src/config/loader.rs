@@ -1,19 +1,25 @@
-use std::{collections::HashSet, path::PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    time::Duration,
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use clap::Parser;
+use outline_wire::cluster::ShardId;
 
 use super::{
     cli::ConfigArgs,
     dashboard::{resolve_control_config, resolve_dashboard_config},
     fallback::HttpFallbackConfig,
     file::{
-        FileConfig, ReverseTunnelSection, TlsCertSection, default_config_path_if_exists,
-        load_file_config,
+        ClusterSection, FileConfig, ReverseTunnelSection, TlsCertSection,
+        default_config_path_if_exists, load_file_config,
     },
     resolved::{
-        AccessKeyConfig, Config, H3Alpn, PaddingConfig, ReverseProtocol, ReverseTunnelConfig,
-        ReverseTunnelEndpoint, SessionResumptionConfig,
+        AccessKeyConfig, ClusterConfig, ClusterPsk, Config, H3Alpn, PaddingConfig, ReverseProtocol,
+        ReverseTunnelConfig, ReverseTunnelEndpoint, SessionResumptionConfig,
     },
     sni::{SniFallbackConfig, TlsCertEntry},
     user_entry::CipherKind,
@@ -192,6 +198,7 @@ impl AppMode {
             )?,
             sni_fallback: SniFallbackConfig::from_section(file.sni_fallback.unwrap_or_default())?,
             reverse_tunnel: resolve_reverse_tunnel(file.reverse_tunnel)?,
+            cluster: resolve_cluster(file.cluster)?,
         };
         config.validate()?;
 
@@ -297,6 +304,72 @@ fn host_of(addr: &str) -> String {
         _ => addr.to_string(),
     }
 }
+
+/// Resolve the `[cluster]` section into runtime config. Returns `None` (no
+/// cluster) when the section is absent or `enabled` is not `true`. Fails fast
+/// on a missing/invalid shard, PSK, listen address or peer entry so a
+/// misconfiguration aborts startup rather than silently degrading.
+fn resolve_cluster(section: Option<ClusterSection>) -> Result<Option<ClusterConfig>> {
+    let Some(section) = section else { return Ok(None) };
+    if !section.enabled.unwrap_or(false) {
+        return Ok(None);
+    }
+
+    let shard_raw = section
+        .shard_id
+        .context("cluster.shard_id is required when cluster.enabled")?;
+    let shard = ShardId::new(shard_raw)
+        .ok_or_else(|| anyhow!("cluster.shard_id must be < 16, got {shard_raw}"))?;
+
+    let psk_b64 = section
+        .cluster_psk
+        .context("cluster.cluster_psk is required when cluster.enabled")?;
+    let psk = STANDARD
+        .decode(psk_b64.trim())
+        .context("cluster.cluster_psk must be valid base64")?;
+    if psk.is_empty() {
+        bail!("cluster.cluster_psk must not be empty");
+    }
+
+    let mesh_listen = section
+        .mesh_listen
+        .context("cluster.mesh_listen is required when cluster.enabled")?
+        .parse()
+        .context("cluster.mesh_listen must be a valid host:port")?;
+
+    let budget_ms = section.mesh_relay_budget_ms.unwrap_or(4000).max(1);
+    let mesh_relay_budget = Duration::from_millis(budget_ms);
+
+    let mut peers = HashMap::new();
+    for (idx, peer) in section.peers.unwrap_or_default().into_iter().enumerate() {
+        let peer_shard = ShardId::new(peer.shard).ok_or_else(|| {
+            anyhow!("cluster.peers[{idx}].shard must be < 16, got {}", peer.shard)
+        })?;
+        // Our own shard is served locally, never relayed to.
+        if peer_shard == shard {
+            continue;
+        }
+        let addr = peer
+            .addr
+            .parse()
+            .with_context(|| format!("cluster.peers[{idx}].addr must be a valid host:port"))?;
+        if peers.insert(peer_shard, addr).is_some() {
+            bail!("duplicate cluster.peers entry for shard {}", peer.shard);
+        }
+    }
+
+    Ok(Some(ClusterConfig {
+        shard,
+        psk: ClusterPsk::from_bytes(psk),
+        mesh_listen,
+        mesh_relay_budget,
+        peers,
+    }))
+}
+
+#[cfg(test)]
+#[path = "tests/loader.rs"]
+mod tests;
 
 fn resolve_h3_alpn(input: Option<&[String]>) -> Result<Vec<H3Alpn>> {
     let Some(raw) = input else {
