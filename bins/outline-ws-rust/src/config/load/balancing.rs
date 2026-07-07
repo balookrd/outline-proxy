@@ -18,6 +18,7 @@ pub(super) fn load_balancing_config(
     Ok(LoadBalancingConfig {
         mode: lb.and_then(|l| l.mode).unwrap_or(LoadBalancingMode::ActiveActive),
         routing_scope: lb.and_then(|l| l.routing_scope).unwrap_or(RoutingScope::PerFlow),
+        shared_resume: lb.and_then(|l| l.shared_resume).unwrap_or(false),
         sticky_ttl: Duration::from_secs(lb.and_then(|l| l.sticky_ttl_secs).unwrap_or(300)),
         hysteresis: Duration::from_millis(lb.and_then(|l| l.hysteresis_ms).unwrap_or(50)),
         failure_cooldown: Duration::from_secs(

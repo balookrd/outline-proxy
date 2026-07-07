@@ -177,6 +177,7 @@ fn load_balancing_config_from_group(
     let shim = LoadBalancingSection {
         mode: section.mode,
         routing_scope: section.routing_scope,
+        shared_resume: section.shared_resume,
         sticky_ttl_secs: section.sticky_ttl_secs,
         hysteresis_ms: section.hysteresis_ms,
         failure_cooldown_secs: section.failure_cooldown_secs,
