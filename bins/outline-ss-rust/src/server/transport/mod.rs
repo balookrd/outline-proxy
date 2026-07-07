@@ -26,6 +26,10 @@ use super::state::{AppState, empty_transport_route, empty_vless_transport_route}
 
 pub(in crate::server) mod carrier_padding;
 mod fallback;
+// The mesh carrier adapter is consumed by the home-side relay dispatch (later
+// in phase 5c); not yet constructed by the runtime.
+#[allow(dead_code)]
+mod mesh_carrier;
 mod proxy_protocol;
 mod raw_quic;
 mod resume_headers;
