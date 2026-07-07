@@ -15,17 +15,20 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use axum::extract::ws::WebSocketUpgrade;
 use axum::response::Response;
 use outline_wire::cluster::ShardId;
-use quinn::{RecvStream, SendStream};
+use quinn::{RecvStream, SendStream, VarInt};
 use tracing::{debug, warn};
 
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
-use crate::server::cluster::mesh::{CarrierKind, MeshStream, OpenHeader, accept_relay};
+use crate::server::cluster::mesh::{
+    CarrierKind, CloseReason, MeshStream, OpenHeader, accept_relay,
+};
 use crate::server::resumption::SessionId;
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::state::{
@@ -55,10 +58,22 @@ const MESH_EDGE_CHUNK: usize = 256 * 1024;
 /// break that invariant. A fully idle session therefore relies on the client's
 /// own reconnect; an H3 client carrier is unaffected (QUIC keep-alive holds
 /// liveness and the client swallows its own Ping).
+///
+/// Health budget: `budget` bounds a single uplink write to the mesh. When the
+/// home stops draining (hung or the cross-country interconnect stalls), the
+/// QUIC send window fills and the write blocks; exceeding `budget` means a
+/// stalled relay, so we reset the mesh stream with [`CloseReason::Budget`] and
+/// fail — the client reconnects and gets a fresh session (the home parks the
+/// upstream, which then TTL-expires). It measures *progress*, not RTT: a high
+/// but flowing RTT keeps completing writes, so this only fires on a full stall.
+/// It never false-fires on an idle session — an idle uplink blocks on `recv`,
+/// not on a write. Pure-download stalls (no uplink to push) are left to the
+/// mesh QUIC idle timeout. See `docs/CLUSTER.md` § Health budget.
 pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
     client: T,
     mut mesh_send: SendStream,
     mut mesh_recv: RecvStream,
+    budget: Duration,
 ) -> Result<()> {
     let (mut reader, mut writer) = client.split_io();
 
@@ -67,7 +82,14 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
         while let Some(msg) = T::recv(&mut reader).await? {
             match T::classify(msg) {
                 WsFrame::Binary(data) => {
-                    mesh_send.write_all(&data).await.context("mesh edge uplink write")?;
+                    match tokio::time::timeout(budget, mesh_send.write_all(&data)).await {
+                        Ok(result) => result.context("mesh edge uplink write")?,
+                        Err(_elapsed) => {
+                            // Stalled past the budget: the home is not draining.
+                            let _ = mesh_send.reset(VarInt::from_u32(CloseReason::Budget.code()));
+                            bail!("mesh relay stalled past the health budget");
+                        },
+                    }
                 },
                 WsFrame::Close => break,
                 // The edge does not interpret the carrier; drop control frames.
@@ -165,6 +187,7 @@ pub(in crate::server::transport) async fn try_relay_edge(
         },
     };
     let session = metrics.open_websocket_session(Transport::Tcp, protocol, app_protocol);
+    let budget = cluster.relay_budget;
     // Continuity: echo the id the client presented — the home parks the relayed
     // upstream under exactly that id, so the client keeps resuming it.
     let echo = ResumeResponseEcho {
@@ -174,7 +197,7 @@ pub(in crate::server::transport) async fn try_relay_edge(
     let mut response = ws.on_upgrade(move |socket| async move {
         // Hold the pool permit for the relay's whole lifetime (drops here).
         let (send, recv, _permit) = pooled.into_parts();
-        let result = edge_relay::<AxumWs>(AxumWs(socket), send, recv).await;
+        let result = edge_relay::<AxumWs>(AxumWs(socket), send, recv, budget).await;
         super::finish_ws_session(session, result, kind);
     });
     echo.apply(response.headers_mut());
