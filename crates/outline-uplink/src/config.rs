@@ -631,6 +631,15 @@ impl TlsProbeConfig {
 pub struct LoadBalancingConfig {
     pub mode: LoadBalancingMode,
     pub routing_scope: RoutingScope,
+    /// Share one session-resumption id across every uplink in this group,
+    /// scoped to the group name instead of the per-uplink name. Set this when
+    /// the group's uplinks are edges of one **mesh cluster** (the server-side
+    /// `[cluster]` feature): whichever edge the client dials, it presents the
+    /// same resume id, so the edge relays the session to its home and it
+    /// survives an edge switch. Leave `false` (the default) for a group of
+    /// independent servers — sharing a resume id across unrelated homes would
+    /// only ever miss. See `docs/CLUSTER-DEPLOY.md`.
+    pub shared_resume: bool,
     pub sticky_ttl: Duration,
     pub hysteresis: Duration,
     pub failure_cooldown: Duration,

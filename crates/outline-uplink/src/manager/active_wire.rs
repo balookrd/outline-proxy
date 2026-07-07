@@ -79,7 +79,21 @@ impl UplinkManager {
     ///
     /// `transport_label` must be one of `"tcp"` / `"udp"`.
     pub fn resume_cache_key_for(&self, uplink_name: &str, transport_label: &str) -> String {
-        resume_cache_key(uplink_name, transport_label)
+        resume_cache_key(self.resume_scope(uplink_name), transport_label)
+    }
+
+    /// The resume-cache scope for `uplink_name`: the group name when this group
+    /// shares one resume id across its uplinks (`shared_resume`, set when the
+    /// uplinks are edges of one server-side mesh `[cluster]`), else the
+    /// uplink's own name (the standalone per-uplink default). Sharing the scope
+    /// makes the client present the same `X-Outline-Resume` id to whichever
+    /// edge it dials, so the session survives an edge switch via the mesh relay.
+    pub(crate) fn resume_scope<'a>(&'a self, uplink_name: &'a str) -> &'a str {
+        if self.inner.load_balancing.shared_resume {
+            &self.inner.group_name
+        } else {
+            uplink_name
+        }
     }
 
     /// Read the currently-active wire index for `uplink_index` on `transport`.
