@@ -210,6 +210,7 @@ async fn setup_vless_raw_quic_server() -> Result<(SocketAddr, JoinHandle<Result<
                 raw_vless_candidates,
                 raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -396,6 +397,7 @@ async fn setup_vless_ws_h3_server(
                 raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
                 raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -1115,6 +1117,7 @@ async fn setup_vless_raw_quic_server_with_resumption()
                 raw_vless_candidates,
                 raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -1285,6 +1288,7 @@ async fn setup_vless_ws_h3_server_with_resumption(
                 raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
                 raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )

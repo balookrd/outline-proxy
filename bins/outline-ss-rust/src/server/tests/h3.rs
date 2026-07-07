@@ -76,6 +76,7 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
                     Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
                 ),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -189,6 +190,7 @@ async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
                     Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
                 ),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -353,6 +355,7 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
                     Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
                 ),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -459,6 +462,7 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
                     Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
                 ),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -543,6 +547,7 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
                     Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
                 ),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -661,6 +666,7 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
                     Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
                 ),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -810,6 +816,7 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
                     Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
                 ),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -953,6 +960,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
                     Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
                 ),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )

@@ -14,12 +14,14 @@ use super::super::{
         build_root_http_auth_success_response, parse_failed_root_auth_attempts,
         parse_root_http_auth_password, password_matches_any_user,
     },
+    cluster::{RouteDecision, mesh::CarrierKind},
     state::{empty_transport_route, empty_vless_transport_route},
     transport::{
-        ResumeContext, UdpRouteCtx, VlessWsRouteCtx, WsTcpRouteCtx, XhttpH3Ctx, XhttpRoute,
-        finish_ws_session, generate_anonymous_xhttp_session_id, h3_fallback_handle,
-        handle_tcp_h3_connection, handle_udp_h3_connection, handle_vless_h3_connection,
-        handle_xhttp_h3_request, is_normal_h3_shutdown,
+        ResumeContext, ResumeResponseEcho, UdpRouteCtx, VlessWsRouteCtx, WsTcpRouteCtx, XhttpH3Ctx,
+        XhttpRoute, edge_route, finish_ws_session, generate_anonymous_xhttp_session_id,
+        h3_fallback_handle, handle_tcp_h3_connection, handle_udp_h3_connection,
+        handle_vless_h3_connection, handle_xhttp_h3_request, is_normal_h3_shutdown,
+        mesh_relay::{edge_relay_h3, open_edge_relay},
     },
 };
 use super::H3ConnectionCtx;
@@ -217,6 +219,56 @@ async fn handle_h3_request(
             .await
             .context("failed to send HTTP/3 websocket error response")?;
         return Ok(());
+    }
+
+    // Cluster edge: relay a foreign-shard SS-TCP / VLESS resume to its home
+    // over the mesh. UDP has no mesh relay yet; combined-SS was already split
+    // to a tcp/udp leg above. Checked before the local resume context; on relay
+    // failure we fall through to a fresh local session (this edge becomes home).
+    if path_is_tcp || path_is_vless {
+        let registry = if path_is_tcp {
+            &ctx.tcp_server.orphan_registry
+        } else {
+            &ctx.vless_server.orphan_registry
+        };
+        if let Some(cluster) = ctx.cluster.as_deref()
+            && let (RouteDecision::Relay(shard), Some(advert)) =
+                edge_route(request.headers(), registry.cluster_identity())
+        {
+            let (carrier, app_protocol, kind) = if path_is_tcp {
+                (CarrierKind::SsTcp, AppProtocol::Shadowsocks, "tcp")
+            } else {
+                (CarrierKind::VlessTcp, AppProtocol::Vless, "vless")
+            };
+            if let Some(pooled) =
+                open_edge_relay(cluster, shard, &advert, carrier, &ws_req.path, peer_addr).await
+            {
+                // Continuity: echo the id the client presented (the home parks
+                // the relayed upstream under exactly that id).
+                let mut response = build_extended_connect_response(None, None);
+                ResumeResponseEcho {
+                    session_id: Some(advert.session_id),
+                    ..Default::default()
+                }
+                .apply(response.headers_mut());
+                stream
+                    .send_response(response)
+                    .await
+                    .context("failed to send HTTP/3 websocket response")?;
+                let socket = vendored::server_ws_stream(stream, ctx.ws_config.clone());
+                let metrics = if path_is_tcp {
+                    &ctx.tcp_server.metrics
+                } else {
+                    &ctx.vless_server.metrics
+                };
+                let session =
+                    metrics.open_websocket_session(Transport::Tcp, Protocol::Http3, app_protocol);
+                let result = edge_relay_h3(socket, pooled, cluster.relay_budget).await;
+                finish_ws_session(session, result, kind);
+                return Ok(());
+            }
+            // Relay unavailable: fall through to a fresh local session.
+        }
     }
 
     // Resume negotiation. Parse `X-Outline-*` headers up-front (cheap)

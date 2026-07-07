@@ -159,6 +159,7 @@ async fn vless_raw_quic_tcp_relay_smoke() -> Result<()> {
                 raw_vless_candidates,
                 raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -237,6 +238,7 @@ async fn ss_raw_quic_tcp_relay_smoke() -> Result<()> {
                 raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
                 raw_ss_users: users,
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -353,6 +355,7 @@ async fn vless_raw_quic_udp_relay_smoke() -> Result<()> {
                 raw_vless_candidates,
                 raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -453,6 +456,7 @@ async fn vless_raw_quic_udp_oversize_relay() -> Result<()> {
                 raw_vless_candidates,
                 raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -572,6 +576,7 @@ async fn ss_raw_quic_udp_relay_smoke() -> Result<()> {
                 raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
                 raw_ss_users: users,
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )
@@ -643,6 +648,7 @@ async fn ss_raw_quic_udp_oversize_relay() -> Result<()> {
                 raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
                 raw_ss_users: users,
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )

@@ -55,7 +55,7 @@ pub(in crate::server) use raw_quic::{
     serve_raw_ss_oversize_records, serve_raw_ss_quic_datagrams, serve_raw_vless_oversize_records,
     serve_raw_vless_quic_datagrams,
 };
-pub(in crate::server) use resume_headers::ResumeContext;
+pub(in crate::server) use resume_headers::{ResumeContext, ResumeResponseEcho, edge_route};
 pub(in crate::server) use sink::is_handshake_rejected;
 pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
