@@ -176,13 +176,11 @@ pub struct Config {
     /// carrying its shard, binds the mesh listener and relays foreign-shard
     /// sessions to their home. `None` keeps the standalone model. See
     /// `docs/CLUSTER.md`.
-    #[allow(dead_code)] // consumed by the mesh startup wiring in phase 5.
     pub cluster: Option<ClusterConfig>,
 }
 
 /// The shared cluster secret, wrapped so it never appears in `Debug` output.
 #[derive(Clone)]
-#[allow(dead_code)] // consumed by the mesh startup wiring in phase 5.
 pub struct ClusterPsk(Vec<u8>);
 
 impl ClusterPsk {
@@ -190,7 +188,6 @@ impl ClusterPsk {
         Self(bytes)
     }
 
-    #[allow(dead_code)] // read by the mesh startup wiring in phase 5.
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
@@ -205,7 +202,9 @@ impl fmt::Debug for ClusterPsk {
 /// Resolved `[cluster]` config. The PSK stays raw here; the obfuscation key and
 /// the mesh-auth keypair are derived from it at startup.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // fields consumed by the mesh startup wiring in phase 5.
+// `shard`/`psk` feed the registry identity now; `mesh_listen`/`mesh_relay_budget`/
+// `peers` are consumed by the mesh bring-up + relay in phase 5c.
+#[allow(dead_code)]
 pub struct ClusterConfig {
     pub shard: ShardId,
     pub psk: ClusterPsk,
