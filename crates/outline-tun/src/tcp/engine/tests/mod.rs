@@ -1871,6 +1871,7 @@ pub(crate) async fn build_test_manager_with_urls(
         LoadBalancingConfig {
             mode: outline_uplink::LoadBalancingMode::ActiveActive,
             routing_scope: outline_uplink::RoutingScope::PerFlow,
+            shared_resume: false,
             sticky_ttl: Duration::from_secs(300),
             hysteresis: Duration::from_millis(50),
             failure_cooldown: Duration::from_secs(10),
