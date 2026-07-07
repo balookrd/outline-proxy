@@ -15,7 +15,8 @@
 
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use quinn::{RecvStream, SendStream};
 use tracing::{debug, warn};
 
 use crate::metrics::Protocol;
@@ -32,6 +33,59 @@ use super::mesh_carrier::MeshCarrier;
 use super::resume_headers::ResumeContext;
 use super::tcp::{WsTcpRouteCtx, run_tcp_relay};
 use super::vless::{VlessWsRouteCtx, run_vless_relay};
+use super::ws_socket::{WsFrame, WsSocket};
+
+/// Read granularity for the mesh→client direction on the edge.
+const MESH_EDGE_CHUNK: usize = 256 * 1024;
+
+/// Edge-side relay: splice a client carrier to a mesh relay stream, forwarding
+/// the still-encrypted application bytes both ways. The edge does not decode
+/// the SS/VLESS layer — it moves the WS binary payload verbatim (padding +
+/// ciphertext) so the home strips both. Exactly one writer per direction, so
+/// backpressure rides the QUIC / WS windows (mirrors [`super::mesh_carrier`]
+/// on the home side). Validated end to end by the phase-8 test.
+#[allow(dead_code)] // invoked by the edge accept branch in phase 5c-3b.
+pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
+    client: T,
+    mut mesh_send: SendStream,
+    mut mesh_recv: RecvStream,
+) -> Result<()> {
+    let (mut reader, mut writer) = client.split_io();
+
+    // Uplink: the ONLY writer to `mesh_send`.
+    let uplink = async {
+        while let Some(msg) = T::recv(&mut reader).await? {
+            match T::classify(msg) {
+                WsFrame::Binary(data) => {
+                    mesh_send.write_all(&data).await.context("mesh edge uplink write")?;
+                },
+                WsFrame::Close => break,
+                // The edge does not interpret the carrier; drop control frames.
+                WsFrame::Ping(_) | WsFrame::Pong | WsFrame::Text => {},
+            }
+        }
+        let _ = mesh_send.finish();
+        Ok::<(), anyhow::Error>(())
+    };
+
+    // Downlink: the ONLY writer to the client `writer`.
+    let downlink = async {
+        while let Some(chunk) = mesh_recv
+            .read_chunk(MESH_EDGE_CHUNK, true)
+            .await
+            .context("mesh edge downlink read")?
+        {
+            T::send(&mut writer, T::binary_msg(chunk.bytes))
+                .await
+                .context("edge client downlink write")?;
+        }
+        T::finish(&mut writer).await;
+        Ok::<(), anyhow::Error>(())
+    };
+
+    tokio::try_join!(uplink, downlink)?;
+    Ok(())
+}
 
 /// Accepts relayed connections from edge peers until the endpoint closes or the
 /// server shuts down. One task per peer connection; one task per relayed
