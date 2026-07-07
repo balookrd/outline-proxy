@@ -40,6 +40,7 @@ fn lb_with_mode(
     LoadBalancingConfig {
         mode,
         routing_scope,
+        shared_resume: false,
         sticky_ttl: Duration::from_secs(300),
         hysteresis: Duration::from_millis(50),
         failure_cooldown: Duration::from_secs(10),

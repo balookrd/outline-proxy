@@ -557,6 +557,11 @@ pub(super) struct UplinkGroupSection {
     pub(super) name: Option<String>,
     pub(super) mode: Option<LoadBalancingMode>,
     pub(super) routing_scope: Option<RoutingScope>,
+    /// Share one resumption id across all uplinks in this group (scoped to the
+    /// group name) so a mesh-cluster session survives an edge switch. Default
+    /// `false` — only enable for a group whose uplinks are edges of one
+    /// server-side `[cluster]`. See `docs/CLUSTER-DEPLOY.md`.
+    pub(super) shared_resume: Option<bool>,
     pub(super) sticky_ttl_secs: Option<u64>,
     pub(super) hysteresis_ms: Option<u64>,
     pub(super) failure_cooldown_secs: Option<u64>,
@@ -754,6 +759,11 @@ pub(super) struct TlsProbeSection {
 pub(super) struct LoadBalancingSection {
     pub(super) mode: Option<LoadBalancingMode>,
     pub(super) routing_scope: Option<RoutingScope>,
+    /// Share one resumption id across all uplinks in this group (scoped to the
+    /// group name) so a mesh-cluster session survives an edge switch. Default
+    /// `false` — only enable for a group whose uplinks are edges of one
+    /// server-side `[cluster]`. See `docs/CLUSTER-DEPLOY.md`.
+    pub(super) shared_resume: Option<bool>,
     pub(super) sticky_ttl_secs: Option<u64>,
     pub(super) hysteresis_ms: Option<u64>,
     pub(super) failure_cooldown_secs: Option<u64>,

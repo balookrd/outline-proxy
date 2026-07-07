@@ -94,6 +94,7 @@ fn lb(weighted: bool) -> LoadBalancingConfig {
     LoadBalancingConfig {
         mode: LoadBalancingMode::ActiveActive,
         routing_scope: RoutingScope::PerFlow,
+        shared_resume: false,
         sticky_ttl: Duration::from_secs(300),
         hysteresis: Duration::from_millis(50),
         failure_cooldown: Duration::from_secs(10),
@@ -227,4 +228,28 @@ async fn weighted_rotate_avoids_flaky_wire_but_not_entirely() {
         "the anti-DPI reroll lands on the flaky wire least often: {tcp_hits:?}"
     );
     assert!(tcp_hits[0] > 0, "but the floor keeps the flaky wire reachable: {tcp_hits:?}");
+}
+
+/// `shared_resume` scopes the resume-cache key to the group name, so every
+/// uplink in a mesh-cluster group presents one `X-Outline-Resume` id and a
+/// session survives an edge switch. Off (the default) keeps the per-uplink
+/// scope so independent servers never cross-resume.
+#[test]
+fn shared_resume_scopes_the_resume_key_to_the_group() {
+    let uplink = three_wire_uplink(); // name = "up"
+
+    let per_uplink =
+        UplinkManager::new_for_test("cluster-a", vec![uplink.clone()], probe(), lb(false)).unwrap();
+    assert_eq!(per_uplink.resume_cache_key_for("up", "tcp"), "up#tcp");
+    assert_eq!(per_uplink.resume_cache_key_for("edge-b", "udp"), "edge-b#udp");
+
+    let shared = UplinkManager::new_for_test(
+        "cluster-a",
+        vec![uplink],
+        probe(),
+        LoadBalancingConfig { shared_resume: true, ..lb(false) },
+    )
+    .unwrap();
+    assert_eq!(shared.resume_cache_key_for("up", "tcp"), "cluster-a#tcp");
+    assert_eq!(shared.resume_cache_key_for("edge-b", "udp"), "cluster-a#udp");
 }

@@ -207,7 +207,7 @@ impl UplinkManager {
         // Cache key is the uplink's display name — unique within a
         // group, stable across reconnects. The store-if-issued at the
         // bottom records the new ID for the next reconnect.
-        let resume_key = resume_cache_key(&candidate.uplink.name, "tcp");
+        let resume_key = resume_cache_key(self.resume_scope(&candidate.uplink.name), "tcp");
         let resume_request = global_resume_cache().get(&resume_key);
         let ws = crate::dial::dial_in_uplink_scope(
             &candidate.uplink,
@@ -298,7 +298,7 @@ impl UplinkManager {
                 // dials of the same uplink — server-side both park
                 // under `Parked::Tcp(Vless)`, so one Session ID is
                 // valid through either transport.
-                let resume_key = resume_cache_key(&uplink.name, "tcp");
+                let resume_key = resume_cache_key(self.resume_scope(&uplink.name), "tcp");
                 let resume_request = global_resume_cache().get(&resume_key);
                 let resume_id_bytes = resume_request.map(|id| *id.as_bytes());
                 let (w, r, issued_rx) = crate::dial::dial_in_uplink_scope(
@@ -591,7 +591,7 @@ impl UplinkManager {
         // Mirrors the TCP path's ResumeCache wiring; the cache key
         // distinguishes TCP and UDP slots so a TCP-side reconnect
         // doesn't steal the UDP-side Session ID and vice versa.
-        let udp_resume_key = resume_cache_key(&candidate.uplink.name, "udp");
+        let udp_resume_key = resume_cache_key(self.resume_scope(&candidate.uplink.name), "udp");
         let udp_resume_request = global_resume_cache().get(&udp_resume_key);
         // Scope the per-uplink padding override over the dial + build: padding
         // is read when `from_websocket` builds the transport (after the dial

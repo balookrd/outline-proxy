@@ -305,6 +305,7 @@ fn lb() -> LoadBalancingConfig {
     LoadBalancingConfig {
         mode: LoadBalancingMode::ActivePassive,
         routing_scope: RoutingScope::Global,
+        shared_resume: false,
         sticky_ttl: Duration::from_secs(0),
         hysteresis: Duration::from_millis(0),
         failure_cooldown: Duration::from_secs(5),

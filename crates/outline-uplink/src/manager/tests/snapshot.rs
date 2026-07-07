@@ -85,6 +85,7 @@ fn lb(bypass_when_down: bool) -> LoadBalancingConfig {
     LoadBalancingConfig {
         mode: LoadBalancingMode::ActiveActive,
         routing_scope: RoutingScope::PerFlow,
+        shared_resume: false,
         sticky_ttl: Duration::from_secs(300),
         hysteresis: Duration::from_millis(50),
         failure_cooldown: Duration::from_secs(10),
