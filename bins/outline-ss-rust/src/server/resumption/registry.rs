@@ -100,8 +100,7 @@ impl OrphanRegistry {
 
     /// Attaches this server's cluster identity so minted session ids carry the
     /// shard. Builder-style so existing constructor call sites are unchanged;
-    /// wired from `[cluster]` config in a later phase.
-    #[allow(dead_code)] // wired by phase 7 (cluster config → identity).
+    /// wired from `[cluster]` config at startup (see `server::services`).
     pub(crate) fn with_cluster(mut self, key: ObfuscationKey, shard: ShardId) -> Self {
         self.cluster = Some(ClusterIdentity { key, shard });
         self
