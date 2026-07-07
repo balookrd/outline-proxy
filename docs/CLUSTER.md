@@ -291,10 +291,15 @@ distribute. It is HKDF-split by domain (`"shard-obfuscation"` for the session
 id, `"mesh-auth"` for the interconnect keypair) so the same key is never reused
 across two crypto contexts.
 
-Client (`outline-ws-rust`): **ideally no changes.** The cluster is transparent
-to the client — it already resumes to the same uplink with the same session
-id, and the edge failover path already exists. Anycast ingress and the relay
-are invisible to it.
+Client (`outline-ws-rust`): **no code changes.** The cluster is transparent to
+the client — it already resumes to the same uplink with the same session id, and
+the edge failover path already exists. With an **anycast** ingress the relay is
+fully invisible. When anycast is not available and DNS is unreliable, list every
+node as its own uplink and set `shared_resume = true` on the group's
+`[load_balancing]` so all uplinks share one resume scope (the group name) —
+whichever edge the client dials, it presents the same resume id and the session
+survives the switch. Step-by-step deployment (server + client) is in
+[`CLUSTER-DEPLOY.md`](CLUSTER-DEPLOY.md).
 
 ## Bounded resources
 
