@@ -234,6 +234,17 @@ pub async fn run(config: Config) -> Result<()> {
     // `ws` listeners, each serving raw SS on the streams the peer opens.
     reverse_tunnel::spawn_reverse_tunnels(&config, &built, &mut tasks, &shutdown_signal);
 
+    // Mesh cluster listener (home side): accept relayed carriers from edge
+    // peers and serve them through the normal accept path. Only when clustered.
+    if let Some(cluster) = built.cluster.clone() {
+        let services = Arc::clone(&built.services);
+        let routes = Arc::clone(&built.routes);
+        let shutdown = shutdown_signal.clone();
+        tasks.spawn(async move {
+            transport::mesh_relay::run_mesh_listener(cluster, services, routes, shutdown).await
+        });
+    }
+
     // `shutdown_signal` lives past the spawn block so receivers inherited above
     // can observe cancellation; drop our copy so the watch channel can close
     // cleanly once the OS-signal task fires.

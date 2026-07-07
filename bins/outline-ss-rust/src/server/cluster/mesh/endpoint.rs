@@ -22,7 +22,10 @@ pub(in crate::server) struct MeshStream {
     pub(in crate::server) recv: RecvStream,
 }
 
-/// A bound mesh endpoint, usable both as listener and dialer.
+/// A bound mesh endpoint, usable both as listener and dialer. Cloneable (the
+/// inner quinn endpoint is an `Arc`), so the listener accept-loop and the peer
+/// pool can share one socket.
+#[derive(Clone)]
 pub(in crate::server) struct MeshEndpoint {
     endpoint: Endpoint,
 }

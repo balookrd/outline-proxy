@@ -202,9 +202,6 @@ impl fmt::Debug for ClusterPsk {
 /// Resolved `[cluster]` config. The PSK stays raw here; the obfuscation key and
 /// the mesh-auth keypair are derived from it at startup.
 #[derive(Debug, Clone)]
-// `shard`/`psk` feed the registry identity now; `mesh_listen`/`mesh_relay_budget`/
-// `peers` are consumed by the mesh bring-up + relay in phase 5c.
-#[allow(dead_code)]
 pub struct ClusterConfig {
     pub shard: ShardId,
     pub psk: ClusterPsk,

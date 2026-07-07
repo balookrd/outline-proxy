@@ -13,6 +13,9 @@ mod peer_pool;
 mod pump;
 mod tls;
 
-// Re-exported so the transport-side `MeshCarrier` (a `WsSocket` adapter) can
-// wrap a relayed stream and feed it into the existing accept path.
-pub(in crate::server) use endpoint::MeshStream;
+// Re-exported so the transport-side relay dispatch can accept relayed streams
+// and wrap them (`MeshCarrier`) into the existing accept path.
+pub(in crate::server) use endpoint::{MeshEndpoint, MeshStream, accept_relay};
+pub(in crate::server) use frame::{CarrierKind, OpenHeader};
+pub(in crate::server) use peer_pool::MeshPeerPool;
+pub(in crate::server) use tls::MeshIdentity;
