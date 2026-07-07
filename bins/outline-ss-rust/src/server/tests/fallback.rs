@@ -148,7 +148,7 @@ async fn http_fallback_proxies_unmatched_requests_to_upstream() -> Result<()> {
         config.http_root_realm.clone(),
     );
     let fallback = fallback_ctx_for(upstream_addr, addr, None);
-    let app = build_app(routes, services, auth, Some(fallback));
+    let app = build_app(routes, services, auth, Some(fallback), None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
@@ -222,7 +222,7 @@ async fn http_fallback_proxies_post_with_body() -> Result<()> {
         config.http_root_realm.clone(),
     );
     let fallback = fallback_ctx_for(upstream_addr, addr, None);
-    let app = build_app(routes, services, auth, Some(fallback));
+    let app = build_app(routes, services, auth, Some(fallback), None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
@@ -264,7 +264,7 @@ async fn http_fallback_disabled_returns_404_for_unknown_path() -> Result<()> {
         false,
         config.http_root_realm.clone(),
     );
-    let app = build_app(routes, services, auth, None);
+    let app = build_app(routes, services, auth, None, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
@@ -351,7 +351,7 @@ async fn http_fallback_emits_proxy_protocol_v1_header() -> Result<()> {
         config.http_root_realm.clone(),
     );
     let fallback = fallback_ctx_for(upstream_addr, addr, Some(ProxyProtocolVersion::V1));
-    let app = build_app(routes, services, auth, Some(fallback));
+    let app = build_app(routes, services, auth, Some(fallback), None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
@@ -409,7 +409,7 @@ async fn http_fallback_emits_proxy_protocol_v2_header() -> Result<()> {
         config.http_root_realm.clone(),
     );
     let fallback = fallback_ctx_for(upstream_addr, addr, Some(ProxyProtocolVersion::V2));
-    let app = build_app(routes, services, auth, Some(fallback));
+    let app = build_app(routes, services, auth, Some(fallback), None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
@@ -542,7 +542,7 @@ async fn http_fallback_relays_to_h2_upstream() -> Result<()> {
         config.http_root_realm.clone(),
     );
     let fallback = fallback_ctx_for_proto(upstream_addr, addr, None, BackendProto::H2);
-    let app = build_app(routes, services, auth, Some(fallback));
+    let app = build_app(routes, services, auth, Some(fallback), None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 

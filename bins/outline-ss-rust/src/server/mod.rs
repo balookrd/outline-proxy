@@ -82,6 +82,7 @@ pub async fn run(config: Config) -> Result<()> {
         Arc::clone(&built.services),
         Arc::clone(&built.auth),
         built.http_fallback.clone(),
+        built.cluster.clone(),
     );
 
     let (shutdown_sender, shutdown_signal) = shutdown_channel();

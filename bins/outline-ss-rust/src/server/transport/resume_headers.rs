@@ -14,7 +14,7 @@ pub(in crate::server) use outline_wire::resume::{
 };
 
 use super::super::cluster::{RouteDecision, decide};
-use super::super::resumption::{OrphanRegistry, SessionId};
+use super::super::resumption::{ClusterIdentity, OrphanRegistry, SessionId};
 
 /// Per-request resumption negotiation state, parsed once at WS Upgrade
 /// time from `X-Outline-*` headers and threaded into the relay loop.
@@ -180,6 +180,75 @@ impl ResumeContext {
     }
 }
 
+/// The client's raw resume advertisement, read straight from the request
+/// headers with **no** local-registry gating. Used by the cluster edge to
+/// build the mesh OPEN header: the home re-derives resumption policy from its
+/// own registry, and in a symmetric cluster (shared PSK and matching config)
+/// that is equivalent to gating here — so the edge forwards exactly what the
+/// client advertised.
+pub(in crate::server) struct EdgeResumeAdvert {
+    /// The foreign-shard resume id the client presented.
+    pub(in crate::server) session_id: SessionId,
+    /// Client advertised `X-Outline-Resume-Capable`.
+    pub(in crate::server) resume_capable: bool,
+    /// Client advertised the Ack-Prefix (v1) capability.
+    pub(in crate::server) ack_prefix: bool,
+    /// Client advertised Symmetric Downlink Replay (v2).
+    pub(in crate::server) symmetric_replay: bool,
+    /// Client-reported downstream-acked offset (v2), else `0`.
+    pub(in crate::server) down_acked: u64,
+}
+
+/// Routes an incoming carrier by the shard embedded in its resume id and, when
+/// the session belongs to a foreign home, returns the advertisement to relay
+/// there over the mesh.
+///
+/// A [`RouteDecision::Relay`] always yields `Some(advert)` — a relay decision
+/// implies the client presented a resume id. [`RouteDecision::Local`] (no
+/// cluster identity, a first connect, or an own-shard id) yields `None`, and
+/// the caller serves the carrier locally. Total and side-effect-free. Takes the
+/// identity (not the registry) so it stays trivially testable, mirroring
+/// [`decide`].
+pub(in crate::server) fn edge_route(
+    headers: &axum::http::HeaderMap,
+    identity: Option<&ClusterIdentity>,
+) -> (RouteDecision, Option<EdgeResumeAdvert>) {
+    let requested = headers
+        .get(RESUME_REQUEST_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(SessionId::parse_hex);
+    match decide(identity, requested) {
+        RouteDecision::Relay(shard) => {
+            let session_id =
+                requested.expect("a Relay decision implies the client presented a resume id");
+            let advert = EdgeResumeAdvert {
+                session_id,
+                resume_capable: header_is_one(headers, RESUME_CAPABLE_HEADER),
+                ack_prefix: header_is_one(headers, ACK_PREFIX_HEADER),
+                symmetric_replay: header_is_one(headers, SYMMETRIC_REPLAY_HEADER),
+                down_acked: headers
+                    .get(DOWN_ACKED_HEADER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(0),
+            };
+            (RouteDecision::Relay(shard), Some(advert))
+        },
+        RouteDecision::Local => (RouteDecision::Local, None),
+    }
+}
+
+/// Whether `name`'s value is the ASCII flag `1` (after trimming). Mirrors the
+/// capability gating in [`ResumeContext::from_request_headers`].
+fn header_is_one(headers: &axum::http::HeaderMap, name: &str) -> bool {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim() == "1")
+}
+
 /// Response-side resume echo, captured by value (the fields are `Copy`)
 /// before `ResumeContext` moves into an upgrade closure. The headers it
 /// writes are exactly what the client-side dial plan reads back to decide
@@ -206,3 +275,7 @@ impl ResumeResponseEcho {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/resume_headers.rs"]
+mod tests;

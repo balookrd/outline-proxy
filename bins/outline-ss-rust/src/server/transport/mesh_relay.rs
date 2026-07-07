@@ -13,13 +13,17 @@
 //! issued id — the home parks under the id the client already holds (there is
 //! no HTTP response over the mesh to echo a fresh one). See `docs/CLUSTER.md`.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use axum::extract::ws::WebSocketUpgrade;
+use axum::response::Response;
+use outline_wire::cluster::ShardId;
 use quinn::{RecvStream, SendStream};
 use tracing::{debug, warn};
 
-use crate::metrics::Protocol;
+use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{CarrierKind, MeshStream, OpenHeader, accept_relay};
 use crate::server::resumption::SessionId;
@@ -30,10 +34,10 @@ use crate::server::state::{
 
 use super::carrier_padding;
 use super::mesh_carrier::MeshCarrier;
-use super::resume_headers::ResumeContext;
+use super::resume_headers::{EdgeResumeAdvert, ResumeContext, ResumeResponseEcho};
 use super::tcp::{WsTcpRouteCtx, run_tcp_relay};
 use super::vless::{VlessWsRouteCtx, run_vless_relay};
-use super::ws_socket::{WsFrame, WsSocket};
+use super::ws_socket::{AxumWs, WsFrame, WsSocket};
 
 /// Read granularity for the mesh→client direction on the edge.
 const MESH_EDGE_CHUNK: usize = 256 * 1024;
@@ -44,7 +48,13 @@ const MESH_EDGE_CHUNK: usize = 256 * 1024;
 /// ciphertext) so the home strips both. Exactly one writer per direction, so
 /// backpressure rides the QUIC / WS windows (mirrors [`super::mesh_carrier`]
 /// on the home side). Validated end to end by the phase-8 test.
-#[allow(dead_code)] // invoked by the edge accept branch in phase 5c-3b.
+///
+/// Known v1 limitation (h1/h2 client carriers only): the edge drops the
+/// client's keepalive `Ping` rather than answering `Pong`, because a single
+/// writer owns the client downlink and interleaving a control reply would
+/// break that invariant. A fully idle session therefore relies on the client's
+/// own reconnect; an H3 client carrier is unaffected (QUIC keep-alive holds
+/// liveness and the client swallows its own Ping).
 pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
     client: T,
     mut mesh_send: SendStream,
@@ -85,6 +95,90 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
 
     tokio::try_join!(uplink, downlink)?;
     Ok(())
+}
+
+/// Describes a carrier the edge is about to relay to its home. Bundled so the
+/// TCP and VLESS upgrade call sites stay readable.
+pub(in crate::server::transport) struct EdgeRelay {
+    /// Home shard the resume id decoded to.
+    pub(in crate::server::transport) shard: ShardId,
+    /// Raw client resume advertisement to carry in the OPEN header.
+    pub(in crate::server::transport) advert: EdgeResumeAdvert,
+    /// Carrier kind (already resolved to a Tcp/Udp leg for combined-SS).
+    pub(in crate::server::transport) carrier: CarrierKind,
+    /// Request path, for the home's padding-scheme selection and routing.
+    pub(in crate::server::transport) path: Arc<str>,
+    /// Client address hint (logging / routing scope on the home).
+    pub(in crate::server::transport) peer_addr: SocketAddr,
+    /// HTTP version of the client carrier (metrics label).
+    pub(in crate::server::transport) protocol: Protocol,
+    /// Application protocol of the carrier (metrics label).
+    pub(in crate::server::transport) app_protocol: AppProtocol,
+    /// Short carrier name for session-teardown logging (`"tcp"` / `"vless"`).
+    pub(in crate::server::transport) kind: &'static str,
+}
+
+/// Edge side: relay a foreign-shard carrier to its home over the mesh.
+///
+/// The mesh relay is opened **before** the WebSocket `101` handshake so the
+/// echoed session id reflects the real outcome. On success the returned
+/// response upgrades the client carrier and splices it byte-for-byte to the
+/// home, echoing the id the client already holds (the home parks the upstream
+/// under exactly that id — continuity across the edge switch). On failure the
+/// [`WebSocketUpgrade`] is handed back so the caller serves a fresh local
+/// session instead (this edge becomes the new home and mints its own id).
+pub(in crate::server::transport) async fn try_relay_edge(
+    ws: WebSocketUpgrade,
+    cluster: &ClusterCtx,
+    metrics: &Arc<Metrics>,
+    relay: EdgeRelay,
+) -> std::result::Result<Response, WebSocketUpgrade> {
+    let EdgeRelay {
+        shard,
+        advert,
+        carrier,
+        path,
+        peer_addr,
+        protocol,
+        app_protocol,
+        kind,
+    } = relay;
+    let header = OpenHeader {
+        carrier,
+        session_id: *advert.session_id.as_bytes(),
+        resume_capable: advert.resume_capable,
+        ack_prefix: advert.ack_prefix,
+        symmetric_replay: advert.symmetric_replay,
+        client_down_acked: advert.down_acked,
+        path: path.to_string(),
+        peer_addr: Some(peer_addr),
+    };
+    let pooled = match cluster.pool.open_relay(shard, &header).await {
+        Ok(pooled) => pooled,
+        Err(error) => {
+            debug!(
+                ?error,
+                shard = shard.get(),
+                "mesh relay open failed; serving a fresh local session",
+            );
+            return Err(ws);
+        },
+    };
+    let session = metrics.open_websocket_session(Transport::Tcp, protocol, app_protocol);
+    // Continuity: echo the id the client presented — the home parks the relayed
+    // upstream under exactly that id, so the client keeps resuming it.
+    let echo = ResumeResponseEcho {
+        session_id: Some(advert.session_id),
+        ..Default::default()
+    };
+    let mut response = ws.on_upgrade(move |socket| async move {
+        // Hold the pool permit for the relay's whole lifetime (drops here).
+        let (send, recv, _permit) = pooled.into_parts();
+        let result = edge_relay::<AxumWs>(AxumWs(socket), send, recv).await;
+        super::finish_ws_session(session, result, kind);
+    });
+    echo.apply(response.headers_mut());
+    Ok(response)
 }
 
 /// Accepts relayed connections from edge peers until the endpoint closes or the

@@ -212,7 +212,7 @@ async fn matched_sni_terminates_locally() -> Result<()> {
         false,
         config.http_root_realm.clone(),
     );
-    let app = build_app(routes, services_state, auth, None);
+    let app = build_app(routes, services_state, auth, None, None);
     let sni_fallback = Some(sni_ctx(backend_addr, addr, None, false));
     let server_config = Arc::new(config);
     let shutdown = ShutdownSignal::never();
@@ -268,7 +268,7 @@ async fn foreign_sni_splices_to_backend_with_clienthello() -> Result<()> {
         false,
         config.http_root_realm.clone(),
     );
-    let app = build_app(routes, services_state, auth, None);
+    let app = build_app(routes, services_state, auth, None, None);
     let sni_fallback = Some(sni_ctx(backend_addr, addr, None, false));
     let server_config = Arc::new(config);
     let shutdown = ShutdownSignal::never();
@@ -330,7 +330,7 @@ async fn foreign_sni_with_proxy_protocol_v2_prefixes_header() -> Result<()> {
         false,
         config.http_root_realm.clone(),
     );
-    let app = build_app(routes, services_state, auth, None);
+    let app = build_app(routes, services_state, auth, None, None);
     let sni_fallback = Some(sni_ctx(backend_addr, addr, Some(ProxyProtocolVersion::V2), false));
     let server_config = Arc::new(config);
     let shutdown = ShutdownSignal::never();

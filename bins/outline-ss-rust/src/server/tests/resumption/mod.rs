@@ -180,7 +180,7 @@ async fn spawn_test_server(
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
     });
-    let app = build_app(routes, services, auth, None);
+    let app = build_app(routes, services, auth, None, None);
     let metrics_for_handle = Arc::clone(&metrics);
     let task =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
