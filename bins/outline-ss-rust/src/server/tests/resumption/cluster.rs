@@ -1,0 +1,308 @@
+//! End-to-end tests for the mesh cluster (phase 8).
+//!
+//! Each test boots a small in-process cluster of real `outline-ss-rust` nodes,
+//! each with `[cluster]` wired (a PSK-derived mesh endpoint + peer pool) and
+//! session resumption enabled, then drives an SS-over-WebSocket client through
+//! the edge relay and asserts the end-to-end behaviour on the wire.
+//!
+//! The nodes share one PSK, so every node derives the same shard-obfuscation
+//! key (a resume id minted by one decodes to the same shard on all) and the
+//! same mesh mutual-auth pin. All nodes use `sample_config`, so the SS user
+//! ("bob") and its key are identical across nodes — the client encrypts once
+//! and whichever home decrypts it succeeds.
+//!
+//! The load-bearing probe is the echo target's accept counter (see
+//! [`super::spawn_echo_target`]): a fresh upstream connect bumps it, a resume
+//! hit reuses the parked socket and leaves it unchanged.
+
+use std::{
+    collections::{BTreeMap, HashMap},
+    net::{Ipv4Addr, SocketAddr},
+    sync::{Arc, atomic::Ordering},
+    time::Duration,
+};
+
+use anyhow::{Result, bail};
+use arc_swap::ArcSwap;
+use futures_util::{SinkExt, StreamExt};
+use outline_wire::cluster::{ObfuscationKey, ShardId};
+use ring::rand::SystemRandom;
+use tokio::{net::TcpListener, task::JoinHandle};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+use super::super::super::bootstrap::serve_listener;
+use super::super::super::cluster::ClusterCtx;
+use super::super::super::nat::NatTable;
+use super::super::super::replay::ReplayStore;
+use super::super::super::resumption::{OrphanRegistry, ResumptionConfig, SessionId};
+use super::super::super::setup::build_vless_transport_route_map;
+use super::super::super::shutdown::ShutdownSignal;
+use super::super::super::state::UserKeySlice;
+use super::super::super::transport::mesh_relay::run_mesh_listener;
+use super::super::super::{
+    AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_app,
+    build_transport_route_map, build_user_routes, ensure_rustls_provider_installed, user_keys,
+};
+use super::super::sample_config;
+use super::ss::ss_handshake_frame;
+use super::{connect_ws_h1, expect_binary_reply, spawn_echo_target};
+use crate::config::{ClusterConfig, ClusterPsk};
+use crate::crypto::{AeadStreamDecryptor, UserKey};
+use crate::metrics::{Metrics, Transport};
+
+/// A running cluster node: an SS-over-WS listener plus a mesh endpoint (home
+/// listener + edge dialer). Aborts its tasks on drop so tests don't leak
+/// listeners between cases.
+struct ClusterNode {
+    listen_addr: SocketAddr,
+    mesh_addr: SocketAddr,
+    ws_task: JoinHandle<Result<()>>,
+    mesh_task: JoinHandle<Result<()>>,
+}
+
+impl Drop for ClusterNode {
+    fn drop(&mut self) {
+        self.ws_task.abort();
+        self.mesh_task.abort();
+    }
+}
+
+/// Boots one cluster node on fresh random localhost ports: an SS-over-WS
+/// listener and a mesh endpoint bound to `[cluster]`-derived identity, with
+/// `peers` as its shard→home routing table. Returns the node and the shared SS
+/// `UserKey` clients encrypt with.
+async fn spawn_cluster_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+) -> Result<(ClusterNode, UserKey)> {
+    // The mesh QUIC endpoint needs the process-wide rustls provider installed.
+    ensure_rustls_provider_installed();
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+
+    // `listen` here only validates the config schema; the real port is the
+    // bound listener above.
+    let mut config = sample_config((Ipv4Addr::LOCALHOST, 0).into());
+    config.session_resumption.enabled = true;
+    let user_routes = build_user_routes(&config)?;
+    let user = user_routes[0].user.clone();
+    let users = user_keys(user_routes.as_ref());
+
+    let metrics = Metrics::new(&config);
+    let shard = ShardId::new(shard).unwrap();
+    let obf_key = ObfuscationKey::derive_from_psk(psk);
+    let orphan_registry = Arc::new(
+        OrphanRegistry::new(
+            ResumptionConfig::from(&config.session_resumption),
+            Arc::clone(&metrics),
+        )
+        .with_cluster(obf_key, shard),
+    );
+
+    let nat_table = NatTable::new(Duration::from_secs(300));
+    let dns_cache = DnsCache::new(Duration::from_secs(30));
+    let tcp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
+    let udp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: tcp_routes,
+        udp: udp_routes,
+        vless: Arc::new(build_vless_transport_route_map(&[])),
+        xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(BTreeMap::new()),
+    }));
+    let services = Arc::new(Services::new(
+        Arc::clone(&metrics),
+        dns_cache,
+        false,
+        None,
+        UdpServices {
+            nat_table,
+            replay_store: ReplayStore::new(Duration::from_secs(300), 0),
+            relay_semaphore: None,
+        },
+        Some(orphan_registry),
+        16,
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),
+        http_root_auth: false,
+        http_root_realm: "Authorization required".into(),
+    });
+
+    let cluster_cfg = ClusterConfig {
+        shard,
+        psk: ClusterPsk::from_bytes(psk.to_vec()),
+        mesh_listen: (Ipv4Addr::LOCALHOST, 0).into(),
+        mesh_relay_budget: Duration::from_secs(4),
+        peers,
+    };
+    let cluster = ClusterCtx::build(&cluster_cfg)?;
+    let mesh_addr = cluster.endpoint.local_addr()?;
+
+    let app = build_app(
+        Arc::clone(&routes),
+        Arc::clone(&services),
+        auth,
+        None,
+        Some(Arc::clone(&cluster)),
+    );
+    let ws_task =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    let mesh_task =
+        tokio::spawn(run_mesh_listener(cluster, services, routes, ShutdownSignal::never()));
+
+    Ok((
+        ClusterNode {
+            listen_addr,
+            mesh_addr,
+            ws_task,
+            mesh_task,
+        },
+        user,
+    ))
+}
+
+/// Fabricates a resume id whose shard decodes to `shard` under `psk` — as if a
+/// home on that shard had minted it on a prior connect.
+fn resume_id_for_shard(psk: &[u8], shard: u8) -> Result<SessionId> {
+    let key = ObfuscationKey::derive_from_psk(psk);
+    Ok(SessionId::random_with_shard(
+        &SystemRandom::new(),
+        &key,
+        ShardId::new(shard).unwrap(),
+    )?)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+/// Survival across an edge switch: a session established through one edge is
+/// resumed through a *different* edge, both relaying to the same home over the
+/// mesh. The home reuses the parked upstream, so the echo target sees exactly
+/// one accept across the two connects.
+#[tokio::test]
+async fn cluster_session_survives_edge_switch() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-survival-psk";
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
+
+    // Home owns shard 1; two edges (shards 2, 3) relay to it.
+    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new()).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge_a, _) = spawn_cluster_node(PSK, 2, peers.clone()).await?;
+    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers).await?;
+
+    // The client holds a home-shard resume id (as if the home minted it on a
+    // prior connect). Both edges route it to the home over the mesh.
+    let session_id = resume_id_for_shard(PSK, 1)?;
+
+    // Session #1 via edge A: the home misses (never parked) → fresh upstream,
+    // then parks on close under the id the client presented.
+    let (mut sock_a, _) = connect_ws_h1(edge_a.listen_addr, "/tcp", Some(session_id), true).await?;
+    sock_a
+        .send(WsMessage::Binary(ss_handshake_frame(&user, echo_addr, b"via-edge-a")?))
+        .await?;
+    let _ = expect_binary_reply(&mut sock_a).await?;
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "first relay must open exactly one upstream"
+    );
+    sock_a.close(None).await?;
+    drop(sock_a);
+    // Let the mesh stream finish and the home park the upstream on the FIN.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Session #2 via edge B, same id: the home's take_for_resume hits → the
+    // parked upstream is reattached, with no fresh connect.
+    let (mut sock_b, _) = connect_ws_h1(edge_b.listen_addr, "/tcp", Some(session_id), true).await?;
+    sock_b
+        .send(WsMessage::Binary(ss_handshake_frame(&user, echo_addr, b"via-edge-b")?))
+        .await?;
+    let _ = expect_binary_reply(&mut sock_b).await?;
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "resume across the edge switch must reuse the parked upstream (no fresh connect)"
+    );
+    sock_b.close(None).await?;
+    Ok(())
+}
+
+/// A large payload survives the relay byte-for-byte in both directions. 512 KiB
+/// forces several 256 KiB mesh read chunks each way, exercising the
+/// chunk-boundary reassembly that is the relay's main silent-corruption risk.
+#[tokio::test]
+async fn cluster_relay_preserves_large_payload() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-integrity-psk";
+    let (echo_addr, _accepts) = spawn_echo_target().await?;
+    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new()).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers).await?;
+
+    let session_id = resume_id_for_shard(PSK, 1)?;
+
+    // Deterministic 512 KiB pattern.
+    let payload: Vec<u8> = (0..512 * 1024usize)
+        .map(|i| (i.wrapping_mul(31).wrapping_add(7)) as u8)
+        .collect();
+
+    let (socket, _) = connect_ws_h1(edge.listen_addr, "/tcp", Some(session_id), true).await?;
+    let frame = ss_handshake_frame(&user, echo_addr, &payload)?;
+
+    // Send and receive concurrently so the round-trip can't deadlock on
+    // buffer capacity while the client is still writing the uplink.
+    let (mut sink, mut stream) = socket.split();
+    let send_task = tokio::spawn(async move { sink.send(WsMessage::Binary(frame)).await });
+
+    let mut decryptor = AeadStreamDecryptor::new(Arc::from(vec![user.clone()].into_boxed_slice()));
+    let mut plaintext = Vec::new();
+    while plaintext.len() < payload.len() {
+        let next = tokio::time::timeout(Duration::from_secs(10), stream.next()).await?;
+        match next {
+            Some(Ok(WsMessage::Binary(bytes))) => {
+                decryptor.feed_ciphertext(&bytes);
+                decryptor.drain_plaintext(&mut plaintext)?;
+            },
+            Some(Ok(WsMessage::Close(_))) | None => break,
+            // Ignore any control frames the carrier may surface.
+            Some(Ok(_)) => {},
+            Some(Err(error)) => bail!("edge websocket error: {error}"),
+        }
+    }
+    let _ = send_task.await?;
+
+    assert_eq!(plaintext.len(), payload.len(), "relayed byte count differs from what was sent");
+    assert!(
+        plaintext == payload,
+        "relayed payload was corrupted or reordered across the mesh"
+    );
+    Ok(())
+}
+
+/// When the edge has no mesh route to the resume id's home shard, `open_relay`
+/// fails and the edge must degrade to a fresh local session rather than drop
+/// the client. The echo target sees a fresh upstream connect.
+#[tokio::test]
+async fn cluster_unreachable_home_falls_back_to_local_session() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-fallback-psk";
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
+
+    // An edge on shard 2 with NO peer for shard 1: a shard-1 resume relays
+    // nowhere, so the edge serves the carrier locally.
+    let (edge, user) = spawn_cluster_node(PSK, 2, HashMap::new()).await?;
+    let foreign_id = resume_id_for_shard(PSK, 1)?;
+
+    let (mut sock, _) = connect_ws_h1(edge.listen_addr, "/tcp", Some(foreign_id), true).await?;
+    sock.send(WsMessage::Binary(ss_handshake_frame(&user, echo_addr, b"fallback")?))
+        .await?;
+    let _ = expect_binary_reply(&mut sock).await?;
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "an unreachable home must degrade to a fresh local upstream, not drop the client"
+    );
+    sock.close(None).await?;
+    Ok(())
+}

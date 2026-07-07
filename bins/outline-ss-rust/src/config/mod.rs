@@ -21,6 +21,10 @@ pub use resolved::{
     AccessKeyConfig, ClusterConfig, Config, H3Alpn, PaddingConfig, ReverseProtocol,
     ReverseTunnelEndpoint, SessionResumptionConfig,
 };
+// Surfaced only for the cluster e2e tests, which build a `ClusterConfig` by
+// hand; nothing in the non-test binary consumes this re-export.
+#[cfg(test)]
+pub use resolved::ClusterPsk;
 pub use sni::{SniBackend, SniFallbackConfig, SniMatcher, TlsCertEntry};
 pub use tuning::{TuningOverrides, TuningPreset, TuningProfile};
 pub use user_entry::{CipherKind, ConfigError, UserEntry, validate_ip_aliases};
