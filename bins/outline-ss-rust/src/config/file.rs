@@ -48,6 +48,51 @@ pub(super) struct FileConfig {
     /// addition to) listening locally. `None` keeps the listen-only model.
     #[serde(default)]
     pub reverse_tunnel: Option<ReverseTunnelSection>,
+    /// Mesh cluster membership: this server's shard, the shared PSK and the
+    /// peer shard→address table. `None` keeps the standalone model. See
+    /// `docs/CLUSTER.md`.
+    #[serde(default)]
+    pub cluster: Option<ClusterSection>,
+}
+
+/// `[cluster]` — mesh cluster membership. When `enabled`, this server mints
+/// session ids carrying its `shard_id` and dials/relays to the peer homes
+/// listed in `peers` over the QUIC mesh. All members share one `cluster_psk`
+/// (no CA / certificates to distribute).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ClusterSection {
+    /// Master switch. When absent or `false`, the server behaves as standalone
+    /// (session ids stay plain random, no mesh listener, no relay).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// This server's shard id, `0..16`. Unique within the cluster.
+    #[serde(default)]
+    pub shard_id: Option<u8>,
+    /// Base64 of the shared cluster secret. HKDF-split into the
+    /// shard-obfuscation key and the mesh-auth keypair; never logged.
+    #[serde(default)]
+    pub cluster_psk: Option<String>,
+    /// `host:port` the mesh QUIC listener binds for inbound relays.
+    #[serde(default)]
+    pub mesh_listen: Option<String>,
+    /// Progress budget in milliseconds: a relay stalled longer than this is
+    /// torn down so the client re-homes. Defaults to 4000.
+    #[serde(default)]
+    pub mesh_relay_budget_ms: Option<u64>,
+    /// Peer homes: shard → address. This server's own shard entry (if any) is
+    /// ignored (it is served locally, not relayed).
+    #[serde(default)]
+    pub peers: Option<Vec<ClusterPeerSection>>,
+}
+
+/// One peer home in the cluster: which shard it owns and where to dial it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ClusterPeerSection {
+    pub shard: u8,
+    /// `host:port` of the peer's mesh listener.
+    pub addr: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

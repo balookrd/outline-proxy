@@ -59,6 +59,7 @@ fn test_config() -> Config {
         http_fallback: None,
         sni_fallback: None,
         reverse_tunnel: None,
+        cluster: None,
         config_path: None,
         control: None,
         dashboard: None,
