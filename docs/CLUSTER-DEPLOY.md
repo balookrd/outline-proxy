@@ -1,0 +1,169 @@
+# Cluster deployment runbook
+
+Operational guide for turning two or more standalone `outline-ss-rust` servers
+into a mesh cluster where a client session survives switching between edges.
+For the design, see [`CLUSTER.md`](CLUSTER.md).
+
+## 0. Prerequisites
+
+- **Two or more server nodes.** A one-node cluster is pointless — there is no
+  peer to relay to. Nodes are usually in different countries.
+- **All nodes on the same build.** The mesh wire protocol has a version
+  (`OPEN_VERSION`); mixing builds can break the mesh handshake or OPEN parsing.
+  Roll out one binary everywhere.
+- The mesh interconnect uses **QUIC over UDP**. Make sure UDP between the nodes
+  is allowed (see §4).
+
+## 1. Topology and shard plan
+
+Every node is simultaneously an **edge** (accepts clients) and a **home** (owns
+its own sessions and accepts relays from other edges). Give each a unique
+`shard_id` in `0..16`:
+
+| Node | shard_id | public ingress (WS/H3/XHTTP) | mesh address (node-to-node) |
+| --- | --- | --- | --- |
+| A (e.g. DE) | 0 | unchanged | `A_ip:9443` |
+| B (e.g. NL) | 1 | unchanged | `B_ip:9443` |
+
+## 2. Shared secret
+
+One secret for the whole cluster, identical on every node:
+
+```bash
+openssl rand -base64 32
+```
+
+It is HKDF-split by domain (`shard-obfuscation` for the session id,
+`mesh-auth` for the interconnect keypair) — **no CA, no certificates** to
+distribute. Store it like any other secret (not in git). Leaking it breaks
+future mesh auth, but past traffic stays protected by the ephemeral QUIC keys.
+
+## 3. Server `[cluster]` config
+
+`peers` is the full shard → mesh-address map of **all** nodes; a node's own
+entry is ignored, so the same `peers` block can be copied to every node.
+
+**Node A** (`shard_id = 0`):
+
+```toml
+[cluster]
+enabled = true
+shard_id = 0
+cluster_psk = "<same base64 on every node>"
+mesh_listen = "[::]:9443"          # QUIC (UDP) listener for inbound relays
+mesh_relay_budget_ms = 4000        # a relay stalled longer than this is torn down
+peers = [
+  { shard = 0, addr = "A_ip:9443" },   # own shard — ignored
+  { shard = 1, addr = "B_ip:9443" },
+]
+```
+
+**Node B** — identical, but `shard_id = 1`.
+
+Validation is fail-fast at startup: `shard_id` required and `< 16`;
+`cluster_psk` valid non-empty base64; `mesh_listen` a valid `host:port`; a
+duplicate `peers` shard is an error. `enabled = false` (or omitting the whole
+section) means standalone — byte-for-byte the current behaviour.
+
+## 4. Network / firewall
+
+- Open the **mesh port (9443/UDP)** between nodes. It is QUIC — **UDP**, not TCP.
+- Defense in depth: restrict the mesh port to the peer IPs. The PSK-derived
+  mutual pin already rejects outsiders, but an IP filter shrinks the surface.
+- The public ingress (WS/H3/XHTTP) is unchanged.
+
+## 5. Client: reaching the cluster
+
+The client is **cluster-agnostic and needs no code changes**, but the way it
+addresses the cluster matters. The client caches its resumption id per
+**resume scope**; a session only survives an edge switch if the client presents
+the *same* resume id to whichever edge it lands on. There are three ways to get
+that, in order of preference:
+
+### 5a. Anycast (ideal)
+
+One IP announced by BGP from every node. The client always dials one address;
+the network routes it to the nearest/live node. One scope, one resume id,
+survival for free. Nothing special in the client config.
+
+### 5b. Single DNS hostname
+
+One hostname with several A/AAAA records. Works **if** the client is configured
+with a single uplink URL on that hostname (the scope is the uplink, not the
+resolved IP). Fragile if resolution is unreliable.
+
+### 5c. Explicit uplinks with `shared_resume` (no anycast / no reliable DNS)
+
+List every node as its own uplink and mark the group so all uplinks **share one
+resume scope** (the group name). Then, whichever edge the client's load balancer
+dials, it presents the same resume id, the edge relays the session to its home,
+and it survives the switch.
+
+Simple (implicit) group form:
+
+```toml
+[[uplinks]]
+name = "edge-de"
+transport = "ss"                   # or vless; see UPLINK-CONFIGURATIONS.md
+# ...url / cipher / password / mode fields for node A...
+
+[[uplinks]]
+name = "edge-nl"
+transport = "ss"
+# ...same for node B...
+
+[load_balancing]
+shared_resume = true               # ← all uplinks above share one resume id
+```
+
+Named-group form (`[[uplink_group]]`) — set `shared_resume = true` on the group
+whose uplinks are the cluster edges.
+
+`shared_resume` defaults to `false`. **Only enable it for a group whose uplinks
+are edges of one mesh cluster.** For a group of independent servers, sharing a
+resume id across unrelated homes would only ever miss.
+
+## 6. Rollout order
+
+1. Generate the PSK; prepare the `[cluster]` blocks.
+2. Open the mesh port between nodes.
+3. Deploy the new binary + config to all nodes (rolling is fine — a node still
+   on the old binary just runs standalone for its clients; safe degradation).
+4. Point the client at the cluster (§5).
+5. Run the checks below.
+
+## 7. Verification
+
+- **Startup:** each node's log shows the mesh listener came up and no config
+  validation panic.
+- **Mesh reachability:** from a test client, dial one node presenting a resume
+  id that decodes to a *different* node's shard (this happens by itself when a
+  client moves between edges); the session is served and the upstream is not
+  reopened. On an unreachable home the edge degrades silently to a fresh session
+  (the topology is not revealed).
+- **Survival:** start a session (a download in flight), force the client onto a
+  different node (§5c makes this deterministic — kill the active uplink), and the
+  download continues.
+- **⚠️ Integrity on real traffic:** the e2e tests cover the data plane but not
+  production traffic. Download a large file through the cluster and **verify its
+  sha256** against the original (the risk is silent corruption / reordering, like
+  the TUN pump). Keep `git revert` ready for the first days.
+
+## 8. Rollback
+
+- Instant: set `enabled = false` in `[cluster]` (or delete the section) and
+  restart — the node is standalone again, session ids are plain random, the mesh
+  does not listen. Clients keep working (they degrade to a fresh session). On the
+  client, drop `shared_resume` (or point at a single node).
+- Full: revert the cluster commits and rebuild. But for turning it off,
+  `enabled = false` is enough — the code with no `[cluster]` is unchanged.
+
+## 9. Caveats
+
+- **Double-hop RTT:** the edge → home hop between countries adds latency on long
+  bulk transfers. The health budget catches *hangs*, not slowness.
+- **Throttle detection:** keep it **off** at first — the home-side detector
+  cannot tell the mesh interconnect apart from the client last mile and can fire
+  spuriously (see `CLUSTER.md`).
+- **UDP / raw-QUIC carriers** are not relayed yet — those legs fall back to a
+  fresh local session on a foreign shard (safe, just no cross-edge resume).
