@@ -16,11 +16,12 @@ use h3_quinn::BidiStream;
 use tracing::{debug, warn};
 
 use crate::metrics::Protocol;
+use crate::server::cluster::ClusterCtx;
 
 use super::super::super::state::Services;
 use super::super::is_normal_h3_shutdown;
 use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
-use super::handlers::{XhttpRoute, spawn_relay};
+use super::handlers::{XhttpRoute, spawn_relay, xhttp_edge_plan, xhttp_issued_id};
 use super::padding::post_response_headers;
 use super::{
     AttachOutcome, FIN_HEADER, SEQ_HEADER, UplinkIngestError, XhttpRegistry, XhttpSession,
@@ -40,6 +41,9 @@ pub(in crate::server) struct XhttpH3Ctx {
     pub(in crate::server) services: Arc<Services>,
     pub(in crate::server) route: XhttpRoute,
     pub(in crate::server) base_path: Arc<str>,
+    /// Mesh-cluster runtime; `Some` only when clustered. Read on a session-
+    /// creating request to relay a foreign-shard resume to its home.
+    pub(in crate::server) cluster: Option<Arc<ClusterCtx>>,
 }
 
 /// Dispatcher entry. Called from `h3/http.rs` once a non-CONNECT
@@ -124,9 +128,11 @@ async fn xhttp_h3_get(
     // the response like the h1/h2 XHTTP handlers do.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
+    let edge =
+        xhttp_edge_plan(ctx.cluster.as_ref(), &ctx.services.orphan_registry, &request_headers);
     let (session, created) = ctx
         .registry
-        .get_or_create(&session_id, resume_for_create.issued_session_id);
+        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create));
 
     if created {
         spawn_relay(
@@ -138,6 +144,7 @@ async fn xhttp_h3_get(
             protocol,
             peer_addr,
             resume_for_create,
+            edge,
         );
     }
 
@@ -200,9 +207,10 @@ async fn xhttp_h3_post(
     // like the h1/h2 XHTTP handlers do.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
+    let edge = xhttp_edge_plan(ctx.cluster.as_ref(), &ctx.services.orphan_registry, &headers);
     let (session, created) = if seq == 0 {
         ctx.registry
-            .get_or_create(&session_id, resume_for_create.issued_session_id)
+            .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
     } else {
         match ctx.registry.get(&session_id) {
             Some(s) => (s, false),
@@ -224,6 +232,7 @@ async fn xhttp_h3_post(
             protocol,
             peer_addr,
             resume_for_create,
+            edge,
         );
     }
 
@@ -318,9 +327,10 @@ async fn xhttp_h3_stream_one(
     // like the h1/h2 XHTTP handlers do.
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
+    let edge = xhttp_edge_plan(ctx.cluster.as_ref(), &ctx.services.orphan_registry, &headers);
     let (session, created) = ctx
         .registry
-        .get_or_create(&session_id, resume_for_create.issued_session_id);
+        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create));
     if session.is_closed() {
         return finish_with_status(stream, StatusCode::GONE).await;
     }
@@ -334,6 +344,7 @@ async fn xhttp_h3_stream_one(
             protocol,
             peer_addr,
             resume_for_create,
+            edge,
         );
     }
     match session.try_attach_get() {

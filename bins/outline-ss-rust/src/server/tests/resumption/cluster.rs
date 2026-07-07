@@ -27,6 +27,10 @@ use arc_swap::ArcSwap;
 use axum::http::{Method, Request, StatusCode, Version, header};
 use futures_util::{SinkExt, StreamExt};
 use h3::ext::Protocol as H3Protocol;
+use outline_transport::{
+    DnsCache as ClientDnsCache, SessionId as ClientSessionId, TcpShadowsocksReader,
+    TcpShadowsocksWriter, TransportMode, UpstreamTransportGuard,
+};
 use outline_wire::cluster::{ObfuscationKey, ShardId};
 use quinn::Endpoint;
 use ring::rand::SystemRandom;
@@ -35,15 +39,19 @@ use sockudo_ws::{
     Config as H3WsConfig, Http3 as H3Transport, Message as H3Message, Role as H3Role,
     Stream as H3Stream, WebSocketServer as H3WebSocketServer, WebSocketStream as H3WebSocketStream,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use url::Url;
 
 use super::super::super::bootstrap::serve_listener;
 use super::super::super::cluster::ClusterCtx;
 use super::super::super::nat::NatTable;
 use super::super::super::replay::ReplayStore;
 use super::super::super::resumption::{OrphanRegistry, ResumptionConfig, SessionId};
-use super::super::super::setup::build_vless_transport_route_map;
+use super::super::super::setup::{
+    SsXhttpUserRoute, build_vless_transport_route_map, build_xhttp_ss_route_map,
+};
 use super::super::super::shutdown::ShutdownSignal;
 use super::super::super::state::{RoutesSnapshot, UserKeySlice};
 use super::super::super::transport::mesh_relay::run_mesh_listener;
@@ -52,10 +60,12 @@ use super::super::super::{
     build_transport_route_map, build_user_routes, ensure_rustls_provider_installed,
     serve_h3_server, user_keys,
 };
-use super::super::{sample_config, test_h3_client_config, test_h3_server_tls};
+use super::super::{
+    connect_websocket_with_resume, sample_config, test_h3_client_config, test_h3_server_tls,
+};
 use super::ss::ss_handshake_frame;
 use super::{connect_ws_h1, expect_binary_reply, spawn_echo_target};
-use crate::config::{ClusterConfig, ClusterPsk, H3Alpn};
+use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn};
 use crate::crypto::{AeadStreamDecryptor, UserKey};
 use crate::metrics::{Metrics, Transport};
 use crate::protocol::vless::VlessUser;
@@ -90,12 +100,15 @@ struct ClusterParts {
 }
 
 /// Builds the cluster-aware services + mesh runtime for one node. Carrier-
-/// agnostic: the caller binds the WS or h3 listener over these.
+/// agnostic: the caller binds the WS or h3 listener over these. When
+/// `xhttp_ss_path` is set, the node also serves (edge) / resolves (home) an
+/// SS-over-XHTTP base path for the shared user.
 fn build_cluster_parts(
     psk: &[u8],
     shard: u8,
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
+    xhttp_ss_path: Option<&str>,
 ) -> Result<ClusterParts> {
     // The mesh QUIC endpoint needs the process-wide rustls provider installed.
     ensure_rustls_provider_installed();
@@ -121,12 +134,19 @@ fn build_cluster_parts(
     let dns_cache = DnsCache::new(Duration::from_secs(30));
     let tcp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
+    let xhttp_ss = match xhttp_ss_path {
+        Some(path) => Arc::new(build_xhttp_ss_route_map(&[SsXhttpUserRoute {
+            user: user_routes[0].user.clone(),
+            xhttp_path: Arc::from(path),
+        }])),
+        None => Arc::new(BTreeMap::new()),
+    };
     let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: tcp_routes,
         udp: udp_routes,
         vless: Arc::new(build_vless_transport_route_map(&[])),
         xhttp_vless: Arc::new(BTreeMap::new()),
-        xhttp_ss: Arc::new(BTreeMap::new()),
+        xhttp_ss,
         xhttp_ss_udp: Arc::new(BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
@@ -176,6 +196,7 @@ async fn spawn_cluster_node(
     shard: u8,
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
+    xhttp_ss_path: Option<&str>,
 ) -> Result<(ClusterNode, UserKey)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
@@ -186,7 +207,7 @@ async fn spawn_cluster_node(
         cluster,
         mesh_addr,
         user,
-    } = build_cluster_parts(psk, shard, peers, budget)?;
+    } = build_cluster_parts(psk, shard, peers, budget, xhttp_ss_path)?;
 
     let app = build_app(
         Arc::clone(&routes),
@@ -245,7 +266,7 @@ async fn spawn_h3_edge_node(
 
     let ClusterParts {
         routes, services, auth, cluster, user, ..
-    } = build_cluster_parts(psk, shard, peers, budget)?;
+    } = build_cluster_parts(psk, shard, peers, budget, None)?;
     let ctx = H3ServeCtx {
         routes,
         services,
@@ -302,10 +323,12 @@ async fn cluster_session_survives_edge_switch() -> Result<()> {
     let (echo_addr, echo_accepts) = spawn_echo_target().await?;
 
     // Home owns shard 1; two edges (shards 2, 3) relay to it.
-    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4)).await?;
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
-    let (edge_a, _) = spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(4)).await?;
-    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(4)).await?;
+    let (edge_a, _) =
+        spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(4), None).await?;
+    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(4), None).await?;
 
     // The client holds a home-shard resume id (as if the home minted it on a
     // prior connect). Both edges route it to the home over the mesh.
@@ -351,9 +374,10 @@ async fn cluster_session_survives_edge_switch() -> Result<()> {
 async fn cluster_relay_preserves_large_payload() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-integrity-psk";
     let (echo_addr, _accepts) = spawn_echo_target().await?;
-    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4)).await?;
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
-    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4)).await?;
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None).await?;
 
     let session_id = resume_id_for_shard(PSK, 1)?;
 
@@ -405,7 +429,8 @@ async fn cluster_unreachable_home_falls_back_to_local_session() -> Result<()> {
 
     // An edge on shard 2 with NO peer for shard 1: a shard-1 resume relays
     // nowhere, so the edge serves the carrier locally.
-    let (edge, user) = spawn_cluster_node(PSK, 2, HashMap::new(), Duration::from_secs(4)).await?;
+    let (edge, user) =
+        spawn_cluster_node(PSK, 2, HashMap::new(), Duration::from_secs(4), None).await?;
     let foreign_id = resume_id_for_shard(PSK, 1)?;
 
     let (mut sock, _) = connect_ws_h1(edge.listen_addr, "/tcp", Some(foreign_id), true).await?;
@@ -432,9 +457,10 @@ async fn cluster_stalled_relay_tears_down_on_health_budget() -> Result<()> {
     let blackhole = spawn_blackhole_target().await?;
 
     // Home with a generous budget; edge with a short one so the stall trips fast.
-    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(30)).await?;
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(30), None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
-    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_millis(300)).await?;
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_millis(300), None).await?;
 
     let session_id = resume_id_for_shard(PSK, 1)?;
 
@@ -483,7 +509,8 @@ async fn cluster_h3_edge_relays_to_home() -> Result<()> {
 
     // Home: a plain-WS node with the mesh listener — carrier-agnostic on the
     // home side, so it serves an h3-originated relay just like a WS one.
-    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4)).await?;
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) = spawn_h3_edge_node(PSK, 2, peers, Duration::from_secs(4)).await?;
 
@@ -529,5 +556,112 @@ async fn cluster_h3_edge_relays_to_home() -> Result<()> {
     );
 
     driver_task.abort();
+    Ok(())
+}
+
+/// The SOCKS5 IPv4 address header + payload the server's `parse_target_addr`
+/// expects as the first SS chunk right after the salt.
+fn ss_first_chunk(target: SocketAddr, payload: &[u8]) -> Vec<u8> {
+    let mut chunk = vec![0x01]; // ATYP = IPv4
+    match target.ip() {
+        std::net::IpAddr::V4(v4) => chunk.extend_from_slice(&v4.octets()),
+        std::net::IpAddr::V6(_) => unreachable!("test upstream is always ipv4"),
+    }
+    chunk.extend_from_slice(&target.port().to_be_bytes());
+    chunk.extend_from_slice(payload);
+    chunk
+}
+
+/// The edge relay also works for XHTTP: an SS-over-XHTTP (h2 packet-up) client
+/// dials an edge that serves the base path, presents a home-shard resume id,
+/// and the edge relays the reassembled byte stream to the home over the mesh.
+/// The home resolves the `xhttp_ss` route (the new `SsXhttp` carrier kind) and
+/// decrypts the SS stream. A full ping/pong round trip proves the XHTTP
+/// reassembly → mesh → home path end to end.
+#[tokio::test]
+async fn cluster_xhttp_edge_relays_to_home() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-xhttp-psk";
+    // TCP echo upstream on the home side.
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    // Home resolves the `/ssx` xhttp_ss route (for the relayed carrier's user
+    // lookup) and runs the mesh listener; the edge serves `/ssx` and relays.
+    let (home, _user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), Some("/ssx")).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), Some("/ssx")).await?;
+
+    // Home-shard resume id, presented by the client on the XHTTP dial.
+    let session_id = resume_id_for_shard(PSK, 1)?;
+    let client_resume = ClientSessionId::from_bytes(*session_id.as_bytes());
+
+    // Real client: SS-over-XHTTP (h2 packet-up) to the edge, resuming the
+    // home-shard id so the edge routes the session to the home over the mesh.
+    let url = Url::parse(&format!("http://{}/ssx", edge.listen_addr))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let stream = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        None,
+        false,
+        "cluster-xhttp-test",
+        Some(client_resume),
+        false,
+        false,
+        0,
+    )
+    .await?;
+
+    // Layer the SS AEAD stream on the XHTTP carrier, as the real client does.
+    // The shared user is `sample_config`'s bob (secret-b / Chacha20).
+    let master_key = CipherKind::Chacha20IetfPoly1305.derive_master_key("secret-b")?;
+    let lifetime = UpstreamTransportGuard::new("cluster-xhttp-test", "tcp");
+    let (sink, source) = stream.split();
+    let (mut writer, ctrl_tx) = TcpShadowsocksWriter::connect(
+        sink,
+        CipherKind::Chacha20IetfPoly1305,
+        &master_key,
+        Arc::clone(&lifetime),
+    )
+    .await?;
+    let request_salt = writer.request_salt();
+    let mut reader = TcpShadowsocksReader::new(
+        source,
+        CipherKind::Chacha20IetfPoly1305,
+        &master_key,
+        lifetime,
+        ctrl_tx,
+    )
+    .with_request_salt(request_salt);
+
+    writer.send_chunk(&ss_first_chunk(upstream_addr, b"ping")).await?;
+
+    let mut echoed = Vec::new();
+    while echoed.len() < 4 {
+        let chunk = reader.read_chunk().await?;
+        if chunk.is_empty() {
+            break;
+        }
+        echoed.extend_from_slice(&chunk);
+    }
+    assert_eq!(&echoed[..4], b"pong", "SS-over-XHTTP echo relayed home→edge→client");
+
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(
+        &upstream_bytes, b"ping",
+        "uplink reached the home's upstream via the mesh relay"
+    );
+
+    drop(writer);
+    drop(reader);
     Ok(())
 }

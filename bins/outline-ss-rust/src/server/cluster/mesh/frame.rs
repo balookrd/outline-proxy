@@ -22,7 +22,9 @@ use anyhow::{Result, bail};
 
 /// Wire-format version of the [`OpenHeader`]. Bump on any layout change so a
 /// peer on an older build fails cleanly instead of misparsing.
-const OPEN_VERSION: u8 = 1;
+///
+/// v2 added the `SsXhttp` / `VlessXhttp` carrier kinds.
+const OPEN_VERSION: u8 = 2;
 
 /// Upper bound on the request path length carried in an OPEN header. Guards the
 /// parser against an oversized allocation from a malformed peer.
@@ -30,13 +32,17 @@ const MAX_PATH_LEN: usize = 512;
 
 /// Which carrier a relayed stream is, so the home dispatches it into the right
 /// accept path. Combined-SS path-kind is already resolved into the Tcp/Udp
-/// split here.
+/// split here. The `*Xhttp` kinds differ from `*Tcp` only in which route table
+/// the home resolves the path against (`xhttp_ss` / `xhttp_vless` vs the WS
+/// `tcp` / `vless` tables); the relayed byte stream and the crypto are the same.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::server) enum CarrierKind {
     SsTcp,
     SsUdp,
     VlessTcp,
     VlessUdp,
+    SsXhttp,
+    VlessXhttp,
 }
 
 impl CarrierKind {
@@ -46,6 +52,8 @@ impl CarrierKind {
             CarrierKind::SsUdp => 1,
             CarrierKind::VlessTcp => 2,
             CarrierKind::VlessUdp => 3,
+            CarrierKind::SsXhttp => 4,
+            CarrierKind::VlessXhttp => 5,
         }
     }
 
@@ -55,6 +63,8 @@ impl CarrierKind {
             1 => CarrierKind::SsUdp,
             2 => CarrierKind::VlessTcp,
             3 => CarrierKind::VlessUdp,
+            4 => CarrierKind::SsXhttp,
+            5 => CarrierKind::VlessXhttp,
             other => bail!("unknown mesh carrier kind {other}"),
         })
     }
