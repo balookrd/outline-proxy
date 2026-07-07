@@ -656,6 +656,7 @@ async fn setup_xhttp_h3_server(
                 raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
                 raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )

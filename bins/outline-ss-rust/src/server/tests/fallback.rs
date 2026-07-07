@@ -654,6 +654,7 @@ async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
                     Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
                 ),
                 http_fallback: Some(h3_fallback),
+                cluster: None,
             },
             ShutdownSignal::never(),
         )

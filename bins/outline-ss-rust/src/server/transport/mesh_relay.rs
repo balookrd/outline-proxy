@@ -27,8 +27,9 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    CarrierKind, CloseReason, MeshStream, OpenHeader, accept_relay,
+    CarrierKind, CloseReason, MeshStream, OpenHeader, PooledRelay, accept_relay,
 };
+use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::server::resumption::SessionId;
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::state::{
@@ -40,7 +41,7 @@ use super::mesh_carrier::MeshCarrier;
 use super::resume_headers::{EdgeResumeAdvert, ResumeContext, ResumeResponseEcho};
 use super::tcp::{WsTcpRouteCtx, run_tcp_relay};
 use super::vless::{VlessWsRouteCtx, run_vless_relay};
-use super::ws_socket::{AxumWs, WsFrame, WsSocket};
+use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 
 /// Read granularity for the mesh→client direction on the edge.
 const MESH_EDGE_CHUNK: usize = 256 * 1024;
@@ -119,6 +120,56 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
     Ok(())
 }
 
+/// Opens a mesh relay to the home for an edge-routed carrier: builds the OPEN
+/// header from the client's advertisement and dials the home. Returns the
+/// pooled relay on success (the caller splices the client carrier into it and
+/// echoes `advert.session_id` for continuity), or `None` when the relay is
+/// unavailable (the caller serves a fresh local session instead). Carrier-
+/// agnostic, so the axum (h1/h2) and h3 accept paths share it.
+pub(in crate::server) async fn open_edge_relay(
+    cluster: &ClusterCtx,
+    shard: ShardId,
+    advert: &EdgeResumeAdvert,
+    carrier: CarrierKind,
+    path: &str,
+    peer_addr: SocketAddr,
+) -> Option<PooledRelay> {
+    let header = OpenHeader {
+        carrier,
+        session_id: *advert.session_id.as_bytes(),
+        resume_capable: advert.resume_capable,
+        ack_prefix: advert.ack_prefix,
+        symmetric_replay: advert.symmetric_replay,
+        client_down_acked: advert.down_acked,
+        path: path.to_string(),
+        peer_addr: Some(peer_addr),
+    };
+    match cluster.pool.open_relay(shard, &header).await {
+        Ok(pooled) => Some(pooled),
+        Err(error) => {
+            debug!(
+                ?error,
+                shard = shard.get(),
+                "mesh relay open failed; serving a fresh local session",
+            );
+            None
+        },
+    }
+}
+
+/// Splices an h3 client carrier to an already-opened mesh relay. The h3 accept
+/// path holds the carrier directly (not behind an `on_upgrade` closure), so it
+/// calls this after sending the extended-CONNECT response. Wraps the stream in
+/// the `H3Ws` `WsSocket` and holds the pool permit for the relay's lifetime.
+pub(in crate::server) async fn edge_relay_h3(
+    socket: H3WebSocketStream<H3Stream<H3Transport>>,
+    pooled: PooledRelay,
+    budget: Duration,
+) -> Result<()> {
+    let (send, recv, _permit) = pooled.into_parts();
+    edge_relay::<H3Ws>(H3Ws(socket), send, recv, budget).await
+}
+
 /// Describes a carrier the edge is about to relay to its home. Bundled so the
 /// TCP and VLESS upgrade call sites stay readable.
 pub(in crate::server::transport) struct EdgeRelay {
@@ -165,26 +216,9 @@ pub(in crate::server::transport) async fn try_relay_edge(
         app_protocol,
         kind,
     } = relay;
-    let header = OpenHeader {
-        carrier,
-        session_id: *advert.session_id.as_bytes(),
-        resume_capable: advert.resume_capable,
-        ack_prefix: advert.ack_prefix,
-        symmetric_replay: advert.symmetric_replay,
-        client_down_acked: advert.down_acked,
-        path: path.to_string(),
-        peer_addr: Some(peer_addr),
-    };
-    let pooled = match cluster.pool.open_relay(shard, &header).await {
-        Ok(pooled) => pooled,
-        Err(error) => {
-            debug!(
-                ?error,
-                shard = shard.get(),
-                "mesh relay open failed; serving a fresh local session",
-            );
-            return Err(ws);
-        },
+    let Some(pooled) = open_edge_relay(cluster, shard, &advert, carrier, &path, peer_addr).await
+    else {
+        return Err(ws);
     };
     let session = metrics.open_websocket_session(Transport::Tcp, protocol, app_protocol);
     let budget = cluster.relay_budget;

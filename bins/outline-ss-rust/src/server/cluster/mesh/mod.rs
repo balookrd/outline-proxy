@@ -17,5 +17,5 @@ mod tls;
 // and wrap them (`MeshCarrier`) into the existing accept path.
 pub(in crate::server) use endpoint::{MeshEndpoint, MeshStream, accept_relay};
 pub(in crate::server) use frame::{CarrierKind, CloseReason, OpenHeader};
-pub(in crate::server) use peer_pool::MeshPeerPool;
+pub(in crate::server) use peer_pool::{MeshPeerPool, PooledRelay};
 pub(in crate::server) use tls::MeshIdentity;
