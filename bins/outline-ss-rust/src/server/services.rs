@@ -5,6 +5,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use anyhow::{Context, Result};
 use tokio::{sync::Semaphore, time::Duration};
 
+use outline_wire::cluster::ObfuscationKey;
+
 use crate::{
     config::Config,
     crypto::UserKey,
@@ -149,7 +151,20 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         Some(Arc::new(Semaphore::new(config.tuning.udp_max_concurrent_relay_tasks)))
     };
     let resumption_cfg = ResumptionConfig::from(&config.session_resumption);
-    let orphan_registry = Arc::new(OrphanRegistry::new(resumption_cfg, Arc::clone(&metrics)));
+    // When clustered, the registry mints session ids carrying this server's
+    // shard (obfuscated under the PSK) so a resuming client's edge can route
+    // back to this home. Standalone servers keep plain random ids.
+    let orphan_registry = {
+        let registry = OrphanRegistry::new(resumption_cfg, Arc::clone(&metrics));
+        match &config.cluster {
+            Some(cluster) => {
+                let key = ObfuscationKey::derive_from_psk(cluster.psk.as_bytes());
+                registry.with_cluster(key, cluster.shard)
+            },
+            None => registry,
+        }
+    };
+    let orphan_registry = Arc::new(orphan_registry);
     let services = Arc::new(Services::new(
         metrics,
         dns_cache,
