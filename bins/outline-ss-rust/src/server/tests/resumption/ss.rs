@@ -115,7 +115,13 @@ async fn spawn_ss_two_user_server() -> Result<(ResumptionTestServer, UserKey, Us
 /// a fresh random salt), matching what a real client would do for
 /// every new SS session — including the resume case, where the
 /// server consumes the target bytes but ignores their value.
-fn ss_handshake_frame(user: &UserKey, target: SocketAddr, payload: &[u8]) -> Result<Bytes> {
+///
+/// `pub(super)` so the cluster e2e tests can reuse the same wire framing.
+pub(super) fn ss_handshake_frame(
+    user: &UserKey,
+    target: SocketAddr,
+    payload: &[u8],
+) -> Result<Bytes> {
     let mut plaintext = TargetAddr::from(target).to_wire_bytes()?;
     plaintext.extend_from_slice(payload);
     let mut encryptor = AeadStreamEncryptor::new(user, None)?;
