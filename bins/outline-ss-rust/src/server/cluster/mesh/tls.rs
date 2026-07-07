@@ -39,6 +39,10 @@ use crate::server::bootstrap::{CERT_PIN_LEN, cert_fingerprint, ensure_rustls_pro
 /// protocols so a stray client can never negotiate onto the mesh.
 const MESH_ALPN: &[u8] = b"outline-mesh/1";
 
+/// SAN in the mesh certificate; the dialer passes it as the QUIC server name.
+/// The pin verifier ignores the name, but quinn still requires a valid one.
+pub(super) const MESH_SERVER_NAME: &str = "mesh.cluster.internal";
+
 /// Keep-alive / idle tuning, mirroring the reverse carrier so the mesh link
 /// stays warm across the long inter-country hop without hanging forever.
 const MESH_KEEP_ALIVE_SECS: u64 = 10;
@@ -90,7 +94,7 @@ impl MeshIdentity {
             .distinguished_name
             .push(DnType::CommonName, "outline-cluster-mesh");
         params.subject_alt_names =
-            vec![SanType::DnsName("mesh.cluster.internal".try_into().expect("valid SAN"))];
+            vec![SanType::DnsName(MESH_SERVER_NAME.try_into().expect("valid SAN"))];
         let cert = params
             .self_signed(&key_pair)
             .context("self-signing mesh certificate")?;
