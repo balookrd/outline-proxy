@@ -12,3 +12,7 @@ mod frame;
 mod peer_pool;
 mod pump;
 mod tls;
+
+// Re-exported so the transport-side `MeshCarrier` (a `WsSocket` adapter) can
+// wrap a relayed stream and feed it into the existing accept path.
+pub(in crate::server) use endpoint::MeshStream;
