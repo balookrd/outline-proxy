@@ -69,12 +69,14 @@ impl Drop for ClusterNode {
 
 /// Boots one cluster node on fresh random localhost ports: an SS-over-WS
 /// listener and a mesh endpoint bound to `[cluster]`-derived identity, with
-/// `peers` as its shard→home routing table. Returns the node and the shared SS
-/// `UserKey` clients encrypt with.
+/// `peers` as its shard→home routing table and `budget` as the edge relay's
+/// per-uplink-write stall budget. Returns the node and the shared SS `UserKey`
+/// clients encrypt with.
 async fn spawn_cluster_node(
     psk: &[u8],
     shard: u8,
     peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
 ) -> Result<(ClusterNode, UserKey)> {
     // The mesh QUIC endpoint needs the process-wide rustls provider installed.
     ensure_rustls_provider_installed();
@@ -136,7 +138,7 @@ async fn spawn_cluster_node(
         shard,
         psk: ClusterPsk::from_bytes(psk.to_vec()),
         mesh_listen: (Ipv4Addr::LOCALHOST, 0).into(),
-        mesh_relay_budget: Duration::from_secs(4),
+        mesh_relay_budget: budget,
         peers,
     };
     let cluster = ClusterCtx::build(&cluster_cfg)?;
@@ -176,6 +178,23 @@ fn resume_id_for_shard(psk: &[u8], shard: u8) -> Result<SessionId> {
     )?)
 }
 
+/// A TCP target that accepts connections and then never reads from them, so a
+/// writer's socket buffer fills and its writes block — used to stall the home's
+/// upstream and, by backpressure, the whole relay.
+async fn spawn_blackhole_target() -> Result<SocketAddr> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    tokio::spawn(async move {
+        // Keep every accepted stream alive (never dropped, never read) so it
+        // stays open and un-drained for the lifetime of the test.
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            held.push(stream);
+        }
+    });
+    Ok(addr)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// Survival across an edge switch: a session established through one edge is
@@ -188,10 +207,10 @@ async fn cluster_session_survives_edge_switch() -> Result<()> {
     let (echo_addr, echo_accepts) = spawn_echo_target().await?;
 
     // Home owns shard 1; two edges (shards 2, 3) relay to it.
-    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new()).await?;
+    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4)).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
-    let (edge_a, _) = spawn_cluster_node(PSK, 2, peers.clone()).await?;
-    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers).await?;
+    let (edge_a, _) = spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(4)).await?;
+    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(4)).await?;
 
     // The client holds a home-shard resume id (as if the home minted it on a
     // prior connect). Both edges route it to the home over the mesh.
@@ -237,9 +256,9 @@ async fn cluster_session_survives_edge_switch() -> Result<()> {
 async fn cluster_relay_preserves_large_payload() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-integrity-psk";
     let (echo_addr, _accepts) = spawn_echo_target().await?;
-    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new()).await?;
+    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4)).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
-    let (edge, _) = spawn_cluster_node(PSK, 2, peers).await?;
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4)).await?;
 
     let session_id = resume_id_for_shard(PSK, 1)?;
 
@@ -291,7 +310,7 @@ async fn cluster_unreachable_home_falls_back_to_local_session() -> Result<()> {
 
     // An edge on shard 2 with NO peer for shard 1: a shard-1 resume relays
     // nowhere, so the edge serves the carrier locally.
-    let (edge, user) = spawn_cluster_node(PSK, 2, HashMap::new()).await?;
+    let (edge, user) = spawn_cluster_node(PSK, 2, HashMap::new(), Duration::from_secs(4)).await?;
     let foreign_id = resume_id_for_shard(PSK, 1)?;
 
     let (mut sock, _) = connect_ws_h1(edge.listen_addr, "/tcp", Some(foreign_id), true).await?;
@@ -304,5 +323,55 @@ async fn cluster_unreachable_home_falls_back_to_local_session() -> Result<()> {
         "an unreachable home must degrade to a fresh local upstream, not drop the client"
     );
     sock.close(None).await?;
+    Ok(())
+}
+
+/// A relay that stops making progress is torn down on the edge's health budget
+/// rather than hanging forever. The home's upstream is a black hole that never
+/// drains, so a large uplink backs up through the home into the mesh window;
+/// the edge's uplink write stalls past the short budget and it resets the
+/// carrier, closing the client.
+#[tokio::test]
+async fn cluster_stalled_relay_tears_down_on_health_budget() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-budget-psk";
+    let blackhole = spawn_blackhole_target().await?;
+
+    // Home with a generous budget; edge with a short one so the stall trips fast.
+    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(30)).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_millis(300)).await?;
+
+    let session_id = resume_id_for_shard(PSK, 1)?;
+
+    // Large enough to overflow the target socket buffer, the home's read buffer
+    // and the mesh QUIC send window, so the edge's uplink write genuinely
+    // blocks (not just buffers) and the budget can fire.
+    let payload = vec![0xABu8; 8 * 1024 * 1024];
+
+    let (socket, _) = connect_ws_h1(edge.listen_addr, "/tcp", Some(session_id), true).await?;
+    let frame = ss_handshake_frame(&user, blackhole, &payload)?;
+    let (mut sink, mut stream) = socket.split();
+    // The send may never fully flush before the teardown — that's the point.
+    let _send_task = tokio::spawn(async move {
+        let _ = sink.send(WsMessage::Binary(frame)).await;
+    });
+
+    // The stalled carrier must close within a small multiple of the budget
+    // instead of hanging. A Close frame, a clean EOF, or a reset error all
+    // count as a teardown.
+    let torn_down = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match stream.next().await {
+                Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
+                // Ignore any bytes the home echoed before the stall.
+                Some(Ok(_)) => continue,
+            }
+        }
+    })
+    .await;
+    assert!(
+        torn_down.is_ok(),
+        "a stalled relay must be torn down on the health budget, not hang"
+    );
     Ok(())
 }

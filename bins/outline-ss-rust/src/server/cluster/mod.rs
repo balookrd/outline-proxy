@@ -20,16 +20,15 @@ use super::resumption::{ClusterIdentity, SessionId};
 use mesh::MeshIdentity;
 pub(in crate::server) use mesh::{MeshEndpoint, MeshPeerPool};
 
-/// Process-wide cluster runtime: this server's shard, the mesh endpoint (shared
-/// by the listener accept-loop and the peer pool) and the relay progress
-/// budget. Built at startup when `[cluster]` is configured; `None` otherwise.
-// `endpoint` drives the home listener and `pool` the edge relay now; `shard`
-// and `relay_budget` feed the health budget in phase 6.
-#[allow(dead_code)]
+/// Process-wide cluster runtime: the mesh endpoint (shared by the listener
+/// accept-loop and the peer pool) and the relay progress budget. Built at
+/// startup when `[cluster]` is configured; `None` otherwise.
 pub(in crate::server) struct ClusterCtx {
-    pub(in crate::server) shard: ShardId,
+    /// Serves the home listener and dials edge relays.
     pub(in crate::server) endpoint: MeshEndpoint,
+    /// Connections to peer homes, keyed by shard.
     pub(in crate::server) pool: Arc<MeshPeerPool>,
+    /// Per-uplink-write stall budget for the edge relay (health budget).
     pub(in crate::server) relay_budget: Duration,
 }
 
@@ -51,7 +50,6 @@ impl ClusterCtx {
             MESH_MAX_RELAY_STREAMS,
         ));
         Ok(Arc::new(Self {
-            shard: cfg.shard,
             endpoint,
             pool,
             relay_budget: cfg.mesh_relay_budget,
