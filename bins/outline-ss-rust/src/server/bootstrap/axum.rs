@@ -18,6 +18,7 @@ use crate::{
 };
 
 use super::super::{
+    cluster::ClusterCtx,
     connect::configure_tcp_stream,
     constants::{
         CERT_RELOAD_POLL_INTERVAL_SECS, H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS,
@@ -41,6 +42,7 @@ pub(in crate::server) fn build_app(
     services: Arc<Services>,
     auth: Arc<AuthPolicy>,
     http_fallback: Option<Arc<HttpFallbackContext>>,
+    cluster: Option<Arc<ClusterCtx>>,
 ) -> Router {
     let mut router = Router::new();
 
@@ -114,6 +116,7 @@ pub(in crate::server) fn build_app(
         services: Arc::clone(&services),
         auth,
         http_fallback,
+        cluster,
     };
     // The h1/h2 fallback handler is only wired when `apply_to_h1` is
     // on. `apply_to_h3 = true, apply_to_h1 = false` keeps the TCP

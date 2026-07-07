@@ -20,6 +20,8 @@ use tracing::{debug, warn};
 
 use crate::metrics::{AppProtocol, DisconnectReason, Metrics, Transport, WebSocketSessionGuard};
 
+use super::cluster::RouteDecision;
+use super::cluster::mesh::CarrierKind;
 use super::h3::vendored::H3WsError;
 use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
@@ -96,6 +98,40 @@ async fn tcp_upgrade_for_path(
     peer_addr: SocketAddr,
 ) -> Response {
     let protocol = protocol_from_http_version(version);
+    let server = Arc::clone(&state.services.tcp_server);
+    // Cluster edge: a resume id whose shard is a foreign home is relayed there
+    // over the mesh rather than served locally. Checked before any local route
+    // setup so the relay path does the minimum work; on relay failure the
+    // upgrade is handed back and we fall through to a fresh local session.
+    let ws = if let Some(cluster) = state.cluster.as_deref() {
+        match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
+            (RouteDecision::Relay(shard), Some(advert)) => {
+                match mesh_relay::try_relay_edge(
+                    ws,
+                    cluster,
+                    &server.metrics,
+                    mesh_relay::EdgeRelay {
+                        shard,
+                        advert,
+                        carrier: CarrierKind::SsTcp,
+                        path: Arc::clone(&path),
+                        peer_addr,
+                        protocol,
+                        app_protocol: AppProtocol::Shadowsocks,
+                        kind: "tcp",
+                    },
+                )
+                .await
+                {
+                    Ok(response) => return response,
+                    Err(ws) => ws,
+                }
+            },
+            _ => ws,
+        }
+    } else {
+        ws
+    };
     let routes_snap = state.routes.load();
     let route = routes_snap
         .tcp
@@ -104,7 +140,6 @@ async fn tcp_upgrade_for_path(
         .unwrap_or_else(empty_transport_route);
     drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
-    let server = Arc::clone(&state.services.tcp_server);
     let session =
         server
             .metrics
@@ -151,6 +186,38 @@ pub(super) async fn vless_websocket_upgrade(
     let ConnectInfo(peer_addr) = connect_info;
     let protocol = protocol_from_http_version(version);
     let path: Arc<str> = Arc::from(uri.path());
+    let server = Arc::clone(&state.services.vless_server);
+    // Cluster edge: relay a foreign-shard resume to its home over the mesh.
+    // See the matching note in `tcp_upgrade_for_path`.
+    let ws = if let Some(cluster) = state.cluster.as_deref() {
+        match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
+            (RouteDecision::Relay(shard), Some(advert)) => {
+                match mesh_relay::try_relay_edge(
+                    ws,
+                    cluster,
+                    &server.metrics,
+                    mesh_relay::EdgeRelay {
+                        shard,
+                        advert,
+                        carrier: CarrierKind::VlessTcp,
+                        path: Arc::clone(&path),
+                        peer_addr,
+                        protocol,
+                        app_protocol: AppProtocol::Vless,
+                        kind: "vless",
+                    },
+                )
+                .await
+                {
+                    Ok(response) => return response,
+                    Err(ws) => ws,
+                }
+            },
+            _ => ws,
+        }
+    } else {
+        ws
+    };
     let routes_snap = state.routes.load();
     let route = routes_snap
         .vless
@@ -159,7 +226,6 @@ pub(super) async fn vless_websocket_upgrade(
         .unwrap_or_else(empty_vless_transport_route);
     drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming vless websocket upgrade");
-    let server = Arc::clone(&state.services.vless_server);
     let session =
         server
             .metrics
