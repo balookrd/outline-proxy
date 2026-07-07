@@ -25,6 +25,17 @@ pub(in crate::server) struct PooledRelay {
     _permit: OwnedSemaphorePermit,
 }
 
+impl PooledRelay {
+    /// Splits into the owned stream halves and the pool permit. The caller
+    /// must keep the permit alive for the relay's lifetime (it releases the
+    /// concurrency slot on drop).
+    pub(in crate::server) fn into_parts(
+        self,
+    ) -> (quinn::SendStream, quinn::RecvStream, OwnedSemaphorePermit) {
+        (self.stream.send, self.stream.recv, self._permit)
+    }
+}
+
 /// Connections to peer homes, dialed on demand and reused.
 pub(in crate::server) struct MeshPeerPool {
     endpoint: MeshEndpoint,
