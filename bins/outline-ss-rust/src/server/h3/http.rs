@@ -140,6 +140,7 @@ async fn handle_h3_request(
                 services: Arc::clone(&ctx.services),
                 route,
                 base_path: base,
+                cluster: ctx.cluster.clone(),
             };
             return handle_xhttp_h3_request(
                 request, stream, xhttp_ctx, session_id, path_seq, peer_addr,

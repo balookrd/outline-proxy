@@ -9,6 +9,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     body::Body,
@@ -24,9 +25,16 @@ use tracing::{debug, warn};
 use outline_wire::xhttp::{SsPathKind, decode_kind};
 
 use crate::metrics::{AppProtocol, Protocol, Transport};
+use crate::server::cluster::mesh::{CarrierKind, PooledRelay};
+use crate::server::cluster::{ClusterCtx, RouteDecision};
+use crate::server::resumption::{OrphanRegistry, SessionId};
+use outline_wire::cluster::ShardId;
 
 use super::super::super::state::{AppState, Services, TransportRoute, VlessTransportRoute};
-use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
+use super::super::mesh_relay::{edge_relay, open_edge_relay};
+use super::super::resume_headers::{
+    EdgeResumeAdvert, ResumeContext, ResumeResponseEcho, edge_route,
+};
 use super::super::tcp::{WsTcpRouteCtx, run_tcp_relay};
 use super::super::udp::{UdpRouteCtx, run_udp_relay};
 use super::super::vless::{VlessWsRouteCtx, run_vless_relay};
@@ -297,9 +305,14 @@ async fn xhttp_get(
     // (a) v1 also requested and (b) registry has v2 capacity, so a
     // true value here is safe to surface in the response.
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
+    let edge = xhttp_edge_plan(
+        state.parent.cluster.as_ref(),
+        &state.parent.services.orphan_registry,
+        headers,
+    );
     let (session, created) = state
         .registry
-        .get_or_create(&session_id, resume_for_create.issued_session_id);
+        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create));
 
     if created {
         spawn_relay(
@@ -311,6 +324,7 @@ async fn xhttp_get(
             protocol,
             peer_addr,
             resume_for_create,
+            edge,
         );
     }
 
@@ -386,10 +400,15 @@ async fn xhttp_post(
     // is allowed to establish the session. Refuse seq>0 against a
     // dead session — at that point the client is replaying old
     // packets to a registry slot that has been swept.
+    let edge = xhttp_edge_plan(
+        state.parent.cluster.as_ref(),
+        &state.parent.services.orphan_registry,
+        &headers,
+    );
     let (session, created) = if seq == 0 {
         state
             .registry
-            .get_or_create(&session_id, resume_for_create.issued_session_id)
+            .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
     } else {
         match state.registry.get(&session_id) {
             Some(s) => (s, false),
@@ -411,6 +430,7 @@ async fn xhttp_post(
             protocol,
             peer_addr,
             resume_for_create,
+            edge,
         );
     }
 
@@ -503,9 +523,14 @@ async fn xhttp_stream_one(
     // (a) v1 also requested and (b) registry has v2 capacity, so a
     // true value here is safe to surface in the response.
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
+    let edge = xhttp_edge_plan(
+        state.parent.cluster.as_ref(),
+        &state.parent.services.orphan_registry,
+        &headers,
+    );
     let (session, created) = state
         .registry
-        .get_or_create(&session_id, resume_for_create.issued_session_id);
+        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create));
     if session.is_closed() {
         return short_status(StatusCode::GONE);
     }
@@ -519,6 +544,7 @@ async fn xhttp_stream_one(
             protocol,
             peer_addr,
             resume_for_create,
+            edge,
         );
     }
     // Claim the downlink slot so a parallel packet-up GET on the
@@ -640,11 +666,70 @@ impl Drop for DownlinkStreamState {
     }
 }
 
+/// The edge relay decision for a session-creating XHTTP request: relay a
+/// foreign-shard resume to its home over the mesh. Carries the shard the id
+/// decoded to and the raw advertisement to forward.
+pub(in crate::server::transport::xhttp) struct EdgeRelayPlan {
+    cluster: Arc<ClusterCtx>,
+    shard: ShardId,
+    advert: EdgeResumeAdvert,
+}
+
+/// Computes the edge relay plan for a session-creating request: `Some` when
+/// clustered and the resume id targets a foreign home shard, else `None` (serve
+/// locally). Mirrors the WS/h3 edge routing.
+pub(in crate::server::transport::xhttp) fn xhttp_edge_plan(
+    cluster: Option<&Arc<ClusterCtx>>,
+    orphan_registry: &OrphanRegistry,
+    headers: &HeaderMap,
+) -> Option<EdgeRelayPlan> {
+    let cluster = cluster?;
+    match edge_route(headers, orphan_registry.cluster_identity()) {
+        (RouteDecision::Relay(shard), Some(advert)) => Some(EdgeRelayPlan {
+            cluster: Arc::clone(cluster),
+            shard,
+            advert,
+        }),
+        _ => None,
+    }
+}
+
+/// The resume id to record on a new session: when relaying, the id the client
+/// presented (continuity — the home parks the upstream under it); otherwise the
+/// freshly minted one.
+pub(in crate::server::transport::xhttp) fn xhttp_issued_id(
+    edge: &Option<EdgeRelayPlan>,
+    resume: &ResumeContext,
+) -> Option<SessionId> {
+    match edge {
+        Some(plan) => Some(plan.advert.session_id),
+        None => resume.issued_session_id,
+    }
+}
+
+/// Opens the mesh relay for an XHTTP edge plan, returning the pooled relay and
+/// the health budget on success, or `None` (not clustered / home unreachable)
+/// so the caller serves a fresh local session over the same duplex.
+async fn open_xhttp_mesh(
+    edge: Option<EdgeRelayPlan>,
+    carrier: CarrierKind,
+    path: &str,
+    peer_addr: SocketAddr,
+) -> Option<(PooledRelay, Duration)> {
+    let plan = edge?;
+    let pooled =
+        open_edge_relay(&plan.cluster, plan.shard, &plan.advert, carrier, path, peer_addr).await?;
+    Some((pooled, plan.cluster.relay_budget))
+}
+
 /// Spawn the per-session relay task for whichever protocol this base
 /// path carries. VLESS rides `run_vless_relay`; SS rides the same
 /// `run_tcp_relay` the WS path uses — both are generic over the
 /// frame-oriented [`XhttpDuplex`] socket, so only the route context and
-/// the metrics `AppProtocol` label differ.
+/// the metrics `AppProtocol` label differ. When `edge` is set (a foreign-shard
+/// resume on a clustered node), the reassembled byte stream is relayed to the
+/// home over the mesh instead of served locally, falling back to a fresh local
+/// session if the mesh open fails. UDP has no mesh relay yet.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::server::transport::xhttp) fn spawn_relay(
     session: Arc<XhttpSession>,
@@ -655,6 +740,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
     protocol: Protocol,
     peer_addr: SocketAddr,
     resume: ResumeContext,
+    edge: Option<EdgeRelayPlan>,
 ) {
     let session_for_task = Arc::clone(&session);
     let session_id = Arc::clone(&session.id);
@@ -664,6 +750,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
             // Resolve the carrier-padding scheme before `base_path` moves into
             // the route context (mirrors the SS-over-XHTTP arm below).
             let padding = crate::server::transport::carrier_padding::scheme_for_path(&base_path);
+            let relay_path = Arc::clone(&base_path);
             let route_ctx = VlessWsRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
@@ -677,9 +764,18 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                     .metrics
                     .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Vless);
             tokio::spawn(async move {
+                let relay =
+                    open_xhttp_mesh(edge, CarrierKind::VlessXhttp, &relay_path, peer_addr).await;
                 let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
-                let result =
-                    run_vless_relay::<XhttpDuplex>(socket, &server, &route_ctx, resume).await;
+                let result = match relay {
+                    Some((pooled, budget)) => {
+                        let (send, recv, _permit) = pooled.into_parts();
+                        edge_relay::<XhttpDuplex>(socket, send, recv, budget).await
+                    },
+                    None => {
+                        run_vless_relay::<XhttpDuplex>(socket, &server, &route_ctx, resume).await
+                    },
+                };
                 // Always drop the registry slot: even on a clean exit
                 // the session id should not be reused for a fresh
                 // handshake.
@@ -695,6 +791,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
             // and applied here exactly like the WS path — the relay's decode
             // (uplink) and `ChannelSink` encode (downlink) cover both carriers.
             let padding = crate::server::transport::carrier_padding::scheme_for_path(&base_path);
+            let relay_path = Arc::clone(&base_path);
             let route_ctx = WsTcpRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
@@ -709,21 +806,34 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 AppProtocol::Shadowsocks,
             );
             tokio::spawn(async move {
+                let relay =
+                    open_xhttp_mesh(edge, CarrierKind::SsXhttp, &relay_path, peer_addr).await;
                 let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
-                let result = run_tcp_relay::<XhttpDuplex>(
-                    socket,
-                    &server,
-                    &route_ctx,
-                    resume,
-                    Some(peer_addr),
-                )
-                .await;
+                let result = match relay {
+                    Some((pooled, budget)) => {
+                        let (send, recv, _permit) = pooled.into_parts();
+                        edge_relay::<XhttpDuplex>(socket, send, recv, budget).await
+                    },
+                    None => {
+                        run_tcp_relay::<XhttpDuplex>(
+                            socket,
+                            &server,
+                            &route_ctx,
+                            resume,
+                            Some(peer_addr),
+                        )
+                        .await
+                    },
+                };
                 session_for_task.close();
                 registry.remove(&session_id);
                 finish_ws_session(metrics_session, classify_relay_result(result), "ss");
             });
         },
         XhttpRoute::SsUdp(route) => {
+            // UDP has no mesh relay yet; a clustered UDP session is served
+            // locally regardless of the resume id's shard.
+            drop(edge);
             let server = Arc::clone(&services.udp_server);
             // Combined-SS base resolves the same scheme as the TCP leg (both
             // reach here via the shared base path), so listing the base path
