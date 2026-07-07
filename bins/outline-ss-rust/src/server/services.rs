@@ -65,6 +65,9 @@ pub(super) struct Built {
     /// Per-process state for the SNI-routed L4 fallback. `None` when
     /// `[sni_fallback]` is not configured.
     pub(super) sni_fallback: Option<Arc<SniFallbackContext>>,
+    /// Mesh cluster runtime (endpoint + peer pool). `None` when `[cluster]`
+    /// is not configured. Drives the mesh listener and the edge relay.
+    pub(super) cluster: Option<Arc<super::cluster::ClusterCtx>>,
 }
 
 pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
@@ -201,6 +204,13 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         let inbound_listen = config.listen.expect("listen required when sni_fallback is set");
         Arc::new(SniFallbackContext::new(Arc::new(cfg.clone()), inbound_listen))
     });
+    // Bind the mesh endpoint + build the peer pool when clustered. Fails fast
+    // (aborting startup) on a bad identity or listen bind.
+    let cluster = config
+        .cluster
+        .as_ref()
+        .map(super::cluster::ClusterCtx::build)
+        .transpose()?;
     Ok(Built {
         users,
         user_routes,
@@ -221,6 +231,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         auth,
         http_fallback,
         sni_fallback,
+        cluster,
     })
 }
 
