@@ -35,9 +35,14 @@ fn round_trip_with_ipv6_peer() {
 
 #[test]
 fn round_trip_all_carrier_kinds() {
-    for carrier in
-        [CarrierKind::SsTcp, CarrierKind::SsUdp, CarrierKind::VlessTcp, CarrierKind::VlessUdp]
-    {
+    for carrier in [
+        CarrierKind::SsTcp,
+        CarrierKind::SsUdp,
+        CarrierKind::VlessTcp,
+        CarrierKind::VlessUdp,
+        CarrierKind::SsXhttp,
+        CarrierKind::VlessXhttp,
+    ] {
         let mut h = sample(None);
         h.carrier = carrier;
         assert_eq!(OpenHeader::parse(&h.encode()).unwrap().carrier, carrier);

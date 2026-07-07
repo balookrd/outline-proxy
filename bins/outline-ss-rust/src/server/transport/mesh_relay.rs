@@ -305,16 +305,26 @@ async fn serve_relayed(
         client_acked_offset: header.client_down_acked,
     };
     let peer_addr = header.peer_addr;
+    // The `*Xhttp` carriers differ only in which route table holds the path.
+    let protocol = match header.carrier {
+        CarrierKind::SsXhttp | CarrierKind::VlessXhttp => Protocol::XhttpH3,
+        _ => Protocol::Http3,
+    };
 
     match header.carrier {
-        CarrierKind::SsTcp => {
+        CarrierKind::SsTcp | CarrierKind::SsXhttp => {
             let route = {
                 let snap = routes.load();
-                snap.tcp.get(&*path).cloned().unwrap_or_else(empty_transport_route)
+                let map = if header.carrier == CarrierKind::SsXhttp {
+                    &snap.xhttp_ss
+                } else {
+                    &snap.tcp
+                };
+                map.get(&*path).cloned().unwrap_or_else(empty_transport_route)
             };
             let route_ctx = WsTcpRouteCtx {
                 users: Arc::clone(&route.users),
-                protocol: Protocol::Http3,
+                protocol,
                 path: Arc::clone(&path),
                 candidate_users: Arc::clone(&route.candidate_users),
                 peer_user_cache: Arc::clone(&route.peer_user_cache),
@@ -322,17 +332,19 @@ async fn serve_relayed(
             };
             run_tcp_relay(carrier, &services.tcp_server, &route_ctx, resume, peer_addr).await
         },
-        CarrierKind::VlessTcp => {
+        CarrierKind::VlessTcp | CarrierKind::VlessXhttp => {
             let route = {
                 let snap = routes.load();
-                snap.vless
-                    .get(&*path)
-                    .cloned()
-                    .unwrap_or_else(empty_vless_transport_route)
+                let map = if header.carrier == CarrierKind::VlessXhttp {
+                    &snap.xhttp_vless
+                } else {
+                    &snap.vless
+                };
+                map.get(&*path).cloned().unwrap_or_else(empty_vless_transport_route)
             };
             let route_ctx = VlessWsRouteCtx {
                 users: Arc::clone(&route.users),
-                protocol: Protocol::Http3,
+                protocol,
                 path: Arc::clone(&path),
                 candidate_users: Arc::clone(&route.candidate_users),
                 padding,
