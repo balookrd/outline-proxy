@@ -184,6 +184,7 @@ async fn websocket_rfc9220_http3_udp_reuses_nat_entry_after_client_reconnect() -
                     Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
                 ),
                 http_fallback: None,
+                cluster: None,
             },
             ShutdownSignal::never(),
         )

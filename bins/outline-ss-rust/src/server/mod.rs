@@ -199,6 +199,7 @@ pub async fn run(config: Config) -> Result<()> {
         );
         let raw_ss_users = Arc::clone(&built.users);
         let h3_fallback = built.http_fallback.clone();
+        let h3_cluster = built.cluster.clone();
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move {
             serve_h3_server(
@@ -212,6 +213,7 @@ pub async fn run(config: Config) -> Result<()> {
                     raw_vless_candidates,
                     raw_ss_users,
                     http_fallback: h3_fallback,
+                    cluster: h3_cluster,
                 },
                 shutdown,
             )

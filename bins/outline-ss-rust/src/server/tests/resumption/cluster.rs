@@ -24,9 +24,17 @@ use std::{
 
 use anyhow::{Result, bail};
 use arc_swap::ArcSwap;
+use axum::http::{Method, Request, StatusCode, Version, header};
 use futures_util::{SinkExt, StreamExt};
+use h3::ext::Protocol as H3Protocol;
 use outline_wire::cluster::{ObfuscationKey, ShardId};
+use quinn::Endpoint;
 use ring::rand::SystemRandom;
+use rustls::pki_types::CertificateDer;
+use sockudo_ws::{
+    Config as H3WsConfig, Http3 as H3Transport, Message as H3Message, Role as H3Role,
+    Stream as H3Stream, WebSocketServer as H3WebSocketServer, WebSocketStream as H3WebSocketStream,
+};
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -37,18 +45,20 @@ use super::super::super::replay::ReplayStore;
 use super::super::super::resumption::{OrphanRegistry, ResumptionConfig, SessionId};
 use super::super::super::setup::build_vless_transport_route_map;
 use super::super::super::shutdown::ShutdownSignal;
-use super::super::super::state::UserKeySlice;
+use super::super::super::state::{RoutesSnapshot, UserKeySlice};
 use super::super::super::transport::mesh_relay::run_mesh_listener;
 use super::super::super::{
-    AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_app,
-    build_transport_route_map, build_user_routes, ensure_rustls_provider_installed, user_keys,
+    AuthPolicy, DnsCache, H3ServeCtx, RouteRegistry, Services, UdpServices, build_app,
+    build_transport_route_map, build_user_routes, ensure_rustls_provider_installed,
+    serve_h3_server, user_keys,
 };
-use super::super::sample_config;
+use super::super::{sample_config, test_h3_client_config, test_h3_server_tls};
 use super::ss::ss_handshake_frame;
 use super::{connect_ws_h1, expect_binary_reply, spawn_echo_target};
-use crate::config::{ClusterConfig, ClusterPsk};
+use crate::config::{ClusterConfig, ClusterPsk, H3Alpn};
 use crate::crypto::{AeadStreamDecryptor, UserKey};
 use crate::metrics::{Metrics, Transport};
+use crate::protocol::vless::VlessUser;
 
 /// A running cluster node: an SS-over-WS listener plus a mesh endpoint (home
 /// listener + edge dialer). Aborts its tasks on drop so tests don't leak
@@ -67,25 +77,29 @@ impl Drop for ClusterNode {
     }
 }
 
-/// Boots one cluster node on fresh random localhost ports: an SS-over-WS
-/// listener and a mesh endpoint bound to `[cluster]`-derived identity, with
-/// `peers` as its shard→home routing table and `budget` as the edge relay's
-/// per-uplink-write stall budget. Returns the node and the shared SS `UserKey`
-/// clients encrypt with.
-async fn spawn_cluster_node(
+/// The shared pieces of a cluster node: routing/services/auth wired to a
+/// cluster-aware resumption registry, plus the built mesh runtime. Both the WS
+/// and the h3 node spawns build these, then bind their own carrier listener.
+struct ClusterParts {
+    routes: RoutesSnapshot,
+    services: Arc<Services>,
+    auth: Arc<AuthPolicy>,
+    cluster: Arc<ClusterCtx>,
+    mesh_addr: SocketAddr,
+    user: UserKey,
+}
+
+/// Builds the cluster-aware services + mesh runtime for one node. Carrier-
+/// agnostic: the caller binds the WS or h3 listener over these.
+fn build_cluster_parts(
     psk: &[u8],
     shard: u8,
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
-) -> Result<(ClusterNode, UserKey)> {
+) -> Result<ClusterParts> {
     // The mesh QUIC endpoint needs the process-wide rustls provider installed.
     ensure_rustls_provider_installed();
 
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let listen_addr = listener.local_addr()?;
-
-    // `listen` here only validates the config schema; the real port is the
-    // bound listener above.
     let mut config = sample_config((Ipv4Addr::LOCALHOST, 0).into());
     config.session_resumption.enabled = true;
     let user_routes = build_user_routes(&config)?;
@@ -107,7 +121,7 @@ async fn spawn_cluster_node(
     let dns_cache = DnsCache::new(Duration::from_secs(30));
     let tcp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
-    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: tcp_routes,
         udp: udp_routes,
         vless: Arc::new(build_vless_transport_route_map(&[])),
@@ -144,6 +158,36 @@ async fn spawn_cluster_node(
     let cluster = ClusterCtx::build(&cluster_cfg)?;
     let mesh_addr = cluster.endpoint.local_addr()?;
 
+    Ok(ClusterParts {
+        routes,
+        services,
+        auth,
+        cluster,
+        mesh_addr,
+        user,
+    })
+}
+
+/// Boots one WS cluster node on fresh random localhost ports: an SS-over-WS
+/// listener and a mesh endpoint (home listener + edge dialer). Returns the node
+/// and the shared SS `UserKey` clients encrypt with.
+async fn spawn_cluster_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
+) -> Result<(ClusterNode, UserKey)> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let ClusterParts {
+        routes,
+        services,
+        auth,
+        cluster,
+        mesh_addr,
+        user,
+    } = build_cluster_parts(psk, shard, peers, budget)?;
+
     let app = build_app(
         Arc::clone(&routes),
         Arc::clone(&services),
@@ -165,6 +209,57 @@ async fn spawn_cluster_node(
         },
         user,
     ))
+}
+
+/// A running h3 edge node: an HTTP/3 WebSocket server that relays to peer homes.
+/// Aborts its task on drop.
+struct H3EdgeNode {
+    addr: SocketAddr,
+    cert_der: CertificateDer<'static>,
+    h3_task: JoinHandle<Result<()>>,
+}
+
+impl Drop for H3EdgeNode {
+    fn drop(&mut self) {
+        self.h3_task.abort();
+    }
+}
+
+/// Boots an h3 edge node: a real `serve_h3_server` with the cluster wired, so
+/// its CONNECT accept path relays a foreign-shard resume to the home. The edge
+/// only dials the mesh (its `ClusterCtx` endpoint), so no mesh listener runs.
+async fn spawn_h3_edge_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
+) -> Result<(H3EdgeNode, UserKey)> {
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server = H3WebSocketServer::<H3Transport>::bind(
+        (Ipv4Addr::LOCALHOST, 0).into(),
+        tls_config,
+        H3WsConfig::default(),
+    )
+    .await?;
+    let addr = server.local_addr()?;
+
+    let ClusterParts {
+        routes, services, auth, cluster, user, ..
+    } = build_cluster_parts(psk, shard, peers, budget)?;
+    let ctx = H3ServeCtx {
+        routes,
+        services,
+        auth,
+        alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
+        raw_vless_users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+        raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+        raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+        http_fallback: None,
+        cluster: Some(cluster),
+    };
+    let h3_task = tokio::spawn(serve_h3_server(server, ctx, ShutdownSignal::never()));
+
+    Ok((H3EdgeNode { addr, cert_der, h3_task }, user))
 }
 
 /// Fabricates a resume id whose shard decodes to `shard` under `psk` — as if a
@@ -373,5 +468,66 @@ async fn cluster_stalled_relay_tears_down_on_health_budget() -> Result<()> {
         torn_down.is_ok(),
         "a stalled relay must be torn down on the health budget, not hang"
     );
+    Ok(())
+}
+
+/// The edge relay works over the HTTP/3 carrier too: an h3 client connects to
+/// an h3 edge, presents a home-shard resume id, and the edge splices the h3
+/// WebSocket to the mesh so the home serves it. A binary reply back through the
+/// relay proves the h3 accept-branch wiring end to end (a different `WsSocket`
+/// impl than the h1/h2 path).
+#[tokio::test]
+async fn cluster_h3_edge_relays_to_home() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-h3-psk";
+    let (echo_addr, echo_accepts) = spawn_echo_target().await?;
+
+    // Home: a plain-WS node with the mesh listener — carrier-agnostic on the
+    // home side, so it serves an h3-originated relay just like a WS one.
+    let (home, user) = spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4)).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_h3_edge_node(PSK, 2, peers, Duration::from_secs(4)).await?;
+
+    let session_id = resume_id_for_shard(PSK, 1)?;
+
+    // h3 client → edge, presenting the home-shard resume id.
+    let mut endpoint = Endpoint::client((Ipv4Addr::LOCALHOST, 0).into())?;
+    endpoint.set_default_client_config(test_h3_client_config(edge.cert_der.clone())?);
+    let connection = endpoint.connect(edge.addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver_task =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://localhost:{}/tcp", edge.addr.port()))
+        .version(Version::HTTP_3)
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .header("x-outline-resume-capable", "1")
+        .header("x-outline-resume", session_id.to_hex())
+        .extension(H3Protocol::WEBSOCKET)
+        .body(())?;
+    let mut req_stream = send_request.send_request(request).await?;
+    let response = req_stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK, "h3 CONNECT must succeed on the edge");
+
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(req_stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+
+    socket
+        .send(H3Message::Binary(ss_handshake_frame(&user, echo_addr, b"via-h3-edge")?))
+        .await?;
+    let reply = tokio::time::timeout(Duration::from_secs(5), socket.next()).await?;
+    match reply {
+        Some(Ok(H3Message::Binary(_))) => {},
+        other => bail!("expected a binary reply relayed over the h3 edge, got {other:?}"),
+    }
+    assert_eq!(
+        echo_accepts.load(Ordering::SeqCst),
+        1,
+        "the h3 edge relay must open exactly one upstream on the home"
+    );
+
+    driver_task.abort();
     Ok(())
 }

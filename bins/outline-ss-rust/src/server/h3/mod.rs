@@ -14,6 +14,7 @@ use crate::{
 
 use super::{
     bootstrap::{h3_cert_paths, load_h3_tls_config, spawn_cert_reloader},
+    cluster::ClusterCtx,
     constants::{
         CERT_RELOAD_POLL_INTERVAL_SECS, H3_MAX_CONCURRENT_CONNECTIONS, H3_MAX_CONCURRENT_STREAMS,
         H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
@@ -251,6 +252,9 @@ struct H3ConnectionCtx {
     /// hot-reload of `[http_fallback]` can flip the flag without
     /// having to rebuild the per-connection ctx.
     http_fallback: Option<Arc<HttpFallbackContext>>,
+    /// Mesh-cluster runtime; `Some` only when clustered. Read by the h3
+    /// CONNECT accept path to relay a foreign-shard resume over the mesh.
+    cluster: Option<Arc<ClusterCtx>>,
 }
 
 fn negotiated_alpn(connection: &quinn::Connection) -> Option<H3Alpn> {
@@ -273,6 +277,9 @@ pub(in crate::server) struct H3ServeCtx {
     pub(in crate::server) raw_vless_candidates: Arc<[Arc<str>]>,
     pub(in crate::server) raw_ss_users: Arc<[UserKey]>,
     pub(in crate::server) http_fallback: Option<Arc<HttpFallbackContext>>,
+    /// Mesh-cluster runtime; `Some` only when `[cluster]` is configured. The h3
+    /// CONNECT accept path reads it to relay a foreign-shard resume.
+    pub(in crate::server) cluster: Option<Arc<ClusterCtx>>,
 }
 
 pub(in crate::server) async fn serve_h3_server(
@@ -289,6 +296,7 @@ pub(in crate::server) async fn serve_h3_server(
         raw_vless_candidates,
         raw_ss_users,
         http_fallback,
+        cluster,
     } = ctx;
     let initial = routes.load();
     let tcp_paths: Arc<BTreeSet<String>> =
@@ -384,6 +392,7 @@ pub(in crate::server) async fn serve_h3_server(
             raw_vless_route: Arc::clone(&raw_vless_route),
             raw_ss_ctx: Arc::clone(&raw_ss_ctx),
             http_fallback: http_fallback.clone(),
+            cluster: cluster.clone(),
         });
 
         tokio::spawn(async move {
