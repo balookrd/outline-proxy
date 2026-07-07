@@ -14,10 +14,12 @@ use outline_wire::cluster::ShardId;
 
 use super::resumption::{ClusterIdentity, SessionId};
 
-// The mesh transport is built out but not yet wired into the runtime (that
-// happens in phase 4c/5), so its items are dead in a non-test build until then.
+// The mesh transport is built out but not yet fully wired into the runtime
+// (that finishes in phase 5c), so some items are dead in a non-test build until
+// then. `pub(in crate::server)` so the transport-side carrier adapter can reach
+// `MeshStream`.
 #[allow(dead_code)]
-mod mesh;
+pub(in crate::server) mod mesh;
 
 /// Where a freshly accepted carrier's session should be served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
