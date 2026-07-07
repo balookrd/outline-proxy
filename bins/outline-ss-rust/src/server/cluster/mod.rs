@@ -10,9 +10,54 @@
 //! [`RouteDecision::Relay`] is treated as a resume-miss so a foreign-shard
 //! resume degrades to a fresh local session. See `docs/CLUSTER.md`.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use outline_wire::cluster::ShardId;
 
 use super::resumption::{ClusterIdentity, SessionId};
+
+use mesh::MeshIdentity;
+pub(in crate::server) use mesh::{MeshEndpoint, MeshPeerPool};
+
+/// Process-wide cluster runtime: this server's shard, the mesh endpoint (shared
+/// by the listener accept-loop and the peer pool) and the relay progress
+/// budget. Built at startup when `[cluster]` is configured; `None` otherwise.
+// `shard`/`pool`/`relay_budget` feed the edge-side relay + health budget in
+// phase 5c-3/6; `endpoint` drives the listener now.
+#[allow(dead_code)]
+pub(in crate::server) struct ClusterCtx {
+    pub(in crate::server) shard: ShardId,
+    pub(in crate::server) endpoint: MeshEndpoint,
+    pub(in crate::server) pool: Arc<MeshPeerPool>,
+    pub(in crate::server) relay_budget: Duration,
+}
+
+/// Cap on concurrent relay streams this server dials out (bounded resources).
+const MESH_MAX_RELAY_STREAMS: usize = 4096;
+
+impl ClusterCtx {
+    /// Builds the cluster runtime from resolved config: derives the mesh
+    /// identity from the PSK, binds the mesh endpoint and constructs the peer
+    /// pool. Fails fast (aborting startup) on a bad identity or listen bind.
+    pub(in crate::server) fn build(
+        cfg: &crate::config::ClusterConfig,
+    ) -> anyhow::Result<Arc<Self>> {
+        let identity = MeshIdentity::derive(cfg.psk.as_bytes())?;
+        let endpoint = MeshEndpoint::bind(cfg.mesh_listen, &identity)?;
+        let pool = Arc::new(MeshPeerPool::new(
+            endpoint.clone(),
+            cfg.peers.clone(),
+            MESH_MAX_RELAY_STREAMS,
+        ));
+        Ok(Arc::new(Self {
+            shard: cfg.shard,
+            endpoint,
+            pool,
+            relay_budget: cfg.mesh_relay_budget,
+        }))
+    }
+}
 
 // The mesh transport is built out but not yet fully wired into the runtime
 // (that finishes in phase 5c), so some items are dead in a non-test build until
