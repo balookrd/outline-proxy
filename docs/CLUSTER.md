@@ -163,14 +163,17 @@ streams.
 Because cluster members live in different countries, the edge → home hop is
 always long. The mesh is therefore best-effort, not a reliable backbone:
 
-- The edge measures *progress* per session: `no_progress_ms` (in-flight bytes
-  with no DATA coming back from home) and the mesh handshake RTT.
-- Exceeding `mesh_relay_budget_ms` makes the edge close the client carrier
-  with an ordinary resume-miss/close, so the client starts a **fresh session
-  locally on the edge** (the edge becomes the new home; the orphaned park on
-  the slow home expires by TTL).
-- The budget is about *progress*, not absolute RTT — high RTT between
-  countries is expected and tolerated; a stalled relay is not.
+- The edge bounds each uplink write to the mesh by `mesh_relay_budget_ms`. When
+  the home stops draining (hung, or the interconnect stalls), the QUIC send
+  window fills and the write blocks; exceeding the budget means a stalled relay.
+- On a stall the edge resets the mesh stream (`CloseReason::Budget`) and closes
+  the client carrier, so the client starts a **fresh session locally on the
+  edge** (the edge becomes the new home; the orphaned park on the slow home
+  expires by TTL).
+- The budget is about *progress*, not absolute RTT — a high but flowing RTT
+  keeps completing writes, so it fires only on a full stall, never on an idle
+  session (an idle uplink blocks on a read, not on a write). A pure-download
+  stall with no uplink to push falls back to the mesh QUIC idle timeout.
 
 ## Home: park/unpark unchanged
 
