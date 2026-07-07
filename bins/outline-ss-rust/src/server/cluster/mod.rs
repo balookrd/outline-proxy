@@ -23,8 +23,8 @@ pub(in crate::server) use mesh::{MeshEndpoint, MeshPeerPool};
 /// Process-wide cluster runtime: this server's shard, the mesh endpoint (shared
 /// by the listener accept-loop and the peer pool) and the relay progress
 /// budget. Built at startup when `[cluster]` is configured; `None` otherwise.
-// `shard`/`pool`/`relay_budget` feed the edge-side relay + health budget in
-// phase 5c-3/6; `endpoint` drives the listener now.
+// `endpoint` drives the home listener and `pool` the edge relay now; `shard`
+// and `relay_budget` feed the health budget in phase 6.
 #[allow(dead_code)]
 pub(in crate::server) struct ClusterCtx {
     pub(in crate::server) shard: ShardId,
@@ -59,10 +59,10 @@ impl ClusterCtx {
     }
 }
 
-// The mesh transport is built out but not yet fully wired into the runtime
-// (that finishes in phase 5c), so some items are dead in a non-test build until
-// then. `pub(in crate::server)` so the transport-side carrier adapter can reach
-// `MeshStream`.
+// The mesh transport is wired into both the home listener and the edge relay,
+// but a few items (the health-budget close codes / progress plumbing) stay dead
+// until phase 6, so keep the module-level allow. `pub(in crate::server)` so the
+// transport-side carrier adapter can reach `MeshStream`.
 #[allow(dead_code)]
 pub(in crate::server) mod mesh;
 

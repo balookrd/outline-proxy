@@ -12,6 +12,7 @@ use crate::{
     protocol::vless::VlessUser,
 };
 
+use super::cluster::ClusterCtx;
 use super::nat::NatTable;
 use super::peer_user_cache::PeerUserCache;
 use super::replay::ReplayStore;
@@ -154,6 +155,11 @@ pub(super) struct AppState {
     /// Reverse-proxy context for the HTTP fallback handler. `None`
     /// keeps the legacy 404 behaviour for unmatched paths.
     pub(super) http_fallback: Option<Arc<HttpFallbackContext>>,
+    /// Mesh-cluster runtime. `Some` only when `[cluster]` is configured;
+    /// the accept path reads it to relay a foreign-shard resume to its home
+    /// over the mesh instead of serving it locally. `None` on a standalone
+    /// server, keeping the accept path unchanged.
+    pub(super) cluster: Option<Arc<ClusterCtx>>,
 }
 
 #[derive(Clone)]
