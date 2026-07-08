@@ -21,7 +21,7 @@ use super::super::{
         XhttpRoute, edge_route, finish_ws_session, generate_anonymous_xhttp_session_id,
         h3_fallback_handle, handle_tcp_h3_connection, handle_udp_h3_connection,
         handle_vless_h3_connection, handle_xhttp_h3_request, is_normal_h3_shutdown,
-        mesh_relay::{edge_relay_h3, open_edge_relay},
+        mesh_relay::{edge_relay_h3, edge_relay_h3_udp, open_edge_relay},
     },
 };
 use super::H3ConnectionCtx;
@@ -223,9 +223,10 @@ async fn handle_h3_request(
     }
 
     // Cluster edge: relay a foreign-shard SS-TCP / VLESS resume to its home
-    // over the mesh. UDP has no mesh relay yet; combined-SS was already split
-    // to a tcp/udp leg above. Checked before the local resume context; on relay
-    // failure we fall through to a fresh local session (this edge becomes home).
+    // over the mesh (combined-SS was already split to a tcp/udp leg above; the
+    // SS-UDP leg is handled by the datagram-framed block below). Checked before
+    // the local resume context; on relay failure we fall through to a fresh
+    // local session (this edge becomes home).
     if path_is_tcp || path_is_vless {
         let registry = if path_is_tcp {
             &ctx.tcp_server.orphan_registry
@@ -270,6 +271,41 @@ async fn handle_h3_request(
             }
             // Relay unavailable: fall through to a fresh local session.
         }
+    }
+
+    // Cluster edge: relay a foreign-shard SS-UDP resume to its home over the
+    // mesh with datagram framing (SS-UDP packets are atomic — a byte splice
+    // would break the home's per-packet AEAD). Separate from the TCP/VLESS block
+    // above because the carrier kind and splice differ; on relay failure we fall
+    // through to a fresh local session.
+    if path_is_udp
+        && let Some(cluster) = ctx.cluster.as_deref()
+        && let (RouteDecision::Relay(shard), Some(advert)) =
+            edge_route(request.headers(), ctx.udp_server.orphan_registry.cluster_identity())
+        && let Some(pooled) =
+            open_edge_relay(cluster, shard, &advert, CarrierKind::SsUdp, &ws_req.path, peer_addr)
+                .await
+    {
+        // Continuity: echo the id the client presented (the home parks under it).
+        let mut response = build_extended_connect_response(None, None);
+        ResumeResponseEcho {
+            session_id: Some(advert.session_id),
+            ..Default::default()
+        }
+        .apply(response.headers_mut());
+        stream
+            .send_response(response)
+            .await
+            .context("failed to send HTTP/3 websocket response")?;
+        let socket = vendored::server_ws_stream(stream, ctx.ws_config.clone());
+        let session = ctx.udp_server.metrics.open_websocket_session(
+            Transport::Udp,
+            Protocol::Http3,
+            AppProtocol::Shadowsocks,
+        );
+        let result = edge_relay_h3_udp(socket, pooled, cluster.relay_budget).await;
+        finish_ws_session(session, result, "ss-udp");
+        return Ok(());
     }
 
     // Resume negotiation. Parse `X-Outline-*` headers up-front (cheap)
