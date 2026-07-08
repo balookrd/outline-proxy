@@ -121,11 +121,12 @@ throttle-кадр `OCTL` (ниже) переживает релей.
   нод, каждая нода детерминированно выводит keypair из общего `cluster_psk`
   (`HKDF(psk, "mesh-auth", shard)` → ed25519 → self-signed cert). Любая нода
   знает PSK, поэтому выводит ожидаемый fingerprint любого пира по его shard и
-  сверяет предъявленный cert — mutual pin. Переиспользует существующий паттерн
-  `PinnedServerCertVerifier` (`bootstrap/reverse_tls.rs`), обобщённый с one-way
-  на mutual: проверка подписи по-прежнему делегируется провайдеру, заменяется
-  только path-валидация на константное сравнение pin. Единственный общий
-  секрет — PSK, уже в конфиге; доставлять нечего. External-PSK API в rustls
+  сверяет предъявленный cert — mutual pin. Обе стороны опираются на общий
+  fingerprint-хелпер из `bootstrap/cert_pin.rs` (`cert_fingerprint` /
+  `CERT_PIN_LEN`): mesh-TLS-верификаторы (`MeshServerVerifier`,
+  `MeshClientVerifier`) по-прежнему делегируют проверку подписи провайдеру и
+  заменяют только path-валидацию на константное сравнение pin. Единственный
+  общий секрет — PSK, уже в конфиге; доставлять нечего. External-PSK API в rustls
   нет, поэтому cert остаётся носителем, но PKI-веса не несёт.
 - **Forward secrecy сохраняется:** утечка PSK ломает *будущий* auth
   (имперсонация пира), но записанный прошлый трафик защищён эфемерными
