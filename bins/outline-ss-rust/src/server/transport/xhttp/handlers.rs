@@ -31,7 +31,7 @@ use crate::server::resumption::{OrphanRegistry, SessionId};
 use outline_wire::cluster::ShardId;
 
 use super::super::super::state::{AppState, Services, TransportRoute, VlessTransportRoute};
-use super::super::mesh_relay::{edge_relay, open_edge_relay};
+use super::super::mesh_relay::{edge_relay, edge_relay_udp, open_edge_relay};
 use super::super::resume_headers::{
     EdgeResumeAdvert, ResumeContext, ResumeResponseEcho, edge_route,
 };
@@ -729,7 +729,8 @@ async fn open_xhttp_mesh(
 /// the metrics `AppProtocol` label differ. When `edge` is set (a foreign-shard
 /// resume on a clustered node), the reassembled byte stream is relayed to the
 /// home over the mesh instead of served locally, falling back to a fresh local
-/// session if the mesh open fails. UDP has no mesh relay yet.
+/// session if the mesh open fails. SS-UDP relays too, but datagram-framed
+/// (`edge_relay_udp`) so per-packet boundaries survive the mesh hop.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::server::transport::xhttp) fn spawn_relay(
     session: Arc<XhttpSession>,
@@ -831,14 +832,12 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
             });
         },
         XhttpRoute::SsUdp(route) => {
-            // UDP has no mesh relay yet; a clustered UDP session is served
-            // locally regardless of the resume id's shard.
-            drop(edge);
             let server = Arc::clone(&services.udp_server);
             // Combined-SS base resolves the same scheme as the TCP leg (both
             // reach here via the shared base path), so listing the base path
             // pads both legs uniformly.
             let padding = crate::server::transport::carrier_padding::scheme_for_path(&base_path);
+            let relay_path = Arc::clone(&base_path);
             let route_ctx = Arc::new(UdpRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
@@ -852,8 +851,20 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 AppProtocol::Shadowsocks,
             );
             tokio::spawn(async move {
+                // A foreign-shard resume relays to the home over the mesh with
+                // datagram framing (SS-UDP packets are atomic — a byte splice
+                // would break the home's per-packet AEAD); otherwise the session
+                // is served locally on this node.
+                let relay =
+                    open_xhttp_mesh(edge, CarrierKind::SsUdpXhttp, &relay_path, peer_addr).await;
                 let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
-                let result = run_udp_relay::<XhttpDuplex>(socket, server, route_ctx, resume).await;
+                let result = match relay {
+                    Some((pooled, budget)) => {
+                        let (send, recv, _permit) = pooled.into_parts();
+                        edge_relay_udp::<XhttpDuplex>(socket, send, recv, budget).await
+                    },
+                    None => run_udp_relay::<XhttpDuplex>(socket, server, route_ctx, resume).await,
+                };
                 session_for_task.close();
                 registry.remove(&session_id);
                 finish_ws_session(metrics_session, classify_relay_result(result), "ss-udp");

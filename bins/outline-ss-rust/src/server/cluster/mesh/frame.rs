@@ -28,7 +28,8 @@ use anyhow::{Result, bail};
 /// peer on an older build fails cleanly instead of misparsing.
 ///
 /// v2 added the `SsXhttp` / `VlessXhttp` carrier kinds.
-const OPEN_VERSION: u8 = 2;
+/// v3 added the `SsUdpXhttp` carrier kind (SS-UDP over XHTTP).
+const OPEN_VERSION: u8 = 3;
 
 /// Upper bound on the request path length carried in an OPEN header. Guards the
 /// parser against an oversized allocation from a malformed peer.
@@ -36,9 +37,12 @@ const MAX_PATH_LEN: usize = 512;
 
 /// Which carrier a relayed stream is, so the home dispatches it into the right
 /// accept path. Combined-SS path-kind is already resolved into the Tcp/Udp
-/// split here. The `*Xhttp` kinds differ from `*Tcp` only in which route table
-/// the home resolves the path against (`xhttp_ss` / `xhttp_vless` vs the WS
-/// `tcp` / `vless` tables); the relayed byte stream and the crypto are the same.
+/// split here. The `*Xhttp` kinds differ from the WS kinds only in which route
+/// table the home resolves the path against (`xhttp_ss` / `xhttp_vless` /
+/// `xhttp_ss_udp` vs the WS `tcp` / `vless` / `udp` tables); the crypto is the
+/// same. Body framing depends on the kind: the TCP-shaped carriers relay as a
+/// byte stream, whereas `SsUdp` and `SsUdpXhttp` are datagram-framed (see
+/// [`super::datagram`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::server) enum CarrierKind {
     SsTcp,
@@ -47,6 +51,7 @@ pub(in crate::server) enum CarrierKind {
     VlessUdp,
     SsXhttp,
     VlessXhttp,
+    SsUdpXhttp,
 }
 
 impl CarrierKind {
@@ -58,6 +63,7 @@ impl CarrierKind {
             CarrierKind::VlessUdp => 3,
             CarrierKind::SsXhttp => 4,
             CarrierKind::VlessXhttp => 5,
+            CarrierKind::SsUdpXhttp => 6,
         }
     }
 
@@ -69,6 +75,7 @@ impl CarrierKind {
             3 => CarrierKind::VlessUdp,
             4 => CarrierKind::SsXhttp,
             5 => CarrierKind::VlessXhttp,
+            6 => CarrierKind::SsUdpXhttp,
             other => bail!("unknown mesh carrier kind {other}"),
         })
     }
