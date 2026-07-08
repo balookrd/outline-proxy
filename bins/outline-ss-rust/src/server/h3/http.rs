@@ -21,7 +21,7 @@ use super::super::{
         XhttpRoute, edge_route, finish_ws_session, generate_anonymous_xhttp_session_id,
         h3_fallback_handle, handle_tcp_h3_connection, handle_udp_h3_connection,
         handle_vless_h3_connection, handle_xhttp_h3_request, is_normal_h3_shutdown,
-        mesh_relay::{edge_relay_h3, edge_relay_h3_udp, open_edge_relay},
+        mesh_relay::{edge_relay_h3, edge_relay_h3_udp, edge_throttle_ctx, open_edge_relay},
     },
 };
 use super::H3ConnectionCtx;
@@ -265,7 +265,8 @@ async fn handle_h3_request(
                 };
                 let session =
                     metrics.open_websocket_session(Transport::Tcp, Protocol::Http3, app_protocol);
-                let result = edge_relay_h3(socket, pooled, cluster.relay_budget).await;
+                let detect = edge_throttle_ctx(&pooled, advert.session_id, &ws_req.path);
+                let result = edge_relay_h3(socket, pooled, cluster.relay_budget, detect).await;
                 finish_ws_session(session, result, kind);
                 return Ok(());
             }
@@ -303,7 +304,8 @@ async fn handle_h3_request(
             Protocol::Http3,
             AppProtocol::Shadowsocks,
         );
-        let result = edge_relay_h3_udp(socket, pooled, cluster.relay_budget).await;
+        let detect = edge_throttle_ctx(&pooled, advert.session_id, &ws_req.path);
+        let result = edge_relay_h3_udp(socket, pooled, cluster.relay_budget, detect).await;
         finish_ws_session(session, result, "ss-udp");
         return Ok(());
     }
