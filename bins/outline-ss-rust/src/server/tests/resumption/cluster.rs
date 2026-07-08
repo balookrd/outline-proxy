@@ -32,6 +32,7 @@ use outline_transport::{
     TcpShadowsocksWriter, TransportMode, UdpWsTransport, UpstreamTransportGuard,
 };
 use outline_wire::cluster::{ObfuscationKey, ShardId};
+use outline_wire::padding::{ControlSignal, PaddingDecoder, encode_frame_into};
 use quinn::Endpoint;
 use ring::rand::SystemRandom;
 use rustls::pki_types::CertificateDer;
@@ -54,6 +55,7 @@ use super::super::super::setup::{
 };
 use super::super::super::shutdown::ShutdownSignal;
 use super::super::super::state::{RoutesSnapshot, UserKeySlice};
+use super::super::super::transport::carrier_padding;
 use super::super::super::transport::mesh_relay::run_mesh_listener;
 use super::super::super::{
     AuthPolicy, DnsCache, H3ServeCtx, RouteRegistry, Services, UdpServices, build_app,
@@ -66,7 +68,7 @@ use super::super::{
 use super::ss::ss_handshake_frame;
 use super::vless::vless_udp_request;
 use super::{connect_ws_h1, expect_binary_reply, spawn_echo_target, spawn_echo_udp_target};
-use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn};
+use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn, PaddingConfig};
 use crate::crypto::{AeadStreamDecryptor, UserKey, decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::{Metrics, Transport};
 use crate::protocol::TargetAddr;
@@ -117,12 +119,18 @@ fn build_cluster_parts(
     budget: Duration,
     xhttp_ss_path: Option<&str>,
     xhttp_ss_udp_path: Option<&str>,
+    ss_tcp_path: Option<&str>,
 ) -> Result<ClusterParts> {
     // The mesh QUIC endpoint needs the process-wide rustls provider installed.
     ensure_rustls_provider_installed();
 
     let mut config = sample_config((Ipv4Addr::LOCALHOST, 0).into());
     config.session_resumption.enabled = true;
+    // The throttle e2e serves SS on its own padded path so enabling padding for
+    // it (a process-global) never touches the other tests' `/tcp` carriers.
+    if let Some(path) = ss_tcp_path {
+        config.ws_path_tcp = path.to_string();
+    }
     let user_routes = build_user_routes(&config)?;
     let user = user_routes[0].user.clone();
     let users = user_keys(user_routes.as_ref());
@@ -228,7 +236,52 @@ async fn spawn_cluster_node(
         cluster,
         mesh_addr,
         user,
-    } = build_cluster_parts(psk, shard, peers, budget, xhttp_ss_path, xhttp_ss_udp_path)?;
+    } = build_cluster_parts(psk, shard, peers, budget, xhttp_ss_path, xhttp_ss_udp_path, None)?;
+
+    let app = build_app(
+        Arc::clone(&routes),
+        Arc::clone(&services),
+        auth,
+        None,
+        Some(Arc::clone(&cluster)),
+    );
+    let ws_task =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    let mesh_task =
+        tokio::spawn(run_mesh_listener(cluster, services, routes, ShutdownSignal::never()));
+
+    Ok((
+        ClusterNode {
+            listen_addr,
+            mesh_addr,
+            ws_task,
+            mesh_task,
+        },
+        user,
+    ))
+}
+
+/// Boots a WS cluster node serving SS on a custom path (the throttle e2e). Same
+/// wiring as [`spawn_cluster_node`], but the SS route lives on `ss_tcp_path` so
+/// the process-global padding this test enables for that path never touches the
+/// other tests' `/tcp` carriers.
+async fn spawn_throttle_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
+    ss_tcp_path: &str,
+) -> Result<(ClusterNode, UserKey)> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let ClusterParts {
+        routes,
+        services,
+        auth,
+        cluster,
+        mesh_addr,
+        user,
+    } = build_cluster_parts(psk, shard, peers, budget, None, None, Some(ss_tcp_path))?;
 
     let app = build_app(
         Arc::clone(&routes),
@@ -287,7 +340,7 @@ async fn spawn_h3_edge_node(
 
     let ClusterParts {
         routes, services, auth, cluster, user, ..
-    } = build_cluster_parts(psk, shard, peers, budget, None, None)?;
+    } = build_cluster_parts(psk, shard, peers, budget, None, None, None)?;
     let ctx = H3ServeCtx {
         routes,
         services,
@@ -324,6 +377,34 @@ async fn spawn_blackhole_target() -> Result<SocketAddr> {
         let mut held = Vec::new();
         while let Ok((stream, _)) = listener.accept().await {
             held.push(stream);
+        }
+    });
+    Ok(addr)
+}
+
+/// A TCP target that floods `bytes` of data at every connection, so the home has
+/// far more downlink to push than the (stalled) client will drain — the setup
+/// the edge throttle detector needs. Ignores the client's request payload.
+async fn spawn_flood_target(bytes: usize) -> Result<SocketAddr> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let chunk = vec![0xA5u8; 64 * 1024];
+                let mut written = 0;
+                while written < bytes {
+                    if stream.write_all(&chunk).await.is_err() {
+                        return;
+                    }
+                    written += chunk.len();
+                }
+                // Keep the upstream open after the flood so the home's data
+                // channel drains to empty (not closed): the ws_writer's biased
+                // select services the throttle signal only in that lull, emitting
+                // the OCTL instead of tearing the session down on upstream EOF.
+                std::future::pending::<()>().await;
+            });
         }
     });
     Ok(addr)
@@ -951,5 +1032,91 @@ async fn cluster_vless_udp_relays_via_vless_tcp() -> Result<()> {
     );
 
     socket.close(None).await?;
+    Ok(())
+}
+
+/// The whole edge→hint→home→OCTL→client path, end to end. With padding + throttle
+/// detection enabled on a dedicated path, a client that stalls its downlink read
+/// while the home floods it makes the edge's client-facing send block; the edge
+/// detects the stall, sends a `THROTTLE_HINT` mesh datagram to the home, which
+/// routes it to the relayed session's monitor and injects an `OCTL` cover frame.
+/// The client decodes that frame as `ThrottleSwitchUplink`.
+///
+/// Timing-driven (the detection window is floored at 1s), so the stall and the
+/// read deadline use wide margins. Padding is a process-global; it is scoped to
+/// this test's own path so the other cluster tests' `/tcp` carriers stay
+/// unpadded (and nothing else in the test binary calls `carrier_padding::init`).
+#[tokio::test]
+async fn cluster_edge_throttle_hint_injects_octl_to_client() -> Result<()> {
+    const PSK: &[u8] = b"cluster-throttle-octl-psk";
+    const PATH: &str = "/throttle-e2e";
+
+    carrier_padding::init(PaddingConfig {
+        enabled: true,
+        min_bytes: 1,
+        max_bytes: 16,
+        cover: false,
+        cover_jitter_min_ms: 0,
+        cover_jitter_max_ms: 0,
+        paths: vec![PATH.to_string()],
+        throttle_detect_enabled: true,
+        throttle_ratio_percent: 200,
+        // Window is floored at 1s; sustain 1 fires on a single >1s stalled send.
+        throttle_window_secs: 1,
+        throttle_sustain_windows: 1,
+        throttle_min_bytes_per_sec: 0,
+        throttle_signal_cooldown_secs: 1,
+    });
+
+    let flood_addr = spawn_flood_target(4 * 1024 * 1024).await?;
+    let (home, user) =
+        spawn_throttle_node(PSK, 1, HashMap::new(), Duration::from_secs(30), PATH).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_throttle_node(PSK, 2, peers, Duration::from_secs(30), PATH).await?;
+
+    let session_id = resume_id_for_shard(PSK, 1)?;
+    let (socket, _) = connect_ws_h1(edge.listen_addr, PATH, Some(session_id), true).await?;
+    let (mut sink, mut stream) = socket.split();
+
+    // Padded uplink: the home decodes padding on this path before AEAD, so wrap
+    // the SS handshake+request in one padding frame (empty pad is a valid frame).
+    let ss = ss_handshake_frame(&user, flood_addr, b"flood")?;
+    let mut framed = Vec::new();
+    encode_frame_into(&mut framed, &ss, &[]).expect("padding frame within u16 bounds");
+    sink.send(WsMessage::Binary(framed.into())).await?;
+
+    // Stall the downlink read past one detection window: the edge's client-facing
+    // send blocks, and when it finally completes it records a >1s stall and fires
+    // the hint.
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+
+    // Resume reading and decode the padding stream until the OCTL control frame
+    // surfaces. The SS plaintext is irrelevant here, so the decode sink is reused
+    // and discarded — only the control signal matters.
+    let mut decoder = PaddingDecoder::new();
+    let mut discard = Vec::new();
+    let got_octl = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match stream.next().await {
+                Some(Ok(WsMessage::Binary(bytes))) => {
+                    discard.clear();
+                    decoder.push(&bytes, &mut discard);
+                    if matches!(decoder.take_control(), Some(ControlSignal::ThrottleSwitchUplink)) {
+                        return true;
+                    }
+                },
+                Some(Ok(WsMessage::Close(_))) | None => return false,
+                Some(Ok(_)) => {},
+                Some(Err(_)) => return false,
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        matches!(got_octl, Ok(true)),
+        "client must decode an OCTL ThrottleSwitchUplink cover frame injected by the home \
+         after the edge signalled the throttled client segment (got {got_octl:?})",
+    );
     Ok(())
 }
