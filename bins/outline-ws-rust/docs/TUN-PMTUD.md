@@ -15,10 +15,6 @@ engine wraps the payload in SOCKS5 framing and hands it to the
 transport's `send_packet`. Several transports refuse oversized payloads
 they cannot fragment around:
 
-- raw QUIC SS-UDP — `QuicDatagramChannel` bounded by the negotiated
-  `max_datagram_size` (typically ~1180 bytes);
-- VLESS QUIC UDP — the same QUIC datagram budget plus 4-byte session-id
-  overhead;
 - VLESS-UDP framing — hard 64 KiB ceiling on the length-prefixed frame;
 - Shadowsocks 2022 UDP — refuses anything that exceeds the AEAD record
   limit on the uplink leg.
@@ -34,7 +30,7 @@ The transport drop is invisible to the client: the sender keeps
 retransmitting the same too-large payload on every loss timer. Without
 an in-band signal it never learns the effective tunnel MTU. Real
 production breakage came from VoWiFi IKE_AUTH carrying client
-certificates over a raw-QUIC uplink — the IKE retransmits piled up,
+certificates over a tunnel uplink — the IKE retransmits piled up,
 the certificate exchange never completed, and the call failed.
 
 The fix is to synthesise an ICMP error toward the original sender so
@@ -159,7 +155,7 @@ PTB emission for every oversize drop that has a known transport limit
 `should_emit_ptb_for_limit`). Use it on deployments where QUIC
 eviction is a non-issue and the explicit PMTUD signal on every drop
 is worth more: pure VoWiFi / IKEv2 concentrators carrying IKE_AUTH
-with certificates over a narrow raw-QUIC uplink are the canonical
+with certificates over a narrow tunnel uplink are the canonical
 example — the PTB is the only signal that lets the IKE retransmit
 loop learn the effective tunnel MTU before the call times out.
 

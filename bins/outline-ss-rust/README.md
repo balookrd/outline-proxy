@@ -47,8 +47,6 @@ It supports:
 | HTTP/1.1 WebSocket | Supported | Plain `ws://` or `wss://` |
 | HTTP/2 WebSocket | Supported | RFC 8441 Extended CONNECT |
 | HTTP/3 WebSocket | Supported | RFC 9220 Extended CONNECT |
-| Raw VLESS over QUIC | Supported | ALPN `vless`; bidi stream per TCP target, QUIC datagrams for UDP with session_id prefix |
-| Raw Shadowsocks over QUIC | Supported | ALPN `ss`; bidi stream = one SS-AEAD TCP session, QUIC datagrams = SS-UDP packets |
 | Built-in TLS for h1/h2 | Supported | Optional, on the main TCP listener |
 | Built-in QUIC/TLS for h3 | Supported | Optional, on `h3_listen` (may reuse the `listen` port over UDP); ALPN list is configurable |
 | IPv6 | Supported | Listener, upstream resolution, and access key generation |
@@ -62,7 +60,6 @@ It supports:
 | HTTP fallback (camouflage) | Supported | Reverse-proxies unmatched HTTP/1.1 + HTTP/2 requests to an upstream backend (haproxy / nginx / caddy) instead of returning 404, so the listener is indistinguishable from a regular web service. Optional HAProxy PROXY-protocol v1/v2 prefix preserves the real client IP for upstream logs/ACLs |
 | SNI fallback (L4 camouflage) | Supported | Peeks ClientHello on the TLS listener and splices foreign-SNI connections (raw TCP, including the captured ClientHello) to a backend that holds its own cert. Sister of the HTTP fallback, one OSI layer below. nginx-style wildcards in `match_sni`; PROXY-protocol v1/v2 strongly recommended so the backend sees the real peer IP |
 | VLESS REALITY / XTLS / Vision | Not supported | Out of scope |
-| VLESS / Shadowsocks raw over QUIC | Supported | No WebSocket / no HTTP/3 framing; selected by ALPN (`vless`, `ss`) on the same `h3_listen` port |
 | Outline management API | Not supported | Data plane only |
 | SIP003 plugin negotiation | Not supported | Out of scope |
 
@@ -77,20 +74,16 @@ flowchart LR
     SS["Outline / Shadowsocks Client"] --> H1["HTTP/1.1 WS"]
     SS --> H2["HTTP/2 WS (RFC 8441)"]
     SS --> H3["HTTP/3 WS (RFC 9220)"]
-    SS --> SSQ["Raw SS over QUIC (ALPN ss)"]
 
     VL["VLESS Client (Happ / v2rayNG / Hiddify)"] --> H1
     VL --> H2
     VL --> H3
-    VL --> VLQ["Raw VLESS over QUIC (ALPN vless)"]
     VL --> XH["XHTTP packet-up (h2/h3)"]
     XH --> S
 
     H1 --> S["outline-ss-rust"]
     H2 --> S
     H3 --> S
-    VLQ --> S
-    SSQ --> S
 
     S --> ROUTER["Per-path router"]
     ROUTER --> SSAUTH["Shadowsocks AEAD user detection"]
@@ -155,16 +148,6 @@ Each incoming datagram is dispatched to an independent relay task. At most 256 c
 
 NAT entries are evicted after `tuning.udp_nat_idle_timeout_secs` (default 300 seconds under the `large` profile) of no outbound traffic. A background task scans for idle entries every 60 seconds.
 
-### Raw VLESS / Shadowsocks over QUIC (no WebSocket)
-
-When `[server.h3]` advertises additional ALPN protocols, the same QUIC endpoint multiplexes more than just HTTP/3. Each QUIC connection is dispatched by the negotiated ALPN:
-
-- `h3` — HTTP/3 + WebSocket-over-HTTP/3 (default, unchanged).
-- `vless` — VLESS framed directly on QUIC bidirectional streams. One bidi stream carries one VLESS request: TCP target gets full-duplex byte splicing on the same stream, UDP target uses the bidi stream as a control/lifetime anchor and exchanges packets as QUIC datagrams prefixed with a 4-byte big-endian session_id allocated by the server in the VLESS response header `[VERSION, 0x00, session_id]`. The `mux.cool` command is rejected — open multiple QUIC streams instead.
-- `ss` — Shadowsocks AEAD framed directly on QUIC. One bidi stream is one SS-AEAD TCP session (identical wire format to the plain TCP listener — first chunk identifies the user); each QUIC datagram is one SS-AEAD UDP packet, also identical to the plain UDP listener and routed through the same NAT table.
-
-Configure with `alpn = ["h3", "vless", "ss"]` under `[server.h3]`. Datagrams must be enabled on the QUIC endpoint (the server enables them automatically when `h3_listen` is set).
-
 ## Carrier Padding
 
 Optional application-layer padding for the WebSocket / XHTTP carriers that breaks the TLS-record-size correlation "proxy-inside-TLS" (TLS-in-TLS) classifiers key on. Each Shadowsocks chunk on a padded path is wrapped in a `real_len | pad_len | real | pad` frame before it reaches the outer TLS record layer, so the encrypted record size no longer tracks the Shadowsocks payload size — the same idea as AnyTLS's padding, hardened into the carriers already shipped here instead of adopting a second proxy protocol.
@@ -173,7 +156,7 @@ Optional application-layer padding for the WebSocket / XHTTP carriers that break
 - **Config-synchronised, not negotiated.** There is no on-wire capability bit — the matching `outline-ws-rust` client must enable `[padding]` too, or its plain frames are fed into the padding decoder and the session fails. Off by default, so the wire stays byte-for-byte identical until both ends opt in.
 - **Cover traffic.** With `cover = true` the downlink emits pad-only frames on an idle connection at a jittered interval (`cover_jitter_min_ms` … `cover_jitter_max_ms`), so silence does not leak timing.
 
-Covers SS- and VLESS-over-WebSocket (h1/h2/h3) and -over-XHTTP alike, and UDP is padded per-datagram on every WS carrier — SS-UDP (split: list its path; combined: the shared base path) and VLESS-UDP both; only raw SS / VLESS over QUIC stays out of scope. Full reference: [`docs/PADDING.md`](../../docs/PADDING.md); the `[padding]` block in `config.toml` lists the knobs.
+Covers SS- and VLESS-over-WebSocket (h1/h2/h3) and -over-XHTTP alike, and UDP is padded per-datagram on every WS carrier — SS-UDP (split: list its path; combined: the shared base path) and VLESS-UDP both. Full reference: [`docs/PADDING.md`](../../docs/PADDING.md); the `[padding]` block in `config.toml` lists the knobs.
 
 ## User Model
 
@@ -238,10 +221,10 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `listen` | Optional main TCP listener for HTTP/1.1 and HTTP/2 |
 | `[server].cert_path` / `[server].key_path` | Optional built-in TLS for the main listener (default cert when no SNI matches). The legacy keys `tls_cert_path` / `tls_key_path` still parse as aliases for backward compat |
 | `[[server.certs]]` | Optional list of additional cert/key pairs selected by SNI on the main listener. Each entry: `cert_path`, `key_path`, optional `sni = [...]`. When `sni` is omitted, names are derived from the certificate's SAN (and Subject CN as a last-resort fallback). Wildcards in SAN are skipped (the resolver matches SNIs exactly) — list each hostname explicitly when needed |
-| `h3_listen` | Optional QUIC listener address for HTTP/3 (and, when ALPN list extends, raw VLESS/SS over QUIC); must be set explicitly when HTTP/3 is enabled |
+| `h3_listen` | Optional QUIC listener address for HTTP/3; must be set explicitly when HTTP/3 is enabled |
 | `[server.h3].cert_path` / `[server.h3].key_path` | Default cert for the QUIC listener. When the `[server.h3]` table omits them, the QUIC listener inherits the cert/key from `[server]` so a single cert block can cover both transports |
 | `[[server.h3.certs]]` | SNI-selected cert array for the QUIC listener; same shape as `[[server.certs]]`. When the `[server.h3]` table omits this array entirely, it inherits `[[server.certs]]` |
-| `[server.h3].alpn` | List of ALPN protocols advertised on the QUIC endpoint. Allowed values: `"h3"` (HTTP/3 + WebSocket-over-HTTP/3), `"vless"` (raw VLESS framed on QUIC streams), `"ss"` (raw Shadowsocks AEAD framed on QUIC streams). Defaults to `["h3"]` |
+| `[server.h3].alpn` | List of ALPN protocols advertised on the QUIC endpoint. Only `"h3"` (HTTP/3 + WebSocket-over-HTTP/3) is supported. Defaults to `["h3"]` |
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
 | `prefer_ipv4_upstream` | Prefer IPv4 for upstream DNS resolution and connects; useful when IPv6 paths are broken |
@@ -343,7 +326,7 @@ mobile = ["10.0.0.0/8", "2001:db8::/48"]
 - **Value shape:** one CIDR/IP string or a list. A bare address is a host route (`/32` or `/128`). Overlapping subnets are allowed; the most specific (longest-prefix) match wins.
 - **Uniqueness:** alias names must not collide with any user `id` or another alias — each becomes a distinct `user="…"` time series, so a collision would silently merge accounting. Config that violates this is rejected at startup and by the control plane.
 - **Cardinality:** every alias adds one label value across the per-user metric families, bounded by the number of aliases you configure.
-- **Coverage:** honored wherever the server sees the real client IP — SS-over-WS/XHTTP TCP, all VLESS carriers (WS/XHTTP/H3/raw-QUIC), and all raw-QUIC SS carriers (TCP and UDP). SS-UDP-over-WebSocket falls back to the base `id` (the relay layer does not carry the peer).
+- **Coverage:** honored wherever the server sees the real client IP — SS-over-WS/XHTTP TCP and all VLESS carriers (WS/XHTTP/H3). SS-UDP-over-WebSocket falls back to the base `id` (the relay layer does not carry the peer).
 - **CDN caveat:** the source IP is the directly-connected peer. Behind a CDN or L4 proxy that is the CDN's IP, not the client's, so aliasing is only meaningful on direct connections — the server does not read inbound PROXY-protocol or `X-Forwarded-For`.
 
 ### VLESS over XHTTP
