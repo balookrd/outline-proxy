@@ -233,6 +233,17 @@ pub(in crate::server) async fn edge_relay_h3(
     edge_relay::<H3Ws>(H3Ws(socket), send, recv, budget).await
 }
 
+/// SS-UDP twin of [`edge_relay_h3`]: splices an h3 client carrier to a mesh
+/// relay with datagram framing, so per-packet SS-UDP boundaries survive the hop.
+pub(in crate::server) async fn edge_relay_h3_udp(
+    socket: H3WebSocketStream<H3Stream<H3Transport>>,
+    pooled: PooledRelay,
+    budget: Duration,
+) -> Result<()> {
+    let (send, recv, _permit) = pooled.into_parts();
+    edge_relay_udp::<H3Ws>(H3Ws(socket), send, recv, budget).await
+}
+
 /// Describes a carrier the edge is about to relay to its home. Bundled so the
 /// TCP and VLESS upgrade call sites stay readable.
 pub(in crate::server::transport) struct EdgeRelay {
