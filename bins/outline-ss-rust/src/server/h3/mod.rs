@@ -6,11 +6,7 @@ use tracing::{debug, warn};
 
 use vendored::{H3Transport, H3WebSocketConfig, H3WebSocketServer};
 
-use crate::{
-    config::{Config, H3Alpn, TuningProfile},
-    crypto::UserKey,
-    protocol::vless::VlessUser,
-};
+use crate::config::{Config, H3Alpn, TuningProfile};
 
 use super::{
     bootstrap::{h3_cert_paths, load_h3_tls_config, spawn_cert_reloader},
@@ -21,21 +17,13 @@ use super::{
     },
     state::{AuthPolicy, RoutesSnapshot, Services, TransportRoute, VlessTransportRoute},
     transport::{
-        HttpFallbackContext, RawQuicSsCtx, RawQuicVlessRouteCtx, UdpServerCtx, VlessWsServerCtx,
-        WsTcpServerCtx, XhttpRegistry, is_normal_h3_shutdown,
+        HttpFallbackContext, UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx, XhttpRegistry,
+        is_normal_h3_shutdown,
     },
 };
 
 mod http;
-mod raw_ss;
-mod raw_vless;
 pub(in crate::server) mod vendored;
-
-// Re-exported so the reverse-tunnel dialer can drive the same raw-SS / raw-VLESS
-// accept loop on an outbound-dialed carrier (topology A) — both handlers are
-// agnostic to how the `quinn::Connection` was obtained.
-pub(in crate::server) use raw_ss::handle_raw_ss_connection;
-pub(in crate::server) use raw_vless::handle_raw_vless_connection;
 
 pub(in crate::server) async fn build_h3_server(
     config: &Config,
@@ -143,15 +131,13 @@ fn build_h3_transport_config(profile: &TuningProfile) -> Result<quinn::Transport
         .send_window(profile.h3_connection_window_bytes)
         .datagram_receive_buffer_size(Some(profile.h3_connection_window_bytes as usize))
         .datagram_send_buffer_size(profile.h3_connection_window_bytes as usize);
-    // Endpoint also serves raw-QUIC ALPNs (vless / ss) which carry
-    // application UDP datagrams as QUIC datagrams (RFC 9221). The
-    // default initial_mtu of 1200 caps the server→client datagram
-    // payload at ~1170 B for the first few RTTs of every connection
-    // while DPLPMTUD probes upward — long enough to drop real UDP
-    // traffic (DNS, video) on a 1500-Ethernet link. Bump the floor
-    // to 1400 (safe whenever the path supports standard 1500 MTU)
-    // and let MTU discovery target 1452 from there. The matching
-    // client config in outline-ws-rust uses identical values.
+    // The default initial_mtu of 1200 caps the server→client QUIC
+    // payload for the first few RTTs of every connection while
+    // DPLPMTUD probes upward — long enough to hurt real traffic on a
+    // 1500-Ethernet link. Bump the floor to 1400 (safe whenever the
+    // path supports standard 1500 MTU) and let MTU discovery target
+    // 1452 from there. The matching client config in outline-ws-rust
+    // uses identical values.
     transport.initial_mtu(1400);
     let mut mtu = quinn::MtuDiscoveryConfig::default();
     mtu.upper_bound(1452);
@@ -242,8 +228,6 @@ struct H3ConnectionCtx {
     vless_server: Arc<VlessWsServerCtx>,
     stream_semaphore: Arc<Semaphore>,
     alpn: Arc<[H3Alpn]>,
-    raw_vless_route: Arc<RawQuicVlessRouteCtx>,
-    raw_ss_ctx: Arc<RawQuicSsCtx>,
     /// Per-process fallback context — `Some` and active for h3 only
     /// when `[http_fallback]` is set with `apply_to_h3 = true`. The
     /// h3 dispatch in `http::handle_h3_request` checks the
@@ -265,17 +249,14 @@ fn negotiated_alpn(connection: &quinn::Connection) -> Option<H3Alpn> {
 }
 
 /// Everything the HTTP/3 accept loop needs besides the endpoint
-/// itself: the shared route/auth state plus the raw-QUIC user sets
-/// served next to HTTP/3 on the same listener. Bundled so
-/// [`serve_h3_server`] keeps a flat three-argument signature.
+/// itself: the shared route/auth state served on the listener.
+/// Bundled so [`serve_h3_server`] keeps a flat three-argument
+/// signature.
 pub(in crate::server) struct H3ServeCtx {
     pub(in crate::server) routes: RoutesSnapshot,
     pub(in crate::server) services: Arc<Services>,
     pub(in crate::server) auth: Arc<AuthPolicy>,
     pub(in crate::server) alpn: Arc<[H3Alpn]>,
-    pub(in crate::server) raw_vless_users: Arc<[VlessUser]>,
-    pub(in crate::server) raw_vless_candidates: Arc<[Arc<str>]>,
-    pub(in crate::server) raw_ss_users: Arc<[UserKey]>,
     pub(in crate::server) http_fallback: Option<Arc<HttpFallbackContext>>,
     /// Mesh-cluster runtime; `Some` only when `[cluster]` is configured. The h3
     /// CONNECT accept path reads it to relay a foreign-shard resume.
@@ -292,9 +273,6 @@ pub(in crate::server) async fn serve_h3_server(
         services,
         auth,
         alpn,
-        raw_vless_users,
-        raw_vless_candidates,
-        raw_ss_users,
         http_fallback,
         cluster,
     } = ctx;
@@ -328,15 +306,6 @@ pub(in crate::server) async fn serve_h3_server(
 
     let connection_semaphore = Arc::new(Semaphore::new(H3_MAX_CONCURRENT_CONNECTIONS));
     let stream_semaphore = Arc::new(Semaphore::new(H3_MAX_CONCURRENT_STREAMS));
-
-    let raw_vless_route = Arc::new(RawQuicVlessRouteCtx {
-        users: raw_vless_users,
-        candidate_users: raw_vless_candidates,
-    });
-    let raw_ss_ctx = Arc::new(RawQuicSsCtx {
-        users: raw_ss_users,
-        services: Arc::clone(&services),
-    });
 
     loop {
         // Acquire a connection permit before accepting so that at most
@@ -389,8 +358,6 @@ pub(in crate::server) async fn serve_h3_server(
             vless_server: Arc::clone(&vless_server),
             stream_semaphore: Arc::clone(&stream_semaphore),
             alpn: Arc::clone(&alpn),
-            raw_vless_route: Arc::clone(&raw_vless_route),
-            raw_ss_ctx: Arc::clone(&raw_ss_ctx),
             http_fallback: http_fallback.clone(),
             cluster: cluster.clone(),
         });
@@ -417,21 +384,6 @@ async fn handle_quic_connection(
     match alpn {
         Some(H3Alpn::H3) if ctx.alpn.contains(&H3Alpn::H3) => {
             http::handle_h3_connection(connection, ctx).await
-        },
-        Some(H3Alpn::Vless) if ctx.alpn.contains(&H3Alpn::Vless) => {
-            let raw_vless_ctx = Arc::new(crate::server::transport::RawVlessConnectionCtx {
-                vless_server: Arc::clone(&ctx.vless_server),
-                raw_vless_route: Arc::clone(&ctx.raw_vless_route),
-                stream_semaphore: Arc::clone(&ctx.stream_semaphore),
-            });
-            raw_vless::handle_raw_vless_connection(connection, raw_vless_ctx).await
-        },
-        Some(H3Alpn::Ss) if ctx.alpn.contains(&H3Alpn::Ss) => {
-            let raw_ss_ctx = Arc::new(crate::server::transport::RawSsConnectionCtx {
-                raw_ss_ctx: Arc::clone(&ctx.raw_ss_ctx),
-                stream_semaphore: Arc::clone(&ctx.stream_semaphore),
-            });
-            raw_ss::handle_raw_ss_connection(connection, raw_ss_ctx).await
         },
         other => {
             warn!(?other, "rejecting QUIC connection with unsupported or disabled ALPN");

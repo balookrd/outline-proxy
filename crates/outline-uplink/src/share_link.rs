@@ -18,7 +18,6 @@
 //! | `HOST:PORT` authority      | URL host:port                        |
 //! | `?type=ws`                 | `vless_mode = ws_*`, `vless_ws_url`  |
 //! | `?type=xhttp`              | `vless_mode = xhttp_*`, `vless_xhttp_url` |
-//! | `?type=quic`               | `vless_mode = quic`, `vless_ws_url`  |
 //! | `?security=tls`/`reality`  | URL scheme `wss`/`https`             |
 //! | `?security=none` (default) | URL scheme `ws`/`http`               |
 //! | `?path=...`                | URL path                             |
@@ -219,15 +218,13 @@ fn pick_mode_and_scheme(
             let scheme = if tls { "https" } else { "http" };
             Ok((mode, scheme, UrlTarget::Xhttp))
         },
-        "quic" => {
-            // Raw QUIC is TLS-only at the transport layer; the share-link
-            // `security` flag is just metadata for our URL scheme.
-            let scheme = if tls { "https" } else { "http" };
-            Ok((TransportMode::Quic, scheme, UrlTarget::WsOrQuic))
-        },
+        "quic" => bail!(
+            "vless link type=quic is not supported (raw QUIC carrier support has been removed; \
+             use type=ws with alpn=h3 or type=xhttp with alpn=h3)"
+        ),
         "tcp" => bail!("vless link type=tcp is not supported (raw TCP carrier not implemented)"),
         "grpc" | "h2" => {
-            bail!("vless link type={transport} is not supported (only ws/xhttp/quic)")
+            bail!("vless link type={transport} is not supported (only ws/xhttp)")
         },
         other => bail!("vless link type={other} is not recognised"),
     }

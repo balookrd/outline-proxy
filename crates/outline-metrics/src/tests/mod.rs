@@ -795,12 +795,6 @@ fn init_exports_zero_value_request_and_session_series() {
     assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"tcp\"} 0"));
     assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"udp\"} 0"));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_oversized_dropped_total{cause=\"quic_dgram\",direction=\"incoming\"} 0"
-    ));
-    assert!(rendered.contains(
-        "outline_ws_rust_udp_oversized_dropped_total{cause=\"vless_quic_dgram\",direction=\"outgoing\"} 0"
-    ));
-    assert!(rendered.contains(
         "outline_ws_rust_udp_oversized_dropped_total{cause=\"socks_in_tcp\",direction=\"outgoing\"} 0"
     ));
     assert!(rendered.contains(

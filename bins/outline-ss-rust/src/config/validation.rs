@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Result, bail};
 
-use super::{AccessKeyConfig, Config, H3Alpn, ReverseProtocol};
+use super::{AccessKeyConfig, Config};
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
@@ -106,13 +106,6 @@ impl Config {
         if self.ws_path_vless.is_some() && self.users.iter().all(|user| user.vless_id.is_none()) {
             bail!("ws_path_vless requires at least one [[users]] entry with vless_id");
         }
-        // A reverse-tunnel endpoint dialing out with protocol = "vless" carries
-        // VLESS over raw QUIC, so it counts as a transport for vless_id users —
-        // no ws/xhttp path needed on a reverse-only server.
-        let has_reverse_vless = self
-            .reverse_tunnel
-            .as_ref()
-            .is_some_and(|rt| rt.endpoints.iter().any(|e| e.protocol == ReverseProtocol::Vless));
         for user in &self.users {
             if let Some(path) = user.ws_path_vless.as_deref()
                 && !path.starts_with('/')
@@ -122,24 +115,15 @@ impl Config {
             if user.ws_path_vless.is_some() && user.vless_id.is_none() {
                 bail!("user {} ws_path_vless requires vless_id", user.id);
             }
-            if user.vless_id.is_some() {
-                let ws_path = user.effective_ws_path_vless(self.ws_path_vless.as_deref());
-                let xhttp_path = user.effective_xhttp_path_vless(self.xhttp_path_vless.as_deref());
-                let has_raw_quic = self.h3_alpn.contains(&H3Alpn::Vless);
-                if let Some(path) = ws_path {
-                    vless_paths.insert(path.to_owned());
-                }
-                if ws_path.is_none() && xhttp_path.is_none() && !has_raw_quic && !has_reverse_vless
-                {
-                    bail!(
-                        "user {} vless_id requires at least one transport: \
-                         ws_path_vless, xhttp_path_vless, raw VLESS-over-QUIC \
-                         (\"vless\" in [server.h3].alpn), or a [reverse_tunnel] \
-                         endpoint with protocol = \"vless\"",
-                        user.id
-                    );
-                }
+            if user.vless_id.is_some()
+                && let Some(path) = user.effective_ws_path_vless(self.ws_path_vless.as_deref())
+            {
+                vless_paths.insert(path.to_owned());
             }
+            // A vless_id user with neither ws_path_vless nor xhttp_path_vless
+            // has no forward transport now that raw VLESS-over-QUIC is gone.
+            // That is not a hard error: the user is warned about and skipped
+            // when the route maps are built (see `services::build`).
         }
         let mut vless_seen = HashSet::new();
         for user in vless_enabled_users {

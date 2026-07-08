@@ -157,8 +157,8 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 name: "uplink-02".to_string(),
                 group: "core".to_string(),
                 transport: "vless".to_string(),
-                tcp_mode: Some("quic".to_string()),
-                udp_mode: Some("quic".to_string()),
+                tcp_mode: Some("ws_h3".to_string()),
+                udp_mode: Some("ws_h3".to_string()),
                 weight: 1.0,
                 tcp_healthy: Some(false),
                 udp_healthy: Some(true),
@@ -203,13 +203,13 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
                 configured_wire_chain: vec![
                     outline_metrics::WireSnapshot {
                         transport: "vless".to_string(),
-                        tcp_mode: Some("quic".to_string()),
-                        tcp_mode_effective: Some("quic".to_string()),
+                        tcp_mode: Some("ws_h3".to_string()),
+                        tcp_mode_effective: Some("ws_h3".to_string()),
                         tcp_downgrade_active: false,
                         tcp_xhttp_submode: None,
                         tcp_xhttp_submode_block_remaining_ms: None,
-                        udp_mode: Some("quic".to_string()),
-                        udp_mode_effective: Some("quic".to_string()),
+                        udp_mode: Some("ws_h3".to_string()),
+                        udp_mode_effective: Some("ws_h3".to_string()),
                         udp_downgrade_active: false,
                         udp_xhttp_submode: None,
                         udp_xhttp_submode_block_remaining_ms: None,
@@ -361,7 +361,7 @@ fn probe_disabled() -> ProbeConfig {
 #[test]
 fn topology_serialization_shape_has_active_flags() {
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshot_fixture(), Vec::new()),
+        instance: build_instance_topology(&snapshot_fixture()),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     assert_eq!(json["instance"]["groups"][0]["name"], "core");
@@ -387,7 +387,7 @@ fn topology_omits_fingerprint_profile_strategy_when_default() {
     // the wire shape backward-compatible for older snapshot consumers
     // that don't yet know about fingerprint diversification.
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshot_fixture(), Vec::new()),
+        instance: build_instance_topology(&snapshot_fixture()),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let u0 = &json["instance"]["groups"][0]["uplinks"][0];
@@ -404,7 +404,7 @@ fn topology_serialises_non_default_fingerprint_profile_strategy() {
     // on this exact lowercase token, and the Prometheus label uses
     // the same string, so renaming a variant is detected here.
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshot_fixture(), Vec::new()),
+        instance: build_instance_topology(&snapshot_fixture()),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let u1 = &json["instance"]["groups"][0]["uplinks"][1];
@@ -422,7 +422,7 @@ fn topology_resolves_effective_padding_from_per_uplink_override() {
     snaps[0].uplinks[0].padding_override = Some(true);
     snaps[0].uplinks[1].padding_override = Some(false);
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snaps, Vec::new()),
+        instance: build_instance_topology(&snaps),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let uplinks = &json["instance"]["groups"][0]["uplinks"];
@@ -440,7 +440,7 @@ fn topology_serialises_active_fingerprint_profile_name() {
     // `none` (no profile applies), so this test exercises both
     // branches in one go.
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshot_fixture(), Vec::new()),
+        instance: build_instance_topology(&snapshot_fixture()),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let u0 = &json["instance"]["groups"][0]["uplinks"][0];
@@ -464,7 +464,7 @@ fn topology_carries_admin_disabled_flag() {
     let mut snapshots = snapshot_fixture();
     snapshots[0].uplinks[1].admin_disabled = true;
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshots, Vec::new()),
+        instance: build_instance_topology(&snapshots),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let u0 = &json["instance"]["groups"][0]["uplinks"][0];
@@ -486,7 +486,7 @@ fn topology_omits_bypass_fields_when_off() {
     // wire shape backward-compatible for older topology consumers and
     // for the common opt-out deployment.
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshot_fixture(), Vec::new()),
+        instance: build_instance_topology(&snapshot_fixture()),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let group = &json["instance"]["groups"][0];
@@ -508,7 +508,7 @@ fn topology_serialises_bypass_fields_when_on() {
     snapshots[0].bypass_active_tcp = true;
     snapshots[0].bypass_active_udp = false;
     let topology = ControlTopologyResponse {
-        instance: build_instance_topology(&snapshots, Vec::new()),
+        instance: build_instance_topology(&snapshots),
     };
     let json: Value = serde_json::to_value(topology).unwrap();
     let group = &json["instance"]["groups"][0];
@@ -619,7 +619,6 @@ async fn send_raw_http(raw_request: &str, uplinks: UplinkRegistry, token: &str) 
     let state = Arc::new(ControlState {
         token: token.to_string(),
         uplinks,
-        reverse_peers: None,
         config_path: None,
         config_write_lock: tokio::sync::Mutex::new(()),
         apply: None,

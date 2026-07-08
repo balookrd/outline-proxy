@@ -31,7 +31,7 @@ use self::http::run_http_probe;
 use self::metrics::record_attempt;
 use self::tcp_tunnel::run_tcp_tunnel_probe;
 use self::tls::run_tls_probe;
-use self::ws::{run_quic_handshake_probe, run_ws_probe};
+use self::ws::run_ws_probe;
 use super::manager::probe::outcome::ProbeOutcome;
 use super::manager::probe::warm_tcp::WarmTcpProbeSlot;
 use super::manager::probe::warm_udp::WarmUdpProbeSlot;
@@ -120,33 +120,19 @@ async fn run_tcp_probe(
                     let url = uplink
                         .tcp_dial_url()
                         .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
-                    if effective_tcp_mode == TransportMode::Quic {
-                        run_quic_handshake_probe(
-                            cache,
-                            &uplink.name,
-                            "tcp",
-                            url,
-                            uplink.transport,
-                            uplink.fwmark,
-                            uplink.ipv6_first,
-                            Arc::clone(&dial_limit),
-                        )
-                        .await
-                    } else {
-                        run_ws_probe(
-                            cache,
-                            group,
-                            &uplink.name,
-                            "tcp",
-                            url,
-                            effective_tcp_mode,
-                            uplink.fwmark,
-                            uplink.combined_ss_kind(SsPathKind::Tcp),
-                            Arc::clone(&dial_limit),
-                            probe.timeout,
-                        )
-                        .await
-                    }
+                    run_ws_probe(
+                        cache,
+                        group,
+                        &uplink.name,
+                        "tcp",
+                        url,
+                        effective_tcp_mode,
+                        uplink.fwmark,
+                        uplink.combined_ss_kind(SsPathKind::Tcp),
+                        Arc::clone(&dial_limit),
+                        probe.timeout,
+                    )
+                    .await
                 },
             }
         };
@@ -261,33 +247,19 @@ async fn run_udp_probe(
                     let url = uplink
                         .udp_dial_url()
                         .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
-                    if effective_udp_mode == TransportMode::Quic {
-                        run_quic_handshake_probe(
-                            cache,
-                            &uplink.name,
-                            "udp",
-                            url,
-                            uplink.transport,
-                            uplink.fwmark,
-                            uplink.ipv6_first,
-                            Arc::clone(&dial_limit),
-                        )
-                        .await
-                    } else {
-                        run_ws_probe(
-                            cache,
-                            group,
-                            &uplink.name,
-                            "udp",
-                            url,
-                            effective_udp_mode,
-                            uplink.fwmark,
-                            uplink.combined_ss_kind(SsPathKind::Udp),
-                            Arc::clone(&dial_limit),
-                            probe.timeout,
-                        )
-                        .await
-                    }
+                    run_ws_probe(
+                        cache,
+                        group,
+                        &uplink.name,
+                        "udp",
+                        url,
+                        effective_udp_mode,
+                        uplink.fwmark,
+                        uplink.combined_ss_kind(SsPathKind::Udp),
+                        Arc::clone(&dial_limit),
+                        probe.timeout,
+                    )
+                    .await
                 },
             }
         };

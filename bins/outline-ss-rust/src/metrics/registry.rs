@@ -83,14 +83,6 @@ pub(super) fn register_descriptions() {
         "Websocket session completions grouped by outcome."
     );
     describe_gauge!("outline_ss_active_websocket_sessions", "Currently active websocket sessions.");
-    describe_gauge!(
-        "outline_ss_reverse_tunnel_active_connections",
-        "Currently established reverse-tunnel carriers (topology A: this server dials out)."
-    );
-    describe_counter!(
-        "outline_ss_reverse_tunnel_connects_total",
-        "Reverse-tunnel dial outcomes by result (success / failure)."
-    );
     describe_histogram!(
         "outline_ss_websocket_session_duration_seconds",
         "Wall-clock websocket session duration."

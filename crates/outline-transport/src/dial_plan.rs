@@ -161,15 +161,6 @@ impl DialPlan {
                     TransportMode::WsH3 => self.connect_ws_h3_with_fallback(options).await,
                     #[cfg(not(feature = "h3"))]
                     TransportMode::WsH3 => self.connect_ws_h3_without_feature(options).await,
-                    TransportMode::Quic => {
-                        // Raw QUIC bypasses the WebSocket layer entirely; callers must
-                        // dispatch to `crate::quic::connect_quic_uplink` before reaching
-                        // this function. Reaching here means a config-routing bug.
-                        anyhow::bail!(
-                            "TransportMode::Quic does not produce a WebSocket stream; \
-                             caller must dispatch to the raw-QUIC dial path"
-                        );
-                    },
                     TransportMode::XhttpH3 => self.connect_xhttp_h3_with_fallback(options).await,
                     TransportMode::XhttpH2 => {
                         self.connect_xhttp_h2_with_h1_fallback(options, true).await

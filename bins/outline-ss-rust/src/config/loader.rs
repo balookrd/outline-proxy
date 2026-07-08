@@ -14,12 +14,11 @@ use super::{
     dashboard::{resolve_control_config, resolve_dashboard_config},
     fallback::HttpFallbackConfig,
     file::{
-        ClusterSection, FileConfig, ReverseTunnelSection, TlsCertSection,
-        default_config_path_if_exists, load_file_config,
+        ClusterSection, FileConfig, TlsCertSection, default_config_path_if_exists, load_file_config,
     },
     resolved::{
-        AccessKeyConfig, ClusterConfig, ClusterPsk, Config, H3Alpn, PaddingConfig, ReverseProtocol,
-        ReverseTunnelConfig, ReverseTunnelEndpoint, SessionResumptionConfig,
+        AccessKeyConfig, ClusterConfig, ClusterPsk, Config, H3Alpn, PaddingConfig,
+        SessionResumptionConfig,
     },
     sni::{SniFallbackConfig, TlsCertEntry},
     user_entry::CipherKind,
@@ -197,7 +196,6 @@ impl AppMode {
                 file.http_fallback.unwrap_or_default(),
             )?,
             sni_fallback: SniFallbackConfig::from_section(file.sni_fallback.unwrap_or_default())?,
-            reverse_tunnel: resolve_reverse_tunnel(file.reverse_tunnel)?,
             cluster: resolve_cluster(file.cluster)?,
         };
         config.validate()?;
@@ -236,73 +234,6 @@ fn normalize_access_key_file_extension(extension: Option<String>) -> String {
 
 pub fn default_http_root_realm() -> String {
     "Authorization required".to_owned()
-}
-
-/// Resolve the `[reverse_tunnel]` section into runtime config. Returns
-/// `None` (no dialer) when the section is absent, `enabled` is not `true`,
-/// or no endpoints are listed. Per-endpoint defaults: `server_name` = host
-/// part of `addr`, `mtu` = true, backoff 1s..60s. The pin string and cert
-/// paths are validated lazily by the dialer at startup.
-fn resolve_reverse_tunnel(
-    section: Option<ReverseTunnelSection>,
-) -> Result<Option<ReverseTunnelConfig>> {
-    use std::time::Duration;
-    let Some(section) = section else { return Ok(None) };
-    if !section.enabled.unwrap_or(false) {
-        return Ok(None);
-    }
-    let raw = section.endpoints.unwrap_or_default();
-    if raw.is_empty() {
-        return Ok(None);
-    }
-    let mut endpoints = Vec::with_capacity(raw.len());
-    for (idx, ep) in raw.into_iter().enumerate() {
-        if ep.addr.trim().is_empty() {
-            anyhow::bail!("reverse_tunnel.endpoints[{idx}].addr must not be empty");
-        }
-        // SNI defaults to the host part of `addr` (strip a trailing
-        // `:port`, handling bracketed IPv6 literals).
-        let server_name = ep.server_name.clone().unwrap_or_else(|| host_of(&ep.addr));
-        let protocol = match ep.protocol.as_deref() {
-            None | Some("ss") => ReverseProtocol::Ss,
-            Some("vless") => ReverseProtocol::Vless,
-            Some(other) => anyhow::bail!(
-                "reverse_tunnel.endpoints[{idx}].protocol must be \"ss\" or \"vless\", got {other:?}"
-            ),
-        };
-        let backoff_min = Duration::from_secs(ep.backoff_min_secs.unwrap_or(1).max(1));
-        let backoff_max =
-            Duration::from_secs(ep.backoff_max_secs.unwrap_or(60).max(backoff_min.as_secs()));
-        endpoints.push(ReverseTunnelEndpoint {
-            addr: ep.addr,
-            server_name,
-            server_cert_pin: ep.server_cert_pin,
-            client_cert_path: ep.client_cert_path,
-            client_key_path: ep.client_key_path,
-            protocol,
-            mtu: ep.mtu.unwrap_or(true),
-            backoff_min,
-            backoff_max,
-        });
-    }
-    Ok(Some(ReverseTunnelConfig { endpoints }))
-}
-
-/// Host part of a `host:port` / `[v6]:port` / bare-host string.
-fn host_of(addr: &str) -> String {
-    let addr = addr.trim();
-    if let Some(rest) = addr.strip_prefix('[') {
-        // `[v6]:port` or `[v6]`.
-        if let Some(end) = rest.find(']') {
-            return rest[..end].to_string();
-        }
-    }
-    match addr.rsplit_once(':') {
-        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) && !host.is_empty() => {
-            host.to_string()
-        },
-        _ => addr.to_string(),
-    }
 }
 
 /// Resolve the `[cluster]` section into runtime config. Returns `None` (no
@@ -381,13 +312,24 @@ fn resolve_h3_alpn(input: Option<&[String]>) -> Result<Vec<H3Alpn>> {
     let mut seen = HashSet::new();
     let mut out = Vec::with_capacity(raw.len());
     for entry in raw {
-        let alpn = H3Alpn::parse(entry).ok_or_else(|| {
-            anyhow::anyhow!("unknown server.h3.alpn entry {entry:?}; allowed: h3, vless, ss")
-        })?;
-        if !seen.insert(alpn) {
-            anyhow::bail!("server.h3.alpn contains duplicate entry {entry:?}");
+        match H3Alpn::parse(entry) {
+            Some(alpn) => {
+                if !seen.insert(alpn) {
+                    anyhow::bail!("server.h3.alpn contains duplicate entry {entry:?}");
+                }
+                out.push(alpn);
+            },
+            // Raw-QUIC ALPNs (`vless`/`ss` and their `-mtu` siblings) were
+            // removed. A legacy config that still lists one is not fatal —
+            // warn and skip so an otherwise-valid config still starts.
+            None => tracing::warn!(
+                "ignoring unsupported server.h3.alpn entry {entry:?}; only \"h3\" is supported"
+            ),
         }
-        out.push(alpn);
+    }
+    if out.is_empty() {
+        tracing::warn!("server.h3.alpn listed no supported protocols; defaulting to [\"h3\"]");
+        out.push(H3Alpn::H3);
     }
     Ok(out)
 }

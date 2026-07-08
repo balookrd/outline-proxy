@@ -67,8 +67,6 @@ pub fn init() {
     }
     for direction in ["incoming", "outgoing"] {
         for cause in [
-            "quic_dgram",
-            "vless_quic_dgram",
             "vless_udp",
             "ss_socket",
             "socks_client",

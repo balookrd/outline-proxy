@@ -1,15 +1,14 @@
 //! Generic core shared by the per-target VLESS-UDP session muxes.
 //!
 //! VLESS UDP locks the target into the request header at session open,
-//! so each destination needs its own session. Both muxes — WS
-//! ([`super::udp_mux::VlessUdpSessionMux`]) and raw QUIC
-//! ([`crate::VlessUdpQuicMux`]) — therefore share the same shape: a
+//! so each destination needs its own session. The WS mux
+//! ([`super::udp_mux::VlessUdpSessionMux`]) is built on this shape: a
 //! lazy `target → session` map with LRU + idle eviction, a janitor
 //! loop, and a downlink fan-in channel that re-frames every inbound
 //! datagram with the originating session's SOCKS5 prefix. This module
 //! owns that machinery once, generic over the session transport
 //! ([`VlessUdpMuxSession`]) and the dial path ([`VlessUdpMuxDial`]);
-//! the carrier-specific muxes contribute only their dialer (and any
+//! the carrier-specific mux contributes only its dialer (and any
 //! side-channel bookkeeping such as resume IDs or downgrade latching)
 //! plus the public constructors.
 

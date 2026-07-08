@@ -15,8 +15,6 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::debug;
 
 use ss2022::{Ss2022TcpWriterState, build_ss2022_request_header};
-#[cfg(feature = "quic")]
-use transport::QuicWriteTransport;
 use transport::{SocketWriteTransport, WriteTransport, WsSink, WsWriteTransport};
 
 pub struct TcpShadowsocksWriter<T: WriteTransport> {
@@ -33,8 +31,6 @@ pub struct TcpShadowsocksWriter<T: WriteTransport> {
 
 pub type WsTcpWriter = TcpShadowsocksWriter<WsWriteTransport>;
 pub type SocketTcpWriter = TcpShadowsocksWriter<SocketWriteTransport>;
-#[cfg(feature = "quic")]
-pub type QuicTcpWriter = TcpShadowsocksWriter<QuicWriteTransport>;
 
 impl TcpShadowsocksWriter<WsWriteTransport> {
     /// Connects the TCP shadowsocks writer.  Returns `(writer, ctrl_tx)` where
@@ -83,35 +79,6 @@ impl TcpShadowsocksWriter<SocketWriteTransport> {
         let cipher_state = AeadCipher::new(cipher, &key[..cipher.key_len()])?;
         Ok(Self {
             transport: SocketWriteTransport { writer },
-            cipher,
-            cipher_state,
-            nonce: [0u8; 12],
-            pending_salt: Some(salt),
-            ss2022: cipher
-                .is_ss2022()
-                .then_some(Ss2022TcpWriterState { request_salt: salt, header_sent: false }),
-            _lifetime: lifetime,
-        })
-    }
-}
-
-#[cfg(feature = "quic")]
-impl TcpShadowsocksWriter<QuicWriteTransport> {
-    /// Build an SS TCP writer over a QUIC bidi `SendStream`. Pairs with
-    /// [`crate::tcp_transport::reader::TcpShadowsocksReader::connect_quic`]
-    /// holding the matching `RecvStream`.
-    pub fn connect_quic(
-        send: quinn::SendStream,
-        cipher: CipherKind,
-        master_key: &[u8],
-        lifetime: Arc<UpstreamTransportGuard>,
-    ) -> Result<Self> {
-        let mut salt = [0u8; 32];
-        rand::rng().fill_bytes(&mut salt[..cipher.salt_len()]);
-        let key = derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?;
-        let cipher_state = AeadCipher::new(cipher, &key[..cipher.key_len()])?;
-        Ok(Self {
-            transport: QuicWriteTransport { send: Some(send) },
             cipher,
             cipher_state,
             nonce: [0u8; 12],

@@ -1,5 +1,4 @@
-//! Shared upstream→client relay loop used by both websocket/H3 transports and
-//! the raw shadowsocks TCP listener.
+//! Shared upstream→client relay loop used by the websocket/H3 transports.
 //!
 //! The per-transport differences (where the ciphertext is written, teardown
 //! semantics, ancillary logging) are captured by the [`UpstreamSink`] trait so
@@ -10,10 +9,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
+    io::{AsyncRead, ReadBuf},
     net::tcp::OwnedReadHalf,
     sync::Notify,
 };
@@ -21,7 +20,7 @@ use tokio::{
 use parking_lot::Mutex;
 
 use crate::{
-    crypto::{AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE},
+    crypto::{AeadStreamEncryptor, MAX_CHUNK_SIZE},
     metrics::{AppProtocol, Metrics, Protocol},
 };
 
@@ -196,64 +195,6 @@ where
 
     sink.close().await;
     Ok(UpstreamRelayOutcome::Closed)
-}
-
-/// Relay decrypted client bytes to the upstream after the shadowsocks handshake.
-///
-/// Writes `initial_payload` first (already-decrypted bytes left over from the
-/// handshake), then loops: read ciphertext from the client, decrypt, write
-/// plaintext to upstream.  Shuts down the upstream writer on clean client EOF.
-#[allow(clippy::too_many_arguments)]
-pub(in crate::server) async fn relay_client_to_upstream<R, W>(
-    mut client_reader: R,
-    mut decryptor: AeadStreamDecryptor,
-    initial_payload: Vec<u8>,
-    mut upstream_writer: W,
-    metrics: Arc<Metrics>,
-    protocol: Protocol,
-    app_protocol: AppProtocol,
-    user_id: Arc<str>,
-) -> Result<()>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let user_counters = metrics.user_counters(&user_id);
-    let client_to_target = user_counters.tcp_in(app_protocol, protocol);
-    if !initial_payload.is_empty() {
-        client_to_target.increment(initial_payload.len() as u64);
-        upstream_writer
-            .write_all(&initial_payload)
-            .await
-            .context("failed to write initial payload to upstream")?;
-    }
-
-    let mut plaintext = ScratchBuf::take();
-    loop {
-        decryptor.ciphertext_buffer_mut().reserve(MAX_CHUNK_SIZE);
-        let read = client_reader
-            .read_buf(decryptor.ciphertext_buffer_mut())
-            .await
-            .context("failed to read from client")?;
-        if read == 0 {
-            break;
-        }
-        match decryptor.drain_plaintext(&mut plaintext) {
-            Ok(()) => {},
-            Err(CryptoError::UnknownUser) => break,
-            Err(error) => return Err(anyhow!(error)),
-        }
-        if !plaintext.is_empty() {
-            client_to_target.increment(plaintext.len() as u64);
-            upstream_writer
-                .write_all(&plaintext)
-                .await
-                .context("failed to write decrypted data to upstream")?;
-            plaintext.clear();
-        }
-    }
-    upstream_writer.shutdown().await.ok();
-    Ok(())
 }
 
 /// Single non-blocking poll of `reader`, appending whatever is already

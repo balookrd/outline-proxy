@@ -5,12 +5,10 @@ use tokio::fs;
 
 use super::args::Args;
 use super::compat::normalize_outline_section;
-use super::schema::{
-    ConfigFile, ControlSection, DashboardSection, PaddingSection, ReverseListenerSection,
-};
+use super::schema::{ConfigFile, ControlSection, DashboardSection, PaddingSection};
 use super::types::{
     AppConfig, ControlConfig, DashboardConfig, DashboardInstanceConfig, MetricsConfig,
-    PaddingConfig, ReverseListenerConfig, ReversePeerConfig, ReversePeerKind,
+    PaddingConfig,
 };
 
 mod auth;
@@ -140,9 +138,6 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         Some(path.with_extension("state.toml"))
     };
 
-    let reverse_listener =
-        load_reverse_listener(file.as_ref().and_then(|f| f.reverse_listener.as_ref()), config_dir)?;
-
     // Default = disabled, which keeps WS / XHTTP wire shape byte-identical.
     // Config-synchronised with the server's `[padding]`; no CLI override
     // (it must match the server, so it lives in the config file only).
@@ -168,7 +163,6 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         state_path,
         tcp_timeouts,
         fingerprint_profile,
-        reverse_listener,
         padding,
     })
 }
@@ -196,75 +190,6 @@ fn resolve_padding(section: Option<&PaddingSection>) -> PaddingConfig {
         cover_jitter_max_ms,
         react_to_throttle: s.react_to_throttle.unwrap_or(d.react_to_throttle),
     }
-}
-
-/// Resolve `[reverse_listener]` into runtime config. `None` when absent or
-/// `enabled = false`. Cert paths are resolved against the config dir; pin
-/// strings and certs are validated by the listener at bind time. A peer
-/// list is mandatory (the listener requires at least one allowed pin).
-fn load_reverse_listener(
-    section: Option<&ReverseListenerSection>,
-    config_dir: &Path,
-) -> Result<Option<ReverseListenerConfig>> {
-    let Some(section) = section else { return Ok(None) };
-    if section.enabled == Some(false) {
-        return Ok(None);
-    }
-    if section.peers.is_empty() {
-        bail!("[reverse_listener] requires at least one [[reverse_listener.peers]] entry");
-    }
-    let server_cert_path = routing::resolve_config_path(&section.server_cert_path, config_dir)
-        .context("invalid [reverse_listener].server_cert_path")?;
-    let server_key_path = routing::resolve_config_path(&section.server_key_path, config_dir)
-        .context("invalid [reverse_listener].server_key_path")?;
-    let peers = section
-        .peers
-        .iter()
-        .enumerate()
-        .map(|(idx, p)| resolve_reverse_peer(idx, p, &section.group))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(Some(ReverseListenerConfig {
-        listen: section.listen,
-        server_cert_path,
-        server_key_path,
-        group: section.group.as_str().into(),
-        mtu: section.mtu.unwrap_or(true),
-        max_peers: section.max_peers.unwrap_or(8).max(1),
-        peers,
-    }))
-}
-
-/// Resolve one reverse peer: pick the per-peer (or listener-default) group and
-/// the protocol-specific credentials. Exactly one of `method` + `password`
-/// (an SS peer) or `vless_id` (a VLESS peer) must be set.
-fn resolve_reverse_peer(
-    idx: usize,
-    peer: &super::schema::ReversePeerSection,
-    default_group: &str,
-) -> Result<ReversePeerConfig> {
-    // Per-peer `group` wins; otherwise fall back to the listener default so
-    // existing single-group configs keep working.
-    let group = peer.group.as_deref().unwrap_or(default_group).into();
-    let kind = match (peer.method, peer.password.as_deref(), peer.vless_id.as_deref()) {
-        (Some(method), Some(password), None) => {
-            ReversePeerKind::Ss { method, password: password.to_string() }
-        },
-        (None, None, Some(vless_id)) => {
-            let uuid = outline_transport::vless::parse_uuid(vless_id).with_context(|| {
-                format!("[reverse_listener].peers[{idx}].vless_id is not a valid UUID")
-            })?;
-            ReversePeerKind::Vless { uuid }
-        },
-        _ => bail!(
-            "[reverse_listener].peers[{idx}] must set exactly one of (method + password) \
-             for an SS peer or vless_id for a VLESS peer"
-        ),
-    };
-    Ok(ReversePeerConfig {
-        client_cert_pin: peer.client_cert_pin.clone(),
-        kind,
-        group,
-    })
 }
 
 async fn load_dashboard_config(

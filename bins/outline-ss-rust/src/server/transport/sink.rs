@@ -14,10 +14,7 @@
 
 use std::time::Duration;
 
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    time::sleep,
-};
+use tokio::time::sleep;
 
 use super::{super::constants::SS_TCP_HANDSHAKE_TIMEOUT_SECS, ws_socket::WsSocket};
 
@@ -118,30 +115,6 @@ pub(super) async fn sink_ws<T: WsSocket>(reader: &mut T::Reader) {
                     }
                 },
                 Ok(None) | Err(_) => return,
-            }
-        }
-    }
-}
-
-/// `AsyncRead` analogue of [`sink_ws`] for plain-TCP and raw-QUIC paths
-/// where there is no WS framing — we just discard bytes off the stream.
-pub(in crate::server) async fn sink_async_read<R: AsyncRead + Unpin>(reader: &mut R) {
-    let deadline = sleep(sink_timeout());
-    tokio::pin!(deadline);
-    let mut drained: usize = 0;
-    let mut buf = [0_u8; 4096];
-    loop {
-        tokio::select! {
-            biased;
-            _ = &mut deadline => return,
-            result = reader.read(&mut buf) => match result {
-                Ok(0) | Err(_) => return,
-                Ok(n) => {
-                    drained = drained.saturating_add(n);
-                    if drained >= SINK_MAX_BYTES {
-                        return;
-                    }
-                },
             }
         }
     }

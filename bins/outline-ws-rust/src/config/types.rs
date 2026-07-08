@@ -63,11 +63,6 @@ pub struct AppConfig {
     /// config key applies per-host-stable or random browser headers
     /// to WS / XHTTP dials. See `docs/UPLINK-CONFIGURATIONS.md`.
     pub fingerprint_profile: outline_transport::FingerprintProfileStrategy,
-    /// Reverse-tunnel listener (topology A). `Some` and enabled means a QUIC
-    /// server endpoint accepts carriers dialed by `ss` peers behind NAT,
-    /// pooled under [`ReverseListenerConfig::group`]. `None` keeps the
-    /// dial-only client model. See `docs/REVERSE-TUNNEL.md`.
-    pub reverse_listener: Option<ReverseListenerConfig>,
     /// Adaptive carrier-padding knobs applied to WS / XHTTP dials. Default
     /// disabled (wire unchanged); opt in via the `[padding]` config block.
     /// Config-synchronised with the server.
@@ -131,50 +126,6 @@ impl PaddingConfig {
     pub fn cover_enabled(&self) -> bool {
         self.enabled && self.cover
     }
-}
-
-/// Resolved reverse-tunnel listener config. Cert paths and pin strings are
-/// kept as-is and parsed/loaded by the listener at startup (a malformed pin
-/// or unreadable cert fails listener bind, logged, without aborting the
-/// client).
-#[derive(Debug, Clone)]
-pub struct ReverseListenerConfig {
-    pub listen: SocketAddr,
-    pub server_cert_path: PathBuf,
-    pub server_key_path: PathBuf,
-    /// Uplink group reverse peers are pooled under.
-    pub group: std::sync::Arc<str>,
-    /// `true` advertises `[ss-mtu, ss]`; `false` only `[ss]`.
-    pub mtu: bool,
-    pub max_peers: usize,
-    pub peers: Vec<ReversePeerConfig>,
-}
-
-/// One expected reverse `ss` peer: its pinned client-cert fingerprint, the
-/// protocol-specific credentials used to frame streams opened to it, and the
-/// resolved egress group.
-#[derive(Debug, Clone)]
-pub struct ReversePeerConfig {
-    pub client_cert_pin: String,
-    pub kind: ReversePeerKind,
-    /// Egress group this peer is pooled under, already resolved (per-peer
-    /// `group` or the listener-level default). Distinct peers may map to
-    /// distinct groups so they serve distinct routes.
-    pub group: std::sync::Arc<str>,
-}
-
-/// Per-peer protocol on the reverse carrier. The carrier ALPN is chosen by
-/// the dialing `ss` per its own config; this is the matching listener-side
-/// framing credential.
-#[derive(Debug, Clone)]
-pub enum ReversePeerKind {
-    /// Raw Shadowsocks: SS2022 framing with this cipher + password.
-    Ss {
-        method: shadowsocks_crypto::CipherKind,
-        password: String,
-    },
-    /// VLESS: request header carries this UUID.
-    Vless { uuid: [u8; 16] },
 }
 
 /// HTTP/2 flow-control window sizes for WebSocket transports.

@@ -98,10 +98,6 @@ pub(crate) struct ConfigFile {
     /// `(host, port)` for the lifetime of the process), or `"random"`
     /// (fresh profile per dial). See docs for the trade-offs.
     pub(super) fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
-    /// Reverse-tunnel listener (topology A): accept QUIC carriers dialed by
-    /// `outline-ss-rust` peers behind NAT and route SOCKS5/TUN traffic out
-    /// through them. `None` keeps the dial-only client model.
-    pub(super) reverse_listener: Option<ReverseListenerSection>,
     /// Adaptive carrier padding applied to WS / XHTTP dials (record-size
     /// obfuscation + optional cover traffic). Absent / `enabled = false`
     /// keeps the wire byte-identical. Config-synchronised: the server must
@@ -129,53 +125,6 @@ pub(super) struct PaddingSection {
     /// React to a server downstream-throttle signal by penalising the current
     /// uplink and migrating away. Default `false`.
     pub(super) react_to_throttle: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ReverseListenerSection {
-    #[serde(default)]
-    pub(super) enabled: Option<bool>,
-    /// UDP address to bind the QUIC server endpoint on.
-    pub(super) listen: SocketAddr,
-    /// Server certificate + key this listener presents to dialing peers.
-    pub(super) server_cert_path: PathBuf,
-    pub(super) server_key_path: PathBuf,
-    /// Name of the uplink group reverse peers are pooled under. SOCKS5/TUN
-    /// traffic routed to this group egresses through a live peer.
-    pub(super) group: String,
-    /// `true` (default) advertises `ss-mtu` then `ss`; `false` only `ss`.
-    #[serde(default)]
-    pub(super) mtu: Option<bool>,
-    /// Upper bound on concurrently-registered peers. Default 8.
-    #[serde(default)]
-    pub(super) max_peers: Option<usize>,
-    pub(super) peers: Vec<ReversePeerSection>,
-}
-
-/// One expected `ss` peer. The pinned client-cert fingerprint authenticates
-/// the carrier (mTLS). The peer's protocol is chosen per-peer: an SS peer
-/// gives `method` + `password` (SS2022 framing), a VLESS peer gives
-/// `vless_id` (a UUID) — exactly one of the two forms, validated at load.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ReversePeerSection {
-    /// SHA-256 fingerprint of the peer's client cert: 64 hex chars
-    /// (optionally colon-separated) or base64 of 32 bytes.
-    pub(super) client_cert_pin: String,
-    /// SS peer: cipher method. Mutually exclusive with `vless_id`.
-    #[serde(default)]
-    pub(super) method: Option<CipherKind>,
-    /// SS peer: password / base64 PSK. Mutually exclusive with `vless_id`.
-    #[serde(default)]
-    pub(super) password: Option<String>,
-    /// VLESS peer: UUID (hex/dashed). Mutually exclusive with `method`/`password`.
-    #[serde(default)]
-    pub(super) vless_id: Option<String>,
-    /// Egress group this peer is pooled under. Omit to fall back to the
-    /// listener-level `group`. Lets distinct peers serve distinct routes.
-    #[serde(default)]
-    pub(super) group: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

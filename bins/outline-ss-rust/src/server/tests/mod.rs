@@ -25,9 +25,7 @@ mod dns_cache;
 mod fallback;
 mod h3;
 mod nat;
-mod raw_quic;
 mod resumption;
-mod reverse_tunnel;
 mod sni_fallback;
 mod vless;
 mod websocket;
@@ -138,7 +136,6 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         padding: Default::default(),
         http_fallback: None,
         sni_fallback: None,
-        reverse_tunnel: None,
         cluster: None,
         config_path: None,
         control: None,

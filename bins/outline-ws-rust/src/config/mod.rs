@@ -8,7 +8,6 @@ pub use args::Args;
 pub use load::load_config;
 pub use types::{
     AppConfig, ControlConfig, DashboardConfig, DashboardInstanceConfig, H2Config, MetricsConfig,
-    ReverseListenerConfig, ReversePeerConfig, ReversePeerKind,
 };
 
 #[cfg(test)]

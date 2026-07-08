@@ -69,11 +69,11 @@ async fn record_failure_outside_xhttp_family_is_noop() {
     let url: Url = "https://wrong-family.test:443/xhttp".parse().unwrap();
     record_failure(&url, TransportMode::WsH3).await;
     record_failure(&url, TransportMode::WsH2).await;
-    record_failure(&url, TransportMode::Quic).await;
+    record_failure(&url, TransportMode::WsH1).await;
     assert_eq!(
         effective_mode(&url, TransportMode::XhttpH3).await,
         TransportMode::XhttpH3,
-        "WS / QUIC failures must not seed the XHTTP cache",
+        "WS failures must not seed the XHTTP cache",
     );
 }
 
@@ -84,7 +84,7 @@ async fn effective_mode_passes_through_non_xhttp_requests() {
     let url: Url = "https://passthrough.test:443/xhttp".parse().unwrap();
     record_failure(&url, TransportMode::XhttpH3).await;
     assert_eq!(effective_mode(&url, TransportMode::WsH3).await, TransportMode::WsH3,);
-    assert_eq!(effective_mode(&url, TransportMode::Quic).await, TransportMode::Quic,);
+    assert_eq!(effective_mode(&url, TransportMode::WsH1).await, TransportMode::WsH1,);
 }
 
 #[tokio::test]

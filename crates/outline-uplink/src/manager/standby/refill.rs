@@ -125,13 +125,6 @@ impl<'a> StandbyCtx<'a> {
         if !matches!(self.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return;
         }
-        // Raw QUIC has its own connection-cache layer (per-ALPN
-        // SharedConnectionRegistry); the warm-standby WebSocket pool is
-        // not used. Dialing here would just bail in
-        // `connect_transport`.
-        if self.mode == outline_transport::TransportMode::Quic {
-            return;
-        }
         let Some(url) = self.url else { return };
 
         let cache = self.manager.inner.dns_cache.as_ref();

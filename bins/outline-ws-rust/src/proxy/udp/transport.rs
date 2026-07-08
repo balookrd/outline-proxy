@@ -5,8 +5,6 @@ use arc_swap::ArcSwap;
 use tracing::{debug, info, warn};
 
 use outline_metrics as metrics;
-#[cfg(feature = "h3")]
-use outline_transport::{FallbackNotifier, VlessUdpHybridMux, VlessUdpQuicMux, WsFallbackFactory};
 use outline_transport::{
     SsPathKind, TransportMode, UdpSessionTransport, UdpWsTransport, VlessUdpDowngradeNotifier,
     VlessUdpSessionMux, global_resume_cache,
@@ -196,12 +194,8 @@ async fn dial_udp_fallback(
             Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())))
         },
         UplinkTransport::Vless => {
-            // VLESS-as-fallback on UDP. We support the WS / XHTTP modes here
-            // (anything that rides through `VlessUdpSessionMux`); raw QUIC
-            // mode would need the `VlessUdpHybridMux` machinery whose hooks
-            // are keyed on the parent's primary index/transport — wire-aware
-            // hybrid-mux is a follow-up. Operators wanting a QUIC fallback
-            // can declare two VLESS uplinks instead.
+            // VLESS-as-fallback on UDP, riding through `VlessUdpSessionMux`
+            // (WS / XHTTP carrier families).
             let url = fallback.udp_dial_url().ok_or_else(|| {
                 anyhow!(
                     "uplink {} fallback (transport=vless) missing UDP dial URL",
@@ -238,78 +232,8 @@ async fn dial_udp_fallback(
                     );
                 });
 
-            #[cfg(feature = "h3")]
-            if mode == TransportMode::Quic {
-                // VLESS-fallback over raw QUIC: build a hybrid mux that
-                // tries QUIC first and falls back to WS-over-H2 the same
-                // way the primary path does, but every per-uplink hook is
-                // wired to *this fallback wire's* slot — never primary's.
-                let dns_cache = Arc::clone(uplinks.dns_cache_arc());
-                let quic_mux = VlessUdpQuicMux::new(
-                    dns_cache,
-                    url.clone(),
-                    uuid,
-                    fallback.fwmark,
-                    fallback.ipv6_first,
-                    source,
-                    limits,
-                )
-                .with_uplink_binding(binding());
-                // Factory for the WS fallback inside the hybrid mux. Mode
-                // pinned to WsH2 so the post-QUIC retry path is
-                // deterministic — the wire-aware downgrade window above
-                // already records the QUIC failure so subsequent dials of
-                // this same fallback wire skip QUIC outright.
-                let factory_dns_cache = Arc::clone(uplinks.dns_cache_arc());
-                let factory_url = url.clone();
-                let factory_fwmark = fallback.fwmark;
-                let factory_ipv6_first = fallback.ipv6_first;
-                let factory_keepalive = keepalive;
-                let factory_limits = limits;
-                let factory_uuid = uuid;
-                let factory_on_downgrade = Arc::clone(&on_downgrade);
-                let factory_binding = binding();
-                let ws_factory: WsFallbackFactory = Box::new(move || {
-                    VlessUdpSessionMux::new_with_limits(
-                        factory_dns_cache,
-                        factory_url,
-                        TransportMode::WsH2,
-                        factory_uuid,
-                        factory_fwmark,
-                        factory_ipv6_first,
-                        source,
-                        factory_keepalive,
-                        factory_limits,
-                    )
-                    .with_on_downgrade(Some(factory_on_downgrade))
-                    .with_uplink_binding(factory_binding)
-                });
-                // QUIC → WS pivot notifier: write a `Quic` downgrade
-                // observation into the fallback wire's slot so the next
-                // session starts at WS directly.
-                let pivot_manager = uplinks.clone();
-                let pivot_index = parent.index;
-                let on_fallback: FallbackNotifier = Arc::new(move |_error: &anyhow::Error| {
-                    pivot_manager.note_silent_transport_fallback_for_wire(
-                        pivot_index,
-                        TransportKind::Udp,
-                        wire_index,
-                        TransportMode::Quic,
-                    );
-                });
-                let hybrid = VlessUdpHybridMux::from_quic(quic_mux, ws_factory, Some(on_fallback));
-                uplinks
-                    .report_connection_latency(
-                        parent.index,
-                        TransportKind::Udp,
-                        dial_started.elapsed(),
-                    )
-                    .await;
-                return Ok(UdpSessionTransport::VlessQuic(hybrid));
-            }
-
-            // Non-QUIC vless fallback: WS or XHTTP family, plain mux with
-            // wire-aware on_downgrade hook.
+            // VLESS fallback: WS or XHTTP family, plain mux with wire-aware
+            // on_downgrade hook.
             let mux = VlessUdpSessionMux::new_with_limits(
                 Arc::clone(uplinks.dns_cache_arc()),
                 url.clone(),

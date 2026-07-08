@@ -55,11 +55,9 @@ impl VlessUdpMuxSession for VlessUdpWsTransport {
 /// silently downgrades from H3 to H2/H1 (host-level `ws_mode_cache` clamp
 /// or inline H3-handshake fallback inside `connect_transport`).
 /// Receives the originally-requested mode so the uplink-manager caller can
-/// record it via `note_silent_transport_fallback`. Distinct from the
-/// QUIC-only `vless_udp_hybrid::FallbackNotifier` which carries an error
-/// (the QUIC dial actually failed); here the dial succeeded but at a lower
-/// mode, so passing the requested mode directly is cleaner than synthesising
-/// an error to extract the mode from.
+/// record it via `note_silent_transport_fallback`. The dial succeeded but at
+/// a lower mode, so passing the requested mode directly is cleaner than
+/// synthesising an error to extract the mode from.
 pub type VlessUdpDowngradeNotifier = Arc<dyn Fn(TransportMode) + Send + Sync>;
 
 pub struct VlessUdpSessionMux {

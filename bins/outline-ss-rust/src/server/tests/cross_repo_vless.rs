@@ -2,23 +2,13 @@
 //!
 //! Companion to `cross_repo_xhttp` — same idea (drive the real
 //! `outline-ws-rust` client crate against this server in a single
-//! tokio process), but covers the WebSocket and raw-QUIC carriers
-//! that XHTTP does not exercise.
-//!
-//! Two tests live here:
-//!   * **VLESS-TCP over WebSocket-h2 plain TCP.** Server mounts the
-//!     same axum vless route the production listener uses; client
-//!     dials via `connect_websocket_with_resume(WsH2)`, gets a
-//!     `TransportStream::H2`, and sends the VLESS handshake as a
-//!     binary frame. Verifies the wire-form agreement on the
-//!     WebSocket-over-h2 carrier without any TLS plumbing — the
-//!     scheme `http://` keeps the dial on plain TCP.
-//!   * **VLESS-TCP over raw QUIC.** Server binds an `H3WebSocketServer`
-//!     with the `vless` ALPN; client dials via
-//!     `connect_vless_tcp_quic_with_resume`, which negotiates the
-//!     same ALPN and then frames the VLESS request on a fresh
-//!     bidi stream. Self-signed cert is shared with the xhttp h3
-//!     tests through the helpers in `tests/mod.rs`.
+//! tokio process), but covers the WebSocket carriers (h1 / h2 / h3)
+//! and cross-transport session resumption that XHTTP does not
+//! exercise. The server mounts the same axum / h3 VLESS routes the
+//! production listener uses; each client dials via
+//! `connect_websocket_with_resume` and frames the VLESS handshake as
+//! a binary WebSocket message. Self-signed certs are shared with the
+//! xhttp h3 tests through the helpers in `tests/mod.rs`.
 
 use std::{
     collections::BTreeMap,
@@ -44,7 +34,7 @@ use url::Url;
 
 use outline_transport::{
     DnsCache as ClientDnsCache, TargetAddr, TransportMode, TransportStream, UpstreamTransportGuard,
-    connect_vless_tcp_quic_with_resume, vless::vless_tcp_pair_from_ws,
+    vless::vless_tcp_pair_from_ws,
 };
 
 use super::super::bootstrap::serve_listener;
@@ -133,89 +123,6 @@ async fn setup_vless_ws_server(
     let app = build_app(routes, services, auth, None, None);
     let handle =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
-    Ok((listen_addr, handle))
-}
-
-/// Spins up a raw-QUIC server with the `vless` ALPN. Reuses the
-/// shared cross-repo cert helpers in `tests/mod.rs` so client and
-/// server end up trusting the same self-signed root. The server
-/// path goes through `serve_h3_server` exactly the same way the
-/// production binary does — `H3Alpn::Vless` selects the raw-QUIC
-/// dispatch and `xhttp_vless` is empty (we're not testing XHTTP
-/// here).
-async fn setup_vless_raw_quic_server() -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
-    super::cross_repo_install_test_tls_root_on_client();
-    let bind_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    // The client offers `[vless-mtu, vless]` ALPNs (MTU-aware first);
-    // the server has to advertise both for the negotiation to pick
-    // the MTU-aware variant when available.
-    let tls_config = super::cross_repo_test_server_tls_config(&[b"vless-mtu", b"vless"]);
-    let quic_config = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
-        .map_err(|_| anyhow::anyhow!("invalid raw-quic test TLS config"))?;
-    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
-    let mut transport = quinn::TransportConfig::default();
-    transport
-        .datagram_receive_buffer_size(Some(1 << 20))
-        .datagram_send_buffer_size(1 << 20);
-    server_config.transport_config(Arc::new(transport));
-    let endpoint = quinn::Endpoint::server(server_config, bind_addr)?;
-    let server = H3WebSocketServer::<H3Transport>::from_endpoint(endpoint, H3WsConfig::default());
-    let listen_addr = server.local_addr()?;
-
-    let config = sample_config(listen_addr);
-    let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
-    let raw_vless_users: Arc<[VlessUser]> = Arc::from(vec![vless_user.clone()].into_boxed_slice());
-    let raw_vless_candidates: Arc<[Arc<str>]> =
-        Arc::from(vec![vless_user.label_arc()].into_boxed_slice());
-
-    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp: Arc::new(BTreeMap::new()),
-        udp: Arc::new(BTreeMap::new()),
-        vless: Arc::new(BTreeMap::new()),
-        xhttp_vless: Arc::new(BTreeMap::new()),
-        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
-        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
-    }));
-    let services = Arc::new(Services::new(
-        metrics,
-        DnsCache::new(Duration::from_secs(30)),
-        false,
-        None,
-        UdpServices {
-            nat_table: NatTable::new(Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
-            relay_semaphore: None,
-        },
-        None,
-        16,
-    ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
-            Vec::<UserKey>::new().into_boxed_slice(),
-        )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
-
-    let handle = tokio::spawn(async move {
-        serve_h3_server(
-            server,
-            H3ServeCtx {
-                routes,
-                services,
-                auth,
-                alpn: Arc::from(vec![H3Alpn::Vless].into_boxed_slice()),
-                raw_vless_users,
-                raw_vless_candidates,
-                raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
-                http_fallback: None,
-                cluster: None,
-            },
-            ShutdownSignal::never(),
-        )
-        .await
-    });
     Ok((listen_addr, handle))
 }
 
@@ -393,9 +300,6 @@ async fn setup_vless_ws_h3_server(
                 services,
                 auth,
                 alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
-                raw_vless_users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
-                raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
-                raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
             },
@@ -457,61 +361,6 @@ async fn cross_repo_vless_tcp_ws_h3_round_trip() -> Result<()> {
     assert_eq!(&upstream_bytes, b"ping");
 
     drop(stream);
-    server.abort();
-    Ok(())
-}
-
-#[tokio::test]
-async fn cross_repo_vless_tcp_raw_quic_round_trip() -> Result<()> {
-    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let upstream_addr = upstream.local_addr()?;
-    let upstream_task = tokio::spawn(async move {
-        let (mut stream, _) = upstream.accept().await?;
-        let mut got = [0_u8; 4];
-        stream.read_exact(&mut got).await?;
-        stream.write_all(b"pong").await?;
-        Result::<_, anyhow::Error>::Ok(got)
-    });
-
-    let (listen_addr, server) = setup_vless_raw_quic_server().await?;
-
-    let cache = ClientDnsCache::new(Duration::from_secs(30));
-    // Raw QUIC uses the URL only for `host:port`; the path is
-    // ignored. ALPN `vless` is what the dialer sends. The scheme
-    // must be `https://` because raw QUIC is TLS-only.
-    let url = Url::parse(&format!("https://localhost:{}/", listen_addr.port()))?;
-    let uuid_bytes: [u8; 16] = parse_uuid(TEST_UUID)?;
-    let target = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
-    let lifetime = UpstreamTransportGuard::new("cross-repo-vless-quic", "vless");
-
-    let (mut writer, mut reader, _resume_rx) = connect_vless_tcp_quic_with_resume(
-        &cache,
-        &url,
-        None,
-        false,
-        "cross-repo-vless-quic",
-        &uuid_bytes,
-        &target,
-        Arc::clone(&lifetime),
-        None,
-    )
-    .await?;
-
-    // The dial flushes the request header eagerly but does NOT send
-    // any payload — push `ping` ourselves so the relay forwards it
-    // upstream.
-    writer.send_chunk(b"ping").await?;
-    // First chunk back consumes the VLESS response header
-    // internally; the bytes returned are the upstream payload only.
-    let reply = reader.read_chunk().await?;
-    assert_eq!(&reply, b"pong");
-
-    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
-    assert_eq!(&upstream_bytes, b"ping");
-
-    drop(reader);
-    drop(writer);
-    drop(lifetime);
     server.abort();
     Ok(())
 }
@@ -1036,184 +885,6 @@ async fn cross_repo_vless_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -
     Ok(())
 }
 
-/// Variant of [`setup_vless_raw_quic_server`] with a real
-/// [`OrphanRegistry`]. Resume tokens for raw QUIC ride inside the
-/// VLESS request header's Addons block (tags `0x10 RESUME_CAPABLE`
-/// / `0x11 RESUME_ID`); the server still parks the upstream the
-/// same way the WS path does once the QUIC bidi stream closes.
-async fn setup_vless_raw_quic_server_with_resumption()
--> Result<(SocketAddr, JoinHandle<Result<()>>)> {
-    super::cross_repo_install_test_tls_root_on_client();
-    let bind_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let tls_config = super::cross_repo_test_server_tls_config(&[b"vless-mtu", b"vless"]);
-    let quic_config = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
-        .map_err(|_| anyhow::anyhow!("invalid raw-quic test TLS config"))?;
-    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
-    let mut transport = quinn::TransportConfig::default();
-    transport
-        .datagram_receive_buffer_size(Some(1 << 20))
-        .datagram_send_buffer_size(1 << 20);
-    server_config.transport_config(Arc::new(transport));
-    let endpoint = quinn::Endpoint::server(server_config, bind_addr)?;
-    let server = H3WebSocketServer::<H3Transport>::from_endpoint(endpoint, H3WsConfig::default());
-    let listen_addr = server.local_addr()?;
-
-    let config = sample_config(listen_addr);
-    let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None, None)?;
-    let raw_vless_users: Arc<[VlessUser]> = Arc::from(vec![vless_user.clone()].into_boxed_slice());
-    let raw_vless_candidates: Arc<[Arc<str>]> =
-        Arc::from(vec![vless_user.label_arc()].into_boxed_slice());
-
-    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp: Arc::new(BTreeMap::new()),
-        udp: Arc::new(BTreeMap::new()),
-        vless: Arc::new(BTreeMap::new()),
-        xhttp_vless: Arc::new(BTreeMap::new()),
-        xhttp_ss: Arc::new(std::collections::BTreeMap::new()),
-        xhttp_ss_udp: Arc::new(std::collections::BTreeMap::new()),
-    }));
-    let orphan_registry = Some(Arc::new(OrphanRegistry::new(
-        ResumptionConfig::from(&crate::config::SessionResumptionConfig {
-            enabled: true,
-            orphan_ttl_tcp_secs: 30,
-            orphan_ttl_udp_secs: 30,
-            orphan_per_user_cap: 4,
-            orphan_global_cap: 16,
-            downlink_buffer_bytes: 0,
-        }),
-        Arc::clone(&metrics),
-    )));
-    let services = Arc::new(Services::new(
-        metrics,
-        DnsCache::new(Duration::from_secs(30)),
-        false,
-        None,
-        UdpServices {
-            nat_table: NatTable::new(Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
-            relay_semaphore: None,
-        },
-        orphan_registry,
-        16,
-    ));
-    let auth = Arc::new(AuthPolicy {
-        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
-            Vec::<UserKey>::new().into_boxed_slice(),
-        )))),
-        http_root_auth: false,
-        http_root_realm: Arc::from("Authorization required"),
-    });
-
-    let handle = tokio::spawn(async move {
-        serve_h3_server(
-            server,
-            H3ServeCtx {
-                routes,
-                services,
-                auth,
-                alpn: Arc::from(vec![H3Alpn::Vless].into_boxed_slice()),
-                raw_vless_users,
-                raw_vless_candidates,
-                raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
-                http_fallback: None,
-                cluster: None,
-            },
-            ShutdownSignal::never(),
-        )
-        .await
-    });
-    Ok((listen_addr, handle))
-}
-
-#[tokio::test]
-async fn cross_repo_vless_tcp_raw_quic_resume_reattaches_parked_upstream() -> Result<()> {
-    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let upstream_addr = upstream.local_addr()?;
-    let upstream_task = tokio::spawn(async move {
-        let (mut stream, _) = upstream.accept().await?;
-        let mut first = [0_u8; 4];
-        stream.read_exact(&mut first).await?;
-        stream.write_all(b"pong").await?;
-        let mut second = [0_u8; 4];
-        stream.read_exact(&mut second).await?;
-        stream.write_all(b"ackk").await?;
-        Result::<_, anyhow::Error>::Ok((first, second))
-    });
-
-    let (listen_addr, server) = setup_vless_raw_quic_server_with_resumption().await?;
-    let cache = ClientDnsCache::new(Duration::from_secs(30));
-    let url = Url::parse(&format!("https://localhost:{}/", listen_addr.port()))?;
-    let uuid_bytes: [u8; 16] = parse_uuid(TEST_UUID)?;
-    let target = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
-    let lifetime_a = UpstreamTransportGuard::new("cross-repo-vless-quic-resume-a", "vless");
-
-    // ── Client A: capability advertise via Addons, first round-trip ──
-    let (mut writer_a, mut reader_a, id_rx_a) = connect_vless_tcp_quic_with_resume(
-        &cache,
-        &url,
-        None,
-        false,
-        "cross-repo-vless-quic-resume-a",
-        &uuid_bytes,
-        &target,
-        Arc::clone(&lifetime_a),
-        None,
-    )
-    .await?;
-
-    writer_a.send_chunk(b"ping").await?;
-    let reply_a = reader_a.read_chunk().await?;
-    assert_eq!(&reply_a, b"pong");
-
-    // Token surfaces on the first read_chunk via the oneshot
-    // receiver returned by the dial — drain it now.
-    let token = id_rx_a
-        .await
-        .map_err(|_| anyhow::anyhow!("resume token sender dropped"))?
-        .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
-    let token_bytes = *token.as_bytes();
-
-    // Drop client A's halves — the QUIC bidi stream closes,
-    // server's relay parks the upstream into the orphan registry.
-    drop(reader_a);
-    drop(writer_a);
-    drop(lifetime_a);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // ── Client B: dials with `RESUME_ID` Addons opcode set ──
-    let lifetime_b = UpstreamTransportGuard::new("cross-repo-vless-quic-resume-b", "vless");
-    let (mut writer_b, mut reader_b, _id_rx_b) = connect_vless_tcp_quic_with_resume(
-        &cache,
-        &url,
-        None,
-        false,
-        "cross-repo-vless-quic-resume-b",
-        &uuid_bytes,
-        // Target is irrelevant on the resume path — server uses
-        // the parked upstream — but the VLESS parser still wants
-        // a valid one in the request header.
-        &target,
-        Arc::clone(&lifetime_b),
-        Some(&token_bytes),
-    )
-    .await?;
-
-    writer_b.send_chunk(b"helo").await?;
-    let reply_b = reader_b.read_chunk().await?;
-    assert_eq!(&reply_b, b"ackk", "echo via resumed upstream");
-
-    let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
-    assert_eq!(&first, b"ping");
-    assert_eq!(&second, b"helo");
-
-    drop(reader_b);
-    drop(writer_b);
-    drop(lifetime_b);
-    server.abort();
-    Ok(())
-}
-
 /// Same as [`setup_vless_ws_h3_server`] but with `OrphanRegistry`
 /// enabled. RFC 9220 (WebSocket-over-HTTP/3 CONNECT extended)
 /// honours the same `X-Outline-Resume-Capable` /
@@ -1284,9 +955,6 @@ async fn setup_vless_ws_h3_server_with_resumption(
                 services,
                 auth,
                 alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
-                raw_vless_users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
-                raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
-                raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
                 http_fallback: None,
                 cluster: None,
             },

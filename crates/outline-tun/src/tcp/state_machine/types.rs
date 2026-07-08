@@ -11,8 +11,6 @@ use tokio::net::tcp::OwnedWriteHalf;
 
 use crate::TunRoute;
 use crate::vnet::VirtioNetHdr;
-#[cfg(feature = "quic")]
-use outline_transport::QuicTcpWriter;
 use outline_transport::{SocketTcpWriter, VlessTcpWriter, WsTcpWriter};
 use outline_uplink::UplinkManager;
 
@@ -30,8 +28,6 @@ pub enum UpstreamWriter {
     TunneledWs(WsTcpWriter),
     TunneledSocket(SocketTcpWriter),
     TunneledVless(VlessTcpWriter),
-    #[cfg(feature = "quic")]
-    TunneledQuicSs(QuicTcpWriter),
     Direct(OwnedWriteHalf),
 }
 
@@ -41,8 +37,6 @@ impl UpstreamWriter {
             Self::TunneledWs(w) => w.send_chunk(data).await,
             Self::TunneledSocket(w) => w.send_chunk(data).await,
             Self::TunneledVless(w) => w.send_chunk(data).await,
-            #[cfg(feature = "quic")]
-            Self::TunneledQuicSs(w) => w.send_chunk(data).await,
             Self::Direct(w) => w.write_all(data).await.context("direct TCP write failed"),
         }
     }
@@ -52,8 +46,6 @@ impl UpstreamWriter {
             Self::TunneledWs(w) => w.close().await,
             Self::TunneledSocket(w) => w.close().await,
             Self::TunneledVless(w) => w.close().await,
-            #[cfg(feature = "quic")]
-            Self::TunneledQuicSs(w) => w.close().await,
             Self::Direct(w) => w.shutdown().await.context("direct TCP shutdown failed"),
         }
     }

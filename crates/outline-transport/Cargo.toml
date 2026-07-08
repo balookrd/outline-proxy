@@ -10,7 +10,7 @@ workspace = true
 default = []
 # Raw QUIC transport (no HTTP/3 framing). Required by `h3` since both share
 # the underlying quinn endpoint and TLS config builder.
-quic = ["dep:quinn", "dep:once_cell", "dep:ring", "dep:subtle", "dep:base64"]
+quic = ["dep:quinn", "dep:once_cell", "dep:ring"]
 h3 = ["quic", "dep:h3", "dep:h3-quinn", "sockudo-ws/http3"]
 metrics = ["outline-metrics/prometheus", "hyper/server"]
 # Exposes `install_test_tls_root` so cross-repo integration tests
@@ -27,8 +27,6 @@ cert-check = ["dep:x509-cert"]
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
-# Reverse-tunnel mTLS pin parsing (hex/base64). Gated under `quic`.
-base64 = { version = "0.22", optional = true }
 bytes = "1.10"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hashbrown = "0.14"
@@ -53,10 +51,9 @@ parking_lot = "0.12"
 pin-project-lite = "0.2"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"], optional = true }
 rand = "0.9"
-# SHA-256 cert fingerprinting + constant-time compare for reverse-tunnel
-# mTLS pinning. Gated under `quic` so builds without it pull neither.
+# SHA-256 / HKDF primitives for the QUIC-Initial decrypt diagnostic test
+# (`quic/tests/tls_config.rs`). Gated under `quic` so slim builds pull neither.
 ring = { version = "0.17", optional = true }
-subtle = { version = "2.6", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 shadowsocks-crypto = { path = "../shadowsocks-crypto" }
@@ -80,7 +77,7 @@ webpki-roots = "1.0"
 # main build deliberately omits to keep the client crate slim.
 hyper = { version = "1.7", features = ["client", "http1", "http2", "server"] }
 tokio = { version = "1.44", features = ["io-util", "macros", "net", "rt", "sync", "time", "test-util"] }
-# Sans-IO QUIC core, used only by the raw-QUIC Initial diagnostic
+# Sans-IO QUIC core, used only by the H3 QUIC-Initial diagnostic
 # (`quic/tests/tls_config.rs`) to produce a real first Initial datagram
 # without any network I/O. `default-features = false` + `rustls-aws-lc-rs`
 # keeps the workspace's single-CryptoProvider invariant (no rustls-ring).
