@@ -302,15 +302,31 @@ UDP leg and migrates just it.
   wall-clock than the throttle sustain window — otherwise the budget tears the
   session down (losing the park) before the soft migration can run.
 
-**Follow-up (not MVP): detect the client segment on the edge.** The edge sees
-the raw bytes in both directions plus its own client-writer backlog, so it can
-detect an `edge→client` throttle by byte balance *without parsing padding*,
-per mesh stream — so it covers the TCP and UDP legs uniformly. It would then
-send home a new mesh control message (`THROTTLE_HINT`), and home
-(the padding-aware side) injects the `OCTL`. This cleanly separates the
-segments — throttle covers only the client mile, the interconnect is left to
-the health budget — and removes the false positives, at the cost of extending
-the mesh framing.
+**Edge-side client-segment detection (`THROTTLE_HINT`).** To avoid the wrong-
+segment problem above, a relayed carrier does **not** run home's local detector
+(it would measure `home→mesh`); the **edge** detects the client segment and
+tells home. While it splices the carrier, the edge times each client-facing
+downlink write: when home keeps feeding the relay but the client stops draining,
+that write blocks. A write that blocks past the detection window is a stalled
+window; sustained past `sustain_windows` and rate-limited by `signal_cooldown`,
+the edge sends a `THROTTLE_HINT` — a mesh **control datagram** (a QUIC datagram
+on the relay's connection, keyed by session id; see the mesh transport control
+channel). Home routes it to that session's `ThroughputMonitor` and injects one
+`OCTL` cover frame, which rides the relay to the client exactly as above. It
+runs per mesh stream, so the TCP and UDP legs are covered uniformly.
+
+This cleanly separates the segments: the edge sees only the client mile, and a
+slow interconnect shows up as a *read* stall on the mesh stream (waiting on more
+relayed bytes), not a client-`send` stall — so it never trips the edge detector,
+removing the interconnect false positives. `home→edge` / `home→target` slowness
+is left to the health budget. Detection shares the server `[padding]
+throttle_detect` gate (off by default; a symmetric cluster shares one config, so
+enabling it turns on home-local detection for direct carriers **and** the edge
+hint for relayed ones). Because the edge signal is purely timing-based it has no
+low-bandwidth floor — a genuinely slow-but-not-throttled client can also trip it
+— but the `OCTL` nudge is idempotent and cooldown-limited, so a stray hint costs
+only one uplink reconsideration. The hint is best-effort: an unreliable QUIC
+datagram, re-sent on the next detection window if lost.
 
 ## Security
 
@@ -383,8 +399,10 @@ has an explicit limit:
    mesh, a separate phase.
 3. **VLESS mux** parks atomically; the relay must carry the whole multiplex on
    one mesh stream, never splitting it, or partial-resume breaks.
-4. **Downstream-throttle detection cannot tell the cluster segments apart**
-   (see the section above): the home detector conflates the interconnect with
-   the client last mile, risking spurious uplink switches and park loss on a
-   slow mesh. Mitigated by keeping the feature off until the edge-side detection
-   follow-up lands, or by tuning the budget vs sustain ordering.
+4. **Downstream-throttle detection on relayed carriers now runs on the edge**
+   (see the section above): the edge times its client-facing writes and sends a
+   `THROTTLE_HINT`, so the home no longer conflates the interconnect with the
+   client last mile. Residual: the edge signal is timing-based with no low-
+   bandwidth floor, so a genuinely slow client can still trip a spurious (but
+   idempotent, cooldown-limited) `OCTL`. The feature stays off by default; keep
+   the budget-vs-sustain ordering in mind when enabling it.
