@@ -128,11 +128,12 @@ survives the relay.
   nodes, each node deterministically derives its keypair from the shared
   `cluster_psk` (`HKDF(psk, "mesh-auth", shard)` → ed25519 → self-signed cert).
   Any node knows the PSK, so it can derive the expected fingerprint of any peer
-  by its shard and verify the presented cert against it — a mutual pin. This
-  reuses the existing `PinnedServerCertVerifier` pattern
-  (`bootstrap/reverse_tls.rs`), generalised from one-way to mutual: signature
-  verification is still delegated to the provider, only path validation is
-  replaced by a constant-time pin compare. The only shared secret is the PSK
+  by its shard and verify the presented cert against it — a mutual pin. Both
+  directions build on the shared fingerprint helper in `bootstrap/cert_pin.rs`
+  (`cert_fingerprint` / `CERT_PIN_LEN`): the mesh TLS verifiers
+  (`MeshServerVerifier`, `MeshClientVerifier`) still delegate signature
+  verification to the provider and replace only path validation with a
+  constant-time pin compare. The only shared secret is the PSK
   already in the config — nothing to deliver. rustls has no external-PSK API,
   so a certificate is still the vehicle, but it carries no PKI weight.
 - **Forward secrecy holds:** a leaked PSK breaks *future* auth (peer
