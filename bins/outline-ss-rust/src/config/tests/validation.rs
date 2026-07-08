@@ -64,7 +64,6 @@ fn base_config() -> Config {
         padding: Default::default(),
         http_fallback: None,
         sni_fallback: None,
-        reverse_tunnel: None,
         cluster: None,
     }
 }
@@ -239,7 +238,6 @@ fn rejects_xhttp_path_tcp_without_leading_slash() {
 fn rejects_xhttp_path_tcp_without_password_user() {
     // A vless-only user (no password) cannot back an SS-over-XHTTP path.
     let mut cfg = base_config();
-    cfg.h3_alpn.push(crate::config::H3Alpn::Vless);
     cfg.users[0].password = None;
     cfg.users[0].vless_id = Some("00000000-0000-0000-0000-000000000001".into());
     cfg.xhttp_path_tcp = Some("/ss".into());
@@ -272,49 +270,6 @@ fn accepts_xhttp_path_udp_with_password_user() {
 // Note: combined mode is opted into via the explicit `xhttp_path_ss` /
 // `ws_path_ss` fields — see `accepts_combined_xhttp_path_ss`. Split tcp/udp
 // paths sharing a value is a conflict, not an implicit combine.
-
-#[test]
-fn allows_vless_reverse_user_without_ws_path() {
-    use super::super::resolved::ReverseTunnelConfig;
-    use super::super::{ReverseProtocol, ReverseTunnelEndpoint};
-    // A reverse-only server carrying VLESS: vless_id user with no ws/xhttp
-    // path, transport provided by a protocol = "vless" reverse endpoint.
-    let endpoint = ReverseTunnelEndpoint {
-        addr: "ws.example.com:8443".into(),
-        server_name: "reverse".into(),
-        server_cert_pin: "aa".repeat(32),
-        client_cert_path: "/etc/ss-client.crt".into(),
-        client_key_path: "/etc/ss-client.key".into(),
-        protocol: ReverseProtocol::Vless,
-        mtu: true,
-        backoff_min: std::time::Duration::from_secs(1),
-        backoff_max: std::time::Duration::from_secs(60),
-    };
-    Config {
-        ws_path_vless: None,
-        users: vec![super::super::UserEntry {
-            id: "rev-vless".into(),
-            password: None,
-            fwmark: None,
-            method: None,
-            ws_path_tcp: None,
-            ws_path_udp: None,
-            ws_path_ss: None,
-            vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-            ws_path_vless: None,
-            xhttp_path_vless: None,
-            xhttp_path_tcp: None,
-            xhttp_path_udp: None,
-            xhttp_path_ss: None,
-            enabled: None,
-            aliases: None,
-        }],
-        reverse_tunnel: Some(ReverseTunnelConfig { endpoints: vec![endpoint] }),
-        ..base_config()
-    }
-    .validate()
-    .unwrap();
-}
 
 #[test]
 fn allows_vless_only_users() {
@@ -432,14 +387,18 @@ fn allows_per_user_vless_path_without_global_default() {
 }
 
 #[test]
-fn allows_vless_id_without_path_when_raw_quic_alpn_enabled() {
+fn allows_vless_id_without_any_path() {
+    // Raw VLESS-over-QUIC and the reverse-tunnel dialer were removed, so a
+    // vless_id user with no ws/xhttp path no longer has a forward transport.
+    // That is not a validation error: the user is warned about and skipped at
+    // route-build time (see `services::build`), so an otherwise-valid config
+    // still starts.
     Config {
         ws_path_vless: None,
         xhttp_path_vless: None,
         xhttp_path_tcp: None,
         xhttp_path_udp: None,
         xhttp_path_ss: None,
-        h3_alpn: vec![crate::config::H3Alpn::H3, crate::config::H3Alpn::Vless],
         users: vec![super::super::UserEntry {
             id: "alice".into(),
             password: None,
@@ -461,43 +420,6 @@ fn allows_vless_id_without_path_when_raw_quic_alpn_enabled() {
     }
     .validate()
     .unwrap();
-}
-
-#[test]
-fn rejects_vless_id_without_any_path() {
-    let error = Config {
-        ws_path_vless: None,
-        xhttp_path_vless: None,
-        xhttp_path_tcp: None,
-        xhttp_path_udp: None,
-        xhttp_path_ss: None,
-        users: vec![super::super::UserEntry {
-            id: "alice".into(),
-            password: None,
-            fwmark: None,
-            method: None,
-            ws_path_tcp: None,
-            ws_path_udp: None,
-            ws_path_ss: None,
-            vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-            ws_path_vless: None,
-            xhttp_path_vless: None,
-            xhttp_path_tcp: None,
-            xhttp_path_udp: None,
-            xhttp_path_ss: None,
-            enabled: None,
-            aliases: None,
-        }],
-        ..base_config()
-    }
-    .validate()
-    .unwrap_err()
-    .to_string();
-
-    assert!(
-        error.contains("user alice vless_id requires at least one transport"),
-        "unexpected error: {error}"
-    );
 }
 
 #[test]

@@ -10,8 +10,6 @@ use tokio::sync::Semaphore;
 use tracing::debug;
 
 use outline_transport::{DnsCache, TransportOperation, UdpWsTransport, VlessUdpWsTransport};
-#[cfg(feature = "quic")]
-use outline_transport::{connect_ss_udp_quic, connect_vless_udp_session_quic};
 
 use crate::config::{
     DnsProbeConfig, SsPathKind, TargetAddr, TransportMode, UplinkConfig, UplinkTransport,
@@ -75,73 +73,40 @@ pub(super) async fn run_dns_probe(
                         let udp_ws_url = uplink.udp_dial_url().ok_or_else(|| {
                             anyhow!("uplink {} has no udp dial URL for DNS probe", uplink.name)
                         })?;
-                        if effective_udp_mode == TransportMode::Quic {
-                            #[cfg(feature = "quic")]
-                            {
-                                let t = connect_ss_udp_quic(
-                                    cache,
-                                    udp_ws_url,
-                                    uplink.fwmark,
-                                    uplink.ipv6_first,
-                                    "probe_dns",
-                                    uplink.cipher,
-                                    &uplink.password,
-                                )
+                        // Use `connect_with_resume(..., None)` so the WS-mode
+                        // downgrade marker propagates. DNS probes do not
+                        // participate in cross-transport session resumption, so
+                        // the SessionId tuple element is discarded.
+                        //
+                        // Scope the per-uplink padding override over the dial +
+                        // build so a probe to a padded per-uplink SS-UDP path
+                        // frames its datagrams (the transport reads
+                        // `effective_carrier_padding` at build). The global
+                        // default is unaffected by an absent override — mirrors
+                        // the VLESS-UDP probe.
+                        let connect = UdpWsTransport::connect_with_resume(
+                            cache,
+                            udp_ws_url,
+                            effective_udp_mode,
+                            uplink.cipher,
+                            &uplink.password,
+                            uplink.fwmark,
+                            uplink.ipv6_first,
+                            "probe_dns",
+                            None,
+                            None,
+                            uplink.combined_ss_kind(SsPathKind::Udp),
+                        );
+                        let (t, _issued, downgraded) =
+                            crate::dial::with_uplink_padding_scope(uplink, connect)
                                 .await
-                                .with_context(|| {
-                                    TransportOperation::Connect {
-                                        target: format!(
-                                            "DNS probe raw-QUIC for uplink {}",
-                                            uplink.name
-                                        ),
-                                    }
+                                .with_context(|| TransportOperation::Connect {
+                                    target: format!(
+                                        "DNS probe websocket for uplink {}",
+                                        uplink.name
+                                    ),
                                 })?;
-                                // Raw QUIC bypasses WS — no `ws_mode_cache` clamp can apply.
-                                (t, None)
-                            }
-                            #[cfg(not(feature = "quic"))]
-                            {
-                                let _ = udp_ws_url;
-                                return Err(anyhow!(
-                                    "TransportMode::Quic requested but binary was built without the `quic` feature"
-                                ));
-                            }
-                        } else {
-                            // Use `connect_with_resume(..., None)` so the WS-mode
-                            // downgrade marker propagates. DNS probes do not
-                            // participate in cross-transport session resumption, so
-                            // the SessionId tuple element is discarded.
-                            //
-                            // Scope the per-uplink padding override over the dial +
-                            // build so a probe to a padded per-uplink SS-UDP path
-                            // frames its datagrams (the transport reads
-                            // `effective_carrier_padding` at build). raw QUIC (the
-                            // branch above) and the global default are unaffected by
-                            // an absent override — mirrors the VLESS-UDP probe.
-                            let connect = UdpWsTransport::connect_with_resume(
-                                cache,
-                                udp_ws_url,
-                                effective_udp_mode,
-                                uplink.cipher,
-                                &uplink.password,
-                                uplink.fwmark,
-                                uplink.ipv6_first,
-                                "probe_dns",
-                                None,
-                                None,
-                                uplink.combined_ss_kind(SsPathKind::Udp),
-                            );
-                            let (t, _issued, downgraded) =
-                                crate::dial::with_uplink_padding_scope(uplink, connect)
-                                    .await
-                                    .with_context(|| TransportOperation::Connect {
-                                        target: format!(
-                                            "DNS probe websocket for uplink {}",
-                                            uplink.name
-                                        ),
-                                    })?;
-                            (t, downgraded)
-                        }
+                        (t, downgraded)
                     };
                     (t, downgraded, true)
                 },
@@ -203,68 +168,6 @@ pub(super) async fn run_dns_probe(
                 .as_ref()
                 .ok_or_else(|| anyhow!("uplink {} has no vless_id for DNS probe", uplink.name))?;
 
-            if effective_udp_mode == TransportMode::Quic {
-                #[cfg(feature = "quic")]
-                {
-                    let session = {
-                        let _permit =
-                            dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
-                        connect_vless_udp_session_quic(
-                            cache,
-                            udp_ws_url,
-                            uplink.fwmark,
-                            uplink.ipv6_first,
-                            "probe_dns",
-                            uuid,
-                            &dns_server,
-                        )
-                        .await
-                        .with_context(|| TransportOperation::Connect {
-                            target: format!("DNS probe VLESS raw-QUIC for uplink {}", uplink.name),
-                        })?
-                    };
-                    let result = async {
-                        session
-                            .send_packet(&query)
-                            .await
-                            .context("failed to send DNS probe packet")?;
-                        bytes.outgoing(query.len());
-                        let response = session
-                            .read_packet()
-                            .await
-                            .context("failed to read DNS probe response")?;
-                        bytes.incoming(response.len());
-                        validate_dns_response(&response, &query)?;
-                        Ok::<bool, anyhow::Error>(true)
-                    }
-                    .await;
-                    debug!(
-                        uplink = %uplink.name,
-                        transport = "udp",
-                        probe = "dns",
-                        "closing probe transport after DNS probe"
-                    );
-                    if let Err(error) = session.close().await {
-                        debug!(
-                            uplink = %uplink.name,
-                            transport = "udp",
-                            probe = "dns",
-                            error = %format!("{error:#}"),
-                            "probe transport close returned error during teardown"
-                        );
-                    }
-                    // Raw QUIC bypasses WS — no `ws_mode_cache` clamp can apply.
-                    return result.map(|ok| (ok, None));
-                }
-                #[cfg(not(feature = "quic"))]
-                {
-                    let _ = (udp_ws_url, uuid);
-                    return Err(anyhow!(
-                        "TransportMode::Quic requested but binary was built without the `quic` feature"
-                    ));
-                }
-            }
-
             // Try to reuse a transport cached from a previous probe cycle.
             // Same uplink + same effective mode + same probe target ⇒ the
             // server-side NAT entry, reader task, and DNS resolve for the
@@ -296,9 +199,8 @@ pub(super) async fn run_dns_probe(
                         // Scope the per-uplink padding override over the
                         // dial + build so a probe to a padded per-uplink VLESS
                         // path frames its datagrams (the transport reads
-                        // `effective_carrier_padding` at build). raw-QUIC and
-                        // the global default are unaffected by an absent
-                        // override.
+                        // `effective_carrier_padding` at build). The global
+                        // default is unaffected by an absent override.
                         let connect = VlessUdpWsTransport::connect_with_resume(
                             cache,
                             udp_ws_url,

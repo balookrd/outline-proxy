@@ -69,14 +69,9 @@ fn rank(m: TransportMode) -> u8 {
         TransportMode::WsH1 => 0,
         TransportMode::WsH2 => 1,
         TransportMode::WsH3 => 2,
-        // Raw QUIC is not part of the WS fallback chain; treated as topmost
-        // so it is never selected by clamping logic here. XHTTP modes share
-        // the same property: they ride their own dial path and never get
-        // clamped against the WS chain.
-        TransportMode::Quic
-        | TransportMode::XhttpH1
-        | TransportMode::XhttpH2
-        | TransportMode::XhttpH3 => 3,
+        // XHTTP modes ride their own dial path and never get clamped against
+        // the WS chain; treat them as topmost so clamping never selects them.
+        TransportMode::XhttpH1 | TransportMode::XhttpH2 | TransportMode::XhttpH3 => 3,
     }
 }
 

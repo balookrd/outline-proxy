@@ -25,8 +25,6 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
 use ss2022::{Ss2022TcpReaderState, parse_ss2022_response_header};
-#[cfg(feature = "quic")]
-use transport::QuicReadTransport;
 use transport::{ReadTransport, SocketReadTransport, WsReadTransport, WsStream};
 
 pub struct TcpShadowsocksReader<T: ReadTransport> {
@@ -90,8 +88,6 @@ pub struct TcpShadowsocksReader<T: ReadTransport> {
 
 pub type WsTcpReader = TcpShadowsocksReader<WsReadTransport>;
 pub type SocketTcpReader = TcpShadowsocksReader<SocketReadTransport>;
-#[cfg(feature = "quic")]
-pub type QuicTcpReader = TcpShadowsocksReader<QuicReadTransport>;
 
 impl TcpShadowsocksReader<WsReadTransport> {
     pub fn new(
@@ -159,35 +155,6 @@ impl TcpShadowsocksReader<SocketReadTransport> {
             // Plain-socket Shadowsocks (no WebSocket upgrade) does not
             // carry the Ack-Prefix capability — the protocol is gated on
             // a successful WS upgrade response. Always off here.
-            expect_ack_prefix: false,
-            up_acked: None,
-            pending_tail: None,
-            expect_downlink_replay: false,
-        }
-    }
-}
-
-#[cfg(feature = "quic")]
-impl TcpShadowsocksReader<QuicReadTransport> {
-    pub fn new_quic(
-        recv: quinn::RecvStream,
-        cipher: CipherKind,
-        master_key: &[u8],
-        lifetime: Arc<UpstreamTransportGuard>,
-    ) -> Self {
-        let mut mk = [0u8; 32];
-        mk[..master_key.len()].copy_from_slice(master_key);
-        Self {
-            transport: QuicReadTransport { recv },
-            cipher,
-            master_key: mk,
-            cipher_state: None,
-            nonce: [0u8; 12],
-            ss2022: None,
-            _lifetime: lifetime,
-            closed_cleanly: false,
-            // Raw QUIC bypasses the WS upgrade entirely; no Ack-Prefix
-            // negotiation surfaces here. Always off.
             expect_ack_prefix: false,
             up_acked: None,
             pending_tail: None,

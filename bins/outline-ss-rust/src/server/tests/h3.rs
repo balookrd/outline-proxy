@@ -66,15 +66,6 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
                 services,
                 auth,
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-                raw_vless_users: std::sync::Arc::from(
-                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-                ),
-                raw_vless_candidates: std::sync::Arc::from(
-                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
-                ),
-                raw_ss_users: std::sync::Arc::from(
-                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
-                ),
                 http_fallback: None,
                 cluster: None,
             },
@@ -180,15 +171,6 @@ async fn http3_connect_echoes_resume_capabilities_like_h1_h2() -> Result<()> {
                 services,
                 auth,
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-                raw_vless_users: std::sync::Arc::from(
-                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-                ),
-                raw_vless_candidates: std::sync::Arc::from(
-                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
-                ),
-                raw_ss_users: std::sync::Arc::from(
-                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
-                ),
                 http_fallback: None,
                 cluster: None,
             },
@@ -345,15 +327,6 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
                 services,
                 auth,
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-                raw_vless_users: std::sync::Arc::from(
-                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-                ),
-                raw_vless_candidates: std::sync::Arc::from(
-                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
-                ),
-                raw_ss_users: std::sync::Arc::from(
-                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
-                ),
                 http_fallback: None,
                 cluster: None,
             },
@@ -452,15 +425,6 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
                 services,
                 auth,
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-                raw_vless_users: std::sync::Arc::from(
-                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-                ),
-                raw_vless_candidates: std::sync::Arc::from(
-                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
-                ),
-                raw_ss_users: std::sync::Arc::from(
-                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
-                ),
                 http_fallback: None,
                 cluster: None,
             },
@@ -537,15 +501,6 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
                 services,
                 auth,
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-                raw_vless_users: std::sync::Arc::from(
-                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-                ),
-                raw_vless_candidates: std::sync::Arc::from(
-                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
-                ),
-                raw_ss_users: std::sync::Arc::from(
-                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
-                ),
                 http_fallback: None,
                 cluster: None,
             },
@@ -656,15 +611,6 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
                 services,
                 auth,
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-                raw_vless_users: std::sync::Arc::from(
-                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-                ),
-                raw_vless_candidates: std::sync::Arc::from(
-                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
-                ),
-                raw_ss_users: std::sync::Arc::from(
-                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
-                ),
                 http_fallback: None,
                 cluster: None,
             },
@@ -806,15 +752,6 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
                 services,
                 auth,
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-                raw_vless_users: std::sync::Arc::from(
-                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-                ),
-                raw_vless_candidates: std::sync::Arc::from(
-                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
-                ),
-                raw_ss_users: std::sync::Arc::from(
-                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
-                ),
                 http_fallback: None,
                 cluster: None,
             },
@@ -950,15 +887,6 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
                 services,
                 auth,
                 alpn: std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
-                raw_vless_users: std::sync::Arc::from(
-                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-                ),
-                raw_vless_candidates: std::sync::Arc::from(
-                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
-                ),
-                raw_ss_users: std::sync::Arc::from(
-                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
-                ),
                 http_fallback: None,
                 cluster: None,
             },

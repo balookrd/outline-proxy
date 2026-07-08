@@ -78,65 +78,6 @@ async fn connect_probe_tcp_inner(
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
     let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
 
-    #[cfg(feature = "quic")]
-    if effective_tcp_mode == TransportMode::Quic
-        && (uplink.transport == UplinkTransport::Ss || uplink.transport == UplinkTransport::Vless)
-    {
-        let url = uplink
-            .tcp_dial_url()
-            .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
-        return match uplink.transport {
-            UplinkTransport::Vless => {
-                let uuid = uplink
-                    .vless_id
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("uplink {} missing vless_id", uplink.name))?;
-                let (w, r) = crate::dial::dial_in_uplink_scope(
-                    uplink,
-                    outline_transport::connect_vless_tcp_quic(
-                        cache,
-                        url,
-                        uplink.fwmark,
-                        uplink.ipv6_first,
-                        source,
-                        uuid,
-                        target,
-                        lifetime,
-                    ),
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!("{probe_label} vless quic for uplink {}", uplink.name),
-                })?;
-                // Raw QUIC bypasses the WS layer, so there is no
-                // `ws_mode_cache` clamp to surface here.
-                Ok((TcpWriter::Vless(w), TcpReader::Vless(r), None))
-            },
-            UplinkTransport::Ss => {
-                let (w, r) = crate::dial::dial_in_uplink_scope(
-                    uplink,
-                    outline_transport::connect_ss_tcp_quic(
-                        cache,
-                        url,
-                        uplink.fwmark,
-                        uplink.ipv6_first,
-                        source,
-                        uplink.cipher,
-                        &master_key,
-                        Arc::clone(&lifetime),
-                    ),
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!("{probe_label} ss quic for uplink {}", uplink.name),
-                })?;
-                let request_salt = w.request_salt();
-                let r = r.with_request_salt(request_salt);
-                Ok((TcpWriter::QuicSs(w), TcpReader::QuicSs(r), None))
-            },
-        };
-    }
-
     match uplink.transport {
         UplinkTransport::Ss => {
             let ws_stream = crate::dial::dial_in_uplink_scope(

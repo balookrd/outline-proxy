@@ -99,11 +99,12 @@ fn xhttp_submode_preserved_as_query_string() {
 }
 
 #[test]
-fn quic_security_tls_yields_https_scheme_and_quic_mode() {
-    let link = parse(&format!("vless://{UUID}@host:443?type=quic&security=tls"));
-    assert_eq!(link.mode, TransportMode::Quic);
-    let url = link.vless_ws_url.expect("dial url present for quic");
-    assert_eq!(url.scheme(), "https");
+fn quic_type_is_rejected() {
+    // Raw QUIC carrier support was removed; `type=quic` links must be rejected
+    // with a hint toward the H3 carriers.
+    let err = VlessShareLink::parse(&format!("vless://{UUID}@host:443?type=quic&security=tls"))
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("type=quic"));
 }
 
 #[test]

@@ -644,15 +644,6 @@ async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
                 services,
                 auth,
                 alpn: std::sync::Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
-                raw_vless_users: std::sync::Arc::from(
-                    Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice(),
-                ),
-                raw_vless_candidates: std::sync::Arc::from(
-                    Vec::<std::sync::Arc<str>>::new().into_boxed_slice(),
-                ),
-                raw_ss_users: std::sync::Arc::from(
-                    Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
-                ),
                 http_fallback: Some(h3_fallback),
                 cluster: None,
             },

@@ -349,45 +349,6 @@ pub(super) async fn connect_tcp_uplink_fresh(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<ConnectedTcpUplink> {
-    #[cfg(feature = "h3")]
-    {
-        let mode = uplinks.effective_tcp_mode(candidate.index).await;
-        if mode == outline_transport::TransportMode::Quic {
-            match uplinks.connect_tcp_quic_fresh(candidate, target, "socks_tcp").await {
-                Ok((writer, reader)) => {
-                    debug!(
-                        uplink = %candidate.uplink.name,
-                        target = %target,
-                        transport = "quic",
-                        "opened raw-QUIC TCP uplink"
-                    );
-                    return Ok(ConnectedTcpUplink {
-                        writer,
-                        reader,
-                        source: TcpUplinkSource::FreshDial,
-                        wire_index: 0,
-                    });
-                },
-                Err(e) => {
-                    warn!(
-                        uplink = %candidate.uplink.name,
-                        target = %target,
-                        error = %format!("{e:#}"),
-                        fallback = "ws/h2",
-                        "raw-QUIC TCP dial failed, falling back to WS over H2"
-                    );
-                    uplinks.note_advanced_mode_dial_failure(
-                        candidate.index,
-                        TransportKind::Tcp,
-                        &e,
-                    );
-                    // Fall through to the WS path below; effective_tcp_mode
-                    // will now return H2 for the rest of the downgrade window,
-                    // and connect_transport handles H2 → H1.
-                },
-            }
-        }
-    }
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "socks_tcp").await?;
     let setup = WireSetup::from_uplink(&candidate.uplink);

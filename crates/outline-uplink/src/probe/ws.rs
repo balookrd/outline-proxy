@@ -1,7 +1,6 @@
-//! Connectivity-only probes: WebSocket handshake and raw-QUIC handshake.
-//! Each verifies that the transport layer can be established but does not
-//! exercise the tunnelled payload — data-path correctness is covered by the
-//! http / dns / tcp_tunnel sub-probes.
+//! Connectivity-only probe: WebSocket handshake. Verifies that the transport
+//! layer can be established but does not exercise the tunnelled payload —
+//! data-path correctness is covered by the http / dns / tcp_tunnel sub-probes.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +15,7 @@ use outline_transport::{
     connect_transport,
 };
 
-use crate::config::{TransportMode, UplinkTransport};
+use crate::config::TransportMode;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_ws_probe(
@@ -65,66 +64,4 @@ pub(super) async fn run_ws_probe(
         );
     }
     Ok(downgraded_from)
-}
-
-/// Connectivity-only probe over raw QUIC: opens (or reuses) a per-ALPN
-/// `quinn::Connection` to the uplink and immediately drops it. Mirrors
-/// [`run_ws_probe`] for the `TransportMode::Quic` dispatch path, where
-/// there is no WebSocket handshake to verify.
-#[cfg(feature = "quic")]
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn run_quic_handshake_probe(
-    cache: &DnsCache,
-    uplink_name: &str,
-    transport: &'static str,
-    url: &url::Url,
-    uplink_transport: UplinkTransport,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-    dial_limit: Arc<Semaphore>,
-) -> Result<Option<TransportMode>> {
-    let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
-    let alpn: &'static [u8] = match uplink_transport {
-        UplinkTransport::Vless => outline_transport::quic::ALPN_VLESS,
-        UplinkTransport::Ss => outline_transport::quic::ALPN_SS,
-    };
-    let _conn = outline_transport::quic::connect_quic_uplink(
-        cache,
-        url,
-        fwmark,
-        ipv6_first,
-        "probe_quic",
-        alpn,
-    )
-    .await
-    .with_context(|| TransportOperation::Connect {
-        target: format!("raw-QUIC probe to {url}"),
-    })?;
-    debug!(
-        uplink = %uplink_name,
-        transport,
-        probe = "quic",
-        url = %url,
-        "raw-QUIC probe connected, releasing"
-    );
-    // Raw QUIC bypasses the WS layer entirely; no `ws_mode_cache` clamp
-    // can apply here, so we never report a downgrade from this probe.
-    Ok(None)
-}
-
-#[cfg(not(feature = "quic"))]
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn run_quic_handshake_probe(
-    _cache: &DnsCache,
-    _uplink_name: &str,
-    _transport: &'static str,
-    _url: &url::Url,
-    _uplink_transport: UplinkTransport,
-    _fwmark: Option<u32>,
-    _ipv6_first: bool,
-    _dial_limit: Arc<Semaphore>,
-) -> Result<Option<TransportMode>> {
-    Err(anyhow::anyhow!(
-        "TransportMode::Quic requested but binary was built without the `quic` feature"
-    ))
 }

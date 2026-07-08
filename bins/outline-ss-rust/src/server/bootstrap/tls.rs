@@ -25,10 +25,8 @@ pub(in crate::server) fn ensure_rustls_provider_installed() {
 }
 
 pub(in crate::server) fn load_h3_tls_config(config: &Config) -> Result<rustls::ServerConfig> {
-    // Advertise the MTU-aware sibling alongside each base ALPN
-    // (vless-mtu / vless, ss-mtu / ss) — newer clients pick the
-    // sibling and use the oversize-record stream fallback; older
-    // clients pick the base and behave exactly as before.
+    // Advertise the ALPNs configured for the HTTP/3 endpoint. Only `h3`
+    // (HTTP/3 + WebSocket-over-HTTP/3) is supported.
     let alpn: Vec<&[u8]> = config
         .h3_alpn
         .iter()

@@ -9,9 +9,10 @@ workspace = true
 [features]
 default = ["metrics"]
 metrics = ["outline-metrics/prometheus", "outline-metrics/tun"]
-# Enable raw QUIC transport support — exposes the `QuicSs` arms in
-# `UpstreamWriter` and unblocks Shadowsocks / VLESS over raw QUIC for
-# tunneled flows. Mirrors `outline-transport`'s `quic` feature.
+# Passthrough that enables the QUIC endpoint / TLS plumbing in the lower
+# crates (required by the HTTP/3 carrier). The raw-QUIC forward carrier was
+# removed, so this crate no longer has any `quic`-gated code of its own; the
+# feature is retained because `outline-ws-rust`'s `h3` feature forwards to it.
 quic = ["outline-transport/quic", "outline-uplink/quic"]
 
 [dependencies]

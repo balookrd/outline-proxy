@@ -24,12 +24,6 @@ pub enum TransportMode {
     /// WebSocket over HTTP/3 (RFC 9220). Alias `h3` for compat.
     #[serde(alias = "h3")]
     WsH3,
-    /// Raw QUIC: no WebSocket framing, no HTTP/3. Pairs with the
-    /// outline-ss-rust server's matching `outline-quic` ALPN. TCP-like
-    /// sessions ride a fresh bidi stream; UDP-like sessions use QUIC
-    /// datagrams (RFC 9221). Available only when the `quic` feature is
-    /// enabled at build time.
-    Quic,
     /// VLESS over XHTTP packet-up, carried on HTTP/1.1. Last-resort
     /// fallback when both `xhttp_h3` and `xhttp_h2` are blocked: the
     /// downlink GET stays on a long-lived keep-alive TCP+TLS socket
@@ -81,7 +75,7 @@ impl std::str::FromStr for TransportMode {
             "ws_h1" | "http1" | "h1" => Ok(Self::WsH1),
             "ws_h2" | "h2" => Ok(Self::WsH2),
             "ws_h3" | "h3" => Ok(Self::WsH3),
-            "quic" => Ok(Self::Quic),
+            "quic" => bail!("raw QUIC uplink support has been removed; use ws_h3 or xhttp_h3"),
             "xhttp_h1" => Ok(Self::XhttpH1),
             "xhttp_h2" => Ok(Self::XhttpH2),
             "xhttp_h3" => Ok(Self::XhttpH3),
@@ -152,7 +146,6 @@ impl fmt::Display for TransportMode {
             Self::WsH1 => "ws_h1",
             Self::WsH2 => "ws_h2",
             Self::WsH3 => "ws_h3",
-            Self::Quic => "quic",
             Self::XhttpH1 => "xhttp_h1",
             Self::XhttpH2 => "xhttp_h2",
             Self::XhttpH3 => "xhttp_h3",

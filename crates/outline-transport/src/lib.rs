@@ -142,8 +142,6 @@ pub mod downlink_replay;
 mod error_classify;
 pub mod fingerprint_profile;
 pub mod frame_io;
-#[cfg(feature = "quic")]
-mod frame_io_quic;
 mod frame_io_ws;
 mod guards;
 mod h2;
@@ -151,22 +149,14 @@ mod h2;
 pub(crate) mod h3;
 #[cfg(feature = "quic")]
 pub mod quic;
-#[cfg(feature = "quic")]
-mod quic_connect;
 pub mod resumption;
 mod shared_cache;
 mod shared_dial;
 mod tcp_transport;
 mod tls;
 mod tls_fingerprint;
-#[cfg(feature = "quic")]
-pub mod tls_reverse;
 mod udp_transport;
 pub mod vless;
-#[cfg(feature = "quic")]
-mod vless_quic_mux;
-#[cfg(feature = "quic")]
-mod vless_udp_hybrid;
 // Note: protocol-agnostic socket helpers now live in the `outline-net` crate.
 mod mode_health;
 mod url_utils;
@@ -229,14 +219,6 @@ pub use dns_cache::{DEFAULT_DNS_CACHE_CAPACITY, DEFAULT_DNS_CACHE_TTL, DnsCache}
 pub use dial_plan::{
     DialNetworkOptions, DialResumeOptions, TransportDialOptions, connect_transport,
 };
-#[cfg(feature = "quic")]
-pub use quic::vless_udp::VlessUdpQuicSession;
-#[cfg(feature = "quic")]
-pub use quic_connect::{
-    connect_ss_tcp_quic, connect_ss_udp_quic, connect_vless_tcp_quic,
-    connect_vless_tcp_quic_with_resume, connect_vless_udp_session_quic, ss_tcp_over_connection,
-    ss_udp_over_connection, vless_tcp_over_connection, vless_udp_over_connection,
-};
 pub use udp_transport::{
     OversizedUdpDatagram, UdpSessionTransport, UdpWsTransport, is_dropped_oversized_udp_error,
 };
@@ -244,13 +226,8 @@ pub use vless::{
     VlessTcpReader, VlessTcpWriter, VlessUdpDowngradeNotifier, VlessUdpMuxLimits,
     VlessUdpSessionMux, VlessUdpWsTransport,
 };
-#[cfg(feature = "quic")]
-pub use vless_quic_mux::VlessUdpQuicMux;
-#[cfg(feature = "quic")]
-pub use vless_udp_hybrid::{FallbackNotifier, VlessUdpHybridMux, WsFallbackFactory};
-// `TargetAddr` is the input type for `connect_vless_tcp_quic*` and
-// the SS QUIC dialers — re-exporting it spares callers from depending
-// on the `socks5-proto` workspace crate directly.
+// `TargetAddr` is the input type for VLESS / SS dialers — re-exporting it
+// spares callers from depending on the `socks5-proto` workspace crate directly.
 pub use socks5_proto::TargetAddr;
 
 // `CipherKind` is the input type for `TcpShadowsocksReader/Writer`
@@ -263,8 +240,6 @@ pub use ws_stream::TransportStream;
 // TUN and the proxy plumb through; the `TcpShadowsocks*` helpers construct
 // them. The half-specific variants (`WsTcpWriter`, `SocketTcpWriter`) are
 // re-exported for TUN's state-machine pattern matching.
-#[cfg(feature = "quic")]
-pub use tcp_transport::{QuicTcpReader, QuicTcpWriter};
 pub use tcp_transport::{
     SocketTcpWriter, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter, WsReadDiag,
     WsTcpWriter,
@@ -351,8 +326,6 @@ pub async fn gc_shared_connections() {
     h2::gc_shared_h2_connections().await;
     #[cfg(feature = "h3")]
     crate::h3::gc_shared_h3_connections().await;
-    #[cfg(feature = "quic")]
-    crate::quic::gc_shared_quic_connections().await;
     ws_mode_cache::gc().await;
     xhttp_mode_cache::gc().await;
     xhttp_submode_cache::gc().await;

@@ -27,16 +27,11 @@ pub(crate) enum Route {
     Drop,
     /// Forward through this group's uplink manager.
     Group { name: Arc<str>, manager: UplinkManager },
-    /// Egress through a live reverse-tunnel peer (topology A) — an `ss`
-    /// server that dialed in. Selected when the resolved group is the
-    /// reverse group and a peer is currently connected.
-    #[cfg(feature = "h3")]
-    Reverse { peer: Arc<crate::reverse::ReversePeer> },
 }
 
-/// Materialize a terminal [`RouteTarget`] into a [`Route`]. Shared by the
-/// primary-route path and the reverse no-peer fallback so a substituted
-/// target is built the same way in both.
+/// Materialize a terminal [`RouteTarget`] into a [`Route`]. Used by the
+/// primary-route path via [`apply_fallback_strategy`] so a substituted target
+/// is built consistently.
 fn materialize_target(
     config: &ProxyConfig,
     registry: &UplinkRegistry,
@@ -52,45 +47,6 @@ fn materialize_target(
             Route::Group { name, manager }
         },
     }
-}
-
-/// Reverse-group resolution, run *before* uplink fallback so a reverse group
-/// is a first-class route target without needing a same-named
-/// `[[uplink_group]]`. Returns:
-/// - `None` — `name` is not a reverse group (or reverse is off), so the
-///   caller proceeds on the normal uplink path. Also returned when the group
-///   has no live peer *but* a same-named uplink group exists, so the normal
-///   path serves that group's uplinks (the operator's explicit fallback).
-/// - `Some(Route::Reverse)` — a live peer is serving the group.
-/// - `Some(..)` — reverse group with no live peer and no uplink fallback:
-///   honor the route's declared `fallback` (one level), else `Drop`. Never
-///   leaks to the default group.
-#[cfg(feature = "h3")]
-fn resolve_reverse_route(
-    config: &ProxyConfig,
-    registry: &UplinkRegistry,
-    name: &str,
-    fallback: Option<&RouteTarget>,
-) -> Option<Route> {
-    let reverse = config.reverse.as_ref()?;
-    if !reverse.is_reverse_group(name) {
-        return None;
-    }
-    if let Some(peer) = reverse.pick_live(name) {
-        return Some(Route::Reverse { peer });
-    }
-    if registry.group_by_name(name).is_some() {
-        // No live peer, but a same-named uplink group is configured — let the
-        // normal path serve it as the operator's fallback.
-        return None;
-    }
-    // Reverse group, no peer, no uplink fallback: honor the route fallback,
-    // else drop. A `Group` fallback is materialized one level deep (its own
-    // reverse-ness is not re-resolved — matching the no-chaining rule).
-    Some(match fallback {
-        Some(target) => materialize_target(config, registry, target.clone()),
-        None => Route::Drop,
-    })
 }
 
 /// Hard cap on how long a client may take to complete the SOCKS5 method
@@ -156,14 +112,7 @@ async fn resolve_dispatch(
     transport: TransportKind,
 ) -> Route {
     let Some(router) = config.router.as_ref() else {
-        // No routing table: everything goes to the default group. That group
-        // may itself be a reverse group (declared only by the listener).
-        #[cfg(feature = "h3")]
-        if let Some(route) =
-            resolve_reverse_route(config, registry, &registry.default_group_name(), None)
-        {
-            return route;
-        }
+        // No routing table: everything goes to the default group.
         let manager = registry.default_group();
         if group_bypasses_when_down(&manager, transport).await {
             debug!(
@@ -178,15 +127,6 @@ async fn resolve_dispatch(
         };
     };
     let decision = router.resolve(target).await;
-    // Reverse short-circuit before uplink fallback: a reverse group is a
-    // first-class target, no `[[uplink_group]]` required.
-    #[cfg(feature = "h3")]
-    if let RouteTarget::Group(ref name) = decision.primary
-        && let Some(route) =
-            resolve_reverse_route(config, registry, name, decision.fallback.as_ref())
-    {
-        return route;
-    }
     apply_fallback_strategy(registry, decision.primary, decision.fallback, transport, |t| {
         materialize_target(config, registry, t)
     })

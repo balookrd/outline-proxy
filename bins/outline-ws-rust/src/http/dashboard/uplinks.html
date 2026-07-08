@@ -270,8 +270,8 @@ function getUplinkConfig(group, name) {
 const TRANSPORTS = ["ss", "vless"];
 // `tcp_mode` / `udp_mode` apply to `transport = "ss"` (Shadowsocks-over-WS).
 // XHTTP modes are VLESS-only, so they live in VLESS_MODES instead.
-const WS_MODES = ["", "ws_h1", "ws_h2", "ws_h3", "quic"];
-const VLESS_MODES = ["", "ws_h1", "ws_h2", "ws_h3", "quic", "xhttp_h2", "xhttp_h3"];
+const WS_MODES = ["", "ws_h1", "ws_h2", "ws_h3"];
+const VLESS_MODES = ["", "ws_h1", "ws_h2", "ws_h3", "xhttp_h2", "xhttp_h3"];
 
 function escapeHtml(value) {
   return String(value == null ? "" : value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
@@ -400,7 +400,7 @@ const FIELDS = [
   { key: "tcp_mode",       label: "TCP mode (transport=ws)", type: "select", options: WS_MODES },
   { key: "udp_ws_url",     label: "UDP WS URL (transport=ws)" },
   { key: "udp_mode",       label: "UDP mode (transport=ws)", type: "select", options: WS_MODES },
-  { key: "vless_ws_url",   label: "VLESS WS URL (vless_mode=ws_*/quic)" },
+  { key: "vless_ws_url",   label: "VLESS WS URL (vless_mode=ws_*)" },
   { key: "vless_xhttp_url", label: "VLESS XHTTP URL (vless_mode=xhttp_*)" },
   { key: "vless_mode",     label: "VLESS mode", type: "select", options: VLESS_MODES },
   { key: "weight",      label: "Weight", type: "number" },

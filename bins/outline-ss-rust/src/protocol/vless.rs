@@ -8,13 +8,9 @@ use std::sync::Arc;
 use outline_net::IpAliasTable;
 
 #[cfg(test)]
+pub use outline_wire::vless::{COMMAND_MUX, COMMAND_TCP, COMMAND_UDP};
 pub use outline_wire::vless::{
-    ADDON_TAG_RESUME_CAPABLE, ADDON_TAG_RESUME_ID, ADDON_TAG_RESUME_RESULT, ADDON_TAG_SESSION_ID,
-    COMMAND_MUX, COMMAND_TCP, COMMAND_UDP,
-};
-pub use outline_wire::vless::{
-    AddonResumeResult, VERSION, VlessCommand, VlessError, VlessRequest, encode_response_addons,
-    mask_uuid, parse_request, parse_uuid,
+    VERSION, VlessCommand, VlessError, VlessRequest, mask_uuid, parse_request, parse_uuid,
 };
 
 #[derive(Debug, Clone)]

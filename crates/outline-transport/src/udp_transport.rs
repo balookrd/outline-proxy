@@ -481,21 +481,13 @@ impl UdpWsTransport {
 pub enum UdpSessionTransport {
     Ss(UdpWsTransport),
     Vless(crate::vless::VlessUdpSessionMux),
-    /// VLESS UDP over raw QUIC, wrapped in a hybrid envelope that pivots
-    /// to WS over H2 if the QUIC path fails before any session succeeds.
-    /// Multiple targets are multiplexed on a shared QUIC connection by
-    /// server-allocated `session_id` while QUIC is active.
-    #[cfg(feature = "quic")]
-    VlessQuic(crate::vless_udp_hybrid::VlessUdpHybridMux),
 }
 
 impl UdpSessionTransport {
     /// Installs a carrier control-signal handler (server-initiated downstream
     /// throttle) on the underlying datagram transport. `None` leaves it inert.
     /// Acts on the padded WS/XHTTP carriers — SS-UDP and VLESS-UDP — whose
-    /// decoders surface the control cover datagram; the raw-QUIC primary
-    /// (`VlessQuic`) is not a padded carrier and ignores it (its WS pivot leg
-    /// stays unmonitored — a follow-up).
+    /// decoders surface the control cover datagram.
     pub fn with_throttle_handle(self, handle: Option<crate::ThrottleSignalHandle>) -> Self {
         match self {
             Self::Ss(t) => match handle {
@@ -503,8 +495,6 @@ impl UdpSessionTransport {
                 None => Self::Ss(t),
             },
             Self::Vless(t) => Self::Vless(t.with_throttle_handle(handle)),
-            #[cfg(feature = "quic")]
-            Self::VlessQuic(t) => Self::VlessQuic(t),
         }
     }
 
@@ -512,8 +502,6 @@ impl UdpSessionTransport {
         match self {
             Self::Ss(t) => t.send_packet(socks5_payload).await,
             Self::Vless(t) => t.send_packet(socks5_payload).await,
-            #[cfg(feature = "quic")]
-            Self::VlessQuic(t) => t.send_packet(socks5_payload).await,
         }
     }
 
@@ -521,8 +509,6 @@ impl UdpSessionTransport {
         match self {
             Self::Ss(t) => t.read_packet().await,
             Self::Vless(t) => t.read_packet().await,
-            #[cfg(feature = "quic")]
-            Self::VlessQuic(t) => t.read_packet().await,
         }
     }
 
@@ -530,8 +516,6 @@ impl UdpSessionTransport {
         match self {
             Self::Ss(t) => t.close().await,
             Self::Vless(t) => t.close().await,
-            #[cfg(feature = "quic")]
-            Self::VlessQuic(t) => t.close().await,
         }
     }
 }

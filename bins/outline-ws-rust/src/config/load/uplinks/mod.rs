@@ -262,9 +262,7 @@ pub(super) fn load_uplinks(
     let uplinks = outline.and_then(|o| o.uplinks.as_ref()).ok_or_else(|| {
         anyhow!(
             "no uplink configured: add an [outline] section (or at least `password` + \
-             `tcp_ws_url`), use `[[uplink_group]]`, or pass CLI overrides. \
-             A reverse-tunnel deployment still needs at least one forward uplink group \
-             (a [reverse_listener] alone is not enough to bring the proxy up)"
+             `tcp_ws_url`), use `[[uplink_group]]`, or pass CLI overrides."
         )
     })?;
     if uplinks.is_empty() {

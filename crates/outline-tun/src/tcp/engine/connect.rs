@@ -141,38 +141,6 @@ async fn connect_tcp_uplink_inner(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<(TcpWriter, TcpReader)> {
-    // Raw QUIC (VLESS-over-QUIC or SS-over-QUIC) is shared via the per-ALPN
-    // connection registry, not the warm-standby pool. Dispatch directly to
-    // the QUIC dial helper which already returns a ready-to-use writer/reader
-    // pair (with the VLESS request header / SS target prefix sent on the
-    // first frame as the protocol requires).
-    #[cfg(feature = "quic")]
-    {
-        let mode = uplinks.effective_tcp_mode(candidate.index).await;
-        if mode == outline_transport::TransportMode::Quic {
-            match uplinks.connect_tcp_quic_fresh(candidate, target, "tun_tcp").await {
-                Ok(pair) => return Ok(pair),
-                Err(e) => {
-                    warn!(
-                        uplink = %candidate.uplink.name,
-                        target = %target,
-                        error = %format!("{e:#}"),
-                        fallback = "ws/h2",
-                        "raw-QUIC TCP dial failed, falling back to WS over H2"
-                    );
-                    uplinks.note_advanced_mode_dial_failure(
-                        candidate.index,
-                        TransportKind::Tcp,
-                        &e,
-                    );
-                    // Fall through to the WS path below; effective_tcp_mode
-                    // will now return H2 for the rest of the downgrade window,
-                    // and connect_transport handles H2 → H1.
-                },
-            }
-        }
-    }
-
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
 
     // Variant A: try a standby pool connection first.  If it turns out to be

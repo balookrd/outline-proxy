@@ -1,11 +1,7 @@
 mod reader;
 mod writer;
 
-#[cfg(feature = "quic")]
-pub use reader::QuicTcpReader;
 pub use reader::{SocketTcpReader, TcpShadowsocksReader, WsReadDiag, WsTcpReader};
-#[cfg(feature = "quic")]
-pub use writer::QuicTcpWriter;
 pub use writer::{SocketTcpWriter, TcpShadowsocksWriter, WsTcpWriter};
 
 use crate::vless::{VlessTcpReader, VlessTcpWriter};
@@ -23,9 +19,6 @@ pub enum TcpWriter {
     Ws(WsTcpWriter),
     Socket(SocketTcpWriter),
     Vless(VlessTcpWriter),
-    /// Shadowsocks over a raw QUIC bidi stream.
-    #[cfg(feature = "quic")]
-    QuicSs(QuicTcpWriter),
 }
 
 impl TcpWriter {
@@ -34,8 +27,6 @@ impl TcpWriter {
             Self::Ws(w) => w.request_salt(),
             Self::Socket(w) => w.request_salt(),
             Self::Vless(_) => None,
-            #[cfg(feature = "quic")]
-            Self::QuicSs(w) => w.request_salt(),
         }
     }
 
@@ -44,8 +35,6 @@ impl TcpWriter {
             Self::Ws(w) => w.supports_half_close(),
             Self::Socket(w) => w.supports_half_close(),
             Self::Vless(w) => w.supports_half_close(),
-            #[cfg(feature = "quic")]
-            Self::QuicSs(w) => w.supports_half_close(),
         }
     }
 
@@ -54,8 +43,6 @@ impl TcpWriter {
             Self::Ws(w) => w.send_chunk(payload).await,
             Self::Socket(w) => w.send_chunk(payload).await,
             Self::Vless(w) => w.send_chunk(payload).await,
-            #[cfg(feature = "quic")]
-            Self::QuicSs(w) => w.send_chunk(payload).await,
         }
     }
 
@@ -64,8 +51,6 @@ impl TcpWriter {
             Self::Ws(w) => w.send_keepalive().await,
             Self::Socket(w) => w.send_keepalive().await,
             Self::Vless(w) => w.send_keepalive().await,
-            #[cfg(feature = "quic")]
-            Self::QuicSs(w) => w.send_keepalive().await,
         }
     }
 
@@ -74,8 +59,6 @@ impl TcpWriter {
             Self::Ws(w) => w.close().await,
             Self::Socket(w) => w.close().await,
             Self::Vless(w) => w.close().await,
-            #[cfg(feature = "quic")]
-            Self::QuicSs(w) => w.close().await,
         }
     }
 }
@@ -85,9 +68,6 @@ pub enum TcpReader {
     Ws(WsTcpReader),
     Socket(SocketTcpReader),
     Vless(VlessTcpReader),
-    /// Shadowsocks over a raw QUIC bidi stream.
-    #[cfg(feature = "quic")]
-    QuicSs(QuicTcpReader),
 }
 
 impl TcpReader {
@@ -96,15 +76,13 @@ impl TcpReader {
             Self::Ws(r) => Self::Ws(r.with_request_salt(salt)),
             Self::Socket(r) => Self::Socket(r.with_request_salt(salt)),
             Self::Vless(r) => Self::Vless(r),
-            #[cfg(feature = "quic")]
-            Self::QuicSs(r) => Self::QuicSs(r.with_request_salt(salt)),
         }
     }
 
     /// Installs a carrier control-signal handler (server-initiated downstream
     /// throttle). Acts on the padded WS carriers — VLESS-over-WS and
     /// SS-over-WS — whose readers decode the control cover frame; the
-    /// raw-socket / raw-QUIC variants ignore the call.
+    /// raw-socket variant ignores the call.
     pub fn with_throttle_handle(self, handle: crate::ThrottleSignalHandle) -> Self {
         match self {
             Self::Vless(r) => Self::Vless(r.with_throttle_handle(handle)),
@@ -126,8 +104,8 @@ impl TcpReader {
     /// Tells the inner reader to expect a v1 Ack-Prefix control
     /// frame as the very first payload bytes after handshake.
     /// Forwarded to the WS (SS-WS) and VLESS variants — the
-    /// Socket / raw-QUIC variants ignore the call so callers can
-    /// wire it unconditionally regardless of negotiation outcome.
+    /// Socket variant ignores the call so callers can wire it
+    /// unconditionally regardless of negotiation outcome.
     pub fn with_expect_ack_prefix(self, expect: bool) -> Self {
         match self {
             Self::Ws(r) => Self::Ws(r.with_expect_ack_prefix(expect)),
@@ -138,7 +116,7 @@ impl TcpReader {
 
     /// Tells the reader to expect a v2 Symmetric Downlink Replay
     /// frame after the v1 control frame on a resume hit. Forwarded
-    /// to the WS / VLESS variants; Socket / raw-QUIC ignore it.
+    /// to the WS / VLESS variants; Socket ignores it.
     pub fn with_expect_downlink_replay(self, expect: bool) -> Self {
         match self {
             Self::Ws(r) => Self::Ws(r.with_expect_downlink_replay(expect)),
@@ -149,15 +127,13 @@ impl TcpReader {
 
     /// Returns the server-reported `up_acked` byte offset parsed from
     /// the v1 Ack-Prefix control frame. `None` for non-negotiating
-    /// variants (Socket / raw-QUIC) and for negotiating variants
-    /// where the prefix has not yet been parsed.
+    /// variants (Socket) and for negotiating variants where the prefix
+    /// has not yet been parsed.
     pub fn upstream_acked_offset(&self) -> Option<u64> {
         match self {
             Self::Ws(r) => r.upstream_acked_offset(),
             Self::Vless(r) => r.upstream_acked_offset(),
             Self::Socket(_) => None,
-            #[cfg(feature = "quic")]
-            Self::QuicSs(_) => None,
         }
     }
 
@@ -168,9 +144,8 @@ impl TcpReader {
     /// `Ok(None)` on no-op (protocol not negotiated, prefix already
     /// consumed, or the reader is a non-negotiating variant).
     ///
-    /// Forwarded to the WS (SS-WS) and VLESS variants. Socket /
-    /// raw-QUIC variants return `Ok(None)` without touching the
-    /// network.
+    /// Forwarded to the WS (SS-WS) and VLESS variants. The Socket
+    /// variant returns `Ok(None)` without touching the network.
     pub async fn consume_ack_prefix_with_timeout(
         &mut self,
         timeout: std::time::Duration,
@@ -179,8 +154,6 @@ impl TcpReader {
             Self::Ws(r) => r.consume_ack_prefix_with_timeout(timeout).await,
             Self::Vless(r) => r.consume_ack_prefix_with_timeout(timeout).await,
             Self::Socket(_) => Ok(None),
-            #[cfg(feature = "quic")]
-            Self::QuicSs(_) => Ok(None),
         }
     }
 
@@ -197,8 +170,6 @@ impl TcpReader {
             Self::Ws(r) => r.consume_downlink_replay_with_timeout(timeout, max_bytes).await,
             Self::Vless(r) => r.consume_downlink_replay_with_timeout(timeout, max_bytes).await,
             Self::Socket(_) => Ok(None),
-            #[cfg(feature = "quic")]
-            Self::QuicSs(_) => Ok(None),
         }
     }
 
@@ -207,8 +178,6 @@ impl TcpReader {
             Self::Ws(r) => r.closed_cleanly,
             Self::Socket(r) => r.closed_cleanly,
             Self::Vless(r) => r.closed_cleanly(),
-            #[cfg(feature = "quic")]
-            Self::QuicSs(r) => r.closed_cleanly,
         }
     }
 
@@ -217,8 +186,6 @@ impl TcpReader {
             Self::Ws(r) => r.read_chunk().await,
             Self::Socket(r) => r.read_chunk().await,
             Self::Vless(r) => r.read_chunk().await,
-            #[cfg(feature = "quic")]
-            Self::QuicSs(r) => r.read_chunk().await,
         }
     }
 }

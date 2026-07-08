@@ -72,10 +72,4 @@ pub struct ProxyConfig {
     pub direct_fwmark: Option<u32>,
     /// TCP session timeouts applied to SOCKS CONNECT and direct sessions.
     pub tcp_timeouts: TcpTimeouts,
-    /// Reverse-tunnel peer registry, one pool per egress group. When `Some`,
-    /// traffic routed to a reverse group egresses through a live `ss` peer
-    /// that dialed in (topology A) instead of a configured uplink. `None`
-    /// keeps the dial-only client model.
-    #[cfg(feature = "h3")]
-    pub reverse: Option<std::sync::Arc<crate::reverse::ReverseRegistry>>,
 }

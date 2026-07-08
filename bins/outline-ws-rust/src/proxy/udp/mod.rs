@@ -1,8 +1,6 @@
 mod dispatch;
 mod group;
 mod in_tcp;
-#[cfg(feature = "h3")]
-mod reverse;
 mod routing;
 mod socks5;
 mod transport;
