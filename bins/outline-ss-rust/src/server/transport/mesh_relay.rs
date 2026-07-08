@@ -98,12 +98,13 @@ impl EdgeThrottleDetector {
         Self { ctx, tracker }
     }
 
-    /// Feeds one client-facing send's elapsed time; on a sustained stall past
-    /// the cooldown, fires one THROTTLE_HINT to the home. Fire-and-forget: an
+    /// Feeds one client-facing send's elapsed time and the `bytes` it delivered;
+    /// on a sustained stall that also cleared the low-bandwidth floor and the
+    /// cooldown, fires one THROTTLE_HINT to the home. Fire-and-forget: an
     /// unreliable QUIC datagram, re-sent next window if lost, idempotent on the
     /// client.
-    fn observe_send(&mut self, elapsed: Duration) {
-        if self.tracker.observe(elapsed, tokio::time::Instant::now()) {
+    fn observe_send(&mut self, elapsed: Duration, bytes: usize) {
+        if self.tracker.observe(elapsed, bytes, tokio::time::Instant::now()) {
             let _ = self
                 .ctx
                 .conn
@@ -113,19 +114,30 @@ impl EdgeThrottleDetector {
     }
 }
 
-/// Pure stall-streak tracker: the counting + cooldown decision behind
+/// Pure stall-streak tracker: the counting + floor + cooldown decision behind
 /// [`EdgeThrottleDetector`], split out from the I/O so it is unit-testable
 /// without a live mesh connection. A send spanning one or more detection windows
-/// adds that many stalled windows to the streak; a fast send resets it. Once the
-/// streak reaches `sustain_windows` and the cooldown has elapsed, [`observe`]
-/// returns `true` once and re-arms.
+/// adds that many stalled windows to the streak (accumulating the bytes it
+/// delivered and the time it took); a fast send resets it. Once the streak
+/// reaches `sustain_windows`, the streak's delivered rate clears
+/// `min_bytes_per_sec`, and the cooldown has elapsed, [`observe`] returns `true`
+/// once and re-arms.
+///
+/// The floor keeps a genuinely slow (or idle) client from tripping a spurious
+/// hint: the edge only sees how long each `send` blocks, and that delivered rate
+/// is capped by the chunk over the window, so without a floor any client slow
+/// enough to block would signal. A streak below the floor is suppressed but not
+/// reset — if delivery climbs past the floor it can still fire.
 ///
 /// [`observe`]: StallTracker::observe
 struct StallTracker {
     window_secs: f64,
     sustain_windows: u32,
+    min_bytes_per_sec: u64,
     cooldown: Duration,
     sustain: u32,
+    stall_bytes: u64,
+    stall_secs: f64,
     last_hint: Option<tokio::time::Instant>,
 }
 
@@ -134,23 +146,42 @@ impl StallTracker {
         Self {
             window_secs: params.window.as_secs_f64().max(0.001),
             sustain_windows: params.sustain_windows,
+            min_bytes_per_sec: params.edge_min_bytes_per_sec,
             cooldown: params.signal_cooldown,
             sustain: 0,
+            stall_bytes: 0,
+            stall_secs: 0.0,
             last_hint: None,
         }
     }
 
-    /// Feeds one send's `elapsed` time at instant `now`; returns `true` exactly
-    /// when a hint should fire (sustained stall past the cooldown), recording the
+    /// Feeds one send's `elapsed` time and delivered `bytes` at instant `now`;
+    /// returns `true` exactly when a hint should fire (a sustained stall whose
+    /// delivered rate clears the floor, past the cooldown), recording the
     /// cooldown start and resetting the streak.
-    fn observe(&mut self, elapsed: Duration, now: tokio::time::Instant) -> bool {
+    fn observe(&mut self, elapsed: Duration, bytes: usize, now: tokio::time::Instant) -> bool {
         let windows = (elapsed.as_secs_f64() / self.window_secs).floor() as u32;
         if windows >= 1 {
             self.sustain = self.sustain.saturating_add(windows);
+            self.stall_bytes = self.stall_bytes.saturating_add(bytes as u64);
+            self.stall_secs += elapsed.as_secs_f64();
         } else {
             self.sustain = 0;
+            self.stall_bytes = 0;
+            self.stall_secs = 0.0;
         }
         if self.sustain < self.sustain_windows {
+            return false;
+        }
+        // Low-bandwidth floor: a sustained stall that delivered too little to the
+        // client is a slow/idle client, not an actionable throttle. Stay quiet
+        // but keep the streak so a later pickup past the floor can still fire.
+        let delivered_rate = if self.stall_secs > 0.0 {
+            self.stall_bytes as f64 / self.stall_secs
+        } else {
+            0.0
+        };
+        if delivered_rate < self.min_bytes_per_sec as f64 {
             return false;
         }
         let cooled = self.last_hint.is_none_or(|t| now.duration_since(t) >= self.cooldown);
@@ -159,6 +190,8 @@ impl StallTracker {
         }
         self.last_hint = Some(now);
         self.sustain = 0;
+        self.stall_bytes = 0;
+        self.stall_secs = 0.0;
         true
     }
 }
@@ -229,6 +262,7 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
             .await
             .context("mesh edge downlink read")?
         {
+            let bytes = chunk.bytes.len();
             let msg = T::binary_msg(chunk.bytes);
             match detector.as_mut() {
                 Some(d) => {
@@ -236,7 +270,7 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
                     T::send(&mut writer, msg)
                         .await
                         .context("edge client downlink write")?;
-                    d.observe_send(started.elapsed());
+                    d.observe_send(started.elapsed(), bytes);
                 },
                 None => {
                     T::send(&mut writer, msg)
@@ -311,7 +345,7 @@ pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
                     T::send(&mut writer, msg)
                         .await
                         .context("edge client downlink datagram write")?;
-                    d.observe_send(started.elapsed());
+                    d.observe_send(started.elapsed(), len);
                 },
                 None => {
                     T::send(&mut writer, msg)
