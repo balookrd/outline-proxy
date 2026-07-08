@@ -1,10 +1,10 @@
 # Uplink Configurations and Fallback Behavior
 
-Defines the five supported `[[outline.uplinks]]` shapes, with a minimal
+Defines the four supported `[[outline.uplinks]]` shapes, with a minimal
 config block and the dial-time fallback chain for each.
 
 Each fallback step fires only when the previous step returns an error
-during the dial / handshake. Once an "advanced" mode (`ws_h3`, `quic`,
+during the dial / handshake. Once an "advanced" mode (`ws_h3`,
 `xhttp_h3`) fails for an uplink, a per-uplink **downgrade window** opens:
 subsequent dials within the window skip the broken mode entirely. The
 window closes when an explicit recovery probe confirms the advanced mode
@@ -15,43 +15,7 @@ configured mode.
 
 ---
 
-## 1. Shadowsocks over raw QUIC
-
-`tcp_mode = "quic"` selects the raw-QUIC carrier (ALPN `ss`). One QUIC
-bidi per SS-TCP session; SS-UDP rides QUIC datagrams 1:1 with SS-AEAD
-packets. The dial URL is reused as the QUIC dial target — only
-`host:port` matter, scheme and path are ignored.
-
-```toml
-[[outline.uplinks]]
-name = "ss-quic"
-group = "main"
-transport = "ss"
-tcp_ws_url = "https://ss.example.com:443"
-udp_ws_url = "https://ss.example.com:443"
-tcp_mode = "quic"
-udp_mode = "quic"
-method = "chacha20-ietf-poly1305"
-password = "Secret0"
-weight = 1.0
-```
-
-- **TCP fallback chain:** `quic → ws_h2 → ws_h1`.
-  - QUIC handshake fails → `note_advanced_mode_dial_failure` opens the
-    per-uplink downgrade window; the dispatcher falls into the WS path
-    where `effective_tcp_mode` now returns `WsH2`.
-  - The h2 handshake fails on the same dial →
-    `connect_transport` falls through to `ws_h1` inline.
-  - During the downgrade window every new TCP dial skips QUIC entirely
-    and starts at H2.
-- **UDP fallback chain:** `quic → ws_h2 → ws_h1`. Same shape as TCP.
-  SS-UDP over WS uses the WS datagram framing on the H2/H1 stream.
-- **Resume:** TCP and UDP each get their own slot in
-  `global_resume_cache` (keys `<uplink>#tcp` / `<uplink>#udp`). The
-  Session ID survives the carrier switch — a parked upstream
-  re-attaches across the QUIC→WS pivot.
-
-## 2. Shadowsocks over WebSocket (H3)
+## 1. Shadowsocks over WebSocket (H3)
 
 WebSocket carrier on HTTP/1.1, /2, or /3. `ws_h3` (alias `h3`) is
 recommended when the server supports it — H3 dials are a single 1-RTT
@@ -84,7 +48,7 @@ weight = 1.0
   H3→H2→H1 fallback inside `connect_transport` carries the
   same `resume_request` token across all three carriers.
 
-## 3. Shadowsocks over XHTTP
+## 2. Shadowsocks over XHTTP
 
 `tcp_mode = "xhttp_h3"` (or `xhttp_h2` / `xhttp_h1`) carries the
 Shadowsocks AEAD stream over the XHTTP packet-up / stream-one driver
@@ -115,7 +79,7 @@ weight = 1.0
   One wire carries one family — switch WS↔XHTTP with a separate
   fallback wire.
 - **TCP fallback chain:** `xhttp_h3 → xhttp_h2 → xhttp_h1`, identical to
-  the VLESS-XHTTP descent (see section 6). The h1 carrier coerces
+  the VLESS-XHTTP descent (see section 4). The h1 carrier coerces
   stream-one to packet-up exactly as VLESS does.
 - **Submode:** packet-up (default) or stream-one, selected via `?mode=`
   on `tcp_xhttp_url` — same rules as the VLESS-XHTTP submode table.
@@ -163,14 +127,13 @@ ss_mode = "ws_h2"
 `ss_xhttp_url` and `ss_ws_url` are mutually exclusive, and `ss_mode` must match
 the chosen carrier (an XHTTP `ss_mode` for `ss_xhttp_url`, a WS one for
 `ss_ws_url`). The combined fields are also mutually exclusive with the split
-`tcp_*` / `udp_*` URLs — config load rejects mixing them. Raw QUIC never needs
-this, since it muxes TCP + UDP on one connection natively.
+`tcp_*` / `udp_*` URLs — config load rejects mixing them.
 
 ### Share-link URI (`ss://`)
 
 The combined-path SS uplink above can also be configured through a single
 `ss://BASE64(method:password)@HOST:PORT?...#NAME` URI — the SS analogue of the
-VLESS share link (section 7). Set the `link` field instead of writing the
+VLESS share link (section 5). Set the `link` field instead of writing the
 `ss_*_url` / `ss_mode` / `method` / `password` fields by hand:
 
 ```toml
@@ -258,9 +221,8 @@ validation and `resolve_primary_credentials` path as a hand-written TOML uplink.
 - `link` is mutually exclusive with `method`, `password`, every `ss_*` /
   `tcp_*` / `udp_*` field, and the `vless_*` fields. Mixing them errors at
   config load; use the URI **or** the explicit fields.
-- `type=quic` is rejected for the share link — raw QUIC muxes TCP + UDP
-  natively, so it has no combined-path form; use the long-form `transport=ss`
-  config for raw QUIC.
+- `type=quic` is not supported — raw QUIC has been removed as a carrier; use a
+  `ws` or `xhttp` carrier instead.
 - `sni=` and `host=` are only accepted when they match the authority host
   (the transport stack reuses the URL host for both SNI and the HTTP `Host`
   header), mirroring the VLESS share link.
@@ -272,42 +234,7 @@ The same `link` field is accepted by the CLI flag (`--link` / `--vless-link` /
 For the **split** two-path SS layout (separate `tcp_*` and `udp_*` URLs) there
 is no single-URL share-link form — use the long-form TOML above.
 
-## 4. VLESS over raw QUIC
-
-`vless_mode = "quic"` selects raw QUIC with ALPN `vless`. Multiple TCP
-and UDP sessions to different targets share a single QUIC connection;
-UDP sessions are demuxed by a 4-byte server-allocated session_id
-prefix on each datagram. URL is taken from `vless_ws_url`
-(only `host:port` matter — same as SS-over-QUIC).
-
-```toml
-[[outline.uplinks]]
-name = "vless-quic"
-group = "main"
-transport = "vless"
-vless_ws_url = "https://vless.example.com:443"
-vless_mode = "quic"
-vless_id = "11111111-2222-3333-4444-555555555555"
-weight = 1.0
-```
-
-- **TCP fallback chain:** `quic → ws_h2 → ws_h1`. Same dispatcher path
-  as SS-over-QUIC. Cross-transport session resumption is preserved
-  across the QUIC→WS pivot — the parked upstream re-attaches under the
-  same VLESS Session ID.
-- **UDP fallback chain:** `quic → ws_h2 → ws_h1`. Special-cased through
-  `VlessUdpHybridMux`: the mux starts on QUIC and pivots to WS lazily
-  when the first session's QUIC dial fails before any session has
-  succeeded. Once any QUIC session has succeeded, runtime errors stay
-  on QUIC (they reflect a real session failure, not an unreachable
-  QUIC peer).
-- **Resume:** TCP shares one `<uplink>#tcp` slot across QUIC and WS —
-  the server parks both under the same `Parked::Tcp(Vless)` slot, so a
-  single Session ID is valid through either carrier. UDP does not
-  participate in resume (the hybrid mux re-creates per-target sessions
-  on the WS side after the pivot).
-
-## 5. VLESS over WebSocket (H3)
+## 3. VLESS over WebSocket (H3)
 
 WebSocket carrier with VLESS framing. The VLESS server exposes a single
 WS path (`ws_path_vless`) shared by TCP and UDP — VLESS UDP rides the
@@ -333,7 +260,7 @@ weight = 1.0
   WS session, so it follows TCP's reconnects implicitly (no separate
   UDP resume token).
 
-## 6. VLESS over XHTTP (H3)
+## 4. VLESS over XHTTP (H3)
 
 `vless_mode = "xhttp_h3"` selects XHTTP packet-up over QUIC + HTTP/3.
 The driver opens one long-lived GET (downlink) and pipelines POSTs
@@ -395,10 +322,10 @@ CDN / proxy intermediaries to rely on. As a result:
   bail in the inner h1 driver is preserved for direct callers that
   bypass the public `connect_xhttp` entry point.
 
-## 7. VLESS share-link URIs
+## 5. VLESS share-link URIs
 
-The five VLESS shapes above (sections 3–5, plus the `ws_h2` / `ws_h1`
-variants of section 5) can also be configured through a single
+The VLESS shapes above (sections 3–4, including the `ws_h1` / `ws_h2` /
+`ws_h3` carrier variants) can also be configured through a single
 `vless://UUID@HOST:PORT?...#NAME` URI — the share-link format used by
 Xray / V2Ray clients. Set the `link` field instead of writing the
 `vless_id` / `vless_*_url` / `vless_mode` triple by hand:
@@ -424,8 +351,7 @@ to the corresponding section above. Setting `transport` is optional —
 | `HOST:PORT` (authority)            | dial URL host + port (port is required)           |
 | `type=ws`                          | `vless_mode = ws_h1` (with `alpn`: `ws_h2`/`ws_h3`), URL → `vless_ws_url` |
 | `type=xhttp`                       | `vless_mode = xhttp_h2` (with `alpn=h3`: `xhttp_h3`; with `alpn=h1` / `http/1.1`: `xhttp_h1`), URL → `vless_xhttp_url` |
-| `type=quic`                        | `vless_mode = quic`, URL → `vless_ws_url` (TLS-only) |
-| `security=tls` / `reality`         | URL scheme → `wss://` (ws) or `https://` (xhttp/quic) |
+| `security=tls` / `reality`         | URL scheme → `wss://` (ws) or `https://` (xhttp) |
 | `security=none` (or absent)        | URL scheme → `ws://` / `http://`                  |
 | `path=...`                         | URL path (percent-decoded; leading `/` added if missing) |
 | `alpn=h3` / `h2` / `h1` / `h2,h3`  | picks the H1/H2/H3 mode variant; first token wins |
@@ -475,11 +401,6 @@ vless_xhttp_url = "https://vless.example.com:443/xhttp?mode=stream-one"   # type
 vless_mode = "xhttp_h3"
 ```
 
-A `type=quic` link maps the URL into `vless_ws_url` with `vless_mode = "quic"`
-(only host + port matter; the path is ignored for raw QUIC). Unlike SS, VLESS
-muxes TCP + UDP on the **one** path, so there is a single dial URL regardless of
-carrier — there is no split / combined distinction to encode.
-
 There is no dedicated dial logic for the link — it simply fills the same
 `vless_*` fields, which then flow through the identical per-transport validation
 and `resolve_primary_credentials` path as a hand-written TOML uplink.
@@ -510,7 +431,7 @@ The same `link` field is accepted by:
   inside the `uplink` JSON payload.
 
 The `link` field also accepts an `ss://` Shadowsocks share link — see
-"Share-link URI (`ss://`)" under section 3. The scheme selects the transport.
+"Share-link URI (`ss://`)" under section 2. The scheme selects the transport.
 
 ### Submode: packet-up vs stream-one
 
@@ -580,9 +501,7 @@ Snapshot fields:
 | Configuration         | TCP chain                  | UDP chain                            | TCP resume        | UDP resume                |
 |-----------------------|----------------------------|--------------------------------------|-------------------|---------------------------|
 | Native SS             | none                       | none                                 | —                 | —                         |
-| SS / WS / QUIC        | `quic → ws_h2 → ws_h1`     | `quic → ws_h2 → ws_h1`               | yes (`#tcp`)      | yes (`#udp`)              |
 | SS / WS / H3          | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (`#tcp`)      | yes (`#udp`)              |
-| VLESS / QUIC          | `quic → ws_h2 → ws_h1`     | `quic → ws_h2 → ws_h1` (hybrid mux)  | yes (`#tcp`)      | no (sessions re-created)  |
 | VLESS / WS / H3       | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (`#tcp`)      | shared with TCP carrier   |
 | VLESS / XHTTP / H3    | `xhttp_h3 → xhttp_h2→ xhttp_h1` | `xhttp_h3 → xhttp_h2 → xhttp_h1` | yes (`#tcp`) | shared with TCP carrier   |
 
@@ -620,7 +539,7 @@ password = "Secret0"
 |-------------------|----------------------------------------------------------------------------------|
 | `ss`              | Shadowsocks AEAD framing inside a WebSocket carrier (default; alias `shadowsocks`) |
 | `ws` / `websocket`| **Deprecated** aliases for `ss` — still accepted, removed in a future release    |
-| `vless`           | VLESS over WebSocket or XHTTP (h1/h2/h3) — see §§ 3–6                            |
+| `vless`           | VLESS over WebSocket or XHTTP (h1/h2/h3) — see §§ 3–4                            |
 
 **2. Multi-uplink + groups (production shape).** `[[outline.uplinks]]`
 declares uplinks; `[[uplink_group]]` (top-level, *not* nested under
@@ -663,7 +582,7 @@ fields are optional; omitted fields fall back to the defaults below.
 | `failure_penalty_max_ms`             | `30000`            | ms    | cap on the cumulative failure penalty                                                             |
 | `failure_penalty_halflife_secs`      | `60`               | s     | half-life of the failure-penalty exponential decay                                                |
 | `runtime_failure_window_secs`        | `60`               | s     | window over which back-to-back data-plane failures stack toward a health flip; `0` = legacy (no decay) |
-| `mode_downgrade_secs`                | `60`               | s     | cooldown before retrying the configured advanced mode (H3 / QUIC / `xhttp_h{2,3}`) after fallback. Legacy alias: `h3_downgrade_secs` |
+| `mode_downgrade_secs`                | `60`               | s     | cooldown before retrying the configured advanced mode (H3 / `xhttp_h{2,3}`) after fallback. Legacy alias: `h3_downgrade_secs` |
 | `global_udp_strict_health`           | `false`            | bool  | in `routing_scope = "global"`, also gate the active uplink on UDP health; default lenient — UDP failures are informational |
 | `udp_ws_keepalive_secs`              | `60`               | s     | WS Ping cadence on idle UDP-WS sockets (`0` disables; ignored on the H3 carrier — QUIC keep-alive owns liveness there, and a WS Ping/Pong on a quiet H3 datagram stream risks `H3_INTERNAL_ERROR`) |
 | `tcp_ws_keepalive_secs`              | `60`               | s     | WS Ping cadence on idle VLESS-over-WS TCP sessions (`0` disables; SS-over-WS ignores)             |
@@ -847,9 +766,7 @@ Mid-session retry (Ack-Prefix Protocol v1):
   replay the downlink direction. The v2 Symmetric Downlink Replay
   protocol (see below) closes that gap.
 - Gated to WS-family carriers — SS-WS (`transport = "ss"`) and
-  VLESS-WS (`transport = "vless"`). Raw QUIC is a no-op for retry
-  in v1; the relay falls back to the legacy "single shot, propagate
-  error" behaviour with no observable change.
+  VLESS-WS (`transport = "vless"`).
 - The redial dials the **wire the manager currently considers
   active** for this transport (`active_wire`), not unconditionally
   the primary. When an earlier primary failure has advanced
@@ -858,7 +775,7 @@ Mid-session retry (Ack-Prefix Protocol v1):
   primary path uses, instead of slamming the dead primary URL and
   inflating the parent uplink's runtime-failure streak. The
   fallback wire must itself be SS-WS or VLESS-WS for the retry to
-  apply; an SS-direct or raw-QUIC fallback collapses the retry to a
+  apply; a non-WS fallback collapses the retry to a
   no-op and the session ends on the original mid-stream error.
 - Outcomes are exposed on
   `outline_ws_rust_uplink_mid_session_retries_total{outcome}` with
@@ -911,8 +828,7 @@ Symmetric Downlink Replay (v2):
   `"hard"` drops the session immediately. Use the same value as
   for the v1 buffer-overflow case to keep policy consistent.
 - Same eligibility gate as v1 — SS-WS / VLESS-WS / VLESS-XHTTP
-  carriers; raw QUIC is out of scope (no HTTP-layer carrier for the
-  v2 negotiation).
+  carriers.
 
 Example — `[outline.load_balancing]` for the inline shape, and the same
 fields lifted onto a group:
@@ -1128,8 +1044,8 @@ Recorded in two layers:
    or `note_silent_transport_fallback` fires. `effective_tcp_mode` /
    `effective_udp_mode` return the cap (not the configured mode) while
    the window is open, so probes, standby refills and direct dials all
-   stop hammering the broken advanced mode. Family-aware: `WsH3` /
-   `Quic` collapse to `WsH2`, `XhttpH3` collapses to `XhttpH2`,
+   stop hammering the broken advanced mode. Family-aware: `WsH3`
+   collapses to `WsH2`, `XhttpH3` collapses to `XhttpH2`,
    `XhttpH2` to `XhttpH1`. Multi-step XHTTP downgrades
    (`XhttpH3 → XhttpH2 → XhttpH1`) converge over consecutive dials —
    each silent-fallback observation lowers the cap one rank inside the
@@ -1156,9 +1072,6 @@ On dial, the cached ID (if any) is presented to the server as a
 - **WS path** — sent as the `X-Outline-Resume` request header alongside
   `X-Outline-Resume-Capable: 1`. The same token is reused if the dial
   falls back inline (h3 → h2 → h1).
-- **VLESS-over-QUIC** — sent inside the VLESS Addons `SESSION_ID`
-  opcode. The `#tcp` slot is shared with VLESS-over-WS, so a cached ID
-  reattaches across either carrier.
 - **XHTTP path** — sent as `X-Outline-Resume`; the same token is
   re-used across every step of the
   `xhttp_h3 → xhttp_h2 → xhttp_h1` carrier switch.
@@ -1349,7 +1262,7 @@ What this does **not** cover (separate, costlier work):
   cipher / extension / curve order, so meaningful diversification
   here needs a uTLS-style stack (e.g. `boring`/BoringSSL).
 - ALPN ordering — currently fixed per carrier (`h2`, `http/1.1`,
-  `h3`, `vless`, `ss`). The TLS configs are cached per ALPN list,
+  `h3`). The TLS configs are cached per ALPN list,
   so per-host ALPN reshuffling needs a new caching key.
 - HTTP/2 `SETTINGS` frame fingerprint (Akamai/JA4H2) — owned by
   the `h2` crate and largely closed to client-side tweaks.
@@ -1404,7 +1317,7 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
 |---|---|---|
 | `transport` | always | `ss` / `vless` (`ss` also accepts the deprecated `ws` / `websocket` aliases). **No uniqueness restriction** — same-transport-as-parent and duplicate-transport entries are explicitly allowed. The most common cross-family shape is a VLESS primary on `xhttp_h*` with a VLESS fallback on `ws_h*` (same `transport = "vless"`, different carrier family, different dial URL); two VLESS fallbacks at distinct hosts as belt-and-suspenders also work. The dial loop and per-wire mode tracking treat each fallback as its own wire regardless of `transport`. |
 | `tcp_ws_url`, `udp_ws_url`, `tcp_mode`, `udp_mode` | `transport = "ss"` | `tcp_ws_url` mandatory; `udp_ws_url` optional (UDP fallback opt-in). |
-| `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws/quic → `vless_ws_url`). `vless_id` is per-wire-credential and **not** inherited from the parent — different VLESS endpoints use different uuids by definition. |
+| `vless_ws_url`, `vless_xhttp_url`, `vless_mode`, `vless_id` | `transport = "vless"` | URL field must match the chosen `vless_mode` (xhttp\_\* → `vless_xhttp_url`; ws\_\* → `vless_ws_url`). `vless_id` is per-wire-credential and **not** inherited from the parent — different VLESS endpoints use different uuids by definition. |
 | `cipher`, `password` | inherited | Default to the parent uplink's value. Override here to dial a fallback that uses a different shared secret. |
 | `fwmark`, `ipv6_first`, `fingerprint_profile` | inherited | Same: default to the parent's, override per-fallback if needed. |
 
@@ -1560,8 +1473,7 @@ Semantics:
   (caps the wire one rank lower: `ws_h3 → ws_h2 → ws_h1`,
   `xhttp_h3 → xhttp_h2 → xhttp_h1`) rather than the per-wire
   advance counter. Only when the wire reaches `ws_h1` / `xhttp_h1`
-  (or sits on a family with no descent stack: raw QUIC ALPN
-  cases) does the next failure on the
+  does the next failure on the
   active wire trigger the actual wire-rotation step. This gives
   the operator's `min_failures × carrier_ranks` budget on each
   wire before rotating to the next one — matching the legacy
@@ -1744,9 +1656,7 @@ mode-downgrade cap) but no longer changes `active_wire`.
   primary fails presents that token on the fallback dial; the
   server-side resume mechanism re-attaches the upstream session.
   Works for any combination where both wires carry the WS-resume
-  header (WS, VLESS-WS, VLESS-XHTTP). A raw-QUIC fallback wire has no
-  WS layer and dials fresh — the user-visible session restart there is
-  unavoidable.
+  header (WS, VLESS-WS, VLESS-XHTTP).
 
 #### Liveness override
 
@@ -1844,18 +1754,12 @@ mode-downgrade cap) but no longer changes `active_wire`.
 
 #### VLESS-fallback wire types
 
-- **All three wire shapes work as VLESS fallbacks** now: `ws_h1` /
-  `ws_h2` / `ws_h3` (WS family), `xhttp_h1` / `xhttp_h2` / `xhttp_h3`
-  (XHTTP family), and `quic` (raw QUIC). The QUIC mode rides through
-  the same `VlessUdpHybridMux` machinery the primary VLESS-UDP path
-  uses (QUIC mux + WS-over-H2 fallback factory), but every per-uplink
-  hook is wired to *the fallback wire's* per-wire mode-downgrade slot
-  rather than primary's. So a fallback wire's `quic` dial that fails
-  and pivots to WS-H2 records the QUIC failure in its own slot, and
-  subsequent dials of the same fallback wire skip QUIC outright until
-  the wire's downgrade window expires — exactly mirroring primary's
-  established behaviour, just without polluting primary's mode
-  tracking.
+- **Both wire shapes work as VLESS fallbacks**: `ws_h1` /
+  `ws_h2` / `ws_h3` (WS family) and `xhttp_h1` / `xhttp_h2` / `xhttp_h3`
+  (XHTTP family). Each fallback wire is tracked independently — its
+  per-wire mode-downgrade slot is separate from primary's, so a
+  fallback wire's carrier downgrade caps only its own slot without
+  polluting primary's mode tracking.
 
 ### Inline `[outline]` shorthand
 

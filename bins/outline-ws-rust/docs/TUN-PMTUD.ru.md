@@ -16,10 +16,6 @@ uplink, engine оборачивает payload в SOCKS5 framing и отдаёт 
 `send_packet` транспорта. Часть транспортов не умеет фрагментировать
 oversized payload и отказывает в отправке:
 
-- raw QUIC SS-UDP — `QuicDatagramChannel` ограничен согласованным
-  `max_datagram_size` (как правило ~1180 байт);
-- VLESS QUIC UDP — тот же QUIC datagram limit плюс 4 байта на
-  session-id;
 - VLESS-UDP framing — жёсткий потолок 64 KiB на length-prefixed frame;
 - Shadowsocks 2022 UDP — отказывает всему, что превышает AEAD record
   limit на uplink leg.
@@ -34,7 +30,7 @@ PMTUD-путь, а не классифицирует её как сбой uplink
 Отказ транспорта невидим клиенту: отправитель просто ретрансмитит тот
 же oversized payload по каждому loss-таймеру. Без in-band сигнала он
 никогда не узнает реальный tunnel MTU. Реальный production-кейс —
-VoWiFi IKE_AUTH с клиентским сертификатом поверх raw-QUIC uplink-а:
+VoWiFi IKE_AUTH с клиентским сертификатом поверх туннельного uplink-а:
 IKE-ретрансмиты копились, сертификатный обмен не завершался, звонок
 падал.
 
@@ -162,7 +158,7 @@ pmtud_emit_below_quic_initial = false
 `should_emit_ptb_for_limit`). Используйте на инсталляциях, где
 вытеснение QUIC не проблема, а явный PMTUD-сигнал на каждом дропе
 важнее: каноничный пример — чистый VoWiFi / IKEv2 концентратор,
-который везёт IKE_AUTH с сертификатами поверх узкого raw-QUIC
+который везёт IKE_AUTH с сертификатами поверх узкого туннельного
 uplink-а, где PTB — единственный сигнал, позволяющий IKE retransmit
 loop узнать реальный tunnel MTU до того, как звонок отвалится по
 таймауту.

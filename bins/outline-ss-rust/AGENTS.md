@@ -14,7 +14,7 @@
 ## Кратко о проекте
 
 `outline-ss-rust` - production-ориентированный Rust-сервер data plane для
-Shadowsocks AEAD и VLESS поверх WebSocket, XHTTP, HTTP/3 и raw QUIC. Это не
+Shadowsocks AEAD и VLESS поверх WebSocket, XHTTP и HTTP/3. Это не
 реализация Outline management API.
 
 Крейт использует Rust edition 2024, Tokio, axum, hyper, quinn/h3, rustls,
@@ -29,16 +29,9 @@ Prometheus metrics и локально пропатченные копии `h3` 
   access key и tuning profiles.
 - `src/server/`: listeners, runtime services, routing, shutdown, fallbacks,
   session resumption, control/dashboard servers и transport handlers.
-- `src/server/transport/`: WebSocket, XHTTP, raw QUIC, VLESS transport, fallback,
+- `src/server/transport/`: WebSocket, XHTTP, VLESS transport, fallback,
   SNI fallback и proxy-protocol plumbing.
 - `src/server/shadowsocks/`: plain Shadowsocks TCP/UDP listeners.
-- `src/server/reverse_tunnel/`: reverse-tunnel dialer (топология A) — исходящий
-  QUIC-client endpoint + reconnect loop; на установленной несущей зовёт
-  существующий `handle_raw_ss_connection` БЕЗ изменений (несущая инвертирована,
-  но stream-направление и accept_bi-цикл те же). TLS-client + pinned-серт ws +
-  client cert (mTLS) — в `src/server/bootstrap/reverse_tls.rs`. См.
-  `docs/REVERSE-TUNNEL.md`. Меняя raw-SS accept-путь, помни оба источника
-  `quinn::Connection` (forward accept и reverse dial) — handler агностичен.
 - `src/crypto/`: Shadowsocks AEAD stream/UDP primitives и логика
   replay/session cache. SS2022-заголовки, UDP-раскладки (обе половины) и
   session-subkey KDF живут в общем крейте `crates/outline-wire`;
@@ -146,9 +139,10 @@ Prometheus metrics и локально пропатченные копии `h3` 
 - UDP over WebSocket переносит ровно один encrypted Shadowsocks UDP packet на
   каждый binary WebSocket frame.
 - VLESS сам по себе не шифруется. Для публичных deployments нужен TLS на h1/h2
-  или QUIC encryption на h3/raw QUIC paths.
-- Raw QUIC transports выбираются через ALPN (`h3`, `vless`/`vless-mtu`,
-  `ss`/`ss-mtu`). Не ломай ALPN compatibility.
+  или QUIC encryption на h3 paths.
+- HTTP/3 на QUIC-endpoint выбирается через ALPN `h3`; raw-QUIC ALPN
+  (`vless`/`vless-mtu`, `ss`/`ss-mtu`) удалены и больше не принимаются. Не ломай
+  ALPN compatibility.
 - `fwmark` работает только на Linux. Non-Linux builds и tests должны продолжать
   компилироваться и работать без `SO_MARK`.
 - Session resumption и NAT behavior stateful. Сохраняй bounded queues, idle

@@ -123,7 +123,7 @@ Both fallbacks share `transport::proxy_protocol::encode_proxy_protocol` so v1/v2
 
 ### Wire shape: carrier padding (`[padding]`)
 
-Where the two fallback knobs protect the listener's *unmatched* surface, carrier padding hardens the *matched* carriers themselves. Each Shadowsocks chunk — or VLESS frame — on a padded WS / XHTTP path is wrapped in a `real_len | pad_len | real | pad` frame (codec in `crates/outline-wire/src/padding.rs`) before it reaches the outer TLS record layer, so the encrypted record size no longer tracks the proxied payload size — breaking the record-size correlation that "proxy-inside-TLS" (TLS-in-TLS) classifiers key on. The SS-TCP relay decodes inbound frames before the AEAD layer (`handle_tcp_binary_frame`) and frames the downlink in `ChannelSink`; the SS-UDP relay (`run_udp_relay`) and the VLESS relay (`run_vless_relay`) do the same per message — decoding each inbound datagram before parsing and routing each downlink message through `frame_downlink_message`. Per-path (`[padding] paths`), config-synchronised with the client (no on-wire capability bit, off by default), with optional idle cover traffic on a quiet connection. It rides the `Message` layer shared by every WS / XHTTP carrier, so one mechanism covers SS- and VLESS-over-WS (h1/h2/h3) and -over-XHTTP alike, and UDP is padded per-datagram on every WS carrier — SS-UDP (split: list its path; combined: list the shared base path) and VLESS-UDP both. Only raw-SS / -VLESS over QUIC stays out of scope (a separate fingerprint surface). Full reference: [`../../../docs/PADDING.md`](../../../docs/PADDING.md).
+Where the two fallback knobs protect the listener's *unmatched* surface, carrier padding hardens the *matched* carriers themselves. Each Shadowsocks chunk — or VLESS frame — on a padded WS / XHTTP path is wrapped in a `real_len | pad_len | real | pad` frame (codec in `crates/outline-wire/src/padding.rs`) before it reaches the outer TLS record layer, so the encrypted record size no longer tracks the proxied payload size — breaking the record-size correlation that "proxy-inside-TLS" (TLS-in-TLS) classifiers key on. The SS-TCP relay decodes inbound frames before the AEAD layer (`handle_tcp_binary_frame`) and frames the downlink in `ChannelSink`; the SS-UDP relay (`run_udp_relay`) and the VLESS relay (`run_vless_relay`) do the same per message — decoding each inbound datagram before parsing and routing each downlink message through `frame_downlink_message`. Per-path (`[padding] paths`), config-synchronised with the client (no on-wire capability bit, off by default), with optional idle cover traffic on a quiet connection. It rides the `Message` layer shared by every WS / XHTTP carrier, so one mechanism covers SS- and VLESS-over-WS (h1/h2/h3) and -over-XHTTP alike, and UDP is padded per-datagram on every WS carrier — SS-UDP (split: list its path; combined: list the shared base path) and VLESS-UDP both. Full reference: [`../../../docs/PADDING.md`](../../../docs/PADDING.md).
 
 ## Request Routing
 
@@ -269,16 +269,6 @@ Uses RFC 9220 Extended CONNECT over QUIC. This requires:
 
 The repository currently vendors and patches upstream crates to make this path practical. See [PATCHES.md](../../../PATCHES.md) ([Русский](../../../PATCHES.ru.md)).
 
-### Raw VLESS / Shadowsocks over QUIC
-
-Configurable via `[server.h3].alpn` (defaults to `["h3"]`). When the list also includes `"vless"` or `"ss"`, the same QUIC endpoint also accepts non-HTTP/3 protocols on the same UDP port. After the QUIC handshake, the server inspects the negotiated ALPN on `quinn::Connection::handshake_data()` and dispatches:
-
-- `h3` — existing HTTP/3 + WebSocket-over-HTTP/3 path.
-- `vless` — raw VLESS framing on QUIC bidi streams, plus QUIC datagrams for UDP. The per-connection UDP session table maps a server-allocated `session_id` (4-byte big-endian, prefixed on every datagram) to the upstream UDP socket; the originating bidi stream's recv side is the session's lifetime anchor and closing it tears the session down. The `mux.cool` command is rejected — every additional target opens its own bidi stream, letting QUIC's native multiplexing handle head-of-line isolation.
-- `ss` — raw Shadowsocks AEAD on QUIC. A bidi stream carries one SS-AEAD TCP session; the handshake parser is the shared SS-AEAD primitive (auth by trial decrypt of the first chunk), so user identity, fwmark, NAT entries and metric labels behave the same. UDP is delivered as one QUIC datagram per SS-AEAD packet through the shared `handle_ss_udp_packet` helper, so the NAT table and replay store are reused unchanged.
-
-The same `H3_MAX_CONCURRENT_CONNECTIONS` and `H3_MAX_CONCURRENT_STREAMS` semaphores bound the raw-QUIC paths. Datagram queues are sized off `tuning.h3_*` knobs.
-
 ## Observability Design
 
 Metrics are intentionally low-cardinality and focused on production operations.
@@ -286,7 +276,7 @@ Metrics are intentionally low-cardinality and focused on production operations.
 Labels include:
 
 - `transport`: `tcp` or `udp`
-- `protocol`: `http1`, `http2`, `http3`, `socket` (plain SS listeners), `quic` (raw VLESS/SS over QUIC)
+- `protocol`: `http1`, `http2`, `http3`, `socket` (plain SS listeners)
 - `user`: user identifier
 - `result`: `success`, `timeout`, or `error` where applicable
 - `direction`: traffic direction for byte counters

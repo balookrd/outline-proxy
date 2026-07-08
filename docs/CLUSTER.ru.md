@@ -21,7 +21,7 @@ home недоступен или mesh слишком медленный — си
 (`ParkedVlessUdpSingle`). Ничего из этого нельзя сериализовать и поднять на
 другой машине. Поэтому сессия никуда не переезжает. Она **остаётся на
 home-сервере**, а anycast'ом становится carrier (клиентский транспорт
-WebSocket / HTTP3 / QUIC): он может приземлиться на любой edge, который
+WebSocket / HTTP3): он может приземлиться на любой edge, который
 релеит байты обратно на home. С точки зрения клиента это выглядит как «park на
 сервере A, unpark на сервере B»; физически состояние всё время жило на home.
 
@@ -69,13 +69,12 @@ Edge обязан узнать shard **до** любого SS/VLESS-payload. Sha
 | Carrier | Где shard | Когда виден |
 | --- | --- | --- |
 | WS / H3 / XHTTP resume | заголовок `X-Outline-Resume: <hex>` | при апгрейде, до тела |
-| VLESS raw QUIC resume | addon `0x11 RESUME_ID` (16 байт) | в первом VLESS-кадре |
 | Первое подключение (нет resume) | — | edge *и есть* home: обрабатывает локально, генерит session_id с `shard = self` |
 
 ```
             client (ws-rust)
-          resume? X-Outline-Resume / addon 0x11
-                      │ carrier (WS/H3/QUIC)
+          resume? X-Outline-Resume
+                      │ carrier (WS/H3)
                       ▼
                   ┌────────┐
                   │  EDGE  │  decode_shard(session_id)
@@ -101,7 +100,7 @@ shard. Все последующие resume этого клиента — чер
 
 ## Mesh-транспорт (граница релея = сырые application-байты)
 
-Edge терминирует **только carrier** (WS-фреймы / H3-stream / QUIC),
+Edge терминирует **только carrier** (WS-фреймы / H3-stream),
 извлекает application-байты (ещё зашифрованный SS/VLESS-поток как есть) и
 туннелирует их на home. **Crypto и upstream-соединение живут только на home.**
 Edge никогда не держит ключей и не видит plaintext.
@@ -241,7 +240,7 @@ A, новые на B. Это by design, а не дефект:
 Padding-детекция троттлинга (серверный `ThroughputMonitor` → cover-кадр `OCTL`
 → смена uplink на клиенте) совмещается с кластером, но с оговорками, которые
 стоит проговорить явно. Она работает на **обоих** padded WS/XHTTP-carrier'ах —
-TCP и UDP (SS и VLESS); немониторятся только raw-QUIC datagram-carrier'ы. В
+TCP и UDP (SS и VLESS); немониторится только непаддированный wire. В
 кластере UDP-нога едет отдельным carrier'ом на том же uplink index, поэтому
 релеится своим mesh-стримом на тот же home и подвержена тем же оговоркам ниже —
 обнаруженный UDP-throttle штрафует именно UDP-ногу и мигрирует только её.

@@ -21,7 +21,7 @@ TCP socket to the target with its kernel sequence numbers, source address and
 connection state (`ParkedTcp`), or a bound `UdpSocket`
 (`ParkedVlessUdpSingle`). None of that can be serialized and resurrected on a
 different machine. So the session is never moved. Instead it **stays on the
-home server**, and the carrier (the client-facing WebSocket / HTTP3 / QUIC
+home server**, and the carrier (the client-facing WebSocket / HTTP3
 transport) is what becomes anycast: it may land on any edge, which relays the
 bytes back to home. From the client's point of view this looks like "park on
 server A, unpark on server B"; physically the state lived on home the whole
@@ -75,13 +75,12 @@ available in carrier metadata that arrives ahead of the body:
 | Carrier | Where the shard is | When visible |
 | --- | --- | --- |
 | WS / H3 / XHTTP resume | `X-Outline-Resume: <hex>` header | at upgrade, before body |
-| VLESS raw QUIC resume | addon `0x11 RESUME_ID` (16 bytes) | in the first VLESS frame |
 | First connect (no resume) | — | edge *is* home: handle locally, mint a session id with `shard = self` |
 
 ```
             client (ws-rust)
-          resume? X-Outline-Resume / addon 0x11
-                      │ carrier (WS/H3/QUIC)
+          resume? X-Outline-Resume
+                      │ carrier (WS/H3)
                       ▼
                   ┌────────┐
                   │  EDGE  │  decode_shard(session_id)
@@ -107,7 +106,7 @@ the nearest working server.
 
 ## Mesh transport (relay boundary = raw application bytes)
 
-The edge terminates **only the carrier** (WS frames / H3 stream / QUIC),
+The edge terminates **only the carrier** (WS frames / H3 stream),
 extracts the application bytes (the still-encrypted SS/VLESS stream as-is) and
 tunnels them to home. **Crypto and the upstream connection live only on home.**
 The edge never holds keys and never sees plaintext.
@@ -249,7 +248,7 @@ wherever the client happened to be when it opened the session.
 The padding-based downstream-throttle detection (server `ThroughputMonitor` →
 `OCTL` cover frame → client uplink switch) composes with the cluster, but with
 caveats worth stating explicitly. It runs on **both** the TCP and the UDP
-padded WS/XHTTP carriers (SS and VLESS); only raw-QUIC datagram carriers stay
+padded WS/XHTTP carriers (SS and VLESS); the unpadded wire stays
 unmonitored. In the cluster the UDP leg rides its own separate carrier on the
 same uplink index, so it relays over its own mesh stream to the same home and
 is subject to the same caveats below — a detected UDP throttle penalises the

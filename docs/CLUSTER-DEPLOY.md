@@ -165,5 +165,5 @@ resume id across unrelated homes would only ever miss.
 - **Throttle detection:** keep it **off** at first — the home-side detector
   cannot tell the mesh interconnect apart from the client last mile and can fire
   spuriously (see `CLUSTER.md`).
-- **UDP / raw-QUIC carriers** are not relayed yet — those legs fall back to a
+- **UDP carriers** are not relayed yet — those legs fall back to a
   fresh local session on a foreign shard (safe, just no cross-edge resume).

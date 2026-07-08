@@ -316,29 +316,3 @@ ws_path_udp = "/dave/udp"
                                          # raise to absorb upstream-vs-WS write
                                          # speed mismatches under bursty video,
                                          # lower to cap per-session memory.
-
-# Reverse tunnel (topology A): dial out to a public outline-ws-rust listener
-# instead of (or in addition to) listening locally, so this server can run
-# behind NAT without a public IP. See docs/REVERSE-TUNNEL.md.
-# [reverse_tunnel]
-# enabled = true
-#
-# [[reverse_tunnel.endpoints]]
-# addr = "ws.example.com:8443"          # host:port of the public ws listener
-# server_name = "reverse"               # TLS SNI; defaults to host part of addr
-# server_cert_pin = "dd:ee:ff:..."      # SHA-256 of the ws server cert (DER)
-# client_cert_path = "/etc/outline-ss/ss-client.crt"  # mTLS client cert
-# client_key_path  = "/etc/outline-ss/ss-client.key"
-# protocol = "ss"                       # "ss" (default) or "vless"; must match the ws peer entry
-# mtu = true                            # offer the -mtu ALPN sibling (default true)
-# backoff_min_secs = 1                  # transient-failure backoff floor (default 1)
-# backoff_max_secs = 60                 # transient-failure backoff ceiling (default 60)
-# Note: a pin/cert (auth) failure is not retried on this schedule — the loop
-# backs off a fixed 5 min and warns, since a retry cannot fix it.
-#
-# With protocol = "vless", the matching [[users]] entry only needs `vless_id`
-# (no ws_path_vless / xhttp_path_vless): the reverse endpoint itself is the
-# VLESS transport. A plain VLESS reverse-only user:
-# [[users]]
-# id = "rev-vless"
-# vless_id = "b831381d-6324-4d53-ad4f-8cda48b30811"

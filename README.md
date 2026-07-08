@@ -2,11 +2,11 @@
 
 `outline-proxy` is a Cargo workspace (monorepo) that hosts both halves of an
 Outline-compatible proxy system built on Shadowsocks AEAD and VLESS over
-WebSocket / XHTTP / HTTP/3 / raw QUIC.
+WebSocket / XHTTP / HTTP/3.
 
 - **[`outline-ss-rust`](bins/outline-ss-rust/)** — the **server** data plane.
   Accepts Shadowsocks AEAD or VLESS traffic over WebSocket (HTTP/1.1, RFC 8441
-  H2, RFC 9220 H3), XHTTP, and raw QUIC, and relays it to arbitrary TCP/UDP
+  H2, RFC 9220 H3) and XHTTP, and relays it to arbitrary TCP/UDP
   destinations. Multi-user with per-user policy, Prometheus metrics, optional
   built-in TLS and QUIC/H3 listeners.
 - **[`outline-ws-rust`](bins/outline-ws-rust/)** — the **client**. Accepts local
@@ -16,11 +16,6 @@ WebSocket / XHTTP / HTTP/3 / raw QUIC.
 The client dials the server; both speak the same wire protocol and share a set
 of common crates, which is why they live in one repository.
 
-A **reverse-tunnel** mode (topology A) inverts the carrier so the server can run
-behind NAT without a public IP: it dials *out* to the public client, which
-listens and routes user traffic back through it. See
-[docs/REVERSE-TUNNEL.md](docs/REVERSE-TUNNEL.md).
-
 *Русская версия: [README.ru.md](README.ru.md)*
 
 ## Supported protocols & transports
@@ -29,10 +24,10 @@ Two independent axes: the **payload protocol** (what rides inside) and the
 **carrier transport** (how it is delivered). The client and server negotiate a
 pair of both per uplink.
 
-| Payload \ Carrier | WebSocket (h1/h2/h3) | XHTTP (h1/h2/h3) | raw QUIC |
-|---|:---:|:---:|:---:|
-| **Shadowsocks** (AEAD / SS2022) | ✅ | ✅ | ✅ |
-| **VLESS** | ✅ | ✅ | ✅ |
+| Payload \ Carrier | WebSocket (h1/h2/h3) | XHTTP (h1/h2/h3) |
+|---|:---:|:---:|
+| **Shadowsocks** (AEAD / SS2022) | ✅ | ✅ |
+| **VLESS** | ✅ | ✅ |
 
 XHTTP is a `packet-up` / `stream-one` protocol. VLESS rides it for TCP + UDP on
 one path; Shadowsocks rides it on the **forward path** (client→server) for both
@@ -42,16 +37,16 @@ TCP and UDP. By default TCP and UDP take separate base paths (server
 `xhttp_path_ss`, client `ss_xhttp_url` + `ss_mode`). The TCP/UDP split then
 rides a hidden discriminator in the session id, so a censor sees one endpoint
 instead of two. The same combined option applies to WebSocket (server
-`ws_path_ss`, client `ss_ws_url`). Reverse-tunnel-over-XHTTP is a planned
-follow-up. Every other cell is supported in both directions.
+`ws_path_ss`, client `ss_ws_url`). Every other cell is supported in both
+directions.
 
 The client picks a `transport` + `mode` pair on each uplink:
 
 | `transport` | style | accepted `*_mode` values | dial URL field |
 |---|---|---|---|
-| `ss` (alias `shadowsocks`; deprecated `ws` / `websocket`) | split | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `tcp_ws_url` / `udp_ws_url` (ws / quic) · `tcp_xhttp_url` / `udp_xhttp_url` (xhttp) |
+| `ss` (alias `shadowsocks`; deprecated `ws` / `websocket`) | split | `ws_h1` · `ws_h2` · `ws_h3` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `tcp_ws_url` / `udp_ws_url` (ws) · `tcp_xhttp_url` / `udp_xhttp_url` (xhttp) |
 | `ss` | combined | `ws_h1` · `ws_h2` · `ws_h3` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `ss_ws_url` or `ss_xhttp_url` + `ss_mode` |
-| `vless` | — | `ws_h1` · `ws_h2` · `ws_h3` · `quic` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `vless_ws_url` (ws / quic) · `vless_xhttp_url` (xhttp) |
+| `vless` | — | `ws_h1` · `ws_h2` · `ws_h3` · `xhttp_h1` · `xhttp_h2` · `xhttp_h3` | `vless_ws_url` (ws) · `vless_xhttp_url` (xhttp) |
 
 Carrier aliases: `h1` / `http1` → `ws_h1`, `h2` → `ws_h2`, `h3` → `ws_h3`.
 
@@ -63,21 +58,17 @@ Carrier aliases: `h1` / `http1` → `ws_h1`, `h2` → `ws_h2`, `h3` → `ws_h3`.
   on h1 / h2 / h3) and `stream-one` (a single bidi POST, needs multiplexing —
   h2 / h3 only; the server returns 505 on h1). Carries VLESS (TCP + UDP) and
   Shadowsocks (forward-path TCP + UDP).
-- **raw QUIC** — no WebSocket / HTTP framing, ALPN `outline-quic`. Carries both
-  Shadowsocks and VLESS. TCP-like sessions ride a fresh bidi stream; UDP-like
-  sessions use QUIC datagrams (RFC 9221). Requires the `quic` build feature.
 
 **Automatic fallback** (per uplink, including mid-session): WebSocket descends
-`h3 → h2 → h1`, XHTTP descends `xhttp_h3 → xhttp_h2 → xhttp_h1`, and raw QUIC
-falls back to WebSocket-over-H2 on a dial failure.
+`h3 → h2 → h1` and XHTTP descends `xhttp_h3 → xhttp_h2 → xhttp_h1`.
 
 > **Outline compatibility:** Shadowsocks-over-WebSocket is the path the Outline
 > apps speak — the server emits an Outline access key (`$type: websocket`,
-> TCP + UDP) for it. Shadowsocks-over-XHTTP and Shadowsocks-over-QUIC are
-> standalone modes for the bundled `outline-ws-rust` client only and are not
-> exposed as Outline keys — but a combined-path Shadowsocks user also gets an
+> TCP + UDP) for it. Shadowsocks-over-XHTTP is a
+> standalone mode for the bundled `outline-ws-rust` client only and is not
+> exposed as an Outline key — but a combined-path Shadowsocks user also gets an
 > `ss://…` share link (`ws` / `xhttp`, SIP002 userinfo) for that client. VLESS
-> is exposed as a `vless://…` share link (`ws` / `xhttp` / `quic`).
+> is exposed as a `vless://…` share link (`ws` / `xhttp`).
 
 ## Layout
 
@@ -101,7 +92,6 @@ Per-binary documentation lives next to each binary —
 
 Cross-cutting topics under [`docs/`](docs/):
 [carrier padding](docs/PADDING.md) ·
-[reverse tunnel](docs/REVERSE-TUNNEL.md) ·
 [outbound IPv6 source selection](docs/OUTBOUND-IPV6.md) ·
 [server mesh cluster](docs/CLUSTER.md).
 
