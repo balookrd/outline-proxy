@@ -48,6 +48,14 @@ pub(super) const MESH_SERVER_NAME: &str = "mesh.cluster.internal";
 const MESH_KEEP_ALIVE_SECS: u64 = 10;
 const MESH_IDLE_TIMEOUT_SECS: u64 = 30;
 
+/// Buffers for QUIC datagrams carrying out-of-band control signals
+/// (`THROTTLE_HINT`). A control datagram is tiny (17 bytes) and low-rate
+/// (cooldown-gated), so small buffers are ample and bound the memory a peer can
+/// make us queue. Enabling the receive buffer also advertises datagram support
+/// to peers, which the send side requires.
+const MESH_DATAGRAM_RECV_BUFFER: usize = 64 * 1024;
+const MESH_DATAGRAM_SEND_BUFFER: usize = 64 * 1024;
+
 /// PKCS#8 v1 wrapper for a raw 32-byte Ed25519 seed: a fixed 16-byte ASN.1
 /// prefix followed by the seed. Lets us hand a deterministic seed to rcgen.
 fn ed25519_pkcs8_from_seed(seed: &[u8; 32]) -> Vec<u8> {
@@ -222,6 +230,9 @@ fn mesh_transport_config() -> Result<quinn::TransportConfig> {
             .try_into()
             .context("invalid mesh idle timeout")?,
     ));
+    // Out-of-band control signals (THROTTLE_HINT) ride QUIC datagrams.
+    transport.datagram_receive_buffer_size(Some(MESH_DATAGRAM_RECV_BUFFER));
+    transport.datagram_send_buffer_size(MESH_DATAGRAM_SEND_BUFFER);
     Ok(transport)
 }
 

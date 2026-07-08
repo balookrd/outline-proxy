@@ -22,10 +22,19 @@ use super::frame::OpenHeader;
 /// concurrency cap until it is dropped.
 pub(in crate::server) struct PooledRelay {
     pub(in crate::server) stream: MeshStream,
+    /// The mesh connection the stream rides, so the edge can send out-of-band
+    /// control datagrams (THROTTLE_HINT) on it alongside the relay stream.
+    conn: Connection,
     _permit: OwnedSemaphorePermit,
 }
 
 impl PooledRelay {
+    /// A handle to the mesh connection carrying this relay, for sending control
+    /// datagrams. Cloneable and cheap (quinn `Connection` is `Arc`-backed).
+    pub(in crate::server) fn connection(&self) -> Connection {
+        self.conn.clone()
+    }
+
     /// Splits into the owned stream halves and the pool permit. The caller
     /// must keep the permit alive for the relay's lifetime (it releases the
     /// concurrency slot on drop).
@@ -77,7 +86,7 @@ impl MeshPeerPool {
             .context("mesh relay stream cap exhausted")?;
         let conn = self.connection_for(shard, addr).await?;
         let stream = open_relay_stream(&conn, header).await?;
-        Ok(PooledRelay { stream, _permit: permit })
+        Ok(PooledRelay { stream, conn, _permit: permit })
     }
 
     /// Returns a live connection to `addr` for `shard`, dialing if there is no
