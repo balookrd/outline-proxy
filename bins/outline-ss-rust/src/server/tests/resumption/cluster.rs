@@ -29,7 +29,7 @@ use futures_util::{SinkExt, StreamExt};
 use h3::ext::Protocol as H3Protocol;
 use outline_transport::{
     DnsCache as ClientDnsCache, SessionId as ClientSessionId, TcpShadowsocksReader,
-    TcpShadowsocksWriter, TransportMode, UpstreamTransportGuard,
+    TcpShadowsocksWriter, TransportMode, UdpWsTransport, UpstreamTransportGuard,
 };
 use outline_wire::cluster::{ObfuscationKey, ShardId};
 use quinn::Endpoint;
@@ -109,6 +109,7 @@ fn build_cluster_parts(
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
     xhttp_ss_path: Option<&str>,
+    xhttp_ss_udp_path: Option<&str>,
 ) -> Result<ClusterParts> {
     // The mesh QUIC endpoint needs the process-wide rustls provider installed.
     ensure_rustls_provider_installed();
@@ -134,20 +135,25 @@ fn build_cluster_parts(
     let dns_cache = DnsCache::new(Duration::from_secs(30));
     let tcp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
-    let xhttp_ss = match xhttp_ss_path {
-        Some(path) => Arc::new(build_xhttp_ss_route_map(&[SsXhttpUserRoute {
+    // Registers a single SS-over-XHTTP base path for the shared user, or an
+    // empty table when the path is unset. Used for both the TCP (`xhttp_ss`) and
+    // UDP (`xhttp_ss_udp`) route tables.
+    let build_ss_xhttp = |path: Option<&str>| match path {
+        Some(p) => Arc::new(build_xhttp_ss_route_map(&[SsXhttpUserRoute {
             user: user_routes[0].user.clone(),
-            xhttp_path: Arc::from(path),
+            xhttp_path: Arc::from(p),
         }])),
         None => Arc::new(BTreeMap::new()),
     };
+    let xhttp_ss = build_ss_xhttp(xhttp_ss_path);
+    let xhttp_ss_udp = build_ss_xhttp(xhttp_ss_udp_path);
     let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: tcp_routes,
         udp: udp_routes,
         vless: Arc::new(build_vless_transport_route_map(&[])),
         xhttp_vless: Arc::new(BTreeMap::new()),
         xhttp_ss,
-        xhttp_ss_udp: Arc::new(BTreeMap::new()),
+        xhttp_ss_udp,
     }));
     let services = Arc::new(Services::new(
         Arc::clone(&metrics),
@@ -197,6 +203,7 @@ async fn spawn_cluster_node(
     peers: HashMap<ShardId, SocketAddr>,
     budget: Duration,
     xhttp_ss_path: Option<&str>,
+    xhttp_ss_udp_path: Option<&str>,
 ) -> Result<(ClusterNode, UserKey)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
@@ -207,7 +214,7 @@ async fn spawn_cluster_node(
         cluster,
         mesh_addr,
         user,
-    } = build_cluster_parts(psk, shard, peers, budget, xhttp_ss_path)?;
+    } = build_cluster_parts(psk, shard, peers, budget, xhttp_ss_path, xhttp_ss_udp_path)?;
 
     let app = build_app(
         Arc::clone(&routes),
@@ -266,7 +273,7 @@ async fn spawn_h3_edge_node(
 
     let ClusterParts {
         routes, services, auth, cluster, user, ..
-    } = build_cluster_parts(psk, shard, peers, budget, None)?;
+    } = build_cluster_parts(psk, shard, peers, budget, None, None)?;
     let ctx = H3ServeCtx {
         routes,
         services,
@@ -321,11 +328,11 @@ async fn cluster_session_survives_edge_switch() -> Result<()> {
 
     // Home owns shard 1; two edges (shards 2, 3) relay to it.
     let (home, user) =
-        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None).await?;
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge_a, _) =
-        spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(4), None).await?;
-    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(4), None).await?;
+        spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(4), None, None).await?;
+    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(4), None, None).await?;
 
     // The client holds a home-shard resume id (as if the home minted it on a
     // prior connect). Both edges route it to the home over the mesh.
@@ -372,9 +379,9 @@ async fn cluster_relay_preserves_large_payload() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-integrity-psk";
     let (echo_addr, _accepts) = spawn_echo_target().await?;
     let (home, user) =
-        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None).await?;
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
-    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None).await?;
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, None).await?;
 
     let session_id = resume_id_for_shard(PSK, 1)?;
 
@@ -427,7 +434,7 @@ async fn cluster_unreachable_home_falls_back_to_local_session() -> Result<()> {
     // An edge on shard 2 with NO peer for shard 1: a shard-1 resume relays
     // nowhere, so the edge serves the carrier locally.
     let (edge, user) =
-        spawn_cluster_node(PSK, 2, HashMap::new(), Duration::from_secs(4), None).await?;
+        spawn_cluster_node(PSK, 2, HashMap::new(), Duration::from_secs(4), None, None).await?;
     let foreign_id = resume_id_for_shard(PSK, 1)?;
 
     let (mut sock, _) = connect_ws_h1(edge.listen_addr, "/tcp", Some(foreign_id), true).await?;
@@ -455,9 +462,10 @@ async fn cluster_stalled_relay_tears_down_on_health_budget() -> Result<()> {
 
     // Home with a generous budget; edge with a short one so the stall trips fast.
     let (home, user) =
-        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(30), None).await?;
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(30), None, None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
-    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_millis(300), None).await?;
+    let (edge, _) =
+        spawn_cluster_node(PSK, 2, peers, Duration::from_millis(300), None, None).await?;
 
     let session_id = resume_id_for_shard(PSK, 1)?;
 
@@ -507,7 +515,7 @@ async fn cluster_h3_edge_relays_to_home() -> Result<()> {
     // Home: a plain-WS node with the mesh listener — carrier-agnostic on the
     // home side, so it serves an h3-originated relay just like a WS one.
     let (home, user) =
-        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None).await?;
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge, _) = spawn_h3_edge_node(PSK, 2, peers, Duration::from_secs(4)).await?;
 
@@ -592,9 +600,11 @@ async fn cluster_xhttp_edge_relays_to_home() -> Result<()> {
     // Home resolves the `/ssx` xhttp_ss route (for the relayed carrier's user
     // lookup) and runs the mesh listener; the edge serves `/ssx` and relays.
     let (home, _user) =
-        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), Some("/ssx")).await?;
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), Some("/ssx"), None)
+            .await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
-    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), Some("/ssx")).await?;
+    let (edge, _) =
+        spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), Some("/ssx"), None).await?;
 
     // Home-shard resume id, presented by the client on the XHTTP dial.
     let session_id = resume_id_for_shard(PSK, 1)?;
@@ -676,9 +686,9 @@ async fn cluster_udp_relays_datagrams_to_home() -> Result<()> {
 
     // Home owns shard 1; an edge (shard 2) relays /udp to it over the mesh.
     let (home, user) =
-        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None).await?;
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
-    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None).await?;
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, None).await?;
 
     // A home-shard resume id routes the edge's /udp carrier to the home.
     let session_id = resume_id_for_shard(PSK, 1)?;
@@ -717,11 +727,11 @@ async fn cluster_udp_survives_edge_switch() -> Result<()> {
 
     // Home owns shard 1; two edges (shards 2, 3) relay to it.
     let (home, user) =
-        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None).await?;
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
     let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
     let (edge_a, _) =
-        spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(4), None).await?;
-    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(4), None).await?;
+        spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(4), None, None).await?;
+    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(4), None, None).await?;
 
     let session_id = resume_id_for_shard(PSK, 1)?;
 
@@ -759,5 +769,63 @@ async fn cluster_udp_survives_edge_switch() -> Result<()> {
         "resume across the edge switch must reuse the parked NAT entry (one upstream source)"
     );
     sock_b.close(None).await?;
+    Ok(())
+}
+
+/// SS-UDP over XHTTP relays through the mesh. The client drives the real
+/// `UdpWsTransport` (packet-up h2) against the edge with a home-shard resume id;
+/// the edge relays the datagram carrier to the home with datagram framing
+/// (`SsUdpXhttp` → `edge_relay_udp::<XhttpDuplex>`), the home resolves the user
+/// on its `xhttp_ss_udp` table and forwards to the target. Proves the XHTTP
+/// datagram edge path end to end, byte-exact.
+#[tokio::test]
+async fn cluster_udp_xhttp_relays_to_home() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-xhttp-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+
+    // Home resolves `/ssu` on its `xhttp_ss_udp` table and runs the mesh
+    // listener; the edge serves `/ssu` and relays a foreign-shard resume.
+    let (home, _user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, Some("/ssu"))
+            .await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) =
+        spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, Some("/ssu")).await?;
+
+    // Home-shard resume id: the edge routes this XHTTP UDP session to the home.
+    let session_id = resume_id_for_shard(PSK, 1)?;
+    let client_resume = ClientSessionId::from_bytes(*session_id.as_bytes());
+
+    // Real client: SS-UDP over XHTTP (h2 packet-up) to the edge, resuming the
+    // home-shard id so the edge relays the datagram carrier over the mesh.
+    let url = Url::parse(&format!("http://{}/ssu", edge.listen_addr))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let (transport, _issued, _downgraded) = UdpWsTransport::connect_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        CipherKind::Chacha20IetfPoly1305,
+        // sample_config's shared user "bob".
+        "secret-b",
+        None,
+        false,
+        "cluster-udp-xhttp-test",
+        None,
+        Some(client_resume),
+        // Split UDP path, so no combined-path discriminator.
+        None,
+    )
+    .await?;
+
+    // One SS-UDP datagram, relayed edge→mesh→home→NAT→target and echoed back.
+    // `send_packet` encrypts the SOCKS5 target header + payload as one packet.
+    transport.send_packet(&ss_first_chunk(target_addr, b"ping")).await?;
+    let reply = transport.read_packet().await?;
+    assert!(
+        reply.ends_with(b"ping"),
+        "SS-UDP-over-XHTTP datagram relayed home→edge→client byte-exact: {reply:?}",
+    );
+
+    transport.close().await?;
     Ok(())
 }
