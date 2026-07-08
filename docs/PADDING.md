@@ -108,8 +108,7 @@ between SS-UDP and VLESS-UDP. Each datagram is wrapped in exactly one frame —
 the codec never splits a packet across datagrams, so packet boundaries survive —
 and the receiver runs each inbound datagram through a streaming decoder before
 the SS / VLESS layer parses it. A `real_len = 0` cover frame on a quiet downlink
-decodes to nothing and is dropped. The raw socket and the raw-QUIC datagram
-channel are *not* WS carriers and stay plain (see *Out of scope*).
+decodes to nothing and is dropped.
 
 - **VLESS-UDP** multiplexes TCP and UDP on a *single* path (distinguished by a
   command byte *inside* the first frame), so the server cannot tell the legs
@@ -125,13 +124,6 @@ channel are *not* WS carriers and stay plain (see *Out of scope*).
   `[padding] paths` pads *both* legs: the UDP leg's `run_udp_relay` resolves the
   same per-path scheme as the TCP leg's `run_tcp_relay`.
 
-**Out of scope:**
-
-- **Raw SS / VLESS over QUIC** (ALPN `ss` / `vless`) — a separate transport, not
-  a WS carrier; QUIC has its own fingerprint surface (a separate future track).
-  The raw-QUIC datagram channel reaches the same `UdpWsTransport` as the WS
-  carrier, but it is built with padding disabled, so it stays plain.
-
 ## Downstream-throttle detection (server → client uplink switch)
 
 A padded carrier can optionally watch its own throughput and, when a provider
@@ -140,8 +132,8 @@ Russia), nudge the client to move to another uplink — before the user notices
 the slowdown. It covers **both TCP and UDP** carriers on both transports:
 VLESS and SS over WS / XHTTP. This matters for QUIC (HTTP/3) traffic such as
 YouTube, which rides the UDP carrier — a UDP-only throttle is detected on the
-UDP carrier and switches the UDP leg of the same uplink. Raw-QUIC carriers and
-the unpadded wire are never monitored.
+UDP carrier and switches the UDP leg of the same uplink. The unpadded wire is
+never monitored.
 
 The server measures, per carrier, the rate it pulls from the internet (inbound,
 destined for the client) versus the rate it hands to the carrier (outbound),
@@ -156,7 +148,7 @@ is temporary — the uplink recovers automatically once its probe goes green.
 
 Because the signal rides a cover frame, the feature only works on a **padded
 carrier** — only your own clients on a path you listed in `[padding] paths` can
-receive it; third-party (unpadded) SS clients and the datagram / raw-QUIC paths
+receive it; third-party (unpadded) SS clients and the unpadded datagram paths
 are never monitored. Both detection (server) and reaction (client) are **off by
 default**. "Switch
 uplink" only helps when the other uplink takes a different network path (a

@@ -13,7 +13,7 @@
 `outline-ws-rust` — Rust 2024 workspace для production-ориентированного прокси.
 Верхнеуровневый пакет собирает бинарь `outline-ws-rust`, принимает локальный
 SOCKS5 и опциональный TUN-трафик и отправляет его через Outline-совместимые
-WebSocket-транспорты, raw QUIC, direct Shadowsocks или VLESS-транспорты.
+WebSocket-транспорты, direct Shadowsocks или VLESS-транспорты.
 
 Этот репозиторий чувствителен к производительности и эксплуатационному
 поведению. Считайте transport fallback, совместимость конфигурации, метрики и
@@ -52,7 +52,7 @@ feature gates частью публичного поведения.
   `attribution`, `ring_buffer`.
 - `src/http/`: metrics endpoint, control plane, встроенный dashboard и HTTP
   serving helpers.
-- `crates/outline-transport/`: WebSocket, HTTP/2, HTTP/3, raw QUIC, VLESS,
+- `crates/outline-transport/`: WebSocket, HTTP/2, HTTP/3, VLESS,
   XHTTP, direct Shadowsocks transport logic, resume caches и HTTP-family dial
   planning в `dial_plan.rs`.
 - `crates/outline-uplink/`: выбор uplink'ов, probes, standby pools, penalties,
@@ -166,7 +166,6 @@ cargo release-musl-aarch64
   backpressure, retry loops, standby pools и горячими TCP/UDP relay paths.
 - Сохраняйте transport fallback semantics:
   - `h3 -> h2 -> http1`
-  - `quic -> h2 -> http1`
   - `xhttp_h3 -> xhttp_h2 -> xhttp_h1`
   - per-uplink fallback wires через `[[outline.uplinks.fallbacks]]`
 - Сохраняйте cross-transport resume behavior (`X-Outline-Resume-Capable`,
@@ -210,16 +209,6 @@ cargo release-musl-aarch64
   `DialNetworkOptions`, `DialResumeOptions` и `connect_transport`. Новые
   transport branches, downgrade planning и resume/fallback plumbing добавляйте
   рядом с этим планировщиком, не возвращая длинные positional args в facade.
-- Reverse-tunnel (топология A, `src/reverse/`, gated `#[cfg(feature = "h3")]`):
-  ws — QUIC-**server**, принимает несущие от ss-пиров за NAT (mTLS, pinned
-  client-cert fingerprint), пулит их в `ReversePeerRegistry` и открывает поток
-  на сессию через `ss_tcp_over_connection` / `ss_udp_over_connection`. Сделано
-  ОТДЕЛЬНЫМ `Route::Reverse` (см. `proxy/dispatcher.rs apply_reverse` +
-  `proxy/udp/reverse.rs`), НЕ через `UplinkManager`/`UplinkCandidate` — у
-  менеджера per-index массивы фиксируются при старте, а пиры приходят/уходят в
-  рантайме. Не суй reverse-пиров в candidates; горячий forward-путь не трогай.
-  Серверный TLS-config + `PinnedClientCertVerifier` — в
-  `crates/outline-transport/src/tls_reverse.rs`. См. `docs/REVERSE-TUNNEL.md`.
 - Горячие TCP/UDP/TUN paths должны избегать лишних allocations, глобальных locks
   и O(n) scans. Если линейный обход остается, он должен быть ограничен холодным
   путем, лимитом или понятным backpressure.

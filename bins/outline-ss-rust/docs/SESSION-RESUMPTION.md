@@ -6,7 +6,7 @@ This document specifies the wire format and runtime semantics of the cross-trans
 
 ## Goal and Scope
 
-Session resumption lets a compatible client move an existing logical session from one ingress transport to another (e.g. from raw QUIC to WebSocket-over-HTTP/2) **without re-establishing the upstream connection** to the destination host. This addresses environments where the network path between the client and the server suffers from intermittent UDP loss or path instability that breaks QUIC but tolerates TCP, and vice versa.
+Session resumption lets a compatible client move an existing logical session from one ingress transport to another (e.g. from WebSocket-over-HTTP/3 to WebSocket-over-HTTP/2) **without re-establishing the upstream connection** to the destination host. This addresses environments where the network path between the client and the server suffers from intermittent UDP loss or path instability that breaks QUIC but tolerates TCP, and vice versa.
 
 ### What is preserved
 
@@ -27,7 +27,6 @@ Session resumption lets a compatible client move an existing logical session fro
 Session resumption is a strict opt-in extension. Clients that do not advertise it MUST behave identically to today. Standard third-party clients (sing-box, v2ray-core, official Outline client) are unaffected because:
 
 - HTTP-header-based negotiation uses unknown `X-Outline-*` headers that other clients ignore.
-- The VLESS Addons opcode is reserved within the `opt_len` TLV section that other implementations skip without parsing.
 - No bytes are added to handshakes that omit the negotiation.
 
 The feature is intended for the `outline-ss-rust` ↔ `outline-ws-rust` pair. It is not a public protocol.
@@ -81,28 +80,6 @@ Both headers are optional. `Resume-Capable` is sent on every connect for as long
 
 A `Resume-Result` of `hit` means the upstream state was attached. Any `miss-*` value means a fresh session was created instead.
 
-### VLESS over raw QUIC
-
-For raw QUIC (ALPN `vless` / `vless-mtu`) there are no HTTP headers. The negotiation rides inside the VLESS request Addons section (the `opt_len`-prefixed TLV block immediately after the user UUID).
-
-Two new opcodes are reserved:
-
-| Tag | Name | Length | Value |
-|---|---|---|---|
-| `0x10` | `RESUME_CAPABLE` | 1 | `0x01` (must be present to opt in) |
-| `0x11` | `RESUME_ID` | 16 | Session ID bytes |
-
-A request that contains `RESUME_ID` is interpreted as a resume attempt. A request that contains only `RESUME_CAPABLE` is a fresh session that wants a Session ID issued.
-
-The VLESS response Addons section (introduced in this extension; the existing protocol does not encode response options for the request types we use) carries:
-
-| Tag | Name | Length | Value |
-|---|---|---|---|
-| `0x10` | `SESSION_ID` | 16 | Session ID bytes assigned to this session |
-| `0x11` | `RESUME_RESULT` | 1 | `0x00` hit, `0x01` miss-expired, `0x02` miss-unknown, `0x03` miss-owner, `0x04` miss-capacity |
-
-Standard VLESS clients do not parse these tags and ignore the entire Addons block.
-
 ### Negotiation matrix
 
 ```
@@ -130,14 +107,13 @@ struct OrphanRegistry {
 }
 ```
 
-A `Parked` value carries one of four shapes, depending on the parked transport:
+A `Parked` value carries one of three shapes, depending on the parked transport:
 
 ```
 enum Parked {
     Tcp { upstream_writer, upstream_reader, target, owner, deadline }
     UdpSingle { nat_entry, backbuf, owner, deadline }
     VlessMux { sub_conns, owner, deadline }
-    QuicUdpBundle { sessions, owner, deadline }
 }
 ```
 
@@ -167,7 +143,6 @@ When a client transport stream closes and a Session ID was issued for it:
    - **TCP**: assign `upstream_writer`/`upstream_reader` to the new relay state, spawn copy tasks.
    - **UDP**: `nat_entry.sender.store(Some(new_sender))`, drain `backbuf` into `new_sender`, then resume normal reader operation.
    - **VLessMux**: walk `sub_conns`, attach each to the new mux dispatcher.
-   - **QuicUdpBundle**: re-bind each `VlessUdpSession`'s datagram channel to the new QUIC `Connection`.
 4. Respond with `Session = <same id>`, `Result = hit`.
 
 ### TCP behavior
@@ -202,24 +177,6 @@ VLESS mux carries multiple sub-connections (TCP and UDP) over a single WebSocket
 - Resume restores the entire MuxState; partial resume is not supported.
 
 Rationale: mixing partial parking with sub-connection-level reattach creates a tangle of session-ID-to-sub mapping that is fragile and has no clear use case (the client would have to remember per-sub state).
-
-### Raw QUIC UDP bundle
-
-Each QUIC connection carries a `DashMap<u32, Arc<VlessUdpSession>>` of UDP sessions, keyed by the client-assigned session number. On QUIC connection loss:
-
-- The whole `udp_sessions` map is parked as a `QuicUdpBundle`.
-- Each `VlessUdpSession` keeps its `UdpSocket` and back-buffer.
-- Resume requires the new transport to also be a QUIC connection (so datagram routing works) **or** a switch to WebSocket mux. The cross-transport mapping rule:
-
-  | Parked from | Resumed via | Behavior |
-  |---|---|---|
-  | Raw QUIC bundle | Raw QUIC | Re-bind each session's datagram sender to the new `Connection` |
-  | Raw QUIC bundle | WebSocket VLESS mux | Sessions are re-numbered into the mux's `u16` namespace; client must know the mapping (sent in the resume response under tag `0x12 SESSION_REMAP`, TLV: pairs of `<old:u32><new:u16>`) |
-  | VLESS mux | Raw QUIC | Mirror of the above; remap `u16` → `u32` |
-  | TCP single | Anything | No remap needed |
-  | UDP single (non-mux) | Anything | No remap needed |
-
-The remap table is included only when the transport changes between QUIC-bundle and WS-mux. For same-transport resume the response carries no remap.
 
 ## Client Semantics
 
@@ -511,7 +468,7 @@ orphan_per_user_cap = 4
 orphan_global_cap = 10000
 ```
 
-When `enabled = false`, all `X-Outline-Resume*` headers and VLESS Addons opcodes are ignored on the server side; clients see the same behavior as if talking to an old server.
+When `enabled = false`, all `X-Outline-Resume*` headers are ignored on the server side; clients see the same behavior as if talking to an old server.
 
 ## Metrics
 
@@ -522,7 +479,7 @@ All emitted via the existing Prometheus subsystem.
 | `orphan_park_total` | counter | `transport`, `kind` | Sessions moved into the orphan registry |
 | `orphan_resume_hit_total` | counter | `transport_from`, `transport_to` | Successful resumes, labeled by transport switch |
 | `orphan_resume_miss_total` | counter | `reason` | Failed resumes (`expired`, `unknown`, `owner`, `capacity`) |
-| `orphan_current` | gauge | `kind` | Current orphan count by kind (`tcp`, `udp_single`, `vless_mux`, `quic_bundle`) |
+| `orphan_current` | gauge | `kind` | Current orphan count by kind (`tcp`, `udp_single`, `vless_mux`) |
 | `orphan_evicted_oom_total` | counter | `kind` | Evictions due to global cap or byte budget |
 | `orphan_udp_pkt_dropped_total` | counter | `reason` | UDP packets dropped while parked (`backbuf_overflow`) |
 | `orphan_udp_buf_bytes` | gauge | — | Current total bytes used by UDP back-buffers |
@@ -533,7 +490,6 @@ The following are out of scope for this revision and are intentionally not addre
 
 - **Persistent registry across restarts**. Resume after server restart is not supported. Doing so requires either FD-passing via systemd socket activation or upstream re-establishment from saved state, both of which add significant complexity for marginal benefit.
 - **Server-initiated migration**. The server cannot push a "go to another transport" message to the client. Migration is always initiated by the client when its current transport fails.
-- **Resumption for SS over raw QUIC**. The Shadowsocks protocol has no Addons-equivalent extension point. Clients that need resumption must use Shadowsocks-over-WebSocket, where headers carry the negotiation.
 - **Resumption for direct SS UDP** (no WebSocket tunneling). Direct SS UDP identifies sessions by client `SocketAddr`; a transport switch implies a different client address, which already creates a fresh NAT entry. There is no useful state to preserve.
 - **Cross-server resumption**. Resume is single-server only. Any load balancer in front MUST be sticky (by client IP or by an L4 hash that survives transport switches) for resumption to work.
 - **Partial mux resume**. The entire `MuxState` is parked atomically. No facility exists for resuming only a subset of sub-connections.

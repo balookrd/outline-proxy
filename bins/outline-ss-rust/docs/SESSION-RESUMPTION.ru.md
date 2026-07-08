@@ -6,7 +6,7 @@
 
 ## Цель и область применения
 
-Возобновление сессии позволяет совместимому клиенту перенести существующую логическую сессию с одного входящего транспорта на другой (например, с raw QUIC на WebSocket-over-HTTP/2) **без переустановки upstream-соединения** к целевому хосту. Это решает сценарии, в которых сетевой путь между клиентом и сервером страдает от прерывистых потерь UDP или нестабильности пути, ломающих QUIC, но допускающих TCP, и наоборот.
+Возобновление сессии позволяет совместимому клиенту перенести существующую логическую сессию с одного входящего транспорта на другой (например, с WebSocket-over-HTTP/3 на WebSocket-over-HTTP/2) **без переустановки upstream-соединения** к целевому хосту. Это решает сценарии, в которых сетевой путь между клиентом и сервером страдает от прерывистых потерь UDP или нестабильности пути, ломающих QUIC, но допускающих TCP, и наоборот.
 
 ### Что переносится
 
@@ -27,7 +27,6 @@
 Возобновление сессии — строго opt-in расширение. Клиенты, которые его не объявляют, ОБЯЗАНЫ работать ровно как сегодня. Стандартные сторонние клиенты (sing-box, v2ray-core, официальный Outline) не затронуты, потому что:
 
 - HTTP-header negotiation использует неизвестные `X-Outline-*` заголовки, которые остальные клиенты игнорируют.
-- VLESS Addons opcode зарезервирован внутри TLV-секции `opt_len`, которую остальные реализации проходят без парсинга.
 - В handshake'и без negotiation никаких байт не добавляется.
 
 Фича рассчитана на пару `outline-ss-rust` ↔ `outline-ws-rust`. Это не публичный протокол.
@@ -81,28 +80,6 @@ Negotiation едет через HTTP request/response заголовки, при
 
 `Resume-Result = hit` означает, что upstream-state был привязан. Любое значение `miss-*` означает, что вместо этого создана свежая сессия.
 
-### VLESS поверх raw QUIC
-
-Для raw QUIC (ALPN `vless` / `vless-mtu`) HTTP-заголовков нет. Negotiation едет внутри секции Addons VLESS-запроса (TLV-блок с префиксом `opt_len` сразу после UUID пользователя).
-
-Зарезервированы два новых opcode:
-
-| Tag | Имя | Длина | Значение |
-|---|---|---|---|
-| `0x10` | `RESUME_CAPABLE` | 1 | `0x01` (должен присутствовать для opt-in) |
-| `0x11` | `RESUME_ID` | 16 | Байты Session ID |
-
-Запрос, содержащий `RESUME_ID`, интерпретируется как resume-попытка. Запрос, содержащий только `RESUME_CAPABLE`, — это свежая сессия, которая хочет получить Session ID.
-
-Секция Addons VLESS-ответа (введена этим расширением; существующий протокол не кодирует response options для используемых нами типов запроса) несёт:
-
-| Tag | Имя | Длина | Значение |
-|---|---|---|---|
-| `0x10` | `SESSION_ID` | 16 | Байты Session ID, назначенного этой сессии |
-| `0x11` | `RESUME_RESULT` | 1 | `0x00` hit, `0x01` miss-expired, `0x02` miss-unknown, `0x03` miss-owner, `0x04` miss-capacity |
-
-Стандартные VLESS-клиенты эти теги не парсят и игнорируют весь Addons-блок.
-
 ### Матрица negotiation
 
 ```
@@ -130,14 +107,13 @@ struct OrphanRegistry {
 }
 ```
 
-Значение `Parked` имеет одну из четырёх форм в зависимости от припаркованного транспорта:
+Значение `Parked` имеет одну из трёх форм в зависимости от припаркованного транспорта:
 
 ```
 enum Parked {
     Tcp { upstream_writer, upstream_reader, target, owner, deadline }
     UdpSingle { nat_entry, backbuf, owner, deadline }
     VlessMux { sub_conns, owner, deadline }
-    QuicUdpBundle { sessions, owner, deadline }
 }
 ```
 
@@ -167,7 +143,6 @@ enum Parked {
    - **TCP**: назначить `upstream_writer`/`upstream_reader` в новый relay-state, заспавнить copy-задачи.
    - **UDP**: `nat_entry.sender.store(Some(new_sender))`, дренировать `backbuf` в `new_sender`, потом возобновить нормальную работу reader'а.
    - **VlessMux**: пройти `sub_conns`, привязать каждый к новому mux-диспетчеру.
-   - **QuicUdpBundle**: пере-привязать datagram-канал каждой `VlessUdpSession` к новому QUIC `Connection`.
 4. Ответить `Session = <тот же id>`, `Result = hit`.
 
 ### Поведение TCP
@@ -202,24 +177,6 @@ VLESS mux несёт несколько sub-соединений (TCP и UDP) в
 - Resume восстанавливает целиком MuxState; частичный resume не поддерживается.
 
 Обоснование: смешение частичной парковки с переподцеплением на уровне sub-соединений создаёт тангль маппинга session-ID → sub, который хрупок и не имеет ясного use-case (клиенту пришлось бы помнить per-sub state).
-
-### Bundle UDP-сессий raw QUIC
-
-Каждое QUIC-соединение несёт `DashMap<u32, Arc<VlessUdpSession>>` UDP-сессий, ключ — назначенный клиентом session number. На потерю QUIC-соединения:
-
-- Вся map `udp_sessions` паркуется как `QuicUdpBundle`.
-- Каждая `VlessUdpSession` сохраняет свой `UdpSocket` и back-buffer.
-- Resume требует, чтобы новый транспорт тоже был QUIC-соединением (чтобы datagram-routing работал) **или** переключения на WebSocket mux. Правило cross-transport маппинга:
-
-  | Припаркован из | Возобновляется через | Поведение |
-  |---|---|---|
-  | Raw QUIC bundle | Raw QUIC | Пере-привязать datagram-sender каждой сессии к новому `Connection` |
-  | Raw QUIC bundle | WebSocket VLESS mux | Сессии перенумеровываются в `u16`-namespace mux'а; клиент должен знать маппинг (отправляется в resume-ответе под тегом `0x12 SESSION_REMAP`, TLV: пары `<old:u32><new:u16>`) |
-  | VLESS mux | Raw QUIC | Зеркально вышеуказанному; remap `u16` → `u32` |
-  | TCP single | Что угодно | Remap не нужен |
-  | UDP single (не-mux) | Что угодно | Remap не нужен |
-
-Таблица remap включается только при смене транспорта между QUIC-bundle и WS-mux. При resume на тот же транспорт ответ remap не несёт.
 
 ## Клиентская семантика
 
@@ -511,7 +468,7 @@ orphan_per_user_cap = 4
 orphan_global_cap = 10000
 ```
 
-При `enabled = false` все `X-Outline-Resume*` заголовки и VLESS Addons opcode'ы игнорируются на серверной стороне; клиенты видят то же поведение, как если бы говорили со старым сервером.
+При `enabled = false` все `X-Outline-Resume*` заголовки игнорируются на серверной стороне; клиенты видят то же поведение, как если бы говорили со старым сервером.
 
 ## Метрики
 
@@ -522,7 +479,7 @@ orphan_global_cap = 10000
 | `orphan_park_total` | counter | `transport`, `kind` | Сессии, перенесённые в реестр orphan'ов |
 | `orphan_resume_hit_total` | counter | `transport_from`, `transport_to` | Успешные resume, размечены сменой транспорта |
 | `orphan_resume_miss_total` | counter | `reason` | Неудачные resume (`expired`, `unknown`, `owner`, `capacity`) |
-| `orphan_current` | gauge | `kind` | Текущий счёт orphan'ов по виду (`tcp`, `udp_single`, `vless_mux`, `quic_bundle`) |
+| `orphan_current` | gauge | `kind` | Текущий счёт orphan'ов по виду (`tcp`, `udp_single`, `vless_mux`) |
 | `orphan_evicted_oom_total` | counter | `kind` | Вытеснения из-за глобального cap'а или байтового бюджета |
 | `orphan_udp_pkt_dropped_total` | counter | `reason` | UDP-пакеты, дропнутые во время парковки (`backbuf_overflow`) |
 | `orphan_udp_buf_bytes` | gauge | — | Текущий суммарный объём, занятый UDP back-буферами |
@@ -533,7 +490,6 @@ orphan_global_cap = 10000
 
 - **Persistent registry через рестарт**. Resume после рестарта сервера не поддерживается. Реализация требует либо передачи FD через systemd socket activation, либо переустановки upstream'а из сохранённого состояния, оба варианта добавляют значительную сложность ради маргинальной выгоды.
 - **Server-initiated migration**. Сервер не может отправить клиенту сообщение «иди на другой транспорт». Миграция всегда инициируется клиентом, когда его текущий транспорт ломается.
-- **Resumption для SS поверх raw QUIC**. У протокола Shadowsocks нет точки расширения, эквивалентной Addons. Клиенты, нуждающиеся в resumption, должны использовать Shadowsocks-over-WebSocket, где negotiation несут заголовки.
 - **Resumption для прямого SS UDP** (без WebSocket-туннелирования). Прямой SS UDP идентифицирует сессии по `SocketAddr` клиента; смена транспорта подразумевает другой клиентский адрес, что и так создаёт свежую NAT-запись. Полезного state'а сохранять нечего.
 - **Cross-server resumption**. Resume только в пределах одного сервера. Любой балансировщик нагрузки спереди ОБЯЗАН быть sticky (по client IP или по L4-хешу, переживающему смену транспорта), чтобы resumption работал.
 - **Частичный mux resume**. Целиком `MuxState` паркуется атомарно. Возможности возобновить только подмножество sub-соединений нет.
