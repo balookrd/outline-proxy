@@ -100,6 +100,7 @@ pub(in crate::server) fn throttle_params_for_path(path: &str) -> Option<Throttle
         window: Duration::from_secs(p.throttle_window_secs.max(1)),
         sustain_windows: p.throttle_sustain_windows.max(1),
         min_in_bytes_per_sec: p.throttle_min_bytes_per_sec,
+        edge_min_bytes_per_sec: p.throttle_edge_min_bytes_per_sec,
         signal_cooldown: Duration::from_secs(p.throttle_signal_cooldown_secs.max(1)),
     })
 }

@@ -273,6 +273,9 @@ pub struct PaddingConfig {
     pub throttle_window_secs: u64,
     pub throttle_sustain_windows: u32,
     pub throttle_min_bytes_per_sec: u64,
+    /// Edge-side delivered-rate floor (bytes/sec) for the cluster stall detector;
+    /// see `PaddingSection::throttle_edge_min_bytes_per_sec`.
+    pub throttle_edge_min_bytes_per_sec: u64,
     pub throttle_signal_cooldown_secs: u64,
 }
 
@@ -294,6 +297,7 @@ impl Default for PaddingConfig {
             throttle_window_secs: 1,
             throttle_sustain_windows: 5,
             throttle_min_bytes_per_sec: 1_000_000,
+            throttle_edge_min_bytes_per_sec: 64_000,
             throttle_signal_cooldown_secs: 30,
         }
     }
@@ -332,6 +336,9 @@ impl PaddingConfig {
             throttle_min_bytes_per_sec: section
                 .throttle_min_bytes_per_sec
                 .unwrap_or(d.throttle_min_bytes_per_sec),
+            throttle_edge_min_bytes_per_sec: section
+                .throttle_edge_min_bytes_per_sec
+                .unwrap_or(d.throttle_edge_min_bytes_per_sec),
             throttle_signal_cooldown_secs: section
                 .throttle_signal_cooldown_secs
                 .unwrap_or(d.throttle_signal_cooldown_secs),
