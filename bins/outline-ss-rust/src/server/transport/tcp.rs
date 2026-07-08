@@ -537,6 +537,11 @@ async fn try_park_on_drop(
     let Some(task) = state.upstream_to_client.take() else {
         return false;
     };
+    // Reserve the id before harvesting the reader (which awaits): a client
+    // redial that races this teardown then waits for the park to land instead
+    // of missing it. The guard clears the reservation on every exit below,
+    // committed park or not.
+    let _reservation = server.orphan_registry.reserve_park(session_id);
     cancel.notify_one();
     let reader = match task.await {
         Ok(Ok(UpstreamRelayOutcome::Cancelled(reader))) => reader,
@@ -708,7 +713,7 @@ where
         // hit — by spec the parked target is authoritative.
         if let Some(resume_id) = state.pending_resume_request.take()
             && let ResumeOutcome::Hit(Parked::Tcp(parked)) =
-                server.orphan_registry.take_for_resume(resume_id, &user_id)
+                server.orphan_registry.take_for_resume(resume_id, &user_id).await
         {
             // Cross-protocol mismatch (a SS-authenticated client
             // presents a Session ID minted under VLESS, or vice versa)

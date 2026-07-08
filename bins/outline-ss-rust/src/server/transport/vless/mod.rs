@@ -287,6 +287,10 @@ async fn try_park_vless_on_drop(
     let Some(session_id) = state.issued_session_id else {
         return false;
     };
+    // Reserve the id for the whole harvest+park below (each variant awaits its
+    // reader harvest), so a racing client redial waits for the park instead of
+    // missing it. The guard clears the reservation on every return path.
+    let _reservation = server.orphan_registry.reserve_park(session_id);
     match state.upstream {
         UpstreamSession::Tcp(_) => try_park_vless_tcp(state, server, route, session_id).await,
         UpstreamSession::Udp(_) => {
@@ -513,8 +517,10 @@ where
     // a fresh one.
     let user_id_for_resume = user.label_arc();
     if let Some(resume_id) = state.pending_resume_request.take()
-        && let ResumeOutcome::Hit(parked_kind) =
-            server.orphan_registry.take_for_resume(resume_id, &user_id_for_resume)
+        && let ResumeOutcome::Hit(parked_kind) = server
+            .orphan_registry
+            .take_for_resume(resume_id, &user_id_for_resume)
+            .await
     {
         match parked_kind {
             Parked::VlessMux(parked) => {

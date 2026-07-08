@@ -157,7 +157,7 @@ async fn park_then_take_returns_payload_for_owner() {
     registry.park(id, parked);
     assert_eq!(registry.len(), 1);
 
-    let outcome = registry.take_for_resume(id, "u1");
+    let outcome = registry.take_for_resume(id, "u1").await;
     assert!(matches!(outcome, ResumeOutcome::Hit(Parked::Tcp(_))));
     assert_eq!(registry.len(), 0);
 }
@@ -170,12 +170,12 @@ async fn take_with_wrong_owner_keeps_entry_and_reports_mismatch() {
     let parked = make_parked_tcp(&metrics, "alice").await;
     registry.park(id, parked);
 
-    let outcome = registry.take_for_resume(id, "mallory");
+    let outcome = registry.take_for_resume(id, "mallory").await;
     assert!(matches!(outcome, ResumeOutcome::Miss(ResumeMiss::OwnerMismatch)));
     // The entry stays parked so its rightful owner can still claim it.
     assert_eq!(registry.len(), 1);
 
-    let outcome = registry.take_for_resume(id, "alice");
+    let outcome = registry.take_for_resume(id, "alice").await;
     assert!(matches!(outcome, ResumeOutcome::Hit(Parked::Tcp(_))));
 }
 
@@ -183,7 +183,9 @@ async fn take_with_wrong_owner_keeps_entry_and_reports_mismatch() {
 async fn unknown_id_misses() {
     let metrics = Metrics::new(&test_config());
     let registry = OrphanRegistry::new(enabled_config(), metrics);
-    let outcome = registry.take_for_resume(SessionId::from_bytes([7u8; 16]), "anyone");
+    let outcome = registry
+        .take_for_resume(SessionId::from_bytes([7u8; 16]), "anyone")
+        .await;
     assert!(matches!(outcome, ResumeOutcome::Miss(ResumeMiss::Unknown)));
 }
 
@@ -205,11 +207,11 @@ async fn per_user_cap_evicts_oldest() {
 
     assert_eq!(registry.len(), 2, "oldest entry must have been evicted");
     assert!(matches!(
-        registry.take_for_resume(id1, "u1"),
+        registry.take_for_resume(id1, "u1").await,
         ResumeOutcome::Miss(ResumeMiss::Unknown)
     ));
-    assert!(matches!(registry.take_for_resume(id2, "u1"), ResumeOutcome::Hit(_)));
-    assert!(matches!(registry.take_for_resume(id3, "u1"), ResumeOutcome::Hit(_)));
+    assert!(matches!(registry.take_for_resume(id2, "u1").await, ResumeOutcome::Hit(_)));
+    assert!(matches!(registry.take_for_resume(id3, "u1").await, ResumeOutcome::Hit(_)));
 }
 
 #[tokio::test]
@@ -228,5 +230,59 @@ async fn sweep_drops_expired_entries() {
     tokio::time::sleep(Duration::from_millis(40)).await;
     let removed = registry.sweep_expired();
     assert_eq!(removed, 1);
+    assert_eq!(registry.len(), 0);
+}
+
+/// A resume that arrives while a park is still in flight (reserved but not yet
+/// committed) waits for the park to land and then hits, instead of missing and
+/// forcing a fresh session. This is the park-miss race fix.
+#[tokio::test]
+async fn resume_waits_for_in_flight_park() {
+    let metrics = Metrics::new(&test_config());
+    let registry = Arc::new(OrphanRegistry::new(enabled_config(), metrics.clone()));
+    let id = registry.mint_session_id().unwrap();
+
+    // Reserve the id as the parking side does before its reader harvest, but do
+    // not commit the park yet.
+    let reservation = registry.reserve_park(id);
+
+    // A concurrent resume must not miss: it blocks on the reservation.
+    let r2 = Arc::clone(&registry);
+    let resume =
+        tokio::spawn(
+            async move { matches!(r2.take_for_resume(id, "u1").await, ResumeOutcome::Hit(_)) },
+        );
+
+    // Let the resume task reach its wait, then land the park and drop the guard
+    // (the real parking side commits, then the reservation guard drops).
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!resume.is_finished(), "resume must block while the park is in flight");
+    registry.park(id, make_parked_tcp(&metrics, "u1").await);
+    drop(reservation);
+
+    assert!(resume.await.unwrap(), "resume must hit the just-committed park");
+    assert_eq!(registry.len(), 0);
+}
+
+/// If the in-flight park is abandoned (the reservation guard drops without a
+/// commit — e.g. the reader harvest found nothing worth parking), the waiting
+/// resume wakes and misses rather than hanging.
+#[tokio::test]
+async fn resume_misses_when_reserved_park_is_abandoned() {
+    let metrics = Metrics::new(&test_config());
+    let registry = Arc::new(OrphanRegistry::new(enabled_config(), metrics));
+    let id = registry.mint_session_id().unwrap();
+    let reservation = registry.reserve_park(id);
+
+    let r2 = Arc::clone(&registry);
+    let resume = tokio::spawn(async move {
+        matches!(r2.take_for_resume(id, "u1").await, ResumeOutcome::Miss(ResumeMiss::Unknown))
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!resume.is_finished(), "resume must block while the id is reserved");
+    drop(reservation); // abandon the park without committing
+
+    assert!(resume.await.unwrap(), "resume must miss once the park is abandoned");
     assert_eq!(registry.len(), 0);
 }
