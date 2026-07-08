@@ -131,11 +131,13 @@ When a client transport stream closes and a Session ID was issued for it:
 6. If the global cap (`orphan_global_cap`) is exceeded, evict by global LRU.
 7. Set `deadline = now + orphan_ttl_*`.
 
+> **Park-before-resume barrier.** The Session ID is *reserved* in the registry at the start of this sequence — before the reader is harvested (step 2 awaits the relay task) — and the reservation is cleared once the entry is committed (step 4) or the park is abandoned. This closes the park-miss race: a fast client redial that arrives while its own session is still parking would otherwise look the id up before it lands in `by_id`, get `miss-unknown`, and be forced onto a fresh session — losing the mid-stream bytes. With the reservation in place, a concurrent resume waits for the park to land or abandon (see the resume sequence). The same reservation covers the cluster edge-switch / failover path, where the redial arrives on an independent network stream.
+
 ### Resume sequence (on a new stream with `Resume`)
 
 1. Authenticate the new stream as usual (Shadowsocks key match or VLESS UUID).
 2. Look up `Resume` in `by_id`. Possible outcomes:
-   - **Not found**: respond `miss-unknown`, proceed as fresh session.
+   - **Not found**: if a park for this ID is *in flight* (reserved but not yet committed), wait — bounded — for it to commit or abandon, then re-check `by_id`. Only if it is still absent, respond `miss-unknown` and proceed as fresh session.
    - **Owner mismatch** (parked under a different user): respond `miss-owner`, do not reveal whether the ID exists. Proceed as fresh session.
    - **Expired** (deadline passed but sweeper has not yet run): respond `miss-expired`, evict, proceed as fresh session.
    - **Hit**: remove from `by_id` and `per_user`, atomically. Proceed to step 3.
@@ -426,6 +428,7 @@ stateDiagram-v2
 |---|---|
 | Resume ID matches but owner differs | `miss-owner`; do not reveal existence; treat as fresh session |
 | Two simultaneous resume requests for the same ID | `take()` is atomic; loser gets `miss-unknown` |
+| Client redial races the parking of its own session (park-miss window) | The id is reserved at park-begin, so the resume waits (bounded, ~5 s) for the park to land, then hits — the mid-stream bytes are preserved instead of being lost to a premature `miss-unknown` |
 | Upstream socket died while parked | Resume succeeds at the protocol level; on first read after attach, the client receives EOF / error |
 | Client disconnects again very fast (re-park) | New Session ID is issued; old ID is dropped |
 | `Resume-Capable` sent without TLS / over plaintext path | Honored (resumption itself does not require TLS, but Shadowsocks / VLESS auth is unchanged) |

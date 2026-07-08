@@ -12,11 +12,19 @@ use dashmap::DashMap;
 use outline_wire::cluster::{ObfuscationKey, ShardId};
 use parking_lot::Mutex;
 use ring::rand::SystemRandom;
+use tokio::sync::Notify;
 use tracing::{debug, warn};
 
 use crate::metrics::Metrics;
 
 use super::{config::ResumptionConfig, parked::Parked, session_id::SessionId};
+
+/// Upper bound on how long a `take_for_resume` waits for an in-flight park to
+/// commit before concluding a miss. The park side only holds a reservation
+/// across the reader harvest (a cancel-notify plus one task join), which is
+/// sub-millisecond in practice; this is a generous ceiling so a wedged or
+/// panicking parker can never hang a resume indefinitely.
+const RESERVATION_WAIT: Duration = Duration::from_secs(5);
 
 /// This server's cluster identity: the shard it owns and the key that
 /// obfuscates it inside minted session ids. `None` when the server is not part
@@ -74,6 +82,14 @@ pub(crate) struct OrphanRegistry {
     config: ResumptionConfig,
     rng: SystemRandom,
     by_id: DashMap<SessionId, ParkedEntry>,
+    /// Session ids with a park *in flight*: reserved before the parking side
+    /// harvests its reader (a step that awaits), and cleared once the entry is
+    /// committed to `by_id` or the park is abandoned. A concurrent
+    /// [`Self::take_for_resume`] that finds no committed entry but an active
+    /// reservation waits on the entry's `Notify` instead of declaring a miss —
+    /// this closes the park-miss race where a fast client redial arrived in the
+    /// window between the old carrier closing and the park landing.
+    reservations: DashMap<SessionId, Arc<Notify>>,
     /// Per-user index for cap enforcement and bulk eviction. The Mutex
     /// scope is narrow and contention is bounded by `orphan_per_user_cap`
     /// (4 by default), so a parking_lot mutex is preferred over a per-key
@@ -92,6 +108,7 @@ impl OrphanRegistry {
             config,
             rng: SystemRandom::new(),
             by_id: DashMap::new(),
+            reservations: DashMap::new(),
             per_user: DashMap::new(),
             cluster: None,
             metrics,
@@ -163,6 +180,27 @@ impl OrphanRegistry {
         }
     }
 
+    /// Reserves `id` for an imminent park, returning an RAII guard the parking
+    /// side holds across its reader harvest (which awaits). While the guard is
+    /// live, a concurrent [`Self::take_for_resume`] for `id` that finds no
+    /// committed entry waits on the reservation rather than missing. Dropping
+    /// the guard — whether the park committed or was abandoned — clears the
+    /// reservation and wakes any waiters, which then re-check `by_id` (a hit if
+    /// the park landed, a miss otherwise).
+    ///
+    /// A no-op when resumption is disabled (nothing is ever committed, so there
+    /// is nothing to race), matching `park`'s early drop.
+    pub(crate) fn reserve_park(&self, id: SessionId) -> ParkReservation<'_> {
+        if self.enabled() {
+            // A duplicate reservation for the same id (e.g. an overlapping
+            // teardown) simply shares the slot; the last guard dropped clears
+            // it. `entry`+`or_insert` keeps a single Notify per id so waiters
+            // and the committing park agree on which channel to signal.
+            self.reservations.entry(id).or_insert_with(|| Arc::new(Notify::new()));
+        }
+        ParkReservation { registry: self, id }
+    }
+
     /// Parks an upstream state. The caller MUST hold a freshly minted
     /// Session ID or one that the client previously received and is reusing.
     pub(crate) fn park(&self, id: SessionId, parked: Parked) {
@@ -227,15 +265,54 @@ impl OrphanRegistry {
     /// Attempts to resume the named session for an authenticated user.
     /// On a hit, the entry is removed from the registry and ownership
     /// of the upstream state transfers to the caller.
-    pub(crate) fn take_for_resume(&self, id: SessionId, authenticated_user: &str) -> ResumeOutcome {
+    ///
+    /// If no committed entry exists but a park is *in flight* for this id (a
+    /// reservation from [`Self::reserve_park`]), waits for that park to land or
+    /// be abandoned before concluding a miss — otherwise a client redial that
+    /// races the park's reader harvest would miss its own still-parking session
+    /// and lose the mid-stream bytes. The wait is bounded by [`RESERVATION_WAIT`].
+    pub(crate) async fn take_for_resume(
+        &self,
+        id: SessionId,
+        authenticated_user: &str,
+    ) -> ResumeOutcome {
         if !self.enabled() {
             return ResumeOutcome::Miss(ResumeMiss::Disabled);
         }
-        let Some((_, entry)) = self.by_id.remove(&id) else {
-            self.metrics
-                .record_orphan_resume_miss(ResumeMiss::Unknown.metric_reason());
-            return ResumeOutcome::Miss(ResumeMiss::Unknown);
-        };
+        // Fast path: a committed entry is already present.
+        if let Some(outcome) = self.try_take_committed(id, authenticated_user) {
+            return outcome;
+        }
+        // No committed entry yet. If a park is in flight for this id, wait for
+        // it before declaring a miss — this is the race fix.
+        if let Some(notify) = self.reservations.get(&id).map(|e| Arc::clone(e.value())) {
+            // Arm the wait *before* re-checking the reservation, so a
+            // `notify_waiters()` fired by the committing/abandoning park between
+            // our lookup and our await is not lost (`Notify::notified` only
+            // observes wakes registered from this point on).
+            let notified = notify.notified();
+            if self.reservations.contains_key(&id) {
+                let _ = tokio::time::timeout(RESERVATION_WAIT, notified).await;
+            }
+        }
+        // Final check: the park may have committed during the wait. A committed
+        // entry stays in `by_id` until taken, so this never misses a landed park.
+        if let Some(outcome) = self.try_take_committed(id, authenticated_user) {
+            return outcome;
+        }
+        self.metrics
+            .record_orphan_resume_miss(ResumeMiss::Unknown.metric_reason());
+        ResumeOutcome::Miss(ResumeMiss::Unknown)
+    }
+
+    /// Takes an already-committed entry synchronously. `None` means nothing is
+    /// indexed by `id` (the async caller may then wait on an in-flight
+    /// reservation); `Some` is a definitive outcome — a hit, a TTL-expired
+    /// miss, or an owner mismatch. Records the hit / eviction / mismatch metrics
+    /// inline; the plain "unknown" miss is left to the caller so an in-flight
+    /// park is not counted as a miss before it has had a chance to land.
+    fn try_take_committed(&self, id: SessionId, authenticated_user: &str) -> Option<ResumeOutcome> {
+        let (_, entry) = self.by_id.remove(&id)?;
         if entry.deadline <= Instant::now() {
             self.detach_from_per_user(&entry.owner, &id);
             let kind = entry.parked.kind();
@@ -244,7 +321,7 @@ impl OrphanRegistry {
                 .record_orphan_resume_miss(ResumeMiss::Unknown.metric_reason());
             self.refresh_kind_gauge(kind);
             drop(entry);
-            return ResumeOutcome::Miss(ResumeMiss::Unknown);
+            return Some(ResumeOutcome::Miss(ResumeMiss::Unknown));
         }
         if entry.owner.as_ref() != authenticated_user {
             // Reinsert and report owner mismatch internally. The same ID
@@ -258,13 +335,13 @@ impl OrphanRegistry {
             );
             self.metrics
                 .record_orphan_resume_miss(ResumeMiss::OwnerMismatch.metric_reason());
-            return ResumeOutcome::Miss(ResumeMiss::OwnerMismatch);
+            return Some(ResumeOutcome::Miss(ResumeMiss::OwnerMismatch));
         }
         self.detach_from_per_user(&entry.owner, &id);
         let kind = entry.parked.kind();
         self.metrics.record_orphan_resume_hit(kind);
         self.refresh_kind_gauge(kind);
-        ResumeOutcome::Hit(entry.parked)
+        Some(ResumeOutcome::Hit(entry.parked))
     }
 
     /// Sweeps expired entries. Called by the periodic maintenance task.
@@ -363,6 +440,33 @@ impl OrphanRegistry {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.by_id.len()
+    }
+}
+
+/// RAII reservation guard from [`OrphanRegistry::reserve_park`]. The parking
+/// side holds it across the reader harvest; dropping it — after a successful
+/// `park` or on any abandon path — clears the reservation and wakes any resume
+/// waiting on this id, which then re-checks `by_id`.
+#[must_use]
+pub(crate) struct ParkReservation<'a> {
+    registry: &'a OrphanRegistry,
+    id: SessionId,
+}
+
+impl Drop for ParkReservation<'_> {
+    fn drop(&mut self) {
+        // Clear the reservation and wake every current waiter. Remove *before*
+        // notifying so a woken waiter observes `contains_key == false` and does
+        // not re-arm. Waiters then re-check `by_id`: a hit if `park` committed
+        // before this drop, a miss otherwise. `notify_waiters` leaves no permit,
+        // which is correct — once the reservation is gone a later resume takes
+        // the committed fast path or waits on a fresh reservation instead.
+        //
+        // A no-op when the id was never inserted (resumption disabled) or when
+        // an overlapping teardown's guard already cleared the shared slot.
+        if let Some((_, notify)) = self.registry.reservations.remove(&self.id) {
+            notify.notify_waiters();
+        }
     }
 }
 

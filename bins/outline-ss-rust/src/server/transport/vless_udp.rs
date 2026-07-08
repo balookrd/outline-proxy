@@ -55,8 +55,10 @@ where
     // the parked target is authoritative.
     let user_id_for_resume = user.label_arc();
     if let Some(resume_id) = state.pending_resume_request.take()
-        && let ResumeOutcome::Hit(parked_kind) =
-            server.orphan_registry.take_for_resume(resume_id, &user_id_for_resume)
+        && let ResumeOutcome::Hit(parked_kind) = server
+            .orphan_registry
+            .take_for_resume(resume_id, &user_id_for_resume)
+            .await
     {
         match parked_kind {
             Parked::VlessUdpSingle(parked) => {

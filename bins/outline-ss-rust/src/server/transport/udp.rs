@@ -151,7 +151,7 @@ async fn attempt_ss_udp_resume(
         Some(id) => id,
         None => return 0,
     };
-    let outcome = server.orphan_registry.take_for_resume(resume_id, user_id);
+    let outcome = server.orphan_registry.take_for_resume(resume_id, user_id).await;
     let parked = match outcome {
         ResumeOutcome::Hit(Parked::SsUdpStream(parked)) => parked,
         ResumeOutcome::Hit(other) => {
@@ -629,6 +629,11 @@ async fn park_ss_udp_stream_on_drop(
     let Some(owner) = session.authenticated_user_id.get().map(Arc::clone) else {
         return; // Stream never authenticated — nothing to park.
     };
+    // Reserve the id so a racing resume of this SS-UDP stream waits for the park
+    // to land rather than missing it (the detach + park below is brief but still
+    // concurrent with a redial on another task). The guard clears on every
+    // return; the park commits under it.
+    let _reservation = server.orphan_registry.reserve_park(session_id);
     let nat_keys: HashSet<NatKey> = std::mem::take(&mut *session.nat_keys.lock());
     if nat_keys.is_empty() {
         return;
