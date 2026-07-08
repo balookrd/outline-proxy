@@ -175,8 +175,10 @@ where
     // the parked target is authoritative.
     let user_id_for_resume = user.label_arc();
     if let Some(resume_id) = state.pending_resume_request.take()
-        && let ResumeOutcome::Hit(Parked::Tcp(parked)) =
-            server.orphan_registry.take_for_resume(resume_id, &user_id_for_resume)
+        && let ResumeOutcome::Hit(Parked::Tcp(parked)) = server
+            .orphan_registry
+            .take_for_resume(resume_id, &user_id_for_resume)
+            .await
     {
         let TcpProtocolContext::Vless = parked.protocol_context else {
             warn!(
