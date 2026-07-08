@@ -20,32 +20,19 @@ use super::{
 pub enum H3Alpn {
     /// HTTP/3 (with Extended CONNECT WebSocket per RFC 9220).
     H3,
-    /// Raw VLESS framed directly over QUIC bidirectional streams.
-    Vless,
-    /// Raw Shadowsocks AEAD framed directly over QUIC bidirectional streams.
-    Ss,
 }
 
 impl H3Alpn {
-    /// All ALPN identifiers the server should advertise for this
-    /// protocol, in preference order (MTU-aware sibling first when
-    /// applicable). Newer clients negotiate the MTU-aware variant
-    /// and use the oversize-record stream fallback for UDP datagrams
-    /// that exceed `Connection::max_datagram_size()`; older clients
-    /// negotiate the base ALPN and behave as before.
+    /// All ALPN identifiers the server advertises for this protocol.
     pub const fn advertised_alpns(self) -> &'static [&'static [u8]] {
         match self {
             Self::H3 => &[b"h3"],
-            Self::Vless => &[b"vless-mtu", b"vless"],
-            Self::Ss => &[b"ss-mtu", b"ss"],
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "h3" => Some(Self::H3),
-            "vless" | "vless-mtu" => Some(Self::Vless),
-            "ss" | "ss-mtu" => Some(Self::Ss),
             _ => None,
         }
     }
@@ -81,11 +68,9 @@ pub struct Config {
     /// [`Self::tls_certs`] when no `[[server.h3.certs]]` table is given
     /// at all.
     pub h3_certs: Vec<TlsCertEntry>,
-    /// ALPN protocols advertised on the HTTP/3 QUIC endpoint. Each entry
-    /// selects a different transport multiplexed on the same UDP port:
-    /// `"h3"` for HTTP/3 + WebSocket-over-HTTP/3 (the default), `"vless"`
-    /// for raw VLESS over QUIC streams, `"ss"` for raw Shadowsocks over QUIC
-    /// streams. Resolved from `[server.h3].alpn`; defaults to `["h3"]`.
+    /// ALPN protocols advertised on the HTTP/3 QUIC endpoint. Only
+    /// `"h3"` (HTTP/3 + WebSocket-over-HTTP/3) is supported. Resolved
+    /// from `[server.h3].alpn`; defaults to `["h3"]`.
     pub h3_alpn: Vec<H3Alpn>,
     pub metrics_listen: Option<SocketAddr>,
     pub metrics_path: String,
@@ -167,11 +152,6 @@ pub struct Config {
     /// configured backend. `None` keeps every TLS connection on the
     /// local terminator.
     pub sni_fallback: Option<SniFallbackConfig>,
-    /// Reverse-tunnel dialer (topology A). When `Some` and enabled, the
-    /// server dials each configured public `ws` listener over QUIC and
-    /// serves raw Shadowsocks on the streams the peer opens. `None` keeps
-    /// the listen-only model. See `docs/REVERSE-TUNNEL.md`.
-    pub reverse_tunnel: Option<ReverseTunnelConfig>,
     /// Mesh cluster membership. When `Some`, this server mints session ids
     /// carrying its shard, binds the mesh listener and relays foreign-shard
     /// sessions to their home. `None` keeps the standalone model. See
@@ -209,54 +189,6 @@ pub struct ClusterConfig {
     pub mesh_relay_budget: Duration,
     /// Peer homes by shard. Excludes this server's own shard.
     pub peers: HashMap<ShardId, SocketAddr>,
-}
-
-/// Resolved reverse-tunnel dialer config: one or more public `ws`
-/// endpoints to dial. Empty `endpoints` or `enabled = false` means no
-/// dialer runs.
-#[derive(Debug, Clone)]
-pub struct ReverseTunnelConfig {
-    pub endpoints: Vec<ReverseTunnelEndpoint>,
-}
-
-/// One resolved reverse-tunnel endpoint. The pinned `ws` server-cert
-/// fingerprint stays a string and the client cert/key stay paths — all
-/// three are parsed/loaded by the dialer at startup (mirrors how the H3
-/// listener keeps `h3_cert_path` as a path). A malformed pin or unreadable
-/// cert fails that one endpoint's dial loop without aborting the server.
-/// Wire protocol carried over a reverse-tunnel carrier. Selects the QUIC
-/// ALPN offered and which raw-QUIC accept loop the dialer drives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReverseProtocol {
-    Ss,
-    Vless,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReverseTunnelEndpoint {
-    pub addr: String,
-    pub server_name: String,
-    pub server_cert_pin: String,
-    pub client_cert_path: PathBuf,
-    pub client_key_path: PathBuf,
-    /// Wire protocol carried over this carrier (selects ALPN + accept loop).
-    pub protocol: ReverseProtocol,
-    /// `true` offers the `-mtu` ALPN sibling first; `false` only the base.
-    pub mtu: bool,
-    pub backoff_min: std::time::Duration,
-    pub backoff_max: std::time::Duration,
-}
-
-impl ReverseTunnelEndpoint {
-    /// ALPN list to offer, MTU-aware sibling first when enabled.
-    pub fn advertised_alpns(&self) -> &'static [&'static [u8]] {
-        match (self.protocol, self.mtu) {
-            (ReverseProtocol::Ss, true) => &[b"ss-mtu", b"ss"],
-            (ReverseProtocol::Ss, false) => &[b"ss"],
-            (ReverseProtocol::Vless, true) => &[b"vless-mtu", b"vless"],
-            (ReverseProtocol::Vless, false) => &[b"vless"],
-        }
-    }
 }
 
 /// Public snapshot of the `[session_resumption]` config. Mirrors

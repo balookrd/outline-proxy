@@ -370,8 +370,6 @@ impl TunTcpEngine {
                 TcpWriter::Ws(w) => UpstreamWriter::TunneledWs(w),
                 TcpWriter::Socket(w) => UpstreamWriter::TunneledSocket(w),
                 TcpWriter::Vless(w) => UpstreamWriter::TunneledVless(w),
-                #[cfg(feature = "quic")]
-                TcpWriter::QuicSs(w) => UpstreamWriter::TunneledQuicSs(w),
             }));
             let (group_name, uplink_name, notify) = {
                 let mut state = flow.lock().await;

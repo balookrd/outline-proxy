@@ -179,11 +179,6 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
         let m = ss_mode.ok_or_else(|| {
             anyhow!("uplink {name}: combined `ss_xhttp_url`/`ss_ws_url` requires `ss_mode`")
         })?;
-        if matches!(m, TransportMode::Quic) {
-            bail!(
-                "uplink {name}: combined mode does not support raw QUIC (it muxes tcp+udp on one connection natively)"
-            );
-        }
         #[cfg(not(feature = "h3"))]
         if matches!(m, TransportMode::XhttpH3 | TransportMode::WsH3) {
             bail!(
@@ -316,10 +311,10 @@ pub(super) fn resolve_primary_wire_shape(input: PrimaryWireInput<'_>) -> Result<
                 );
             }
             let mode = vless_mode.unwrap_or_default();
-            // `xhttp_h3`, `ws_h3` and `quic` all need the QUIC + h3 stack
-            // that lives behind the optional `h3` feature on this binary.
+            // `xhttp_h3` and `ws_h3` both need the QUIC + h3 stack that lives
+            // behind the optional `h3` feature on this binary.
             #[cfg(not(feature = "h3"))]
-            if matches!(mode, TransportMode::XhttpH3 | TransportMode::WsH3 | TransportMode::Quic) {
+            if matches!(mode, TransportMode::XhttpH3 | TransportMode::WsH3) {
                 bail!(
                     "uplink {name}: mode={mode} requires the `h3` feature; \
                      rebuild with `--features h3` (the default profile already enables it) \

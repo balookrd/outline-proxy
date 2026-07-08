@@ -4,13 +4,9 @@ use arc_swap::ArcSwap;
 use crate::server::tests::sample_config;
 
 /// Builds a `UserManager` whose only registered route surface is the default
-/// tcp/udp paths from `sample_config`. `h3_alpn` controls whether raw
-/// VLESS-over-QUIC counts as an available transport — exactly the bit
-/// `validate_new` must honour to stay feature-equivalent with the startup
-/// `config::validation` path.
-fn manager_with_alpn(h3_alpn: Vec<H3Alpn>) -> UserManager {
-    let mut config = sample_config("127.0.0.1:0".parse().unwrap());
-    config.h3_alpn = h3_alpn;
+/// tcp/udp paths from `sample_config`.
+fn test_manager() -> UserManager {
+    let config = sample_config("127.0.0.1:0".parse().unwrap());
     let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
@@ -58,27 +54,15 @@ fn vless_only_entry() -> UserEntry {
     }
 }
 
-// A `vless_id` user with no ws/xhttp path is valid *iff* raw VLESS-over-QUIC is
-// enabled (`"vless"` in `[server.h3].alpn`) — the raw-QUIC ALPN is itself a
-// transport. The control API must accept exactly what a fresh startup would, so
-// this mirrors the `has_raw_quic` branch in `config::validation::validate`.
-#[test]
-fn vless_id_with_raw_quic_alpn_needs_no_ws_or_xhttp_path() {
-    let manager = manager_with_alpn(vec![H3Alpn::H3, H3Alpn::Vless]);
-    assert!(
-        manager.validate_new(&vless_only_entry()).is_ok(),
-        "raw VLESS-over-QUIC ALPN must satisfy the vless_id transport requirement, \
-         matching startup validation"
-    );
-}
-
 #[test]
 fn vless_id_without_any_transport_is_rejected() {
-    // No raw-QUIC VLESS and no ws/xhttp path: both startup and runtime reject.
-    let manager = manager_with_alpn(vec![H3Alpn::H3]);
+    // A `vless_id` user needs a ws_path_vless or xhttp_path_vless. Raw
+    // VLESS-over-QUIC was removed, so no ALPN can satisfy the requirement and
+    // the live control API rejects such a user outright.
+    let manager = test_manager();
     assert!(
         manager.validate_new(&vless_only_entry()).is_err(),
-        "vless_id with no ws/xhttp path and no raw-QUIC ALPN must be rejected"
+        "vless_id with no ws/xhttp path must be rejected"
     );
 }
 
@@ -108,7 +92,7 @@ fn ss_entry_with_aliases(pairs: &[(&str, &str)]) -> UserEntry {
 
 #[test]
 fn validate_new_accepts_valid_aliases() {
-    let manager = manager_with_alpn(vec![H3Alpn::H3]);
+    let manager = test_manager();
     let entry = ss_entry_with_aliases(&[("mobile", "10.0.0.0/8")]);
     assert!(manager.validate_new(&entry).is_ok());
 }
@@ -116,7 +100,7 @@ fn validate_new_accepts_valid_aliases() {
 #[test]
 fn validate_new_rejects_malformed_alias_cidr() {
     // Control-plane parity with startup `config::validation`.
-    let manager = manager_with_alpn(vec![H3Alpn::H3]);
+    let manager = test_manager();
     let entry = ss_entry_with_aliases(&[("mobile", "not-a-cidr")]);
     assert!(manager.validate_new(&entry).is_err());
 }

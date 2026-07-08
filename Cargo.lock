@@ -1807,7 +1807,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64",
  "bytes",
  "futures-util",
  "h3",
@@ -1833,7 +1832,6 @@ dependencies = [
  "shadowsocks-crypto",
  "socks5-proto",
  "sockudo-ws",
- "subtle",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",

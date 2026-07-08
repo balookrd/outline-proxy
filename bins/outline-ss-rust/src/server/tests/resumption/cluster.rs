@@ -68,7 +68,6 @@ use super::{connect_ws_h1, expect_binary_reply, spawn_echo_target};
 use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn};
 use crate::crypto::{AeadStreamDecryptor, UserKey};
 use crate::metrics::{Metrics, Transport};
-use crate::protocol::vless::VlessUser;
 
 /// A running cluster node: an SS-over-WS listener plus a mesh endpoint (home
 /// listener + edge dialer). Aborts its tasks on drop so tests don't leak
@@ -272,9 +271,6 @@ async fn spawn_h3_edge_node(
         services,
         auth,
         alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
-        raw_vless_users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
-        raw_vless_candidates: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
-        raw_ss_users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
         http_fallback: None,
         cluster: Some(cluster),
     };

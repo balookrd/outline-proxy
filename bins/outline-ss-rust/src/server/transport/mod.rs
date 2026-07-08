@@ -31,7 +31,6 @@ mod fallback;
 mod mesh_carrier;
 pub(in crate::server) mod mesh_relay;
 mod proxy_protocol;
-mod raw_quic;
 mod resume_headers;
 pub(in crate::server) mod sink;
 pub(in crate::server) mod sni_fallback;
@@ -48,15 +47,7 @@ mod xhttp;
 pub(in crate::server) use fallback::{
     HttpFallbackContext, h3_fallback_handle, http_fallback_handler,
 };
-pub(in crate::server) use raw_quic::{
-    OversizeStream, RawQuicSsCtx, RawQuicVlessRouteCtx, RawSsConnectionCtx, RawVlessConnectionCtx,
-    SsQuicConn, StreamKind, VlessQuicConn, classify_accept_bi,
-    handle_raw_ss_quic_stream_with_prefix, handle_raw_vless_quic_stream_with_prefix,
-    serve_raw_ss_oversize_records, serve_raw_ss_quic_datagrams, serve_raw_vless_oversize_records,
-    serve_raw_vless_quic_datagrams,
-};
 pub(in crate::server) use resume_headers::{ResumeContext, ResumeResponseEcho, edge_route};
-pub(in crate::server) use sink::is_handshake_rejected;
 pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
 pub(in crate::server) use vless::{VlessWsRouteCtx, VlessWsServerCtx, handle_vless_h3_connection};

@@ -319,19 +319,15 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .wire-dot.failed { background: rgba(220, 38, 38, .55); border-color: rgba(185, 28, 28, .55); }
 .wire-dot.fam-vless-ws    { background: #6366f1; }
 .wire-dot.fam-vless-xhttp { background: #a855f7; }
-.wire-dot.fam-vless-quic  { background: #ec4899; }
 .wire-dot.fam-ss-ws       { background: #06b6d4; }
 .wire-dot.fam-ss-xhttp    { background: #8b5cf6; }
-.wire-dot.fam-ss-quic     { background: #94a3b8; }
 .wire-dot.fam-unknown     { background: var(--dot-idle); }
 .leg-chain .leg-arrow { color: var(--muted); font-size: 9px; opacity: .6; }
 [data-theme="light"] .wire-dot { border-color: rgba(15, 23, 42, 0.10); }
 [data-theme="light"] .wire-dot.fam-vless-ws    { background: #818cf8; }
 [data-theme="light"] .wire-dot.fam-vless-xhttp { background: #c084fc; }
-[data-theme="light"] .wire-dot.fam-vless-quic  { background: #f472b6; }
 [data-theme="light"] .wire-dot.fam-ss-ws       { background: #22d3ee; }
 [data-theme="light"] .wire-dot.fam-ss-xhttp    { background: #a78bfa; }
-[data-theme="light"] .wire-dot.fam-ss-quic     { background: #94a3b8; }
 /* Wire-chain legend — collapsed by default so it doesn't crowd the
  * summary cards. Click the summary chip to expand the colour key.
  * Keeps the same look on light + dark themes. */
@@ -447,10 +443,8 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
       <div class="wire-legend-body">
         <span class="wire-legend-item"><span class="wire-dot fam-vless-ws"></span>VLESS / WS</span>
         <span class="wire-legend-item"><span class="wire-dot fam-vless-xhttp"></span>VLESS / XHTTP</span>
-        <span class="wire-legend-item"><span class="wire-dot fam-vless-quic"></span>VLESS / QUIC</span>
         <span class="wire-legend-item"><span class="wire-dot fam-ss-ws"></span>Shadowsocks / WS</span>
         <span class="wire-legend-item"><span class="wire-dot fam-ss-xhttp"></span>Shadowsocks / XHTTP</span>
-        <span class="wire-legend-item"><span class="wire-dot fam-ss-quic"></span>Shadowsocks / QUIC</span>
         <span class="wire-legend-item"><span class="wire-dot failed"></span>failed in current shuffle round</span>
         <span class="wire-legend-item wire-legend-note">Active wire of the leg is rendered as a full pill; hover any square for the exact `transport / mode` of that wire.</span>
       </div>
@@ -708,7 +702,6 @@ function transportLabel(mode) {
   if (v === "ws_h1"||v === "http1") return "WS/H1";
   if (v === "ws_h2"||v === "h2") return "WS/H2";
   if (v === "ws_h3"||v === "h3") return "WS/H3";
-  if (v === "quic") return "QUIC";
   if (v === "xhttp_h1") return "XHTTP/H1";
   if (v === "xhttp_h2") return "XHTTP/H2";
   if (v === "xhttp_h3") return "XHTTP/H3";
@@ -747,22 +740,20 @@ function submodeSuffix(submode, effective, downgraded) {
 }
 // Carrier-family CSS class for the per-wire dot in the leg chain cell.
 // Maps `(transport, mode)` onto the colour palette declared in CSS
-// (`fam-vless-ws`, `fam-vless-xhttp`, `fam-vless-quic`, `fam-ss-ws`,
-// `fam-ss-xhttp`, `fam-ss-quic`). For Shadowsocks transport:
-// mode="quic" → `fam-ss-quic`, mode.startsWith("xhttp") → `fam-ss-xhttp`, else → `fam-ss-ws`.
+// (`fam-vless-ws`, `fam-vless-xhttp`, `fam-ss-ws`, `fam-ss-xhttp`). For
+// Shadowsocks transport: mode.startsWith("xhttp") → `fam-ss-xhttp`, else
+// → `fam-ss-ws`.
 // Returns `fam-unknown` for anything the dashboard doesn't recognise so
 // the dot still renders.
 function wireFamilyClass(transport, mode) {
   const t = String(transport || "").toLowerCase();
   const m = String(mode || "").toLowerCase();
   if (t === "ss") {
-    if (m === "quic") return "fam-ss-quic";
     if (m.startsWith("xhttp")) return "fam-ss-xhttp";
     return "fam-ss-ws";
   }
   if (t === "vless") {
     if (m.startsWith("xhttp")) return "fam-vless-xhttp";
-    if (m === "quic") return "fam-vless-quic";
     if (m.startsWith("ws") || m === "h2" || m === "h3" || m === "http1") return "fam-vless-ws";
     return "fam-vless-ws";
   }
@@ -1102,15 +1093,14 @@ function applyInstanceView(inst) {
   if (!inst.ok) {
     state.instances.set(inst.name, {
       name: inst.name, ok: false, error: inst.error || "instance unavailable",
-      groups: prev.groups || [], reversePeers: prev.reversePeers || [],
+      groups: prev.groups || [],
       updatedAt: Date.now(), loading: false,
     });
     return;
   }
   const groups = inst.topology?.instance?.groups || [];
-  const reversePeers = inst.topology?.instance?.reverse_peers || [];
   state.instances.set(inst.name, {
-    name: inst.name, ok: true, error: null, groups, reversePeers,
+    name: inst.name, ok: true, error: null, groups,
     updatedAt: Date.now(), loading: false,
   });
   state.lastUpdated = Date.now();
@@ -1141,9 +1131,6 @@ function renderInstancePanel(instance) {
         <strong>${escapeHtml(instance.name)}</strong>
         <span class="status-pill ${tone}">${instance.ok === null ? "Loading" : statusLabel(tone)}</span>
         ${loadingTag}
-        ${(instance.reversePeers || []).map(r =>
-          `<span class="status-pill ${r.live_peers > 0 ? "ok" : "warn"}" title="Live reverse-tunnel peers in group ${escapeHtml(r.group)}">⇄ ${escapeHtml(r.group)} ${r.live_peers}</span>`
-        ).join("")}
       </div>
       <span class="subtitle" style="margin-right:8px">↻ ${stamp}</span>
       <span class="collapse-chev">⌃</span>

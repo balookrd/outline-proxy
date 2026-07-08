@@ -43,11 +43,6 @@ pub(super) struct FileConfig {
     pub http_fallback: Option<HttpFallbackSection>,
     #[serde(default)]
     pub sni_fallback: Option<SniFallbackSection>,
-    /// Reverse-tunnel dialer (topology A): this server dials out to one or
-    /// more public `outline-ws-rust` listeners over QUIC instead of (or in
-    /// addition to) listening locally. `None` keeps the listen-only model.
-    #[serde(default)]
-    pub reverse_tunnel: Option<ReverseTunnelSection>,
     /// Mesh cluster membership: this server's shard, the shared PSK and the
     /// peer shard→address table. `None` keeps the standalone model. See
     /// `docs/CLUSTER.md`.
@@ -97,57 +92,6 @@ pub(super) struct ClusterPeerSection {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ReverseTunnelSection {
-    /// Master switch. When absent or `false`, no reverse dialer runs even
-    /// if endpoints are listed.
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    #[serde(default)]
-    pub endpoints: Option<Vec<ReverseTunnelEndpointSection>>,
-}
-
-/// One public `ws` listener this server dials. Each becomes an independent
-/// reconnect loop carrying raw Shadowsocks over the QUIC streams the `ws`
-/// peer opens per SOCKS5/TUN session.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ReverseTunnelEndpointSection {
-    /// `host:port` of the public `ws` QUIC listener. `host` may be a DNS
-    /// name (resolved at dial time) or a literal IP.
-    pub addr: String,
-    /// TLS SNI / server name presented in the ClientHello. Defaults to the
-    /// host part of `addr` when omitted.
-    #[serde(default)]
-    pub server_name: Option<String>,
-    /// SHA-256 fingerprint of the `ws` server certificate to pin: 64 hex
-    /// chars (optionally colon-separated) or base64 of 32 bytes. Replaces
-    /// webpki validation (CDN fronting is not applicable to the reverse
-    /// carrier).
-    pub server_cert_pin: String,
-    /// Client certificate + key presented for mTLS. The `ws` peer pins this
-    /// cert's fingerprint to authenticate this server.
-    pub client_cert_path: PathBuf,
-    pub client_key_path: PathBuf,
-    /// Wire protocol carried over this reverse carrier: `"ss"` (default) or
-    /// `"vless"`. Selects the QUIC ALPN offered (`ss`/`ss-mtu` vs
-    /// `vless`/`vless-mtu`) and which raw-QUIC accept loop runs. The `ws`
-    /// peer entry must declare the matching protocol.
-    #[serde(default)]
-    pub protocol: Option<String>,
-    /// `true` (default) offers the `-mtu` ALPN sibling first so the
-    /// oversize-record stream fallback is available; `false` offers only
-    /// the base ALPN.
-    #[serde(default)]
-    pub mtu: Option<bool>,
-    /// Reconnect backoff floor / ceiling in seconds. Defaults 1 / 60.
-    #[serde(default)]
-    pub backoff_min_secs: Option<u64>,
-    #[serde(default)]
-    pub backoff_max_secs: Option<u64>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct ServerSection {
     pub listen: Option<SocketAddr>,
     /// Default TLS cert for the TCP listener. Legacy alias `tls_cert_path`
@@ -180,10 +124,9 @@ pub(super) struct ServerH3Section {
     /// all), inherits the array from `[server].certs`.
     #[serde(default)]
     pub certs: Option<Vec<TlsCertSection>>,
-    /// ALPN protocols to advertise on the HTTP/3 QUIC endpoint. Allowed values
-    /// are `"h3"` (HTTP/3 + WebSocket-over-HTTP/3), `"vless"` (raw VLESS over
-    /// QUIC streams) and `"ss"` (raw Shadowsocks over QUIC streams). Defaults
-    /// to `["h3"]` when unset.
+    /// ALPN protocols to advertise on the HTTP/3 QUIC endpoint. Only `"h3"`
+    /// (HTTP/3 + WebSocket-over-HTTP/3) is supported; defaults to `["h3"]`
+    /// when unset.
     #[serde(default)]
     pub alpn: Option<Vec<String>>,
 }

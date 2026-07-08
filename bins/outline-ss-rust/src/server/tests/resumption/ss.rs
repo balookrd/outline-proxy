@@ -1,6 +1,5 @@
 //! Shadowsocks resumption tests — five SS-TCP scenarios plus two
-//! SS-UDP scenarios. All exercise the WebSocket fast path; raw QUIC
-//! lives in [`super::raw_quic`].
+//! SS-UDP scenarios. All exercise the WebSocket fast path.
 
 use std::{
     net::{Ipv4Addr, SocketAddr},

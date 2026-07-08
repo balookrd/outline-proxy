@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::{
     config::{
-        CipherKind, Config, H3Alpn, OneOrManyCidr, UserEntry,
+        CipherKind, Config, OneOrManyCidr, UserEntry,
         access_key::build_access_key_artifacts_for_user,
     },
     crypto::UserKey,
@@ -62,11 +62,6 @@ pub(in crate::server) struct UserManager {
     allowed_xhttp_paths: BTreeSet<String>,
     allowed_xhttp_ss_paths: BTreeSet<String>,
     allowed_xhttp_ss_udp_paths: BTreeSet<String>,
-    /// Whether raw VLESS-over-QUIC is enabled (`"vless"` in `[server.h3].alpn`).
-    /// When true a `vless_id` user needs no ws/xhttp path — the raw-QUIC ALPN is
-    /// itself a transport. Mirrors the startup check in `config::validation` so
-    /// the control API accepts exactly the users a fresh start would.
-    has_raw_quic_vless: bool,
     config_path: Option<PathBuf>,
 }
 
@@ -188,7 +183,6 @@ impl UserManager {
             allowed_xhttp_paths: allowed.xhttp_vless,
             allowed_xhttp_ss_paths: allowed.xhttp_ss,
             allowed_xhttp_ss_udp_paths: allowed.xhttp_ss_udp,
-            has_raw_quic_vless: config.h3_alpn.contains(&H3Alpn::Vless),
             config_path: config.config_path.clone(),
         }
     }
@@ -368,10 +362,9 @@ impl UserManager {
                 .xhttp_path_vless
                 .as_deref()
                 .or(self.default_xhttp_path_vless.as_deref());
-            if ws_path.is_none() && xhttp_path.is_none() && !self.has_raw_quic_vless {
+            if ws_path.is_none() && xhttp_path.is_none() {
                 bail!(
-                    "vless_id requires at least one transport: ws_path_vless, \
-                     xhttp_path_vless, or raw VLESS-over-QUIC (\"vless\" in [server.h3].alpn)"
+                    "vless_id requires at least one transport: ws_path_vless or xhttp_path_vless"
                 );
             }
             if let Some(path) = ws_path {

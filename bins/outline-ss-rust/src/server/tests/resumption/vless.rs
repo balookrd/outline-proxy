@@ -1,6 +1,5 @@
 //! VLESS-over-WebSocket resumption tests: a TCP scenario, a UDP
-//! scenario, and a Mux scenario. Raw QUIC lives in
-//! [`super::raw_quic`].
+//! scenario, and a Mux scenario.
 
 use std::{
     net::{Ipv4Addr, SocketAddr},

@@ -24,7 +24,7 @@ use super::{
     replay::ReplayStore,
     resumption::{OrphanRegistry, ResumptionConfig},
     setup::{
-        SsXhttpUserRoute, UserRoute, VlessUserRoute, VlessXhttpUserRoute, build_raw_vless_users,
+        SsXhttpUserRoute, UserRoute, VlessUserRoute, VlessXhttpUserRoute,
         build_ss_xhttp_udp_user_routes, build_ss_xhttp_user_routes, build_transport_route_map,
         build_user_routes, build_vless_transport_route_map, build_vless_user_routes,
         build_vless_xhttp_user_routes, build_xhttp_ss_route_map, build_xhttp_vless_route_map,
@@ -42,9 +42,6 @@ pub(super) struct Built {
     pub(super) users: Arc<[UserKey]>,
     pub(super) user_routes: Arc<[UserRoute]>,
     pub(super) vless_user_routes: Arc<[VlessUserRoute]>,
-    /// VLESS auth set for raw-QUIC (forward H3 + reverse-tunnel), including
-    /// users with no WS path. See [`build_raw_vless_users`].
-    pub(super) raw_vless_users: Arc<[crate::protocol::vless::VlessUser]>,
     pub(super) vless_xhttp_user_routes: Arc<[VlessXhttpUserRoute]>,
     pub(super) ss_xhttp_user_routes: Arc<[SsXhttpUserRoute]>,
     pub(super) ss_xhttp_udp_user_routes: Arc<[SsXhttpUserRoute]>,
@@ -79,10 +76,31 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     super::transport::carrier_padding::init(config.padding.clone());
     let user_routes = build_user_routes(config)?;
     let vless_user_routes = build_vless_user_routes(config)?;
-    let raw_vless_users = build_raw_vless_users(config)?;
     let vless_xhttp_user_routes = build_vless_xhttp_user_routes(config)?;
     let ss_xhttp_user_routes = build_ss_xhttp_user_routes(config)?;
     let ss_xhttp_udp_user_routes = build_ss_xhttp_udp_user_routes(config)?;
+    // Raw VLESS-over-QUIC and the reverse-tunnel dialer were removed, so a
+    // vless_id user with neither a ws_path_vless nor an xhttp_path_vless now
+    // has no forward transport. Rather than hard-fail an otherwise-valid
+    // config, warn and skip such users — they are already absent from every
+    // route table built above.
+    for entry in &config.users {
+        if entry.is_enabled()
+            && entry.vless_id.is_some()
+            && entry
+                .effective_ws_path_vless(config.ws_path_vless.as_deref())
+                .is_none()
+            && entry
+                .effective_xhttp_path_vless(config.xhttp_path_vless.as_deref())
+                .is_none()
+        {
+            tracing::warn!(
+                user = %entry.id,
+                "vless_id user has no forward transport (ws_path_vless / xhttp_path_vless); \
+                 skipping — raw VLESS-over-QUIC was removed"
+            );
+        }
+    }
     let users = user_keys(user_routes.as_ref());
     let tcp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
@@ -215,7 +233,6 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         users,
         user_routes,
         vless_user_routes,
-        raw_vless_users,
         vless_xhttp_user_routes,
         ss_xhttp_user_routes,
         ss_xhttp_udp_user_routes,

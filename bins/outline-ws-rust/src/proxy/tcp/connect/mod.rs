@@ -50,11 +50,6 @@ pub async fn serve_tcp_connect(
             debug!(target = %target, group = %name, "TCP route: dispatching via group");
             manager
         },
-        #[cfg(feature = "h3")]
-        Route::Reverse { peer } => {
-            debug!(target = %target, "TCP route: dispatching via reverse-tunnel peer");
-            return crate::reverse::serve_reverse_tcp(client, peer, target).await;
-        },
     };
 
     let session = metrics::track_session("tcp");

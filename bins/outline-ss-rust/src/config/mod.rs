@@ -18,8 +18,7 @@ pub use loader::AppMode;
 #[cfg(test)]
 pub use loader::default_http_root_realm;
 pub use resolved::{
-    AccessKeyConfig, ClusterConfig, Config, H3Alpn, PaddingConfig, ReverseProtocol,
-    ReverseTunnelEndpoint, SessionResumptionConfig,
+    AccessKeyConfig, ClusterConfig, Config, H3Alpn, PaddingConfig, SessionResumptionConfig,
 };
 // Surfaced only for the cluster e2e tests, which build a `ClusterConfig` by
 // hand; nothing in the non-test binary consumes this re-export.

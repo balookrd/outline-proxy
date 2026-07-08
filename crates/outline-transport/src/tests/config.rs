@@ -6,7 +6,8 @@ fn from_str_accepts_http1_and_h1_alias() {
     assert_eq!("h1".parse::<TransportMode>().unwrap(), TransportMode::WsH1);
     assert_eq!("h2".parse::<TransportMode>().unwrap(), TransportMode::WsH2);
     assert_eq!("h3".parse::<TransportMode>().unwrap(), TransportMode::WsH3);
-    assert_eq!("quic".parse::<TransportMode>().unwrap(), TransportMode::Quic);
+    // Raw QUIC uplink support was removed; the mode is now rejected explicitly.
+    assert!("quic".parse::<TransportMode>().is_err());
     assert!("h4".parse::<TransportMode>().is_err());
 }
 

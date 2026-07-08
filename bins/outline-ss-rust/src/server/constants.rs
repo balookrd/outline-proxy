@@ -32,16 +32,6 @@ pub(super) const H3_MAX_CONCURRENT_CONNECTIONS: usize = 4_096;
 // plenty of headroom for legitimate multiplexed traffic while keeping total
 // fan-out bounded.
 pub(super) const H3_MAX_CONCURRENT_STREAMS: usize = 65_536;
-// Cap on concurrent proxied sessions (one bidi stream each) across all
-// reverse-tunnel carriers. Deliberately independent from
-// `H3_MAX_CONCURRENT_STREAMS`: that budget is sized for a forward endpoint
-// fanning out to thousands of client connections, while a reverse deployment
-// runs a handful of dialed carriers, typically on a NAT-ed box with far less
-// headroom. Matches the per-listener session caps
-// (`SS_MAX_CONCURRENT_TCP_CONNECTIONS`, `TLS_MAX_CONCURRENT_CONNECTIONS`).
-// On exhaustion the carrier's accept loop back-pressures rather than
-// rejecting streams.
-pub(super) const REVERSE_TUNNEL_MAX_CONCURRENT_SESSIONS: usize = 4_096;
 
 pub(super) const TCP_CONNECT_TIMEOUT_SECS: u64 = 5;
 pub(super) const SS_TCP_HANDSHAKE_TIMEOUT_SECS: u64 = 30;

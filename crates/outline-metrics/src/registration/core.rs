@@ -67,8 +67,8 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
         IntCounterVec,
         "outline_ws_rust_udp_oversized_dropped_total",
         "Oversized UDP packets dropped before forwarding, by direction and \
-         cause (quic_dgram / vless_quic_dgram / vless_udp / ss_socket / \
-         socks_client / socks_relay / socks_direct / socks_in_tcp).",
+         cause (vless_udp / ss_socket / socks_client / socks_relay / \
+         socks_direct / socks_in_tcp).",
         ["direction", "cause"]
     );
 

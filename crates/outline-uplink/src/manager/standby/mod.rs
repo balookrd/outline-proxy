@@ -110,15 +110,6 @@ impl UplinkManager {
         if !matches!(candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return None;
         }
-        // The pool is never refilled when the effective TCP mode is raw
-        // QUIC (refill returns early), so the lookup would always come
-        // back empty. Skip it to avoid the per-call pool lock and the
-        // bogus `miss` counter inflation against a pool that cannot
-        // produce a stream by design.
-        if self.effective_tcp_mode(candidate.index).await == outline_transport::TransportMode::Quic
-        {
-            return None;
-        }
         let ctx = self.standby_ctx(candidate.index, TransportKind::Tcp).await;
         ctx.try_take_alive(&candidate.uplink.name).await
     }
@@ -256,122 +247,6 @@ impl UplinkManager {
         self.connect_tcp_ws_fresh(candidate, source).await
     }
 
-    /// Dial a fresh TCP session over raw QUIC. Returns a ready-to-use
-    /// `(TcpWriter, TcpReader)` pair — no warm-standby pool is involved
-    /// because QUIC connection sharing already happens at the
-    /// per-ALPN cache layer (`outline_transport::quic`).
-    ///
-    /// `source` selects between probe and shared paths (probes bypass
-    /// the connection cache; everything else can reuse).
-    #[cfg(feature = "quic")]
-    pub async fn connect_tcp_quic_fresh(
-        &self,
-        candidate: &UplinkCandidate,
-        target: &socks5_proto::TargetAddr,
-        source: &'static str,
-    ) -> Result<(outline_transport::TcpWriter, outline_transport::TcpReader)> {
-        use outline_transport::{UplinkConnectionBinding, UpstreamTransportGuard};
-        let cache = self.inner.dns_cache.as_ref();
-        let uplink = &candidate.uplink;
-        let url = uplink
-            .tcp_dial_url()
-            .ok_or_else(|| anyhow!("uplink {} missing dial URL for quic transport", uplink.name))?;
-        // Attribute every raw-QUIC TCP dial to the owning uplink so closes
-        // land in `outline_ws_rust_uplink_open_connections` / the
-        // `*_uplink_connection_close_total{classification}` counter alongside
-        // the WS path's contribution.
-        let binding = UplinkConnectionBinding::new(
-            self.inner.group_name.as_str(),
-            "tcp",
-            uplink.name.as_str(),
-        );
-        let lifetime = UpstreamTransportGuard::new_with_uplink(source, "tcp", binding);
-        let started = Instant::now();
-        let (writer, reader) = match uplink.transport {
-            UplinkTransport::Vless => {
-                let uuid = uplink
-                    .vless_id
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("uplink {} missing vless_id", uplink.name))?;
-                // Cross-transport resumption shares the `#tcp` cache
-                // slot between VLESS-TCP-WS and VLESS-TCP-raw-QUIC
-                // dials of the same uplink — server-side both park
-                // under `Parked::Tcp(Vless)`, so one Session ID is
-                // valid through either transport.
-                let resume_key = resume_cache_key(self.resume_scope(&uplink.name), "tcp");
-                let resume_request = global_resume_cache().get(&resume_key);
-                let resume_id_bytes = resume_request.map(|id| *id.as_bytes());
-                let (w, r, issued_rx) = crate::dial::dial_in_uplink_scope(
-                    uplink,
-                    outline_transport::connect_vless_tcp_quic_with_resume(
-                        cache,
-                        url,
-                        uplink.fwmark,
-                        uplink.ipv6_first,
-                        source,
-                        uuid,
-                        target,
-                        lifetime,
-                        resume_id_bytes.as_ref(),
-                    ),
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!("vless quic to {}", url),
-                })?;
-                // The dial returns before the server's handshake response
-                // is read — saves one full RTT on every cold dial. The
-                // reader fires `issued_rx` from inside its first
-                // `read_chunk` call once the response addons have been
-                // parsed; we forward the result into the global resume
-                // cache asynchronously so this dial path stays
-                // non-blocking. If the connection dies before any
-                // payload arrives, `issued_rx` resolves to `Err(_)` and
-                // we simply don't update the cache, which is correct —
-                // a session ID we never observed is not worth storing.
-                tokio::spawn(async move {
-                    if let Ok(issued) = issued_rx.await {
-                        global_resume_cache().store_if_issued(resume_key, issued);
-                    }
-                });
-                (outline_transport::TcpWriter::Vless(w), outline_transport::TcpReader::Vless(r))
-            },
-            UplinkTransport::Ss => {
-                // Standalone "shadowsocks-over-quic" path uses the
-                // existing WS uplink config: same URL field, but
-                // `tcp_mode = "quic"` selects this branch.
-                let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
-                let (mut w, r) = crate::dial::dial_in_uplink_scope(
-                    uplink,
-                    outline_transport::connect_ss_tcp_quic(
-                        cache,
-                        url,
-                        uplink.fwmark,
-                        uplink.ipv6_first,
-                        source,
-                        uplink.cipher,
-                        &master_key,
-                        Arc::clone(&lifetime),
-                    ),
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!("ss quic to {}", url),
-                })?;
-                let request_salt = w.request_salt();
-                let r = r.with_request_salt(request_salt);
-                let target_wire = target.to_wire_bytes()?;
-                w.send_chunk(&target_wire)
-                    .await
-                    .context("failed to send target address over ss-quic")?;
-                (outline_transport::TcpWriter::QuicSs(w), outline_transport::TcpReader::QuicSs(r))
-            },
-        };
-        self.report_connection_latency(candidate.index, TransportKind::Tcp, started.elapsed())
-            .await;
-        Ok((writer, reader))
-    }
-
     pub async fn acquire_udp_standby_or_connect(
         &self,
         candidate: &UplinkCandidate,
@@ -407,75 +282,6 @@ impl UplinkManager {
                 anyhow!("uplink {} is VLESS but has no vless_id", candidate.uplink.name)
             })?;
             let mode = self.effective_udp_mode(candidate.index).await;
-            #[cfg(feature = "quic")]
-            if mode == outline_transport::TransportMode::Quic {
-                let quic_mux = outline_transport::VlessUdpQuicMux::new(
-                    Arc::clone(&self.inner.dns_cache),
-                    udp_ws_url.clone(),
-                    uuid,
-                    candidate.uplink.fwmark,
-                    candidate.uplink.ipv6_first,
-                    source,
-                    self.inner.load_balancing.vless_udp_mux_limits,
-                )
-                .with_uplink_binding(binding());
-                // WS fallback factory: same uplink parameters as the QUIC
-                // mux, but mode forced to H2 — the H3-downgrade window
-                // recorded by the on_fallback callback below makes any
-                // fresh WS dial during the cooldown skip H3 anyway, so
-                // hard-coding H2 here keeps the post-fallback path
-                // deterministic instead of racing the cache update.
-                let dns_cache = Arc::clone(&self.inner.dns_cache);
-                let ws_url = udp_ws_url.clone();
-                let fwmark = candidate.uplink.fwmark;
-                let ipv6_first = candidate.uplink.ipv6_first;
-                let keepalive = self.inner.load_balancing.udp_ws_keepalive_interval;
-                let limits = self.inner.load_balancing.vless_udp_mux_limits;
-                // Downgrade hook for the post-QUIC WS mux. The factory mints
-                // it at H2 (see comment above), but a stale `ws_mode_cache`
-                // could clamp further to H1 — without this hook that second
-                // step would be invisible to the uplink-manager.
-                let factory_manager = self.clone();
-                let factory_index = candidate.index;
-                let factory_on_downgrade: outline_transport::VlessUdpDowngradeNotifier =
-                    Arc::new(move |requested: outline_transport::TransportMode| {
-                        factory_manager.note_silent_transport_fallback(
-                            factory_index,
-                            TransportKind::Udp,
-                            requested,
-                        );
-                    });
-                let factory_binding = binding();
-                let factory_padding = candidate.uplink.padding;
-                let ws_factory: outline_transport::WsFallbackFactory = Box::new(move || {
-                    VlessUdpSessionMux::new_with_limits(
-                        dns_cache,
-                        ws_url,
-                        outline_transport::TransportMode::WsH2,
-                        uuid,
-                        fwmark,
-                        ipv6_first,
-                        source,
-                        keepalive,
-                        limits,
-                    )
-                    .with_on_downgrade(Some(factory_on_downgrade))
-                    .with_padding_override(factory_padding)
-                    .with_uplink_binding(factory_binding)
-                });
-                let manager = self.clone();
-                let index = candidate.index;
-                let on_fallback: outline_transport::FallbackNotifier =
-                    Arc::new(move |error: &anyhow::Error| {
-                        manager.note_advanced_mode_dial_failure(index, TransportKind::Udp, error);
-                    });
-                let hybrid = outline_transport::VlessUdpHybridMux::from_quic(
-                    quic_mux,
-                    ws_factory,
-                    Some(on_fallback),
-                );
-                return Ok(UdpSessionTransport::VlessQuic(hybrid));
-            }
             // Hook fired the first time the mux observes a transport-level
             // H3→H2/H1 downgrade on a per-target dial. The mux latches on
             // the first call so a burst of fresh sessions during the same
@@ -542,51 +348,8 @@ impl UplinkManager {
         let udp_ws_url = candidate.uplink.udp_dial_url().ok_or_else(|| {
             anyhow!("no udp dial URL configured for uplink {}", candidate.uplink.name)
         })?;
-        // `mode` is only reassigned inside the `#[cfg(feature = "quic")]`
-        // block below, so without the feature `mut` is technically unneeded —
-        // but stripping `mut` would break the quic build. Suppress the
-        // warning instead of duplicating the binding under cfg.
-        #[cfg_attr(not(feature = "quic"), allow(unused_mut))]
-        let mut mode = self.effective_udp_mode(candidate.index).await;
+        let mode = self.effective_udp_mode(candidate.index).await;
         let started = Instant::now();
-        #[cfg(feature = "quic")]
-        if mode == outline_transport::TransportMode::Quic {
-            match crate::dial::dial_in_uplink_scope(
-                &candidate.uplink,
-                outline_transport::connect_ss_udp_quic(
-                    cache,
-                    udp_ws_url,
-                    candidate.uplink.fwmark,
-                    candidate.uplink.ipv6_first,
-                    source,
-                    candidate.uplink.cipher,
-                    &candidate.uplink.password,
-                ),
-            )
-            .await
-            {
-                Ok(transport) => {
-                    self.report_connection_latency(
-                        candidate.index,
-                        TransportKind::Udp,
-                        started.elapsed(),
-                    )
-                    .await;
-                    return Ok(UdpSessionTransport::Ss(transport.with_uplink_binding(binding())));
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        uplink = %candidate.uplink.name,
-                        url = %udp_ws_url,
-                        error = %format!("{e:#}"),
-                        fallback = "ws/h2",
-                        "ss raw-QUIC UDP dial failed, falling back to WS over H2"
-                    );
-                    self.note_advanced_mode_dial_failure(candidate.index, TransportKind::Udp, &e);
-                    mode = self.effective_udp_mode(candidate.index).await;
-                },
-            }
-        }
         // Cross-transport session resumption for SS-UDP-over-WS.
         // Mirrors the TCP path's ResumeCache wiring; the cache key
         // distinguishes TCP and UDP slots so a TCP-side reconnect

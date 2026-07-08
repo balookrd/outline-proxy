@@ -95,7 +95,6 @@ fn sample_config() -> Config {
         padding: Default::default(),
         http_fallback: None,
         sni_fallback: None,
-        reverse_tunnel: None,
         cluster: None,
         config_path: None,
         control: None,

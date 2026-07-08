@@ -47,13 +47,6 @@ impl ScratchBuf {
             .unwrap_or_else(|| Vec::with_capacity(MAX_CHUNK_SIZE));
         Self { inner: Some(inner) }
     }
-
-    /// Extract the inner `Vec`, bypassing the pool return on drop. Use when
-    /// the buffer must be moved into a longer-lived owner (e.g. handed off
-    /// to a relay task that will drop it on its own).
-    pub(in crate::server) fn into_inner(mut self) -> Vec<u8> {
-        self.inner.take().expect("buffer present until drop")
-    }
 }
 
 impl Deref for ScratchBuf {

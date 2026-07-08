@@ -102,11 +102,6 @@ fn resolve_fallback(
                      `ss_xhttp_url`/`ss_ws_url` requires `ss_mode`"
                 )
             })?;
-            if matches!(m, TransportMode::Quic) {
-                bail!(
-                    "uplink {parent_name}: fallbacks[{idx}] combined mode does not support raw QUIC"
-                );
-            }
             #[cfg(not(feature = "h3"))]
             if matches!(m, TransportMode::XhttpH3 | TransportMode::WsH3) {
                 bail!(
@@ -251,7 +246,7 @@ fn resolve_fallback(
             }
             let mode = vless_mode.unwrap_or_default();
             #[cfg(not(feature = "h3"))]
-            if matches!(mode, TransportMode::XhttpH3 | TransportMode::WsH3 | TransportMode::Quic) {
+            if matches!(mode, TransportMode::XhttpH3 | TransportMode::WsH3) {
                 bail!(
                     "uplink {parent_name}: fallbacks[{idx}] mode={mode} requires the \
                      `h3` feature"

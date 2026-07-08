@@ -11,7 +11,6 @@
 //! - [`bootstrap`] — listener setup for the websocket, HTTP/3 and metrics endpoints.
 //! - [`connect`] — upstream TCP/UDP connect and address resolution.
 //! - [`transport`] — websocket/H3 request handlers and the shared session plumbing.
-//! - [`shadowsocks`] — the plain (non-websocket) shadowsocks listeners.
 
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -40,11 +39,9 @@ mod periodic;
 mod relay;
 mod replay;
 mod resumption;
-mod reverse_tunnel;
 mod scratch;
 mod services;
 mod setup;
-mod shadowsocks;
 mod shutdown;
 mod state;
 mod transport;
@@ -55,7 +52,7 @@ mod tests;
 #[cfg(test)]
 use self::{
     dns_cache::DnsCache,
-    setup::{build_transport_route_map, build_user_routes, build_users, user_keys},
+    setup::{build_transport_route_map, build_user_routes, user_keys},
     state::{AuthPolicy, RouteRegistry, Services, UdpServices},
 };
 
@@ -188,16 +185,6 @@ pub async fn run(config: Config) -> Result<()> {
         let auth = Arc::clone(&built.auth);
         let alpn: Arc<[crate::config::H3Alpn]> =
             Arc::from(config.h3_alpn.clone().into_boxed_slice());
-        let raw_vless_users = Arc::clone(&built.raw_vless_users);
-        let raw_vless_candidates: Arc<[Arc<str>]> = Arc::from(
-            built
-                .raw_vless_users
-                .iter()
-                .map(|user| user.label_arc())
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-        let raw_ss_users = Arc::clone(&built.users);
         let h3_fallback = built.http_fallback.clone();
         let h3_cluster = built.cluster.clone();
         let shutdown = shutdown_signal.clone();
@@ -209,9 +196,6 @@ pub async fn run(config: Config) -> Result<()> {
                     services,
                     auth,
                     alpn,
-                    raw_vless_users,
-                    raw_vless_candidates,
-                    raw_ss_users,
                     http_fallback: h3_fallback,
                     cluster: h3_cluster,
                 },
@@ -233,10 +217,6 @@ pub async fn run(config: Config) -> Result<()> {
             serve_metrics_listener(metrics_listener, metrics_app, shutdown).await
         });
     }
-    // Reverse-tunnel dialers (topology A): outbound QUIC carriers to public
-    // `ws` listeners, each serving raw SS on the streams the peer opens.
-    reverse_tunnel::spawn_reverse_tunnels(&config, &built, &mut tasks, &shutdown_signal);
-
     // Mesh cluster listener (home side): accept relayed carriers from edge
     // peers and serve them through the normal accept path. Only when clustered.
     if let Some(cluster) = built.cluster.clone() {
