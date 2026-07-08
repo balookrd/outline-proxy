@@ -17,12 +17,9 @@ mod throttle;
 mod tls;
 
 // Re-exported so the transport-side relay dispatch can accept relayed streams
-// and wrap them (`MeshCarrier`) into the existing accept path.
-//
-// The home receiver (T2) consumes `ControlDatagram`/`parse_control_datagram`;
-// `encode_throttle_hint` is the edge detector's (T3) sender and has no in-tree
-// consumer yet, so keep the unused re-export allow (a phase gate).
-#[allow(unused_imports)]
+// and wrap them (`MeshCarrier`) into the existing accept path. The home receiver
+// consumes `ControlDatagram`/`parse_control_datagram` (T2); the edge detector
+// sends via `encode_throttle_hint` (T3).
 pub(in crate::server) use control::{
     ControlDatagram, encode_throttle_hint, parse_control_datagram,
 };
