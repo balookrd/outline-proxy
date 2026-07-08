@@ -20,6 +20,10 @@ pub struct UplinkManagerSnapshot {
     pub load_balancing_mode: String,
     pub routing_scope: String,
     pub auto_failback: bool,
+    /// `shared_resume` group flag: the group's uplinks are edges of one mesh
+    /// cluster that share a resume id, so a session can migrate between them
+    /// with continuity. Gates the dashboard's soft-switch control.
+    pub shared_resume: bool,
     /// `bypass_when_down` group flag: traffic routed to this group is
     /// dispatched direct (tunnel bypass) while the group has no healthy
     /// uplink. Configuration surface, not live state — see the

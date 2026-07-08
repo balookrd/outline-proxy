@@ -146,12 +146,14 @@ impl UplinkManager {
             None,
             None,
             None,
+            Vec::new(),
         )
     }
 
     /// Like [`Self::new`] but also accepts a [`StateStore`] for persistence and
-    /// optional initial active-uplink names to restore from a previous run.
-    /// Names that no longer match any configured uplink are silently ignored.
+    /// optional initial active-uplink names + a set of administratively disabled
+    /// uplink names to restore from a previous run. Names that no longer match
+    /// any configured uplink are silently ignored.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_state(
         group_name: impl Into<String>,
@@ -163,6 +165,7 @@ impl UplinkManager {
         initial_global_active: Option<String>,
         initial_tcp_active: Option<String>,
         initial_udp_active: Option<String>,
+        initial_disabled: Vec<String>,
     ) -> Result<Self> {
         if uplinks.is_empty() {
             bail!("at least one uplink must be configured");
@@ -185,6 +188,7 @@ impl UplinkManager {
             global: initial_global,
             tcp: initial_tcp,
             udp: initial_udp,
+            soft: false,
         });
         let active_uplinks = RwLock::new(ActiveUplinks {
             global: initial_global,
@@ -222,6 +226,15 @@ impl UplinkManager {
                 Some(uplinks[idx].name.as_str()),
             );
         }
+        // Seed the operator on/off flags from persisted state: an uplink whose
+        // name is in `initial_disabled` comes up administratively disabled.
+        // Computed here, before `uplinks` moves into the struct below.
+        let admin_enabled: Box<[std::sync::atomic::AtomicBool]> = uplinks
+            .iter()
+            .map(|u| {
+                std::sync::atomic::AtomicBool::new(!initial_disabled.iter().any(|n| n == &u.name))
+            })
+            .collect();
         Ok(Self {
             inner: Arc::new(UplinkManagerInner {
                 group_name,
@@ -250,10 +263,7 @@ impl UplinkManager {
                 dns_cache,
                 shutdown_tx,
                 active_uplinks_tx,
-                admin_enabled: (0..count)
-                    .map(|_| std::sync::atomic::AtomicBool::new(true))
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
+                admin_enabled,
             }),
         })
     }

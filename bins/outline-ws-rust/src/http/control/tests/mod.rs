@@ -79,6 +79,7 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
         load_balancing_mode: "active_passive".to_string(),
         routing_scope: "per_uplink".to_string(),
         auto_failback: false,
+        shared_resume: false,
         bypass_when_down: false,
         bypass_active_tcp: false,
         bypass_active_udp: false,

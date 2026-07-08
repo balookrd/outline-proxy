@@ -419,7 +419,10 @@ async fn run_relay_aborts_with_rst_on_active_uplink_switch() {
     .unwrap();
     // Pin the active to "primary" so the subsequent switch to "backup"
     // is unambiguously a move-away event.
-    manager.set_active_uplink_by_name("primary", None).await.unwrap();
+    manager
+        .set_active_uplink_by_name("primary", None, false)
+        .await
+        .unwrap();
 
     let stream = TcpStream::connect(upstream_addr).await.unwrap();
     let (reader_half, writer_half) = stream.into_split();
@@ -488,7 +491,10 @@ async fn run_relay_aborts_with_rst_on_active_uplink_switch() {
     assert_eq!(&first_chunk, b"OK");
 
     // Trigger the switch — strict-abort watcher must fire.
-    manager.set_active_uplink_by_name("backup", None).await.unwrap();
+    manager
+        .set_active_uplink_by_name("backup", None, false)
+        .await
+        .unwrap();
 
     let result = tokio::time::timeout(Duration::from_secs(2), relay_task)
         .await

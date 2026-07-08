@@ -64,11 +64,18 @@ pub enum TransportKind {
 /// Consumers (SOCKS5 strict-abort watcher, UDP proactive wakeup) compare
 /// the relevant field against the index their session is pinned to and react
 /// to mismatches without having to poll the manager's async lock.
+///
+/// `soft` marks the switch that produced this snapshot as an operator *soft*
+/// switch (migrate live sessions to the new active via cluster resume) rather
+/// than a hard one (abort them with RST). The strict-abort watcher reads it to
+/// choose redial-with-resume over teardown. Health/auto switches always publish
+/// `soft = false`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ActiveUplinksSnapshot {
     pub global: Option<usize>,
     pub tcp: Option<usize>,
     pub udp: Option<usize>,
+    pub soft: bool,
 }
 
 impl ActiveUplinksSnapshot {

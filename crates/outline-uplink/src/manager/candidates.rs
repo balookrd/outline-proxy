@@ -211,6 +211,7 @@ impl UplinkManager {
                 transport,
                 uplink_index,
                 "successful selection",
+                false,
             )
             .await;
         }
@@ -722,7 +723,7 @@ impl UplinkManager {
                     .as_deref()
                     .unwrap_or("failover: active unhealthy or in cooldown"),
             };
-            self.set_active_uplink_index_for_transport(transport, selected, reason)
+            self.set_active_uplink_index_for_transport(transport, selected, reason, false)
                 .await;
             let key = strict_route_key(transport, self.inner.load_balancing.routing_scope);
             self.store_sticky_route(&key, selected).await;
@@ -748,8 +749,8 @@ impl UplinkManager {
     /// Enabling restores eligibility and wakes the probe loop to re-validate
     /// health before the uplink can carry traffic again.
     ///
-    /// This is a runtime override and is **not** persisted to the state store,
-    /// so a process restart starts every uplink enabled.
+    /// The toggle is persisted to the state store (by uplink name), so a
+    /// disabled uplink stays parked across a process restart.
     ///
     /// On disable, sticky routes are dropped and — in strict (`active_passive`)
     /// scopes — strict selection is re-run immediately so traffic on the now
@@ -773,6 +774,13 @@ impl UplinkManager {
         if previous == enabled {
             // No change — avoid churning sticky routes / waking the probe loop.
             return Ok(index);
+        }
+        // Persist the toggle so a disabled uplink stays parked across restarts
+        // (mirrors the active-uplink selection persistence).
+        if let Some(store) = &self.inner.state_store {
+            store
+                .update_uplink_enabled(&self.inner.group_name, name, enabled)
+                .await;
         }
         if enabled {
             // Newly eligible: re-probe promptly so health is fresh before the
@@ -806,10 +814,17 @@ impl UplinkManager {
     /// Returns the chosen uplink index. Errors when the group is not in
     /// `active_passive` mode or when the name does not match any configured
     /// uplink in this group.
+    /// `soft = true` marks this as an operator *soft* switch: live sessions
+    /// migrate to the new active uplink via cluster resume instead of being
+    /// aborted with RST (the strict-abort watcher reads the `soft` bit off the
+    /// published snapshot). Everything else — the clean-slate status reset,
+    /// sticky re-seed and probe wakeup — is identical to a hard switch, so the
+    /// override sticks the same way.
     pub async fn set_active_uplink_by_name(
         &self,
         name: &str,
         transport: Option<TransportKind>,
+        soft: bool,
     ) -> Result<usize> {
         if self.inner.load_balancing.mode != LoadBalancingMode::ActivePassive {
             bail!(
@@ -845,12 +860,17 @@ impl UplinkManager {
         self.inner.sticky_routes.write().await.clear();
 
         if self.strict_global_active_uplink() {
-            self.set_active_uplink_index_for_transport(TransportKind::Tcp, index, "manual switch")
-                .await;
+            self.set_active_uplink_index_for_transport(
+                TransportKind::Tcp,
+                index,
+                "manual switch",
+                soft,
+            )
+            .await;
         } else if self.strict_per_uplink_active_uplink() {
             match transport {
                 Some(t) => {
-                    self.set_active_uplink_index_for_transport(t, index, "manual switch")
+                    self.set_active_uplink_index_for_transport(t, index, "manual switch", soft)
                         .await;
                 },
                 None => {
@@ -858,12 +878,14 @@ impl UplinkManager {
                         TransportKind::Tcp,
                         index,
                         "manual switch",
+                        soft,
                     )
                     .await;
                     self.set_active_uplink_index_for_transport(
                         TransportKind::Udp,
                         index,
                         "manual switch",
+                        soft,
                     )
                     .await;
                 },
@@ -909,6 +931,7 @@ impl UplinkManager {
         transport: TransportKind,
         uplink_index: usize,
         reason: impl Into<String>,
+        soft: bool,
     ) {
         let reason = reason.into();
         let uplink_name = self.inner.uplinks[uplink_index].name.as_str();
@@ -992,6 +1015,7 @@ impl UplinkManager {
                 global: active.global,
                 tcp: active.tcp,
                 udp: active.udp,
+                soft,
             }
         };
         let _ = self.inner.active_uplinks_tx.send_if_modified(|current| {
