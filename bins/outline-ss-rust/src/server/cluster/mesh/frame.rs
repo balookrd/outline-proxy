@@ -2,11 +2,15 @@
 //!
 //! Each relayed session is one QUIC bidirectional stream. The stream opens
 //! with a single [`OpenHeader`] — the metadata the home needs to admit the
-//! relayed carrier into its normal accept path — after which the raw,
-//! still-encrypted application bytes flow through transparently in both
-//! directions (the QUIC stream *is* the channel; there is no per-chunk data
-//! frame). The stream closes with a QUIC `finish` (graceful) or `reset` whose
-//! error code is a [`CloseReason`].
+//! relayed carrier into its normal accept path — after which the still-encrypted
+//! application bytes flow through in both directions. The body framing depends
+//! on the carrier kind: the TCP-shaped carriers (`SsTcp` / `VlessTcp` and their
+//! `*Xhttp` variants) relay as a transparent byte stream (chunk boundaries are
+//! irrelevant; the QUIC stream *is* the channel, there is no per-chunk data
+//! frame), whereas `SsUdp` frames each datagram as `u32 BE length | payload`
+//! because an SS-UDP packet is atomic and must not be coalesced or split — see
+//! [`super::datagram`]. The stream closes with a QUIC `finish` (graceful) or
+//! `reset` whose error code is a [`CloseReason`].
 //!
 //! The edge never decrypts, so the header carries only carrier metadata the
 //! edge can see before the payload: the resume id, the carrier kind, the
