@@ -14,20 +14,28 @@
 //! relay never emits a server→client `Ping` and never runs pong-deadline
 //! reaping — QUIC's own keep-alive/idle-timeout detects a dead peer. Control
 //! frames other than close are no-ops on the wire; close finishes the stream.
+//!
+//! [`MeshUdpCarrier`] is the SS-UDP counterpart. It shares the same control
+//! semantics but frames the body as length-delimited datagrams (see
+//! [`crate::server::cluster::mesh::read_datagram`]): one `Binary` frame is one
+//! SS-UDP packet, so `recv` reads exactly one datagram and `send` writes one,
+//! preserving the packet boundary a raw byte splice would corrupt.
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use futures_util::future::BoxFuture;
 use outline_wire::padding::PaddingScheme;
 use quinn::{RecvStream, SendStream};
 use tokio::sync::mpsc;
 
+use super::carrier_padding;
 use super::throughput_monitor::ThroughputMonitor;
 use super::ws_socket::{WsFrame, WsSocket};
 use crate::metrics::{AppProtocol, Protocol};
-use crate::server::cluster::mesh::MeshStream;
-use crate::server::nat::UdpResponseSender;
+use crate::server::cluster::mesh::{MeshStream, read_datagram, write_datagram};
+use crate::server::nat::{ResponseSender, UdpResponseSender};
 
 /// Max bytes pulled from the stream per `recv`. A coarse read granularity; the
 /// downstream decoder reassembles across chunks regardless.
@@ -151,10 +159,160 @@ impl WsSocket for MeshCarrier {
         _scheme: PaddingScheme,
         _monitor: Option<Arc<ThroughputMonitor>>,
     ) -> UdpResponseSender {
-        // UDP relay over the mesh lands in a later 5c sub-phase; the TCP /
-        // VLESS-TCP dispatch never builds a UDP MeshCarrier, so this is
-        // unreachable today.
-        unimplemented!("mesh UDP relay is not yet supported (TCP/VLESS-TCP only)")
+        // The byte-stream `MeshCarrier` serves the TCP / VLESS-TCP dispatch,
+        // which never builds a UDP sender; SS-UDP uses `MeshUdpCarrier`.
+        unimplemented!("MeshCarrier is byte-stream only; SS-UDP uses MeshUdpCarrier")
+    }
+}
+
+/// Wraps a relayed [`MeshStream`] as a [`WsSocket`] carrier for the home-side
+/// SS-UDP accept path. Unlike [`MeshCarrier`], the body is length-delimited
+/// datagrams: `recv` reads exactly one datagram and reports it as one `Binary`
+/// frame, `send` frames one `Binary` back — preserving the per-packet boundary
+/// SS-UDP's AEAD relies on. Control/close semantics are identical to the
+/// byte-stream carrier.
+pub(in crate::server) struct MeshUdpCarrier {
+    stream: MeshStream,
+}
+
+impl MeshUdpCarrier {
+    pub(in crate::server) fn new(stream: MeshStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl WsSocket for MeshUdpCarrier {
+    type Msg = MeshMsg;
+    type Reader = RecvStream;
+    type Writer = SendStream;
+
+    fn split_io(self) -> (Self::Reader, Self::Writer) {
+        (self.stream.recv, self.stream.send)
+    }
+
+    async fn recv(reader: &mut Self::Reader) -> Result<Option<MeshMsg>> {
+        // One length-delimited datagram = one Binary frame. A clean stream end
+        // at a frame boundary reports the relayed carrier ended.
+        let mut buf = Vec::new();
+        match read_datagram(reader, &mut buf).await? {
+            Some(_len) => Ok(Some(MeshMsg::Binary(Bytes::from(buf)))),
+            None => Ok(None),
+        }
+    }
+
+    async fn send(writer: &mut Self::Writer, msg: MeshMsg) -> Result<()> {
+        match msg {
+            // Frame one datagram; the peer's `recv` reconstructs the boundary.
+            MeshMsg::Binary(bytes) => write_datagram(writer, &bytes).await,
+            MeshMsg::Close => {
+                let _ = writer.finish();
+                Ok(())
+            },
+            MeshMsg::Ping(_) | MeshMsg::Pong => Ok(()),
+        }
+    }
+
+    async fn finish(writer: &mut Self::Writer) {
+        let _ = writer.finish();
+    }
+
+    async fn flush(_writer: &mut Self::Writer) -> Result<()> {
+        Ok(())
+    }
+
+    fn is_h3() -> bool {
+        // QUIC-backed like the H3 carrier: suppress server Ping / pong reaping.
+        true
+    }
+
+    fn classify(msg: MeshMsg) -> WsFrame {
+        match msg {
+            MeshMsg::Binary(b) => WsFrame::Binary(b),
+            MeshMsg::Close => WsFrame::Close,
+            MeshMsg::Ping(p) => WsFrame::Ping(p),
+            MeshMsg::Pong => WsFrame::Pong,
+        }
+    }
+
+    fn binary_msg(data: Bytes) -> MeshMsg {
+        MeshMsg::Binary(data)
+    }
+    fn close_msg() -> MeshMsg {
+        MeshMsg::Close
+    }
+    fn close_try_again_msg() -> MeshMsg {
+        MeshMsg::Close
+    }
+    fn ping_msg() -> MeshMsg {
+        MeshMsg::Ping(Bytes::new())
+    }
+    fn pong_msg(_payload: Bytes) -> MeshMsg {
+        MeshMsg::Pong
+    }
+    fn binary_len(msg: &MeshMsg) -> Option<usize> {
+        match msg {
+            MeshMsg::Binary(b) => Some(b.len()),
+            _ => None,
+        }
+    }
+    fn msg_len(msg: &MeshMsg) -> usize {
+        match msg {
+            MeshMsg::Binary(b) => b.len(),
+            MeshMsg::Ping(p) => p.len(),
+            MeshMsg::Close | MeshMsg::Pong => 0,
+        }
+    }
+
+    fn make_udp_response_sender(
+        tx: mpsc::Sender<Self::Msg>,
+        protocol: Protocol,
+        app_protocol: AppProtocol,
+        scheme: PaddingScheme,
+        monitor: Option<Arc<ThroughputMonitor>>,
+    ) -> UdpResponseSender {
+        UdpResponseSender::new(Arc::new(MeshUdpResponseSender {
+            tx,
+            protocol,
+            app_protocol,
+            padding: scheme,
+            monitor,
+        }))
+    }
+}
+
+/// Downlink UDP sender for a home-side relayed SS-UDP session. Mirrors
+/// [`super::ws_socket`]'s `WebSocketResponseSender`: it applies the path's
+/// carrier padding to each datagram (so the home, not the edge, owns padding —
+/// the edge forwards the padded bytes verbatim) and enqueues a `Binary` message
+/// that the writer task frames onto the mesh stream.
+struct MeshUdpResponseSender {
+    tx: mpsc::Sender<MeshMsg>,
+    protocol: Protocol,
+    app_protocol: AppProtocol,
+    /// Carrier-padding scheme for this path; disabled passes the datagram
+    /// through unchanged (plain wire, still mesh-framed).
+    padding: PaddingScheme,
+    /// Per-carrier downstream-throttle monitor; `Some` only on a padded path
+    /// with detection on.
+    monitor: Option<Arc<ThroughputMonitor>>,
+}
+
+impl ResponseSender for MeshUdpResponseSender {
+    fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
+        if let Some(m) = &self.monitor {
+            let used = self.tx.max_capacity().saturating_sub(self.tx.capacity());
+            m.note_datagram(data.len(), used, self.tx.max_capacity());
+        }
+        let framed = carrier_padding::frame_downlink_message(self.padding, data);
+        Box::pin(async move { self.tx.send(MeshMsg::Binary(framed)).await.is_ok() })
+    }
+
+    fn protocol(&self) -> Protocol {
+        self.protocol
+    }
+
+    fn app_protocol(&self) -> AppProtocol {
+        self.app_protocol
     }
 }
 

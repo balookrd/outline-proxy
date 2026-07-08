@@ -157,6 +157,18 @@ For VLESS mux, the whole multiplex parks atomically, so the relay carries the
 entire multiplex over one mesh stream and never splits sub-connections across
 streams.
 
+For **SS-UDP** the body is not a byte stream. Each SS-UDP packet is atomic — one
+WebSocket `Binary` frame is one AEAD-sealed datagram with no length prefix — so
+the relay length-frames each datagram as `u32 length | payload` on the mesh
+stream and de-frames it on the far side. A raw byte splice would let QUIC
+coalesce or split packets and break the home's per-packet AEAD open. The mesh
+QUIC stream is reliable and ordered, so the mesh hop no longer drops packets;
+the client↔target UDP path stays best-effort over the last mile, so this only
+improves delivery. **VLESS-UDP needs no such treatment:** it rides the VLESS-TCP
+carrier — the edge forwards the VLESS byte stream verbatim and the home parses
+the UDP command out of it — so an edge never emits a UDP carrier kind for VLESS,
+and VLESS-UDP is covered by the same path as VLESS-TCP.
+
 ### Health budget ("slow neighbour → tear down")
 
 Because cluster members live in different countries, the edge → home hop is

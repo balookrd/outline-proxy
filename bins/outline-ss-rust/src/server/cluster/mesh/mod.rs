@@ -7,6 +7,7 @@
 //! [`pump`]). Wiring these into the accept/relay path is phase 5. See
 //! `docs/CLUSTER.md`.
 
+mod datagram;
 mod endpoint;
 mod frame;
 mod peer_pool;
@@ -15,6 +16,7 @@ mod tls;
 
 // Re-exported so the transport-side relay dispatch can accept relayed streams
 // and wrap them (`MeshCarrier`) into the existing accept path.
+pub(in crate::server) use datagram::{read_datagram, write_datagram};
 pub(in crate::server) use endpoint::{MeshEndpoint, MeshStream, accept_relay};
 pub(in crate::server) use frame::{CarrierKind, CloseReason, OpenHeader};
 pub(in crate::server) use peer_pool::{MeshPeerPool, PooledRelay};

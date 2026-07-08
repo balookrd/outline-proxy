@@ -64,10 +64,11 @@ use super::super::{
     connect_websocket_with_resume, sample_config, test_h3_client_config, test_h3_server_tls,
 };
 use super::ss::ss_handshake_frame;
-use super::{connect_ws_h1, expect_binary_reply, spawn_echo_target};
+use super::{connect_ws_h1, expect_binary_reply, spawn_echo_target, spawn_echo_udp_target};
 use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn};
-use crate::crypto::{AeadStreamDecryptor, UserKey};
+use crate::crypto::{AeadStreamDecryptor, UserKey, decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::{Metrics, Transport};
+use crate::protocol::TargetAddr;
 
 /// A running cluster node: an SS-over-WS listener plus a mesh endpoint (home
 /// listener + edge dialer). Aborts its tasks on drop so tests don't leak
@@ -659,5 +660,104 @@ async fn cluster_xhttp_edge_relays_to_home() -> Result<()> {
 
     drop(writer);
     drop(reader);
+    Ok(())
+}
+
+/// SS-UDP datagrams relay through the mesh byte-for-byte. Each client packet is
+/// one atomic AEAD datagram; the edge length-frames it onto the mesh stream and
+/// the home de-frames it, decrypts, forwards to the target and relays the echo
+/// back. Distinct sizes (incl. a 1200-byte packet) exercise the datagram
+/// framing that is the SS-UDP relay's main silent-corruption risk — a byte
+/// splice would coalesce or split packets and break the per-packet AEAD.
+#[tokio::test]
+async fn cluster_udp_relays_datagrams_to_home() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-relay-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+
+    // Home owns shard 1; an edge (shard 2) relays /udp to it over the mesh.
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None).await?;
+
+    // A home-shard resume id routes the edge's /udp carrier to the home.
+    let session_id = resume_id_for_shard(PSK, 1)?;
+    let (mut socket, _) = connect_ws_h1(edge.listen_addr, "/udp", Some(session_id), true).await?;
+
+    // Each distinct datagram size must round-trip byte-exact through the relay.
+    for (i, &size) in [4usize, 1200, 64].iter().enumerate() {
+        let payload: Vec<u8> = (0..size).map(|b| (b + i) as u8).collect();
+        let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
+        plaintext.extend_from_slice(&payload);
+        socket
+            .send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext)?.into()))
+            .await?;
+
+        let reply = expect_binary_reply(&mut socket).await?;
+        let decoded = decrypt_udp_packet(std::slice::from_ref(&user), &reply)?;
+        assert!(
+            decoded.payload.ends_with(&payload),
+            "datagram {i} ({size} bytes) must relay home→edge→client byte-exact",
+        );
+    }
+
+    socket.close(None).await?;
+    Ok(())
+}
+
+/// An SS-UDP session survives an edge switch: a datagram sent through one edge
+/// and then a *different* edge relay to the same home, which re-points the
+/// parked NAT entry at the new relay stream rather than binding a fresh upstream
+/// socket — so the target sees exactly one source address. The mesh counterpart
+/// of `ss_udp_resume_hit_reattaches_parked_nat_entry`.
+#[tokio::test]
+async fn cluster_udp_survives_edge_switch() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-switch-psk";
+    let (target_addr, sources) = spawn_echo_udp_target().await?;
+
+    // Home owns shard 1; two edges (shards 2, 3) relay to it.
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge_a, _) =
+        spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(4), None).await?;
+    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(4), None).await?;
+
+    let session_id = resume_id_for_shard(PSK, 1)?;
+
+    // Session #1 via edge A: the home misses (never parked) → fresh NAT entry,
+    // parked on close under the id the client presented.
+    let (mut sock_a, _) = connect_ws_h1(edge_a.listen_addr, "/udp", Some(session_id), true).await?;
+    let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
+    plaintext.extend_from_slice(b"udp-a");
+    sock_a
+        .send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext)?.into()))
+        .await?;
+    let _ = expect_binary_reply(&mut sock_a).await?;
+    assert_eq!(
+        sources.lock().await.len(),
+        1,
+        "first relay must open exactly one upstream source"
+    );
+    sock_a.close(None).await?;
+    drop(sock_a);
+    // Let the mesh stream finish and the home park the NAT keys on the FIN.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Session #2 via edge B, same id: the home's `attempt_ss_udp_resume` hits →
+    // the parked NAT entry is re-pointed at the new relay, with no fresh bind.
+    let (mut sock_b, _) = connect_ws_h1(edge_b.listen_addr, "/udp", Some(session_id), true).await?;
+    let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
+    plaintext.extend_from_slice(b"udp-b");
+    sock_b
+        .send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext)?.into()))
+        .await?;
+    let _ = expect_binary_reply(&mut sock_b).await?;
+    assert_eq!(
+        sources.lock().await.len(),
+        1,
+        "resume across the edge switch must reuse the parked NAT entry (one upstream source)"
+    );
+    sock_b.close(None).await?;
     Ok(())
 }
