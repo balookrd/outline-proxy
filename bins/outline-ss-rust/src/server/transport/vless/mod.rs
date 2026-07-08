@@ -48,17 +48,26 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
     resume: ResumeContext,
+    injected_monitor: Option<Arc<throughput_monitor::ThroughputMonitor>>,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) =
         mpsc::channel::<T::Msg>(server.ws_data_channel_capacity);
     let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
-    // Per-carrier downstream-throttle monitor: `Some` only on a padded path
-    // with detection enabled. The relay feeds it inbound bytes + backlog, the
-    // tick samples once per window, and the writer emits a control frame when
-    // it fires. `None` keeps the carrier byte-for-byte identical to today.
-    let throttle_monitor = carrier_padding::throttle_params_for_path(&route.path)
-        .map(throughput_monitor::ThroughputMonitor::new);
+    // Per-carrier downstream-throttle monitor. A direct carrier (`None`) builds
+    // it from the route and drives the local detection tick (`Some` only on a
+    // padded path with detection enabled; else `None` keeps the wire identical).
+    // A relayed carrier (`Some`) uses the home monitor the mesh receiver pings
+    // from an edge THROTTLE_HINT and runs NO local tick — the home's send
+    // counters measure the fast home→mesh hop, not the edge→client last mile.
+    let (throttle_monitor, run_local_tick) = match injected_monitor {
+        Some(m) => (Some(m), false),
+        None => (
+            carrier_padding::throttle_params_for_path(&route.path)
+                .map(throughput_monitor::ThroughputMonitor::new),
+            true,
+        ),
+    };
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
@@ -74,11 +83,15 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
         carrier_padding::cover_for_path(&route.path),
         throttle_monitor.clone(),
     ));
-    // Detection tick. Bounded: aborted when this handle drops at carrier
-    // teardown, so it never outlives the carrier.
-    let _throttle_tick = throttle_monitor
-        .clone()
-        .map(|m| AbortOnDrop::new(tokio::spawn(throughput_monitor::run_throttle_tick(m))));
+    // Detection tick (direct carriers only). Bounded: aborted when this handle
+    // drops at carrier teardown, so it never outlives the carrier.
+    let _throttle_tick = run_local_tick
+        .then(|| {
+            throttle_monitor
+                .clone()
+                .map(|m| AbortOnDrop::new(tokio::spawn(throughput_monitor::run_throttle_tick(m))))
+        })
+        .flatten();
 
     let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);
     let pong_deadline = ping_interval * WS_PONG_DEADLINE_MULTIPLIER;
@@ -622,7 +635,8 @@ pub(super) async fn handle_vless_connection(
     route: VlessWsRouteCtx,
     resume: ResumeContext,
 ) -> Result<()> {
-    run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route, resume).await
+    // Direct carrier: no injected monitor — local detection runs (`None`).
+    run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, None).await
 }
 
 pub(in crate::server) async fn handle_vless_h3_connection(
@@ -631,5 +645,5 @@ pub(in crate::server) async fn handle_vless_h3_connection(
     route: VlessWsRouteCtx,
     resume: ResumeContext,
 ) -> Result<()> {
-    run_vless_relay::<H3Ws>(H3Ws(socket), &server, &route, resume).await
+    run_vless_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, None).await
 }

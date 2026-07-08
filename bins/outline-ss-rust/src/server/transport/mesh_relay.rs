@@ -28,8 +28,8 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    CarrierKind, CloseReason, MeshStream, OpenHeader, PooledRelay, accept_relay, read_datagram,
-    write_datagram,
+    CarrierKind, CloseReason, ControlDatagram, MeshStream, OpenHeader, PooledRelay, accept_relay,
+    parse_control_datagram, read_datagram, write_datagram,
 };
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::server::resumption::SessionId;
@@ -369,9 +369,10 @@ pub(in crate::server) async fn run_mesh_listener(
             accepted = cluster.endpoint.accept() => {
                 match accepted {
                     Some(Ok(conn)) => {
+                        let cluster = Arc::clone(&cluster);
                         let services = Arc::clone(&services);
                         let routes = Arc::clone(&routes);
-                        tokio::spawn(handle_mesh_connection(conn, services, routes));
+                        tokio::spawn(handle_mesh_connection(conn, cluster, services, routes));
                     },
                     Some(Err(error)) => debug!(?error, "mesh peer connection failed"),
                     None => break, // endpoint closed
@@ -386,15 +387,37 @@ pub(in crate::server) async fn run_mesh_listener(
 /// Serves every relay stream a peer opens on `conn` until it closes.
 async fn handle_mesh_connection(
     conn: quinn::Connection,
+    cluster: Arc<ClusterCtx>,
     services: Arc<Services>,
     routes: RoutesSnapshot,
 ) {
+    // Per-connection control-datagram receiver: routes each THROTTLE_HINT to the
+    // matching relay's carrier monitor by session id (waking its writer to inject
+    // an OCTL cover frame). Best-effort — a malformed or unknown-session datagram
+    // is dropped. Bounded: `read_datagram` errors when the connection closes, and
+    // the `AbortOnDrop` guard tears the task down when this connection ends.
+    let _control_rx = {
+        let cluster = Arc::clone(&cluster);
+        let conn = conn.clone();
+        crate::server::abort::AbortOnDrop::new(tokio::spawn(async move {
+            while let Ok(datagram) = conn.read_datagram().await {
+                match parse_control_datagram(&datagram) {
+                    Ok(ControlDatagram::ThrottleHint { session_id }) => {
+                        cluster.throttle_registry.route_hint(&session_id);
+                    },
+                    Err(error) => debug!(?error, "dropping malformed mesh control datagram"),
+                }
+            }
+        }))
+    };
+
     // Ends when the peer closes the connection (accept_relay errors).
     while let Ok((header, stream)) = accept_relay(&conn).await {
+        let cluster = Arc::clone(&cluster);
         let services = Arc::clone(&services);
         let routes = Arc::clone(&routes);
         tokio::spawn(async move {
-            if let Err(error) = serve_relayed(header, stream, &services, &routes).await {
+            if let Err(error) = serve_relayed(header, stream, &cluster, &services, &routes).await {
                 debug!(?error, "relayed session ended with error");
             }
         });
@@ -405,6 +428,7 @@ async fn handle_mesh_connection(
 async fn serve_relayed(
     header: OpenHeader,
     stream: MeshStream,
+    cluster: &ClusterCtx,
     services: &Services,
     routes: &RoutesSnapshot,
 ) -> Result<()> {
@@ -432,6 +456,19 @@ async fn serve_relayed(
         _ => Protocol::Http3,
     };
 
+    // Downstream-throttle monitor for this relayed carrier. Built here (not in
+    // the relay) so it can be registered under the session id: the home cannot
+    // detect the throttled edge→client segment locally, so the mesh control-
+    // datagram receiver wakes this writer from an edge THROTTLE_HINT instead. The
+    // registration guard lives across the relay (dropped when this fn returns).
+    // `None` when detection is off for this path — the relay then behaves exactly
+    // as before (byte-for-byte identical wire).
+    let throttle_monitor = carrier_padding::throttle_params_for_path(&path)
+        .map(super::throughput_monitor::ThroughputMonitor::new);
+    let _throttle_registration = throttle_monitor
+        .as_ref()
+        .map(|m| cluster.throttle_registry.register(header.session_id, m));
+
     match header.carrier {
         CarrierKind::SsTcp | CarrierKind::SsXhttp => {
             let route = {
@@ -457,6 +494,7 @@ async fn serve_relayed(
                 &route_ctx,
                 resume,
                 peer_addr,
+                throttle_monitor.clone(),
             )
             .await
         },
@@ -478,8 +516,14 @@ async fn serve_relayed(
                 padding,
                 peer: peer_addr.map(|addr| addr.ip()),
             };
-            run_vless_relay(MeshCarrier::new(stream), &services.vless_server, &route_ctx, resume)
-                .await
+            run_vless_relay(
+                MeshCarrier::new(stream),
+                &services.vless_server,
+                &route_ctx,
+                resume,
+                throttle_monitor.clone(),
+            )
+            .await
         },
         CarrierKind::SsUdp | CarrierKind::SsUdpXhttp => {
             let route = {
@@ -505,6 +549,7 @@ async fn serve_relayed(
                 Arc::clone(&services.udp_server),
                 route_ctx,
                 resume,
+                throttle_monitor.clone(),
             )
             .await
         },

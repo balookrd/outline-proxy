@@ -410,6 +410,7 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     server: Arc<UdpServerCtx>,
     route: Arc<UdpRouteCtx>,
     resume: ResumeContext,
+    injected_monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) =
@@ -426,12 +427,22 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         resume_attempted: Arc::new(AtomicBool::new(false)),
     };
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
-    // Per-carrier downstream-throttle monitor: `Some` only on a padded SS-UDP
-    // path with detection enabled (the control notice rides a cover datagram,
-    // so only our own padded clients can receive it). `None` keeps the carrier
-    // byte-for-byte identical to today.
-    let throttle_monitor = carrier_padding::throttle_params_for_path(&route.path)
-        .map(super::throughput_monitor::ThroughputMonitor::new);
+    // Per-carrier downstream-throttle monitor. A direct carrier (`None`) builds
+    // it from the route and drives the local detection tick (`Some` only on a
+    // padded SS-UDP path with detection enabled — the notice rides a cover
+    // datagram only our own padded clients can receive; else `None` keeps the
+    // plain wire unchanged). A relayed carrier (`Some`) uses the home monitor
+    // the mesh receiver pings from an edge THROTTLE_HINT and runs NO local tick —
+    // the home's send counters measure the fast home→mesh hop, not the throttled
+    // edge→client last mile.
+    let (throttle_monitor, run_local_tick) = match injected_monitor {
+        Some(m) => (Some(m), false),
+        None => (
+            carrier_padding::throttle_params_for_path(&route.path)
+                .map(super::throughput_monitor::ThroughputMonitor::new),
+            true,
+        ),
+    };
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
@@ -447,13 +458,17 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         carrier_padding::cover_for_path(&route.path),
         throttle_monitor.clone(),
     ));
-    // Detection tick. Bounded: aborted when this handle drops at carrier
-    // teardown, so it never outlives the carrier.
-    let _throttle_tick = throttle_monitor.clone().map(|m| {
-        crate::server::abort::AbortOnDrop::new(tokio::spawn(
-            super::throughput_monitor::run_throttle_tick(m),
-        ))
-    });
+    // Detection tick (direct carriers only). Bounded: aborted when this handle
+    // drops at carrier teardown, so it never outlives the carrier.
+    let _throttle_tick = run_local_tick
+        .then(|| {
+            throttle_monitor.clone().map(|m| {
+                crate::server::abort::AbortOnDrop::new(tokio::spawn(
+                    super::throughput_monitor::run_throttle_tick(m),
+                ))
+            })
+        })
+        .flatten();
 
     // Strip carrier padding from inbound datagrams before SS decryption when
     // this path pads. One WS Binary frame carries exactly one padding frame
@@ -656,7 +671,8 @@ pub(super) async fn handle_udp_connection(
     route: Arc<UdpRouteCtx>,
     resume: ResumeContext,
 ) -> Result<()> {
-    run_udp_relay::<AxumWs>(AxumWs(socket), server, route, resume).await
+    // Direct carrier: no injected monitor — local detection runs (`None`).
+    run_udp_relay::<AxumWs>(AxumWs(socket), server, route, resume, None).await
 }
 
 pub(in crate::server) async fn handle_udp_h3_connection(
@@ -665,5 +681,5 @@ pub(in crate::server) async fn handle_udp_h3_connection(
     route: Arc<UdpRouteCtx>,
     resume: ResumeContext,
 ) -> Result<()> {
-    run_udp_relay::<H3Ws>(H3Ws(socket), server, route, resume).await
+    run_udp_relay::<H3Ws>(H3Ws(socket), server, route, resume, None).await
 }
