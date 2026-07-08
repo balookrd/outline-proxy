@@ -302,12 +302,15 @@ pub(super) async fn udp_websocket_upgrade(
     method: Method,
     version: Version,
     headers: HeaderMap,
+    connect_info: ConnectInfo<SocketAddr>,
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
         Err(_) => return build_not_found_response(Body::empty()),
     };
-    udp_upgrade_for_path(ws, state, Arc::from(uri.path()), method, version, headers).await
+    let ConnectInfo(peer_addr) = connect_info;
+    udp_upgrade_for_path(ws, state, Arc::from(uri.path()), method, version, headers, peer_addr)
+        .await
 }
 
 /// Core of the UDP-WS upgrade, parameterised by base path so the split-path
@@ -320,9 +323,45 @@ async fn udp_upgrade_for_path(
     method: Method,
     version: Version,
     headers: HeaderMap,
+    peer_addr: SocketAddr,
 ) -> Response {
     let ws = ws.write_buffer_size(0);
     let protocol = protocol_from_http_version(version);
+    let server = Arc::clone(&state.services.udp_server);
+    // Cluster edge: a resume id whose shard is a foreign home is relayed there
+    // over the mesh rather than served locally. Checked before any local route
+    // setup; on relay failure the upgrade is handed back and we fall through to
+    // a fresh local session (this edge becomes the new home). Mirrors the TCP
+    // leg but splices with datagram framing (`try_relay_edge_udp`).
+    let ws = if let Some(cluster) = state.cluster.as_deref() {
+        match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
+            (RouteDecision::Relay(shard), Some(advert)) => {
+                match mesh_relay::try_relay_edge_udp(
+                    ws,
+                    cluster,
+                    &server.metrics,
+                    mesh_relay::EdgeRelay {
+                        shard,
+                        advert,
+                        carrier: CarrierKind::SsUdp,
+                        path: Arc::clone(&path),
+                        peer_addr,
+                        protocol,
+                        app_protocol: AppProtocol::Shadowsocks,
+                        kind: "udp",
+                    },
+                )
+                .await
+                {
+                    Ok(response) => return response,
+                    Err(ws) => ws,
+                }
+            },
+            _ => ws,
+        }
+    } else {
+        ws
+    };
     let routes_snap = state.routes.load();
     let route = routes_snap
         .udp
@@ -331,7 +370,6 @@ async fn udp_upgrade_for_path(
         .unwrap_or_else(empty_transport_route);
     drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
-    let server = Arc::clone(&state.services.udp_server);
     let session =
         server
             .metrics
@@ -381,13 +419,13 @@ pub(super) async fn combined_websocket_upgrade(
         Err(_) => return build_not_found_response(Body::empty()),
     };
     let base_path: Arc<str> = Arc::from(combined_base_path(uri.path(), &token));
+    let ConnectInfo(peer_addr) = connect_info;
     match decode_kind(&token) {
         SsPathKind::Tcp => {
-            let ConnectInfo(peer_addr) = connect_info;
             tcp_upgrade_for_path(ws, state, base_path, method, version, headers, peer_addr).await
         },
         SsPathKind::Udp => {
-            udp_upgrade_for_path(ws, state, base_path, method, version, headers).await
+            udp_upgrade_for_path(ws, state, base_path, method, version, headers, peer_addr).await
         },
     }
 }

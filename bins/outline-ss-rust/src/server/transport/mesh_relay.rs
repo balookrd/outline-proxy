@@ -20,6 +20,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use axum::extract::ws::WebSocketUpgrade;
 use axum::response::Response;
+use bytes::Bytes;
 use outline_wire::cluster::ShardId;
 use quinn::{RecvStream, SendStream, VarInt};
 use tracing::{debug, warn};
@@ -27,7 +28,8 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    CarrierKind, CloseReason, MeshStream, OpenHeader, PooledRelay, accept_relay,
+    CarrierKind, CloseReason, MeshStream, OpenHeader, PooledRelay, accept_relay, read_datagram,
+    write_datagram,
 };
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::server::resumption::SessionId;
@@ -37,9 +39,10 @@ use crate::server::state::{
 };
 
 use super::carrier_padding;
-use super::mesh_carrier::MeshCarrier;
+use super::mesh_carrier::{MeshCarrier, MeshUdpCarrier};
 use super::resume_headers::{EdgeResumeAdvert, ResumeContext, ResumeResponseEcho};
 use super::tcp::{WsTcpRouteCtx, run_tcp_relay};
+use super::udp::{UdpRouteCtx, run_udp_relay};
 use super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 
@@ -111,6 +114,66 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
             T::send(&mut writer, T::binary_msg(chunk.bytes))
                 .await
                 .context("edge client downlink write")?;
+        }
+        T::finish(&mut writer).await;
+        Ok::<(), anyhow::Error>(())
+    };
+
+    tokio::try_join!(uplink, downlink)?;
+    Ok(())
+}
+
+/// Edge-side relay for SS-UDP: like [`edge_relay`] but preserves datagram
+/// boundaries. An SS-UDP packet is atomic — one client `Binary` frame is one
+/// AEAD-sealed packet with no length prefix — so a raw byte splice would let
+/// QUIC coalesce or split packets and the home's per-packet AEAD open would then
+/// fail on a mis-boundaried buffer. Each direction therefore length-frames the
+/// datagram onto the mesh stream ([`write_datagram`]) and de-frames it off the
+/// other side ([`read_datagram`]). One writer per direction, so backpressure
+/// rides the QUIC / WS windows. The health `budget` bounds a single uplink
+/// datagram write exactly as in [`edge_relay`].
+pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
+    client: T,
+    mut mesh_send: SendStream,
+    mut mesh_recv: RecvStream,
+    budget: Duration,
+) -> Result<()> {
+    let (mut reader, mut writer) = client.split_io();
+
+    // Uplink: the ONLY writer to `mesh_send`. One client Binary = one datagram.
+    let uplink = async {
+        while let Some(msg) = T::recv(&mut reader).await? {
+            match T::classify(msg) {
+                WsFrame::Binary(data) => {
+                    match tokio::time::timeout(budget, write_datagram(&mut mesh_send, &data)).await
+                    {
+                        Ok(result) => result.context("mesh edge uplink datagram write")?,
+                        Err(_elapsed) => {
+                            // Stalled past the budget: the home is not draining.
+                            let _ = mesh_send.reset(VarInt::from_u32(CloseReason::Budget.code()));
+                            bail!("mesh relay stalled past the health budget");
+                        },
+                    }
+                },
+                WsFrame::Close => break,
+                // The edge does not interpret the carrier; drop control frames.
+                WsFrame::Ping(_) | WsFrame::Pong | WsFrame::Text => {},
+            }
+        }
+        let _ = mesh_send.finish();
+        Ok::<(), anyhow::Error>(())
+    };
+
+    // Downlink: the ONLY writer to the client `writer`. One datagram = one Binary.
+    let downlink = async {
+        let mut buf = Vec::new();
+        while let Some(len) = read_datagram(&mut mesh_recv, &mut buf)
+            .await
+            .context("mesh edge downlink datagram read")?
+        {
+            T::send(&mut writer, T::binary_msg(Bytes::copy_from_slice(&buf[..len])))
+                .await
+                .context("edge client downlink datagram write")?;
         }
         T::finish(&mut writer).await;
         Ok::<(), anyhow::Error>(())
@@ -238,6 +301,49 @@ pub(in crate::server::transport) async fn try_relay_edge(
     Ok(response)
 }
 
+/// Edge side: relay a foreign-shard SS-UDP carrier to its home over the mesh.
+///
+/// The UDP twin of [`try_relay_edge`]: same open-before-`101` continuity dance
+/// (echo the id the client already holds so the home parks under it), but the
+/// carrier is spliced with [`edge_relay_udp`] to preserve datagram boundaries
+/// and metrics are labelled UDP. Takes the same [`EdgeRelay`] bundle (with
+/// `carrier` = [`CarrierKind::SsUdp`]); `peer_addr` is a client hint carried in
+/// the OPEN header that the UDP relay does not need for routing.
+pub(in crate::server::transport) async fn try_relay_edge_udp(
+    ws: WebSocketUpgrade,
+    cluster: &ClusterCtx,
+    metrics: &Arc<Metrics>,
+    relay: EdgeRelay,
+) -> std::result::Result<Response, WebSocketUpgrade> {
+    let EdgeRelay {
+        shard,
+        advert,
+        carrier,
+        path,
+        peer_addr,
+        protocol,
+        app_protocol,
+        kind,
+    } = relay;
+    let Some(pooled) = open_edge_relay(cluster, shard, &advert, carrier, &path, peer_addr).await
+    else {
+        return Err(ws);
+    };
+    let session = metrics.open_websocket_session(Transport::Udp, protocol, app_protocol);
+    let budget = cluster.relay_budget;
+    let echo = ResumeResponseEcho {
+        session_id: Some(advert.session_id),
+        ..Default::default()
+    };
+    let mut response = ws.on_upgrade(move |socket| async move {
+        let (send, recv, _permit) = pooled.into_parts();
+        let result = edge_relay_udp::<AxumWs>(AxumWs(socket), send, recv, budget).await;
+        super::finish_ws_session(session, result, kind);
+    });
+    echo.apply(response.headers_mut());
+    Ok(response)
+}
+
 /// Accepts relayed connections from edge peers until the endpoint closes or the
 /// server shuts down. One task per peer connection; one task per relayed
 /// session on it.
@@ -291,7 +397,9 @@ async fn serve_relayed(
     services: &Services,
     routes: &RoutesSnapshot,
 ) -> Result<()> {
-    let carrier = MeshCarrier::new(stream);
+    // The carrier wrapping the mesh stream is built inside each arm: the
+    // TCP/VLESS carriers use the byte-stream `MeshCarrier`, while SS-UDP uses
+    // the datagram-framed `MeshUdpCarrier` (moving `stream` into the arm taken).
     let path: Arc<str> = Arc::from(header.path.as_str());
     let padding = carrier_padding::scheme_for_path(&path);
     let session_id = SessionId::from_bytes(header.session_id);
@@ -330,7 +438,14 @@ async fn serve_relayed(
                 peer_user_cache: Arc::clone(&route.peer_user_cache),
                 padding,
             };
-            run_tcp_relay(carrier, &services.tcp_server, &route_ctx, resume, peer_addr).await
+            run_tcp_relay(
+                MeshCarrier::new(stream),
+                &services.tcp_server,
+                &route_ctx,
+                resume,
+                peer_addr,
+            )
+            .await
         },
         CarrierKind::VlessTcp | CarrierKind::VlessXhttp => {
             let route = {
@@ -350,11 +465,39 @@ async fn serve_relayed(
                 padding,
                 peer: peer_addr.map(|addr| addr.ip()),
             };
-            run_vless_relay(carrier, &services.vless_server, &route_ctx, resume).await
+            run_vless_relay(MeshCarrier::new(stream), &services.vless_server, &route_ctx, resume)
+                .await
         },
-        CarrierKind::SsUdp | CarrierKind::VlessUdp => {
-            warn!("UDP mesh relay is not yet supported; dropping relayed session");
-            bail!("UDP mesh relay not yet supported")
+        CarrierKind::SsUdp => {
+            let route = {
+                let snap = routes.load();
+                snap.udp.get(&*path).cloned().unwrap_or_else(empty_transport_route)
+            };
+            let route_ctx = Arc::new(UdpRouteCtx {
+                users: Arc::clone(&route.users),
+                protocol,
+                path: Arc::clone(&path),
+                candidate_users: Arc::clone(&route.candidate_users),
+                padding,
+            });
+            // Datagram-framed carrier keeps SS-UDP packet boundaries intact
+            // across the mesh; the existing UDP relay owns NAT/park/unpark.
+            run_udp_relay(
+                MeshUdpCarrier::new(stream),
+                Arc::clone(&services.udp_server),
+                route_ctx,
+                resume,
+            )
+            .await
+        },
+        CarrierKind::VlessUdp => {
+            // Unreachable in practice: an edge never builds a VlessUdp carrier.
+            // VLESS-UDP rides the VlessTcp carrier — the edge forwards the VLESS
+            // byte stream verbatim and the home's `run_vless_relay` parses the
+            // UDP command from it. Kept as a defensive close (not a panic) in
+            // case a peer sends a forged or mismatched-version header.
+            warn!("unexpected VlessUdp mesh carrier (VLESS-UDP rides VlessTcp); dropping");
+            bail!("VlessUdp mesh carrier is unreachable on the edge")
         },
     }
 }
