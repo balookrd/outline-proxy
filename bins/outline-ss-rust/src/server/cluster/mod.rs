@@ -18,7 +18,7 @@ use outline_wire::cluster::ShardId;
 use super::resumption::{ClusterIdentity, SessionId};
 
 use mesh::MeshIdentity;
-pub(in crate::server) use mesh::{MeshEndpoint, MeshPeerPool};
+pub(in crate::server) use mesh::{MeshEndpoint, MeshPeerPool, ThrottleRegistry};
 
 /// Process-wide cluster runtime: the mesh endpoint (shared by the listener
 /// accept-loop and the peer pool) and the relay progress budget. Built at
@@ -30,6 +30,9 @@ pub(in crate::server) struct ClusterCtx {
     pub(in crate::server) pool: Arc<MeshPeerPool>,
     /// Per-uplink-write stall budget for the edge relay (health budget).
     pub(in crate::server) relay_budget: Duration,
+    /// Home-side map from a relayed session id to its live carrier monitor, so
+    /// an edge `THROTTLE_HINT` datagram can wake the right relay writer.
+    pub(in crate::server) throttle_registry: ThrottleRegistry,
 }
 
 /// Cap on concurrent relay streams this server dials out (bounded resources).
@@ -53,6 +56,7 @@ impl ClusterCtx {
             endpoint,
             pool,
             relay_budget: cfg.mesh_relay_budget,
+            throttle_registry: ThrottleRegistry::new(),
         }))
     }
 }
