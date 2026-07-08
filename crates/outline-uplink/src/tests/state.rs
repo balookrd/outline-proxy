@@ -151,3 +151,59 @@ async fn state_store_missing_file_starts_fresh() {
     let gs = store.group_state("any").await;
     assert_eq!(gs.global_active, None);
 }
+
+// ── Operator on/off (admin-disabled) persistence ──────────────────────────
+
+#[tokio::test]
+async fn uplink_enabled_toggles_the_disabled_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StateStore::load_or_default(dir.path().join("state.toml")).await;
+
+    store.update_uplink_enabled("g", "u1", false).await; // disable
+    assert_eq!(store.group_state("g").await.disabled_uplinks, vec!["u1".to_string()]);
+
+    store.update_uplink_enabled("g", "u1", false).await; // idempotent
+    assert_eq!(store.group_state("g").await.disabled_uplinks, vec!["u1".to_string()]);
+
+    store.update_uplink_enabled("g", "u2", false).await; // second uplink
+    assert_eq!(
+        store.group_state("g").await.disabled_uplinks,
+        vec!["u1".to_string(), "u2".to_string()]
+    );
+
+    store.update_uplink_enabled("g", "u1", true).await; // re-enable u1
+    assert_eq!(store.group_state("g").await.disabled_uplinks, vec!["u2".to_string()]);
+}
+
+#[tokio::test]
+async fn uplink_enabled_persists_to_disk_and_reloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.toml");
+    {
+        let store = StateStore::load_or_default(path.clone()).await;
+        store.update_uplink_enabled("grp", "home-edge", false).await;
+        store.clone().spawn_writer();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+    let reloaded = StateStore::load_or_default(path).await;
+    assert_eq!(
+        reloaded.group_state("grp").await.disabled_uplinks,
+        vec!["home-edge".to_string()],
+        "a disabled uplink must stay parked across a restart",
+    );
+}
+
+#[tokio::test]
+async fn old_state_file_without_disabled_key_parses() {
+    // Backward compatibility: a state file written before this field existed
+    // (only active-uplink names) must still load, with an empty disabled set.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.toml");
+    tokio::fs::write(&path, b"[groups.grp]\nglobal_active = \"u1\"\n")
+        .await
+        .unwrap();
+    let store = StateStore::load_or_default(path).await;
+    let gs = store.group_state("grp").await;
+    assert_eq!(gs.global_active, Some("u1".to_string()));
+    assert!(gs.disabled_uplinks.is_empty());
+}

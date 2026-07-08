@@ -534,6 +534,7 @@ impl UplinkManager {
                 .to_string(),
             routing_scope: routing_scope_name(self.inner.load_balancing.routing_scope).to_string(),
             auto_failback: self.inner.load_balancing.auto_failback,
+            shared_resume: self.inner.load_balancing.shared_resume,
             bypass_when_down,
             bypass_active_tcp,
             bypass_active_udp,

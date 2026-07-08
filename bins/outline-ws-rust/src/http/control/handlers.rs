@@ -16,6 +16,12 @@ pub(crate) struct ActivateRequest {
     pub(crate) uplink: String,
     #[serde(default)]
     pub(crate) transport: Option<ActivateTransport>,
+    /// Operator soft switch: migrate live sessions to the new active uplink via
+    /// cluster resume instead of aborting them. Only meaningful for a group with
+    /// `shared_resume` (a mesh cluster); ignored otherwise. Defaults to a hard
+    /// switch so existing callers are unchanged.
+    #[serde(default)]
+    pub(crate) soft: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -91,7 +97,7 @@ pub(crate) async fn handle_switch(
         );
     };
     match uplinks
-        .set_active_uplink_by_name(group_name.as_deref(), &name, transport)
+        .set_active_uplink_by_name(group_name.as_deref(), &name, transport, false)
         .await
     {
         Ok((group, index)) => {
@@ -174,7 +180,12 @@ pub(crate) async fn activate_from_json(body: &[u8], uplinks: UplinkRegistry) -> 
     }
     let transport = payload.transport.and_then(ActivateTransport::into_registry_transport);
     match uplinks
-        .set_active_uplink_by_name(Some(payload.group.trim()), payload.uplink.trim(), transport)
+        .set_active_uplink_by_name(
+            Some(payload.group.trim()),
+            payload.uplink.trim(),
+            transport,
+            payload.soft,
+        )
         .await
     {
         Ok((group, index)) => {
