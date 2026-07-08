@@ -829,3 +829,69 @@ async fn cluster_udp_xhttp_relays_to_home() -> Result<()> {
     transport.close().await?;
     Ok(())
 }
+
+/// SS-UDP relays over the HTTP/3 carrier too. An h3 client CONNECTs `/udp` on an
+/// h3 edge with a home-shard resume id; the edge splices the h3 WebSocket to the
+/// mesh with datagram framing (`edge_relay_h3_udp`), and the home forwards to
+/// the target. A byte-exact echo proves the h3 SS-UDP accept branch end to end
+/// (the `H3Ws` carrier, a different `WsSocket` impl than the h1/h2 path).
+#[tokio::test]
+async fn cluster_udp_h3_relays_to_home() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-h3-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+
+    // Home: a plain-WS node with the mesh listener (carrier-agnostic home side);
+    // edge: an h3 node that relays a foreign-shard resume.
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_h3_edge_node(PSK, 2, peers, Duration::from_secs(4)).await?;
+
+    let session_id = resume_id_for_shard(PSK, 1)?;
+
+    // h3 client → edge, CONNECT `/udp` presenting the home-shard resume id.
+    let mut endpoint = Endpoint::client((Ipv4Addr::LOCALHOST, 0).into())?;
+    endpoint.set_default_client_config(test_h3_client_config(edge.cert_der.clone())?);
+    let connection = endpoint.connect(edge.addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver_task =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    let request = Request::builder()
+        .method(Method::CONNECT)
+        .uri(format!("https://localhost:{}/udp", edge.addr.port()))
+        .version(Version::HTTP_3)
+        .header(header::SEC_WEBSOCKET_VERSION, "13")
+        .header("x-outline-resume-capable", "1")
+        .header("x-outline-resume", session_id.to_hex())
+        .extension(H3Protocol::WEBSOCKET)
+        .body(())?;
+    let mut req_stream = send_request.send_request(request).await?;
+    let response = req_stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK, "h3 CONNECT /udp must succeed on the edge");
+
+    let h3_stream = H3Stream::<H3Transport>::from_h3_client(req_stream);
+    let mut socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+
+    // One SS-UDP datagram, relayed edge→mesh→home→NAT→target and echoed back.
+    let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
+    plaintext.extend_from_slice(b"h3-udp");
+    socket
+        .send(H3Message::Binary(encrypt_udp_packet(&user, &plaintext)?.into()))
+        .await?;
+
+    let reply = tokio::time::timeout(Duration::from_secs(5), socket.next()).await?;
+    let bytes = match reply {
+        Some(Ok(H3Message::Binary(b))) => b,
+        other => bail!("expected a binary SS-UDP reply over the h3 edge, got {other:?}"),
+    };
+    let decoded = decrypt_udp_packet(std::slice::from_ref(&user), &bytes)?;
+    assert!(
+        decoded.payload.ends_with(b"h3-udp"),
+        "SS-UDP-over-h3 datagram relayed home→edge→client byte-exact",
+    );
+
+    driver_task.abort();
+    Ok(())
+}
