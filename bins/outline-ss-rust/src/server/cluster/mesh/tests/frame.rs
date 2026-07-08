@@ -42,6 +42,7 @@ fn round_trip_all_carrier_kinds() {
         CarrierKind::VlessUdp,
         CarrierKind::SsXhttp,
         CarrierKind::VlessXhttp,
+        CarrierKind::SsUdpXhttp,
     ] {
         let mut h = sample(None);
         h.carrier = carrier;

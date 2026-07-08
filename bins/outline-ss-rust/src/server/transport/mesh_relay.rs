@@ -415,7 +415,9 @@ async fn serve_relayed(
     let peer_addr = header.peer_addr;
     // The `*Xhttp` carriers differ only in which route table holds the path.
     let protocol = match header.carrier {
-        CarrierKind::SsXhttp | CarrierKind::VlessXhttp => Protocol::XhttpH3,
+        CarrierKind::SsXhttp | CarrierKind::VlessXhttp | CarrierKind::SsUdpXhttp => {
+            Protocol::XhttpH3
+        },
         _ => Protocol::Http3,
     };
 
@@ -468,10 +470,15 @@ async fn serve_relayed(
             run_vless_relay(MeshCarrier::new(stream), &services.vless_server, &route_ctx, resume)
                 .await
         },
-        CarrierKind::SsUdp => {
+        CarrierKind::SsUdp | CarrierKind::SsUdpXhttp => {
             let route = {
                 let snap = routes.load();
-                snap.udp.get(&*path).cloned().unwrap_or_else(empty_transport_route)
+                let map = if header.carrier == CarrierKind::SsUdpXhttp {
+                    &snap.xhttp_ss_udp
+                } else {
+                    &snap.udp
+                };
+                map.get(&*path).cloned().unwrap_or_else(empty_transport_route)
             };
             let route_ctx = Arc::new(UdpRouteCtx {
                 users: Arc::clone(&route.users),
