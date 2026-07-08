@@ -774,7 +774,10 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                         edge_relay::<XhttpDuplex>(socket, send, recv, budget).await
                     },
                     None => {
-                        run_vless_relay::<XhttpDuplex>(socket, &server, &route_ctx, resume).await
+                        // Served locally (this node is the home): direct carrier,
+                        // no injected monitor — local detection runs.
+                        run_vless_relay::<XhttpDuplex>(socket, &server, &route_ctx, resume, None)
+                            .await
                     },
                 };
                 // Always drop the registry slot: even on a clean exit
@@ -816,12 +819,15 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                         edge_relay::<XhttpDuplex>(socket, send, recv, budget).await
                     },
                     None => {
+                        // Served locally (this node is the home): direct carrier,
+                        // no injected monitor — local detection runs.
                         run_tcp_relay::<XhttpDuplex>(
                             socket,
                             &server,
                             &route_ctx,
                             resume,
                             Some(peer_addr),
+                            None,
                         )
                         .await
                     },
@@ -863,7 +869,11 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                         let (send, recv, _permit) = pooled.into_parts();
                         edge_relay_udp::<XhttpDuplex>(socket, send, recv, budget).await
                     },
-                    None => run_udp_relay::<XhttpDuplex>(socket, server, route_ctx, resume).await,
+                    // Served locally (this node is the home): direct carrier,
+                    // no injected monitor — local detection runs.
+                    None => {
+                        run_udp_relay::<XhttpDuplex>(socket, server, route_ctx, resume, None).await
+                    },
                 };
                 session_for_task.close();
                 registry.remove(&session_id);
