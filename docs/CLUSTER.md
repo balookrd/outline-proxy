@@ -188,6 +188,53 @@ edge A dies), home parks as it would on any carrier drop; the client arrives at
 edge B with the same session id, edge B opens a fresh mesh stream to home, and
 home unparks into that stream.
 
+## Home is chosen once — the session set stratifies across homes
+
+The client's load balancer switches the **edge** (the entry point), never the
+**home**. A home is minted once, when a session is born, and never moves: a
+**first connect with no resume id** is handled locally on whatever edge it
+landed on, which mints a session id carrying its own shard and *becomes that
+session's home*. A resume, by contrast, carries an existing home in its shard,
+so it points back at wherever that session was first established.
+
+So when a client leaves a still-alive server A as its edge (A picked up a
+throttle / health penalty — it did not die) and moves to B:
+
+- **existing sessions** (born on A) keep A as their home — a resume through
+  edge B relays back to home A over the mesh, so they survive;
+- **new sessions** opened while B is the active edge are minted locally on B
+  and get **B as their home**.
+
+The client's sessions are therefore **stratified across two homes** — old ones
+pinned to A, new ones on B. This is by design, not a defect:
+
+- **Correctness is unaffected.** Every session is independent; nothing requires
+  a client's sessions to share a home.
+- **Path asymmetry is the real cost.** Old sessions now take a double hop
+  `client → B → A → target`. If A was abandoned because of a bad **last mile**
+  (an `edge→client` throttle), that *helps* the old sessions (their downlink is
+  now `B→client`) at the price of the `A→B` interconnect hop. If A was
+  abandoned because of a bad **upstream** (`A→target`), the old sessions still
+  pinned to home A keep suffering — relaying through B does not fix the
+  `A→target` segment; only the new sessions on B escape it.
+- **A cannot be drained instantly.** As long as old sessions live, A stays
+  their home (over the mesh from B, and directly for any still-open flows). A
+  sheds load fully only as its sessions close naturally.
+- **It self-balances over time.** The stratification does not grow without
+  bound: old sessions close, new ones are born on the active edge, and once A
+  recovers by health and becomes the active edge again, new sessions land on A
+  once more. The home distribution **drifts behind whichever edge is currently
+  active**, lagged by session lifetime.
+
+There is no "home migration" — moving a live upstream socket between machines is
+impossible (see the top of this document). The only planned mitigation is
+[open risk #2](#open-risks): let the client dial the home directly when it is
+reachable, which removes the double hop but not the stratification itself (the
+home is still where the session was born). Anycast ingress (§5a in
+[`CLUSTER-DEPLOY.md`](CLUSTER-DEPLOY.md)) minimises stratification structurally:
+one resume scope, and the home is the naturally-nearest node rather than
+wherever the client happened to be when it opened the session.
+
 ## Failure semantics
 
 | Failure | Behaviour | Session |
