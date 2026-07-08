@@ -31,7 +31,9 @@ use crate::server::resumption::{OrphanRegistry, SessionId};
 use outline_wire::cluster::ShardId;
 
 use super::super::super::state::{AppState, Services, TransportRoute, VlessTransportRoute};
-use super::super::mesh_relay::{edge_relay, edge_relay_udp, open_edge_relay};
+use super::super::mesh_relay::{
+    EdgeThrottleCtx, edge_relay, edge_relay_udp, edge_throttle_ctx, open_edge_relay,
+};
 use super::super::resume_headers::{
     EdgeResumeAdvert, ResumeContext, ResumeResponseEcho, edge_route,
 };
@@ -715,11 +717,14 @@ async fn open_xhttp_mesh(
     carrier: CarrierKind,
     path: &str,
     peer_addr: SocketAddr,
-) -> Option<(PooledRelay, Duration)> {
+) -> Option<(PooledRelay, Duration, Option<EdgeThrottleCtx>)> {
     let plan = edge?;
     let pooled =
         open_edge_relay(&plan.cluster, plan.shard, &plan.advert, carrier, path, peer_addr).await?;
-    Some((pooled, plan.cluster.relay_budget))
+    // Build detection before the caller consumes `pooled` (it clones the mesh
+    // connection). `None` when throttle detection is off for this path.
+    let detect = edge_throttle_ctx(&pooled, plan.advert.session_id, path);
+    Some((pooled, plan.cluster.relay_budget, detect))
 }
 
 /// Spawn the per-session relay task for whichever protocol this base
@@ -769,9 +774,9 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                     open_xhttp_mesh(edge, CarrierKind::VlessXhttp, &relay_path, peer_addr).await;
                 let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
                 let result = match relay {
-                    Some((pooled, budget)) => {
+                    Some((pooled, budget, detect)) => {
                         let (send, recv, _permit) = pooled.into_parts();
-                        edge_relay::<XhttpDuplex>(socket, send, recv, budget).await
+                        edge_relay::<XhttpDuplex>(socket, send, recv, budget, detect).await
                     },
                     None => {
                         // Served locally (this node is the home): direct carrier,
@@ -814,9 +819,9 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                     open_xhttp_mesh(edge, CarrierKind::SsXhttp, &relay_path, peer_addr).await;
                 let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
                 let result = match relay {
-                    Some((pooled, budget)) => {
+                    Some((pooled, budget, detect)) => {
                         let (send, recv, _permit) = pooled.into_parts();
-                        edge_relay::<XhttpDuplex>(socket, send, recv, budget).await
+                        edge_relay::<XhttpDuplex>(socket, send, recv, budget, detect).await
                     },
                     None => {
                         // Served locally (this node is the home): direct carrier,
@@ -865,9 +870,9 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                     open_xhttp_mesh(edge, CarrierKind::SsUdpXhttp, &relay_path, peer_addr).await;
                 let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
                 let result = match relay {
-                    Some((pooled, budget)) => {
+                    Some((pooled, budget, detect)) => {
                         let (send, recv, _permit) = pooled.into_parts();
-                        edge_relay_udp::<XhttpDuplex>(socket, send, recv, budget).await
+                        edge_relay_udp::<XhttpDuplex>(socket, send, recv, budget, detect).await
                     },
                     // Served locally (this node is the home): direct carrier,
                     // no injected monitor — local detection runs.

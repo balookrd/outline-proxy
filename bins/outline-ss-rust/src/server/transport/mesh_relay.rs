@@ -22,14 +22,14 @@ use axum::extract::ws::WebSocketUpgrade;
 use axum::response::Response;
 use bytes::Bytes;
 use outline_wire::cluster::ShardId;
-use quinn::{RecvStream, SendStream, VarInt};
+use quinn::{Connection, RecvStream, SendStream, VarInt};
 use tracing::{debug, warn};
 
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     CarrierKind, CloseReason, ControlDatagram, MeshStream, OpenHeader, PooledRelay, accept_relay,
-    parse_control_datagram, read_datagram, write_datagram,
+    encode_throttle_hint, parse_control_datagram, read_datagram, write_datagram,
 };
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::server::resumption::SessionId;
@@ -42,12 +42,126 @@ use super::carrier_padding;
 use super::mesh_carrier::{MeshCarrier, MeshUdpCarrier};
 use super::resume_headers::{EdgeResumeAdvert, ResumeContext, ResumeResponseEcho};
 use super::tcp::{WsTcpRouteCtx, run_tcp_relay};
+use super::throughput_monitor::ThrottleDetectParams;
 use super::udp::{UdpRouteCtx, run_udp_relay};
 use super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 
 /// Read granularity for the mesh→client direction on the edge.
 const MESH_EDGE_CHUNK: usize = 256 * 1024;
+
+/// What the edge needs to signal a throttled client segment to the home: the
+/// mesh connection to send the control datagram on, the relayed session id to
+/// key it, and the detection tunables. Built only when throttle detection is
+/// enabled for the path (`None` otherwise, leaving the splice untouched).
+pub(in crate::server) struct EdgeThrottleCtx {
+    conn: Connection,
+    session_id: [u8; 16],
+    params: ThrottleDetectParams,
+}
+
+/// Builds the edge throttle-detection context for a relay, or `None` when
+/// detection is off for `path`. Must be called before [`PooledRelay::into_parts`]
+/// — it borrows the pooled relay's mesh connection.
+pub(in crate::server) fn edge_throttle_ctx(
+    pooled: &PooledRelay,
+    session_id: SessionId,
+    path: &str,
+) -> Option<EdgeThrottleCtx> {
+    carrier_padding::throttle_params_for_path(path).map(|params| EdgeThrottleCtx {
+        conn: pooled.connection(),
+        session_id: *session_id.as_bytes(),
+        params,
+    })
+}
+
+/// Edge-side detection of a throttled client segment, driven by how long each
+/// downlink write to the client takes. When the home keeps feeding the edge but
+/// the client stops draining, the client-facing `send` blocks; a send that
+/// blocks past a detection window is a stalled window. Sustained past
+/// `sustain_windows`, the edge sends one THROTTLE_HINT datagram to the home
+/// (rate-limited by `signal_cooldown`), which injects an OCTL cover frame so the
+/// client backs off.
+///
+/// The edge times `send` rather than reusing the home's rate-based
+/// [`super::throughput_monitor::ThroughputMonitor`] because a slow mesh shows up
+/// as a *read* stall (waiting on `mesh_recv`), not a *send* stall — only the
+/// throttled client segment blocks the writer.
+struct EdgeThrottleDetector {
+    ctx: EdgeThrottleCtx,
+    tracker: StallTracker,
+}
+
+impl EdgeThrottleDetector {
+    fn new(ctx: EdgeThrottleCtx) -> Self {
+        let tracker = StallTracker::new(&ctx.params);
+        Self { ctx, tracker }
+    }
+
+    /// Feeds one client-facing send's elapsed time; on a sustained stall past
+    /// the cooldown, fires one THROTTLE_HINT to the home. Fire-and-forget: an
+    /// unreliable QUIC datagram, re-sent next window if lost, idempotent on the
+    /// client.
+    fn observe_send(&mut self, elapsed: Duration) {
+        if self.tracker.observe(elapsed, tokio::time::Instant::now()) {
+            let _ = self
+                .ctx
+                .conn
+                .send_datagram(Bytes::from(encode_throttle_hint(&self.ctx.session_id)));
+            debug!("edge signalled a throttled client segment to the home");
+        }
+    }
+}
+
+/// Pure stall-streak tracker: the counting + cooldown decision behind
+/// [`EdgeThrottleDetector`], split out from the I/O so it is unit-testable
+/// without a live mesh connection. A send spanning one or more detection windows
+/// adds that many stalled windows to the streak; a fast send resets it. Once the
+/// streak reaches `sustain_windows` and the cooldown has elapsed, [`observe`]
+/// returns `true` once and re-arms.
+///
+/// [`observe`]: StallTracker::observe
+struct StallTracker {
+    window_secs: f64,
+    sustain_windows: u32,
+    cooldown: Duration,
+    sustain: u32,
+    last_hint: Option<tokio::time::Instant>,
+}
+
+impl StallTracker {
+    fn new(params: &ThrottleDetectParams) -> Self {
+        Self {
+            window_secs: params.window.as_secs_f64().max(0.001),
+            sustain_windows: params.sustain_windows,
+            cooldown: params.signal_cooldown,
+            sustain: 0,
+            last_hint: None,
+        }
+    }
+
+    /// Feeds one send's `elapsed` time at instant `now`; returns `true` exactly
+    /// when a hint should fire (sustained stall past the cooldown), recording the
+    /// cooldown start and resetting the streak.
+    fn observe(&mut self, elapsed: Duration, now: tokio::time::Instant) -> bool {
+        let windows = (elapsed.as_secs_f64() / self.window_secs).floor() as u32;
+        if windows >= 1 {
+            self.sustain = self.sustain.saturating_add(windows);
+        } else {
+            self.sustain = 0;
+        }
+        if self.sustain < self.sustain_windows {
+            return false;
+        }
+        let cooled = self.last_hint.is_none_or(|t| now.duration_since(t) >= self.cooldown);
+        if !cooled {
+            return false;
+        }
+        self.last_hint = Some(now);
+        self.sustain = 0;
+        true
+    }
+}
 
 /// Edge-side relay: splice a client carrier to a mesh relay stream, forwarding
 /// the still-encrypted application bytes both ways. The edge does not decode
@@ -78,6 +192,7 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
     mut mesh_send: SendStream,
     mut mesh_recv: RecvStream,
     budget: Duration,
+    detect: Option<EdgeThrottleCtx>,
 ) -> Result<()> {
     let (mut reader, mut writer) = client.split_io();
 
@@ -104,16 +219,31 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
         Ok::<(), anyhow::Error>(())
     };
 
-    // Downlink: the ONLY writer to the client `writer`.
+    // Downlink: the ONLY writer to the client `writer`. When detection is on,
+    // time each client-facing send: a send that blocks means the client isn't
+    // draining (edge→client throttle).
     let downlink = async {
+        let mut detector = detect.map(EdgeThrottleDetector::new);
         while let Some(chunk) = mesh_recv
             .read_chunk(MESH_EDGE_CHUNK, true)
             .await
             .context("mesh edge downlink read")?
         {
-            T::send(&mut writer, T::binary_msg(chunk.bytes))
-                .await
-                .context("edge client downlink write")?;
+            let msg = T::binary_msg(chunk.bytes);
+            match detector.as_mut() {
+                Some(d) => {
+                    let started = tokio::time::Instant::now();
+                    T::send(&mut writer, msg)
+                        .await
+                        .context("edge client downlink write")?;
+                    d.observe_send(started.elapsed());
+                },
+                None => {
+                    T::send(&mut writer, msg)
+                        .await
+                        .context("edge client downlink write")?;
+                },
+            }
         }
         T::finish(&mut writer).await;
         Ok::<(), anyhow::Error>(())
@@ -137,6 +267,7 @@ pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
     mut mesh_send: SendStream,
     mut mesh_recv: RecvStream,
     budget: Duration,
+    detect: Option<EdgeThrottleCtx>,
 ) -> Result<()> {
     let (mut reader, mut writer) = client.split_io();
 
@@ -165,15 +296,29 @@ pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
     };
 
     // Downlink: the ONLY writer to the client `writer`. One datagram = one Binary.
+    // When detection is on, time each client-facing send (see [`edge_relay`]).
     let downlink = async {
+        let mut detector = detect.map(EdgeThrottleDetector::new);
         let mut buf = Vec::new();
         while let Some(len) = read_datagram(&mut mesh_recv, &mut buf)
             .await
             .context("mesh edge downlink datagram read")?
         {
-            T::send(&mut writer, T::binary_msg(Bytes::copy_from_slice(&buf[..len])))
-                .await
-                .context("edge client downlink datagram write")?;
+            let msg = T::binary_msg(Bytes::copy_from_slice(&buf[..len]));
+            match detector.as_mut() {
+                Some(d) => {
+                    let started = tokio::time::Instant::now();
+                    T::send(&mut writer, msg)
+                        .await
+                        .context("edge client downlink datagram write")?;
+                    d.observe_send(started.elapsed());
+                },
+                None => {
+                    T::send(&mut writer, msg)
+                        .await
+                        .context("edge client downlink datagram write")?;
+                },
+            }
         }
         T::finish(&mut writer).await;
         Ok::<(), anyhow::Error>(())
@@ -228,9 +373,10 @@ pub(in crate::server) async fn edge_relay_h3(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     pooled: PooledRelay,
     budget: Duration,
+    detect: Option<EdgeThrottleCtx>,
 ) -> Result<()> {
     let (send, recv, _permit) = pooled.into_parts();
-    edge_relay::<H3Ws>(H3Ws(socket), send, recv, budget).await
+    edge_relay::<H3Ws>(H3Ws(socket), send, recv, budget, detect).await
 }
 
 /// SS-UDP twin of [`edge_relay_h3`]: splices an h3 client carrier to a mesh
@@ -239,9 +385,10 @@ pub(in crate::server) async fn edge_relay_h3_udp(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     pooled: PooledRelay,
     budget: Duration,
+    detect: Option<EdgeThrottleCtx>,
 ) -> Result<()> {
     let (send, recv, _permit) = pooled.into_parts();
-    edge_relay_udp::<H3Ws>(H3Ws(socket), send, recv, budget).await
+    edge_relay_udp::<H3Ws>(H3Ws(socket), send, recv, budget, detect).await
 }
 
 /// Describes a carrier the edge is about to relay to its home. Bundled so the
@@ -296,6 +443,9 @@ pub(in crate::server::transport) async fn try_relay_edge(
     };
     let session = metrics.open_websocket_session(Transport::Tcp, protocol, app_protocol);
     let budget = cluster.relay_budget;
+    // Edge throttle detection (built before `pooled` moves into the closure; it
+    // clones the mesh connection, so it is independent of the relay streams).
+    let detect = edge_throttle_ctx(&pooled, advert.session_id, &path);
     // Continuity: echo the id the client presented — the home parks the relayed
     // upstream under exactly that id, so the client keeps resuming it.
     let echo = ResumeResponseEcho {
@@ -305,7 +455,7 @@ pub(in crate::server::transport) async fn try_relay_edge(
     let mut response = ws.on_upgrade(move |socket| async move {
         // Hold the pool permit for the relay's whole lifetime (drops here).
         let (send, recv, _permit) = pooled.into_parts();
-        let result = edge_relay::<AxumWs>(AxumWs(socket), send, recv, budget).await;
+        let result = edge_relay::<AxumWs>(AxumWs(socket), send, recv, budget, detect).await;
         super::finish_ws_session(session, result, kind);
     });
     echo.apply(response.headers_mut());
@@ -342,13 +492,14 @@ pub(in crate::server::transport) async fn try_relay_edge_udp(
     };
     let session = metrics.open_websocket_session(Transport::Udp, protocol, app_protocol);
     let budget = cluster.relay_budget;
+    let detect = edge_throttle_ctx(&pooled, advert.session_id, &path);
     let echo = ResumeResponseEcho {
         session_id: Some(advert.session_id),
         ..Default::default()
     };
     let mut response = ws.on_upgrade(move |socket| async move {
         let (send, recv, _permit) = pooled.into_parts();
-        let result = edge_relay_udp::<AxumWs>(AxumWs(socket), send, recv, budget).await;
+        let result = edge_relay_udp::<AxumWs>(AxumWs(socket), send, recv, budget, detect).await;
         super::finish_ws_session(session, result, kind);
     });
     echo.apply(response.headers_mut());
@@ -564,3 +715,7 @@ async fn serve_relayed(
         },
     }
 }
+
+#[cfg(test)]
+#[path = "tests/mesh_relay.rs"]
+mod tests;
