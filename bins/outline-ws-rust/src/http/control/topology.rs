@@ -63,6 +63,13 @@ pub(crate) struct ControlGroupTopology {
     load_balancing_mode: String,
     routing_scope: String,
     auto_failback: bool,
+    /// `shared_resume` group flag: the group's uplinks are edges of one mesh
+    /// cluster, so a session can migrate between them with continuity. The
+    /// dashboard shows the soft-switch control only when this is `true`. Omitted
+    /// from JSON when off so the payload shape is unchanged for non-cluster
+    /// deployments.
+    #[serde(default, skip_serializing_if = "is_false_ref")]
+    cluster_resume_enabled: bool,
     /// `bypass_when_down` group flag — traffic routed to this group escapes
     /// direct (tunnel bypass) while the group has no healthy uplink. All
     /// three fields are omitted from JSON when the option is off so older
@@ -300,6 +307,7 @@ fn build_group_topology(snapshot: &UplinkManagerSnapshot) -> ControlGroupTopolog
         load_balancing_mode: snapshot.load_balancing_mode.clone(),
         routing_scope: snapshot.routing_scope.clone(),
         auto_failback: snapshot.auto_failback,
+        cluster_resume_enabled: snapshot.shared_resume,
         bypass_when_down: snapshot.bypass_when_down,
         bypass_active_tcp: snapshot.bypass_active_tcp,
         bypass_active_udp: snapshot.bypass_active_udp,

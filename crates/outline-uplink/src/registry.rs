@@ -76,15 +76,20 @@ impl UplinkRegistry {
     ) -> Result<Self> {
         // Resolve persisted names up-front so the build step does not have
         // to be async.
-        let mut restored: Vec<(Option<String>, Option<String>, Option<String>)> =
+        let mut restored: Vec<(Option<String>, Option<String>, Option<String>, Vec<String>)> =
             Vec::with_capacity(groups.len());
         if let Some(store) = &state_store {
             for group in &groups {
                 let gs = store.group_state(&group.name).await;
-                restored.push((gs.global_active, gs.tcp_active, gs.udp_active));
+                restored.push((
+                    gs.global_active,
+                    gs.tcp_active,
+                    gs.udp_active,
+                    gs.disabled_uplinks,
+                ));
             }
         } else {
-            restored.resize(groups.len(), (None, None, None));
+            restored.resize(groups.len(), (None, None, None, Vec::new()));
         }
         let state = build_state(groups, Some(restored), dns_cache, state_store)?;
         Ok(Self {
@@ -217,12 +222,15 @@ impl UplinkRegistry {
 
     /// Manually switch the active uplink identified by `uplink_name`. When
     /// `group` is `Some`, only that group is considered; otherwise all groups
-    /// are searched (uplink names are globally unique across groups).
+    /// are searched (uplink names are globally unique across groups). `soft`
+    /// requests an operator soft switch (migrate live sessions via cluster
+    /// resume instead of aborting them); see [`UplinkManager::set_active_uplink_by_name`].
     pub async fn set_active_uplink_by_name(
         &self,
         group: Option<&str>,
         uplink_name: &str,
         transport: Option<TransportKind>,
+        soft: bool,
     ) -> Result<(String, usize)> {
         let state = self.state.load();
         let manager: UplinkManager = if let Some(g) = group {
@@ -241,7 +249,9 @@ impl UplinkRegistry {
                     anyhow::anyhow!("uplink \"{}\" not found in any group", uplink_name)
                 })?
         };
-        let index = manager.set_active_uplink_by_name(uplink_name, transport).await?;
+        let index = manager
+            .set_active_uplink_by_name(uplink_name, transport, soft)
+            .await?;
         Ok((manager.group_name().to_string(), index))
     }
 
@@ -308,16 +318,21 @@ impl UplinkRegistry {
         dns_cache: Arc<outline_transport::DnsCache>,
         state_store: Option<Arc<StateStore>>,
     ) -> Result<()> {
-        // Resolve persisted active-uplink names for the new groups.
-        let mut restored: Vec<(Option<String>, Option<String>, Option<String>)> =
+        // Resolve persisted active-uplink names + disabled sets for the new groups.
+        let mut restored: Vec<(Option<String>, Option<String>, Option<String>, Vec<String>)> =
             Vec::with_capacity(groups.len());
         if let Some(store) = &state_store {
             for group in &groups {
                 let gs = store.group_state(&group.name).await;
-                restored.push((gs.global_active, gs.tcp_active, gs.udp_active));
+                restored.push((
+                    gs.global_active,
+                    gs.tcp_active,
+                    gs.udp_active,
+                    gs.disabled_uplinks,
+                ));
             }
         } else {
-            restored.resize(groups.len(), (None, None, None));
+            restored.resize(groups.len(), (None, None, None, Vec::new()));
         }
 
         let new_state = build_state(groups, Some(restored), dns_cache, state_store)?;
@@ -355,10 +370,10 @@ impl UplinkRegistry {
 
 fn build_state(
     groups: Vec<UplinkGroupConfig>,
-    // Per-group (global, tcp, udp) persisted active-uplink names. `None`
-    // means "no state_store attached"; element-wise `None`s mean "no
+    // Per-group persisted `(global, tcp, udp active names, disabled names)`.
+    // `None` means "no state_store attached"; element-wise empties mean "no
     // persisted value for this group" and are equivalent to fresh start.
-    restored: Option<Vec<(Option<String>, Option<String>, Option<String>)>>,
+    restored: Option<Vec<(Option<String>, Option<String>, Option<String>, Vec<String>)>>,
     dns_cache: Arc<outline_transport::DnsCache>,
     state_store: Option<Arc<StateStore>>,
 ) -> Result<RegistryState> {
@@ -373,9 +388,9 @@ fn build_state(
         if by_name.insert(group.name.clone(), index).is_some() {
             bail!("duplicate uplink group name \"{}\"", group.name);
         }
-        let (init_global, init_tcp, init_udp) = match &restored {
-            Some(v) => v.get(index).cloned().unwrap_or((None, None, None)),
-            None => (None, None, None),
+        let (init_global, init_tcp, init_udp, init_disabled) = match &restored {
+            Some(v) => v.get(index).cloned().unwrap_or((None, None, None, Vec::new())),
+            None => (None, None, None, Vec::new()),
         };
         let manager = UplinkManager::new_with_state(
             group.name.clone(),
@@ -387,6 +402,7 @@ fn build_state(
             init_global,
             init_tcp,
             init_udp,
+            init_disabled,
         )?;
         managed.push(UplinkGroupHandle { name: group.name, manager });
     }

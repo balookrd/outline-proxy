@@ -1,10 +1,11 @@
 //! Persistent uplink state — survives process restarts.
 //!
-//! Only the active-uplink selection is persisted (by uplink name, so it
-//! remains valid even if the uplink list order changes in config).
-//! Metrics such as EWMA and penalty are deliberately not persisted: they
-//! represent short-lived observations and the probe loop will re-establish
-//! accurate values within one probe cycle.
+//! The active-uplink selection and the operator on/off (administratively
+//! disabled) toggle are persisted — both by uplink name, so they remain valid
+//! even if the uplink list order changes in config. Metrics such as EWMA and
+//! penalty are deliberately not persisted: they represent short-lived
+//! observations and the probe loop will re-establish accurate values within one
+//! probe cycle.
 //!
 //! The file is written asynchronously with a 200 ms debounce; a crash
 //! between a switch and the flush means at most one missed write, which
@@ -27,8 +28,9 @@ pub struct PersistedState {
     pub groups: HashMap<String, PersistedGroupState>,
 }
 
-/// Per-group active uplink names.  Stored by name so that index shifts in
-/// config (adding/removing uplinks) do not silently reroute traffic.
+/// Per-group persisted state (active uplink selection + operator on/off).
+/// Stored by uplink name so that index shifts in config (adding/removing
+/// uplinks) do not silently reroute traffic or mis-target a disable.
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct PersistedGroupState {
     /// Active uplink for `routing_scope = global`.
@@ -37,6 +39,12 @@ pub struct PersistedGroupState {
     pub tcp_active: Option<String>,
     /// Active UDP uplink for `routing_scope = per_uplink`.
     pub udp_active: Option<String>,
+    /// Uplinks the operator has administratively disabled (by name). A disabled
+    /// uplink is excluded from probing/selection/failover; the set survives
+    /// restarts so a parked uplink stays parked. `#[serde(default)]` keeps old
+    /// state files (without this key) parseable.
+    #[serde(default)]
+    pub disabled_uplinks: Vec<String>,
 }
 
 /// Thread-safe store that persists [`PersistedState`] to a TOML file.
@@ -109,6 +117,32 @@ impl StateStore {
             g.udp_active = v;
             changed = true;
         }
+        if changed {
+            self.dirty.notify_one();
+        }
+    }
+
+    /// Record the operator on/off state for `uplink` in `group` and schedule a
+    /// flush. `enabled = false` adds the name to the disabled set (if absent);
+    /// `enabled = true` removes it. A no-op change does not mark the store dirty.
+    pub async fn update_uplink_enabled(&self, group: &str, uplink: &str, enabled: bool) {
+        let mut state = self.state.lock().await;
+        let g = state.groups.entry(group.to_string()).or_default();
+        let pos = g.disabled_uplinks.iter().position(|name| name == uplink);
+        let changed = if enabled {
+            match pos {
+                Some(i) => {
+                    g.disabled_uplinks.remove(i);
+                    true
+                },
+                None => false,
+            }
+        } else if pos.is_none() {
+            g.disabled_uplinks.push(uplink.to_string());
+            true
+        } else {
+            false
+        };
         if changed {
             self.dirty.notify_one();
         }
