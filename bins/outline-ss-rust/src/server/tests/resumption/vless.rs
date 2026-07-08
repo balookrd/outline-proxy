@@ -77,7 +77,10 @@ fn vless_tcp_request(uuid: &str, target: SocketAddr, payload: &[u8]) -> Result<B
 /// port(BE16) + atype(0x01 IPv4) + IPv4. The first datagram payload is
 /// appended length-prefixed (`len:u16 + bytes`) — same wire format
 /// the server expects for subsequent datagrams.
-fn vless_udp_request(uuid: &str, target: SocketAddr, payload: &[u8]) -> Result<Bytes> {
+///
+/// `pub(super)` so the cluster e2e can reuse the same wire framing to prove
+/// VLESS-UDP rides the VlessTcp mesh carrier.
+pub(super) fn vless_udp_request(uuid: &str, target: SocketAddr, payload: &[u8]) -> Result<Bytes> {
     let mut request = BytesMut::with_capacity(32 + payload.len());
     request.put_u8(VLESS_VERSION);
     request.extend_from_slice(&parse_uuid(uuid)?);

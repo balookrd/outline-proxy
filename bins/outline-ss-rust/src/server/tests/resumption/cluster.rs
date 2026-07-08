@@ -50,7 +50,7 @@ use super::super::super::nat::NatTable;
 use super::super::super::replay::ReplayStore;
 use super::super::super::resumption::{OrphanRegistry, ResumptionConfig, SessionId};
 use super::super::super::setup::{
-    SsXhttpUserRoute, build_vless_transport_route_map, build_xhttp_ss_route_map,
+    SsXhttpUserRoute, VlessUserRoute, build_vless_transport_route_map, build_xhttp_ss_route_map,
 };
 use super::super::super::shutdown::ShutdownSignal;
 use super::super::super::state::{RoutesSnapshot, UserKeySlice};
@@ -64,11 +64,18 @@ use super::super::{
     connect_websocket_with_resume, sample_config, test_h3_client_config, test_h3_server_tls,
 };
 use super::ss::ss_handshake_frame;
+use super::vless::vless_udp_request;
 use super::{connect_ws_h1, expect_binary_reply, spawn_echo_target, spawn_echo_udp_target};
 use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn};
 use crate::crypto::{AeadStreamDecryptor, UserKey, decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::{Metrics, Transport};
 use crate::protocol::TargetAddr;
+use crate::protocol::vless::{VERSION as VLESS_VERSION, VlessUser};
+
+/// Fixed VLESS user UUID registered on every cluster node's `/vless` route, so
+/// the VLESS(-UDP) e2e shares one identity across nodes (mirrors the shared SS
+/// user "bob").
+const CLUSTER_VLESS_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
 /// A running cluster node: an SS-over-WS listener plus a mesh endpoint (home
 /// listener + edge dialer). Aborts its tasks on drop so tests don't leak
@@ -147,10 +154,17 @@ fn build_cluster_parts(
     };
     let xhttp_ss = build_ss_xhttp(xhttp_ss_path);
     let xhttp_ss_udp = build_ss_xhttp(xhttp_ss_udp_path);
+    // A fixed VLESS user on `/vless`, shared across nodes (like the SS user), so
+    // the VLESS(-UDP) cluster e2e can encrypt once and any home authenticates
+    // it. SS-only tests never hit `/vless`, so this is harmless to them.
+    let vless = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
+        user: VlessUser::new(CLUSTER_VLESS_UUID.into(), Arc::from("cluster-vless"), None, None)?,
+        ws_path: Arc::from("/vless"),
+    }]));
     let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: tcp_routes,
         udp: udp_routes,
-        vless: Arc::new(build_vless_transport_route_map(&[])),
+        vless,
         xhttp_vless: Arc::new(BTreeMap::new()),
         xhttp_ss,
         xhttp_ss_udp,
@@ -893,5 +907,49 @@ async fn cluster_udp_h3_relays_to_home() -> Result<()> {
     );
 
     driver_task.abort();
+    Ok(())
+}
+
+/// VLESS-UDP rides the VlessTcp mesh carrier — there is no dedicated `VlessUdp`
+/// carrier kind. The edge marks a VLESS carrier `VlessTcp` (it never inspects
+/// the UDP command inside the still-encrypted VLESS byte stream) and forwards it
+/// verbatim; the home's `run_vless_relay` parses `VlessCommand::Udp` out of the
+/// stream and forwards to the target. This proves that path end to end — the U0
+/// assumption behind not adding a `VlessUdp` carrier kind.
+#[tokio::test]
+async fn cluster_vless_udp_relays_via_vless_tcp() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-vless-udp-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+
+    // Home owns shard 1 (mesh listener); the edge (shard 2) relays to it. Both
+    // register the shared VLESS user on `/vless` via `build_cluster_parts`.
+    let (home, _user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, None).await?;
+
+    // Home-shard resume id: the edge relays the VLESS carrier (marked VlessTcp).
+    let session_id = resume_id_for_shard(PSK, 1)?;
+    let (mut socket, _) = connect_ws_h1(edge.listen_addr, "/vless", Some(session_id), true).await?;
+
+    socket
+        .send(WsMessage::Binary(vless_udp_request(
+            CLUSTER_VLESS_UUID,
+            target_addr,
+            b"vless-udp",
+        )?))
+        .await?;
+
+    // Standard VLESS response header, then the echoed length-prefixed datagram.
+    let header = expect_binary_reply(&mut socket).await?;
+    assert_eq!(header.as_ref(), &[VLESS_VERSION, 0x00], "VLESS response header over the relay");
+    let echoed = expect_binary_reply(&mut socket).await?;
+    assert_eq!(
+        &echoed[2..],
+        b"vless-udp",
+        "VLESS-UDP datagram relayed edge→mesh→home→target byte-exact",
+    );
+
+    socket.close(None).await?;
     Ok(())
 }
