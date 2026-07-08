@@ -409,8 +409,15 @@ pub(super) struct PaddingSection {
     /// Consecutive over-threshold windows required before signalling. Default 5.
     pub throttle_sustain_windows: Option<u32>,
     /// Inbound-rate floor (bytes/sec) below which the throttle verdict is not
-    /// actionable. Default 1_000_000 (~8 Mbit/s).
+    /// actionable. Default 1_000_000 (~8 Mbit/s). Home (rate detector) only.
     pub throttle_min_bytes_per_sec: Option<u64>,
+    /// Edge-side floor (bytes/sec) on the rate actually delivered to the client
+    /// during a stall, below which the edge stall detector treats the client as
+    /// slow/idle rather than throttled. Default 64_000 (~512 Kbit/s). Set well
+    /// below the last-mile throttle target you want to catch (the edge delivered
+    /// rate is capped by the chunk over the window, so the ~8 Mbit home floor
+    /// would silence it). Cluster edge only.
+    pub throttle_edge_min_bytes_per_sec: Option<u64>,
     /// Minimum gap between two signals on one carrier, seconds. Default 30.
     pub throttle_signal_cooldown_secs: Option<u64>,
 }

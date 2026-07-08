@@ -1079,6 +1079,9 @@ async fn cluster_edge_throttle_hint_injects_octl_to_client() -> Result<()> {
         throttle_window_secs: 1,
         throttle_sustain_windows: 1,
         throttle_min_bytes_per_sec: 0,
+        // Floor off: this timing-driven e2e drives the stall directly and the
+        // flood-throttled delivery rate is not what it asserts on.
+        throttle_edge_min_bytes_per_sec: 0,
         throttle_signal_cooldown_secs: 1,
     });
 

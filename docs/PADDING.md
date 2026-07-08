@@ -179,7 +179,8 @@ throttle_detect_enabled = false          # watch throughput, nudge client to swi
 throttle_ratio_percent = 200             # signal when inbound >= 2x outbound (200 = 2x)
 throttle_window_secs = 1                 # sampling window
 throttle_sustain_windows = 5             # consecutive over-threshold windows before signalling
-throttle_min_bytes_per_sec = 1000000     # inbound floor (~8 Mbit/s); below this not actionable
+throttle_min_bytes_per_sec = 1000000     # home inbound floor (~8 Mbit/s); below this not actionable
+throttle_edge_min_bytes_per_sec = 64000  # cluster edge: delivered-rate floor (~512 Kbit/s); set below the last-mile throttle target
 throttle_signal_cooldown_secs = 30       # min gap between signals on one carrier
 ```
 

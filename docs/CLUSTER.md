@@ -322,11 +322,18 @@ removing the interconnect false positives. `home→edge` / `home→target` slown
 is left to the health budget. Detection shares the server `[padding]
 throttle_detect` gate (off by default; a symmetric cluster shares one config, so
 enabling it turns on home-local detection for direct carriers **and** the edge
-hint for relayed ones). Because the edge signal is purely timing-based it has no
-low-bandwidth floor — a genuinely slow-but-not-throttled client can also trip it
-— but the `OCTL` nudge is idempotent and cooldown-limited, so a stray hint costs
-only one uplink reconsideration. The hint is best-effort: an unreliable QUIC
-datagram, re-sent on the next detection window if lost.
+hint for relayed ones). The edge signal is timing-based, so it carries its own
+low-bandwidth floor to keep a genuinely slow (or idle) client from tripping a
+spurious hint: a stalled streak fires only when the throughput it actually
+delivered to the client clears `throttle_edge_min_bytes_per_sec` (default ~512
+Kbit/s). This is a separate, much lower floor than home's inbound
+`throttle_min_bytes_per_sec` (~8 Mbit/s), because the edge measures how long each
+client-facing `send` blocks and that delivered rate is capped by the chunk over
+the window — reusing the home floor would silence the edge detector outright. Set
+it well below the last-mile throttle target you want to catch. Even so the `OCTL`
+nudge is idempotent and cooldown-limited, so a stray hint costs only one uplink
+reconsideration. The hint is best-effort: an unreliable QUIC datagram, re-sent on
+the next detection window if lost.
 
 ## Security
 
@@ -402,7 +409,10 @@ has an explicit limit:
 4. **Downstream-throttle detection on relayed carriers now runs on the edge**
    (see the section above): the edge times its client-facing writes and sends a
    `THROTTLE_HINT`, so the home no longer conflates the interconnect with the
-   client last mile. Residual: the edge signal is timing-based with no low-
-   bandwidth floor, so a genuinely slow client can still trip a spurious (but
-   idempotent, cooldown-limited) `OCTL`. The feature stays off by default; keep
+   client last mile. The timing signal now carries an edge-specific
+   delivered-rate floor (`throttle_edge_min_bytes_per_sec`, default ~512 Kbit/s),
+   so a genuinely slow or idle client no longer trips a spurious `OCTL`. Residual:
+   the edge cannot tell a real last-mile throttle from a client whose own link is
+   simply that slow, so the floor is a heuristic — set it below the throttle
+   target you expect but above idle noise. The feature stays off by default; keep
    the budget-vs-sustain ordering in mind when enabling it.
