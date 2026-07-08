@@ -1042,11 +1042,25 @@ async fn cluster_vless_udp_relays_via_vless_tcp() -> Result<()> {
 /// routes it to the relayed session's monitor and injects an `OCTL` cover frame.
 /// The client decodes that frame as `ThrottleSwitchUplink`.
 ///
-/// Timing-driven (the detection window is floored at 1s), so the stall and the
-/// read deadline use wide margins. Padding is a process-global; it is scoped to
-/// this test's own path so the other cluster tests' `/tcp` carriers stay
-/// unpadded (and nothing else in the test binary calls `carrier_padding::init`).
+/// Padding is a process-global; it is scoped to this test's own path so the
+/// other cluster tests' `/tcp` carriers stay unpadded (and nothing else in the
+/// test binary calls `carrier_padding::init`).
+///
+/// `#[ignore]`d in CI: firing the edge detector needs a client-facing `send`
+/// that blocks for longer than the 1s detection-window floor, which in turn
+/// needs the socket buffers between home→mesh→edge→client to be *full*. Whether
+/// a bounded flood fills them before the stall elapses depends on the OS's TCP
+/// buffer autotuning (small on macOS, large on Linux) and on the edge send
+/// buffer, which the test cannot size — so it passes locally but flakes on a
+/// Linux CI runner where the flood is absorbed and no send blocks. The detector
+/// itself (real THROTTLE_HINT over a real mesh + the stall/cooldown decision) is
+/// covered deterministically by `mesh_relay`'s
+/// `edge_detector_signals_throttle_hint_over_the_mesh` and the `StallTracker`
+/// unit tests; the home route→signal→OCTL half by the `ThrottleRegistry` and
+/// `ws_writer` tests. Run this one manually with `--ignored` to exercise the
+/// full wire path.
 #[tokio::test]
+#[ignore = "backpressure/timing-dependent (OS TCP buffer sizes); covered deterministically elsewhere"]
 async fn cluster_edge_throttle_hint_injects_octl_to_client() -> Result<()> {
     const PSK: &[u8] = b"cluster-throttle-octl-psk";
     const PATH: &str = "/throttle-e2e";
