@@ -1223,6 +1223,13 @@ function renderInstanceBody(panel, instance, groups) {
               : rowTone === "bad"
                   ? `<button class="action-btn" type="button" disabled data-tip="Uplink is down — every wire is unreachable; activating it would steer traffic to a dead server. Re-enabled automatically once a probe or wire recovers." data-tip-wrap>▶ Activate</button>`
                   : `<button class="action-btn primary" type="button" data-act="activate">▶ Activate</button>`);
+        // Soft switch: only on a cluster group (`cluster_resume_enabled`) and
+        // only where a live Activate is offered (an enabled, healthy-but-passive
+        // uplink). It migrates live sessions to this uplink via cluster resume
+        // instead of resetting them; a plain Activate is a hard switch (RST).
+        const softBtn = (!disabled && rowTone === "warn" && group.cluster_resume_enabled)
+          ? `<button class="action-btn" type="button" data-act="soft-activate" data-tip="Soft switch: migrate live sessions to this uplink via cluster resume instead of resetting them (cluster only)" data-tip-wrap>⇄ Soft switch</button>`
+          : ``;
         const powerBtn = disabled
           ? `<button class="action-btn power off" type="button" data-act="power" data-tip="Enable: add this uplink back to probing, selection and failover">⏻ Off</button>`
           : `<button class="action-btn power on" type="button" data-act="power" data-tip="Disable: remove this uplink from probing, selection and failover">⏻ On</button>`;
@@ -1234,10 +1241,14 @@ function renderInstanceBody(panel, instance, groups) {
           <div>${legWireChainCell(uplink, 'udp')}</div>
           <div class="muted-cell">${weightCell(uplink)}</div>
           <div class="muted-cell">${uplinkRoleCell(uplink)}</div>
-          <div class="action-cell">${activateBtn}${powerBtn}</div>`;
+          <div class="action-cell">${activateBtn}${softBtn}${powerBtn}</div>`;
         const activateEl = row.querySelector('[data-act="activate"]');
         if (activateEl) {
           activateEl.addEventListener("click", ev => { ev.stopPropagation(); activateEntries([entry]); });
+        }
+        const softEl = row.querySelector('[data-act="soft-activate"]');
+        if (softEl) {
+          softEl.addEventListener("click", ev => { ev.stopPropagation(); activateEntries([entry], true); });
         }
         row.querySelector('[data-act="power"]').addEventListener("click", ev => {
           ev.stopPropagation();
@@ -1353,12 +1364,12 @@ async function loadInstance(name) {
     render();
   }
 }
-async function activateEntries(entries) {
+async function activateEntries(entries, soft = false) {
   const targets = entries.map(e => ({ instance: e.instance, group: e.group, uplink: e.uplink.name }));
   await fetch("/dashboard/api/activate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ targets, transport: "both" })
+    body: JSON.stringify({ targets, transport: "both", soft })
   });
   const touched = new Set(entries.map(e => e.instance));
   await Promise.all(Array.from(touched).map(name => loadInstance(name)));
