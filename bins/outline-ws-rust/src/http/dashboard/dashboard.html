@@ -1213,30 +1213,39 @@ function renderInstanceBody(panel, instance, groups) {
           : '';
         const row = document.createElement("div");
         row.className = disabled ? "row disabled" : "row";
-        // ACTION cell: a power toggle (on/off) is always present; Activate is
-        // shown only for an enabled, non-active uplink. A disabled uplink is
-        // out of every check, so it cannot be activated — only re-enabled.
-        // A down uplink (every wire unreachable per probe) cannot be sensibly
-        // activated — doing so would steer traffic to a dead server — so its
-        // Activate button is disabled until a probe or wire recovers. Only a
-        // healthy-but-passive uplink (rowTone "warn") gets a live Activate.
+        // ACTION cell: all three controls are icon-only (▶ Activate, ⇄ Soft
+        // switch, ⏻ power) to keep the column narrow — each carries a `data-tip`
+        // desktop tooltip plus an `aria-label` so screen readers still announce
+        // the action. A power toggle is always present; Activate is shown for
+        // every enabled uplink. A disabled uplink is out of every check, so it
+        // cannot be activated — only re-enabled (no Activate). The already-active
+        // uplink shows Activate disabled; a down uplink (every wire unreachable
+        // per probe) also shows it disabled — activating would steer traffic to a
+        // dead server — until a probe or wire recovers. Only a healthy-but-passive
+        // uplink (rowTone "warn") gets a live Activate.
         const activateBtn = disabled
           ? ``
           : (rowTone === "good"
-              ? `<button class="action-btn" type="button" disabled>Active</button>`
+              ? `<button class="action-btn primary" type="button" disabled aria-label="Uplink is already active" data-tip="This uplink is already active">▶</button>`
               : rowTone === "bad"
-                  ? `<button class="action-btn" type="button" disabled data-tip="Uplink is down — every wire is unreachable; activating it would steer traffic to a dead server. Re-enabled automatically once a probe or wire recovers." data-tip-wrap>▶ Activate</button>`
-                  : `<button class="action-btn primary" type="button" data-act="activate">▶ Activate</button>`);
-        // Soft switch: only on a cluster group (`cluster_resume_enabled`) and
-        // only where a live Activate is offered (an enabled, healthy-but-passive
-        // uplink). It migrates live sessions to this uplink via cluster resume
-        // instead of resetting them; a plain Activate is a hard switch (RST).
-        const softBtn = (!disabled && rowTone === "warn" && group.cluster_resume_enabled)
-          ? `<button class="action-btn" type="button" data-act="soft-activate" data-tip="Soft switch: migrate live sessions to this uplink via cluster resume instead of resetting them (cluster only)" data-tip-wrap>⇄ Soft switch</button>`
+                  ? `<button class="action-btn primary" type="button" disabled aria-label="Activate uplink — unavailable, uplink is down" data-tip="Uplink is down — every wire is unreachable; activating it would steer traffic to a dead server. Re-enabled automatically once a probe or wire recovers." data-tip-wrap>▶</button>`
+                  : `<button class="action-btn primary" type="button" data-act="activate" aria-label="Activate this uplink" data-tip="Activate: switch traffic to this uplink now — a hard switch that resets live sessions" data-tip-wrap>▶</button>`);
+        // Soft switch: only on a cluster group (`cluster_resume_enabled`). It is
+        // live on an enabled, healthy-but-passive uplink — migrating live
+        // sessions via cluster resume instead of resetting them (a plain Activate
+        // is a hard RST switch) — and rendered disabled on the already-active
+        // uplink, mirroring the disabled Activate there so the control keeps its
+        // slot instead of shifting when a row becomes active.
+        const softBtn = (!disabled && group.cluster_resume_enabled)
+          ? (rowTone === "warn"
+              ? `<button class="action-btn" type="button" data-act="soft-activate" aria-label="Soft switch to this uplink" data-tip="Soft switch: migrate live sessions to this uplink via cluster resume instead of resetting them (cluster only)" data-tip-wrap>⇄</button>`
+              : rowTone === "good"
+                  ? `<button class="action-btn" type="button" disabled aria-label="Soft switch — unavailable, uplink is already active" data-tip="Soft switch unavailable — this uplink is already active" data-tip-wrap>⇄</button>`
+                  : ``)
           : ``;
         const powerBtn = disabled
-          ? `<button class="action-btn power off" type="button" data-act="power" data-tip="Enable: add this uplink back to probing, selection and failover">⏻ Off</button>`
-          : `<button class="action-btn power on" type="button" data-act="power" data-tip="Disable: remove this uplink from probing, selection and failover">⏻ On</button>`;
+          ? `<button class="action-btn power off" type="button" data-act="power" aria-label="Enable this uplink" data-tip="Enable: add this uplink back to probing, selection and failover">⏻</button>`
+          : `<button class="action-btn power on" type="button" data-act="power" aria-label="Disable this uplink" data-tip="Disable: remove this uplink from probing, selection and failover">⏻</button>`;
         row.innerHTML = `
           <div class="uplink-cell"><span class="status-dot ${rowTone}"></span><span>${escapeHtml(uplink.name)}</span></div>
           <div>${primaryProtocolCell(uplink)}</div>
