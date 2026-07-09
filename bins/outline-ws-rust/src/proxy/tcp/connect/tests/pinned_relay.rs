@@ -628,3 +628,156 @@ async fn run_relay_does_not_abort_in_active_active_mode() {
     upstream_task.abort();
     let _ = upstream_task.await;
 }
+
+/// Strict `active_passive` + `global` + `shared_resume` (a cluster group): an
+/// operator **soft** switch must NOT tear the session down immediately. Instead
+/// the relay attempts to migrate the live session to the new active uplink by
+/// re-dialling it with the group resume id. Here the new active's `tcp_ws_url`
+/// points at a bogus listener that accepts-and-closes, so the resume redial
+/// fails on the WS upgrade and the relay falls back to the hard RST teardown —
+/// which lets the test assert two things: (1) a redial to the *new* uplink was
+/// attempted (proving the soft-switch migrate path engaged, unlike the hard
+/// switch which RSTs without any redial), and (2) the fallback is still RST.
+#[tokio::test]
+async fn run_relay_soft_switch_migrates_via_resume_redial() {
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_addr = upstream_listener.local_addr().unwrap();
+    let upstream_task = tokio::spawn(async move {
+        let (_stream, _) = upstream_listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+
+    // The new active uplink's redial target: accepts and closes, so the resume
+    // redial fails on the WS handshake. The accept counter proves the migrate
+    // path tried to re-dial the new active uplink.
+    let redial_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let redial_addr = redial_listener.local_addr().unwrap();
+    let redial_accepts = Arc::new(AtomicUsize::new(0));
+    let redial_accepts_for_task = Arc::clone(&redial_accepts);
+    let redial_task = tokio::spawn(async move {
+        while let Ok((stream, _)) = redial_listener.accept().await {
+            redial_accepts_for_task.fetch_add(1, AtomicOrdering::SeqCst);
+            drop(stream);
+        }
+    });
+
+    let primary = make_uplink("primary", upstream_addr);
+    let backup = make_ws_uplink_pointing_at("backup", redial_addr);
+    let mut lb = lb_with_mode(
+        LoadBalancingMode::ActivePassive,
+        RoutingScope::Global,
+        Duration::from_secs(60),
+    );
+    // Cluster group: uplinks share one resume id, so a soft switch can migrate
+    // via group resume instead of tearing the session down.
+    lb.shared_resume = true;
+    let manager = UplinkManager::new_for_test(
+        "strict-cluster",
+        vec![primary.clone(), backup],
+        probe_disabled(),
+        lb,
+    )
+    .unwrap();
+    manager
+        .set_active_uplink_by_name("primary", None, false)
+        .await
+        .unwrap();
+
+    let stream = TcpStream::connect(upstream_addr).await.unwrap();
+    let (reader_half, writer_half) = stream.into_split();
+    let master_key = primary.cipher.derive_master_key(&primary.password).unwrap();
+    let lifetime = UpstreamTransportGuard::new("strict-cluster", "tcp");
+    let mut writer = TcpShadowsocksWriter::connect_socket(
+        writer_half,
+        primary.cipher,
+        &master_key,
+        Arc::clone(&lifetime),
+    )
+    .unwrap();
+    let reader =
+        TcpShadowsocksReader::new_socket(reader_half, primary.cipher, &master_key, lifetime)
+            .with_request_salt(writer.request_salt());
+    writer
+        .send_chunk(&TargetAddr::IpV4(Ipv4Addr::LOCALHOST, 443).to_wire_bytes().unwrap())
+        .await
+        .unwrap();
+    let active = ActiveTcpUplink {
+        index: 0,
+        name: Arc::from(primary.name.as_str()),
+        candidate: UplinkCandidate { index: 0, uplink: primary.clone().into() },
+        writer: TcpWriter::Socket(writer),
+        reader: TcpReader::Socket(reader),
+        source: TcpUplinkSource::FreshDial,
+        wire_index: 0,
+    };
+
+    let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client_addr = client_listener.local_addr().unwrap();
+    let (connect_res, accept_res) =
+        tokio::join!(TcpStream::connect(client_addr), client_listener.accept());
+    let mut client_side = connect_res.unwrap();
+    let (server_side, _) = accept_res.unwrap();
+    let (client_read, client_write) = server_side.into_split();
+
+    let timeouts = TcpTimeouts {
+        post_client_eof_downstream: Duration::from_secs(30),
+        upstream_response: Duration::from_secs(15),
+        socks_upstream_idle: Duration::from_secs(60),
+        direct_idle: Duration::from_secs(120),
+    };
+    let target = outline_transport::TargetAddr::IpV4(Ipv4Addr::LOCALHOST, 443);
+    let manager_for_relay = manager.clone();
+    let relay_task = tokio::spawn(async move {
+        run_relay(
+            manager_for_relay,
+            active,
+            target,
+            Arc::from("test"),
+            b"OK".to_vec(),
+            client_read,
+            client_write,
+            &timeouts,
+        )
+        .await
+    });
+
+    let mut first_chunk = [0u8; 2];
+    client_side.read_exact(&mut first_chunk).await.unwrap();
+    assert_eq!(&first_chunk, b"OK");
+
+    // Operator SOFT switch to "backup": migrate rather than RST.
+    manager.set_active_uplink_by_name("backup", None, true).await.unwrap();
+
+    let result = tokio::time::timeout(Duration::from_secs(3), relay_task)
+        .await
+        .expect("relay must exit promptly after the soft switch migration attempt")
+        .unwrap();
+    assert!(
+        result.is_err(),
+        "with a failing resume redial the relay must fall back to a strict-abort error, got {result:?}",
+    );
+    assert!(
+        redial_accepts.load(AtomicOrdering::SeqCst) >= 1,
+        "soft switch must attempt a resume redial against the new active uplink; accepts = {}",
+        redial_accepts.load(AtomicOrdering::SeqCst),
+    );
+
+    // Migration failed → hard RST fallback, so the client observes a reset.
+    let mut buf = [0u8; 16];
+    let read_result = tokio::time::timeout(Duration::from_secs(1), client_side.read(&mut buf))
+        .await
+        .expect("client read must complete after the RST fallback");
+    let err = read_result.expect_err("client must observe RST as a read error, not a clean EOF");
+    assert_eq!(
+        err.kind(),
+        std::io::ErrorKind::ConnectionReset,
+        "expected ConnectionReset after migration fallback, got {err:?}",
+    );
+
+    upstream_task.abort();
+    redial_task.abort();
+    let _ = upstream_task.await;
+    let _ = redial_task.await;
+}
