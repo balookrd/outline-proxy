@@ -225,13 +225,16 @@ impl UplinkRegistry {
     /// are searched (uplink names are globally unique across groups). `soft`
     /// requests an operator soft switch (migrate live sessions via cluster
     /// resume instead of aborting them); see [`UplinkManager::set_active_uplink_by_name`].
+    /// Returns `(group, index, applied_soft)` — `applied_soft` is the effective
+    /// soft value after clamping to the group's `shared_resume`, so a caller can
+    /// tell the operator whether a soft request will actually migrate.
     pub async fn set_active_uplink_by_name(
         &self,
         group: Option<&str>,
         uplink_name: &str,
         transport: Option<TransportKind>,
         soft: bool,
-    ) -> Result<(String, usize)> {
+    ) -> Result<(String, usize, bool)> {
         let state = self.state.load();
         let manager: UplinkManager = if let Some(g) = group {
             state
@@ -249,10 +252,10 @@ impl UplinkRegistry {
                     anyhow::anyhow!("uplink \"{}\" not found in any group", uplink_name)
                 })?
         };
-        let index = manager
+        let (index, applied_soft) = manager
             .set_active_uplink_by_name(uplink_name, transport, soft)
             .await?;
-        Ok((manager.group_name().to_string(), index))
+        Ok((manager.group_name().to_string(), index, applied_soft))
     }
 
     /// Administratively enable or disable the uplink identified by
