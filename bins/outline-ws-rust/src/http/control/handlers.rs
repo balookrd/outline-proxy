@@ -48,6 +48,11 @@ struct ActivateResponse {
     uplink: String,
     index: usize,
     transport: &'static str,
+    /// The effective soft-switch value after clamping to the group's cluster
+    /// (`shared_resume`) capability: `true` only when the operator requested a
+    /// soft switch *and* the group is a cluster, so the UI can tell whether live
+    /// sessions actually migrated or the switch fell back to a hard one.
+    soft: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,7 +105,10 @@ pub(crate) async fn handle_switch(
         .set_active_uplink_by_name(group_name.as_deref(), &name, transport, false)
         .await
     {
-        Ok((group, index)) => {
+        // `/switch` is always a hard switch (soft is a JSON-body-only knob on
+        // `/control/activate`), so the applied-soft flag is unconditionally
+        // false here and carries no extra information for the plain-text reply.
+        Ok((group, index, _applied_soft)) => {
             info!(group = %group, uplink = %name, index, ?transport, "manual uplink switch");
             plain_response(
                 StatusCode::OK,
@@ -188,14 +196,26 @@ pub(crate) async fn activate_from_json(body: &[u8], uplinks: UplinkRegistry) -> 
         )
         .await
     {
-        Ok((group, index)) => {
+        Ok((group, index, applied_soft)) => {
             info!(
                 group = %group,
                 uplink = %payload.uplink,
                 index,
                 ?transport,
+                soft_requested = payload.soft,
+                soft_applied = applied_soft,
                 "manual uplink activation via /control/activate"
             );
+            if payload.soft && !applied_soft {
+                // Honest degrade: the operator asked to migrate but the group is
+                // not a cluster, so it was a hard switch. The response's `soft`
+                // field reports this so the caller/UI does not assume migration.
+                warn!(
+                    group = %group,
+                    "soft switch requested on a non-cluster group (shared_resume off); \
+                     performed a hard switch instead"
+                );
+            }
             json_response(
                 StatusCode::OK,
                 &ActivateResponse {
@@ -207,6 +227,7 @@ pub(crate) async fn activate_from_json(body: &[u8], uplinks: UplinkRegistry) -> 
                         ActivateTransport::Udp => "udp",
                         ActivateTransport::Both => "both",
                     },
+                    soft: applied_soft,
                 },
             )
         },

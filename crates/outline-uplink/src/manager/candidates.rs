@@ -814,18 +814,21 @@ impl UplinkManager {
     /// Returns the chosen uplink index. Errors when the group is not in
     /// `active_passive` mode or when the name does not match any configured
     /// uplink in this group.
-    /// `soft = true` marks this as an operator *soft* switch: live sessions
-    /// migrate to the new active uplink via cluster resume instead of being
-    /// aborted with RST (the strict-abort watcher reads the `soft` bit off the
-    /// published snapshot). Everything else — the clean-slate status reset,
-    /// sticky re-seed and probe wakeup — is identical to a hard switch, so the
-    /// override sticks the same way.
+    /// `soft = true` requests an operator *soft* switch: live sessions migrate
+    /// to the new active uplink via cluster resume instead of being aborted with
+    /// RST (the strict-abort watcher reads the `soft` bit off the published
+    /// snapshot). Soft is only honoured on a cluster group (`shared_resume`);
+    /// requested elsewhere it is clamped to a hard switch, and the returned
+    /// `bool` reports the effective value so the caller can tell the operator
+    /// whether the migration will actually happen. Everything else — the
+    /// clean-slate status reset, sticky re-seed and probe wakeup — is identical
+    /// to a hard switch, so the override sticks the same way.
     pub async fn set_active_uplink_by_name(
         &self,
         name: &str,
         transport: Option<TransportKind>,
         soft: bool,
-    ) -> Result<usize> {
+    ) -> Result<(usize, bool)> {
         if self.inner.load_balancing.mode != LoadBalancingMode::ActivePassive {
             bail!(
                 "manual switch is only supported in active_passive mode (group \"{}\" is {:?})",
@@ -833,6 +836,10 @@ impl UplinkManager {
                 self.inner.load_balancing.mode
             );
         }
+        // A soft switch only migrates on a mesh cluster (uplinks share one
+        // resume id); off a cluster there is nothing to resume onto, so clamp to
+        // a hard switch and report the effective value to the caller.
+        let applied_soft = soft && self.inner.load_balancing.shared_resume;
         let index = self
             .inner
             .uplinks
@@ -864,28 +871,33 @@ impl UplinkManager {
                 TransportKind::Tcp,
                 index,
                 "manual switch",
-                soft,
+                applied_soft,
             )
             .await;
         } else if self.strict_per_uplink_active_uplink() {
             match transport {
                 Some(t) => {
-                    self.set_active_uplink_index_for_transport(t, index, "manual switch", soft)
-                        .await;
+                    self.set_active_uplink_index_for_transport(
+                        t,
+                        index,
+                        "manual switch",
+                        applied_soft,
+                    )
+                    .await;
                 },
                 None => {
                     self.set_active_uplink_index_for_transport(
                         TransportKind::Tcp,
                         index,
                         "manual switch",
-                        soft,
+                        applied_soft,
                     )
                     .await;
                     self.set_active_uplink_index_for_transport(
                         TransportKind::Udp,
                         index,
                         "manual switch",
-                        soft,
+                        applied_soft,
                     )
                     .await;
                 },
@@ -912,7 +924,7 @@ impl UplinkManager {
         // for the next scheduled probe interval.
         self.inner.probe_wakeup.notify_waiters();
 
-        Ok(index)
+        Ok((index, applied_soft))
     }
 
     /// Clear every per-uplink status field used by the auto-selection logic:
