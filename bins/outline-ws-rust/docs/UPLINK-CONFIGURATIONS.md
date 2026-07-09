@@ -685,8 +685,11 @@ above when the switch was a hard/health one, the group is not a
 cluster, mid-session retry is disabled (no replay ring), the new active
 is not a WS-family uplink, or the resume redial fails. Health and
 probe-driven switches are always hard; only an explicit operator soft
-switch migrates. (The dashboard **Soft switch** control that issues it
-lands in a later phase.)
+switch migrates. The dashboard offers a **⇄ Soft switch** button next to
+**▶ Activate** on cluster groups (shown only when `cluster_resume_enabled`);
+it posts `soft: true` to `/control/activate`, and the response's `soft`
+field reports whether the migration was actually applied or clamped to a
+hard switch.
 
 Bypass on a fully-down group (`bypass_when_down`):
 

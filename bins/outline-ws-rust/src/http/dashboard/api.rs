@@ -88,6 +88,13 @@ struct DashboardActivateRequest {
     targets: Vec<DashboardActivateTarget>,
     #[serde(default)]
     transport: Option<String>,
+    /// Operator soft switch: proxied to `/control/activate` as `soft: true` so
+    /// the instance migrates live sessions via cluster resume instead of
+    /// resetting them. Only honoured on cluster groups (the dashboard only
+    /// offers the control when `cluster_resume_enabled`); the instance clamps
+    /// it otherwise and echoes the effective value in each result's body.
+    #[serde(default)]
+    soft: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -158,6 +165,7 @@ pub async fn handle_activate(
                     instance,
                     &target,
                     payload.transport.as_deref(),
+                    payload.soft,
                     state.request_timeout_secs,
                 )
                 .await
@@ -366,6 +374,7 @@ async fn activate_instance(
     instance: &DashboardInstanceConfig,
     target: &DashboardActivateTarget,
     transport: Option<&str>,
+    soft: bool,
     request_timeout_secs: u64,
 ) -> Result<(StatusCode, Value)> {
     let url = instance_url(&instance.control_url, "/control/activate")?;
@@ -375,6 +384,11 @@ async fn activate_instance(
     });
     if let Some(transport) = transport {
         payload["transport"] = Value::String(transport.to_string());
+    }
+    // Only send `soft` when set, so a plain activate stays byte-identical to the
+    // pre-soft request shape (the instance defaults it to a hard switch).
+    if soft {
+        payload["soft"] = Value::Bool(true);
     }
     let body = serde_json::to_vec(&payload)?;
     let (status, response_body) =
@@ -439,3 +453,7 @@ async fn set_enabled_instance(
         .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&response_body) }));
     Ok((status, parsed))
 }
+
+#[cfg(test)]
+#[path = "tests/api.rs"]
+mod tests;
