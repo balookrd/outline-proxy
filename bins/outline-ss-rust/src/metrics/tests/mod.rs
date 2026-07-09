@@ -142,6 +142,30 @@ fn user_counters_cache_returns_same_handles() {
 }
 
 #[test]
+fn renders_mesh_relay_metrics() {
+    let metrics = Metrics::new(&test_config());
+    metrics.record_mesh_relay_opened("ok");
+    metrics.record_mesh_relay_opened("ok");
+    metrics.record_mesh_relay_opened("fail");
+    let active = metrics.open_mesh_relay();
+
+    let rendered = metrics.render_prometheus();
+    assert!(rendered.contains("outline_ss_mesh_relay_opened_total{outcome=\"ok\"} 2"));
+    assert!(rendered.contains("outline_ss_mesh_relay_opened_total{outcome=\"fail\"} 1"));
+    assert!(
+        rendered.contains("outline_ss_mesh_relay_active 1"),
+        "an in-flight relay guard must show one active relay"
+    );
+
+    drop(active);
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.contains("outline_ss_mesh_relay_active 0"),
+        "dropping the guard must return the active gauge to zero"
+    );
+}
+
+#[test]
 fn no_cert_chain_metric_records_sni_label() {
     let metrics = Metrics::new(&test_config());
     metrics.record_tls_handshake_no_cert_chain(Some("foo.example"));

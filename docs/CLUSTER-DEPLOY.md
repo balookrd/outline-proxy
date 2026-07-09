@@ -144,6 +144,17 @@ resume id across unrelated homes would only ever miss.
 - **Survival:** start a session (a download in flight), force the client onto a
   different node (§5c makes this deterministic — kill the active uplink), and the
   download continues.
+- **Metrics:** on each node's `/metrics` (and the ss-rust Grafana dashboard,
+  panels *Mesh Relay Opens* / *Active Mesh Relays*):
+  - `outline_ss_mesh_relay_opened_total{outcome="ok"}` rising ⇒ edges are
+    relaying cross-shard sessions to their homes; `{outcome="fail"}` rising ⇒ a
+    peer is unreachable (peer down, mesh UDP port blocked, or PSK mismatch) and
+    the edge is degrading to fresh local sessions.
+  - `outline_ss_mesh_relay_active` gauges how many relays a home node is serving
+    right now (zero on an idle cluster is normal — mesh streams are opened on
+    demand, not held). Also watch `outline_ss_orphan_resume_hit_total` on the
+    home: it climbs whenever a home reattaches a parked upstream for a client
+    that arrived via another edge.
 - **⚠️ Integrity on real traffic:** the e2e tests cover the data plane but not
   production traffic. Download a large file through the cluster and **verify its
   sha256** against the original (the risk is silent corruption / reordering, like

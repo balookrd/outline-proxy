@@ -6,7 +6,7 @@ mod render;
 mod sampler;
 mod user_counters;
 
-pub use guards::{TcpUpstreamGuard, WebSocketSessionGuard};
+pub use guards::{MeshRelayGuard, TcpUpstreamGuard, WebSocketSessionGuard};
 pub use labels::{AppProtocol, DisconnectReason, Protocol, Transport};
 pub use process_memory::ProcessMemorySnapshot;
 pub use user_counters::PerUserCounters;
@@ -540,6 +540,26 @@ impl Metrics {
         with_local_recorder(&self.recorder, || {
             gauge!("outline_ss_orphan_current", "kind" => kind).set(count);
         });
+    }
+
+    // ── Cluster mesh metrics ───────────────────────────────────────────────────
+
+    /// Counts an edge's attempt to open a mesh relay to a home shard. `outcome`
+    /// is `ok` when the relay stream was established, or `fail` when the home was
+    /// unreachable / at its relay cap and the edge degraded to a fresh local
+    /// session. The `fail` rate is the direct signal that a cluster peer is
+    /// unreachable (mesh port blocked, peer down, PSK mismatch).
+    pub fn record_mesh_relay_opened(&self, outcome: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_mesh_relay_opened_total", "outcome" => outcome).increment(1);
+        });
+    }
+
+    /// Opens a home-side mesh relay guard. While held, `outline_ss_mesh_relay_active`
+    /// counts this node as serving one more relayed session over the mesh; the
+    /// gauge decrements when the guard drops (relay end or teardown).
+    pub fn open_mesh_relay(self: &Arc<Self>) -> MeshRelayGuard {
+        MeshRelayGuard::new(self.clone())
     }
 
     /// Counts plaintext bytes the server replayed in a v2 Symmetric

@@ -101,3 +101,29 @@ impl Drop for TcpUpstreamGuard {
         }
     }
 }
+
+/// RAII guard for one in-flight home-side mesh relay. Increments
+/// `outline_ss_mesh_relay_active` on creation and decrements it on drop, so the
+/// gauge tracks how many relayed sessions this home node is serving over the
+/// mesh right now. Held for the lifetime of `serve_relayed`, so it also covers
+/// every early-exit and abort path without leaking the gauge.
+pub struct MeshRelayGuard {
+    metrics: Arc<Metrics>,
+}
+
+impl MeshRelayGuard {
+    pub(super) fn new(metrics: Arc<Metrics>) -> Self {
+        with_local_recorder(&metrics.recorder, || {
+            gauge!("outline_ss_mesh_relay_active").increment(1.0);
+        });
+        Self { metrics }
+    }
+}
+
+impl Drop for MeshRelayGuard {
+    fn drop(&mut self) {
+        with_local_recorder(&self.metrics.recorder, || {
+            gauge!("outline_ss_mesh_relay_active").decrement(1.0);
+        });
+    }
+}

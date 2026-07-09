@@ -387,8 +387,12 @@ pub(in crate::server) async fn open_edge_relay(
         peer_addr: Some(peer_addr),
     };
     match cluster.pool.open_relay(shard, &header).await {
-        Ok(pooled) => Some(pooled),
+        Ok(pooled) => {
+            cluster.metrics.record_mesh_relay_opened("ok");
+            Some(pooled)
+        },
         Err(error) => {
+            cluster.metrics.record_mesh_relay_opened("fail");
             debug!(
                 ?error,
                 shard = shard.get(),
@@ -653,6 +657,10 @@ async fn serve_relayed(
     let _throttle_registration = throttle_monitor
         .as_ref()
         .map(|m| cluster.throttle_registry.register(header.session_id, m));
+
+    // Count this relay as active on the home for its whole lifetime; the guard
+    // drops (decrementing the gauge) on return, including every early bail.
+    let _relay_active = cluster.metrics.open_mesh_relay();
 
     match header.carrier {
         CarrierKind::SsTcp | CarrierKind::SsXhttp => {
