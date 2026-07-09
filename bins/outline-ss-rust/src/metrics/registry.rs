@@ -216,6 +216,15 @@ pub(super) fn register_descriptions() {
         "Currently parked orphan sessions awaiting cross-transport resumption, by kind."
     );
     describe_counter!(
+        "outline_ss_mesh_relay_opened_total",
+        "Edge attempts to open a cluster mesh relay to a home shard, by outcome \
+         (ok = relay established; fail = home unreachable / at cap, degraded to a fresh session)."
+    );
+    describe_gauge!(
+        "outline_ss_mesh_relay_active",
+        "Relayed sessions this home node is currently serving over the cluster mesh."
+    );
+    describe_counter!(
         "outline_ss_orphan_downlink_replay_bytes_total",
         "Plaintext bytes replayed to resuming clients via the v2 Symmetric \
          Downlink Replay protocol (`ORDR` frame payload), by transport."

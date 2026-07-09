@@ -206,7 +206,7 @@ fn build_cluster_parts(
         mesh_relay_budget: budget,
         peers,
     };
-    let cluster = ClusterCtx::build(&cluster_cfg)?;
+    let cluster = ClusterCtx::build(&cluster_cfg, Arc::clone(&metrics))?;
     let mesh_addr = cluster.endpoint.local_addr()?;
 
     Ok(ClusterParts {

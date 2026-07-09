@@ -187,7 +187,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     };
     let orphan_registry = Arc::new(orphan_registry);
     let services = Arc::new(Services::new(
-        metrics,
+        metrics.clone(),
         dns_cache,
         config.prefer_ipv4_upstream,
         outbound_ipv6,
@@ -227,7 +227,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     let cluster = config
         .cluster
         .as_ref()
-        .map(super::cluster::ClusterCtx::build)
+        .map(|c| super::cluster::ClusterCtx::build(c, metrics.clone()))
         .transpose()?;
     Ok(Built {
         users,
