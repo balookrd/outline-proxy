@@ -25,6 +25,7 @@ use std::{
 use anyhow::{Result, bail};
 use arc_swap::ArcSwap;
 use axum::http::{Method, Request, StatusCode, Version, header};
+use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
 use h3::ext::Protocol as H3Protocol;
 use outline_transport::{
@@ -69,7 +70,9 @@ use super::ss::ss_handshake_frame;
 use super::vless::vless_udp_request;
 use super::{connect_ws_h1, expect_binary_reply, spawn_echo_target, spawn_echo_udp_target};
 use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn, PaddingConfig};
-use crate::crypto::{AeadStreamDecryptor, UserKey, decrypt_udp_packet, encrypt_udp_packet};
+use crate::crypto::{
+    AeadStreamDecryptor, AeadStreamEncryptor, UserKey, decrypt_udp_packet, encrypt_udp_packet,
+};
 use crate::metrics::{Metrics, Transport};
 use crate::protocol::TargetAddr;
 use crate::protocol::vless::{VERSION as VLESS_VERSION, VlessUser};
@@ -514,6 +517,91 @@ async fn cluster_relay_preserves_large_payload() -> Result<()> {
     assert!(
         plaintext == payload,
         "relayed payload was corrupted or reordered across the mesh"
+    );
+    Ok(())
+}
+
+/// Multi-megabyte round trip through the mesh relay, verified byte-exact with
+/// SHA-256 in both directions (CLUSTER open risk #1: the mesh data plane has no
+/// unit tests and needs large-transfer integrity coverage, mirroring the TUN
+/// pump). Unlike the single-frame 512 KiB check, this streams 16 MiB as one
+/// continuous SS-AEAD stream chunked across ~64 WebSocket frames each way, so
+/// the relay's mesh read-chunk reassembly runs over the many-chunk regime where
+/// a coalescing / reordering / truncation bug would actually surface. Uplink and
+/// downlink run concurrently so the round trip cannot deadlock on buffer
+/// capacity, and the transfer is hashed as it streams rather than buffered whole.
+#[tokio::test]
+async fn cluster_relay_streams_large_transfer_sha256() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-sha256-psk";
+    const TOTAL: usize = 16 * 1024 * 1024;
+    const CHUNK: usize = 256 * 1024;
+
+    let (echo_addr, _accepts) = spawn_echo_target().await?;
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(8), None, None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(8), None, None).await?;
+
+    let session_id = resume_id_for_shard(PSK, 1)?;
+
+    // Deterministic 16 MiB payload and its reference SHA-256.
+    let payload: Vec<u8> = (0..TOTAL)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    let sent_digest = ring::digest::digest(&ring::digest::SHA256, &payload);
+
+    let (socket, _) = connect_ws_h1(edge.listen_addr, "/tcp", Some(session_id), true).await?;
+    let (mut sink, mut stream) = socket.split();
+
+    // Uplink task: one continuous SS-AEAD stream, chunked across WS frames. The
+    // first frame carries the target header + first data chunk; the rest are
+    // continuation data on the same stream (fresh salt once, incrementing nonce).
+    let user_for_send = user.clone();
+    let send_payload = payload.clone();
+    let send_task = tokio::spawn(async move {
+        let mut enc = AeadStreamEncryptor::new(&user_for_send, None)?;
+        let head = CHUNK.min(send_payload.len());
+        let mut first = TargetAddr::from(echo_addr).to_wire_bytes()?;
+        first.extend_from_slice(&send_payload[..head]);
+        let mut buf = BytesMut::new();
+        enc.encrypt_chunk(&first, &mut buf)?;
+        sink.send(WsMessage::Binary(buf.freeze())).await?;
+        for chunk in send_payload[head..].chunks(CHUNK) {
+            let mut buf = BytesMut::new();
+            enc.encrypt_chunk(chunk, &mut buf)?;
+            sink.send(WsMessage::Binary(buf.freeze())).await?;
+        }
+        Ok::<(), anyhow::Error>(())
+    });
+
+    // Downlink: decrypt the echoed stream and hash it as it arrives.
+    let mut decryptor = AeadStreamDecryptor::new(Arc::from(vec![user].into_boxed_slice()));
+    let mut recv_ctx = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut plaintext = Vec::new();
+    let mut received = 0usize;
+    while received < TOTAL {
+        let next = tokio::time::timeout(Duration::from_secs(30), stream.next()).await?;
+        match next {
+            Some(Ok(WsMessage::Binary(bytes))) => {
+                decryptor.feed_ciphertext(&bytes);
+                plaintext.clear();
+                decryptor.drain_plaintext(&mut plaintext)?;
+                recv_ctx.update(&plaintext);
+                received += plaintext.len();
+            },
+            Some(Ok(WsMessage::Close(_))) | None => break,
+            // Ignore any control frames the carrier may surface.
+            Some(Ok(_)) => {},
+            Some(Err(error)) => bail!("edge websocket error: {error}"),
+        }
+    }
+    send_task.await??;
+
+    assert_eq!(received, TOTAL, "relayed byte count differs from the {TOTAL}-byte transfer");
+    assert_eq!(
+        recv_ctx.finish().as_ref(),
+        sent_digest.as_ref(),
+        "SHA-256 mismatch: the mesh relay corrupted or reordered the large transfer"
     );
     Ok(())
 }
