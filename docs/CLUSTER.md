@@ -396,9 +396,13 @@ has an explicit limit:
 
 ## Open risks
 
-1. **Mesh data plane is not covered by unit tests** (same as the TUN pump) —
-   needs e2e coverage plus sha256 verification of large transfers on real
-   traffic; keep `git revert` ready.
+1. **Mesh data plane** (same silent-corruption class as the TUN pump). Now
+   covered by e2e: `cluster_relay_streams_large_transfer_sha256` streams 16 MiB
+   through the relay as a chunked SS-AEAD stream and verifies it byte-exact with
+   SHA-256 in both directions, and `cluster_session_survives_edge_switch` covers
+   the park/reattach across an edge switch. Residual: confirm on real production
+   traffic (a SHA-256 spot-check of a large transfer through a live cluster) and
+   keep `git revert` ready.
 2. **Double hop across countries** raises RTT for long bulk transfers; the
    health budget protects against hangs but not against slowness. A possible
    follow-up: let the client dial the home directly when it is reachable,
