@@ -561,6 +561,39 @@ async fn activate_succeeds_for_existing_uplink() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// A soft switch requested on a non-cluster group (`shared_resume = false`) is
+/// clamped to a hard switch; the response reports `soft: false` so the caller
+/// knows live sessions were NOT migrated.
+#[tokio::test]
+async fn activate_soft_on_non_cluster_group_reports_hard() {
+    let body = r#"{"group":"core","uplink":"uplink-02","transport":"tcp","soft":true}"#;
+    let request = format!(
+        "POST /control/activate HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    let (status, resp_body) = send_raw_http(&request, test_registry(), "token").await;
+    assert_eq!(status, 200);
+    let json: Value = serde_json::from_str(&resp_body).unwrap();
+    assert_eq!(json["soft"], false, "soft must clamp to hard on a non-cluster group");
+}
+
+/// The same soft switch on a cluster group (`shared_resume = true`) is honoured;
+/// the response reports `soft: true`.
+#[tokio::test]
+async fn activate_soft_on_cluster_group_reports_soft() {
+    let body = r#"{"group":"core","uplink":"uplink-02","transport":"tcp","soft":true}"#;
+    let request = format!(
+        "POST /control/activate HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    let (status, resp_body) = send_raw_http(&request, cluster_registry(), "token").await;
+    assert_eq!(status, 200);
+    let json: Value = serde_json::from_str(&resp_body).unwrap();
+    assert_eq!(json["soft"], true, "soft must be honoured on a cluster group");
+}
+
 #[tokio::test]
 async fn endpoint_requires_auth() {
     let (status, _body) = send_raw_http(
@@ -609,6 +642,22 @@ fn test_registry() -> UplinkRegistry {
         vec![test_uplink("uplink-01", addr), test_uplink("uplink-02", addr)],
         probe_disabled(),
         lb(),
+    )
+    .unwrap();
+    UplinkRegistry::from_single_manager(manager)
+}
+
+/// Like [`test_registry`] but a cluster group (`shared_resume = true`), so an
+/// operator soft switch is honoured rather than clamped to a hard one.
+fn cluster_registry() -> UplinkRegistry {
+    let addr: SocketAddr = (Ipv4Addr::LOCALHOST, 8388).into();
+    let mut cluster_lb = lb();
+    cluster_lb.shared_resume = true;
+    let manager = UplinkManager::new_for_test(
+        "core",
+        vec![test_uplink("uplink-01", addr), test_uplink("uplink-02", addr)],
+        probe_disabled(),
+        cluster_lb,
     )
     .unwrap();
     UplinkRegistry::from_single_manager(manager)
