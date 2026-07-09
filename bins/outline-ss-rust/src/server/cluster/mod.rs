@@ -15,6 +15,8 @@ use std::time::Duration;
 
 use outline_wire::cluster::ShardId;
 
+use crate::metrics::Metrics;
+
 use super::resumption::{ClusterIdentity, SessionId};
 
 use mesh::MeshIdentity;
@@ -33,6 +35,9 @@ pub(in crate::server) struct ClusterCtx {
     /// Home-side map from a relayed session id to its live carrier monitor, so
     /// an edge `THROTTLE_HINT` datagram can wake the right relay writer.
     pub(in crate::server) throttle_registry: ThrottleRegistry,
+    /// Metrics sink for the mesh data plane (relay-open outcomes on the edge,
+    /// active relay gauge on the home).
+    pub(in crate::server) metrics: Arc<Metrics>,
 }
 
 /// Cap on concurrent relay streams this server dials out (bounded resources).
@@ -44,6 +49,7 @@ impl ClusterCtx {
     /// pool. Fails fast (aborting startup) on a bad identity or listen bind.
     pub(in crate::server) fn build(
         cfg: &crate::config::ClusterConfig,
+        metrics: Arc<Metrics>,
     ) -> anyhow::Result<Arc<Self>> {
         let identity = MeshIdentity::derive(cfg.psk.as_bytes())?;
         let endpoint = MeshEndpoint::bind(cfg.mesh_listen, &identity)?;
@@ -57,6 +63,7 @@ impl ClusterCtx {
             pool,
             relay_budget: cfg.mesh_relay_budget,
             throttle_registry: ThrottleRegistry::new(),
+            metrics,
         }))
     }
 }
