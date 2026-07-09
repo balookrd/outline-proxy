@@ -112,9 +112,12 @@ pub(super) async fn run_relay(
     // In all other cases the session ends only on a real transport error
     // (optionally re-dialled within the same uplink via the Ack-Prefix
     // Protocol mid-session retry path).
-    let active_index = active.index;
-    let active_name = Arc::clone(&active.name);
-    let candidate = active.candidate.clone();
+    // Mutable across iterations: an operator soft switch migrates this session
+    // to the group's new active uplink (below), re-pointing all three at the
+    // new uplink so the next iteration's strict-abort watcher tracks it.
+    let mut active_index = active.index;
+    let mut active_name = Arc::clone(&active.name);
+    let mut candidate = active.candidate.clone();
     let strict_global = uplinks.strict_global_active_uplink();
     let strict_active = strict_global || uplinks.strict_per_uplink_active_uplink();
 
@@ -442,11 +445,62 @@ pub(super) async fn run_relay(
                 break;
             },
             Ok(DriveExit::AbortedOnSwitch(reason)) => {
-                // Strict mode forcibly tore us down because the active
-                // uplink moved off this session. Skip mid-session retry
-                // (the whole point is to free the client to reconnect
-                // through the new active uplink) and signal the post-
-                // loop tail to force-close the client socket with RST.
+                // The strict-abort watcher fired because the active uplink moved
+                // off this session. When the move was an operator *soft* switch
+                // on a cluster group (`shared_resume`), migrate the live session
+                // to the new active uplink via group resume instead of tearing
+                // it down: redial the new edge with the shared `X-Outline-Resume`
+                // id, replay the uplink tail (and v2 downlink suffix) exactly as
+                // a mid-session retry does, and continue the relay on the fresh
+                // transport. The server re-attaches the parked upstream (the
+                // park-before-resume barrier makes that redial race-free).
+                let client_acked_now =
+                    client_acked_offset.load(std::sync::atomic::Ordering::Relaxed);
+                if let Some((new_candidate, connected, downlink_replay)) = try_soft_switch_migrate(
+                    &uplinks,
+                    strict_global,
+                    lb_snapshot.shared_resume,
+                    retry_eligible,
+                    active_index,
+                    &active_name,
+                    &target,
+                    ring.as_deref(),
+                    consume_timeout,
+                    symmetric_replay_enabled,
+                    symmetric_replay_max_bytes,
+                    client_acked_now,
+                    overflow_policy,
+                )
+                .await
+                {
+                    debug!(
+                        from = %active_name,
+                        to = %new_candidate.uplink.name,
+                        reason,
+                        "soft-switch: migrated live SOCKS TCP session to the new active uplink via group resume"
+                    );
+                    active_index = new_candidate.index;
+                    active_name = Arc::from(new_candidate.uplink.name.as_str());
+                    candidate = new_candidate;
+                    let ConnectedTcpUplink {
+                        writer: new_writer,
+                        reader: new_reader,
+                        wire_index: new_wire_index,
+                        ..
+                    } = connected;
+                    writer = new_writer;
+                    reader = new_reader;
+                    current_wire_index = new_wire_index;
+                    // Flush the v2 downlink replay suffix (if any) to the client
+                    // before the next iteration reads fresh upstream bytes.
+                    first_chunk_for_iter = downlink_replay;
+                    continue;
+                }
+                // Hard switch, non-cluster group, or the migration redial
+                // failed: fall back to the original strict teardown. Skip
+                // mid-session retry (the point is to free the client to
+                // reconnect through the new active uplink) and signal the
+                // post-loop tail to force-close the client socket with RST.
                 force_rst_reason = Some(reason);
                 final_result = Err(anyhow!(
                     "SOCKS TCP session aborted: active uplink switched away from {active_name} ({reason})"
@@ -640,6 +694,97 @@ fn force_client_rst(
     // intent and avoids the deprecation lint.
     let _ = socket2::SockRef::from(&stream).set_linger(Some(Duration::ZERO));
     drop(stream);
+}
+
+/// Attempts to migrate a strict-mode-aborted session to the group's new active
+/// uplink on an operator *soft* switch, instead of tearing it down with RST.
+///
+/// Returns the new candidate plus the freshly-dialled transport (and any v2
+/// downlink replay suffix) on success, or `None` to fall through to the hard
+/// RST teardown — when the switch was hard (`soft = false`), the group is not a
+/// cluster (`shared_resume` off), mid-session retry is disabled (no ring, so the
+/// uplink tail cannot be replayed byte-exact), the new active is not a WS-family
+/// uplink (cannot present the group resume id), or the redial/resume failed.
+///
+/// The migration reuses [`try_mid_session_retry`] against the *new* candidate:
+/// under `shared_resume` the resume-cache scope is the group, so dialling the
+/// new edge presents the same `X-Outline-Resume` id and the server re-attaches
+/// the parked upstream (Ack-Prefix uplink replay + v2 downlink replay included).
+/// The park-before-resume barrier on the server makes that redial race-free.
+#[allow(clippy::too_many_arguments)]
+async fn try_soft_switch_migrate(
+    uplinks: &UplinkManager,
+    strict_global: bool,
+    shared_resume: bool,
+    retry_eligible: bool,
+    current_index: usize,
+    current_name: &Arc<str>,
+    target: &TargetAddr,
+    ring: Option<&Mutex<ClientUpstreamRingBuffer>>,
+    consume_timeout: Duration,
+    symmetric_replay_enabled: bool,
+    symmetric_replay_max_bytes: usize,
+    client_acked_offset: u64,
+    overflow_policy: OverflowPolicy,
+) -> Option<(outline_uplink::UplinkCandidate, ConnectedTcpUplink, Option<Vec<u8>>)> {
+    // Byte-exact migration needs the mid-session-retry ring (for the uplink
+    // replay) and a shared cluster resume id; without both, RST is the honest
+    // fallback rather than a silent mid-stream gap.
+    if !shared_resume || !retry_eligible {
+        return None;
+    }
+    let snapshot = uplinks.active_uplinks_snapshot();
+    // Only an operator soft switch migrates; a hard / health switch tears down.
+    if !snapshot.soft {
+        return None;
+    }
+    let new_index = snapshot.tcp_for(strict_global)?;
+    if new_index == current_index {
+        return None;
+    }
+    // Resolve the candidate the manager just made active. `tcp_candidates`
+    // returns the group's dial-ordered candidates; pick the one at `new_index`.
+    let new_candidate = uplinks
+        .tcp_candidates(target)
+        .await
+        .into_iter()
+        .find(|c| c.index == new_index)?;
+    // Resume-based migration only works on WS-family uplinks (SS-WS / VLESS-WS);
+    // a direct-socket or raw-QUIC active cannot present the group resume id.
+    if !matches!(new_candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
+        return None;
+    }
+    let new_name: Arc<str> = Arc::from(new_candidate.uplink.name.as_str());
+    match try_mid_session_retry(
+        uplinks,
+        &new_name,
+        &new_candidate,
+        target,
+        ring,
+        consume_timeout,
+        symmetric_replay_enabled,
+        symmetric_replay_max_bytes,
+        client_acked_offset,
+        overflow_policy,
+    )
+    .await
+    {
+        Ok((connected, downlink_replay)) => {
+            // The session moved from one uplink to another — record it as a
+            // failover so the dashboard's from→to panel reflects the migration.
+            metrics::record_failover("tcp", uplinks.group_name(), current_name, &new_name);
+            Some((new_candidate, connected, downlink_replay))
+        },
+        Err(error) => {
+            warn!(
+                from = %current_name,
+                to = %new_name,
+                error = %format!("{error:#}"),
+                "soft-switch migration redial failed; falling back to RST teardown"
+            );
+            None
+        },
+    }
 }
 
 /// Performs one mid-session retry attempt. Re-dials the same uplink with
