@@ -193,7 +193,7 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 [data-theme="light"] .cfg-chip.pad-chip { color: #0f766e; }
 .cfg-active { color: var(--green-strong); font-weight: 600; white-space: nowrap; }
 .rows { width: 100%; }
-.rows-head,.row { display: grid; grid-template-columns: minmax(80px, max-content) minmax(110px, .9fr) minmax(80px, .7fr) minmax(170px, 1.5fr) minmax(170px, 1.5fr) minmax(80px, .7fr) minmax(120px, 1fr) 100px; gap: 12px; align-items: center; padding: 13px 18px; }
+.rows-head,.row { display: grid; grid-template-columns: minmax(80px, max-content) minmax(110px, .9fr) minmax(80px, .7fr) minmax(170px, 1.5fr) minmax(170px, 1.5fr) minmax(80px, .7fr) minmax(120px, 1fr) minmax(100px, max-content); gap: 12px; align-items: center; padding: 13px 18px; }
 .proto-pill { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 4px; font-size: 10.5px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; background: var(--soft); color: var(--text); border: 1px solid var(--line); }
 .proto-pill.proto-vless { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
 .proto-pill.proto-ss { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
@@ -284,7 +284,9 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
   font-size: 11px;
   font-weight: 600;
   line-height: 1.35;
-  white-space: nowrap;
+  /* Wrap long tips inside max-width instead of running off-screen; short
+     tips stay on one line since they never reach max-width anyway. */
+  white-space: normal;
   pointer-events: none;
   opacity: 0;
   transition: opacity .1s ease .04s;
@@ -311,10 +313,12 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 [data-tip]:not([data-tip=""]):hover::before,
 [data-tip]:not([data-tip=""]):focus-visible::after,
 [data-tip]:not([data-tip=""]):focus-visible::before { opacity: 1; }
-/* Long-form tooltips (multi-line, used on the wire-chain active pill
- * and config chips) opt in by switching from a single line to wrapped
- * text. Apply with `data-tip-wrap` next to `data-tip`. */
-[data-tip-wrap][data-tip]::after { white-space: normal; min-width: 180px; }
+/* Tooltips wrap by default (see `white-space: normal` above), so long
+ * text stays inside `max-width` instead of running off-screen. Adding
+ * `data-tip-wrap` only forces a wider, more block-like pop-over via a
+ * min width — reach for it when a short label would otherwise wrap to a
+ * cramped sliver, not to enable wrapping (that is now the default). */
+[data-tip-wrap][data-tip]::after { min-width: 180px; }
 .wire-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255, 255, 255, 0.08); flex: 0 0 auto; }
 .wire-dot.failed { background: rgba(220, 38, 38, .55); border-color: rgba(185, 28, 28, .55); }
 .wire-dot.fam-vless-ws    { background: #6366f1; }
@@ -369,7 +373,7 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .action-btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 10px 24px rgba(99,102,241,.22); }
 .action-btn.primary:hover { background: #4f46e5; }
 .action-btn:disabled { opacity: .5; cursor: default; }
-.action-cell { display: inline-flex; align-items: center; gap: 6px; }
+.action-cell { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
 /* Power on/off toggle. `.on` = uplink is enabled (green, click disables);
    `.off` = uplink is administratively disabled (muted, click re-enables). */
 .action-btn.power.on { background: var(--green-soft); border-color: var(--green-soft); color: var(--green-strong); box-shadow: none; }
