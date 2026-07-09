@@ -672,6 +672,22 @@ never fires there because there is no single "active" uplink to
 diverge from. Operators who want session-by-session migration without
 the abort should stay on `active_active` + `per_flow`.
 
+**Soft switch (migrate instead of RST).** On a cluster group
+(`shared_resume = true`, i.e. the uplinks are edges of one server-side
+mesh `[cluster]`) an operator *soft* switch migrates live SOCKS5 TCP
+sessions to the new active uplink instead of resetting them. The
+pinned-relay watcher, on the switch, re-dials the new active edge with
+the group `X-Outline-Resume` id and replays the in-flight uplink tail
+(and, under v2, the downlink suffix) so the session continues without
+the client ever seeing a reset — the server re-attaches the parked
+upstream via the mesh relay. It falls back to the hard RST teardown
+above when the switch was a hard/health one, the group is not a
+cluster, mid-session retry is disabled (no replay ring), the new active
+is not a WS-family uplink, or the resume redial fails. Health and
+probe-driven switches are always hard; only an explicit operator soft
+switch migrates. (The dashboard **Soft switch** control that issues it
+lands in a later phase.)
+
 Bypass on a fully-down group (`bypass_when_down`):
 
 - With `bypass_when_down = true` on a group, any flow or datagram whose
