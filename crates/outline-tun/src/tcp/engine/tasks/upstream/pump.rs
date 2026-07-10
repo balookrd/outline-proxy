@@ -101,11 +101,12 @@ impl TunTcpEngine {
                         if batch.len() == 1 {
                             writer.send_chunk(&batch[0]).await
                         } else {
-                            let mut combined = Vec::with_capacity(sent_bytes);
-                            for chunk in &batch {
-                                combined.extend_from_slice(chunk);
-                            }
-                            writer.send_chunk(&combined).await
+                            // Feed the coalesced batch straight into the writer's framer.
+                            // Building a `combined` Vec here copied a full receive window
+                            // (up to `PUMP_BATCH_BYTES`) per iteration — the uplink hot path's
+                            // biggest allocation, which ballooned the allocator's arena under
+                            // load. `send_chunks` streams the chunks with a bounded scratch.
+                            writer.send_chunks(&batch).await
                         }
                     };
                     if let Err(error) = send_result {
