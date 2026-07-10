@@ -19,6 +19,11 @@ use super::header::{
     parse_response_addons_session_id,
 };
 
+/// Soft cap on a coalesced VLESS data frame built by [`VlessTcpWriter::send_chunks`], bounding
+/// the writer's peak allocation and WS message size instead of building one window-sized buffer
+/// per pump iteration. The reader reassembles raw bytes across frames, so splitting is transparent.
+const FRAME_SOFT_CAP: usize = 256 * 1024;
+
 /// VLESS TCP writer. Emits the request header on the first `send_chunk`
 /// concatenated with the payload into a single frame; subsequent frames
 /// are raw client bytes. Decoupled from the underlying transport via
@@ -82,6 +87,38 @@ impl VlessTcpWriter {
             .ok_or_else(|| anyhow!("vless writer already closed"))?
             .send_frame(Bytes::from(frame))
             .await
+    }
+
+    /// Vectored form of [`Self::send_chunk`]: forwards a batch of client payload chunks
+    /// without concatenating the whole batch into one contiguous buffer. VLESS data frames
+    /// are raw bytes, so the chunks are coalesced into frames capped at `FRAME_SOFT_CAP`
+    /// instead of building one window-sized (multi-MiB) `Vec` per pump iteration — the peak
+    /// allocation stays bounded and mimalloc's arena no longer balloons under uplink load.
+    /// The request header (if still pending) is prepended to the first frame, exactly as the
+    /// scalar path does.
+    pub async fn send_chunks(&mut self, chunks: &[Bytes]) -> Result<()> {
+        let mut frame: Vec<u8> = self.pending_header.take().unwrap_or_default();
+        for chunk in chunks {
+            if chunk.is_empty() {
+                continue;
+            }
+            frame.extend_from_slice(chunk);
+            if frame.len() >= FRAME_SOFT_CAP {
+                self.sink
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("vless writer already closed"))?
+                    .send_frame(Bytes::from(std::mem::take(&mut frame)))
+                    .await?;
+            }
+        }
+        if !frame.is_empty() {
+            self.sink
+                .as_mut()
+                .ok_or_else(|| anyhow!("vless writer already closed"))?
+                .send_frame(Bytes::from(frame))
+                .await?;
+        }
+        Ok(())
     }
 
     /// VLESS has no framing-layer keepalive of its own; the underlying

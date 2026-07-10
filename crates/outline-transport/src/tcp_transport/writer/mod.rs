@@ -3,6 +3,7 @@ mod transport;
 
 use crate::UpstreamTransportGuard;
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use outline_wire::ss2022::Ss2022Error;
 use rand::RngCore;
 use shadowsocks_crypto::{
@@ -16,6 +17,13 @@ use tracing::debug;
 
 use ss2022::{Ss2022TcpWriterState, build_ss2022_request_header};
 use transport::{SocketWriteTransport, WriteTransport, WsSink, WsWriteTransport};
+
+/// Soft cap on a coalesced ciphertext frame built by [`TcpShadowsocksWriter::send_chunks`].
+/// A single pump batch can span a full uplink receive window (multiple MiB); flushing the
+/// frame once it passes this bound keeps the writer's peak allocation (and the WS message
+/// size) small instead of building one window-sized buffer. The reader reassembles bytes
+/// across frames, so splitting is transparent on the wire.
+const FRAME_SOFT_CAP: usize = 256 * 1024;
 
 pub struct TcpShadowsocksWriter<T: WriteTransport> {
     transport: T,
@@ -157,6 +165,70 @@ impl<T: WriteTransport> TcpShadowsocksWriter<T> {
         Ok(())
     }
 
+    /// Vectored form of [`Self::send_chunk`]: encrypts a batch of client payload chunks
+    /// into upstream frames without first concatenating them into one contiguous buffer.
+    ///
+    /// The uplink pump coalesces a receive window's worth of `Bytes` per iteration. Copying
+    /// them into a single `combined` `Vec` just to hand a `&[u8]` to `send_chunk` cost a
+    /// full-window allocation + memcpy on the hot path, and let mimalloc's arena balloon under
+    /// load. Here the chunks feed straight into the AEAD framer: `record` bridges only the
+    /// bytes that straddle a `Bytes` boundary and never exceeds `max`, so it is a fixed scratch
+    /// rather than a per-batch buffer, and the ciphertext `frame` is flushed past
+    /// [`FRAME_SOFT_CAP`]. The emitted AEAD records are byte-identical to
+    /// `concat(chunks).chunks(max)` — only the intermediate buffering differs.
+    pub async fn send_chunks(&mut self, chunks: &[Bytes]) -> Result<()> {
+        let mut data = chunks;
+
+        // SS2022: the very first chunk on the wire is the request header, which carries only
+        // the target address — the pump never batches payload into it. Emit it through the
+        // scalar path (which also flushes the pending salt), then coalesce the data chunks.
+        if let Some(state) = &self.ss2022
+            && !state.header_sent
+        {
+            let Some((first, tail)) = data.split_first() else {
+                return Ok(());
+            };
+            self.send_chunk(first).await?;
+            data = tail;
+        }
+
+        let max = self.cipher.max_payload_len();
+        let mut record: Vec<u8> = Vec::new();
+        let mut frame: Vec<u8> = Vec::new();
+        for chunk in data {
+            let mut rest: &[u8] = chunk;
+            // Fast path: with an empty record, encrypt full `max` slices straight out of the
+            // chunk — no copy into the scratch buffer.
+            while record.is_empty() && rest.len() >= max {
+                self.encrypt_payload_frame_into(&rest[..max], &mut frame)?;
+                rest = &rest[max..];
+                if frame.len() >= FRAME_SOFT_CAP {
+                    self.write_frame(std::mem::take(&mut frame)).await?;
+                }
+            }
+            // Accumulate the remainder (and bytes spanning chunk boundaries) up to `max`.
+            while !rest.is_empty() {
+                let take = (max - record.len()).min(rest.len());
+                record.extend_from_slice(&rest[..take]);
+                rest = &rest[take..];
+                if record.len() == max {
+                    self.encrypt_payload_frame_into(&record, &mut frame)?;
+                    record.clear();
+                    if frame.len() >= FRAME_SOFT_CAP {
+                        self.write_frame(std::mem::take(&mut frame)).await?;
+                    }
+                }
+            }
+        }
+        if !record.is_empty() {
+            self.encrypt_payload_frame_into(&record, &mut frame)?;
+        }
+        if !frame.is_empty() {
+            self.write_frame(frame).await?;
+        }
+        Ok(())
+    }
+
     async fn send_payload_frame(&mut self, payload: &[u8]) -> Result<()> {
         let salt_len = self.pending_salt.as_ref().map_or(0, |_| self.cipher.salt_len());
         let mut frame = Vec::with_capacity(
@@ -218,3 +290,6 @@ impl<T: WriteTransport> TcpShadowsocksWriter<T> {
         self.transport.write_frame(frame).await
     }
 }
+
+#[cfg(test)]
+mod tests;

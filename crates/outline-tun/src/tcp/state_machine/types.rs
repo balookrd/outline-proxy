@@ -41,6 +41,24 @@ impl UpstreamWriter {
         }
     }
 
+    /// Vectored [`Self::send_chunk`]: ships a batch of client payload chunks upstream without
+    /// the pump first concatenating them into one contiguous buffer. Each tunneled writer feeds
+    /// the chunks straight into its framer with a bounded scratch/frame, dropping the
+    /// full-window allocation + memcpy the uplink hot path used to pay per iteration.
+    pub(in crate::tcp) async fn send_chunks(&mut self, chunks: &[Bytes]) -> Result<()> {
+        match self {
+            Self::TunneledWs(w) => w.send_chunks(chunks).await,
+            Self::TunneledSocket(w) => w.send_chunks(chunks).await,
+            Self::TunneledVless(w) => w.send_chunks(chunks).await,
+            Self::Direct(w) => {
+                for chunk in chunks {
+                    w.write_all(chunk).await.context("direct TCP write failed")?;
+                }
+                Ok(())
+            },
+        }
+    }
+
     pub(in crate::tcp) async fn close(&mut self) -> Result<()> {
         match self {
             Self::TunneledWs(w) => w.close().await,
