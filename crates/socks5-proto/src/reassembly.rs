@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::time::Instant;
 
 use crate::constants::{
@@ -9,9 +10,15 @@ use crate::target::TargetAddr;
 use crate::udp::Socks5UdpPacket;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReassembledUdpPacket {
+pub struct ReassembledUdpPacket<'a> {
     pub target: TargetAddr,
-    pub payload: Vec<u8>,
+    /// Shadowsocks UDP body `addr_wire || data`. Borrowed straight from the
+    /// input datagram for a non-fragmented packet (the common case, zero-copy);
+    /// owned only when several fragments had to be concatenated.
+    pub payload: Cow<'a, [u8]>,
+    /// Length of the leading address in `payload`; `payload[addr_len..]` is the
+    /// datagram data used by the policy-direct path.
+    pub addr_len: usize,
 }
 
 #[derive(Debug, Default)]
@@ -29,15 +36,19 @@ struct UdpFragmentState {
 }
 
 impl UdpFragmentReassembler {
-    pub fn push_fragment(
+    pub fn push_fragment<'a>(
         &mut self,
-        packet: Socks5UdpPacket<'_>,
-    ) -> Result<Option<ReassembledUdpPacket>> {
+        packet: Socks5UdpPacket<'a>,
+    ) -> Result<Option<ReassembledUdpPacket<'a>>> {
         if packet.fragment == 0 {
             self.state = None;
+            // Non-fragmented: the datagram's `addr_wire || data` body is already
+            // contiguous, so borrow it — no copy, no address re-serialisation.
+            let addr_len = packet.body.len() - packet.payload.len();
             return Ok(Some(ReassembledUdpPacket {
                 target: packet.target,
-                payload: packet.payload.to_vec(),
+                payload: Cow::Borrowed(packet.body),
+                addr_len,
             }));
         }
 
@@ -90,12 +101,21 @@ impl UdpFragmentReassembler {
         }
 
         let state = self.state.take().expect("state exists when final fragment arrives");
-        let mut payload = Vec::with_capacity(state.total_bytes);
+        // Fragmented: concatenate `addr_wire || data0 || data1 || …` once so the
+        // reassembled body matches the non-fragmented borrowed shape.
+        let addr_wire = state.target.to_wire_bytes()?;
+        let addr_len = addr_wire.len();
+        let mut payload = Vec::with_capacity(addr_len + state.total_bytes);
+        payload.extend_from_slice(&addr_wire);
         for fragment in state.fragments {
             payload.extend_from_slice(&fragment);
         }
 
-        Ok(Some(ReassembledUdpPacket { target: state.target, payload }))
+        Ok(Some(ReassembledUdpPacket {
+            target: state.target,
+            payload: Cow::Owned(payload),
+            addr_len,
+        }))
     }
 }
 

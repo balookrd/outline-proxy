@@ -6,13 +6,23 @@ use crate::target::TargetAddr;
 pub struct Socks5UdpPacket<'a> {
     pub fragment: u8,
     pub target: TargetAddr,
+    /// The Shadowsocks UDP body `addr_wire || data` — the datagram with only the
+    /// 3-byte RSV+FRAG prefix removed. Handed to the tunnel unchanged so the
+    /// address is not re-serialised and the data is not copied.
+    pub body: &'a [u8],
+    /// The datagram data alone (`body` with the leading address removed), used
+    /// by the policy-direct path which sends straight to the target socket.
     pub payload: &'a [u8],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Socks5UdpTcpPacket {
     pub target: TargetAddr,
-    pub payload: Vec<u8>,
+    /// Shadowsocks UDP body `addr_wire || data`, read into one contiguous
+    /// buffer so the tunnel send path forwards it without rebuilding.
+    pub body: Vec<u8>,
+    /// Length of the leading address in `body`; `body[addr_len..]` is the data.
+    pub addr_len: usize,
 }
 
 pub fn parse_udp_request(packet: &[u8]) -> Result<Socks5UdpPacket<'_>> {
@@ -23,12 +33,13 @@ pub fn parse_udp_request(packet: &[u8]) -> Result<Socks5UdpPacket<'_>> {
         return Err(Socks5Error::InvalidUdpReservedBytes);
     }
     let fragment = packet[2];
-    let (target, consumed) = TargetAddr::from_wire_bytes(&packet[3..])?;
-    let payload_offset = 3 + consumed;
+    let body = &packet[3..];
+    let (target, consumed) = TargetAddr::from_wire_bytes(body)?;
     Ok(Socks5UdpPacket {
         fragment,
         target,
-        payload: &packet[payload_offset..],
+        body,
+        payload: &body[consumed..],
     })
 }
 
@@ -67,23 +78,23 @@ where
         .checked_sub(3)
         .ok_or(Socks5Error::InvalidUdpInTcpHeaderLen(header_len as u16))?;
 
-    let mut addr_buf = vec![0u8; addr_len];
+    // Read the address and the data into one contiguous `addr_wire || data`
+    // buffer so the tunnel send path forwards it without a rebuild.
+    let mut body = vec![0u8; addr_len + data_len];
     reader
-        .read_exact(&mut addr_buf)
+        .read_exact(&mut body[..addr_len])
         .await
         .map_err(Socks5Error::io("reading UDP-in-TCP target address"))?;
-    let (target, consumed) = TargetAddr::from_wire_bytes(&addr_buf)?;
+    let (target, consumed) = TargetAddr::from_wire_bytes(&body[..addr_len])?;
     if consumed != addr_len {
         return Err(Socks5Error::UdpInTcpHeaderMismatch);
     }
-
-    let mut payload = vec![0u8; data_len];
     reader
-        .read_exact(&mut payload)
+        .read_exact(&mut body[addr_len..])
         .await
         .map_err(Socks5Error::io("reading UDP-in-TCP payload"))?;
 
-    Ok(Some(Socks5UdpTcpPacket { target, payload }))
+    Ok(Some(Socks5UdpTcpPacket { target, body, addr_len }))
 }
 
 pub async fn write_udp_tcp_packet<W>(

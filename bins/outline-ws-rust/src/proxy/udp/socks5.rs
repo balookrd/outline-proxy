@@ -104,7 +104,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                 }
 
                 let packet = parse_udp_request(&buf[..len])?;
-                let Some(packet) = reassembler.push_fragment(packet)? else {
+                let Some(datagram) = reassembler.push_fragment(packet)? else {
                     continue;
                 };
 
@@ -112,19 +112,19 @@ pub(in crate::proxy) async fn serve_udp_associate(
                     &mut route_cache,
                     &config_uplink,
                     &registry_uplink,
-                    &packet.target,
+                    &datagram.target,
                 )
                 .await
                 {
                     UdpPacketRoute::Drop => {
-                        debug!(target = %packet.target, "UDP route: policy drop");
+                        debug!(target = %datagram.target, "UDP route: policy drop");
                         continue;
                     },
                     UdpPacketRoute::Direct => {
                         send_udp_direct(
                             &direct_socket_uplink,
-                            &packet.target,
-                            &packet.payload,
+                            &datagram.target,
+                            &datagram.payload[datagram.addr_len..],
                             &dns_cache_uplink,
                         )
                         .await?;
@@ -133,13 +133,14 @@ pub(in crate::proxy) async fn serve_udp_associate(
                     UdpPacketRoute::Tunnel(name) => name,
                 };
 
-                let mut payload = packet.target.to_wire_bytes()?;
-                payload.extend_from_slice(&packet.payload);
-                if payload.len() > MAX_CLIENT_UDP_PACKET_SIZE {
+                // `datagram.payload` is already the Shadowsocks body
+                // `addr_wire || data`, borrowed straight from `buf` for a
+                // non-fragmented packet — no address rebuild, no payload copy.
+                if datagram.payload.len() > MAX_CLIENT_UDP_PACKET_SIZE {
                     warn!(
                         %addr,
-                        target = %packet.target,
-                        payload_len = payload.len(),
+                        target = %datagram.target,
+                        payload_len = datagram.payload.len(),
                         limit = MAX_CLIENT_UDP_PACKET_SIZE,
                         "dropping oversized incoming UDP packet"
                     );
@@ -155,7 +156,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                     Some(&client_id),
                 )
                 .await?;
-                send_tunneled_udp(&ctx, Some(&packet.target), &payload).await?;
+                send_tunneled_udp(&ctx, Some(&datagram.target), &datagram.payload).await?;
             }
         };
 
