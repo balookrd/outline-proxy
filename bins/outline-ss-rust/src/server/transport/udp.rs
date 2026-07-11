@@ -10,7 +10,7 @@ use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use outline_wire::padding::{PaddingDecoder, PaddingScheme};
 use parking_lot::Mutex;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{OnceCell, Semaphore, mpsc};
 use tracing::{debug, info, warn};
 
 use super::carrier_padding;
@@ -21,7 +21,7 @@ use crate::{
     },
     metrics::{AppProtocol, Metrics, Protocol, Transport},
     protocol::parse_target_addr,
-    server::nat::{NatKey, NatTable, UdpResponseSender},
+    server::nat::{NatKey, NatScope, NatTable, UdpResponseSender},
     server::replay::{self, ReplayCheck, ReplayStore},
 };
 
@@ -122,34 +122,54 @@ struct UdpSessionState {
     /// `X-Outline-Session` response header value). Used as the
     /// registry key on park.
     issued_session_id: Option<SessionId>,
-    /// Set by the first packet that ran (or skipped) the resume
-    /// attempt — guards against re-running the lookup on every
-    /// concurrent in-flight datagram.
-    resume_attempted: Arc<AtomicBool>,
+    /// This stream's NAT scope ([`NatKey::scope`]), resolved exactly
+    /// once on the first datagram and shared by every subsequent one so
+    /// all of a stream's NAT keys line up. `get_or_init` also folds in
+    /// the first-frame resume attempt: on a resume hit it re-points the
+    /// parked entries and yields the *parked* scope (so the resumed
+    /// carrier keeps addressing the original entries); otherwise it
+    /// yields the issued session id, keeping two independent sessions on
+    /// distinct entries. `None` inside means the historical shared-entry
+    /// behaviour (resumption disabled / no issued id). The `OnceCell`
+    /// serialises concurrent in-flight datagrams so none races ahead
+    /// with the wrong scope.
+    nat_scope: Arc<OnceCell<Option<NatScope>>>,
 }
 
-/// Tries to attach a parked SS-UDP stream's NAT entries to the new
-/// `UdpResponseSender`. Returns the count of NAT keys successfully
-/// re-pointed (entries whose TTL hadn't expired in the registry yet).
+/// Resolves this stream's NAT scope ([`NatKey::scope`]) once, folding in the
+/// first-frame resume attempt. Called through `nat_scope.get_or_init`, so it
+/// runs exactly once per stream and every concurrent datagram observes the same
+/// result.
 ///
-/// Cross-shape mismatches (resume ID minted under TCP / VLESS-UDP /
-/// VLESS mux) are reported as a security event and treated as a
-/// quiet miss — the next datagram falls through to the normal
-/// `get_or_create` flow.
-async fn attempt_ss_udp_resume(
+/// On a resume hit it re-points the parked SS-UDP stream's surviving NAT entries
+/// at this stream's `sender` and returns the **parked** scope, so the resumed
+/// carrier keeps addressing the original entries (and hence the same upstream
+/// sockets / source ports). Otherwise — resumption disabled, no resume request,
+/// a miss, or every parked entry already evicted — it returns the **issued**
+/// session id, which keeps two independent sessions to the same target on
+/// distinct entries. `None` (no issued id) preserves the historical shared
+/// last-writer-wins entry.
+///
+/// Cross-shape mismatches (resume id minted under TCP / VLESS-UDP / VLESS mux)
+/// are reported as a security event and treated as a quiet miss — the stream
+/// falls back to its issued scope.
+async fn resolve_nat_scope(
     server: &UdpServerCtx,
     session: &UdpSessionState,
     user_id: &Arc<str>,
     udp_session: &crate::crypto::UdpCipherMode,
     sender: &UdpResponseSender,
     path: &str,
-) -> usize {
+) -> Option<NatScope> {
+    // Fresh sessions pin to their issued id: distinct between two independent
+    // sessions, and echoed back to the client so a later resume presents it.
+    let issued_scope = session.issued_session_id.map(|id| *id.as_bytes());
     if !server.orphan_registry.enabled() {
-        return 0;
+        return issued_scope;
     }
     let resume_id = match session.pending_resume_request.lock().take() {
         Some(id) => id,
-        None => return 0,
+        None => return issued_scope,
     };
     let outcome = server.orphan_registry.take_for_resume(resume_id, user_id).await;
     let parked = match outcome {
@@ -161,10 +181,13 @@ async fn attempt_ss_udp_resume(
                 parked_kind = other.kind(),
                 "rejecting ss-udp resume: parked entry is not an ss-udp stream"
             );
-            return 0;
+            return issued_scope;
         },
-        ResumeOutcome::Miss(_) => return 0,
+        ResumeOutcome::Miss(_) => return issued_scope,
     };
+    // Every parked key of one session shares its scope; adopt it so this
+    // carrier's own datagrams line up with the re-pointed entries.
+    let parked_scope = parked.nat_keys.first().and_then(|key| key.scope);
     let mut reattached = 0usize;
     let mut keys_for_self = Vec::with_capacity(parked.nat_keys.len());
     for key in parked.nat_keys {
@@ -191,8 +214,13 @@ async fn attempt_ss_udp_resume(
             reattached,
             "ss-udp stream resumed from orphan registry"
         );
+        parked_scope
+    } else {
+        // Hit but every parked entry already evicted: nothing to address, so
+        // start fresh under the issued scope (self-consistent with a later
+        // resume, which will re-pin to whatever this stream parks under).
+        issued_scope
     }
-    reattached
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -309,17 +337,6 @@ where
         "udp datagram relay"
     );
 
-    let nat_key = NatKey {
-        user_id: Arc::clone(&user_id),
-        fwmark: packet.user.fwmark(),
-        target: resolved,
-    };
-    let entry = server
-        .nat_table
-        .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&server.metrics))
-        .await
-        .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
-
     let response_sender = make_response_sender(
         outbound_tx,
         route.protocol,
@@ -328,32 +345,47 @@ where
         monitor,
     );
 
-    // First-frame resume: if this stream advertised a pending
-    // `X-Outline-Resume` ID, attempt the lookup and re-attach every
-    // surviving NAT entry to our response sender before we register
-    // the current packet's NAT key. Subsequent packets see
-    // `resume_attempted == true` and skip straight to register.
-    if !session.resume_attempted.swap(true, Ordering::SeqCst) {
-        attempt_ss_udp_resume(
-            server,
-            session,
-            &user_id,
-            &packet.session,
-            &response_sender,
-            &route.path,
-        )
+    // Resolve this stream's NAT scope before keying the entry — on the first
+    // datagram this also runs the first-frame resume (re-pointing every
+    // surviving parked entry at `response_sender`). `get_or_init` runs the
+    // closure once and makes concurrent in-flight datagrams await the same
+    // scope, so none races ahead and keys an entry under a stale scope.
+    let scope = *session
+        .nat_scope
+        .get_or_init(|| {
+            resolve_nat_scope(
+                server,
+                session,
+                &user_id,
+                &packet.session,
+                &response_sender,
+                &route.path,
+            )
+        })
         .await;
-    }
+
+    let nat_key = NatKey {
+        user_id: Arc::clone(&user_id),
+        fwmark: packet.user.fwmark(),
+        target: resolved,
+        scope,
+    };
+    let entry = server
+        .nat_table
+        .get_or_create(
+            nat_key.clone(),
+            &packet.user,
+            packet.session.clone(),
+            Arc::clone(&server.metrics),
+        )
+        .await
+        .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
     entry.register_session(response_sender, packet.session.clone(), session.stream_id);
     // Track the NAT key as one this stream owns, for park-on-drop.
     // `HashSet::insert` is a no-op on duplicates and avoids the linear
     // scan that the prior `Vec` form paid on every datagram.
-    session.nat_keys.lock().insert(NatKey {
-        user_id: Arc::clone(&user_id),
-        fwmark: packet.user.fwmark(),
-        target: resolved,
-    });
+    session.nat_keys.lock().insert(nat_key);
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
         server.metrics.record_udp_oversized_datagram_dropped(
@@ -424,7 +456,7 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         authenticated_user_id: Arc::new(OnceLock::new()),
         pending_resume_request: Arc::new(Mutex::new(resume.requested_resume)),
         issued_session_id: resume.issued_session_id,
-        resume_attempted: Arc::new(AtomicBool::new(false)),
+        nat_scope: Arc::new(OnceCell::new()),
     };
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
     // Per-carrier downstream-throttle monitor. A direct carrier (`None`) builds

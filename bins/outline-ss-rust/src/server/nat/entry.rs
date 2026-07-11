@@ -19,14 +19,30 @@ use crate::{
     metrics::{AppProtocol, PerUserCounters, Protocol},
 };
 
-/// Lookup key for a NAT entry.  Uniquely identifies the (user, routing mark,
-/// resolved upstream address) triple.
+/// Lookup key for a NAT entry.  Identifies the (user, routing mark, resolved
+/// upstream address) triple, optionally narrowed to a single resumable session
+/// by [`scope`](Self::scope).
+///
+/// The `scope` discriminator is what keeps two *concurrent* SS-UDP-over-WS
+/// carriers for the same (user, target) from sharing one entry — and therefore
+/// one last-writer-wins response slot. It is the session identity the entry was
+/// pinned to (the client's issued/resume id), so it stays stable across a
+/// reconnect/resume (the resuming carrier adopts the parked scope) yet differs
+/// between two independent sessions. `None` on the plain shadowsocks UDP
+/// listener and whenever session resumption is disabled — those paths keep the
+/// historical shared-entry behaviour.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct NatKey {
     pub user_id: Arc<str>,
     pub fwmark: Option<u32>,
     pub target: SocketAddr,
+    pub scope: Option<NatScope>,
 }
+
+/// Session discriminator embedded in a [`NatKey`]. The raw 16 bytes of the
+/// session's issued/resume id — kept as a plain array so the NAT layer stays
+/// independent of the resumption module's `SessionId` type.
+pub(crate) type NatScope = [u8; 16];
 
 // ── Response sender abstraction ───────────────────────────────────────────────
 

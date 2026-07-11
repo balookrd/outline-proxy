@@ -165,7 +165,13 @@ stream and de-frames it on the far side. A raw byte splice would let QUIC
 coalesce or split packets and break the home's per-packet AEAD open. The mesh
 QUIC stream is reliable and ordered, so the mesh hop no longer drops packets;
 the client↔target UDP path stays best-effort over the last mile, so this only
-improves delivery. **VLESS-UDP needs no such treatment:** it rides the VLESS-TCP
+improves delivery. On the home, each relayed SS-UDP session is pinned to its own
+NAT entry by a per-session scope (its resume id), so two concurrent sessions to
+the same `(user, target)` — a second edge relaying the same user, or a client
+warm-probe alongside real traffic — never share one upstream socket or
+last-writer-wins response slot; a resume adopts the parked scope, so an edge
+switch still reuses the single entry (one source port to the target).
+**VLESS-UDP needs no such treatment:** it rides the VLESS-TCP
 carrier — the edge forwards the VLESS byte stream verbatim and the home parses
 the UDP command out of it — so an edge never emits a UDP carrier kind for VLESS,
 and VLESS-UDP is covered by the same path as VLESS-TCP.
