@@ -691,6 +691,26 @@ it posts `soft: true` to `/control/activate`, and the response's `soft`
 field reports whether the migration was actually applied or clamped to a
 hard switch.
 
+**UDP cross-node migration.** Under `shared_resume` the UDP resume scope is
+group-shared too (it was previously pinned per-uplink to sidestep a then-broken
+relay leg). So a soft switch — and any UDP wire re-selection — keeps a live UDP
+flow on its original home instead of re-establishing it on the new edge:
+
+- **SS-UDP** funnels every destination through one group-scoped id
+  (`<group>#udp` in `global_resume_cache`). The new edge decodes the id's home
+  shard and relays the datagram carrier to the home, which re-attaches the
+  parked NAT entry — one upstream source port survives the switch.
+- **VLESS-UDP** fans one uplink out to many single-destination sessions, so it
+  keeps a durable per-target id in its own cache (`global_vless_udp_resume_cache`,
+  keyed `<group>#<target>`). Each target migrates independently: the fresh mux
+  the manager builds for the new edge re-presents that target's shard-carrying
+  id, and the home resumes the parked per-target socket. VLESS-UDP rides the
+  VLESS-TCP mesh carrier on the home, so no dedicated UDP carrier kind exists.
+
+Off a cluster (`shared_resume = false`) UDP stays per-uplink and every wire
+resolves locally, exactly as before — sharing a UDP id across unrelated homes
+would only ever miss.
+
 Bypass on a fully-down group (`bypass_when_down`):
 
 - With `bypass_when_down = true` on a group, any flow or datagram whose
