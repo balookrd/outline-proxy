@@ -288,6 +288,27 @@ pub fn global_resume_cache() -> &'static ResumeCache {
     CACHE.get_or_init(ResumeCache::default)
 }
 
+/// Process-wide cache of the last server-issued [`SessionId`] for each
+/// VLESS-UDP `<resume-scope>#<target>` pair.
+///
+/// Kept separate from [`global_resume_cache`] on purpose: VLESS-UDP fans one
+/// uplink out to many per-target sessions, each with its own Session ID, so
+/// this key space is far more dynamic than the two-slots-per-uplink TCP/SS
+/// cache. Sharing one bounded cache would let a burst of UDP targets evict the
+/// long-lived TCP resume ids (and vice versa). Isolating them keeps each
+/// transport's `RESUME_CACHE_CAPACITY` budget to itself.
+///
+/// Durability across mux re-creation is what enables cross-node VLESS-UDP
+/// migration: when the active UDP wire moves to another edge, a fresh mux is
+/// built for the new edge but this cache still holds each target's parked id.
+/// That id carries the session's home shard, so the new edge decodes the shard
+/// and relays the datagram carrier to the home, which re-attaches the parked
+/// per-target `Arc<UdpSocket>` instead of binding a fresh source port.
+pub fn global_vless_udp_resume_cache() -> &'static ResumeCache {
+    static CACHE: OnceLock<ResumeCache> = OnceLock::new();
+    CACHE.get_or_init(ResumeCache::default)
+}
+
 const fn hex_nibble(n: u8) -> char {
     match n {
         0..=9 => (b'0' + n) as char,
