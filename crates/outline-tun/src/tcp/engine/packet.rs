@@ -138,7 +138,7 @@ impl TunTcpEngine {
                 commit_flow_changes(&mut state, &self.inner.tcp);
                 let key = state.key.clone();
                 drop(state);
-                self.write_tun_packet_or_close_flow(&key, &packet).await?;
+                self.write_server_data_or_close_flow(&key, &packet).await?;
                 metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_retransmit");
                 return Ok(());
             }

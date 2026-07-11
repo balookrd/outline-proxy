@@ -292,7 +292,7 @@ pub(crate) fn build_ipv6_udp_packet(
 /// `len`, IP total length and pseudo-header length all span the WHOLE aggregate
 /// (`8 + payload.len()`), not one datagram — `__udp_gso_segment` rewrites the
 /// per-segment length and corrects the checksum via `csum16_sub(uh->check,
-/// uh->len)`. Mirror of [`super::super::tcp`]'s `build_gso_tcp_packet`.
+/// uh->len)`. Mirror of [`super::super::tcp`]'s `build_gso_tcp_header`.
 pub(super) fn build_gso_udp_packet(
     version: IpVersion,
     source_ip: IpAddr,

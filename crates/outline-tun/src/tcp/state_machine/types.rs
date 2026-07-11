@@ -407,21 +407,22 @@ pub(in crate::tcp) struct ServerSegment {
     pub(in crate::tcp) app_limited: bool,
 }
 
-/// One downlink packet to write to the TUN device.
+/// One downlink packet to write to the TUN device. The IP/TCP `header` and the
+/// `payload` chunks are written vectored (`writev`) so the payload — which
+/// already lives as owned `Bytes` upstream and on the retransmit scoreboard — is
+/// never copied into a packet buffer. `payload` holds one chunk on the fast path
+/// and several when a TSO super-segment coalesces multiple upstream reads
+/// without copying them contiguous.
 #[derive(Debug)]
 pub(in crate::tcp) struct ServerDataPacket {
-    pub(in crate::tcp) bytes: Vec<u8>,
-    /// `Some` when `bytes` is a TSO super-segment: the `virtio_net_hdr` the
-    /// writer prepends so the kernel splits it into `gso_size` MSS segments.
-    /// `None` is a single IP packet (writer emits a GSO_NONE header or a bare
-    /// write, depending on whether the fd carries a vnet header).
+    pub(in crate::tcp) header: Vec<u8>,
+    pub(in crate::tcp) payload: Vec<Bytes>,
+    /// `Some` when this is a TSO super-segment: the `virtio_net_hdr` the writer
+    /// prepends so the kernel splits `payload` into `gso_size` MSS segments and
+    /// finalises each segment's L4 checksum. `None` is a single IP packet
+    /// (writer emits a GSO_NONE header or a bare write, depending on whether the
+    /// fd carries a vnet header).
     pub(in crate::tcp) vnet: Option<VirtioNetHdr>,
-}
-
-impl ServerDataPacket {
-    pub(in crate::tcp) fn single(bytes: Vec<u8>) -> Self {
-        Self { bytes, vnet: None }
-    }
 }
 
 #[derive(Debug, Default)]
