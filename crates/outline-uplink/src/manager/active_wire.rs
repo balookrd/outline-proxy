@@ -79,17 +79,34 @@ impl UplinkManager {
     ///
     /// `transport_label` must be one of `"tcp"` / `"udp"`.
     pub fn resume_cache_key_for(&self, uplink_name: &str, transport_label: &str) -> String {
-        resume_cache_key(self.resume_scope(uplink_name), transport_label)
+        resume_cache_key(self.resume_scope(uplink_name, transport_label), transport_label)
     }
 
-    /// The resume-cache scope for `uplink_name`: the group name when this group
-    /// shares one resume id across its uplinks (`shared_resume`, set when the
-    /// uplinks are edges of one server-side mesh `[cluster]`), else the
-    /// uplink's own name (the standalone per-uplink default). Sharing the scope
-    /// makes the client present the same `X-Outline-Resume` id to whichever
-    /// edge it dials, so the session survives an edge switch via the mesh relay.
-    pub(crate) fn resume_scope<'a>(&'a self, uplink_name: &'a str) -> &'a str {
-        if self.inner.load_balancing.shared_resume {
+    /// The resume-cache scope for `uplink_name` on `transport_label`: the group
+    /// name when this group shares one resume id across its uplinks
+    /// (`shared_resume`, set when the uplinks are edges of one server-side mesh
+    /// `[cluster]`), else the uplink's own name (the standalone per-uplink
+    /// default). Sharing the scope makes the client present the same
+    /// `X-Outline-Resume` id to whichever edge it dials, so the session survives
+    /// an edge switch via the mesh relay.
+    ///
+    /// **UDP never shares the scope**, even in a cluster. A group-shared resume
+    /// id carries a fixed home shard; when the rotating UDP wire lands on an edge
+    /// whose node is not that shard, the server treats the datagram carrier as
+    /// foreign and relays it over the mesh — and the SS-UDP relay leg drops the
+    /// datagrams (process-wide NAT with a last-writer-wins response slot, plus an
+    /// empty user table on the relayed carrier). VLESS-UDP already keeps its
+    /// resume ids private per target and stays Local; mirroring that for all UDP
+    /// makes every UDP wire resolve to its own node (Local, no relay). UDP
+    /// sessions are short-lived, so the lost cross-edge survival is immaterial.
+    /// TCP keeps the shared scope (its relay path is healthy and long-lived TCP
+    /// benefits from cross-edge survival).
+    pub(crate) fn resume_scope<'a>(
+        &'a self,
+        uplink_name: &'a str,
+        transport_label: &str,
+    ) -> &'a str {
+        if transport_label != "udp" && self.inner.load_balancing.shared_resume {
             &self.inner.group_name
         } else {
             uplink_name
