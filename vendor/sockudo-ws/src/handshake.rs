@@ -79,13 +79,13 @@ pub fn parse_request(buf: &[u8]) -> Result<Option<(HandshakeRequest<'_>, usize)>
                         if value.to_ascii_lowercase().contains("websocket") {
                             upgrade = true;
                         }
-                    }
+                    },
                     "connection" => {
                         if value.to_ascii_lowercase().contains("upgrade") {
                             connection_upgrade = true;
                         }
-                    }
-                    _ => {}
+                    },
+                    _ => {},
                 }
             }
 
@@ -117,7 +117,7 @@ pub fn parse_request(buf: &[u8]) -> Result<Option<(HandshakeRequest<'_>, usize)>
                 },
                 len,
             )))
-        }
+        },
         Ok(httparse::Status::Partial) => Ok(None),
         Err(_) => Err(Error::InvalidHttp("failed to parse HTTP request")),
     }
@@ -264,20 +264,12 @@ pub fn parse_response(buf: &[u8]) -> Result<Option<(HandshakeResponse<'_>, usize
                     "sec-websocket-accept" => accept = Some(value),
                     "sec-websocket-protocol" => protocol = Some(value),
                     "sec-websocket-extensions" => extensions = Some(value),
-                    _ => {}
+                    _ => {},
                 }
             }
 
-            Ok(Some((
-                HandshakeResponse {
-                    status,
-                    accept,
-                    protocol,
-                    extensions,
-                },
-                len,
-            )))
-        }
+            Ok(Some((HandshakeResponse { status, accept, protocol, extensions }, len)))
+        },
         Ok(httparse::Status::Partial) => Ok(None),
         Err(_) => Err(Error::InvalidHttp("failed to parse HTTP response")),
     }
@@ -332,12 +324,7 @@ where
                 None
             };
 
-            return Ok(HandshakeResult {
-                path,
-                protocol,
-                extensions,
-                leftover,
-            });
+            return Ok(HandshakeResult { path, protocol, extensions, leftover });
         }
     }
 }

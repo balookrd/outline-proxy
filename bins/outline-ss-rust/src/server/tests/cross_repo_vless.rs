@@ -701,7 +701,7 @@ async fn cross_repo_vless_tcp_ws_h2_ack_prefix_reports_up_acked_offset() -> Resu
 
     // The next read_chunk returns the real downlink payload.
     let reply_b = reader_b.read_chunk().await?;
-    assert_eq!(reply_b, b"ackk", "vless ss tcp echo via resumed upstream");
+    assert_eq!(&reply_b[..], b"ackk", "vless ss tcp echo via resumed upstream");
 
     let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
@@ -872,7 +872,7 @@ async fn cross_repo_vless_tcp_ws_h2_symmetric_replay_returns_downlink_suffix() -
     }
 
     let reply_b = reader_b.read_chunk().await?;
-    assert_eq!(reply_b, b"ackk");
+    assert_eq!(&reply_b[..], b"ackk");
 
     let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");

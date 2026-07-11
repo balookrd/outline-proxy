@@ -13,6 +13,7 @@ use crate::downlink_replay::{
     FRAME_HEADER_LEN_V1 as DOWNLINK_REPLAY_HEADER_LEN_V1,
 };
 use anyhow::{Result, anyhow, bail};
+use bytes::Bytes;
 use outline_wire::padding::PaddingDecoder;
 use outline_wire::resume::{FRAME_LEN_V1, ParseResult, parse_v1};
 use shadowsocks_crypto::{
@@ -395,7 +396,7 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
         }
     }
 
-    pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
+    pub async fn read_chunk(&mut self) -> Result<Bytes> {
         // Fast path for the v1.1 orchestrator: if the prefix was
         // pre-consumed and carried trailing data, hand it back here
         // before touching the transport so no AEAD round-trip is
@@ -403,7 +404,7 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
         // case so callers never see an empty payload that would be
         // misinterpreted as EOF.
         if let Some(tail) = self.pending_tail.take() {
-            return Ok(tail);
+            return Ok(Bytes::from(tail));
         }
         loop {
             let payload_buf = self.read_one_decrypted_chunk().await?;
@@ -413,7 +414,7 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
                         self.up_acked = Some(up_acked);
                         self.expect_ack_prefix = false;
                         if payload_buf.len() > FRAME_LEN_V1 {
-                            return Ok(payload_buf[FRAME_LEN_V1..].to_vec());
+                            return Ok(Bytes::from(payload_buf).slice(FRAME_LEN_V1..));
                         }
                         // Exact 14 bytes (the expected case): loop to
                         // fetch the next chunk so callers never see an
@@ -424,7 +425,7 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
                     err => return Err(ack_prefix_parse_error(err, payload_buf.len())),
                 }
             }
-            return Ok(payload_buf);
+            return Ok(Bytes::from(payload_buf));
         }
     }
 

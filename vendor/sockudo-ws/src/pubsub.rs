@@ -331,10 +331,10 @@ impl PubSub {
             dashmap::mapref::entry::Entry::Occupied(entry) => {
                 // Race condition: someone else created it
                 return (*entry.get(), false);
-            }
+            },
             dashmap::mapref::entry::Entry::Vacant(entry) => {
                 entry.insert(id);
-            }
+            },
         }
 
         self.subscribers.insert(id, subscriber);
@@ -366,9 +366,7 @@ impl PubSub {
     ///
     /// The socket ID if the subscriber has one, or `None`
     pub fn get_socket_id(&self, id: SubscriberId) -> Option<String> {
-        self.subscribers
-            .get(&id)
-            .and_then(|sub| sub.socket_id.clone())
+        self.subscribers.get(&id).and_then(|sub| sub.socket_id.clone())
     }
 
     /// Remove a subscriber by its socket ID
@@ -624,10 +622,7 @@ impl PubSub {
 
     /// Check if a subscriber is subscribed to a topic
     pub fn is_subscribed(&self, id: SubscriberId, topic: &str) -> bool {
-        self.topics
-            .get(topic)
-            .map(|t| t.contains(&id))
-            .unwrap_or(false)
+        self.topics.get(topic).map(|t| t.contains(&id)).unwrap_or(false)
     }
 
     /// Get the number of subscribers to a topic

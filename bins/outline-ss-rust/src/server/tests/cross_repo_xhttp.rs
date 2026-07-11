@@ -409,7 +409,7 @@ async fn cross_repo_xhttp_h2_ack_prefix_reports_up_acked_offset() -> Result<()> 
     assert_eq!(reader_b.upstream_acked_offset(), Some(4));
 
     let reply_b = reader_b.read_chunk().await?;
-    assert_eq!(reply_b, b"ackk", "vless-over-xhttp echo via resumed upstream");
+    assert_eq!(&reply_b[..], b"ackk", "vless-over-xhttp echo via resumed upstream");
 
     let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
@@ -558,7 +558,7 @@ async fn cross_repo_xhttp_h2_symmetric_replay_returns_downlink_suffix() -> Resul
     }
 
     let reply_b = reader_b.read_chunk().await?;
-    assert_eq!(reply_b, b"ackk");
+    assert_eq!(&reply_b[..], b"ackk");
 
     let (first, second) = tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
     assert_eq!(&first, b"ping");
