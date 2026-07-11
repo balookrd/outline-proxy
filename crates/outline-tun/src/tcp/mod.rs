@@ -22,7 +22,9 @@ pub(crate) use self::state_machine::UpstreamWriter;
 pub(crate) use self::wire::parse_tcp_packet as parse_tcp_packet_for_tests;
 #[cfg(test)]
 use self::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN, build_reset_response, parse_tcp_packet};
-use self::wire::{ParsedTcpPacket, build_gso_tcp_packet, build_response_packet_custom};
+use self::wire::{
+    ParsedTcpPacket, build_data_header_custom, build_gso_tcp_header, build_response_packet_custom,
+};
 
 #[cfg(test)]
 use self::state_machine::{

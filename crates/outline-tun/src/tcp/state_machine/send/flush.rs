@@ -1,15 +1,24 @@
 use std::time::Instant;
 
 use anyhow::Result;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
 use super::super::super::{
     GSO_MAX_SUPER_SEGMENT_PAYLOAD, TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_PSH,
     TCP_ZERO_WINDOW_PROBE_MAX_INTERVAL,
 };
+
+/// Upper bound on the number of `Bytes` chunks coalesced into one vectored
+/// downlink write. The write is `[vnet?, header, chunk0, …]`, so this keeps the
+/// `iovec` count far below `IOV_MAX` (1024). A super-segment that would need
+/// more chunks is simply emitted shorter — correctness is unaffected, the
+/// remainder flushes next iteration.
+const MAX_WRITE_PAYLOAD_CHUNKS: usize = 128;
 use super::super::bbr::{pacing_active, pacing_release_at, refill_pacing_credit};
 use super::super::congestion::{congestion_window_remaining, server_max_segment_payload};
-use super::super::packets::{build_flow_packet, build_gso_flow_packet, send_window_remaining};
+use super::super::packets::{
+    build_flow_data_header, build_flow_packet, build_gso_flow_header, send_window_remaining,
+};
 use super::super::transitions::{reset_zero_window_persist, set_flow_status};
 use super::super::types::{
     ServerDataPacket, ServerFlush, ServerSegment, TcpFlowState, TcpFlowStatus,
@@ -66,7 +75,7 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<ServerDataPacket>> 
         if payload.is_empty() {
             break;
         }
-        let payload_len = payload.len();
+        let payload_len: usize = payload.iter().map(Bytes::len).sum();
         // App-limited when nothing remains queued after this write: the
         // delivery-rate sample reflects our supply, not the path, so BBR may
         // only let it raise BtlBw, never lower it.
@@ -78,21 +87,33 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<ServerDataPacket>> 
 
         // The wire packet is one super-segment (TSO) or one MSS packet, but the
         // retransmit/SACK/BBR scoreboard always tracks per-MSS segments so a
-        // loss inside a super-segment is recovered at MSS granularity.
-        let data_packet = if state.gso_enabled && payload_len > max_payload_per_segment {
-            let (bytes, vnet) = build_gso_flow_packet(
+        // loss inside a super-segment is recovered at MSS granularity. Only the
+        // IP/TCP header is built here; the payload chunks are carried by
+        // reference (the same owned `Bytes` upstream produced) and written
+        // vectored — never coalesced into a contiguous buffer.
+        let (header, vnet) = if state.gso_enabled && payload_len > max_payload_per_segment {
+            // Partial (TSO) checksum needs only the length; the kernel finalises
+            // each MSS segment, so the payload bytes are never read here.
+            let (header, vnet) = build_gso_flow_header(
                 state,
                 sequence_number,
                 acknowledgement_number,
                 flags,
                 max_payload_per_segment as u16,
-                &payload,
+                payload_len,
             )?;
-            ServerDataPacket { bytes, vnet: Some(vnet) }
+            (header, Some(vnet))
         } else {
-            let bytes =
-                build_flow_packet(state, sequence_number, acknowledgement_number, flags, &payload)?;
-            ServerDataPacket::single(bytes)
+            // Full checksum folds the payload chunks in order without copying.
+            let parts: Vec<&[u8]> = payload.iter().map(Bytes::as_ref).collect();
+            let header = build_flow_data_header(
+                state,
+                sequence_number,
+                acknowledgement_number,
+                flags,
+                &parts,
+            )?;
+            (header, None)
         };
         push_unacked_segments(
             state,
@@ -109,7 +130,7 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<ServerDataPacket>> 
             state.bbr.pacing_credit = state.bbr.pacing_credit.saturating_sub(payload_len as u64);
         }
         reset_zero_window_persist(state);
-        packets.push(data_packet);
+        packets.push(ServerDataPacket { header, payload, vnet });
         available_window =
             send_window_remaining(state).min(congestion_window_remaining(state) as u32);
     }
@@ -117,22 +138,16 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<ServerDataPacket>> 
     Ok(packets)
 }
 
-/// Take up to `target` bytes off the pending downlink queue as one buffer. Fast
-/// path (the first chunk already covers `target`) is a zero-copy `split_to`;
-/// otherwise chunks are coalesced into one allocation for a TSO super-segment.
-fn take_pending_server_payload(state: &mut TcpFlowState, target: usize) -> Bytes {
-    if let Some(front) = state.pending_server_data.front_mut()
-        && front.len() >= target
-    {
-        let payload = front.split_to(target);
-        if front.is_empty() {
-            state.pending_server_data.pop_front();
-        }
-        state.pending_server_bytes_total -= payload.len();
-        return payload;
-    }
-    let mut buffer = Vec::with_capacity(target);
-    while buffer.len() < target {
+/// Take up to `target` bytes off the pending downlink queue as a list of
+/// zero-copy `Bytes` chunks — each a `split_to` slice of a queued buffer, never
+/// a copy. One chunk on the fast path (the first buffer covers `target`);
+/// several when a TSO super-segment spans multiple upstream reads. Capped at
+/// [`MAX_WRITE_PAYLOAD_CHUNKS`] so the vectored write stays well under
+/// `IOV_MAX`; hitting the cap just emits a shorter super-segment.
+fn take_pending_server_payload(state: &mut TcpFlowState, target: usize) -> Vec<Bytes> {
+    let mut chunks = Vec::new();
+    let mut collected = 0;
+    while collected < target && chunks.len() < MAX_WRITE_PAYLOAD_CHUNKS {
         let Some(front) = state.pending_server_data.front_mut() else {
             break;
         };
@@ -140,43 +155,47 @@ fn take_pending_server_payload(state: &mut TcpFlowState, target: usize) -> Bytes
             state.pending_server_data.pop_front();
             continue;
         }
-        let take = front.len().min(target - buffer.len());
-        buffer.extend_from_slice(&front[..take]);
-        let _ = front.split_to(take);
+        let take = front.len().min(target - collected);
+        let piece = front.split_to(take);
         if front.is_empty() {
             state.pending_server_data.pop_front();
         }
+        collected += take;
         state.pending_server_bytes_total -= take;
+        chunks.push(piece);
     }
-    Bytes::from(buffer)
+    chunks
 }
 
-/// Register the just-sent `payload` on the retransmit scoreboard as per-MSS
-/// segments (so a hole inside a TSO super-segment is retransmitted at MSS
-/// granularity). `payload` is sliced zero-copy. All segments share the send
-/// instant and delivered snapshot — they left the stack in one write.
+/// Register the just-sent payload `chunks` on the retransmit scoreboard as
+/// per-MSS segments (so a hole inside a TSO super-segment is retransmitted at
+/// MSS granularity). Each segment's payload is a [`slice_chunks`] view — a
+/// zero-copy `Bytes::slice` unless the MSS boundary straddles a chunk boundary.
+/// All segments share the send instant and delivered snapshot — they left the
+/// stack in one write.
 #[allow(clippy::too_many_arguments)]
 fn push_unacked_segments(
     state: &mut TcpFlowState,
     start_sequence: u32,
     acknowledgement_number: u32,
     flags: u8,
-    payload: &Bytes,
+    chunks: &[Bytes],
     mss: usize,
     app_limited: bool,
 ) {
     let sent_at = Instant::now();
     let delivered_snapshot = state.bbr.delivered;
+    let total: usize = chunks.iter().map(Bytes::len).sum();
     let mut offset = 0;
     let mut sequence_number = start_sequence;
-    while offset < payload.len() {
-        let end = (offset + mss).min(payload.len());
+    while offset < total {
+        let end = (offset + mss).min(total);
         let segment_len = (end - offset) as u32;
         state.unacked_server_segments.push_back(ServerSegment {
             sequence_number,
             acknowledgement_number,
             flags,
-            payload: payload.slice(offset..end),
+            payload: slice_chunks(chunks, offset, end),
             last_sent: sent_at,
             first_sent: sent_at,
             retransmits: 0,
@@ -188,6 +207,38 @@ fn push_unacked_segments(
         sequence_number = sequence_number.wrapping_add(segment_len);
         offset = end;
     }
+}
+
+/// The `[start, end)` byte range of the logical payload formed by concatenating
+/// `chunks`, returned as a single `Bytes`. Zero-copy (`Bytes::slice`) when the
+/// range lies within one chunk; only a segment straddling a chunk boundary is
+/// copied — roughly one per upstream read, not one per MSS segment. Callers
+/// guarantee `start < end <= sum(chunk lengths)`.
+fn slice_chunks(chunks: &[Bytes], start: usize, end: usize) -> Bytes {
+    let mut pos = 0;
+    let mut idx = 0;
+    // Advance to the chunk containing `start` (`pos` = its start offset).
+    while pos + chunks[idx].len() <= start {
+        pos += chunks[idx].len();
+        idx += 1;
+    }
+    let local_start = start - pos;
+    if end <= pos + chunks[idx].len() {
+        return chunks[idx].slice(local_start..end - pos);
+    }
+    // The range straddles a chunk boundary: copy it out contiguous.
+    let mut buffer = BytesMut::with_capacity(end - start);
+    buffer.extend_from_slice(&chunks[idx][local_start..]);
+    pos += chunks[idx].len();
+    idx += 1;
+    while pos < end {
+        let chunk = &chunks[idx];
+        let take = (end - pos).min(chunk.len());
+        buffer.extend_from_slice(&chunk[..take]);
+        pos += chunk.len();
+        idx += 1;
+    }
+    buffer.freeze()
 }
 
 pub(in crate::tcp) fn flush_server_output(state: &mut TcpFlowState) -> Result<ServerFlush> {

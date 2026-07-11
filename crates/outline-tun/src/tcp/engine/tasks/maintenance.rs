@@ -120,6 +120,38 @@ impl TunTcpEngine {
                                 // this flow (e.g., back-to-back retransmissions).
                                 state = flow.lock().await;
                             },
+                            Ok(FlowMaintenancePlan::SendDataPacket {
+                                packet,
+                                packet_metric,
+                                event,
+                            }) => {
+                                let ip_family = ip_family_from_version(key.version);
+                                drop(state);
+                                if let Err(error) = engine
+                                    .inner
+                                    .writer
+                                    .write_data_packet(&packet.header, &packet.payload, packet.vnet)
+                                    .await
+                                {
+                                    warn!(
+                                        error = %format!("{error:#}"),
+                                        "failed to write maintenance TUN TCP packet"
+                                    );
+                                    engine.close_flow(&key, "write_tun_error").await;
+                                    continue 'flows;
+                                }
+                                let (group_name, uplink_name) =
+                                    super::super::key_group_and_uplink(&flow).await;
+                                metrics::record_tun_tcp_event(&group_name, &uplink_name, event);
+                                metrics::record_tun_packet(
+                                    "upstream_to_tun",
+                                    ip_family,
+                                    packet_metric,
+                                );
+                                // Re-acquire lock to process the next action for
+                                // this flow (e.g., back-to-back retransmissions).
+                                state = flow.lock().await;
+                            },
                             Ok(FlowMaintenancePlan::FlushServer(flush)) => {
                                 // BBR pacer released credit for queued downlink
                                 // data; ship it like the inbound path does.

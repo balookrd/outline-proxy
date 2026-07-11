@@ -7,8 +7,8 @@ use super::super::congestion::{
     current_retransmission_timeout, fast_retransmit_index, preferred_retransmit_index,
     server_segment_is_sacked,
 };
-use super::super::packets::{build_flow_ack_packet, build_flow_packet};
-use super::super::types::{TcpFlowState, TcpFlowStatus};
+use super::super::packets::{build_flow_ack_packet, build_flow_data_header};
+use super::super::types::{ServerDataPacket, TcpFlowState, TcpFlowStatus};
 
 /// True when the flow is quiet enough that a keepalive probe is safe
 /// and useful: fully established, no data to send or in-flight.
@@ -61,7 +61,7 @@ pub(in crate::tcp) fn maybe_emit_keepalive_probe(
 
 pub(in crate::tcp) fn retransmit_oldest_unacked_packet(
     state: &mut TcpFlowState,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<ServerDataPacket>> {
     let index = fast_retransmit_index(state);
     let Some(index) = index else {
         return Ok(None);
@@ -79,19 +79,29 @@ pub(in crate::tcp) fn retransmit_oldest_unacked_packet(
             segment.sequence_number,
             segment.acknowledgement_number,
             segment.flags,
+            // Zero-copy: the scoreboard's owned `Bytes` is written vectored, not
+            // copied into the packet.
             segment.payload.clone(),
         )
     };
-    Ok(Some(build_flow_packet(
+    // A retransmit is always a single MSS segment, never a TSO super-segment.
+    let header = build_flow_data_header(
         state,
         sequence_number,
         state.rcv_nxt.max(acknowledgement_number),
         flags,
-        &payload,
-    )?))
+        &[payload.as_ref()],
+    )?;
+    Ok(Some(ServerDataPacket {
+        header,
+        payload: vec![payload],
+        vnet: None,
+    }))
 }
 
-pub(in crate::tcp) fn retransmit_due_segment(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
+pub(in crate::tcp) fn retransmit_due_segment(
+    state: &mut TcpFlowState,
+) -> Result<Option<ServerDataPacket>> {
     let Some(index) = preferred_retransmit_index(state)
         .filter(|index| {
             state.unacked_server_segments[*index].last_sent.elapsed()
@@ -120,11 +130,16 @@ pub(in crate::tcp) fn retransmit_due_segment(state: &mut TcpFlowState) -> Result
             segment.payload.clone(),
         )
     };
-    Ok(Some(build_flow_packet(
+    let header = build_flow_data_header(
         state,
         sequence_number,
         state.rcv_nxt.max(acknowledgement_number),
         flags,
-        &payload,
-    )?))
+        &[payload.as_ref()],
+    )?;
+    Ok(Some(ServerDataPacket {
+        header,
+        payload: vec![payload],
+        vnet: None,
+    }))
 }
