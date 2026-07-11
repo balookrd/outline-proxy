@@ -436,6 +436,130 @@ async fn vless_udp_mux_resets_downgrade_latch_after_recovery_dial() {
     assert!(mux.downgrade_latch_for_test());
 }
 
+// ── VLESS-UDP durable cross-node resume ───────────────────────────────────────
+//
+// A VLESS-UDP session keeps each target's server-issued Session ID in the
+// process-wide `global_vless_udp_resume_cache`, keyed by `<scope>#<target>`, so
+// the id survives the mux being re-created when the active UDP wire moves to
+// another edge. The id carries the session's home shard, so the new edge relays
+// the resumed carrier home. This mock captures the `X-Outline-Resume` id each
+// dial presents and issues a fixed `X-Outline-Session`, so the test can prove a
+// fresh mux with the same scope re-presents the durable id — the client half of
+// cross-node VLESS-UDP migration.
+
+#[cfg(feature = "metrics")]
+async fn serve_h2_resume_capture_connection(
+    stream: TcpStream,
+    captured_resume: Arc<parking_lot::Mutex<Vec<Option<String>>>>,
+    issued_session_hex: &'static str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut builder = hyper_http2::Builder::new(TokioExecutor::new());
+    builder.enable_connect_protocol();
+    builder
+        .serve_connection(
+            TokioIo::new(stream),
+            service_fn(move |req: Request<Incoming>| {
+                let captured = Arc::clone(&captured_resume);
+                async move {
+                    let presented = req
+                        .headers()
+                        .get(crate::resumption::RESUME_REQUEST_HEADER)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    captured.lock().push(presented);
+
+                    let on_upgrade = hyper::upgrade::on(req);
+                    tokio::spawn(async move {
+                        if let Ok(upgraded) = on_upgrade.await {
+                            let _upgraded = upgraded;
+                            std::future::pending::<()>().await;
+                        }
+                    });
+
+                    let mut response = Response::new(Empty::<Bytes>::new());
+                    response.headers_mut().insert(
+                        crate::resumption::SESSION_RESPONSE_HEADER,
+                        http::HeaderValue::from_static(issued_session_hex),
+                    );
+                    Ok::<_, hyper::Error>(response)
+                }
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// A fresh mux with the same resume scope re-presents the durable per-target
+/// Session ID issued to a previous mux — the mechanism that lets a VLESS-UDP
+/// session migrate to a new edge (the fresh mux is what the manager builds for
+/// the new active UDP wire). The first (cold-cache) dial presents no id; the
+/// second mux presents the id the first stored.
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn vless_udp_mux_re_presents_durable_resume_id_across_recreation() {
+    use crate::vless::VlessUdpSessionMux;
+    use socks5_proto::TargetAddr;
+    use std::net::Ipv4Addr;
+
+    // Fixed id the mock issues on every dial's WS-upgrade response.
+    const ISSUED_HEX: &str = "0102030405060708090a0b0c0d0e0f10";
+    // Scope + target unique to this test — the durable cache is a process-wide
+    // singleton shared across the whole test binary.
+    const SCOPE: &str = "phaseb-durable-resume-scope";
+    let target = TargetAddr::IpV4(Ipv4Addr::new(127, 0, 0, 1), 4711);
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(parking_lot::Mutex::new(Vec::<Option<String>>::new()));
+    let recorder = Arc::clone(&captured);
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => break,
+            };
+            let recorder = Arc::clone(&recorder);
+            tokio::spawn(async move {
+                let _ = serve_h2_resume_capture_connection(stream, recorder, ISSUED_HEX).await;
+            });
+        }
+    });
+    let url = Url::parse(&format!("ws://{addr}/vless-udp-resume")).unwrap();
+
+    let make_mux = || {
+        VlessUdpSessionMux::new(
+            Arc::new(DnsCache::default()),
+            url.clone(),
+            TransportMode::WsH2,
+            [0u8; 16],
+            None,
+            false,
+            "test_vless_durable_resume",
+            None,
+        )
+        .with_resume_scope(SCOPE)
+    };
+
+    // Mux #1 (cold durable cache): the dial presents no resume id and stores the
+    // issued id under `<scope>#<target>`.
+    let mux1 = make_mux();
+    mux1.session_for(&target).await.expect("first dial succeeds");
+
+    // Mux #2 (fresh instance = the manager rebuilding the mux on an edge switch):
+    // the dial must re-present the durable id issued to mux #1.
+    let mux2 = make_mux();
+    mux2.session_for(&target).await.expect("second dial succeeds");
+
+    let cap = captured.lock();
+    assert_eq!(cap.len(), 2, "each mux dialed exactly once");
+    assert_eq!(cap[0], None, "first dial (cold durable cache) presents no resume id");
+    assert_eq!(
+        cap[1].as_deref(),
+        Some(ISSUED_HEX),
+        "the second mux re-presents the durable per-target id issued to the first",
+    );
+}
+
 // ── Ack-Prefix Protocol v1 capability negotiation ─────────────────────────────
 //
 // These tests cover the request-side advertise + response-side echo glue
