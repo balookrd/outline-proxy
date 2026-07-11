@@ -230,12 +230,16 @@ async fn weighted_rotate_avoids_flaky_wire_but_not_entirely() {
     assert!(tcp_hits[0] > 0, "but the floor keeps the flaky wire reachable: {tcp_hits:?}");
 }
 
-/// `shared_resume` scopes the resume-cache key to the group name, so every
-/// uplink in a mesh-cluster group presents one `X-Outline-Resume` id and a
-/// session survives an edge switch. Off (the default) keeps the per-uplink
-/// scope so independent servers never cross-resume.
+/// `shared_resume` scopes the **TCP** resume-cache key to the group name, so
+/// every uplink in a mesh-cluster group presents one `X-Outline-Resume` id and a
+/// TCP session survives an edge switch. Off (the default) keeps the per-uplink
+/// scope so independent servers never cross-resume. **UDP is always per-uplink**,
+/// even under `shared_resume`: a group-shared UDP id carries a fixed home shard,
+/// and when the rotating UDP wire lands on a non-home edge the server relays the
+/// datagrams over the mesh — a path the SS-UDP leg drops on. Keeping UDP
+/// per-uplink makes every UDP wire resolve Local (no relay), mirroring VLESS-UDP.
 #[test]
-fn shared_resume_scopes_the_resume_key_to_the_group() {
+fn shared_resume_scopes_the_tcp_resume_key_to_the_group_but_not_udp() {
     let uplink = three_wire_uplink(); // name = "up"
 
     let per_uplink =
@@ -250,6 +254,7 @@ fn shared_resume_scopes_the_resume_key_to_the_group() {
         LoadBalancingConfig { shared_resume: true, ..lb(false) },
     )
     .unwrap();
+    // TCP shares the group scope; UDP stays per-uplink to avoid the mesh relay.
     assert_eq!(shared.resume_cache_key_for("up", "tcp"), "cluster-a#tcp");
-    assert_eq!(shared.resume_cache_key_for("edge-b", "udp"), "cluster-a#udp");
+    assert_eq!(shared.resume_cache_key_for("edge-b", "udp"), "edge-b#udp");
 }
