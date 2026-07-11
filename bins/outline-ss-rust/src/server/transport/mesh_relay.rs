@@ -613,6 +613,26 @@ async fn handle_mesh_connection(
     }
 }
 
+/// Logs a one-shot diagnostic when a relayed carrier resolves to an empty route
+/// table on the home. Every stream/datagram on an empty route fails
+/// authentication (no configured key matches) and is dropped, so without this a
+/// home/edge path- or carrier-table mismatch is a silent black hole — the exact
+/// failure the SS-UDP relay hit. Only reachable under an asymmetric cluster
+/// config; a symmetric cluster (shared PSK + matching config, the supported
+/// topology) always resolves the path. Fires once per relayed session, not per
+/// datagram, so it stays low-noise.
+fn warn_if_empty_relayed_route(is_empty: bool, carrier: CarrierKind, path: &str) {
+    if is_empty {
+        warn!(
+            ?carrier,
+            path,
+            "relayed carrier resolved to an empty route on the home; every packet will fail \
+             authentication and be dropped — check that this home serves the edge's path and \
+             carrier (cluster config must be symmetric)"
+        );
+    }
+}
+
 /// Dispatches one relayed carrier into the matching accept path.
 async fn serve_relayed(
     header: OpenHeader,
@@ -673,6 +693,7 @@ async fn serve_relayed(
                 };
                 map.get(&*path).cloned().unwrap_or_else(empty_transport_route)
             };
+            warn_if_empty_relayed_route(route.users.is_empty(), header.carrier, &path);
             let route_ctx = WsTcpRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
@@ -701,6 +722,7 @@ async fn serve_relayed(
                 };
                 map.get(&*path).cloned().unwrap_or_else(empty_vless_transport_route)
             };
+            warn_if_empty_relayed_route(route.users.is_empty(), header.carrier, &path);
             let route_ctx = VlessWsRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
@@ -728,6 +750,7 @@ async fn serve_relayed(
                 };
                 map.get(&*path).cloned().unwrap_or_else(empty_transport_route)
             };
+            warn_if_empty_relayed_route(route.users.is_empty(), header.carrier, &path);
             let route_ctx = Arc::new(UdpRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,

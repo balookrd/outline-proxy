@@ -220,6 +220,7 @@ async fn deduplicates_concurrent_nat_entry_creation() -> Result<()> {
         user_id: user.id_arc(),
         fwmark: None,
         target: SocketAddr::from((Ipv4Addr::LOCALHOST, 5300)),
+        scope: None,
     };
 
     let mut tasks = Vec::new();
@@ -306,6 +307,7 @@ async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
             user_id: user.id_arc(),
             fwmark: None,
             target: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+            scope: None,
         };
         nat_table
             .get_or_create(key, &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
@@ -318,6 +320,7 @@ async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
         user_id: user.id_arc(),
         fwmark: None,
         target: SocketAddr::from((Ipv4Addr::LOCALHOST, 6003)),
+        scope: None,
     };
     let rejected = nat_table
         .get_or_create(overflow_key, &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
@@ -330,6 +333,7 @@ async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
         user_id: user.id_arc(),
         fwmark: None,
         target: SocketAddr::from((Ipv4Addr::LOCALHOST, 6001)),
+        scope: None,
     };
     nat_table
         .get_or_create(live_key, &user, UdpCipherMode::Legacy, Arc::clone(&metrics))

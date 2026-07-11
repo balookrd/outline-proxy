@@ -1,7 +1,9 @@
 //! Process-wide UDP NAT table for sharing socket state across client sessions.
 //!
 //! Instead of creating a new ephemeral UDP socket per incoming datagram, the NAT
-//! table maintains a persistent socket per `(user_id, fwmark, target_addr)` triple.
+//! table maintains a persistent socket per `(user_id, fwmark, target_addr)` triple,
+//! optionally narrowed by a per-session `scope` (see [`NatKey`]) so two concurrent
+//! resumable sessions to the same target do not share one response slot.
 //! This gives:
 //!
 //! - A stable source port for the lifetime of the NAT entry, which is required by
@@ -19,7 +21,7 @@ mod entry;
 mod reader;
 mod table;
 
-pub(crate) use entry::{NatKey, ResponseSender, UdpResponseSender};
+pub(crate) use entry::{NatKey, NatScope, ResponseSender, UdpResponseSender};
 pub(crate) use table::{NatTable, bind_nat_udp_socket};
 
 #[cfg(test)]
