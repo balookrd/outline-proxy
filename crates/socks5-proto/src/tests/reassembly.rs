@@ -25,7 +25,33 @@ fn udp_fragment_reassembly_round_trip() {
     let reassembled = reassembler.push_fragment(parsed).unwrap().unwrap();
 
     assert_eq!(reassembled.target, target);
-    assert_eq!(reassembled.payload, b"hello");
+    assert_eq!(reassembled.addr_len, target.to_wire_bytes().unwrap().len());
+    assert_eq!(
+        &reassembled.payload[..reassembled.addr_len],
+        &target.to_wire_bytes().unwrap()[..]
+    );
+    assert_eq!(&reassembled.payload[reassembled.addr_len..], b"hello");
+    // Concatenated fragments own their reassembled body.
+    assert!(matches!(reassembled.payload, std::borrow::Cow::Owned(_)));
+}
+
+#[test]
+fn non_fragmented_packet_borrows_body_without_copy() {
+    let mut reassembler = UdpFragmentReassembler::default();
+    let target = TargetAddr::IpV4(Ipv4Addr::new(1, 2, 3, 4), 443);
+
+    let mut packet = vec![0, 0, 0];
+    packet.extend_from_slice(&target.to_wire_bytes().unwrap());
+    packet.extend_from_slice(b"payload-bytes");
+    let parsed = parse_udp_request(&packet).unwrap();
+    let reassembled = reassembler.push_fragment(parsed).unwrap().unwrap();
+
+    // Zero-copy: the Shadowsocks body is borrowed straight from `packet[3..]`,
+    // not copied or re-serialised.
+    assert!(matches!(reassembled.payload, std::borrow::Cow::Borrowed(_)));
+    assert_eq!(reassembled.target, target);
+    assert_eq!(&reassembled.payload[..], &packet[3..]);
+    assert_eq!(&reassembled.payload[reassembled.addr_len..], b"payload-bytes");
 }
 
 #[test]
@@ -58,7 +84,7 @@ fn udp_fragment_reassembly_rejects_oversized_sequence() {
     packet.extend_from_slice(b"ok");
     let parsed = parse_udp_request(&packet).unwrap();
     let reassembled = reassembler.push_fragment(parsed).unwrap().unwrap();
-    assert_eq!(reassembled.payload, b"ok");
+    assert_eq!(&reassembled.payload[reassembled.addr_len..], b"ok");
 }
 
 #[test]
@@ -78,5 +104,5 @@ fn udp_fragment_reassembly_resets_on_lower_fragment_number() {
     let parsed = parse_udp_request(&packet).unwrap();
     let reassembled = reassembler.push_fragment(parsed).unwrap().unwrap();
 
-    assert_eq!(reassembled.payload, b"fresh");
+    assert_eq!(&reassembled.payload[reassembled.addr_len..], b"fresh");
 }

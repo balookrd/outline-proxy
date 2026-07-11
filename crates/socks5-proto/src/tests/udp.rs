@@ -10,6 +10,12 @@ fn socks5_udp_packet_round_trip() {
     assert_eq!(parsed.fragment, 0);
     assert_eq!(parsed.target, target);
     assert_eq!(parsed.payload, b"hello");
+    // body is addr_wire || data, contiguous.
+    assert_eq!(
+        &parsed.body[..parsed.body.len() - parsed.payload.len()],
+        &target.to_wire_bytes().unwrap()[..]
+    );
+    assert_eq!(&parsed.body[parsed.body.len() - parsed.payload.len()..], b"hello");
 }
 
 #[tokio::test]
@@ -24,5 +30,6 @@ async fn socks5_udp_in_tcp_packet_round_trip() {
     let packet = read_udp_tcp_packet(&mut reader).await.unwrap().unwrap();
     send.await.unwrap();
     assert_eq!(packet.target, TargetAddr::Domain("example.com".to_string(), 53));
-    assert_eq!(packet.payload, b"hello");
+    assert_eq!(&packet.body[packet.addr_len..], b"hello");
+    assert_eq!(&packet.body[..packet.addr_len], &packet.target.to_wire_bytes().unwrap()[..]);
 }
