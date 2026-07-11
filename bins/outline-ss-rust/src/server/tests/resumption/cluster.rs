@@ -22,7 +22,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use arc_swap::ArcSwap;
 use axum::http::{Method, Request, StatusCode, Version, header};
 use bytes::BytesMut;
@@ -68,7 +68,10 @@ use super::super::{
 };
 use super::ss::ss_handshake_frame;
 use super::vless::vless_udp_request;
-use super::{connect_ws_h1, expect_binary_reply, spawn_echo_target, spawn_echo_udp_target};
+use super::{
+    connect_ws_h1, expect_binary_reply, spawn_delayed_echo_udp_target, spawn_echo_target,
+    spawn_echo_udp_target,
+};
 use crate::config::{CipherKind, ClusterConfig, ClusterPsk, H3Alpn, PaddingConfig};
 use crate::crypto::{
     AeadStreamDecryptor, AeadStreamEncryptor, UserKey, decrypt_udp_packet, encrypt_udp_packet,
@@ -952,6 +955,147 @@ async fn cluster_udp_survives_edge_switch() -> Result<()> {
         "resume across the edge switch must reuse the parked NAT entry (one upstream source)"
     );
     sock_b.close(None).await?;
+    Ok(())
+}
+
+/// Two *concurrent* SS-UDP sessions from the same user to the same target —
+/// each relayed through a different edge to the same home — must not steal each
+/// other's upstream responses. This is the mesh trigger for the shared
+/// process-wide NAT's last-writer-wins response slot: the home keys a NAT entry
+/// on `(user, fwmark, target)` only, so a second live carrier for the same
+/// triple overwrites the first's `UdpResponseSender`, and the shared reader then
+/// misroutes the first session's echo to the second (or drops it). VLESS-UDP is
+/// immune because each session owns a dedicated socket + reader.
+///
+/// The reproduction is made deterministic by a delayed-echo target: carrier A's
+/// datagram is held upstream while carrier B connects and registers, so A's echo
+/// arrives *after* B has taken the shared response slot. Correct behaviour: A
+/// still receives its own echo. Buggy behaviour: A times out (its echo went to
+/// B). Uses two distinct home-shard resume ids so B is a genuinely separate
+/// session, not a resume of A.
+#[tokio::test]
+async fn cluster_udp_concurrent_carriers_do_not_share_response_slot() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-collision-psk";
+    // Hold each datagram upstream long enough for the second carrier to register
+    // before the first carrier's echo comes back.
+    let target_addr = spawn_delayed_echo_udp_target(Duration::from_millis(500)).await?;
+
+    // Home owns shard 1; two edges (shards 2, 3) relay /udp to it.
+    let (home, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(8), None, None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge_a, _) =
+        spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(8), None, None).await?;
+    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(8), None, None).await?;
+
+    // Two DISTINCT home-shard sessions (not a resume of one another): both route
+    // to the home, but each is its own carrier.
+    let session_a = resume_id_for_shard(PSK, 1)?;
+    let session_b = resume_id_for_shard(PSK, 1)?;
+    assert_ne!(session_a, session_b, "the two sessions must be distinct");
+
+    // Carrier A: register a NAT responder for `target_addr`, then send a datagram
+    // whose echo the target will hold for 500 ms.
+    let (mut sock_a, _) = connect_ws_h1(edge_a.listen_addr, "/udp", Some(session_a), true).await?;
+    let mut plaintext_a = TargetAddr::from(target_addr).to_wire_bytes()?;
+    plaintext_a.extend_from_slice(b"carrier-a-datagram");
+    sock_a
+        .send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext_a)?.into()))
+        .await?;
+
+    // Give A's datagram time to reach the home, create the NAT entry and be
+    // forwarded upstream (its echo is now pending in the target's delay).
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Carrier B: a second, concurrent session to the SAME (user, target). On the
+    // buggy shared NAT it overwrites A's response slot on the home. B does not
+    // send afterward, so the slot stays pointed at B when A's echo returns.
+    let (mut sock_b, _) = connect_ws_h1(edge_b.listen_addr, "/udp", Some(session_b), true).await?;
+    let mut plaintext_b = TargetAddr::from(target_addr).to_wire_bytes()?;
+    plaintext_b.extend_from_slice(b"carrier-b-datagram");
+    sock_b
+        .send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext_b)?.into()))
+        .await?;
+
+    // A's echo must come back to A — not be misrouted to B because B overwrote
+    // the shared last-writer-wins response slot.
+    let reply = expect_binary_reply(&mut sock_a)
+        .await
+        .context("carrier A never received its echo (misrouted to carrier B's stream)")?;
+    let decoded = decrypt_udp_packet(std::slice::from_ref(&user), &reply)?;
+    assert!(
+        decoded.payload.ends_with(b"carrier-a-datagram"),
+        "carrier A must receive its own echo, not carrier B's traffic",
+    );
+
+    sock_a.close(None).await?;
+    sock_b.close(None).await?;
+    Ok(())
+}
+
+/// A relayed SS-UDP carrier whose home does not serve the edge's path resolves
+/// to an *empty* route table, so every datagram fails authentication and is
+/// dropped. The home keys the relayed user lookup on the edge-supplied
+/// `header.path`, so any home/edge path- or carrier-table mismatch is a silent
+/// black hole (bug #2). This documents that failure mode — now made diagnosable
+/// by `warn_if_empty_relayed_route` — and guards against a future change that
+/// would silently weaken path scoping. Only reachable under an asymmetric
+/// cluster config; a symmetric cluster (matching config, the supported topology)
+/// always resolves the path, as `cluster_udp_relays_datagrams_to_home` and
+/// `cluster_udp_xhttp_relays_to_home` cover across the `udp` and `xhttp_ss_udp`
+/// tables respectively.
+#[tokio::test]
+async fn cluster_udp_relay_drops_when_home_lacks_the_path() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-emptyroute-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+
+    // Build the home's cluster parts, then blank its `udp` route table so the
+    // relayed carrier resolves to no users — an asymmetric-config home. Only the
+    // mesh listener is needed (the client dials the edge, not the home's WS).
+    let home =
+        build_cluster_parts(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None, None)?;
+    {
+        let snap = home.routes.load();
+        home.routes.store(Arc::new(RouteRegistry {
+            tcp: Arc::clone(&snap.tcp),
+            udp: Arc::new(BTreeMap::new()),
+            vless: Arc::clone(&snap.vless),
+            xhttp_vless: Arc::clone(&snap.xhttp_vless),
+            xhttp_ss: Arc::clone(&snap.xhttp_ss),
+            xhttp_ss_udp: Arc::clone(&snap.xhttp_ss_udp),
+        }));
+    }
+    let mesh_addr = home.mesh_addr;
+    let user = home.user.clone();
+    let _home_mesh = tokio::spawn(run_mesh_listener(
+        home.cluster,
+        home.services,
+        home.routes,
+        ShutdownSignal::never(),
+    ));
+
+    // Edge serves /udp normally and relays a shard-1 resume to the home.
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), mesh_addr)]);
+    let (edge, _) = spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), None, None).await?;
+
+    let session_id = resume_id_for_shard(PSK, 1)?;
+    let (mut socket, _) = connect_ws_h1(edge.listen_addr, "/udp", Some(session_id), true).await?;
+
+    let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
+    plaintext.extend_from_slice(b"into-the-void");
+    socket
+        .send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext)?.into()))
+        .await?;
+
+    // The home has no /udp users, so the datagram never authenticates and no echo
+    // returns — the drop bug #2 describes.
+    let reply = expect_binary_reply(&mut socket).await;
+    assert!(
+        reply.is_err(),
+        "a relayed datagram to a home lacking the path must be dropped, got {reply:?}",
+    );
+
+    socket.close(None).await?;
     Ok(())
 }
 

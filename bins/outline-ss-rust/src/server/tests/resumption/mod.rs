@@ -80,6 +80,29 @@ async fn spawn_echo_udp_target()
     Ok((addr, sources))
 }
 
+/// Spins up a UDP echo server that holds each datagram for `delay`
+/// before echoing it back to its source. The delay opens a
+/// deterministic window in which a *second* client carrier can register
+/// against the same NAT entry before the first carrier's response
+/// arrives — exactly the interleaving the shared-NAT last-writer-wins
+/// slot misroutes. Used by the concurrent-carrier collision test.
+async fn spawn_delayed_echo_udp_target(delay: Duration) -> Result<SocketAddr> {
+    let socket = Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?);
+    let addr = socket.local_addr()?;
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        while let Ok((n, src)) = socket.recv_from(&mut buf).await {
+            let datagram = buf[..n].to_vec();
+            let socket = Arc::clone(&socket);
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                let _ = socket.send_to(&datagram, src).await;
+            });
+        }
+    });
+    Ok(addr)
+}
+
 /// Spins up a TCP echo server on a random localhost port and returns
 /// `(addr, accept_counter)`. Each successful `accept` bumps the
 /// counter before forking off the per-connection echo loop.
