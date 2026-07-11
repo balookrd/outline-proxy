@@ -11,11 +11,23 @@ use outline_transport::{
 use crate::config::{SsPathKind, UplinkTransport};
 use crate::error_classify::StandbyProbeExpected;
 use crate::probe::is_expected_standby_probe_failure;
+use crate::types::TransportKind;
 use outline_transport::collections::maybe_shrink_vecdeque;
 
 use super::ctx::{STANDBY_WS_PEEK_TIMEOUT, StandbyCtx};
 
 impl<'a> StandbyCtx<'a> {
+    /// The combined-SS path discriminator (`SsPathKind`) this pool's dials must
+    /// carry: the UDP pool dials the UDP leg, the TCP pool the TCP leg. Keeping
+    /// them apart is load-bearing on a combined-SS uplink — see the call site in
+    /// [`Self::refill`].
+    fn pool_ss_leg(&self) -> SsPathKind {
+        match self.transport {
+            TransportKind::Tcp => SsPathKind::Tcp,
+            TransportKind::Udp => SsPathKind::Udp,
+        }
+    }
+
     /// Drains the pool, peeks each entry for liveness, and writes survivors
     /// back. Entries that slipped in as Http1 fallbacks under H2/H3 are
     /// evicted unconditionally (they each own a distinct TCP socket, so
@@ -148,7 +160,15 @@ impl<'a> StandbyCtx<'a> {
                             fwmark: self.uplink.fwmark,
                             ipv6_first: self.uplink.ipv6_first,
                         })
-                        .with_combined_ss_kind(self.uplink.combined_ss_kind(SsPathKind::Tcp)),
+                        // The combined-SS discriminator (the hidden tcp/udp bit in the
+                        // session-id / WS token) must match THIS pool's leg. A UDP
+                        // standby stream dialed with the TCP token lands on the server's
+                        // SS-TCP relay, so `acquire_udp_standby_or_connect` reusing it for
+                        // a datagram session feeds every packet into the TCP decryptor and
+                        // the echo never returns — combined-SS UDP looks dead while
+                        // VLESS-UDP (no pool) keeps working. Split-path uplinks are
+                        // unaffected (`combined_ss_kind` is `None` regardless of leg).
+                        .with_combined_ss_kind(self.uplink.combined_ss_kind(self.pool_ss_leg())),
                 ),
             )
             .await
