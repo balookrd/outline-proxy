@@ -96,7 +96,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
                         send_udp_direct(
                             &direct_socket_uplink,
                             &packet.target,
-                            &packet.payload,
+                            &packet.body[packet.addr_len..],
                             &dns_cache_uplink,
                         )
                         .await?;
@@ -105,12 +105,12 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
                     UdpPacketRoute::Tunnel(name) => name,
                 };
 
-                let mut payload = packet.target.to_wire_bytes()?;
-                payload.extend_from_slice(&packet.payload);
-                if payload.len() > MAX_CLIENT_UDP_PACKET_SIZE {
+                // `packet.body` is the Shadowsocks body `addr_wire || data`, read
+                // into one contiguous buffer — forwarded without a rebuild.
+                if packet.body.len() > MAX_CLIENT_UDP_PACKET_SIZE {
                     warn!(
                         target = %packet.target,
-                        payload_len = payload.len(),
+                        payload_len = packet.body.len(),
                         limit = MAX_CLIENT_UDP_PACKET_SIZE,
                         "dropping oversized incoming UDP-in-TCP packet"
                     );
@@ -126,7 +126,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
                     Some(&client_id),
                 )
                 .await?;
-                send_tunneled_udp(&ctx, Some(&packet.target), &payload).await?;
+                send_tunneled_udp(&ctx, Some(&packet.target), &packet.body).await?;
             }
             Ok::<(), anyhow::Error>(())
         };
