@@ -513,10 +513,7 @@ unsafe fn apply_mask_altivec(data: &mut [u8], mask: [u8; 4]) {
 }
 
 /// PowerPC AltiVec implementation (nightly only)
-#[cfg(all(
-    any(target_arch = "powerpc", target_arch = "powerpc64"),
-    feature = "nightly"
-))]
+#[cfg(all(any(target_arch = "powerpc", target_arch = "powerpc64"), feature = "nightly"))]
 #[target_feature(enable = "altivec")]
 unsafe fn apply_mask_altivec_impl(data: &mut [u8], mask: [u8; 4]) {
     #[cfg(target_arch = "powerpc")]
@@ -577,9 +574,7 @@ unsafe fn apply_mask_s390x_impl(data: &mut [u8], mask: [u8; 4]) {
 
         if !aligned_data.is_empty() {
             let mask_vec: vector_unsigned_char =
-                std::mem::transmute(vec_splats::<i32, vector_signed_int>(i32::from_ne_bytes(
-                    mask,
-                )));
+                std::mem::transmute(vec_splats::<i32, vector_signed_int>(i32::from_ne_bytes(mask)));
 
             for block in aligned_data {
                 *block = vec_xor(*block, mask_vec);
@@ -648,12 +643,8 @@ pub fn apply_mask_offset(data: &mut [u8], mask: [u8; 4], offset: usize) {
 
     // Rotate mask to account for offset
     let offset = offset & 3;
-    let rotated_mask = [
-        mask[offset & 3],
-        mask[(offset + 1) & 3],
-        mask[(offset + 2) & 3],
-        mask[(offset + 3) & 3],
-    ];
+    let rotated_mask =
+        [mask[offset & 3], mask[(offset + 1) & 3], mask[(offset + 2) & 3], mask[(offset + 3) & 3]];
     apply_mask(data, rotated_mask);
 }
 
@@ -681,11 +672,7 @@ pub fn generate_mask() -> [u8; 4] {
         return buf;
     }
 
-    #[cfg(all(
-        feature = "rand_rng",
-        not(feature = "fastrand"),
-        not(feature = "getrandom")
-    ))]
+    #[cfg(all(feature = "rand_rng", not(feature = "fastrand"), not(feature = "getrandom")))]
     {
         use rand::Rng;
         return rand::rng().random::<[u8; 4]>();

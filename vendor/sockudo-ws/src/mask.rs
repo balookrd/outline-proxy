@@ -37,11 +37,7 @@ fn generate_mask_inner() -> [u8; 4] {
     rand::rng().random()
 }
 
-#[cfg(all(
-    feature = "fastrand",
-    not(feature = "getrandom"),
-    not(feature = "rand_rng")
-))]
+#[cfg(all(feature = "fastrand", not(feature = "getrandom"), not(feature = "rand_rng")))]
 #[inline]
 fn generate_mask_inner() -> [u8; 4] {
     fastrand::u32(..).to_ne_bytes()

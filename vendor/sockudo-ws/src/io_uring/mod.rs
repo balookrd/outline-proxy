@@ -226,10 +226,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn test_kernel_version() {
         let version = kernel_version();
-        assert!(
-            version.is_some(),
-            "Should be able to read kernel version on Linux"
-        );
+        assert!(version.is_some(), "Should be able to read kernel version on Linux");
 
         let (major, minor, _patch) = version.unwrap();
         // Sanity check: kernel version should be reasonable

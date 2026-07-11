@@ -7,6 +7,7 @@ pub use writer::{SocketTcpWriter, TcpShadowsocksWriter, WsTcpWriter};
 use crate::vless::{VlessTcpReader, VlessTcpWriter};
 
 use anyhow::Result;
+use bytes::Bytes;
 
 // ---------------------------------------------------------------------------
 // Enum wrappers for mixed-transport storage
@@ -181,7 +182,7 @@ impl TcpReader {
         }
     }
 
-    pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
+    pub async fn read_chunk(&mut self) -> Result<Bytes> {
         match self {
             Self::Ws(r) => r.read_chunk().await,
             Self::Socket(r) => r.read_chunk().await,

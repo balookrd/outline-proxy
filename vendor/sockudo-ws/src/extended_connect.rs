@@ -280,11 +280,7 @@ impl ExtendedConnectResponse {
 
     /// Create an error response
     pub fn error(status: StatusCode) -> Self {
-        Self {
-            status,
-            protocol: None,
-            extensions: None,
-        }
+        Self { status, protocol: None, extensions: None }
     }
 }
 
@@ -423,10 +419,7 @@ pub fn build_extended_connect_error(status: StatusCode, reason: Option<&str>) ->
 
 /// Helper to extract a header as a String
 fn get_header_string(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(String::from)
+    headers.get(name).and_then(|v| v.to_str().ok()).map(String::from)
 }
 
 #[cfg(test)]
@@ -443,10 +436,7 @@ mod tests {
     fn test_build_response_with_protocol() {
         let response = build_extended_connect_response(Some("graphql-ws"), None);
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get("sec-websocket-protocol").unwrap(),
-            "graphql-ws"
-        );
+        assert_eq!(response.headers().get("sec-websocket-protocol").unwrap(), "graphql-ws");
     }
 
     #[test]

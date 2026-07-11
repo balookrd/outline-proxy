@@ -124,9 +124,7 @@ impl MultiplexedConnection<Http2> {
             _ => unreachable!(),
         };
 
-        let uri: Uri = uri
-            .parse()
-            .map_err(|_| Error::HandshakeFailed("invalid URI"))?;
+        let uri: Uri = uri.parse().map_err(|_| Error::HandshakeFailed("invalid URI"))?;
 
         let authority = uri
             .authority()
@@ -153,9 +151,8 @@ impl MultiplexedConnection<Http2> {
             .body(())
             .map_err(|_| Error::HandshakeFailed("failed to build request"))?;
 
-        let (response_future, send_stream) = send_request
-            .send_request(request, false)
-            .map_err(Error::from)?;
+        let (response_future, send_stream) =
+            send_request.send_request(request, false).map_err(Error::from)?;
 
         let response = response_future.await.map_err(Error::from)?;
 
@@ -166,11 +163,7 @@ impl MultiplexedConnection<Http2> {
         let recv_stream = response.into_body();
         let h2_stream = Stream::<Http2>::from_h2(send_stream, recv_stream);
 
-        Ok(WebSocketStream::from_raw(
-            h2_stream,
-            Role::Client,
-            self.config.clone(),
-        ))
+        Ok(WebSocketStream::from_raw(h2_stream, Role::Client, self.config.clone()))
     }
 
     /// Check if the connection is still open
@@ -221,10 +214,7 @@ impl MultiplexedConnection<Http3> {
 
         let (send_request, server_name, server_port) = match &mut self.inner {
             MultiplexInner::Http3 {
-                send_request,
-                server_name,
-                server_port,
-                ..
+                send_request, server_name, server_port, ..
             } => (send_request, server_name.clone(), *server_port),
             _ => unreachable!(),
         };
@@ -245,10 +235,7 @@ impl MultiplexedConnection<Http3> {
             .body(())
             .map_err(|_| Error::HandshakeFailed("failed to build request"))?;
 
-        let mut stream = send_request
-            .send_request(request)
-            .await
-            .map_err(Error::from)?;
+        let mut stream = send_request.send_request(request).await.map_err(Error::from)?;
 
         let response = stream.recv_response().await.map_err(Error::from)?;
 
@@ -258,11 +245,7 @@ impl MultiplexedConnection<Http3> {
 
         let h3_stream = H3Stream::<Http3>::from_h3_client(stream);
 
-        Ok(WebSocketStream::from_raw(
-            h3_stream,
-            Role::Client,
-            self.config.clone(),
-        ))
+        Ok(WebSocketStream::from_raw(h3_stream, Role::Client, self.config.clone()))
     }
 
     /// Check if the connection is still open
@@ -296,7 +279,7 @@ impl MultiplexedConnection<Http3> {
         match &self.inner {
             MultiplexInner::Http3 { connection, .. } => {
                 connection.close(quinn::VarInt::from_u32(0x100), b"done");
-            }
+            },
             _ => unreachable!(),
         }
     }

@@ -63,7 +63,8 @@ async fn read_chunk_consumes_exact_14_byte_prefix_and_returns_next_payload() {
 
     let chunk = reader.read_chunk().await.unwrap();
     assert_eq!(
-        chunk, b"hello-world",
+        &chunk[..],
+        b"hello-world",
         "first chunk must be the next data frame, not the consumed prefix",
     );
     assert_eq!(
@@ -92,7 +93,7 @@ async fn read_chunk_returns_trailing_bytes_when_prefix_chunk_carries_extras() {
     });
 
     let chunk = reader.read_chunk().await.unwrap();
-    assert_eq!(chunk, b"bonus-bytes");
+    assert_eq!(&chunk[..], b"bonus-bytes");
     assert_eq!(reader.upstream_acked_offset(), Some(42));
 
     writer_task.await.unwrap();
@@ -270,7 +271,7 @@ async fn consume_ack_prefix_stashes_extras_for_next_read_chunk() {
     // Trailing bytes must surface on the very next read_chunk so no
     // upstream payload is silently dropped.
     let chunk = reader.read_chunk().await.unwrap();
-    assert_eq!(chunk, b"trailing-data");
+    assert_eq!(&chunk[..], b"trailing-data");
 
     writer_task.await.unwrap();
 }
