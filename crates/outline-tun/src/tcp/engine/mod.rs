@@ -138,12 +138,13 @@ impl TunTcpEngine {
     }
 
     /// Write one downlink packet: a TSO super-segment when `vnet` is set,
-    /// otherwise a single IP packet.
+    /// otherwise a single IP packet. The IP/TCP header and the payload are
+    /// written vectored so the payload is not copied into a packet buffer.
     async fn write_server_data_packet(&self, packet: &ServerDataPacket) -> Result<()> {
-        match packet.vnet {
-            Some(vnet) => self.inner.writer.write_gso_segment(&packet.bytes, vnet).await,
-            None => self.inner.writer.write_packet(&packet.bytes).await,
-        }
+        self.inner
+            .writer
+            .write_data_packet(&packet.header, &packet.payload, packet.vnet)
+            .await
     }
 
     /// [`write_server_data_packet`] variant that closes the flow on write error.

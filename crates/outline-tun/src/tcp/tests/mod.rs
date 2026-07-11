@@ -604,9 +604,12 @@ async fn flush_server_data_emits_gso_super_segment_tracked_per_mss() {
     assert_eq!(vnet.gso_size as usize, mss);
     assert_eq!(vnet.gso_type, crate::vnet::VIRTIO_NET_HDR_GSO_TCPV4);
     assert_eq!(vnet.flags, crate::vnet::VIRTIO_NET_HDR_F_NEEDS_CSUM);
-    // IPv4 total_len covers the whole coalesced payload.
-    let total_len = u16::from_be_bytes([packet.bytes[2], packet.bytes[3]]) as usize;
-    assert_eq!(total_len, packet.bytes.len());
+    // IPv4 total_len covers the whole coalesced payload: header + payload bytes,
+    // even though the payload is carried as zero-copy chunks never copied into
+    // `header`.
+    let payload_bytes: usize = packet.payload.iter().map(|c| c.len()).sum();
+    let total_len = u16::from_be_bytes([packet.header[2], packet.header[3]]) as usize;
+    assert_eq!(total_len, packet.header.len() + payload_bytes);
     assert!(total_len > mss);
 
     // The retransmit scoreboard is still per-MSS so a loss inside the
@@ -629,6 +632,65 @@ async fn flush_server_data_emits_gso_super_segment_tracked_per_mss() {
     );
     assert_eq!(state.unacked_server_segments.back().unwrap().payload.len(), 200);
     assert_eq!(state.server_seq, 1000 + payload_len as u32);
+}
+
+#[tokio::test]
+async fn flush_super_segment_from_multiple_chunks_is_byte_exact() {
+    let mut state = tcp_flow_state_for_tests().await;
+    state.gso_enabled = true;
+    state.client_max_segment_size = None;
+    state.server_seq = 1000;
+    state.rcv_nxt = 500;
+    state.client_window = 100_000;
+    state.client_window_end = state.server_seq.wrapping_add(100_000);
+    state.congestion_window = 100_000;
+    state.slow_start_threshold = 100_000;
+
+    let mss = super::MAX_SERVER_SEGMENT_PAYLOAD; // 1200
+    // Chunk boundaries (every 1000 B) deliberately misalign with MSS boundaries
+    // (every 1200 B) so every MSS segment straddles a chunk boundary — this is
+    // the copy path in `slice_chunks`, which must stay byte-exact.
+    let chunk_len = 1000usize;
+    let chunk_count = 5usize;
+    let total = chunk_len * chunk_count; // 5000
+    let stream: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+    let mut queue = std::collections::VecDeque::new();
+    for c in 0..chunk_count {
+        let start = c * chunk_len;
+        queue.push_back(stream[start..start + chunk_len].to_vec().into());
+    }
+    state.pending_server_data = queue;
+    state.pending_server_bytes_total = total;
+
+    let flush = super::state_machine::flush_server_output(&mut state).unwrap();
+
+    assert_eq!(flush.data_packets.len(), 1);
+    let packet = &flush.data_packets[0];
+    assert!(packet.vnet.is_some(), "TSO super-segment");
+    // The multi-chunk payload is carried without coalescing into one buffer.
+    assert!(packet.payload.len() > 1, "payload kept as separate chunks");
+
+    // The vectored payload chunks reconstruct the original stream exactly.
+    let mut written = Vec::new();
+    for chunk in &packet.payload {
+        written.extend_from_slice(chunk);
+    }
+    assert_eq!(written, stream, "writev payload must equal the source stream");
+
+    // Every scoreboard segment holds the byte-exact MSS slice of the stream,
+    // including the segments copied across chunk boundaries.
+    assert_eq!(state.unacked_server_segments.len(), total.div_ceil(mss));
+    let mut offset = 0usize;
+    for segment in &state.unacked_server_segments {
+        let end = (offset + mss).min(total);
+        assert_eq!(
+            segment.payload.as_ref(),
+            &stream[offset..end],
+            "segment [{offset}, {end}) must be byte-exact"
+        );
+        offset = end;
+    }
+    assert_eq!(state.server_seq, 1000 + total as u32);
 }
 
 #[tokio::test]
@@ -842,7 +904,11 @@ async fn fast_retransmit_resends_a_hole_at_most_once_per_episode() {
     let third = super::process_server_ack(&mut state, 1000, &[(1004, 1012)]);
     assert!(third.retransmit_now, "3rd dup-ACK enters recovery and retransmits the hole");
 
-    let pkt = super::retransmit_oldest_unacked_packet(&mut state).unwrap().unwrap();
+    let sdp = super::retransmit_oldest_unacked_packet(&mut state).unwrap().unwrap();
+    let mut pkt = sdp.header.clone();
+    for chunk in &sdp.payload {
+        pkt.extend_from_slice(chunk);
+    }
     assert_eq!(super::parse_tcp_packet(&pkt).unwrap().sequence_number, 1000);
     let hole = &state.unacked_server_segments[0];
     assert_eq!(hole.sequence_number, 1000);
@@ -1200,7 +1266,11 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
         },
     ]);
 
-    let packet = super::retransmit_oldest_unacked_packet(&mut state).unwrap().unwrap();
+    let sdp = super::retransmit_oldest_unacked_packet(&mut state).unwrap().unwrap();
+    let mut packet = sdp.header.clone();
+    for chunk in &sdp.payload {
+        packet.extend_from_slice(chunk);
+    }
     let parsed = super::parse_tcp_packet(&packet).unwrap();
     assert_eq!(parsed.sequence_number, 1000);
     assert_eq!(parsed.payload, b"AAAA"[..]);

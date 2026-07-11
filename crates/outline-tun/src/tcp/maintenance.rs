@@ -5,9 +5,9 @@ use anyhow::Result;
 use crate::config::TunTcpConfig;
 
 use super::state_machine::{
-    ServerFlush, TcpFlowState, TcpFlowStatus, build_flow_ack_packet, clear_delayed_ack,
-    flush_server_output, half_close_timed_out, handshake_timed_out, idle_timed_out,
-    is_half_closed_status, keepalive_probe_eligible, keepalive_probe_is_due,
+    ServerDataPacket, ServerFlush, TcpFlowState, TcpFlowStatus, build_flow_ack_packet,
+    clear_delayed_ack, flush_server_output, half_close_timed_out, handshake_timed_out,
+    idle_timed_out, is_half_closed_status, keepalive_probe_eligible, keepalive_probe_is_due,
     keepalive_probes_exhausted, maybe_emit_keepalive_probe, maybe_emit_zero_window_probe,
     next_keepalive_deadline, next_retransmission_deadline, note_congestion_event,
     retransmit_budget_exhausted, retransmit_due_segment, retransmit_is_due, sync_flow_metrics,
@@ -19,6 +19,14 @@ pub(super) enum FlowMaintenancePlan {
     Wait(Option<Instant>),
     SendPacket {
         packet: Vec<u8>,
+        packet_metric: &'static str,
+        event: &'static str,
+    },
+    /// A retransmit whose payload is carried by reference (an owned `Bytes` on
+    /// the scoreboard) and written vectored, so the resent segment is not copied
+    /// into a packet buffer. Always a single MSS segment (`vnet: None`).
+    SendDataPacket {
+        packet: ServerDataPacket,
         packet_metric: &'static str,
         event: &'static str,
     },
@@ -170,7 +178,7 @@ pub(super) fn plan_flow_maintenance(
             return Ok(FlowMaintenancePlan::Abort("retransmit_budget_exhausted"));
         }
         commit_flow_changes(state, tcp);
-        return Ok(FlowMaintenancePlan::SendPacket {
+        return Ok(FlowMaintenancePlan::SendDataPacket {
             packet,
             packet_metric: "tcp_retransmit",
             event: "timeout_retransmit",

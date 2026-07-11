@@ -350,6 +350,106 @@ enum TcpChecksumMode {
     Partial,
 }
 
+/// Build an IPv4 + TCP header (no payload). The IP total-length field and the
+/// TCP checksum both account for the payload (`payload_len` bytes, supplied as
+/// `payload_parts` for the `Full` checksum), but the payload bytes are never
+/// copied into the returned buffer — the caller writes them as separate `writev`
+/// slices. In `Partial` (TSO) mode the payload is not even read: the kernel
+/// finalises the per-segment L4 checksum, so the pseudo-header checksum needs
+/// only its length and `payload_parts` may be empty.
+fn build_ipv4_tcp_header(
+    source_ip: Ipv4Addr,
+    destination_ip: Ipv4Addr,
+    source_port: u16,
+    destination_port: u16,
+    sequence_number: u32,
+    acknowledgement_number: u32,
+    flags: u8,
+    window_size: u16,
+    options: &[u8],
+    payload_len: usize,
+    payload_parts: &[&[u8]],
+    checksum_mode: TcpChecksumMode,
+) -> Result<Vec<u8>> {
+    if !options.len().is_multiple_of(4) {
+        bail!("TCP options must be 32-bit aligned");
+    }
+    let tcp_header_len = TCP_HEADER_LEN + options.len();
+    let total_len = IPV4_HEADER_LEN + tcp_header_len + payload_len;
+    let mut header = vec![0u8; IPV4_HEADER_LEN + tcp_header_len];
+    header[0] = 0x45;
+    header[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+    header[8] = 64;
+    header[9] = 6;
+    header[12..16].copy_from_slice(&source_ip.octets());
+    header[16..20].copy_from_slice(&destination_ip.octets());
+
+    write_tcp_header(
+        &mut header[IPV4_HEADER_LEN..],
+        source_port,
+        destination_port,
+        sequence_number,
+        acknowledgement_number,
+        flags,
+        window_size,
+        options,
+    );
+
+    let tcp_checksum = match checksum_mode {
+        // Sum the pseudo-header, the TCP header (checksum field still zero) and
+        // the payload chunks as separate parts — `checksum16_parts` folds across
+        // part boundaries, so this is byte-identical to the checksum of the
+        // contiguous header+payload while leaving the payload uncopied.
+        TcpChecksumMode::Full => {
+            debug_assert_eq!(
+                payload_parts.iter().map(|p| p.len()).sum::<usize>(),
+                payload_len,
+                "payload_parts must sum to payload_len in Full mode"
+            );
+            let source = source_ip.octets();
+            let destination = destination_ip.octets();
+            let protocol = [0u8, IPV6_NEXT_HEADER_TCP];
+            let length = ((tcp_header_len + payload_len) as u16).to_be_bytes();
+            let tcp_header = &header[IPV4_HEADER_LEN..];
+            tcp_full_checksum(&source, &destination, &protocol, &length, tcp_header, payload_parts)
+        },
+        TcpChecksumMode::Partial => {
+            ipv4_tcp_partial_checksum(source_ip, destination_ip, tcp_header_len + payload_len)
+        },
+    };
+    header[IPV4_HEADER_LEN + 16..IPV4_HEADER_LEN + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
+    let header_checksum = checksum16(&header[..IPV4_HEADER_LEN]);
+    header[10..12].copy_from_slice(&header_checksum.to_be_bytes());
+    Ok(header)
+}
+
+/// Full RFC 793 TCP checksum over the pseudo-header, the TCP header and the
+/// payload chunks. Zero or one payload chunk uses a fixed-size parts array (no
+/// allocation — the common ACK/FIN/single-segment path); multiple chunks (a
+/// coalesced multi-`Bytes` segment) fall back to a heap parts list.
+fn tcp_full_checksum(
+    pseudo_a: &[u8],
+    pseudo_b: &[u8],
+    pseudo_c: &[u8],
+    pseudo_d: &[u8],
+    tcp_header: &[u8],
+    payload_parts: &[&[u8]],
+) -> u16 {
+    if payload_parts.len() <= 1 {
+        let payload = payload_parts.first().copied().unwrap_or(&[]);
+        checksum16_parts(&[pseudo_a, pseudo_b, pseudo_c, pseudo_d, tcp_header, payload])
+    } else {
+        let mut parts: Vec<&[u8]> = Vec::with_capacity(5 + payload_parts.len());
+        parts.extend_from_slice(&[pseudo_a, pseudo_b, pseudo_c, pseudo_d, tcp_header]);
+        parts.extend_from_slice(payload_parts);
+        checksum16_parts(&parts)
+    }
+}
+
+/// Build a full contiguous IPv4/TCP packet (header + payload). Thin wrapper over
+/// [`build_ipv4_tcp_header`] used by the header-only control paths (reset, FIN,
+/// pure ACK) and tests; the data path builds the header alone and writes the
+/// payload vectored.
 fn build_ipv4_tcp_packet(
     source_ip: Ipv4Addr,
     destination_ip: Ipv4Addr,
@@ -363,22 +463,9 @@ fn build_ipv4_tcp_packet(
     payload: &[u8],
     checksum_mode: TcpChecksumMode,
 ) -> Result<Vec<u8>> {
-    if !options.len().is_multiple_of(4) {
-        bail!("TCP options must be 32-bit aligned");
-    }
-    let tcp_header_len = TCP_HEADER_LEN + options.len();
-    let total_len = IPV4_HEADER_LEN + tcp_header_len + payload.len();
-    let mut packet = vec![0u8; total_len];
-    packet[0] = 0x45;
-    packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
-    packet[8] = 64;
-    packet[9] = 6;
-    packet[12..16].copy_from_slice(&source_ip.octets());
-    packet[16..20].copy_from_slice(&destination_ip.octets());
-
-    let tcp = &mut packet[IPV4_HEADER_LEN..];
-    build_tcp_segment(
-        tcp,
+    let mut packet = build_ipv4_tcp_header(
+        source_ip,
+        destination_ip,
         source_port,
         destination_port,
         sequence_number,
@@ -386,21 +473,82 @@ fn build_ipv4_tcp_packet(
         flags,
         window_size,
         options,
-        payload,
+        payload.len(),
+        &[payload],
+        checksum_mode,
+    )?;
+    packet.extend_from_slice(payload);
+    Ok(packet)
+}
+
+/// IPv6 counterpart of [`build_ipv4_tcp_header`].
+fn build_ipv6_tcp_header(
+    source_ip: Ipv6Addr,
+    destination_ip: Ipv6Addr,
+    source_port: u16,
+    destination_port: u16,
+    sequence_number: u32,
+    acknowledgement_number: u32,
+    flags: u8,
+    window_size: u16,
+    options: &[u8],
+    payload_len: usize,
+    payload_parts: &[&[u8]],
+    checksum_mode: TcpChecksumMode,
+) -> Result<Vec<u8>> {
+    if !options.len().is_multiple_of(4) {
+        bail!("TCP options must be 32-bit aligned");
+    }
+    let tcp_header_len = TCP_HEADER_LEN + options.len();
+    let mut header = vec![0u8; IPV6_HEADER_LEN + tcp_header_len];
+    header[0] = 0x60;
+    header[4..6].copy_from_slice(&((tcp_header_len + payload_len) as u16).to_be_bytes());
+    header[6] = 6;
+    header[7] = 64;
+    header[8..24].copy_from_slice(&source_ip.octets());
+    header[24..40].copy_from_slice(&destination_ip.octets());
+
+    write_tcp_header(
+        &mut header[IPV6_HEADER_LEN..],
+        source_port,
+        destination_port,
+        sequence_number,
+        acknowledgement_number,
+        flags,
+        window_size,
+        options,
     );
 
     let tcp_checksum = match checksum_mode {
         TcpChecksumMode::Full => {
-            ipv4_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, tcp)
+            debug_assert_eq!(
+                payload_parts.iter().map(|p| p.len()).sum::<usize>(),
+                payload_len,
+                "payload_parts must sum to payload_len in Full mode"
+            );
+            let source = source_ip.octets();
+            let destination = destination_ip.octets();
+            let length = ((tcp_header_len + payload_len) as u32).to_be_bytes();
+            let next_header = [0u8, 0, 0, IPV6_NEXT_HEADER_TCP];
+            let tcp_header = &header[IPV6_HEADER_LEN..];
+            tcp_full_checksum(
+                &source,
+                &destination,
+                &length,
+                &next_header,
+                tcp_header,
+                payload_parts,
+            )
         },
-        TcpChecksumMode::Partial => ipv4_tcp_partial_checksum(source_ip, destination_ip, tcp.len()),
+        TcpChecksumMode::Partial => {
+            ipv6_tcp_partial_checksum(source_ip, destination_ip, tcp_header_len + payload_len)
+        },
     };
-    tcp[16..18].copy_from_slice(&tcp_checksum.to_be_bytes());
-    let header_checksum = checksum16(&packet[..IPV4_HEADER_LEN]);
-    packet[10..12].copy_from_slice(&header_checksum.to_be_bytes());
-    Ok(packet)
+    header[IPV6_HEADER_LEN + 16..IPV6_HEADER_LEN + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
+    Ok(header)
 }
 
+/// IPv6 counterpart of [`build_ipv4_tcp_packet`].
 fn build_ipv6_tcp_packet(
     source_ip: Ipv6Addr,
     destination_ip: Ipv6Addr,
@@ -414,22 +562,9 @@ fn build_ipv6_tcp_packet(
     payload: &[u8],
     checksum_mode: TcpChecksumMode,
 ) -> Result<Vec<u8>> {
-    if !options.len().is_multiple_of(4) {
-        bail!("TCP options must be 32-bit aligned");
-    }
-    let tcp_header_len = TCP_HEADER_LEN + options.len();
-    let total_len = IPV6_HEADER_LEN + tcp_header_len + payload.len();
-    let mut packet = vec![0u8; total_len];
-    packet[0] = 0x60;
-    packet[4..6].copy_from_slice(&((tcp_header_len + payload.len()) as u16).to_be_bytes());
-    packet[6] = 6;
-    packet[7] = 64;
-    packet[8..24].copy_from_slice(&source_ip.octets());
-    packet[24..40].copy_from_slice(&destination_ip.octets());
-
-    let tcp = &mut packet[IPV6_HEADER_LEN..];
-    build_tcp_segment(
-        tcp,
+    let mut packet = build_ipv6_tcp_header(
+        source_ip,
+        destination_ip,
         source_port,
         destination_port,
         sequence_number,
@@ -437,16 +572,11 @@ fn build_ipv6_tcp_packet(
         flags,
         window_size,
         options,
-        payload,
-    );
-
-    let tcp_checksum = match checksum_mode {
-        TcpChecksumMode::Full => {
-            ipv6_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, tcp)
-        },
-        TcpChecksumMode::Partial => ipv6_tcp_partial_checksum(source_ip, destination_ip, tcp.len()),
-    };
-    tcp[16..18].copy_from_slice(&tcp_checksum.to_be_bytes());
+        payload.len(),
+        &[payload],
+        checksum_mode,
+    )?;
+    packet.extend_from_slice(payload);
     Ok(packet)
 }
 
@@ -472,12 +602,13 @@ fn ipv6_tcp_partial_checksum(source: Ipv6Addr, destination: Ipv6Addr, tcp_len: u
     !checksum16_parts(&[&source[..], &destination[..], &length[..], &next_header[..]])
 }
 
-/// Build a TCP/IP super-segment carrying a *partial* checksum for kernel TSO.
-/// Returns the packet, its L3 header length (the vnet `csum_start`) and its L4
-/// (TCP) header length, so the caller can fill a `virtio_net_hdr` whose
-/// `hdr_len = l3 + l4` and whose `gso_size` is the MSS the kernel splits
-/// `payload` into.
-pub(super) fn build_gso_tcp_packet(
+/// Build the *header* of a TCP/IP super-segment carrying a *partial* checksum
+/// for kernel TSO. Returns the header (IP + TCP, no payload), its L3 header
+/// length (the vnet `csum_start`) and its L4 (TCP) header length, so the caller
+/// can fill a `virtio_net_hdr` whose `hdr_len = l3 + l4` and whose `gso_size`
+/// is the MSS the kernel splits `payload` into. The payload is written vectored
+/// by the caller and never copied here.
+pub(super) fn build_gso_tcp_header(
     version: IpVersion,
     source_ip: IpAddr,
     destination_ip: IpAddr,
@@ -488,12 +619,12 @@ pub(super) fn build_gso_tcp_packet(
     flags: u8,
     window_size: u16,
     options: &[u8],
-    payload: &[u8],
+    payload_len: usize,
 ) -> Result<(Vec<u8>, u16, u16)> {
     let l4_len = (TCP_HEADER_LEN + options.len()) as u16;
     match (version, source_ip, destination_ip) {
         (IpVersion::V4, IpAddr::V4(source_ip), IpAddr::V4(destination_ip)) => {
-            let packet = build_ipv4_tcp_packet(
+            let header = build_ipv4_tcp_header(
                 source_ip,
                 destination_ip,
                 source_port,
@@ -503,13 +634,14 @@ pub(super) fn build_gso_tcp_packet(
                 flags,
                 window_size,
                 options,
-                payload,
+                payload_len,
+                &[],
                 TcpChecksumMode::Partial,
             )?;
-            Ok((packet, IPV4_HEADER_LEN as u16, l4_len))
+            Ok((header, IPV4_HEADER_LEN as u16, l4_len))
         },
         (IpVersion::V6, IpAddr::V6(source_ip), IpAddr::V6(destination_ip)) => {
-            let packet = build_ipv6_tcp_packet(
+            let header = build_ipv6_tcp_header(
                 source_ip,
                 destination_ip,
                 source_port,
@@ -519,16 +651,76 @@ pub(super) fn build_gso_tcp_packet(
                 flags,
                 window_size,
                 options,
-                payload,
+                payload_len,
+                &[],
                 TcpChecksumMode::Partial,
             )?;
-            Ok((packet, IPV6_HEADER_LEN as u16, l4_len))
+            Ok((header, IPV6_HEADER_LEN as u16, l4_len))
         },
         _ => bail!("unexpected address family in TUN GSO response"),
     }
 }
 
-fn build_tcp_segment(
+/// Build the IP + TCP header (no payload) for a single downlink data packet
+/// with a full RFC 793 checksum. Mirrors [`build_response_packet_custom`] but
+/// leaves the payload for the caller to write vectored. `payload_parts` is the
+/// payload split into one or more `Bytes` chunks (folded into the checksum in
+/// order); the header records their combined length.
+pub(super) fn build_data_header_custom(
+    version: IpVersion,
+    source_ip: IpAddr,
+    destination_ip: IpAddr,
+    source_port: u16,
+    destination_port: u16,
+    sequence_number: u32,
+    acknowledgement_number: u32,
+    flags: u8,
+    window_size: u16,
+    options: &[u8],
+    payload_parts: &[&[u8]],
+) -> Result<Vec<u8>> {
+    let payload_len = payload_parts.iter().map(|p| p.len()).sum();
+    match (version, source_ip, destination_ip) {
+        (IpVersion::V4, IpAddr::V4(source_ip), IpAddr::V4(destination_ip)) => {
+            build_ipv4_tcp_header(
+                source_ip,
+                destination_ip,
+                source_port,
+                destination_port,
+                sequence_number,
+                acknowledgement_number,
+                flags,
+                window_size,
+                options,
+                payload_len,
+                payload_parts,
+                TcpChecksumMode::Full,
+            )
+        },
+        (IpVersion::V6, IpAddr::V6(source_ip), IpAddr::V6(destination_ip)) => {
+            build_ipv6_tcp_header(
+                source_ip,
+                destination_ip,
+                source_port,
+                destination_port,
+                sequence_number,
+                acknowledgement_number,
+                flags,
+                window_size,
+                options,
+                payload_len,
+                payload_parts,
+                TcpChecksumMode::Full,
+            )
+        },
+        _ => bail!("unexpected address family in TUN TCP response"),
+    }
+}
+
+/// Write the fixed TCP header and options into `tcp` (which must be exactly the
+/// TCP header length). The checksum field is left zero for the caller to fill;
+/// the payload is not written here.
+fn write_tcp_header(
     tcp: &mut [u8],
     source_port: u16,
     destination_port: u16,
@@ -537,7 +729,6 @@ fn build_tcp_segment(
     flags: u8,
     window_size: u16,
     options: &[u8],
-    payload: &[u8],
 ) {
     let header_len = TCP_HEADER_LEN + options.len();
     tcp[0..2].copy_from_slice(&source_port.to_be_bytes());
@@ -551,7 +742,6 @@ fn build_tcp_segment(
     if !options.is_empty() {
         tcp[TCP_HEADER_LEN..header_len].copy_from_slice(options);
     }
-    tcp[header_len..header_len + payload.len()].copy_from_slice(payload);
 }
 fn seq_lt(lhs: u32, rhs: u32) -> bool {
     (lhs.wrapping_sub(rhs) as i32) < 0

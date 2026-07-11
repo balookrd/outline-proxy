@@ -9,6 +9,7 @@ use std::io::{IoSlice, Write as _};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 
@@ -109,6 +110,53 @@ impl SharedTunWriter {
         }
     }
 
+    /// Write one downlink data packet whose IP/TCP `header` and `payload` chunks
+    /// live in separate buffers, gathering them (and any vnet header) into one
+    /// `writev` so the payload — owned `Bytes` shared with the retransmit
+    /// scoreboard — is never copied into a contiguous packet buffer. `payload`
+    /// carries one chunk on the fast path and several when a TSO super-segment
+    /// coalesces multiple upstream reads.
+    ///
+    /// `gso` is `Some` for a TSO super-segment; `None` for a single IP packet, in
+    /// which case a `GSO_NONE` vnet header is prepended when the fd carries one.
+    pub(crate) async fn write_data_packet(
+        &self,
+        header: &[u8],
+        payload: &[Bytes],
+        gso: Option<VirtioNetHdr>,
+    ) -> Result<()> {
+        let vnet = match gso {
+            Some(vnet) => {
+                // Downlink TSO signal: one super-segment the kernel splits per
+                // MSS — how often the write path coalesced server→client data.
+                metrics::record_tun_packet(
+                    "upstream_to_tun",
+                    ip_family_str(header),
+                    "tso_supersegment",
+                );
+                Some(vnet)
+            },
+            None => self.gso_enabled.then_some(VirtioNetHdr::NONE),
+        };
+        match &self.inner {
+            SharedTunWriterInner::Async(fd) => fd
+                .async_io(Interest::WRITABLE, |f| write_tun_data_packet(f, header, payload, vnet))
+                .await
+                .context("failed to write data packet to TUN"),
+            #[cfg(test)]
+            SharedTunWriterInner::Blocking(mutex) => {
+                let mut file = mutex.lock();
+                file.write_all(header)
+                    .context("failed to write data packet header to TUN")?;
+                for chunk in payload {
+                    file.write_all(chunk)
+                        .context("failed to write data packet payload to TUN")?;
+                }
+                Ok(())
+            },
+        }
+    }
+
     /// Write a batch of IP packets to the TUN device, one `write(2)` per packet.
     pub(crate) async fn write_packets(&self, packets: &[Vec<u8>]) -> Result<()> {
         for packet in packets {
@@ -153,6 +201,40 @@ fn write_tun_packet(
     if written != expected {
         return Err(std::io::Error::other(format!(
             "short TUN vnet write: {written}/{expected} bytes"
+        )));
+    }
+    Ok(())
+}
+
+/// Write one IP packet whose IP/TCP header and payload chunks are separate
+/// buffers, gathering them (with an optional `virtio_net_hdr`) into a single
+/// `writev` so the payload is delivered copy-free. One `write(2)` atomically
+/// delivers the whole packet on TUN, exactly as the single-buffer paths do. The
+/// `iovec` is `[vnet?, header, chunk0, …]`; the caller bounds the chunk count
+/// well below `IOV_MAX`.
+fn write_tun_data_packet(
+    file: &std::fs::File,
+    header: &[u8],
+    payload: &[Bytes],
+    vnet: Option<VirtioNetHdr>,
+) -> std::io::Result<()> {
+    let mut w: &std::fs::File = file;
+    let vnet = vnet.map(|vnet| vnet.encode());
+    let mut iovecs: Vec<IoSlice<'_>> = Vec::with_capacity(2 + payload.len());
+    let mut expected = header.len();
+    if let Some(vnet) = vnet.as_ref() {
+        iovecs.push(IoSlice::new(vnet));
+        expected += vnet.len();
+    }
+    iovecs.push(IoSlice::new(header));
+    for chunk in payload {
+        iovecs.push(IoSlice::new(chunk));
+        expected += chunk.len();
+    }
+    let written = w.write_vectored(&iovecs)?;
+    if written != expected {
+        return Err(std::io::Error::other(format!(
+            "short TUN data write: {written}/{expected} bytes"
         )));
     }
     Ok(())
