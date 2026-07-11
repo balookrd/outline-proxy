@@ -99,10 +99,14 @@ needs `GSO_UDP_L4` (kernel ≥ 5.18). `gro` and `uso` can be toggled independent
 of each other and of `gso`.
 
 > **Persistent interface caveat.** `TUNSETOFFLOAD` sets feature flags on the
-> device that survive a process restart on a *persistent* TUN interface. The
-> client always re-applies the offload state explicitly on attach (including
-> clearing it), so a plain restart is enough — but if you ever see stale
-> `[requested on]` flags in `ethtool -k`, recreate the interface.
+> device that survive a process restart on a *persistent* TUN interface.
+> Re-applying the same value on attach is a kernel no-op: it does NOT clear a
+> stuck `tx-udp-segmentation: off [requested on]` left by the previous run,
+> which kills all UDP after a restart until a manual `ethtool -K`. So when
+> offload is enabled the client first clears the flags to 0, then sets the
+> desired ones — a real off→on transition that heals the stuck state
+> automatically on every attach (the same effect as the manual ethtool toggle),
+> making a plain restart enough.
 
 ## Validating
 
@@ -120,9 +124,25 @@ the CPU win:
 5. Compare CPU and syscall rate against the disabled state at the same
    throughput: `sudo timeout 5 strace -f -c -p $(pidof outline-ws-rust)` — with
    `gso`, `write` should drop sharply; with `gro` on a bulk uplink, `read`
-   should. `ethtool -k` on the TUN device will still show `tcp-segmentation-offload:
-   off` — that is expected; our offload rides `virtio_net_hdr`, not the device
-   feature flag.
+   should.
+
+Reading offload back with `ethtool -k <tun>`:
+
+- **`gso` (write-side downlink TSO) is invisible in `ethtool`.** It rides the
+  per-`read`/`write` `virtio_net_hdr` on the fd (attached with `IFF_VNET_HDR`),
+  which is a queue property, not a netdevice feature — no `ethtool` line
+  reflects it. Our `TUN loop started` / `TUN offload negotiated` log lines
+  (`gso=true`) are the only confirmation.
+- **`gro` and `uso` DO show up**, because they are set via `TUNSETOFFLOAD`, which
+  flips real netdevice features. With both on you should see, all `on`:
+  `tx-checksum-ip-generic` (mandatory `TUN_F_CSUM`), `tx-tcp-segmentation` +
+  `tx-tcp6-segmentation` (`gro`'s `TUN_F_TSO4/6`), and `tx-udp-segmentation`
+  (`uso`'s `TUN_F_USO4/6`). A healthy `uso` reads `tx-udp-segmentation: on`
+  *without* a trailing `[requested on]` — the `[requested on]` form is the stuck
+  state described in the persistent-interface caveat above.
+- **`generic-segmentation-offload` / `generic-receive-offload` are NOT our
+  flags** — those are the kernel's own software GSO/GRO for the device and are
+  irrelevant here; ignore their state.
 
 ## Rollback
 
