@@ -29,11 +29,12 @@ use bytes::BytesMut;
 use futures_util::{SinkExt, StreamExt};
 use h3::ext::Protocol as H3Protocol;
 use outline_transport::{
-    DnsCache as ClientDnsCache, SessionId as ClientSessionId, TcpShadowsocksReader,
-    TcpShadowsocksWriter, TransportMode, UdpWsTransport, UpstreamTransportGuard,
+    CarrierPadding, DnsCache as ClientDnsCache, SessionId as ClientSessionId, SsPathKind,
+    TcpShadowsocksReader, TcpShadowsocksWriter, TransportMode, UdpWsTransport,
+    UpstreamTransportGuard, init_carrier_padding,
 };
 use outline_wire::cluster::{ObfuscationKey, ShardId};
-use outline_wire::padding::{ControlSignal, PaddingDecoder, encode_frame_into};
+use outline_wire::padding::{ControlSignal, PaddingDecoder, PaddingScheme, encode_frame_into};
 use quinn::Endpoint;
 use ring::rand::SystemRandom;
 use rustls::pki_types::CertificateDer;
@@ -64,7 +65,8 @@ use super::super::super::{
     serve_h3_server, user_keys,
 };
 use super::super::{
-    connect_websocket_with_resume, sample_config, test_h3_client_config, test_h3_server_tls,
+    connect_websocket_with_resume, cross_repo_install_test_tls_root_on_client,
+    cross_repo_test_server_tls_config, sample_config, test_h3_client_config, test_h3_server_tls,
 };
 use super::ss::ss_handshake_frame;
 use super::vless::vless_udp_request;
@@ -118,6 +120,9 @@ struct ClusterParts {
 /// agnostic: the caller binds the WS or h3 listener over these. When
 /// `xhttp_ss_path` is set, the node also serves (edge) / resolves (home) an
 /// SS-over-XHTTP base path for the shared user.
+// One optional carrier-path arg per route table the various node spawners wire;
+// bundling them into a struct would only move the noise, so allow the count.
+#[allow(clippy::too_many_arguments)]
 fn build_cluster_parts(
     psk: &[u8],
     shard: u8,
@@ -126,6 +131,7 @@ fn build_cluster_parts(
     xhttp_ss_path: Option<&str>,
     xhttp_ss_udp_path: Option<&str>,
     ss_tcp_path: Option<&str>,
+    ws_ss_path: Option<&str>,
 ) -> Result<ClusterParts> {
     // The mesh QUIC endpoint needs the process-wide rustls provider installed.
     ensure_rustls_provider_installed();
@@ -136,6 +142,12 @@ fn build_cluster_parts(
     // it (a process-global) never touches the other tests' `/tcp` carriers.
     if let Some(path) = ss_tcp_path {
         config.ws_path_tcp = path.to_string();
+    }
+    // A combined WS-SS base: `ws_path_ss` routes both the TCP and UDP legs onto
+    // one path, so it lands in both WS route tables and `build_app` registers a
+    // combined `<base>/{token}` upgrade (mirrors the owner's `ws_path_ss` config).
+    if let Some(path) = ws_ss_path {
+        config.ws_path_ss = Some(path.to_string());
     }
     let user_routes = build_user_routes(&config)?;
     let user = user_routes[0].user.clone();
@@ -242,7 +254,63 @@ async fn spawn_cluster_node(
         cluster,
         mesh_addr,
         user,
-    } = build_cluster_parts(psk, shard, peers, budget, xhttp_ss_path, xhttp_ss_udp_path, None)?;
+    } = build_cluster_parts(
+        psk,
+        shard,
+        peers,
+        budget,
+        xhttp_ss_path,
+        xhttp_ss_udp_path,
+        None,
+        None,
+    )?;
+
+    let app = build_app(
+        Arc::clone(&routes),
+        Arc::clone(&services),
+        auth,
+        None,
+        Some(Arc::clone(&cluster)),
+    );
+    let ws_task =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    let mesh_task =
+        tokio::spawn(run_mesh_listener(cluster, services, routes, ShutdownSignal::never()));
+
+    Ok((
+        ClusterNode {
+            listen_addr,
+            mesh_addr,
+            ws_task,
+            mesh_task,
+        },
+        user,
+    ))
+}
+
+/// Boots a WS cluster node whose SS base path is *combined*: `ws_ss_path` puts
+/// both the TCP and UDP legs on one base, so `build_app` registers a combined
+/// `<base>/{token}` upgrade instead of the split `/tcp` + `/udp` routes. The
+/// combined-SS counterpart of [`spawn_cluster_node`], used to exercise the
+/// combined-WS SS-UDP leg (`combined_websocket_upgrade` → `udp_upgrade_for_path`)
+/// in cluster mode.
+async fn spawn_combined_ws_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
+    ws_ss_path: &str,
+) -> Result<(ClusterNode, UserKey)> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let ClusterParts {
+        routes,
+        services,
+        auth,
+        cluster,
+        mesh_addr,
+        user,
+    } = build_cluster_parts(psk, shard, peers, budget, None, None, None, Some(ws_ss_path))?;
 
     let app = build_app(
         Arc::clone(&routes),
@@ -287,7 +355,7 @@ async fn spawn_throttle_node(
         cluster,
         mesh_addr,
         user,
-    } = build_cluster_parts(psk, shard, peers, budget, None, None, Some(ss_tcp_path))?;
+    } = build_cluster_parts(psk, shard, peers, budget, None, None, Some(ss_tcp_path), None)?;
 
     let app = build_app(
         Arc::clone(&routes),
@@ -346,7 +414,7 @@ async fn spawn_h3_edge_node(
 
     let ClusterParts {
         routes, services, auth, cluster, user, ..
-    } = build_cluster_parts(psk, shard, peers, budget, None, None, None)?;
+    } = build_cluster_parts(psk, shard, peers, budget, None, None, None, None)?;
     let ctx = H3ServeCtx {
         routes,
         services,
@@ -358,6 +426,70 @@ async fn spawn_h3_edge_node(
     let h3_task = tokio::spawn(serve_h3_server(server, ctx, ShutdownSignal::never()));
 
     Ok((H3EdgeNode { addr, cert_der, h3_task }, user))
+}
+
+/// A running h3 cluster node reachable by the *real* client (`UdpWsTransport`
+/// over `WsH3`): it binds the shared cross-repo test cert (so the client's
+/// installed root trusts it) instead of the per-call self-signed cert the raw
+/// quinn probes use. Aborts its task on drop.
+struct H3ClientNode {
+    addr: SocketAddr,
+    h3_task: JoinHandle<Result<()>>,
+}
+
+impl Drop for H3ClientNode {
+    fn drop(&mut self) {
+        self.h3_task.abort();
+    }
+}
+
+/// Boots an h3 cluster node whose SS base path is *combined* over XHTTP
+/// (`xhttp_path` in both the `xhttp_ss` and `xhttp_ss_udp` tables), served over
+/// HTTP/3 with the cluster wired and a cert the real client trusts. Exercises
+/// the h3 XHTTP combined-SS resolve (`handle_h3_request`'s `xhttp_ss` +
+/// `xhttp_ss_udp` decode) → `handle_xhttp_h3_request` SS-UDP accept — the
+/// owner's actual carrier for combined-SS. No mesh listener: a single node
+/// serves cold-start datagrams locally.
+async fn spawn_combined_xhttp_h3_node(
+    psk: &[u8],
+    shard: u8,
+    peers: HashMap<ShardId, SocketAddr>,
+    budget: Duration,
+    xhttp_path: &str,
+) -> Result<(H3ClientNode, UserKey)> {
+    cross_repo_install_test_tls_root_on_client();
+    let tls_config = cross_repo_test_server_tls_config(&[b"h3"]);
+    let server = H3WebSocketServer::<H3Transport>::bind(
+        (Ipv4Addr::LOCALHOST, 0).into(),
+        tls_config,
+        H3WsConfig::default(),
+    )
+    .await?;
+    let addr = server.local_addr()?;
+
+    let ClusterParts {
+        routes, services, auth, cluster, user, ..
+    } = build_cluster_parts(
+        psk,
+        shard,
+        peers,
+        budget,
+        Some(xhttp_path),
+        Some(xhttp_path),
+        None,
+        None,
+    )?;
+    let ctx = H3ServeCtx {
+        routes,
+        services,
+        auth,
+        alpn: Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
+        http_fallback: None,
+        cluster: Some(cluster),
+    };
+    let h3_task = tokio::spawn(serve_h3_server(server, ctx, ShutdownSignal::never()));
+
+    Ok((H3ClientNode { addr, h3_task }, user))
 }
 
 /// Fabricates a resume id whose shard decodes to `shard` under `psk` — as if a
@@ -859,6 +991,462 @@ async fn cluster_xhttp_edge_relays_to_home() -> Result<()> {
     Ok(())
 }
 
+/// COLD-START reproduction: a clustered node must serve an SS-UDP datagram
+/// LOCALLY when the client presents NO resume id. After a client process restart
+/// the resume cache is empty, so the first UDP dial carries no
+/// `X-Outline-Resume` → `decide` = Local → no mesh relay is involved. This is
+/// the path reported dead on the owner's fleet, so it must round-trip here.
+#[tokio::test]
+async fn cluster_node_udp_local_no_resume_roundtrips() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-local-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+    // Single clustered node (shard 1), no peers. A cold-start client presents no
+    // resume id, so the node serves the datagram itself (Local, not relayed).
+    let (node, user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
+    let (mut socket, _) = connect_ws_h1(node.listen_addr, "/udp", None, true).await?;
+
+    let payload = b"cold-start-local-datagram";
+    let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
+    plaintext.extend_from_slice(payload);
+    socket
+        .send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext)?.into()))
+        .await?;
+
+    let reply = expect_binary_reply(&mut socket).await?;
+    let decoded = decrypt_udp_packet(std::slice::from_ref(&user), &reply)?;
+    assert!(
+        decoded.payload.ends_with(payload),
+        "cold-start SS-UDP (no resume) must round-trip locally on a clustered node",
+    );
+    socket.close(None).await?;
+    Ok(())
+}
+
+/// COLD-START reproduction for **combined-SS over XHTTP** on a clustered node —
+/// the exact intersection reported dead on the owner's fleet (combined-SS,
+/// XHTTP carrier, cluster mode, no resume id). The base path is registered in
+/// BOTH the `xhttp_ss` and `xhttp_ss_udp` tables (same path → `build_app` tags
+/// it `SsCombined`), and the real client dials the UDP leg with the hidden UDP
+/// discriminator (`SsPathKind::Udp`) over XHTTP-h2, presenting no resume id.
+/// `edge_route` decides Local, so the node serves the datagram itself and
+/// `resolve_route` must decode the discriminator to the `xhttp_ss_udp` table.
+/// The echo must round-trip.
+#[tokio::test]
+async fn cluster_node_udp_combined_xhttp_no_resume_roundtrips() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-combined-xhttp-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+    // Single clustered node (shard 1), no peers. `/ssc` is combined: the same
+    // path lives in both the `xhttp_ss` and `xhttp_ss_udp` tables.
+    let (node, _user) = spawn_cluster_node(
+        PSK,
+        1,
+        HashMap::new(),
+        Duration::from_secs(4),
+        Some("/ssc"),
+        Some("/ssc"),
+    )
+    .await?;
+
+    let url = Url::parse(&format!("http://{}/ssc", node.listen_addr))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    // Faithful cold start: the real client always dials via `connect_with_resume`,
+    // so it advertises `Resume-Capable: 1` even with no resume id. The server
+    // then mints an issued session id and the SS-UDP relay keys its NAT entry
+    // under the per-session scope (the 6d17e73 fix) — a different code path than
+    // a `Resume-Capable`-less third-party client, and the one the owner hits.
+    let (transport, issued, _downgraded) = UdpWsTransport::connect_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        CipherKind::Chacha20IetfPoly1305,
+        // sample_config's shared user "bob".
+        "secret-b",
+        None,
+        false,
+        "cluster-udp-combined-xhttp-test",
+        None,
+        // Cold start: no resume id to present.
+        None,
+        // Combined path → encode the hidden UDP discriminator in the session id.
+        Some(SsPathKind::Udp),
+    )
+    .await?;
+    assert!(issued.is_some(), "a Resume-Capable cold dial must be issued a session id");
+
+    transport.send_packet(&ss_first_chunk(target_addr, b"ping")).await?;
+    let reply = transport.read_packet().await?;
+    assert!(
+        reply.ends_with(b"ping"),
+        "cold-start combined-SS-UDP over XHTTP must round-trip locally on a clustered node: {reply:?}",
+    );
+
+    transport.close().await?;
+    Ok(())
+}
+
+/// RESUME reproduction for **combined-SS over XHTTP**: an edge relays a
+/// home-shard resume id to the home over the mesh (`SsUdpXhttp` carrier,
+/// datagram-framed), and the home must resolve the combined base path on its
+/// `xhttp_ss_udp` table. The combined counterpart of
+/// `cluster_udp_xhttp_relays_to_home` (which uses the split `/ssu` path).
+#[tokio::test]
+async fn cluster_udp_combined_xhttp_relays_to_home() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-combined-xhttp-relay-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+
+    // Home resolves the combined `/ssc` (both xhttp tables) and runs the mesh
+    // listener; the edge serves `/ssc` and relays a foreign-shard resume.
+    let (home, _user) = spawn_cluster_node(
+        PSK,
+        1,
+        HashMap::new(),
+        Duration::from_secs(4),
+        Some("/ssc"),
+        Some("/ssc"),
+    )
+    .await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) =
+        spawn_cluster_node(PSK, 2, peers, Duration::from_secs(4), Some("/ssc"), Some("/ssc"))
+            .await?;
+
+    let session_id = resume_id_for_shard(PSK, 1)?;
+    let client_resume = ClientSessionId::from_bytes(*session_id.as_bytes());
+
+    let url = Url::parse(&format!("http://{}/ssc", edge.listen_addr))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let (transport, _issued, _downgraded) = UdpWsTransport::connect_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        CipherKind::Chacha20IetfPoly1305,
+        "secret-b",
+        None,
+        false,
+        "cluster-udp-combined-xhttp-relay-test",
+        None,
+        Some(client_resume),
+        Some(SsPathKind::Udp),
+    )
+    .await?;
+
+    transport.send_packet(&ss_first_chunk(target_addr, b"ping")).await?;
+    let reply = transport.read_packet().await?;
+    assert!(
+        reply.ends_with(b"ping"),
+        "combined-SS-UDP over XHTTP must relay home→edge→client byte-exact: {reply:?}",
+    );
+
+    transport.close().await?;
+    Ok(())
+}
+
+/// COLD-START reproduction for **combined-SS over WebSocket** on a clustered
+/// node: `ws_path_ss` puts the TCP and UDP legs on one base, so the client
+/// dials `<base>/{token}` with the hidden UDP discriminator and the server
+/// routes it through `combined_websocket_upgrade` → `udp_upgrade_for_path`
+/// with the COMBINED base path. On a cold start `edge_route` decides Local, so
+/// the node must resolve the base on its `udp` (WS) table and round-trip the
+/// echo. The WS twin of `cluster_node_udp_combined_xhttp_no_resume_roundtrips`.
+#[tokio::test]
+async fn cluster_node_udp_combined_ws_no_resume_roundtrips() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-combined-ws-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+    // Single clustered node (shard 1), no peers. `/ssc` is a combined WS base.
+    let (node, _user) =
+        spawn_combined_ws_node(PSK, 1, HashMap::new(), Duration::from_secs(4), "/ssc").await?;
+
+    let url = Url::parse(&format!("ws://{}/ssc", node.listen_addr))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    // Faithful cold start (see the XHTTP twin): `connect_with_resume` with no id
+    // still advertises `Resume-Capable`, so the server mints an issued id and the
+    // SS-UDP relay uses the per-session NAT scope. The combined WS dial appends
+    // the `/{token}` UDP discriminator segment onto the base path.
+    let (transport, issued, _downgraded) = UdpWsTransport::connect_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH1,
+        CipherKind::Chacha20IetfPoly1305,
+        "secret-b",
+        None,
+        false,
+        "cluster-udp-combined-ws-test",
+        None,
+        None,
+        Some(SsPathKind::Udp),
+    )
+    .await?;
+    assert!(issued.is_some(), "a Resume-Capable cold dial must be issued a session id");
+
+    transport.send_packet(&ss_first_chunk(target_addr, b"ping")).await?;
+    let reply = transport.read_packet().await?;
+    assert!(
+        reply.ends_with(b"ping"),
+        "cold-start combined-SS-UDP over WS must round-trip locally on a clustered node: {reply:?}",
+    );
+
+    transport.close().await?;
+    Ok(())
+}
+
+/// RESUME reproduction for **combined-SS over WebSocket**: an edge relays a
+/// home-shard resume id to the home over the mesh (`SsUdp` carrier,
+/// datagram-framed), and the home must resolve the combined base path on its
+/// `udp` (WS) table. The WS twin of `cluster_udp_combined_xhttp_relays_to_home`.
+#[tokio::test]
+async fn cluster_udp_combined_ws_relays_to_home() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-combined-ws-relay-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+
+    // Home resolves the combined `/ssc` (WS `udp` table) and runs the mesh
+    // listener; the edge serves `/ssc` and relays a foreign-shard resume.
+    let (home, _user) =
+        spawn_combined_ws_node(PSK, 1, HashMap::new(), Duration::from_secs(4), "/ssc").await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge, _) = spawn_combined_ws_node(PSK, 2, peers, Duration::from_secs(4), "/ssc").await?;
+
+    let session_id = resume_id_for_shard(PSK, 1)?;
+    let client_resume = ClientSessionId::from_bytes(*session_id.as_bytes());
+
+    let url = Url::parse(&format!("ws://{}/ssc", edge.listen_addr))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let (transport, _issued, _downgraded) = UdpWsTransport::connect_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH1,
+        CipherKind::Chacha20IetfPoly1305,
+        "secret-b",
+        None,
+        false,
+        "cluster-udp-combined-ws-relay-test",
+        None,
+        Some(client_resume),
+        Some(SsPathKind::Udp),
+    )
+    .await?;
+
+    transport.send_packet(&ss_first_chunk(target_addr, b"ping")).await?;
+    let reply = transport.read_packet().await?;
+    assert!(
+        reply.ends_with(b"ping"),
+        "combined-SS-UDP over WS must relay home→edge→client byte-exact: {reply:?}",
+    );
+
+    transport.close().await?;
+    Ok(())
+}
+
+/// The padded carrier path the combined-SS-UDP padding e2e uses. Distinct from
+/// the unpadded `/ssc` the other combined tests use, so the process-global
+/// server padding config (`carrier_padding::init`, first-call-wins) never pads
+/// those carriers. Padding is config-synchronised (no on-wire capability bit),
+/// so client and server must both opt in on this path or the padded frames fail
+/// the SS-UDP decryptor.
+const COMBINED_PADDED_PATH: &str = "/ssc-pad";
+
+/// Wires the process-global padding on both sides for [`COMBINED_PADDED_PATH`]:
+/// the server pads that path, and the client's per-dial scheme parameters are
+/// installed (the actual on/off is a per-dial override the caller wraps around
+/// its dial). Both inits are first-call-wins process globals, so this is safe to
+/// call from more than one test — every caller passes the same config.
+///
+/// NOTE: `carrier_padding::init` is a process-global shared with the (ignored)
+/// `cluster_edge_throttle_hint_injects_octl_to_client` test. Under a normal
+/// `cargo test` run that test is skipped, so this config wins deterministically;
+/// only a `--include-ignored` run can race the two, and they scope to different
+/// paths so the loser's path simply stays unpadded.
+fn enable_combined_padding_globals() {
+    carrier_padding::init(PaddingConfig {
+        enabled: true,
+        min_bytes: 4,
+        max_bytes: 32,
+        cover: false,
+        cover_jitter_min_ms: 0,
+        cover_jitter_max_ms: 0,
+        paths: vec![COMBINED_PADDED_PATH.to_string()],
+        throttle_detect_enabled: false,
+        throttle_ratio_percent: 200,
+        throttle_window_secs: 1,
+        throttle_sustain_windows: 1,
+        throttle_min_bytes_per_sec: 0,
+        throttle_edge_min_bytes_per_sec: 0,
+        throttle_signal_cooldown_secs: 1,
+    });
+    init_carrier_padding(
+        CarrierPadding {
+            scheme: PaddingScheme::new(4, 32),
+            cover: false,
+            cover_jitter_min_ms: 0,
+            cover_jitter_max_ms: 0,
+        },
+        // Default off: only the padded dial (wrapped in the per-uplink override
+        // scope) pads; every other dial in the binary stays on the plain wire.
+        false,
+    );
+}
+
+/// COLD-START reproduction for **padded combined-SS UDP over XHTTP** on a
+/// clustered node — the owner's full setup (combined-SS, XHTTP carrier, cluster,
+/// padding on, no resume id). The client wraps its dial in the per-uplink
+/// padding override so `send_packet` frames each datagram; the clustered node
+/// serves it locally and must decode the padding on its `xhttp_ss_udp` route
+/// (padding resolved by the combined base path) before SS-UDP decrypt, then pad
+/// the echo. A silent decode/route mismatch would drop every datagram — the
+/// "arrives but no reply" symptom.
+#[tokio::test]
+async fn cluster_node_udp_combined_xhttp_padded_no_resume_roundtrips() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-combined-xhttp-pad-psk";
+    enable_combined_padding_globals();
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+    let (node, _user) = spawn_cluster_node(
+        PSK,
+        1,
+        HashMap::new(),
+        Duration::from_secs(4),
+        Some(COMBINED_PADDED_PATH),
+        Some(COMBINED_PADDED_PATH),
+    )
+    .await?;
+
+    let url = Url::parse(&format!("http://{}{}", node.listen_addr, COMBINED_PADDED_PATH))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    // Faithful cold start: `connect_with_resume` (no id) still advertises
+    // `Resume-Capable`, wrapped in the per-uplink padding override so the dial
+    // pads and the server mints an issued id (padded scoped-NAT path).
+    let (transport, _issued, _downgraded) =
+        outline_transport::carrier_padding::with_uplink_padding_override(
+            true,
+            UdpWsTransport::connect_with_resume(
+                &cache,
+                &url,
+                TransportMode::XhttpH2,
+                CipherKind::Chacha20IetfPoly1305,
+                "secret-b",
+                None,
+                false,
+                "cluster-udp-combined-xhttp-pad-test",
+                None,
+                None,
+                Some(SsPathKind::Udp),
+            ),
+        )
+        .await?;
+
+    transport.send_packet(&ss_first_chunk(target_addr, b"ping")).await?;
+    let reply = transport.read_packet().await?;
+    assert!(
+        reply.ends_with(b"ping"),
+        "padded cold-start combined-SS-UDP over XHTTP must round-trip locally on a clustered node: {reply:?}",
+    );
+
+    transport.close().await?;
+    Ok(())
+}
+
+/// COLD-START reproduction for **padded combined-SS UDP over WebSocket** on a
+/// clustered node: the WS twin of the XHTTP padded test. The client pads each
+/// datagram; the node routes through `combined_websocket_upgrade` →
+/// `udp_upgrade_for_path` and must resolve the padding scheme by the combined
+/// base path (`scheme_for_path(&path)` with the base, not the `/{token}` URL) or
+/// the padded datagram desyncs the decoder and is dropped.
+#[tokio::test]
+async fn cluster_node_udp_combined_ws_padded_no_resume_roundtrips() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-combined-ws-pad-psk";
+    enable_combined_padding_globals();
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+    let (node, _user) = spawn_combined_ws_node(
+        PSK,
+        1,
+        HashMap::new(),
+        Duration::from_secs(4),
+        COMBINED_PADDED_PATH,
+    )
+    .await?;
+
+    let url = Url::parse(&format!("ws://{}{}", node.listen_addr, COMBINED_PADDED_PATH))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    // Faithful cold start: `connect_with_resume` (no id) still advertises
+    // `Resume-Capable`, wrapped in the per-uplink padding override.
+    let (transport, _issued, _downgraded) =
+        outline_transport::carrier_padding::with_uplink_padding_override(
+            true,
+            UdpWsTransport::connect_with_resume(
+                &cache,
+                &url,
+                TransportMode::WsH1,
+                CipherKind::Chacha20IetfPoly1305,
+                "secret-b",
+                None,
+                false,
+                "cluster-udp-combined-ws-pad-test",
+                None,
+                None,
+                Some(SsPathKind::Udp),
+            ),
+        )
+        .await?;
+
+    transport.send_packet(&ss_first_chunk(target_addr, b"ping")).await?;
+    let reply = transport.read_packet().await?;
+    assert!(
+        reply.ends_with(b"ping"),
+        "padded cold-start combined-SS-UDP over WS must round-trip locally on a clustered node: {reply:?}",
+    );
+
+    transport.close().await?;
+    Ok(())
+}
+
+/// COLD-START reproduction for **combined-SS UDP over XHTTP-HTTP/3** on a
+/// clustered node — the owner's actual carrier (combined-SS, XHTTP over H3,
+/// cluster, no resume). The real client dials `UdpWsTransport` in XhttpH3
+/// (packet-up over QUIC) with the hidden UDP discriminator; the h3 request
+/// handler resolves the combined base on `xhttp_ss_udp` and serves it locally
+/// (cluster `edge_route` decides Local on a cold start). The h3 request path is
+/// distinct from the h1/h2 axum XHTTP handler, so it is covered separately.
+#[tokio::test]
+async fn cluster_node_udp_combined_xhttp_h3_no_resume_roundtrips() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-udp-combined-xhttp-h3-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+    let (node, _user) =
+        spawn_combined_xhttp_h3_node(PSK, 1, HashMap::new(), Duration::from_secs(4), "/ssc")
+            .await?;
+
+    // h3 mandates `https://`; the shared test root was installed on the client
+    // by `spawn_combined_xhttp_h3_node`, so the dial trusts the self-signed cert.
+    let url = Url::parse(&format!("https://localhost:{}/ssc", node.addr.port()))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    // Faithful cold start (see the h2 twin): `connect_with_resume` with no id
+    // still advertises `Resume-Capable`, exercising the issued-id / scoped-NAT
+    // path over the QUIC carrier.
+    let (transport, issued, _downgraded) = UdpWsTransport::connect_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH3,
+        CipherKind::Chacha20IetfPoly1305,
+        "secret-b",
+        None,
+        false,
+        "cluster-udp-combined-xhttp-h3-test",
+        None,
+        None,
+        Some(SsPathKind::Udp),
+    )
+    .await?;
+    assert!(issued.is_some(), "a Resume-Capable cold dial must be issued a session id");
+
+    transport.send_packet(&ss_first_chunk(target_addr, b"ping")).await?;
+    let reply = transport.read_packet().await?;
+    assert!(
+        reply.ends_with(b"ping"),
+        "cold-start combined-SS-UDP over XHTTP-h3 must round-trip locally on a clustered node: {reply:?}",
+    );
+
+    transport.close().await?;
+    Ok(())
+}
+
 /// SS-UDP datagrams relay through the mesh byte-for-byte. Each client packet is
 /// one atomic AEAD datagram; the edge length-frames it onto the mesh stream and
 /// the home de-frames it, decrypts, forwards to the target and relays the echo
@@ -1052,8 +1640,16 @@ async fn cluster_udp_relay_drops_when_home_lacks_the_path() -> Result<()> {
     // Build the home's cluster parts, then blank its `udp` route table so the
     // relayed carrier resolves to no users — an asymmetric-config home. Only the
     // mesh listener is needed (the client dials the edge, not the home's WS).
-    let home =
-        build_cluster_parts(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None, None)?;
+    let home = build_cluster_parts(
+        PSK,
+        1,
+        HashMap::new(),
+        Duration::from_secs(4),
+        None,
+        None,
+        None,
+        None,
+    )?;
     {
         let snap = home.routes.load();
         home.routes.store(Arc::new(RouteRegistry {
