@@ -246,6 +246,7 @@ async fn dial_udp_fallback(
                 limits,
             )
             .with_on_downgrade(Some(on_downgrade))
+            .with_resume_scope(uplinks.resume_scope_owned(&parent.uplink.name))
             .with_uplink_binding(binding());
             uplinks
                 .report_connection_latency(parent.index, TransportKind::Udp, dial_started.elapsed())

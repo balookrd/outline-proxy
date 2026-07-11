@@ -13,21 +13,28 @@
 //! [`super::udp_mux_core::VlessUdpMuxCore`] (shared with the raw-QUIC mux);
 //! this module contributes the WS dial path and its side-channel
 //! bookkeeping: per-target resume IDs and the H3-downgrade latch.
+//!
+//! Per-target resume IDs are held in the process-wide
+//! [`global_vless_udp_resume_cache`], keyed by `<resume-scope>#<target>`, not in
+//! a per-mux map. That durability is what lets a VLESS-UDP session survive an
+//! edge switch: when the active UDP wire moves to another edge the manager
+//! builds a fresh mux, but the parked (shard-carrying) id is still cached, so
+//! the new edge relays the resumed carrier to the session's home shard. The
+//! scope mirrors the SS-UDP resume scope (group name under `shared_resume`, else
+//! the uplink name), set via [`VlessUdpSessionMux::with_resume_scope`].
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use parking_lot::RwLock as SyncRwLock;
 use socks5_proto::TargetAddr;
 use url::Url;
 
 use crate::{
     DnsCache, TransportOperation, UplinkConnectionBinding, config::TransportMode,
-    resumption::SessionId,
+    resumption::global_vless_udp_resume_cache,
 };
 
 use super::udp::VlessUdpWsTransport;
@@ -36,6 +43,13 @@ use super::udp_mux_core::VlessUdpMuxSessionEntry;
 use super::udp_mux_core::{
     VlessUdpMuxCore, VlessUdpMuxDial, VlessUdpMuxLimits, VlessUdpMuxSession,
 };
+
+/// Durable-cache key for one VLESS-UDP `(resume-scope, target)` session id.
+/// The scope isolates cluster groups (and standalone uplinks) from each other;
+/// the target keeps every destination's parked id in its own slot.
+fn vless_udp_resume_key(scope: &str, target: &TargetAddr) -> String {
+    format!("{scope}#{target}")
+}
 
 impl VlessUdpMuxSession for VlessUdpWsTransport {
     async fn send_packet(&self, payload: &[u8]) -> Result<()> {
@@ -75,15 +89,15 @@ struct WsVlessUdpDialer {
     ipv6_first: bool,
     source: &'static str,
     keepalive_interval: Option<Duration>,
-    /// Session IDs the server assigned to each per-target VLESS-UDP-WS
-    /// session, keyed by target. On the *next* dial for the same
-    /// target the cached ID is presented as `X-Outline-Resume`, so a
-    /// feature-enabled outline-ss-rust server can re-attach the
-    /// parked `Arc<UdpSocket>` instead of binding a fresh source
-    /// port. The map is intentionally separate from the global
-    /// `outline_transport::ResumeCache` because a single uplink mux
-    /// fans out to many targets and each carries its own Session ID.
-    resume_ids: SyncRwLock<HashMap<TargetAddr, SessionId>>,
+    /// Resume scope this mux keys its durable per-target Session IDs by
+    /// (see [`global_vless_udp_resume_cache`]): the group name under
+    /// `shared_resume`, else the uplink name. `None` disables VLESS-UDP resume
+    /// entirely (no id is presented or stored) — used by test muxes that never
+    /// set a scope. On a real dial the cached id for `<scope>#<target>` is
+    /// presented as `X-Outline-Resume` so a feature-enabled outline-ss-rust
+    /// server (or its home shard, after a mesh relay) re-attaches the parked
+    /// `Arc<UdpSocket>` instead of binding a fresh source port.
+    resume_scope: Option<String>,
     /// Optional hook fired the first time a per-target dial returns a
     /// stream that was silently downgraded from H3 to H2/H1 by the
     /// transport layer. Latched: subsequent downgraded dials are
@@ -112,11 +126,20 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
     type Session = VlessUdpWsTransport;
 
     async fn dial(&self, target: &TargetAddr) -> Result<Arc<VlessUdpWsTransport>> {
-        // Cross-transport resumption: present the previously-issued
-        // Session ID for this target so a feature-enabled server can
-        // re-attach its parked `Arc<UdpSocket>` instead of binding a
-        // fresh source port.
-        let resume_request = self.resume_ids.read().get(target).copied();
+        // Cross-transport / cross-node resumption: present the previously-issued
+        // Session ID for this `<scope>#<target>` so a feature-enabled server can
+        // re-attach its parked `Arc<UdpSocket>` instead of binding a fresh
+        // source port — and, in a cluster, so the edge relays the resumed
+        // carrier to the id's home shard. The id lives in the process-wide
+        // durable cache, so it survives this mux being re-created on an edge
+        // switch.
+        let resume_key = self
+            .resume_scope
+            .as_deref()
+            .map(|scope| vless_udp_resume_key(scope, target));
+        let resume_request = resume_key
+            .as_deref()
+            .and_then(|key| global_vless_udp_resume_cache().get(key));
         let connect = VlessUdpWsTransport::connect_with_resume(
             &self.dns_cache,
             &self.url,
@@ -141,8 +164,8 @@ impl VlessUdpMuxDial for WsVlessUdpDialer {
             dial_result.with_context(|| TransportOperation::Connect {
                 target: format!("vless udp session to {target}"),
             })?;
-        if let Some(id) = issued {
-            self.resume_ids.write().insert(target.clone(), id);
+        if let Some(key) = resume_key {
+            global_vless_udp_resume_cache().store_if_issued(key, issued);
         }
         // Mirror a transport-level WS-mode downgrade (clamp or inline
         // H3→H2/H1 fallback) into the uplink-manager via the latched
@@ -231,7 +254,7 @@ impl VlessUdpSessionMux {
             ipv6_first,
             source,
             keepalive_interval,
-            resume_ids: SyncRwLock::new(HashMap::new()),
+            resume_scope: None,
             on_downgrade: None,
             downgrade_reported: AtomicBool::new(false),
             padding_override: None,
@@ -240,6 +263,16 @@ impl VlessUdpSessionMux {
         Self {
             core: VlessUdpMuxCore::new(dialer, limits, "vless udp", source),
         }
+    }
+
+    /// Set the resume scope this mux keys its durable per-target Session IDs
+    /// by: the group name under `shared_resume` (so a session migrates to the
+    /// new edge and is relayed to its home shard), else the uplink name (durable
+    /// per-uplink resume across mux re-creation). Unset (the default) disables
+    /// VLESS-UDP resume — the manager always sets it on a real acquire.
+    pub fn with_resume_scope(mut self, scope: impl Into<String>) -> Self {
+        self.core.dial.resume_scope = Some(scope.into());
+        self
     }
 
     /// Attach a downgrade-detection hook fired the first time a per-target
