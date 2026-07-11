@@ -123,6 +123,12 @@ whose uplinks are the cluster edges.
 are edges of one mesh cluster.** For a group of independent servers, sharing a
 resume id across unrelated homes would only ever miss.
 
+The shared scope covers **UDP as well as TCP**: with `shared_resume = true`,
+SS-UDP and VLESS-UDP sessions present a group-shared, shard-carrying resume id
+and migrate across an edge switch just like TCP (relayed to their home shard).
+See the "UDP cross-node migration" note in
+[`UPLINK-CONFIGURATIONS.md`](../bins/outline-ws-rust/docs/UPLINK-CONFIGURATIONS.md).
+
 ## 6. Rollout order
 
 1. Generate the PSK; prepare the `[cluster]` blocks.

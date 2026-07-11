@@ -348,6 +348,21 @@ cargo release-musl-aarch64
   (`tcp_transport/reader/transport.rs`). Не возвращай WS-watchdog/Ping на H3 ни
   на одном из них — H3/QUIC keepalive не виден как WS-фрейм, и сервер на H3 не
   пингует, так что watchdog мог бы только ложно сработать на тихой живой сессии.
+- UDP cross-node resume/migration: под `shared_resume` UDP делит групповой
+  resume-scope наравне с TCP — `resume_scope` в `manager/active_wire.rs` больше
+  НЕ исключает `udp` (прежний per-uplink workaround снят). Групповой resume id
+  несёт home-shard, поэтому UDP-wire, попавший на чужой edge, релеится на home;
+  серверная ветка здорова (per-session NAT scope на home; VLESS-UDP едет по
+  VlessTcp-носителю). SS-UDP гоняет все назначения через один `<group>#udp` id в
+  `global_resume_cache`; VLESS-UDP держит durable per-target id в отдельном
+  `global_vless_udp_resume_cache` (ключ `<group>#<target>`), прокинутом в mux
+  через `VlessUdpSessionMux::with_resume_scope`, — так каждый target мигрирует
+  сам по себе. НЕ возвращай UDP к per-uplink scope и НЕ давай VLESS-UDP один
+  общий id на все target'ы: первое убивает cross-node (Local вместо relay),
+  второе ломает home (registry keyed строго по SessionId → wrong-target adoption
+  / cross-shape reject на `Parked::VlessUdpSingle`). Клиент не кодирует shard
+  (это делает сервер через cluster-PSK); он лишь переиспользует server-issued,
+  shard-несущие id'ы дольше жизни одного mux.
 
 ## Форматирование
 
