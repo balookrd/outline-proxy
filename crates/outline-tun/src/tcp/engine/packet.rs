@@ -219,9 +219,11 @@ impl TunTcpEngine {
         // through the advertised receive window, back-pressures the client.
         let mut buffered_client_data = false;
         let abort_for_pending_limit = if !outcome.pending_payload.is_empty() {
-            state
-                .pending_client_data
-                .push_back(std::mem::take(&mut outcome.pending_payload).into());
+            // Each ready segment is already an owned `Bytes`; push them straight
+            // onto the queue the pump drains, rather than coalescing into one.
+            for payload in outcome.pending_payload.drain(..) {
+                state.pending_client_data.push_back(payload);
+            }
             buffered_client_data = true;
             exceeds_client_reassembly_limits(&state, &self.inner.tcp)
         } else {

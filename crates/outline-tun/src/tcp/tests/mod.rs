@@ -250,7 +250,7 @@ fn drain_ready_buffered_segments_reassembles_contiguous_tail() {
 
     assert!(!closed);
     assert_eq!(expected_seq, 109);
-    assert_eq!(payload, b"defghi");
+    assert_eq!(payload.concat(), b"defghi");
     assert!(pending.is_empty());
 }
 
@@ -286,7 +286,7 @@ fn drain_ready_buffered_segments_closes_on_buffered_fin() {
 
     assert!(closed);
     assert_eq!(expected_seq, 107);
-    assert_eq!(payload, b"def");
+    assert_eq!(payload.concat(), b"def");
     assert!(pending.is_empty());
 }
 
@@ -557,7 +557,7 @@ fn randomized_out_of_order_reassembly_smoke() {
             drain_ready_buffered_segments(&mut expected_seq, &mut pending, &mut reassembled);
         assert!(!closed);
         assert_eq!(expected_seq, sequence_start + total_len as u32);
-        assert_eq!(reassembled, original);
+        assert_eq!(reassembled.concat(), original);
     }
 }
 
@@ -1571,7 +1571,7 @@ fn queue_future_segment_reassembles_across_isn_wraparound() {
     let mut payload = Vec::new();
     let closed = drain_ready_buffered_segments(&mut expected_seq, &mut pending, &mut payload);
     assert!(!closed);
-    assert_eq!(payload, b"ABCDEFGHIJKL");
+    assert_eq!(payload.concat(), b"ABCDEFGHIJKL");
     assert_eq!(expected_seq, start.wrapping_add(12));
     assert!(pending.is_empty());
 }
