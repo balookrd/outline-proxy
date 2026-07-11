@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use anyhow::Result;
+use bytes::Bytes;
 
 use super::super::{TCP_DELAYED_ACK_TIMEOUT, TCP_FLAG_ACK};
 use super::packets::build_flow_ack_packet;
@@ -17,7 +18,10 @@ use super::types::{ServerFlush, TcpFlowState};
 // whether the client's half has closed. The engine is responsible for
 // the actual IO and the post-close transition.
 pub(in crate::tcp) struct DeliverOutcome {
-    pub(in crate::tcp) pending_payload: Vec<u8>,
+    /// Ready in-order client payload segments for this packet, each an
+    /// already-owned (zero-copy sliced) `Bytes`. The engine drains them straight
+    /// onto `pending_client_data` — no coalescing copy into one buffer.
+    pub(in crate::tcp) pending_payload: Vec<Bytes>,
     pub(in crate::tcp) should_close_client_half: bool,
     pub(in crate::tcp) server_flush: ServerFlush,
     pub(in crate::tcp) pending_ack: Option<Vec<u8>>,
@@ -40,7 +44,7 @@ pub(in crate::tcp) fn apply_inbound_and_flush(
     let had_buffered_segments = !state.pending_client_segments.is_empty();
     let carries_data = !trimmed.payload.is_empty();
     let segment = normalize_trimmed_segment(trimmed, state.rcv_nxt);
-    let mut pending_payload = Vec::with_capacity(trimmed.payload.len());
+    let mut pending_payload: Vec<Bytes> = Vec::new();
     let mut should_close_client_half = false;
 
     if !segment.payload.is_empty() || segment.fin {
