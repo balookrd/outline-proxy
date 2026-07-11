@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use tokio::{
     io::AsyncWriteExt,
     sync::{Notify, mpsc},
@@ -18,9 +18,8 @@ use crate::{
 use super::super::super::{
     abort::AbortOnDrop,
     connect::connect_tcp_target,
-    relay::{GREEDY_DRAIN_TARGET, try_read_now_into_slice},
+    relay::GREEDY_DRAIN_TARGET,
     resumption::{Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext},
-    scratch::TcpRelayBuf,
 };
 use super::super::carrier_padding;
 use super::ctx::{
@@ -544,7 +543,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 async fn relay_vless_upstream_to_client<Msg>(
-    mut upstream_reader: tokio::net::tcp::OwnedReadHalf,
+    upstream_reader: tokio::net::tcp::OwnedReadHalf,
     tx: mpsc::Sender<Msg>,
     make_binary: fn(Bytes) -> Msg,
     make_close: fn() -> Msg,
@@ -569,6 +568,11 @@ where
 {
     let user_counters = metrics.user_counters(&user_id);
     let target_to_client = user_counters.tcp_out(AppProtocol::Vless, protocol);
+    // Reused per-connection downlink buffer: read straight into it, then hand
+    // the filled region off with a zero-copy `split_to().freeze()`. Empty (and
+    // unallocated) until the first ready read, so a parked/idle session holds
+    // nothing; it drops when this relay call returns on park or close.
+    let mut downlink_buf = BytesMut::new();
     loop {
         // Cancel arm: when no notify is registered, substitute a never-
         // resolving future so the select degenerates to a single-arm
@@ -590,11 +594,9 @@ where
             }
             ready = upstream_reader.readable() => {
                 ready.context("failed to await vless upstream")?;
-                // Allocate from the pool only once data is ready, so an idle
-                // VLESS session holds no per-direction relay buffer; the
-                // buffer returns to the pool before the next park.
-                let mut buffer = TcpRelayBuf::take();
-                let read = match upstream_reader.try_read(&mut buffer) {
+                // Reserve into the reused buffer only once data is ready.
+                downlink_buf.reserve(GREEDY_DRAIN_TARGET);
+                let read = match upstream_reader.try_read_buf(&mut downlink_buf) {
                     Ok(read) => read,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => return Err(error).context("failed to read from vless upstream"),
@@ -609,18 +611,15 @@ where
                 // already-buffered upstream bytes into a single binary
                 // frame collapses ~14k frames/sec at 200 Mbit into
                 // ~1.5k while never yielding the runtime.
-                let mut total = read;
-                let cap = buffer.len().min(GREEDY_DRAIN_TARGET);
-                while total < cap {
-                    match try_read_now_into_slice(&mut upstream_reader, &mut buffer[total..cap])
-                        .await
-                        .context("failed to drain vless upstream")?
-                    {
-                        Some(0) => break,
-                        Some(n) => total += n,
-                        None => break,
+                while downlink_buf.len() < GREEDY_DRAIN_TARGET {
+                    match upstream_reader.try_read_buf(&mut downlink_buf) {
+                        Ok(0) => break, // EOF: send what we have
+                        Ok(_) => {},    // got more, keep pulling
+                        Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(error) => return Err(error).context("failed to drain vless upstream"),
                     }
                 }
+                let total = downlink_buf.len();
                 target_to_client.increment(total as u64);
                 // Throttle detection: count bytes pulled from the internet
                 // (inbound) for this carrier.
@@ -631,7 +630,7 @@ where
                 // WS Binary send so `total_sent` always reflects what
                 // the server has committed to send.
                 if let Some(ring) = downlink_ring.as_ref() {
-                    ring.lock().push(&buffer[..total]);
+                    ring.lock().push(&downlink_buf[..total]);
                 }
                 let used = tx.max_capacity().saturating_sub(tx.capacity());
                 metrics.observe_ws_data_channel_fill(
@@ -647,10 +646,12 @@ where
                 {
                     m.note_backlog();
                 }
-                let frame = carrier_padding::frame_downlink_message(
-                    padding,
-                    Bytes::copy_from_slice(&buffer[..total]),
-                );
+                // Zero-copy hand-off: the frozen slice shares the buffer's
+                // allocation; `frame_downlink_message` forwards it unchanged on
+                // the unpadded path. `split_to` keeps any spare tail capacity in
+                // `downlink_buf` for the next read.
+                let payload = downlink_buf.split_to(total).freeze();
+                let frame = carrier_padding::frame_downlink_message(padding, payload);
                 tx.send(make_binary(frame))
                     .await
                     .map_err(|error| anyhow!("failed to queue vless websocket frame: {error}"))?;
