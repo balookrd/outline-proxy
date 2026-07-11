@@ -1863,6 +1863,96 @@ async fn cluster_vless_udp_relays_via_vless_tcp() -> Result<()> {
     Ok(())
 }
 
+/// A VLESS-UDP session migrates across an edge switch. VLESS-UDP rides the
+/// VlessTcp mesh carrier (no dedicated `VlessUdp` kind); on carrier drop the
+/// home parks a `Parked::VlessUdpSingle` under the carrier's home-shard session
+/// id. Presenting that same id on a *different* edge relays to the same home,
+/// whose `establish_vless_udp_upstream` resumes the parked `Arc<UdpSocket>`
+/// instead of binding a fresh source port — so the target sees exactly one
+/// upstream source across the switch, mirroring the SS-UDP
+/// `cluster_udp_survives_edge_switch` guarantee.
+///
+/// This is the server half of client-side cross-node VLESS-UDP migration: the
+/// client keeps each target's issued id in the durable
+/// `global_vless_udp_resume_cache`, so a fresh mux on the new edge re-presents
+/// the shard-carrying id and the edge relays it home.
+#[tokio::test]
+async fn cluster_vless_udp_survives_edge_switch() -> Result<()> {
+    const PSK: &[u8] = b"cluster-e2e-vless-udp-switch-psk";
+    let (target_addr, sources) = spawn_echo_udp_target().await?;
+
+    // Home owns shard 1; two edges (shards 2, 3) relay the VlessTcp carrier to it.
+    let (home, _user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, None).await?;
+    let peers = HashMap::from([(ShardId::new(1).unwrap(), home.mesh_addr)]);
+    let (edge_a, _) =
+        spawn_cluster_node(PSK, 2, peers.clone(), Duration::from_secs(4), None, None).await?;
+    let (edge_b, _) = spawn_cluster_node(PSK, 3, peers, Duration::from_secs(4), None, None).await?;
+
+    let session_id = resume_id_for_shard(PSK, 1)?;
+
+    // Session #1 via edge A: the home misses (never parked) → fresh UDP socket,
+    // parked on close under the id the client presented.
+    let (mut sock_a, _) =
+        connect_ws_h1(edge_a.listen_addr, "/vless", Some(session_id), true).await?;
+    sock_a
+        .send(WsMessage::Binary(vless_udp_request(
+            CLUSTER_VLESS_UUID,
+            target_addr,
+            b"vless-a",
+        )?))
+        .await?;
+    let header = expect_binary_reply(&mut sock_a).await?;
+    assert_eq!(header.as_ref(), &[VLESS_VERSION, 0x00], "VLESS response header over edge A");
+    let echoed = expect_binary_reply(&mut sock_a).await?;
+    assert_eq!(&echoed[2..], b"vless-a", "edge A datagram relayed to target byte-exact");
+    assert_eq!(
+        sources.lock().await.len(),
+        1,
+        "first relay must open exactly one upstream source"
+    );
+    sock_a.close(None).await?;
+    drop(sock_a);
+    // Let the mesh stream finish and the home park the UDP session on the FIN.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Session #2 via edge B, same id: the home's `establish_vless_udp_upstream`
+    // resumes the parked `Parked::VlessUdpSingle` and re-attaches its socket with
+    // no fresh bind. The datagram reaches the target through the migrated session.
+    let (mut sock_b, _) =
+        connect_ws_h1(edge_b.listen_addr, "/vless", Some(session_id), true).await?;
+    sock_b
+        .send(WsMessage::Binary(vless_udp_request(
+            CLUSTER_VLESS_UUID,
+            target_addr,
+            b"vless-b",
+        )?))
+        .await?;
+    let reply = expect_binary_reply(&mut sock_b)
+        .await
+        .context("carrier B never received a reply after the edge switch")?;
+    // A resume hit re-attaches the parked socket; the home replays the VLESS
+    // response header on the new carrier, so tolerate either the header frame
+    // (followed by the datagram) or the datagram directly.
+    let echoed = if reply.as_ref() == [VLESS_VERSION, 0x00] {
+        expect_binary_reply(&mut sock_b).await?
+    } else {
+        reply
+    };
+    assert_eq!(
+        &echoed[2..],
+        b"vless-b",
+        "edge B datagram relayed to target byte-exact after the switch",
+    );
+    assert_eq!(
+        sources.lock().await.len(),
+        1,
+        "resume across the edge switch must reuse the parked UDP socket (one upstream source)",
+    );
+    sock_b.close(None).await?;
+    Ok(())
+}
+
 /// The whole edge→hint→home→OCTL→client path, end to end. With padding + throttle
 /// detection enabled on a dedicated path, a client that stalls its downlink read
 /// while the home floods it makes the edge's client-facing send block; the edge
