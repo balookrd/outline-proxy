@@ -196,6 +196,21 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
         let set = |value: u32| unsafe {
             libc::ioctl(file.as_raw_fd(), TUNSETOFFLOAD as _, value as libc::c_ulong)
         };
+        // Force an off→on toggle when we want offload on. On a *persistent* TUN
+        // device the feature flags survive a process restart, and re-applying the
+        // SAME non-zero value is a kernel no-op that does NOT clear a stuck
+        // `tx-udp-segmentation: off [requested on]` state left by the previous
+        // run — which breaks all UDP until an external `ethtool -K` (or interface
+        // recreate) drives a real feature transition. Clearing to 0 first makes
+        // the following set a genuine down→up transition, healing the stuck state
+        // automatically on every attach (the same effect as the manual ethtool
+        // toggle). No traffic flows yet — the read/write loops start after
+        // `open` returns — so the momentary clear is safe. When `offload == 0`
+        // the single `set(0)` below already clears, so the extra toggle is only
+        // needed for the enable path.
+        if offload != 0 {
+            let _ = set(0);
+        }
         if set(offload) == 0 {
             gso.tcp_gro = want_gro;
             gso.udp_gso = want_uso;
@@ -224,6 +239,23 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
             );
         }
     }
+
+    // Emit the negotiated offload state unconditionally (info) so the log always
+    // answers "is gso/gro/uso really on?" — showing both what the config
+    // *requested* and what the kernel actually *accepted* on this attach. A
+    // requested flag that reads back `false` here means the kernel (or a degraded
+    // plain attach) refused it; the `warn!`s above spell out why. Distinct
+    // message + all-flag fields make it greppable (`TUN offload`).
+    tracing::info!(
+        name = %name,
+        req_gso = config.gso,
+        req_gro = config.gro,
+        req_uso = config.uso,
+        vnet_hdr = gso.vnet_hdr,
+        rx_gro = gso.tcp_gro,
+        udp_gso = gso.udp_gso,
+        "TUN offload negotiated"
+    );
 
     Ok((file, gso))
 }

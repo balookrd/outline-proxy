@@ -97,9 +97,13 @@ uso = true   # downlink UDP USO (требует gso)
 
 > **Нюанс persistent-интерфейса.** `TUNSETOFFLOAD` ставит feature-флаги на
 > устройство, переживающие рестарт процесса на *persistent* TUN-интерфейсе.
-> Клиент всегда переустанавливает offload явно при attach (в т.ч. сбрасывает),
-> поэтому обычного рестарта достаточно — но если в `ethtool -k` видны залипшие
-> `[requested on]`, пересоздайте интерфейс.
+> Повторная установка того же значения при attach — kernel no-op: она НЕ
+> вычищает залипшее `tx-udp-segmentation: off [requested on]` от прошлого
+> запуска, из-за которого после рестарта весь UDP мёртв, пока не сделаешь
+> `ethtool -K` вручную. Поэтому при включённом offload клиент сначала явно
+> сбрасывает флаги в 0, затем ставит нужные — реальный переход off→on лечит
+> залипание автоматически на каждом attach (тот же эффект, что ручной
+> ethtool-toggle), и обычного рестарта достаточно.
 
 ## Проверка
 
@@ -117,9 +121,26 @@ uso = true   # downlink UDP USO (требует gso)
    downlink-датаграммы коалесцируются.
 5. Сравните CPU и частоту syscall'ов с выключенным состоянием при той же
    скорости: `sudo timeout 5 strace -f -c -p $(pidof outline-ws-rust)` — с `gso`
-   резко падает `write`; с `gro` на bulk-uplink — `read`. `ethtool -k` на
-   TUN-устройстве по-прежнему покажет `tcp-segmentation-offload: off` — это
-   ожидаемо: наш offload едет на `virtio_net_hdr`, а не на device-feature.
+   резко падает `write`; с `gro` на bulk-uplink — `read`.
+
+Как читать offload через `ethtool -k <tun>`:
+
+- **`gso` (downlink-TSO на write) в `ethtool` не виден.** Он едет на
+  `virtio_net_hdr` в каждом `read`/`write` (fd открыт с `IFF_VNET_HDR`) — это
+  свойство очереди, а не netdevice-фича, поэтому ни одна строка `ethtool` его не
+  отражает. Единственное подтверждение — наши лог-строки `TUN loop started` /
+  `TUN offload negotiated` (`gso=true`).
+- **`gro` и `uso` в `ethtool` видны**, потому что ставятся через `TUNSETOFFLOAD`,
+  который переключает реальные netdevice-фичи. При обоих включённых должны быть
+  `on`: `tx-checksum-ip-generic` (обязательный `TUN_F_CSUM`),
+  `tx-tcp-segmentation` + `tx-tcp6-segmentation` (`TUN_F_TSO4/6` от `gro`) и
+  `tx-udp-segmentation` (`TUN_F_USO4/6` от `uso`). Здоровый `uso` читается как
+  `tx-udp-segmentation: on` **без** хвоста `[requested on]` — форма
+  `[requested on]` и есть залипшее состояние из нюанса про persistent-интерфейс
+  выше.
+- **`generic-segmentation-offload` / `generic-receive-offload` — НЕ наши
+  флаги**: это собственные software-GSO/GRO ядра для устройства, к нашему пути
+  отношения не имеют; их состояние игнорируйте.
 
 ## Откат
 
