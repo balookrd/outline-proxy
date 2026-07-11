@@ -86,9 +86,11 @@ impl AeadCipher {
         Ok(buf)
     }
 
-    /// Decrypt `buf` (layout: `[ciphertext || tag]`) in-place.
-    /// On success `buf` is truncated to the plaintext length; no new allocation.
-    pub fn decrypt_in_place(&self, nonce: &[u8; 12], buf: &mut Vec<u8>) -> Result<()> {
+    /// Decrypt `buf` (layout: `[ciphertext || tag]`) in place and return the
+    /// plaintext length. Does NOT resize `buf` — the caller truncates its own
+    /// container (works for `Vec`, `BytesMut`, or any `&mut [u8]` backing) once
+    /// this returns. No new allocation.
+    pub fn decrypt_detached_in_place(&self, nonce: &[u8; 12], buf: &mut [u8]) -> Result<usize> {
         if buf.len() < SHADOWSOCKS_TAG_LEN {
             return Err(CryptoError::ShortCiphertext);
         }
@@ -123,7 +125,14 @@ impl AeadCipher {
                 )
                 .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_AES_256 })?,
         };
-        buf.truncate(split_at);
+        Ok(split_at)
+    }
+
+    /// Decrypt `buf` (layout: `[ciphertext || tag]`) in-place and truncate it to
+    /// the plaintext length. On success no new allocation is made.
+    pub fn decrypt_in_place(&self, nonce: &[u8; 12], buf: &mut Vec<u8>) -> Result<()> {
+        let plaintext_len = self.decrypt_detached_in_place(nonce, buf)?;
+        buf.truncate(plaintext_len);
         Ok(())
     }
 }

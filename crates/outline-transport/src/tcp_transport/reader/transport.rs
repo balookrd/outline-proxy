@@ -2,6 +2,7 @@ use crate::TransportOperation;
 use crate::TransportStream;
 use crate::{TryAgain, WsClosed};
 use anyhow::{Context, Result, bail};
+use bytes::BytesMut;
 use futures_util::StreamExt;
 use futures_util::stream::SplitStream;
 use outline_wire::padding::PaddingDecoder;
@@ -44,7 +45,7 @@ const WS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[allow(async_fn_in_trait)]
 pub trait ReadTransport: Send + 'static {
-    async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<Vec<u8>>;
+    async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<BytesMut>;
     /// Installs a handler for out-of-band carrier control signals (a
     /// server-initiated downstream-throttle notice riding a padding cover
     /// frame). Default no-op: only the padding-aware WS transport recognises
@@ -78,7 +79,7 @@ pub struct WsReadDiag {
 pub struct WsReadTransport {
     pub(super) stream: WsStream,
     pub(super) ctrl_tx: mpsc::Sender<Message>,
-    pub(super) buffer: Vec<u8>,
+    pub(super) buffer: BytesMut,
     pub(super) diag: WsReadDiag,
     /// `Some` when carrier padding is on: each inbound binary frame is run
     /// through the streaming decoder (which strips pad and yields the original
@@ -112,7 +113,7 @@ impl ReadTransport for WsReadTransport {
         self.throttle = Some(handle);
     }
 
-    async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<Vec<u8>> {
+    async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<BytesMut> {
         while self.buffer.len() < len {
             // On the H3 carrier the QUIC layer owns liveness (~120 s idle
             // timeout + 10 s keep-alive), and H3/QUIC keepalive frames never
@@ -244,8 +245,11 @@ impl ReadTransport for WsReadTransport {
             }
         }
 
-        let tail = self.buffer.split_off(len);
-        Ok(std::mem::replace(&mut self.buffer, tail))
+        // Zero-copy hand-off: `split_to` returns `[0, len)` sharing the buffer's
+        // allocation and keeps `[len, …)` (any residual payload from the same WS
+        // frame) in `self.buffer` for the next record. The old `split_off`
+        // copied that residual out into a fresh Vec on every length-block read.
+        Ok(self.buffer.split_to(len))
     }
 }
 
@@ -255,8 +259,8 @@ pub struct SocketReadTransport {
 }
 
 impl ReadTransport for SocketReadTransport {
-    async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<Vec<u8>> {
-        let mut buf = vec![0u8; len];
+    async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<BytesMut> {
+        let mut buf = BytesMut::zeroed(len);
         if let Err(err) = self.reader.read_exact(&mut buf).await {
             if err.kind() == std::io::ErrorKind::UnexpectedEof {
                 *closed_cleanly = true;

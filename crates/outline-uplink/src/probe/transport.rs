@@ -127,7 +127,7 @@ async fn connect_probe_tcp_inner(
                 TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
                     .with_request_salt(request_salt)
                     .with_diag(diag);
-            Ok((TcpWriter::Ws(writer), TcpReader::Ws(reader), downgraded_from))
+            Ok((TcpWriter::Ws(writer), TcpReader::Ws(Box::new(reader)), downgraded_from))
         },
         UplinkTransport::Vless => {
             let ws_stream = crate::dial::dial_in_uplink_scope(

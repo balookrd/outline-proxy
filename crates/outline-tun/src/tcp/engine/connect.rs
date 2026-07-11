@@ -227,5 +227,5 @@ async fn do_tcp_ss_setup(
         .send_chunk(&target.to_wire_bytes()?)
         .await
         .context("failed to send target address")?;
-    Ok((TcpWriter::Ws(writer), TcpReader::Ws(reader)))
+    Ok((TcpWriter::Ws(writer), TcpReader::Ws(Box::new(reader))))
 }

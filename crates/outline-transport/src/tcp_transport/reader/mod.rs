@@ -13,7 +13,7 @@ use crate::downlink_replay::{
     FRAME_HEADER_LEN_V1 as DOWNLINK_REPLAY_HEADER_LEN_V1,
 };
 use anyhow::{Result, anyhow, bail};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use outline_wire::padding::PaddingDecoder;
 use outline_wire::resume::{FRAME_LEN_V1, ParseResult, parse_v1};
 use shadowsocks_crypto::{
@@ -104,7 +104,7 @@ impl TcpShadowsocksReader<WsReadTransport> {
             transport: WsReadTransport {
                 stream,
                 ctrl_tx,
-                buffer: Vec::new(),
+                buffer: BytesMut::new(),
                 diag: WsReadDiag::default(),
                 padding: carrier_padding::effective_carrier_padding()
                     .scheme
@@ -414,7 +414,7 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
                         self.up_acked = Some(up_acked);
                         self.expect_ack_prefix = false;
                         if payload_buf.len() > FRAME_LEN_V1 {
-                            return Ok(Bytes::from(payload_buf).slice(FRAME_LEN_V1..));
+                            return Ok(payload_buf.freeze().slice(FRAME_LEN_V1..));
                         }
                         // Exact 14 bytes (the expected case): loop to
                         // fetch the next chunk so callers never see an
@@ -425,7 +425,7 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
                     err => return Err(ack_prefix_parse_error(err, payload_buf.len())),
                 }
             }
-            return Ok(Bytes::from(payload_buf));
+            return Ok(payload_buf.freeze());
         }
     }
 
@@ -438,7 +438,7 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
     /// Shared between [`Self::read_chunk`] and
     /// [`Self::consume_ack_prefix`] so the AEAD framing logic stays
     /// in one place.
-    async fn read_one_decrypted_chunk(&mut self) -> Result<Vec<u8>> {
+    async fn read_one_decrypted_chunk(&mut self) -> Result<BytesMut> {
         if self.cipher_state.is_none() {
             let salt = self
                 .transport
@@ -504,11 +504,13 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
     /// Decrypt `buf` (layout: `[ciphertext || tag]`) in-place with the session
     /// cipher and advance the nonce.  No new allocation — `buf` is truncated to
     /// plaintext length on success.
-    fn decrypt_in_place_session(&mut self, buf: &mut Vec<u8>) -> Result<()> {
-        self.cipher_state
+    fn decrypt_in_place_session(&mut self, buf: &mut BytesMut) -> Result<()> {
+        let plaintext_len = self
+            .cipher_state
             .as_ref()
             .ok_or_else(|| anyhow!("missing session cipher"))?
-            .decrypt_in_place(&self.nonce, buf)?;
+            .decrypt_detached_in_place(&self.nonce, buf)?;
+        buf.truncate(plaintext_len);
         increment_nonce(&mut self.nonce)?;
         Ok(())
     }
