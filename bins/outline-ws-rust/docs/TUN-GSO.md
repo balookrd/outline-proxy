@@ -99,14 +99,13 @@ needs `GSO_UDP_L4` (kernel ≥ 5.18). `gro` and `uso` can be toggled independent
 of each other and of `gso`.
 
 > **Persistent interface caveat.** `TUNSETOFFLOAD` sets feature flags on the
-> device that survive a process restart on a *persistent* TUN interface.
-> Re-applying the same value on attach is a kernel no-op: it does NOT clear a
-> stuck `tx-udp-segmentation: off [requested on]` left by the previous run,
-> which kills all UDP after a restart until a manual `ethtool -K`. So when
-> offload is enabled the client first clears the flags to 0, then sets the
-> desired ones — a real off→on transition that heals the stuck state
-> automatically on every attach (the same effect as the manual ethtool toggle),
-> making a plain restart enough.
+> device that survive a process restart on a *persistent* TUN interface. The
+> client re-applies the offload state explicitly on every attach (including
+> clearing it to `0` when disabled), so a plain restart normally suffices. If
+> you ever see a stuck `tx-udp-segmentation: off [requested on]` in `ethtool -k`
+> after a restart, drive a real feature transition with `ethtool -K <tun>
+> tx-udp-segmentation off …` (then restart), or recreate the interface
+> (`ip link del` / `ip tuntap add`).
 
 ## Validating
 
