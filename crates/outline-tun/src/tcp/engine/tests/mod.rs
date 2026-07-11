@@ -2052,14 +2052,14 @@ async fn handle_test_tcp_upstream(
     let mut reader = TcpShadowsocksReader::new(stream, cipher, &master_key, lifetime, ctrl_tx)
         .with_request_salt(request_salt);
 
-    target_tx.send(reader.read_chunk().await?).unwrap();
+    target_tx.send(reader.read_chunk().await?.to_vec()).unwrap();
 
     loop {
         tokio::select! {
             inbound = reader.read_chunk() => {
                 match inbound {
                     Ok(chunk) => {
-                        chunk_tx.send(chunk).unwrap();
+                        chunk_tx.send(chunk.to_vec()).unwrap();
                     }
                     Err(_) => break,
                 }

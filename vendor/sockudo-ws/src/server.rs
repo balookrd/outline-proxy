@@ -53,7 +53,7 @@ use bytes::Bytes;
 
 #[cfg(any(feature = "http2", feature = "http3"))]
 use crate::extended_connect::{
-    build_extended_connect_error, build_extended_connect_response, ExtendedConnectRequest,
+    ExtendedConnectRequest, build_extended_connect_error, build_extended_connect_response,
 };
 
 // ============================================================================
@@ -263,10 +263,10 @@ impl WebSocketServer<Http1> {
                 match server.accept(stream).await {
                     Ok((ws, handshake)) => {
                         handler(ws, handshake).await;
-                    }
+                    },
                     Err(e) => {
                         eprintln!("WebSocket handshake error: {}", e);
-                    }
+                    },
                 }
             });
         }
@@ -461,9 +461,7 @@ where
         // Accept the WebSocket upgrade
         let response = build_extended_connect_response(ws_req.subprotocols.as_deref(), None);
 
-        let send_stream = respond
-            .send_response(response, false)
-            .map_err(Error::from)?;
+        let send_stream = respond.send_response(response, false).map_err(Error::from)?;
 
         let recv_stream = request.into_body();
 
@@ -518,9 +516,7 @@ where
 
         let response = build_extended_connect_response(ws_req.subprotocols.as_deref(), None);
 
-        let send_stream = respond
-            .send_response(response, false)
-            .map_err(Error::from)?;
+        let send_stream = respond.send_response(response, false).map_err(Error::from)?;
 
         let recv_stream = request.into_body();
         let h2_stream = Stream::<Http2>::from_h2(send_stream, recv_stream);
@@ -727,7 +723,7 @@ where
                     Err(e) => {
                         eprintln!("Failed to resolve request: {}", e);
                         continue;
-                    }
+                    },
                 };
 
                 let handler = handler.clone();
@@ -738,14 +734,14 @@ where
                         eprintln!("HTTP/3 request error: {}", e);
                     }
                 });
-            }
+            },
             Ok(None) => break,
             Err(e) => {
                 if !is_normal_h3_shutdown(&e) {
                     eprintln!("HTTP/3 accept error: {}", e);
                 }
                 break;
-            }
+            },
         }
     }
 
@@ -779,7 +775,7 @@ where
                     Err(e) => {
                         eprintln!("Failed to resolve request: {}", e);
                         continue;
-                    }
+                    },
                 };
 
                 let handler = handler.clone();
@@ -794,14 +790,14 @@ where
                         eprintln!("HTTP/3 request error: {}", e);
                     }
                 });
-            }
+            },
             Ok(None) => break,
             Err(e) => {
                 if !is_normal_h3_shutdown(&e) {
                     eprintln!("HTTP/3 accept error: {}", e);
                 }
                 break;
-            }
+            },
         }
     }
 

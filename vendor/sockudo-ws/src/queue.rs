@@ -292,7 +292,7 @@ impl<T, const N: usize> MpmcQueue<T, N> {
                         // Signal completion - consumers waiting for seq == head+1 will proceed
                         self.sequences[idx].store(head.wrapping_add(1), Ordering::Release);
                         return Ok(());
-                    }
+                    },
                     Err(h) => head = h, // Another producer won, retry with new head
                 }
             } else if diff < 0 {
@@ -337,7 +337,7 @@ impl<T, const N: usize> MpmcQueue<T, N> {
                         // sequence = tail + N means producers looking at head = tail + N can use it
                         self.sequences[idx].store(tail.wrapping_add(N), Ordering::Release);
                         return Some(item);
-                    }
+                    },
                     Err(t) => tail = t, // Another consumer won, retry with new tail
                 }
             } else if diff < 0 {

@@ -437,12 +437,12 @@ impl VlessTcpReader {
         }
     }
 
-    pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
+    pub async fn read_chunk(&mut self) -> Result<Bytes> {
         // Fast path for the v1.1 orchestrator: hand back any bytes
         // that arrived bundled with a previously-consumed control
         // frame so the caller sees them as the first data chunk.
         if let Some(tail) = self.pending_tail.take() {
-            return Ok(tail);
+            return Ok(Bytes::from(tail));
         }
         self.ensure_header_parsed().await?;
         if self.expect_ack_prefix {
@@ -451,7 +451,7 @@ impl VlessTcpReader {
                     let buffered = std::mem::take(&mut self.header_buf);
                     if let Some(extras) = self.try_consume_prefix_inline(&buffered)? {
                         if !extras.is_empty() {
-                            return Ok(extras);
+                            return Ok(Bytes::from(extras));
                         }
                         // Exact 14-byte prefix; drop into the data
                         // path and read the next frame.
@@ -472,13 +472,13 @@ impl VlessTcpReader {
         // Hand it back here before touching the network so the caller
         // never blocks waiting for a frame that already arrived.
         if !self.header_buf.is_empty() {
-            return Ok(std::mem::take(&mut self.header_buf));
+            return Ok(Bytes::from(std::mem::take(&mut self.header_buf)));
         }
         let bytes = match self.source.recv_frame().await? {
             None => return Err(anyhow::Error::from(WsClosed)),
             Some(b) => b,
         };
-        Ok(bytes.into())
+        Ok(bytes)
     }
 
     /// Drives `recv_frame` until the VLESS response header (`[version,

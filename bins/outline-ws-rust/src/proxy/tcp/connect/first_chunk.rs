@@ -49,6 +49,9 @@ pub(super) async fn await_first_upstream_chunk(
 
     loop {
         if *client_half_closed {
+            // Chunk 0 is read once per connection; the small `to_vec` keeps this
+            // orchestrator on `Vec` while the per-frame downlink read stays the
+            // zero-copy `Bytes` from `read_chunk`.
             return tokio::time::timeout_at(deadline, active.reader.read_chunk())
                 .await
                 .map_err(|_| {
@@ -56,12 +59,13 @@ pub(super) async fn await_first_upstream_chunk(
                         "upstream did not respond within {}s (chunk 0)",
                         attempt_timeout.as_secs(),
                     )
-                })?;
+                })?
+                .map(|chunk| chunk.to_vec());
         }
 
         tokio::select! {
             result = active.reader.read_chunk() => {
-                return result;
+                return result.map(|chunk| chunk.to_vec());
             }
             n_res = client_read.read(rbuf) => {
                 match n_res {
