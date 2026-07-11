@@ -267,7 +267,7 @@ pub(in crate::tcp) fn exceeds_client_reassembly_limits(
 pub(in crate::tcp) fn drain_ready_buffered_segments(
     expected_seq: &mut u32,
     pending_segments: &mut VecDeque<BufferedClientSegment>,
-    pending_payload: &mut Vec<u8>,
+    pending_payload: &mut Vec<Bytes>,
 ) -> bool {
     loop {
         let Some(segment) = pending_segments.front() else {
@@ -300,7 +300,7 @@ pub(in crate::tcp) fn drain_ready_buffered_segments(
 
 pub(in crate::tcp) fn drain_ready_buffered_segments_from_state(
     state: &mut TcpFlowState,
-    pending_payload: &mut Vec<u8>,
+    pending_payload: &mut Vec<Bytes>,
 ) -> bool {
     drain_ready_buffered_segments(
         &mut state.rcv_nxt,
@@ -312,12 +312,14 @@ pub(in crate::tcp) fn drain_ready_buffered_segments_from_state(
 pub(in crate::tcp) fn apply_client_segment(
     expected_seq: &mut u32,
     segment: ClientSegmentView,
-    pending_payload: &mut Vec<u8>,
+    pending_payload: &mut Vec<Bytes>,
     should_close_client_half: &mut bool,
 ) -> bool {
     if !segment.payload.is_empty() {
         *expected_seq = expected_seq.wrapping_add(segment.payload.len() as u32);
-        pending_payload.extend_from_slice(&segment.payload);
+        // Move the already-owned (zero-copy sliced) payload onto the ready
+        // queue instead of copying it into a coalescing `Vec<u8>`.
+        pending_payload.push(segment.payload);
     }
     if segment.fin {
         *expected_seq = expected_seq.wrapping_add(1);
