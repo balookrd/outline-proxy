@@ -14,7 +14,7 @@ use outline_wire::ss2022::{
 use crate::cipher_kind::CipherKind;
 use crate::error::{CryptoError, Result};
 
-use super::aead::{SHADOWSOCKS_TAG_LEN, decrypt, encrypt};
+use super::aead::{SHADOWSOCKS_TAG_LEN, decrypt, encrypt_into};
 use super::keys::derive_subkey;
 
 #[cfg(test)]
@@ -98,12 +98,14 @@ pub(crate) fn encrypt_udp_packet_2022_aes(
     let nonce = udp_nonce_from_separate_header(&separate_header);
 
     let key = derive_subkey(cipher, master_key, &separate_header[..8])?;
-    let encrypted_body = encrypt(cipher, &key[..cipher.key_len()], &nonce, plaintext)?;
     let encrypted_header = encrypt_udp_separate_header(cipher, master_key, &separate_header)?;
 
-    let mut packet = Vec::with_capacity(16 + encrypted_body.len());
+    // Encrypt the body straight into the packet after the 16-byte header rather
+    // than into a throwaway `Vec` that is then copied in — the ciphertext is a
+    // full datagram payload, so the second copy scaled with UDP throughput.
+    let mut packet = Vec::with_capacity(16 + plaintext.len() + SHADOWSOCKS_TAG_LEN);
     packet.extend_from_slice(&encrypted_header);
-    packet.extend_from_slice(&encrypted_body);
+    encrypt_into(cipher, &key[..cipher.key_len()], &nonce, plaintext, &mut packet)?;
     Ok(packet)
 }
 
@@ -219,17 +221,19 @@ pub(crate) fn encrypt_udp_packet_2022_chacha(
     }
     let mut nonce = [0u8; 24];
     rand::rng().fill_bytes(&mut nonce);
-    let mut buffer = plaintext.to_vec();
     let cipher = XChaCha20Poly1305::new_from_slice(master_key)
         .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_XCHACHA })?;
-    let tag = cipher
-        .encrypt_in_place_detached(XChaNonce::from_slice(&nonce), b"", &mut buffer)
-        .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_XCHACHA })?;
-    buffer.extend_from_slice(&tag);
 
-    let mut packet = Vec::with_capacity(nonce.len() + buffer.len());
+    // Encrypt in place inside the final packet (nonce prefix + plaintext region)
+    // instead of into a throwaway `buffer` that is then copied in — the second
+    // copy was a full datagram payload, scaling with UDP throughput.
+    let mut packet = Vec::with_capacity(nonce.len() + plaintext.len() + SHADOWSOCKS_TAG_LEN);
     packet.extend_from_slice(&nonce);
-    packet.extend_from_slice(&buffer);
+    packet.extend_from_slice(plaintext);
+    let tag = cipher
+        .encrypt_in_place_detached(XChaNonce::from_slice(&nonce), b"", &mut packet[nonce.len()..])
+        .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_XCHACHA })?;
+    packet.extend_from_slice(&tag);
     Ok(packet)
 }
 

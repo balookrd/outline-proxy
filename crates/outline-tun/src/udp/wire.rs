@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Result, anyhow, bail};
+use bytes::Bytes;
 
 use crate::vnet::{VIRTIO_NET_HDR_F_NEEDS_CSUM, VIRTIO_NET_HDR_GSO_UDP_L4, VirtioNetHdr};
 use crate::wire::{
@@ -299,16 +300,27 @@ pub(super) fn build_gso_udp_packet(
     source_port: u16,
     destination_port: u16,
     gso_size: u16,
-    payload: &[u8],
+    segments: &[Bytes],
 ) -> Result<(Vec<u8>, VirtioNetHdr)> {
     match (version, source_ip, destination_ip) {
         (IpVersion::V4, IpAddr::V4(src), IpAddr::V4(dst)) => {
-            build_ipv4_udp_gso_packet(src, dst, source_port, destination_port, gso_size, payload)
+            build_ipv4_udp_gso_packet(src, dst, source_port, destination_port, gso_size, segments)
         },
         (IpVersion::V6, IpAddr::V6(src), IpAddr::V6(dst)) => {
-            build_ipv6_udp_gso_packet(src, dst, source_port, destination_port, gso_size, payload)
+            build_ipv6_udp_gso_packet(src, dst, source_port, destination_port, gso_size, segments)
         },
         _ => bail!("UDP GSO address family mismatch"),
+    }
+}
+
+/// Copy the batch's datagrams contiguously into the packet's payload region,
+/// starting at `start`. This is the sole payload copy — the caller no longer
+/// coalesces the `Bytes` into an intermediate buffer first.
+fn write_segments(packet: &mut [u8], start: usize, segments: &[Bytes]) {
+    let mut offset = start;
+    for segment in segments {
+        packet[offset..offset + segment.len()].copy_from_slice(segment);
+        offset += segment.len();
     }
 }
 
@@ -318,9 +330,10 @@ fn build_ipv4_udp_gso_packet(
     source_port: u16,
     destination_port: u16,
     gso_size: u16,
-    payload: &[u8],
+    segments: &[Bytes],
 ) -> Result<(Vec<u8>, VirtioNetHdr)> {
-    let udp_len = UDP_HEADER_LEN + payload.len();
+    let payload_len: usize = segments.iter().map(Bytes::len).sum();
+    let udp_len = UDP_HEADER_LEN + payload_len;
     let total_len = IPV4_HEADER_LEN + udp_len;
     if total_len > usize::from(u16::MAX) {
         bail!("UDP GSO super-packet too large for IPv4 total_len");
@@ -337,7 +350,7 @@ fn build_ipv4_udp_gso_packet(
     packet[udp_offset..udp_offset + 2].copy_from_slice(&source_port.to_be_bytes());
     packet[udp_offset + 2..udp_offset + 4].copy_from_slice(&destination_port.to_be_bytes());
     packet[udp_offset + 4..udp_offset + 6].copy_from_slice(&(udp_len as u16).to_be_bytes());
-    packet[udp_offset + UDP_HEADER_LEN..].copy_from_slice(payload);
+    write_segments(&mut packet, udp_offset + UDP_HEADER_LEN, segments);
     // Partial (pseudo-header) checksum — the kernel adds the L4 byte checksum
     // and finalises it per segment.
     let partial = ipv4_udp_partial_checksum(source_ip, destination_ip, udp_len);
@@ -364,9 +377,10 @@ fn build_ipv6_udp_gso_packet(
     source_port: u16,
     destination_port: u16,
     gso_size: u16,
-    payload: &[u8],
+    segments: &[Bytes],
 ) -> Result<(Vec<u8>, VirtioNetHdr)> {
-    let udp_len = UDP_HEADER_LEN + payload.len();
+    let payload_len: usize = segments.iter().map(Bytes::len).sum();
+    let udp_len = UDP_HEADER_LEN + payload_len;
     if udp_len > usize::from(u16::MAX) {
         bail!("UDP GSO super-packet too large for IPv6 payload_len");
     }
@@ -383,7 +397,7 @@ fn build_ipv6_udp_gso_packet(
     packet[udp_offset..udp_offset + 2].copy_from_slice(&source_port.to_be_bytes());
     packet[udp_offset + 2..udp_offset + 4].copy_from_slice(&destination_port.to_be_bytes());
     packet[udp_offset + 4..udp_offset + 6].copy_from_slice(&(udp_len as u16).to_be_bytes());
-    packet[udp_offset + UDP_HEADER_LEN..].copy_from_slice(payload);
+    write_segments(&mut packet, udp_offset + UDP_HEADER_LEN, segments);
     let partial = ipv6_udp_partial_checksum(source_ip, destination_ip, udp_len);
     packet[udp_offset + 6..udp_offset + 8].copy_from_slice(&partial.to_be_bytes());
 
