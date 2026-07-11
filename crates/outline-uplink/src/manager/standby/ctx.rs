@@ -23,8 +23,11 @@ pub(super) const STANDBY_WS_PEEK_TIMEOUT: Duration = Duration::from_millis(1);
 /// configured URL + effective mode + metric labels); this struct bundles the
 /// per-transport differences so the algorithm can be written once.
 ///
-/// Shadowsocks UDP does not fit this model (no WS pool) and is handled
-/// separately in `acquire_udp_standby_or_connect`.
+/// The SS-UDP *acquire* is bespoke (`acquire_udp_standby_or_connect`) rather
+/// than a generic take, but it DOES reuse this UDP pool — so on a combined-SS
+/// uplink the refill must dial each pool's leg with the matching discriminator
+/// (`refill::StandbyCtx::pool_ss_leg`); a UDP pool filled with TCP-leg streams
+/// silently drops every reused datagram.
 pub(super) struct StandbyCtx<'a> {
     pub(super) manager: &'a UplinkManager,
     pub(super) uplink: &'a Uplink,
