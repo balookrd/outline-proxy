@@ -66,7 +66,10 @@ impl TcpWriter {
 
 /// Owns either a WebSocket or a plain-socket Shadowsocks reader.
 pub enum TcpReader {
-    Ws(WsTcpReader),
+    // Boxed: `WsTcpReader` is by far the largest variant (WS stream + decode
+    // buffer + padding decoder + diag), so inlining it would bloat every
+    // `TcpReader` move. The box keeps the enum small.
+    Ws(Box<WsTcpReader>),
     Socket(SocketTcpReader),
     Vless(VlessTcpReader),
 }
@@ -74,7 +77,7 @@ pub enum TcpReader {
 impl TcpReader {
     pub fn with_request_salt(self, salt: Option<[u8; 32]>) -> Self {
         match self {
-            Self::Ws(r) => Self::Ws(r.with_request_salt(salt)),
+            Self::Ws(r) => Self::Ws(Box::new(r.with_request_salt(salt))),
             Self::Socket(r) => Self::Socket(r.with_request_salt(salt)),
             Self::Vless(r) => Self::Vless(r),
         }
@@ -87,7 +90,7 @@ impl TcpReader {
     pub fn with_throttle_handle(self, handle: crate::ThrottleSignalHandle) -> Self {
         match self {
             Self::Vless(r) => Self::Vless(r.with_throttle_handle(handle)),
-            Self::Ws(r) => Self::Ws(r.with_throttle_handle(handle)),
+            Self::Ws(r) => Self::Ws(Box::new(r.with_throttle_handle(handle))),
             other => other,
         }
     }
@@ -97,7 +100,7 @@ impl TcpReader {
     /// so this is a no-op for `Vless` here.
     pub fn with_diag(self, diag: WsReadDiag) -> Self {
         match self {
-            Self::Ws(r) => Self::Ws(r.with_diag(diag)),
+            Self::Ws(r) => Self::Ws(Box::new(r.with_diag(diag))),
             other => other,
         }
     }
@@ -109,7 +112,7 @@ impl TcpReader {
     /// unconditionally regardless of negotiation outcome.
     pub fn with_expect_ack_prefix(self, expect: bool) -> Self {
         match self {
-            Self::Ws(r) => Self::Ws(r.with_expect_ack_prefix(expect)),
+            Self::Ws(r) => Self::Ws(Box::new(r.with_expect_ack_prefix(expect))),
             Self::Vless(r) => Self::Vless(r.with_expect_ack_prefix(expect)),
             other => other,
         }
@@ -120,7 +123,7 @@ impl TcpReader {
     /// to the WS / VLESS variants; Socket ignores it.
     pub fn with_expect_downlink_replay(self, expect: bool) -> Self {
         match self {
-            Self::Ws(r) => Self::Ws(r.with_expect_downlink_replay(expect)),
+            Self::Ws(r) => Self::Ws(Box::new(r.with_expect_downlink_replay(expect))),
             Self::Vless(r) => Self::Vless(r.with_expect_downlink_replay(expect)),
             other => other,
         }

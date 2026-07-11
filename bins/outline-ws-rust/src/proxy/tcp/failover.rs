@@ -761,7 +761,7 @@ async fn do_tcp_ss_setup(
             .await?;
     let reader = TcpShadowsocksReader::new(ws_stream, setup.cipher, &master_key, lifetime, ctrl_tx);
     let mut writer = TcpWriter::Ws(writer);
-    let reader = TcpReader::Ws(reader)
+    let reader = TcpReader::Ws(Box::new(reader))
         .with_request_salt(writer.request_salt())
         .with_diag(diag)
         .with_expect_ack_prefix(expect_ack_prefix)
