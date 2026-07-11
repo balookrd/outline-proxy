@@ -236,19 +236,22 @@ async fn xhttp_h3_post(
         );
     }
 
-    let mut body = BytesMut::new();
+    let mut body_parts: Vec<Bytes> = Vec::new();
+    let mut body_len = 0usize;
     loop {
         match stream.recv_data().await {
             Ok(Some(chunk)) => {
                 let mut chunk = chunk;
-                while chunk.has_remaining() {
-                    let read = chunk.chunk();
-                    if body.len() + read.len() > MAX_POST_BYTES {
-                        return finish_with_status(stream, StatusCode::PAYLOAD_TOO_LARGE).await;
-                    }
-                    body.extend_from_slice(read);
-                    let consumed = read.len();
-                    chunk.advance(consumed);
+                let remaining = chunk.remaining();
+                if body_len + remaining > MAX_POST_BYTES {
+                    return finish_with_status(stream, StatusCode::PAYLOAD_TOO_LARGE).await;
+                }
+                if remaining > 0 {
+                    // Zero-copy `split_to` for the h3-quinn `Bytes`-backed buf;
+                    // the common single-DATA-frame POST is then forwarded with no
+                    // copy at all (the `1 =>` arm below moves it out).
+                    body_parts.push(chunk.copy_to_bytes(remaining));
+                    body_len += remaining;
                 }
             },
             Ok(None) => break,
@@ -259,7 +262,17 @@ async fn xhttp_h3_post(
         }
     }
 
-    let bytes = body.freeze();
+    let bytes = match body_parts.len() {
+        0 => Bytes::new(),
+        1 => body_parts.pop().expect("len == 1"),
+        _ => {
+            let mut acc = BytesMut::with_capacity(body_len);
+            for part in &body_parts {
+                acc.extend_from_slice(part);
+            }
+            acc.freeze()
+        },
+    };
     debug!(
         method = "POST", version = ?version, base = %ctx.base_path, %peer_addr,
         session = %session_id, seq, len = bytes.len(), fin,
@@ -384,16 +397,13 @@ async fn xhttp_h3_stream_one(
         loop {
             match recv_half.recv_data().await {
                 Ok(Some(chunk)) => {
+                    // `copy_to_bytes` is a zero-copy `split_to` for the h3-quinn
+                    // `Bytes`-backed buf — forward the DATA frame without copying
+                    // every segment into a fresh `BytesMut`.
                     let mut chunk = chunk;
-                    let mut acc = BytesMut::with_capacity(chunk.remaining());
-                    while chunk.has_remaining() {
-                        let segment = chunk.chunk();
-                        acc.extend_from_slice(segment);
-                        let consumed = segment.len();
-                        chunk.advance(consumed);
-                    }
-                    if !acc.is_empty()
-                        && session_for_uplink.ingest_uplink_inorder(acc.freeze()).is_err()
+                    let remaining = chunk.remaining();
+                    let bytes = chunk.copy_to_bytes(remaining);
+                    if !bytes.is_empty() && session_for_uplink.ingest_uplink_inorder(bytes).is_err()
                     {
                         break;
                     }

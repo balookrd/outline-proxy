@@ -8,6 +8,7 @@ use crate::wire::test_utils::{
     corrupt_ip_length_field, corrupt_udp_length_field, random_payload, seeded_rng,
 };
 use crate::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN, IpVersion, checksum16};
+use bytes::Bytes;
 use rand::Rng;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -282,7 +283,7 @@ fn gso_udp_partial_checksum_finalizes_to_full_ipv4() {
         443,
         50000,
         payload.len() as u16,
-        payload,
+        &[Bytes::copy_from_slice(payload)],
     )
     .unwrap();
     assert_eq!(vnet.gso_type, 5); // VIRTIO_NET_HDR_GSO_UDP_L4
@@ -316,7 +317,7 @@ fn gso_udp_partial_checksum_finalizes_to_full_ipv6() {
         5353,
         41000,
         payload.len() as u16,
-        payload,
+        &[Bytes::copy_from_slice(payload)],
     )
     .unwrap();
     assert_eq!(vnet.gso_type, 5);
@@ -327,6 +328,47 @@ fn gso_udp_partial_checksum_finalizes_to_full_ipv6() {
         full_csum,
         "kernel-finalised partial UDP checksum must equal the full checksum (v6)"
     );
+}
+
+#[test]
+fn gso_udp_assembles_multiple_segments_contiguously() {
+    let src = Ipv4Addr::new(9, 9, 9, 9);
+    let dst = Ipv4Addr::new(10, 0, 0, 5);
+    // USO coalesces equal-sized datagrams; use three of the same length.
+    let d0 = Bytes::from_static(b"segment-zero-payload-0");
+    let d1 = Bytes::from_static(b"segment-one--payload-1");
+    let d2 = Bytes::from_static(b"segment-two--payload-2");
+    assert_eq!(d0.len(), d1.len());
+    assert_eq!(d1.len(), d2.len());
+    let segments = [d0.clone(), d1.clone(), d2.clone()];
+
+    let mut concat = Vec::new();
+    concat.extend_from_slice(&d0);
+    concat.extend_from_slice(&d1);
+    concat.extend_from_slice(&d2);
+
+    let (gso, vnet) = build_gso_udp_packet(
+        IpVersion::V4,
+        IpAddr::V4(src),
+        IpAddr::V4(dst),
+        443,
+        50000,
+        d0.len() as u16,
+        &segments,
+    )
+    .unwrap();
+    assert_eq!(vnet.gso_size, d0.len() as u16);
+
+    // The builder must assemble the batch's datagrams contiguously — the
+    // payload region equals their exact concatenation (UDP header is 8 bytes).
+    let payload_region = &gso[IPV4_HEADER_LEN + 8..];
+    assert_eq!(payload_region, concat.as_slice());
+
+    // Partial checksum still finalises to the full checksum over the whole payload.
+    let full = build_ipv4_udp_packet(src, dst, 443, 50000, &concat).unwrap();
+    let full_udp = &full[IPV4_HEADER_LEN..];
+    let full_csum = u16::from_be_bytes([full_udp[6], full_udp[7]]);
+    assert_eq!(checksum16(&gso[IPV4_HEADER_LEN..]), full_csum);
 }
 
 /// Eviction-selection logic shared by the tunnelled and direct UDP flow

@@ -3,7 +3,7 @@ use rand::rand_core::RngCore;
 use crate::cipher_kind::CipherKind;
 use crate::error::{CryptoError, Result};
 
-use super::aead::{SHADOWSOCKS_TAG_LEN, decrypt, encrypt};
+use super::aead::{SHADOWSOCKS_TAG_LEN, decrypt, encrypt_into};
 use super::keys::derive_subkey;
 use super::ss2022_udp::{decrypt_udp_packet_2022, encrypt_udp_packet_2022};
 
@@ -23,10 +23,12 @@ pub fn encrypt_udp_packet(
     let salt = &mut salt_buf[..salt_len];
     rand::rng().fill_bytes(salt);
     let key = derive_subkey(cipher, master_key, salt)?;
-    let mut encrypted = encrypt(cipher, &key[..cipher.key_len()], &UDP_ZERO_NONCE, payload)?;
-    let mut packet = Vec::with_capacity(salt_len + encrypted.len());
+    // Encrypt straight into the packet after the salt rather than into a
+    // throwaway `Vec` copied in with `append` (which memcpys, not moves) — the
+    // ciphertext is a full datagram payload, so that copy scaled with throughput.
+    let mut packet = Vec::with_capacity(salt_len + payload.len() + SHADOWSOCKS_TAG_LEN);
     packet.extend_from_slice(salt);
-    packet.append(&mut encrypted);
+    encrypt_into(cipher, &key[..cipher.key_len()], &UDP_ZERO_NONCE, payload, &mut packet)?;
     Ok(packet)
 }
 

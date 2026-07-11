@@ -495,10 +495,11 @@ impl TunUdpEngine {
 
                     let batch_len = batch.len();
                     if batch_len > 1 {
-                        let mut coalesced = Vec::with_capacity(total_payload);
-                        for datagram in &batch {
-                            coalesced.extend_from_slice(datagram);
-                        }
+                        // Assemble the super-segment straight from the batch's
+                        // `Bytes` — the builder copies each datagram into the
+                        // packet's payload region, so the old `coalesced` Vec
+                        // (a full super-segment allocation + memcpy per USO
+                        // write) is gone.
                         let (packet, vnet) = build_gso_udp_packet(
                             key.version,
                             key.remote_ip,
@@ -506,7 +507,7 @@ impl TunUdpEngine {
                             key.remote_port,
                             key.local_port,
                             datagram_size as u16,
-                            &coalesced,
+                            &batch,
                         )?;
                         engine.inner.writer.write_gso_segment(&packet, vnet).await?;
                         metrics::record_tun_packet(

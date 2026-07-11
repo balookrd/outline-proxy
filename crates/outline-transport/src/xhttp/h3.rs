@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes};
 use h3::client::SendRequest;
 use http::{Method, Request, Version};
 use rustls::pki_types::ServerName;
@@ -558,19 +558,14 @@ where
             Ok(None) => break,
             Err(error) => return Err(anyhow!(error)).context("xhttp/h3 GET recv_data failed"),
         };
-        // h3's chunk is `impl Buf` — copy contiguous segments out
-        // until the chunk is drained, then forward as a single
-        // Message::Binary. Coalescing avoids per-segment allocations
-        // on the inbound channel and matches the h2 path's framing.
+        // h3's chunk is `impl Buf`; for the h3-quinn `Bytes`-backed buf
+        // `copy_to_bytes` is a zero-copy `split_to`, so forward the chunk
+        // whole instead of copying every segment into a fresh `BytesMut`.
+        // A genuinely segmented buf falls back to the same copy — never worse.
         let mut chunk = chunk;
-        let mut acc = BytesMut::with_capacity(chunk.remaining());
-        while chunk.has_remaining() {
-            let segment = chunk.chunk();
-            acc.extend_from_slice(segment);
-            let consumed = segment.len();
-            chunk.advance(consumed);
-        }
-        if !acc.is_empty() && in_tx.send(Ok(Message::Binary(acc.freeze()))).await.is_err() {
+        let remaining = chunk.remaining();
+        let bytes = chunk.copy_to_bytes(remaining);
+        if !bytes.is_empty() && in_tx.send(Ok(Message::Binary(bytes))).await.is_err() {
             return Ok(());
         }
     }
