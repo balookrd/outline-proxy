@@ -1819,6 +1819,42 @@ async fn cluster_udp_h3_relays_to_home() -> Result<()> {
     Ok(())
 }
 
+/// Reads the first VLESS-UDP reply datagram's payload from the carrier,
+/// tolerant of where WebSocket framing happens to land. VLESS rides a byte
+/// stream: the relay queues the 2-byte VLESS response header
+/// (`[VLESS_VERSION, 0x00]`) and each length-prefixed datagram
+/// (`[len_be_hi, len_be_lo, payload…]`) as separate messages, but the transport
+/// may deliver them as two binary frames or coalesce them into one — and on
+/// resume the header may be replayed or omitted. A real client decodes the
+/// stream and ignores frame boundaries; this helper does the same so the
+/// assertion never hinges on framing timing.
+///
+/// The response header is recognized only as a *leading* `[VLESS_VERSION, 0x00]`;
+/// a datagram length prefix of `[0, 0]` would mean an empty datagram, which these
+/// tests never send, so the two never alias.
+async fn read_vless_udp_datagram<S>(socket: &mut S) -> Result<Vec<u8>>
+where
+    S: futures_util::Stream<Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>>
+        + Unpin,
+{
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        // Drop an optional leading VLESS response header once it is fully present.
+        if buf.len() >= 2 && buf[0] == VLESS_VERSION && buf[1] == 0x00 {
+            buf.drain(..2);
+        }
+        // Return as soon as one whole length-prefixed datagram has arrived.
+        if buf.len() >= 2 {
+            let len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+            if buf.len() >= 2 + len {
+                return Ok(buf[2..2 + len].to_vec());
+            }
+        }
+        let frame = expect_binary_reply(socket).await?;
+        buf.extend_from_slice(&frame);
+    }
+}
+
 /// VLESS-UDP rides the VlessTcp mesh carrier — there is no dedicated `VlessUdp`
 /// carrier kind. The edge marks a VLESS carrier `VlessTcp` (it never inspects
 /// the UDP command inside the still-encrypted VLESS byte stream) and forwards it
@@ -1849,12 +1885,11 @@ async fn cluster_vless_udp_relays_via_vless_tcp() -> Result<()> {
         )?))
         .await?;
 
-    // Standard VLESS response header, then the echoed length-prefixed datagram.
-    let header = expect_binary_reply(&mut socket).await?;
-    assert_eq!(header.as_ref(), &[VLESS_VERSION, 0x00], "VLESS response header over the relay");
-    let echoed = expect_binary_reply(&mut socket).await?;
+    // The VLESS response header and the echoed length-prefixed datagram may
+    // arrive as two binary frames or coalesced into one; read the stream.
+    let echoed = read_vless_udp_datagram(&mut socket).await?;
     assert_eq!(
-        &echoed[2..],
+        echoed.as_slice(),
         b"vless-udp",
         "VLESS-UDP datagram relayed edge→mesh→home→target byte-exact",
     );
@@ -1902,10 +1937,8 @@ async fn cluster_vless_udp_survives_edge_switch() -> Result<()> {
             b"vless-a",
         )?))
         .await?;
-    let header = expect_binary_reply(&mut sock_a).await?;
-    assert_eq!(header.as_ref(), &[VLESS_VERSION, 0x00], "VLESS response header over edge A");
-    let echoed = expect_binary_reply(&mut sock_a).await?;
-    assert_eq!(&echoed[2..], b"vless-a", "edge A datagram relayed to target byte-exact");
+    let echoed = read_vless_udp_datagram(&mut sock_a).await?;
+    assert_eq!(echoed.as_slice(), b"vless-a", "edge A datagram relayed to target byte-exact");
     assert_eq!(
         sources.lock().await.len(),
         1,
@@ -1928,19 +1961,15 @@ async fn cluster_vless_udp_survives_edge_switch() -> Result<()> {
             b"vless-b",
         )?))
         .await?;
-    let reply = expect_binary_reply(&mut sock_b)
+    // A resume hit re-attaches the parked socket; the home replays the VLESS
+    // response header on the new carrier. The header and datagram may land as
+    // two frames or coalesced into one, so read the stream rather than assume a
+    // frame boundary.
+    let echoed = read_vless_udp_datagram(&mut sock_b)
         .await
         .context("carrier B never received a reply after the edge switch")?;
-    // A resume hit re-attaches the parked socket; the home replays the VLESS
-    // response header on the new carrier, so tolerate either the header frame
-    // (followed by the datagram) or the datagram directly.
-    let echoed = if reply.as_ref() == [VLESS_VERSION, 0x00] {
-        expect_binary_reply(&mut sock_b).await?
-    } else {
-        reply
-    };
     assert_eq!(
-        &echoed[2..],
+        echoed.as_slice(),
         b"vless-b",
         "edge B datagram relayed to target byte-exact after the switch",
     );
