@@ -185,7 +185,7 @@ where
                     Transport::Tcp,
                     protocol,
                     AppProtocol::Vless,
-                    "out",
+                    "down",
                     frame.len(),
                 );
                 if tx.send(make_binary(frame)).await.is_err() {

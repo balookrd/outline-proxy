@@ -72,14 +72,8 @@ impl GroupUdpContext {
                 }
                 return Err(error);
             }
-            metrics::add_udp_datagram("client_to_upstream", group, &replacement.uplink_name);
-            metrics::add_bytes(
-                "udp",
-                "client_to_upstream",
-                group,
-                &replacement.uplink_name,
-                payload.len(),
-            );
+            metrics::add_udp_datagram("up", group, &replacement.uplink_name);
+            metrics::add_bytes("udp", "up", group, &replacement.uplink_name, payload.len());
             // NOTE: do NOT report liveness here. This is the client→upstream
             // (send) direction — writing a datagram into the tunnel does not
             // prove the data path delivers. A degraded server can keep
@@ -90,8 +84,8 @@ impl GroupUdpContext {
             // (and, once it stops failing, the runtime-failure window lapsing)
             // — mirroring the TUN UDP path, which never reported send liveness.
         } else {
-            metrics::add_udp_datagram("client_to_upstream", group, &uplink_name);
-            metrics::add_bytes("udp", "client_to_upstream", group, &uplink_name, payload.len());
+            metrics::add_udp_datagram("up", group, &uplink_name);
+            metrics::add_bytes("udp", "up", group, &uplink_name, payload.len());
         }
         Ok(())
     }

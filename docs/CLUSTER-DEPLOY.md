@@ -175,9 +175,9 @@ See the "UDP cross-node migration" note in
     rate points at edge/home config/version skew. Panel *Mesh Throttle Hints &
     Control Errors*.
   - On the **client** (ws-rust dashboard, *Cluster / Soft-switch* row):
-    `outline_ws_rust_soft_switch_total{outcome}` — operator soft-switch
+    `outline_ws_soft_switch_total{outcome}` — operator soft-switch
     migrations, dominated by `migrated` on a healthy switch; and
-    `outline_ws_rust_resume_lookup_total{transport,scope,result}` —
+    `outline_ws_resume_lookup_total{transport,scope,result}` —
     `scope="group",result="hit"` is a cross-node-capable resume presented to a
     new edge.
 - **⚠️ Integrity on real traffic:** the e2e tests cover the data plane but not

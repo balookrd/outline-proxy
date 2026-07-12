@@ -656,7 +656,7 @@ break source-IP-bound state on the destination side.
   (`SO_LINGER {l_onoff=1, l_linger=0}` + drop). The client
   application sees a hard reset on its TCP and reconnects through the
   new active uplink. Counted on
-  `outline_ws_rust_socks_tcp_strict_aborts_total{reason="global_switch"}`.
+  `outline_ws_socks_tcp_strict_aborts_total{reason="global_switch"}`.
 - **SOCKS5 UDP**: the per-group downlink loop subscribes to the same
   signal and atomically replaces the transport on switch
   (`reconcile_global_udp_transport`); the client never sees an L4
@@ -664,7 +664,7 @@ break source-IP-bound state on the destination side.
   new uplink.
 - **TUN TCP**: mirrors the SOCKS5 behaviour but at L3 — the TUN
   engine emits a `RST+ACK` segment to the in-kernel TCP of the client
-  app. See `outline_ws_rust_tun_tcp_events_total{event="global_switch"}`.
+  app. See `outline_ws_tun_tcp_events_total{event="global_switch"}`.
 
 The behaviour is opt-in by virtue of running in `active_passive` (any
 scope); `active_active` is unaffected — the strict-abort watcher
@@ -747,14 +747,14 @@ Bypass on a fully-down group (`bypass_when_down`):
   header — grey `Bypass: armed` while every transport still has a
   healthy uplink, amber `Bypass: DIRECT (TCP + UDP)` naming the
   diverted transports while the bypass is live. The same state is
-  exported as `outline_ws_rust_group_bypass_active{group, transport}`
+  exported as `outline_ws_group_bypass_active{group, transport}`
   (`1` = diverting direct, `0` = tunnelling; series exist only for
   opted-in groups) and rides through `/control/topology` as the
   group-level `bypass_when_down` / `bypass_active_tcp` /
   `bypass_active_udp` fields (omitted while `false`). The packaged
   Grafana dashboard has a matching stat + timeline in the Routing
   Policy section. Alert example:
-  `max by (group) (outline_ws_rust_group_bypass_active) == 1`.
+  `max by (group) (outline_ws_group_bypass_active) == 1`.
 
 Mid-session retry (Ack-Prefix Protocol v1):
 
@@ -817,7 +817,7 @@ Mid-session retry (Ack-Prefix Protocol v1):
   apply; a non-WS fallback collapses the retry to a
   no-op and the session ends on the original mid-stream error.
 - Outcomes are exposed on
-  `outline_ws_rust_uplink_mid_session_retries_total{outcome}` with
+  `outline_ws_uplink_mid_session_retries_total{outcome}` with
   `outcome ∈ {success, failed_redial, failed_replay,
   buffer_overflow, downlink_truncated}`. See
   `docs/SESSION-RESUMPTION.md` § Ack-Prefix Protocol (v1) in the
@@ -863,7 +863,7 @@ Symmetric Downlink Replay (v2):
   client respects `tcp_mid_session_retry_overflow_policy`:
   `"soft"` continues the session under an irrecoverable
   downstream gap and increments
-  `outline_ws_rust_uplink_mid_session_retries_total{outcome="downlink_truncated"}`;
+  `outline_ws_uplink_mid_session_retries_total{outcome="downlink_truncated"}`;
   `"hard"` drops the session immediately. Use the same value as
   for the v1 buffer-overflow case to keep policy consistent.
 - Same eligibility gate as v1 — SS-WS / VLESS-WS / VLESS-XHTTP
@@ -1220,7 +1220,7 @@ init_fingerprint_profile_strategy(FingerprintProfileStrategy::ProcessStable);
 time it is observed in the process — useful for verifying that the
 strategy actually engaged after a config change.
 
-Prometheus exposes `outline_ws_rust_uplink_fingerprint_profile_strategy_info`
+Prometheus exposes `outline_ws_uplink_fingerprint_profile_strategy_info`
 with labels `group`, `uplink`, and `strategy` (one of `none`,
 `per_host_stable`, `process_stable`, `random`). The gauge is `1` on the active strategy
 and `0` on the others, published unconditionally — an absent series
@@ -1382,7 +1382,7 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
   the dial loop uses: a failure pinned to a wire that the manager has
   already moved away from is treated as session-local fallback churn,
   recorded only as a suppressed metric
-  (`outline_ws_rust_uplink_runtime_failures_suppressed_total`), and
+  (`outline_ws_uplink_runtime_failures_suppressed_total`), and
   does **not** stack onto the parent uplink's penalty / cooldown /
   consecutive-runtime-failures streak. Single-wire uplinks (no
   fallbacks declared) behave exactly as before — no "non-active wire"
@@ -1414,7 +1414,7 @@ that belong to the parent (`name`, `weight`, `group`, `link`):
   outcomes flip the active wire in either direction).
 - State is **per-transport**: TCP and UDP advance independently
   (`PerTransportStatus::active_wire` is split per transport).
-  `outline_ws_rust_uplink_active_wire_index{transport}` exposes the
+  `outline_ws_uplink_active_wire_index{transport}` exposes the
   current wire to dashboards.
 
 #### Random forward-only rotation (`shuffle_wires = true`)
@@ -1656,7 +1656,7 @@ independently. No-op for uplinks without any fallbacks.
 
 The interval is surfaced on the JSON snapshot as
 `shuffle_timer_secs: Option<u64>` and a rotation event records a
-metric `outline_ws_rust_uplink_failover_total{transport="tcp_shuffle_timer"}`
+metric `outline_ws_uplink_failover_total{transport="tcp_shuffle_timer"}`
 (and the `udp_shuffle_timer` counterpart).
 
 **Probe-driven early-failback is suppressed** while
@@ -1738,10 +1738,10 @@ mode-downgrade cap) but no longer changes `active_wire`.
   primary's (possibly stale) measurement.
 - The same any-wire signal also drives **effective health** on the
   snapshot / Prometheus / dashboard. `UplinkSnapshot::tcp_health_effective`
-  (and the corresponding `outline_ws_rust_uplink_health_effective` gauge)
+  (and the corresponding `outline_ws_uplink_health_effective` gauge)
   reflects "is this uplink delivering traffic?": probe-confirmed OR
   any-wire-recent-success. The legacy `tcp_healthy` /
-  `outline_ws_rust_uplink_health` keeps the probe-only verdict for
+  `outline_ws_uplink_health` keeps the probe-only verdict for
   dashboards that specifically care about the primary wire. The HTML
   dashboard's row tone consults effective health, so an uplink whose
   primary is probe-down but whose fallback is delivering traffic
@@ -1774,10 +1774,10 @@ mode-downgrade cap) but no longer changes `active_wire`.
   primary's EWMA for one probe cycle until the per-wire probe stamps
   in.
 - Two Prometheus gauges now expose RTT EWMA at different semantic
-  layers. `outline_ws_rust_uplink_rtt_ewma_seconds{transport,uplink}`
+  layers. `outline_ws_uplink_rtt_ewma_seconds{transport,uplink}`
   keeps the legacy primary-only verdict — useful for seeing the
   carrier health of the configured primary regardless of which wire
-  is currently doing the work. `outline_ws_rust_uplink_active_wire_rtt_ewma_seconds{transport,uplink}`
+  is currently doing the work. `outline_ws_uplink_active_wire_rtt_ewma_seconds{transport,uplink}`
   reports the EWMA of the wire actually carrying traffic; equals the
   legacy gauge when `active_wire == 0`, reads the matching
   `fallback_rtt_ewma` slot otherwise. Operators graphing user-visible
@@ -1822,11 +1822,11 @@ SNI reached *through* the tunnel.
 
 The soonest `notAfter` across an uplink's endpoints is surfaced two ways:
 
-- **Prometheus**: `outline_ws_rust_uplink_cert_expiry_timestamp_seconds{group,uplink}`
+- **Prometheus**: `outline_ws_uplink_cert_expiry_timestamp_seconds{group,uplink}`
   — the expiry as a Unix timestamp in seconds. Absent until the first
   check completes and for uplinks with no TLS endpoint. Alert with
   your own threshold, e.g.
-  `outline_ws_rust_uplink_cert_expiry_timestamp_seconds - time() < 14 * 86400`.
+  `outline_ws_uplink_cert_expiry_timestamp_seconds - time() < 14 * 86400`.
 - **Dashboard**: the uplink's Status cell shows an amber `⚠ cert Nd` chip
   when the certificate expires within 14 days and a red `⚠ cert expired`
   chip once it is past; a healthy certificate shows nothing.

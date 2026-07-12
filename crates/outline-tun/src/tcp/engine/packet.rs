@@ -56,7 +56,7 @@ impl TunTcpEngine {
                 drop(state);
                 self.close_flow(&key, reason).await;
                 if reason == "client_rst" {
-                    metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_rst_observed");
+                    metrics::record_tun_packet("down", ip_family, "tcp_rst_observed");
                 }
                 return Ok(());
             },
@@ -139,7 +139,7 @@ impl TunTcpEngine {
                 let key = state.key.clone();
                 drop(state);
                 self.write_server_data_or_close_flow(&key, &packet).await?;
-                metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_retransmit");
+                metrics::record_tun_packet("down", ip_family, "tcp_retransmit");
                 return Ok(());
             }
         }
@@ -162,7 +162,7 @@ impl TunTcpEngine {
             let key = state.key.clone();
             drop(state);
             self.write_tun_packet_or_close_flow(&key, &fin_ack).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_fin");
+            metrics::record_tun_packet("down", ip_family, "tcp_fin");
             return Ok(());
         }
 
@@ -275,7 +275,7 @@ impl TunTcpEngine {
 
         if let Some(ack) = outcome.pending_ack {
             self.write_tun_packet_or_close_flow(&key, &ack).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
+            metrics::record_tun_packet("down", ip_family, "tcp_ack");
         }
 
         // This packet ACKed downlink data, so `flush_server_output` just shipped

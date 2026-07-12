@@ -362,7 +362,7 @@ v2 строится поверх v1. Оба capability'я договариваю
 
 1. v1 frame (14 байт) — парсится точно как в v1; при provision failure — дропать сессию.
 2. v2 frame шапка (14 байт) — валидировать `magic == "ORDR"`, `version == 0x01`, reserved-биты `flags == 0`; при провале — дропать сессию.
-3. Если `REPLAY_TRUNCATED` установлен и `replay_len == 0`: downstream-стрим клиента имеет невосстановимый gap. Поведение определяется `tcp_mid_session_retry_overflow_policy`: `"soft"` продолжает сессию и инкрементирует `outline_ws_rust_uplink_mid_session_retries_total{outcome="downlink_truncated"}`; `"hard"` дропает сессию.
+3. Если `REPLAY_TRUNCATED` установлен и `replay_len == 0`: downstream-стрим клиента имеет невосстановимый gap. Поведение определяется `tcp_mid_session_retry_overflow_policy`: `"soft"` продолжает сессию и инкрементирует `outline_ws_uplink_mid_session_retries_total{outcome="downlink_truncated"}`; `"hard"` дропает сессию.
 4. Иначе: прочитать ровно `replay_len` plaintext-байт из транспорта и записать их SOCKS5-клиенту ДО того как любые свежие upstream-байты пойдут. Инкрементировать `client_acked_offset` на `replay_len`.
 5. После того как v2 payload потреблён, транспорт возвращается к нормальной семантике read-loop'а.
 

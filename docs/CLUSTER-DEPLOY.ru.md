@@ -174,9 +174,9 @@ SS-UDP и VLESS-UDP предъявляют групповой shard-несущи
     расхождение конфига/версий между edge и home. Панель *Mesh Throttle Hints &
     Control Errors*.
   - На **клиенте** (дашборд ws-rust, ряд *Cluster / Soft-switch*):
-    `outline_ws_rust_soft_switch_total{outcome}` — операторские soft-switch
+    `outline_ws_soft_switch_total{outcome}` — операторские soft-switch
     миграции, на здоровом переключении доминирует `migrated`; и
-    `outline_ws_rust_resume_lookup_total{transport,scope,result}` —
+    `outline_ws_resume_lookup_total{transport,scope,result}` —
     `scope="group",result="hit"` = cross-node-способный resume, предъявленный
     новому edge.
 - **⚠️ Целостность на боевом трафике:** e2e-тесты покрывают data-plane, но не

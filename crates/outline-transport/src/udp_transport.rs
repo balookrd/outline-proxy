@@ -335,7 +335,7 @@ impl UdpWsTransport {
                         cipher = %self.cipher,
                         "dropping oversized UDP packet before shadowsocks uplink send"
                     );
-                    outline_metrics::record_dropped_oversized_udp_packet("outgoing", "ss_socket");
+                    outline_metrics::record_dropped_oversized_udp_packet("down", "ss_socket");
                     bail!(Ss2022Error::OversizedUdpUplink);
                 }
                 socket
@@ -348,7 +348,7 @@ impl UdpWsTransport {
     }
 
     /// Attribute this UDP transport to a concrete uplink so its lifetime
-    /// participates in `outline_ws_rust_uplink_open_connections` and the
+    /// participates in `outline_ws_uplink_open_connections` and the
     /// matching close-classification counter. Must be called before the
     /// transport is wrapped in any further `Arc<>` or shared state — the
     /// inner guard is mutated through `Arc::get_mut`, which only succeeds

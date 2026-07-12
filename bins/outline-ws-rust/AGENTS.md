@@ -222,7 +222,7 @@ cargo release-musl-aarch64
   плюс старт и reload) — в `crates/outline-uplink/src/manager/cert_check.rs`,
   пишет `UplinkStatus.cert_not_after_unix_ms`. Значение течёт через
   `UplinkSnapshot` в control-топологию, gauge
-  `outline_ws_rust_uplink_cert_expiry_timestamp_seconds` и dashboard-чип.
+  `outline_ws_uplink_cert_expiry_timestamp_seconds` и dashboard-чип.
   `cert-check` включается транзитивно из `metrics` и top-level `dashboard`, но
   НЕ из `control` — `x509-cert` не должен попадать в сборку только с `control`
   (проверка:
@@ -277,7 +277,7 @@ cargo release-musl-aarch64
   срабатывает только на `TunRoute::Group`: Direct/Drop-маршруты и пакеты без
   парсибельного destination (`icmp_echo_destination`, pure-хелпер в `icmp.rs`
   под unit-тестами) отвечаются как раньше. Подавленные запросы считаются как
-  `outcome="icmp_reply_suppressed"` на `outline_ws_rust_tun_packets_total`.
+  `outcome="icmp_reply_suppressed"` на `outline_ws_tun_packets_total`.
 - Group-level bypass: per-group флаг `bypass_when_down` (поле
   `LoadBalancingConfig`, default `false`) диспатчит трафик упавшей группы в
   `direct` (с `direct_fwmark`) на обоих ingress. Критерий «группа лежит»
@@ -296,7 +296,7 @@ cargo release-musl-aarch64
   снапшоте: `UplinkManagerSnapshot.{bypass_when_down,bypass_active_tcp,
   bypass_active_udp}` считаются в `manager/snapshot.rs` тем же
   `has_any_healthy`, что и dispatch (не дублируйте критерий в потребителях);
-  оттуда поле течёт в gauge `outline_ws_rust_group_bypass_active{group,
+  оттуда поле течёт в gauge `outline_ws_group_bypass_active{group,
   transport}` (публикуется ТОЛЬКО для opted-in групп — отсутствие серии =
   опция выключена), в `/control/topology` (групповые поля скрываются при
   `false` через `skip_serializing_if`) и в чип `groupBypassChip` в

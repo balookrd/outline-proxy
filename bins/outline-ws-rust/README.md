@@ -136,7 +136,7 @@ tun2udp + tun2tcp"]
 - fastest-first selection
 - selection mode:
   - `active_active`: new flows can use different uplinks based on score, stickiness, and failover
-  - `active_passive`: keep the current selected uplink until it becomes unhealthy or enters cooldown. A manual control-plane switch or probe-driven failover that moves the active uplink off an in-flight SOCKS5 session now tears that TCP session down with RST (`SO_LINGER {l_onoff=1, l_linger=0}`) so the client reconnects through the new active uplink instead of egressing through the now-passive one (different source IP / ASN). UDP-side downlink loop wakes on the same `subscribe_active_uplinks` watch. Counter: `outline_ws_rust_socks_tcp_strict_aborts_total`. `active_active` is unaffected — the watcher never arms there.
+  - `active_passive`: keep the current selected uplink until it becomes unhealthy or enters cooldown. A manual control-plane switch or probe-driven failover that moves the active uplink off an in-flight SOCKS5 session now tears that TCP session down with RST (`SO_LINGER {l_onoff=1, l_linger=0}`) so the client reconnects through the new active uplink instead of egressing through the now-passive one (different source IP / ASN). UDP-side downlink loop wakes on the same `subscribe_active_uplinks` watch. Counter: `outline_ws_socks_tcp_strict_aborts_total`. `active_active` is unaffected — the watcher never arms there.
 - routing scope:
   - `per_flow`: decisions are made independently per routing key / target
   - `per_uplink`: one active uplink is shared process-wide per transport (`tcp` and `udp`); in `active_passive` mode the pinned TCP and UDP uplinks do not expire with `sticky_ttl`, established SOCKS TCP tunnels stay pinned to the uplink that completed setup while non-migratable flows that still depend on the older active uplink may be reselected or closed after a switch, and penalty history is not folded into the strict per-transport score
@@ -174,7 +174,7 @@ tun2udp + tun2tcp"]
 - Prometheus metrics
 - built-in multi-instance dashboard
 - packaged Grafana dashboards
-- proactive uplink TLS certificate-expiry monitoring (dashboard chip + Prometheus gauge `outline_ws_rust_uplink_cert_expiry_timestamp_seconds`)
+- proactive uplink TLS certificate-expiry monitoring (dashboard chip + Prometheus gauge `outline_ws_uplink_cert_expiry_timestamp_seconds`)
 - hardened systemd unit
 - Linux `fwmark` / `SO_MARK`
 - IPv6-capable listeners, upstreams, probes, and SOCKS5 targets
@@ -1056,12 +1056,12 @@ Metrics include:
 
 On Linux, the process memory sampler updates:
 
-- `outline_ws_rust_process_resident_memory_bytes`
-- `outline_ws_rust_process_virtual_memory_bytes`
-- `outline_ws_rust_process_heap_allocated_bytes`
-- `outline_ws_rust_process_heap_mode_info{mode}`
-- `outline_ws_rust_process_open_fds`
-- `outline_ws_rust_process_threads`
+- `outline_ws_process_resident_memory_bytes`
+- `outline_ws_process_virtual_memory_bytes`
+- `outline_ws_process_heap_allocated_bytes`
+- `outline_ws_process_heap_mode_info{mode}`
+- `outline_ws_process_open_fds`
+- `outline_ws_process_threads`
 
 Heap metrics currently fall back to `VmData`-based estimation on Linux and export `heap_mode_info{mode="estimated"}`.
 
@@ -1071,19 +1071,19 @@ On Linux, the process also emits a periodic descriptor inventory log:
 
 The descriptor snapshot includes total open FDs plus a breakdown for sockets, pipes, anon inodes, regular files, and other descriptor types.
 
-`outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}`, and `outline_ws_rust_sticky_routes_total` expose selector configuration and active-uplink state.
+`outline_ws_selection_mode_info{mode}`, `outline_ws_routing_scope_info{scope}`, `outline_ws_global_active_uplink_info{uplink}`, and `outline_ws_sticky_routes` expose selector configuration and active-uplink state.
 
-`outline_ws_rust_group_bypass_active{group, transport}` reports the live `bypass_when_down` state: `1` while new flows of that transport are being dispatched direct (tunnel bypass) because the group has no healthy uplink, `0` while traffic tunnels normally. The series exists only for groups with `bypass_when_down = true`; the built-in dashboard renders the same signal as a group-header chip (grey `Bypass: armed` / amber `Bypass: DIRECT`), and the Grafana dashboard carries a matching stat + timeline in the Routing Policy section.
+`outline_ws_group_bypass_active{group, transport}` reports the live `bypass_when_down` state: `1` while new flows of that transport are being dispatched direct (tunnel bypass) because the group has no healthy uplink, `0` while traffic tunnels normally. The series exists only for groups with `bypass_when_down = true`; the built-in dashboard renders the same signal as a group-header chip (grey `Bypass: armed` / amber `Bypass: DIRECT`), and the Grafana dashboard carries a matching stat + timeline in the Routing Policy section.
 
 Per-uplink open-connection accounting (used to detect connections leaking
 into a non-active uplink after a `Global` / `PerUplink` switchover) is
 exported by:
 
-- `outline_ws_rust_uplink_open_connections{group, transport, uplink}` — gauge
+- `outline_ws_uplink_open_connections{group, transport, uplink}` — gauge
   of currently open upstream transports attributed to each uplink. After a
   switchover the new active uplink ramps up while the old one drains; a
   series that fails to drain is the leak signal.
-- `outline_ws_rust_uplink_connection_close_total{group, transport, uplink, classification}`
+- `outline_ws_uplink_connection_close_total{group, transport, uplink, classification}`
   — counter of upstream-transport closes, classified at close time as
   `active` (the uplink was still active), `inactive` (the active pointer
   had moved elsewhere — a stranded session draining), or `unknown`
@@ -1096,10 +1096,10 @@ Both are wired to the dashboard row `Inactive Uplink Leak (Global / Per-Uplink)`
 in `grafana/outline-ws-rust-dashboard.json`. Probe / health-check
 connections are intentionally *not* attributed — the metrics cover only
 user-traffic dials.
-When TUN UDP forwarding fails before a packet can be delivered upstream, `outline_ws_rust_tun_udp_forward_errors_total{reason}` breaks that down into `all_uplinks_failed`, `transport_error`, `connect_failed`, and `other`.
-Oversized SOCKS5 UDP packets dropped before uplink forwarding, and oversized UDP responses dropped before client delivery, are exported as `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing", cause}` (the `cause` label distinguishes `quic_dgram`, `vless_quic_dgram`, `vless_udp`, `ss_socket`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`).
+When TUN UDP forwarding fails before a packet can be delivered upstream, `outline_ws_tun_udp_forward_errors_total{reason}` breaks that down into `all_uplinks_failed`, `transport_error`, `connect_failed`, and `other`.
+Oversized SOCKS5 UDP packets dropped before uplink forwarding, and oversized UDP responses dropped before client delivery, are exported as `outline_ws_udp_oversized_dropped_total{direction="incoming|outgoing", cause}` (the `cause` label distinguishes `quic_dgram`, `vless_quic_dgram`, `vless_udp`, `ss_socket`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`).
 On the TUN UDP path, oversize drops also synthesise an ICMP "Fragmentation Needed" (IPv4) or "Packet Too Big" (IPv6) reply toward the sender so its own PMTUD state machine can react — throttled to one PTB per second per flow, and suppressed below QUIC v1's Initial-datagram floor (1200 v4 / 1280 v6) so well-behaved QUIC clients are not pushed off UDP into a TCP fallback. See [docs/TUN-PMTUD.md](docs/TUN-PMTUD.md) for the full contract.
-Local ICMP echo handling is exported separately via `outline_ws_rust_tun_icmp_local_replies_total{ip_family}`.
+Local ICMP echo handling is exported separately via `outline_ws_tun_icmp_local_replies_total{ip_family}`.
 
 Grafana dashboards:
 

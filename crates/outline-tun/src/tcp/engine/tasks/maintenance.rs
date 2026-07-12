@@ -111,11 +111,7 @@ impl TunTcpEngine {
                                 let (group_name, uplink_name) =
                                     super::super::key_group_and_uplink(&flow).await;
                                 metrics::record_tun_tcp_event(&group_name, &uplink_name, event);
-                                metrics::record_tun_packet(
-                                    "upstream_to_tun",
-                                    ip_family,
-                                    packet_metric,
-                                );
+                                metrics::record_tun_packet("down", ip_family, packet_metric);
                                 // Re-acquire lock to process the next action for
                                 // this flow (e.g., back-to-back retransmissions).
                                 state = flow.lock().await;
@@ -143,11 +139,7 @@ impl TunTcpEngine {
                                 let (group_name, uplink_name) =
                                     super::super::key_group_and_uplink(&flow).await;
                                 metrics::record_tun_tcp_event(&group_name, &uplink_name, event);
-                                metrics::record_tun_packet(
-                                    "upstream_to_tun",
-                                    ip_family,
-                                    packet_metric,
-                                );
+                                metrics::record_tun_packet("down", ip_family, packet_metric);
                                 // Re-acquire lock to process the next action for
                                 // this flow (e.g., back-to-back retransmissions).
                                 state = flow.lock().await;

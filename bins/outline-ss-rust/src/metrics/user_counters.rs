@@ -38,27 +38,27 @@ impl PerUserCounters {
             tcp_payload_client_to_target: build_payload_matrix(
                 "outline_ss_tcp_payload_bytes_total",
                 &user_id,
-                "client_to_target",
+                "up",
             ),
             tcp_payload_target_to_client: build_payload_matrix(
                 "outline_ss_tcp_payload_bytes_total",
                 &user_id,
-                "target_to_client",
+                "down",
             ),
             tcp_aead_overhead_target_to_client: build_payload_matrix(
                 "outline_ss_tcp_aead_overhead_bytes_total",
                 &user_id,
-                "target_to_client",
+                "down",
             ),
             udp_payload_client_to_target: build_payload_matrix(
                 "outline_ss_udp_payload_bytes_total",
                 &user_id,
-                "client_to_target",
+                "up",
             ),
             udp_payload_target_to_client: build_payload_matrix(
                 "outline_ss_udp_payload_bytes_total",
                 &user_id,
-                "target_to_client",
+                "down",
             ),
         })
     }
@@ -75,7 +75,7 @@ impl PerUserCounters {
 
     /// AEAD framing overhead emitted on the wire per `tcp_out` chunk —
     /// salt+tag+length envelope produced by `AeadStreamEncryptor`.
-    /// Together with `tcp_out` this lets `ws_bytes_total{direction="out"}`
+    /// Together with `tcp_out` this lets `websocket_bytes_total{direction="down"}`
     /// be reconciled against the per-user accounting without a residual.
     #[inline]
     pub fn tcp_aead_out(&self, app_protocol: AppProtocol, protocol: Protocol) -> &Counter {
@@ -93,6 +93,10 @@ impl PerUserCounters {
     }
 }
 
+/// `direction` is the harmonized `up`/`down` label value: `up` = client→target
+/// (the internal `*_client_to_target` fields), `down` = target→client (the
+/// `*_target_to_client` fields). The field names keep the explicit form; the
+/// emitted label uses the short cross-binary vocabulary.
 fn build_payload_matrix(
     name: &'static str,
     user_id: &Arc<str>,

@@ -136,7 +136,7 @@ tun2udp + tun2tcp"]
 - выбор по принципу «быстрейший первый»
 - режим выбора:
   - `active_active`: новые потоки могут использовать разные аплинки в зависимости от скора, sticky и failover
-  - `active_passive`: удерживать текущий выбранный аплинк, пока он не станет нездоровым или не войдёт в cooldown. Ручное переключение через control-plane или probe-driven failover, сдвигающий активный аплинк с in-flight SOCKS5-сессии, теперь рвёт эту TCP-сессию RST'ом (`SO_LINGER {l_onoff=1, l_linger=0}`), чтобы клиент переподключился через новый активный аплинк, а не продолжал егрессить через теперь-passive (другой source IP / ASN). UDP downlink-цикл будится тем же watch'ем `subscribe_active_uplinks`. Счётчик: `outline_ws_rust_socks_tcp_strict_aborts_total`. `active_active` не затрагивается — там вотчер не вооружается.
+  - `active_passive`: удерживать текущий выбранный аплинк, пока он не станет нездоровым или не войдёт в cooldown. Ручное переключение через control-plane или probe-driven failover, сдвигающий активный аплинк с in-flight SOCKS5-сессии, теперь рвёт эту TCP-сессию RST'ом (`SO_LINGER {l_onoff=1, l_linger=0}`), чтобы клиент переподключился через новый активный аплинк, а не продолжал егрессить через теперь-passive (другой source IP / ASN). UDP downlink-цикл будится тем же watch'ем `subscribe_active_uplinks`. Счётчик: `outline_ws_socks_tcp_strict_aborts_total`. `active_active` не затрагивается — там вотчер не вооружается.
 - область маршрутизации:
   - `per_flow`: решения принимаются независимо для каждого ключа маршрутизации / цели
   - `per_uplink`: один активный аплинк разделяется на уровне процесса для каждого транспорта (`tcp` и `udp`); в режиме `active_passive` закреплённые TCP и UDP аплинки не истекают по `sticky_ttl`, установленные SOCKS TCP-туннели остаются закреплёнными за аплинком, который завершил setup, а немигрируемые потоки, всё ещё зависящие от старого активного аплинка, могут быть пересозданы или закрыты после переключения, история штрафов не влияет на строгий per-transport скор
@@ -174,7 +174,7 @@ tun2udp + tun2tcp"]
 - метрики Prometheus
 - встроенный multi-instance дашборд
 - готовые дашборды Grafana
-- проактивный контроль срока TLS-сертификатов аплинков (чип на дашборде + Prometheus-gauge `outline_ws_rust_uplink_cert_expiry_timestamp_seconds`)
+- проактивный контроль срока TLS-сертификатов аплинков (чип на дашборде + Prometheus-gauge `outline_ws_uplink_cert_expiry_timestamp_seconds`)
 - hardened systemd unit
 - Linux `fwmark` / `SO_MARK`
 - IPv6-совместимые слушатели, upstream'ы, пробы и SOCKS5-цели
@@ -1056,12 +1056,12 @@ scrape_configs:
 
 На Linux семплер памяти процесса обновляет:
 
-- `outline_ws_rust_process_resident_memory_bytes`
-- `outline_ws_rust_process_virtual_memory_bytes`
-- `outline_ws_rust_process_heap_allocated_bytes`
-- `outline_ws_rust_process_heap_mode_info{mode}`
-- `outline_ws_rust_process_open_fds`
-- `outline_ws_rust_process_threads`
+- `outline_ws_process_resident_memory_bytes`
+- `outline_ws_process_virtual_memory_bytes`
+- `outline_ws_process_heap_allocated_bytes`
+- `outline_ws_process_heap_mode_info{mode}`
+- `outline_ws_process_open_fds`
+- `outline_ws_process_threads`
 
 Метрики heap на Linux сейчас рассчитываются через оценку по `VmData` и экспортируют `heap_mode_info{mode="estimated"}`.
 
@@ -1071,20 +1071,20 @@ scrape_configs:
 
 Snapshot дескрипторов включает общее количество открытых FD и разбивку на сокеты, pipes, anon inodes, обычные файлы и прочее.
 
-`outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}` и `outline_ws_rust_sticky_routes_total` экспортируют конфигурацию селектора и состояние активного uplink.
+`outline_ws_selection_mode_info{mode}`, `outline_ws_routing_scope_info{scope}`, `outline_ws_global_active_uplink_info{uplink}` и `outline_ws_sticky_routes` экспортируют конфигурацию селектора и состояние активного uplink.
 
-`outline_ws_rust_group_bypass_active{group, transport}` отражает живое состояние `bypass_when_down`: `1` — новые потоки этого транспорта сейчас диспатчатся direct (байпасс туннеля), потому что в группе нет здорового uplink'а; `0` — трафик туннелируется нормально. Серия существует только для групп с `bypass_when_down = true`; встроенный dashboard показывает тот же сигнал чипом в заголовке группы (серый `Bypass: armed` / янтарный `Bypass: DIRECT`), а Grafana-дашборд — парной stat-панелью и таймлайном в секции Routing Policy.
+`outline_ws_group_bypass_active{group, transport}` отражает живое состояние `bypass_when_down`: `1` — новые потоки этого транспорта сейчас диспатчатся direct (байпасс туннеля), потому что в группе нет здорового uplink'а; `0` — трафик туннелируется нормально. Серия существует только для групп с `bypass_when_down = true`; встроенный dashboard показывает тот же сигнал чипом в заголовке группы (серый `Bypass: armed` / янтарный `Bypass: DIRECT`), а Grafana-дашборд — парной stat-панелью и таймлайном в секции Routing Policy.
 
 Учёт открытых соединений по uplink (используется для детекции утекания
 коннектов в неактивный uplink после переключения active в режимах
 `Global` / `PerUplink`) экспортируется через:
 
-- `outline_ws_rust_uplink_open_connections{group, transport, uplink}` —
+- `outline_ws_uplink_open_connections{group, transport, uplink}` —
   gauge с текущим числом открытых upstream-транспортов, привязанных к
   конкретному uplink. После переключения новый active поднимается, старый
   понемногу слив сессии заканчивает; серия, которая не сходит к нулю —
   сигнал утечки.
-- `outline_ws_rust_uplink_connection_close_total{group, transport, uplink, classification}`
+- `outline_ws_uplink_connection_close_total{group, transport, uplink, classification}`
   — счётчик закрытий upstream-транспортов с классификацией на момент close:
   `active` (uplink всё ещё активный), `inactive` (active уже сменился —
   дренаж осиротевшей сессии), `unknown` (`PerFlow` scope без понятия
@@ -1097,8 +1097,8 @@ Snapshot дескрипторов включает общее количеств
 коннекты намеренно НЕ привязаны — метрики покрывают только
 пользовательский трафик.
 
-При ошибке UDP-forwarding в TUN метрика `outline_ws_rust_tun_udp_forward_errors_total{reason}` разбивает их по: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
-Дроп oversized SOCKS5 UDP-пакетов до отправки в uplink и oversized UDP-ответов до отправки клиенту экспортируется как `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing", cause}` (label `cause` различает `quic_dgram`, `vless_quic_dgram`, `vless_udp`, `ss_socket`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`).
+При ошибке UDP-forwarding в TUN метрика `outline_ws_tun_udp_forward_errors_total{reason}` разбивает их по: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
+Дроп oversized SOCKS5 UDP-пакетов до отправки в uplink и oversized UDP-ответов до отправки клиенту экспортируется как `outline_ws_udp_oversized_dropped_total{direction="incoming|outgoing", cause}` (label `cause` различает `quic_dgram`, `vless_quic_dgram`, `vless_udp`, `ss_socket`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`).
 На TUN UDP-пути oversize-дропы дополнительно синтезируют ICMP «Fragmentation Needed» (IPv4) или «Packet Too Big» (IPv6) в адрес отправителя, чтобы сработала его собственная PMTUD state machine — throttled до одного PTB в секунду на flow и полностью подавлены ниже QUIC v1 Initial-datagram floor (1200 v4 / 1280 v6), чтобы compliant QUIC-клиентов не выбивало с UDP в TCP fallback. Полный контракт описан в [docs/TUN-PMTUD.ru.md](docs/TUN-PMTUD.ru.md).
 
 Дашборды Grafana:

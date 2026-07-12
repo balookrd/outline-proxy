@@ -13,35 +13,35 @@ pub(super) fn build(registry: &Registry) -> TransportFields {
     let transport_connects_total = register_labeled!(
         registry,
         IntCounterVec,
-        "outline_ws_rust_transport_connects_total",
+        "outline_ws_transport_connects_total",
         "Transport websocket connect attempts by source, mode and result.",
         ["source", "mode", "result"]
     );
     let transport_connects_active = register_labeled!(
         registry,
         IntGaugeVec,
-        "outline_ws_rust_transport_connects_active",
+        "outline_ws_transport_connects_active",
         "Currently active transport websocket connect attempts by source and mode.",
         ["source", "mode"]
     );
     let upstream_transports_total = register_labeled!(
         registry,
         IntCounterVec,
-        "outline_ws_rust_upstream_transports_total",
+        "outline_ws_upstream_transports_total",
         "Established upstream websocket transports by source, protocol and result.",
         ["source", "protocol", "result"]
     );
     let upstream_transports_active = register_labeled!(
         registry,
         IntGaugeVec,
-        "outline_ws_rust_upstream_transports_active",
+        "outline_ws_upstream_transports_active",
         "Currently active established upstream websocket transports by source and protocol.",
         ["source", "protocol"]
     );
     let metrics_http_requests_total = register_labeled!(
         registry,
         IntCounterVec,
-        "outline_ws_rust_metrics_http_requests_total",
+        "outline_ws_metrics_http_requests_total",
         "HTTP requests served by the control and metrics listeners by path and status code.",
         ["path", "status"]
     );

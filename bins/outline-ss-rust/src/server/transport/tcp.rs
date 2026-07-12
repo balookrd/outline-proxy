@@ -633,7 +633,7 @@ where
         Transport::Tcp,
         route.protocol,
         AppProtocol::Shadowsocks,
-        "in",
+        "up",
         data.len(),
     );
     // Strip carrier padding before the AEAD layer when this path pads. The

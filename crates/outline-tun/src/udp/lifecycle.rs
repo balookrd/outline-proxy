@@ -323,7 +323,7 @@ impl TunUdpEngine {
                 };
                 match transport.send_packet(&payload).await {
                     Ok(()) => super::record_udp_xfer(
-                        "client_to_upstream",
+                        "up",
                         manager.group_name(),
                         &uplink_name,
                         payload.len(),
@@ -370,7 +370,7 @@ impl TunUdpEngine {
                                     warn!(flow_id, error = %format!("{retry_error:#}"), "TUN UDP resend after reconnect failed");
                                 } else {
                                     super::record_udp_xfer(
-                                        "client_to_upstream",
+                                        "up",
                                         manager.group_name(),
                                         &uplink_name,
                                         payload.len(),
@@ -487,7 +487,7 @@ impl TunUdpEngine {
                         }
                     };
                     super::record_udp_xfer(
-                        "upstream_to_client",
+                        "down",
                         manager.group_name(),
                         &uplink_name,
                         total_payload,
@@ -511,7 +511,7 @@ impl TunUdpEngine {
                         )?;
                         engine.inner.writer.write_gso_segment(&packet, vnet).await?;
                         metrics::record_tun_packet(
-                            "upstream_to_tun",
+                            "down",
                             ip_family_from_version(key.version),
                             "uso_supersegment",
                         );
@@ -522,7 +522,7 @@ impl TunUdpEngine {
                     // Per-datagram `accepted` parity with the non-USO path.
                     for _ in 0..batch_len {
                         metrics::record_tun_packet(
-                            "upstream_to_tun",
+                            "down",
                             ip_family_from_version(key.version),
                             "accepted",
                         );
@@ -554,11 +554,7 @@ impl TunUdpEngine {
                 && flow_is_current(&engine.inner.flows, &key, flow_id).await
             {
                 report_udp_runtime_failure(&manager, uplink_index, error).await;
-                metrics::record_tun_packet(
-                    "upstream_to_tun",
-                    ip_family_from_version(key.version),
-                    "error",
-                );
+                metrics::record_tun_packet("down", ip_family_from_version(key.version), "error");
                 warn!(
                     flow_id,
                     error = %format!("{error:#}"),

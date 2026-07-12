@@ -308,7 +308,7 @@ impl VlessUdpSessionMux {
     }
 
     /// Attribute the mux's lifetime guard to a concrete uplink so it
-    /// participates in `outline_ws_rust_uplink_open_connections` and the
+    /// participates in `outline_ws_uplink_open_connections` and the
     /// matching close-classification counter alongside per-session lifetimes.
     /// Same constraints as [`crate::UdpWsTransport::with_uplink_binding`].
     pub fn with_uplink_binding(mut self, binding: UplinkConnectionBinding) -> Self {

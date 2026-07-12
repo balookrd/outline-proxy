@@ -181,7 +181,7 @@ async fn send_data<T: WsSocket>(
     monitor: Option<&Arc<ThroughputMonitor>>,
 ) -> Result<()> {
     if let Some(len) = T::binary_len(&msg) {
-        metrics.record_websocket_binary_frame(transport_kind, protocol, app_protocol, "out", len);
+        metrics.record_websocket_binary_frame(transport_kind, protocol, app_protocol, "down", len);
         if let Some(m) = monitor {
             m.add_outbound(len as u64);
         }

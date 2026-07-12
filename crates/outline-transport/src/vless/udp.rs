@@ -210,7 +210,7 @@ impl VlessUdpTransport {
     }
 
     /// Attribute this VLESS UDP session to a concrete uplink so its lifetime
-    /// drives `outline_ws_rust_uplink_open_connections` and the matching
+    /// drives `outline_ws_uplink_open_connections` and the matching
     /// close-classification counter. Same constraints as
     /// [`crate::UdpWsTransport::with_uplink_binding`] — call before sharing
     /// the inner guard `Arc`.
@@ -221,7 +221,7 @@ impl VlessUdpTransport {
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
         if payload.len() > MAX_VLESS_UDP_PAYLOAD {
-            outline_metrics::record_dropped_oversized_udp_packet("outgoing", "vless_udp");
+            outline_metrics::record_dropped_oversized_udp_packet("down", "vless_udp");
             bail!(crate::OversizedUdpDatagram {
                 transport: "vless-udp",
                 payload_len: payload.len(),

@@ -106,7 +106,7 @@ fn render_prometheus_exports_session_histogram() {
     session.finish(true);
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
-    assert!(rendered.contains("outline_ws_rust_session_duration_seconds_bucket"));
+    assert!(rendered.contains("outline_ws_session_duration_seconds_bucket"));
     assert!(rendered.contains("protocol=\"tcp\""));
     assert!(rendered.contains("result=\"success\""));
 }
@@ -122,20 +122,18 @@ fn render_prometheus_exports_cluster_soft_switch_and_resume_metrics() {
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(
-        rendered
-            .contains("outline_ws_rust_soft_switch_total{group=\"main\",outcome=\"migrated\"} 1")
+        rendered.contains("outline_ws_soft_switch_total{group=\"main\",outcome=\"migrated\"} 1")
     );
     assert!(
-        rendered.contains(
-            "outline_ws_rust_soft_switch_total{group=\"main\",outcome=\"redial_failed\"} 1"
-        )
+        rendered
+            .contains("outline_ws_soft_switch_total{group=\"main\",outcome=\"redial_failed\"} 1")
     );
     // The prometheus text exposition renders label pairs sorted by label name.
     assert!(rendered.contains(
-        "outline_ws_rust_resume_lookup_total{result=\"hit\",scope=\"group\",transport=\"tcp\"} 1"
+        "outline_ws_resume_lookup_total{result=\"hit\",scope=\"group\",transport=\"tcp\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_resume_lookup_total{result=\"miss\",scope=\"uplink\",transport=\"udp\"} 1"
+        "outline_ws_resume_lookup_total{result=\"miss\",scope=\"uplink\",transport=\"udp\"} 1"
     ));
 }
 
@@ -157,7 +155,7 @@ fn render_prometheus_exports_uplink_cert_expiry_gauge() {
     let line = rendered
         .lines()
         .find(|l| {
-            l.starts_with("outline_ws_rust_uplink_cert_expiry_timestamp_seconds{")
+            l.starts_with("outline_ws_uplink_cert_expiry_timestamp_seconds{")
                 && l.contains("uplink=\"nuxt\"")
         })
         .expect("cert-expiry gauge present for the uplink with a certificate");
@@ -169,7 +167,7 @@ fn render_prometheus_exports_uplink_cert_expiry_gauge() {
     // An uplink with no certificate must not emit the gauge at all.
     assert!(
         !rendered.lines().any(|l| {
-            l.starts_with("outline_ws_rust_uplink_cert_expiry_timestamp_seconds")
+            l.starts_with("outline_ws_uplink_cert_expiry_timestamp_seconds")
                 && l.contains("uplink=\"senko\"")
         }),
         "uplink without a measured certificate must not emit the cert-expiry gauge"
@@ -192,15 +190,13 @@ fn render_prometheus_exports_group_bypass_active_for_opted_in_groups() {
 
     let rendered = render_prometheus(&[bypassing, plain]).expect("render metrics");
     assert!(
-        rendered
-            .contains("outline_ws_rust_group_bypass_active{group=\"edge\",transport=\"tcp\"} 1")
+        rendered.contains("outline_ws_group_bypass_active{group=\"edge\",transport=\"tcp\"} 1")
     );
     assert!(
-        rendered
-            .contains("outline_ws_rust_group_bypass_active{group=\"edge\",transport=\"udp\"} 0")
+        rendered.contains("outline_ws_group_bypass_active{group=\"edge\",transport=\"udp\"} 0")
     );
     assert!(
-        !rendered.contains("outline_ws_rust_group_bypass_active{group=\"main\""),
+        !rendered.contains("outline_ws_group_bypass_active{group=\"main\""),
         "group without bypass_when_down must not emit the gauge"
     );
 }
@@ -243,19 +239,19 @@ fn render_prometheus_exports_process_memory_metrics() {
     );
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
-    assert!(rendered.contains("outline_ws_rust_process_resident_memory_bytes 1234"));
-    assert!(rendered.contains("outline_ws_rust_process_virtual_memory_bytes 4321"));
-    assert!(rendered.contains("outline_ws_rust_process_heap_allocated_bytes 5678"));
-    assert!(rendered.contains("outline_ws_rust_process_heap_mode_info{mode=\"estimated\"} 1"));
-    assert!(rendered.contains("outline_ws_rust_process_open_fds 42"));
-    assert!(rendered.contains("outline_ws_rust_process_threads 9"));
-    assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"socket\"} 20"));
-    assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"pipe\"} 10"));
+    assert!(rendered.contains("outline_ws_process_resident_memory_bytes 1234"));
+    assert!(rendered.contains("outline_ws_process_virtual_memory_bytes 4321"));
+    assert!(rendered.contains("outline_ws_process_heap_allocated_bytes 5678"));
+    assert!(rendered.contains("outline_ws_process_heap_mode_info{mode=\"estimated\"} 1"));
+    assert!(rendered.contains("outline_ws_process_open_fds 42"));
+    assert!(rendered.contains("outline_ws_process_threads 9"));
+    assert!(rendered.contains("outline_ws_process_fd_by_type{kind=\"socket\"} 20"));
+    assert!(rendered.contains("outline_ws_process_fd_by_type{kind=\"pipe\"} 10"));
     assert!(rendered.contains(
-        "outline_ws_rust_process_sockets_by_state{family=\"ipv4\",protocol=\"tcp\",state=\"established\"} 12"
+        "outline_ws_process_sockets_by_state{family=\"ipv4\",protocol=\"tcp\",state=\"established\"} 12"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_process_sockets_by_state{family=\"ipv4\",protocol=\"tcp\",state=\"close_wait\"} 3"
+        "outline_ws_process_sockets_by_state{family=\"ipv4\",protocol=\"tcp\",state=\"close_wait\"} 3"
     ));
 }
 
@@ -274,26 +270,26 @@ fn render_prometheus_exports_transport_connect_metrics() {
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(
-        rendered
-            .contains("outline_ws_rust_transport_connects_active{mode=\"h2\",source=\"tun_tcp\"}")
+        rendered.contains("outline_ws_transport_connects_active{mode=\"h2\",source=\"tun_tcp\"}")
     );
     assert!(rendered.contains(
-        "outline_ws_rust_transport_connects_total{mode=\"h2\",result=\"started\",source=\"tun_tcp\"}"
+        "outline_ws_transport_connects_total{mode=\"h2\",result=\"started\",source=\"tun_tcp\"}"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_transport_connects_total{mode=\"h2\",result=\"success\",source=\"tun_tcp\"}"
+        "outline_ws_transport_connects_total{mode=\"h2\",result=\"success\",source=\"tun_tcp\"}"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_transport_connects_total{mode=\"h3\",result=\"error\",source=\"probe_http\"}"
+        "outline_ws_transport_connects_total{mode=\"h3\",result=\"error\",source=\"probe_http\"}"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_runtime_failures_suppressed_total{group=\"main\",transport=\"udp\",uplink=\"primary\"}"
+        "outline_ws_uplink_runtime_failures_suppressed_total{group=\"main\",transport=\"udp\",uplink=\"primary\"}"
     ));
+    assert!(
+        rendered
+            .contains("outline_ws_upstream_transports_active{protocol=\"tcp\",source=\"tun_tcp\"}")
+    );
     assert!(rendered.contains(
-        "outline_ws_rust_upstream_transports_active{protocol=\"tcp\",source=\"tun_tcp\"}"
-    ));
-    assert!(rendered.contains(
-        "outline_ws_rust_upstream_transports_total{protocol=\"tcp\",result=\"opened\",source=\"tun_tcp\"}"
+        "outline_ws_upstream_transports_total{protocol=\"tcp\",result=\"opened\",source=\"tun_tcp\"}"
     ));
 }
 
@@ -301,63 +297,63 @@ fn render_prometheus_exports_transport_connect_metrics() {
 fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     let _guard = test_guard();
     init();
-    add_bytes("tcp", "client_to_upstream", "main", "nuxt", 128);
-    add_bytes("udp", "upstream_to_client", "main", "senko", 256);
-    add_bytes("tcp", "upstream_to_client", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL, 512);
-    add_probe_bytes("main", "primary", "tcp", "http", "outgoing", 64);
-    add_probe_bytes("main", "primary", "udp", "dns", "incoming", 96);
+    add_bytes("tcp", "up", "main", "nuxt", 128);
+    add_bytes("udp", "down", "main", "senko", 256);
+    add_bytes("tcp", "down", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL, 512);
+    add_probe_bytes("main", "primary", "tcp", "http", "up", 64);
+    add_probe_bytes("main", "primary", "udp", "dns", "down", 96);
     record_probe_wakeup("main", "primary", "udp", "runtime_failure", "sent");
     record_probe_wakeup("main", "primary", "udp", "runtime_failure", "suppressed");
     record_runtime_failure_cause("tcp", "main", "primary", "timeout");
     record_runtime_failure_signature("tcp", "main", "primary", "read_failed");
     record_runtime_failure_other_detail("tcp", "main", "primary", "failed_to_read_chunk");
-    add_udp_datagram("client_to_upstream", "main", "nuxt");
-    add_udp_datagram("upstream_to_client", "main", "senko");
-    add_udp_datagram("upstream_to_client", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL);
-    record_dropped_oversized_udp_packet("incoming", "socks_client");
+    add_udp_datagram("up", "main", "nuxt");
+    add_udp_datagram("down", "main", "senko");
+    add_udp_datagram("down", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL);
+    record_dropped_oversized_udp_packet("up", "socks_client");
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"client_to_upstream\",group=\"main\",protocol=\"tcp\",uplink=\"nuxt\"} 128"
+        "outline_ws_bytes_total{direction=\"up\",group=\"main\",protocol=\"tcp\",uplink=\"nuxt\"} 128"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",group=\"main\",protocol=\"udp\",uplink=\"senko\"} 256"
+        "outline_ws_bytes_total{direction=\"down\",group=\"main\",protocol=\"udp\",uplink=\"senko\"} 256"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",group=\"direct\",protocol=\"tcp\",uplink=\"direct\"} 512"
+        "outline_ws_bytes_total{direction=\"down\",group=\"direct\",protocol=\"tcp\",uplink=\"direct\"} 512"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_probe_bytes_total{direction=\"outgoing\",group=\"main\",probe=\"http\",transport=\"tcp\",uplink=\"primary\"} 64"
+        "outline_ws_probe_bytes_total{direction=\"up\",group=\"main\",probe=\"http\",transport=\"tcp\",uplink=\"primary\"} 64"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_probe_bytes_total{direction=\"incoming\",group=\"main\",probe=\"dns\",transport=\"udp\",uplink=\"primary\"} 96"
+        "outline_ws_probe_bytes_total{direction=\"down\",group=\"main\",probe=\"dns\",transport=\"udp\",uplink=\"primary\"} 96"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_probe_wakeups_total{group=\"main\",reason=\"runtime_failure\",result=\"sent\",transport=\"udp\",uplink=\"primary\"} 1"
+        "outline_ws_probe_wakeups_total{group=\"main\",reason=\"runtime_failure\",result=\"sent\",transport=\"udp\",uplink=\"primary\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_probe_wakeups_total{group=\"main\",reason=\"runtime_failure\",result=\"suppressed\",transport=\"udp\",uplink=\"primary\"} 1"
+        "outline_ws_probe_wakeups_total{group=\"main\",reason=\"runtime_failure\",result=\"suppressed\",transport=\"udp\",uplink=\"primary\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_runtime_failure_causes_total{cause=\"timeout\",group=\"main\",transport=\"tcp\",uplink=\"primary\"} 1"
+        "outline_ws_uplink_runtime_failure_causes_total{cause=\"timeout\",group=\"main\",transport=\"tcp\",uplink=\"primary\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_runtime_failure_signatures_total{group=\"main\",signature=\"read_failed\",transport=\"tcp\",uplink=\"primary\"} 1"
+        "outline_ws_uplink_runtime_failure_signatures_total{group=\"main\",signature=\"read_failed\",transport=\"tcp\",uplink=\"primary\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_runtime_failure_other_details_total{detail=\"failed_to_read_chunk\",group=\"main\",transport=\"tcp\",uplink=\"primary\"} 1"
+        "outline_ws_uplink_runtime_failure_other_details_total{detail=\"failed_to_read_chunk\",group=\"main\",transport=\"tcp\",uplink=\"primary\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"client_to_upstream\",group=\"main\",uplink=\"nuxt\"} 1"
+        "outline_ws_udp_datagrams_total{direction=\"up\",group=\"main\",uplink=\"nuxt\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"main\",uplink=\"senko\"} 1"
+        "outline_ws_udp_datagrams_total{direction=\"down\",group=\"main\",uplink=\"senko\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"direct\",uplink=\"direct\"} 1"
+        "outline_ws_udp_datagrams_total{direction=\"down\",group=\"direct\",uplink=\"direct\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_oversized_dropped_total{cause=\"socks_client\",direction=\"incoming\"} 1"
+        "outline_ws_udp_oversized_dropped_total{cause=\"socks_client\",direction=\"up\"} 1"
     ));
 }
 
@@ -396,25 +392,25 @@ fn render_prometheus_exports_uplink_fingerprint_profile_strategy_info() {
     // (even for the default `none` strategy) so an absent series is a
     // pipeline bug, not "feature off".
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"senko\"} 1"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"senko\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"none\",uplink=\"senko\"} 0"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"none\",uplink=\"senko\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"random\",uplink=\"senko\"} 0"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"random\",uplink=\"senko\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"process_stable\",uplink=\"senko\"} 0"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"process_stable\",uplink=\"senko\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"none\",uplink=\"nuxt\"} 1"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"none\",uplink=\"nuxt\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"nuxt\"} 0"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"nuxt\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"process_stable\",uplink=\"nuxt\"} 0"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"process_stable\",uplink=\"nuxt\"} 0"
     ));
 }
 
@@ -452,13 +448,13 @@ fn render_prometheus_publishes_process_stable_strategy_label() {
     .expect("render metrics");
 
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"process_stable\",uplink=\"aeza\"} 1"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"process_stable\",uplink=\"aeza\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"aeza\"} 0"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"aeza\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"random\",uplink=\"aeza\"} 0"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"random\",uplink=\"aeza\"} 0"
     ));
 }
 
@@ -518,10 +514,10 @@ fn render_prometheus_clears_stale_uplink_fingerprint_profile_strategy() {
     .expect("render second metrics");
 
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"senko\"} 0"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"per_host_stable\",uplink=\"senko\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"none\",uplink=\"senko\"} 1"
+        "outline_ws_uplink_fingerprint_profile_strategy_info{group=\"main\",strategy=\"none\",uplink=\"senko\"} 1"
     ));
 }
 
@@ -552,17 +548,13 @@ fn render_prometheus_exports_routing_selection_info() {
     .expect("render metrics");
 
     assert!(
-        rendered.contains(
-            "outline_ws_rust_selection_mode_info{group=\"main\",mode=\"active_passive\"} 1"
-        )
+        rendered
+            .contains("outline_ws_selection_mode_info{group=\"main\",mode=\"active_passive\"} 1")
     );
+    assert!(rendered.contains("outline_ws_routing_scope_info{group=\"main\",scope=\"global\"} 1"));
     assert!(
-        rendered.contains("outline_ws_rust_routing_scope_info{group=\"main\",scope=\"global\"} 1")
-    );
-    assert!(
-        rendered.contains(
-            "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"senko\"} 1"
-        )
+        rendered
+            .contains("outline_ws_global_active_uplink_info{group=\"main\",uplink=\"senko\"} 1")
     );
 }
 
@@ -616,14 +608,11 @@ fn render_prometheus_clears_previous_global_active_uplink() {
     .expect("render second metrics");
 
     assert!(
-        rendered.contains(
-            "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"senko\"} 0"
-        )
+        rendered
+            .contains("outline_ws_global_active_uplink_info{group=\"main\",uplink=\"senko\"} 0")
     );
     assert!(
-        rendered.contains(
-            "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"nuxt\"} 1"
-        )
+        rendered.contains("outline_ws_global_active_uplink_info{group=\"main\",uplink=\"nuxt\"} 1")
     );
 }
 
@@ -659,13 +648,13 @@ fn render_prometheus_exports_mode_downgrade_state() {
 
     assert!(
         rendered.contains(
-            "outline_ws_rust_uplink_mode_downgrade_remaining_seconds{group=\"main\",transport=\"tcp\",uplink=\"nuxt\"}",
+            "outline_ws_uplink_mode_downgrade_remaining_seconds{group=\"main\",transport=\"tcp\",uplink=\"nuxt\"}",
         ),
         "remaining_seconds gauge missing in:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "outline_ws_rust_uplink_mode_downgrade_capped_to_info{group=\"main\",mode=\"xhttp_h2\",transport=\"tcp\",uplink=\"nuxt\"} 1",
+            "outline_ws_uplink_mode_downgrade_capped_to_info{group=\"main\",mode=\"xhttp_h2\",transport=\"tcp\",uplink=\"nuxt\"} 1",
         ),
         "active cap label not set to 1 in:\n{rendered}"
     );
@@ -674,13 +663,13 @@ fn render_prometheus_exports_mode_downgrade_state() {
     // missed".
     assert!(
         rendered.contains(
-            "outline_ws_rust_uplink_mode_downgrade_capped_to_info{group=\"main\",mode=\"ws_h3\",transport=\"tcp\",uplink=\"nuxt\"} 0",
+            "outline_ws_uplink_mode_downgrade_capped_to_info{group=\"main\",mode=\"ws_h3\",transport=\"tcp\",uplink=\"nuxt\"} 0",
         ),
         "non-active cap label not zeroed in:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "outline_ws_rust_uplink_mode_downgrade_capped_to_info{group=\"main\",mode=\"quic\",transport=\"tcp\",uplink=\"nuxt\"} 0",
+            "outline_ws_uplink_mode_downgrade_capped_to_info{group=\"main\",mode=\"quic\",transport=\"tcp\",uplink=\"nuxt\"} 0",
         ),
         "non-active cap label not zeroed in:\n{rendered}"
     );
@@ -738,11 +727,11 @@ fn render_prometheus_clears_previous_mode_downgrade_window() {
     .expect("render second metrics");
 
     assert!(
-        !rendered.contains("outline_ws_rust_uplink_mode_downgrade_remaining_seconds{"),
+        !rendered.contains("outline_ws_uplink_mode_downgrade_remaining_seconds{"),
         "remaining_seconds series should be cleared after window expires:\n{rendered}"
     );
     assert!(
-        !rendered.contains("outline_ws_rust_uplink_mode_downgrade_capped_to_info{"),
+        !rendered.contains("outline_ws_uplink_mode_downgrade_capped_to_info{"),
         "capped_to_info series should be cleared after window expires:\n{rendered}"
     );
 }
@@ -757,44 +746,47 @@ fn init_exports_zero_value_tun_udp_forward_error_series() {
     assert!(
         metric_value(
             &rendered,
-            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"all_uplinks_failed\"}",
+            "outline_ws_tun_udp_forward_errors_total{reason=\"all_uplinks_failed\"}",
         )
         .is_some()
     );
     assert!(
         metric_value(
             &rendered,
-            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"transport_error\"}",
+            "outline_ws_tun_udp_forward_errors_total{reason=\"transport_error\"}",
         )
         .is_some()
     );
     assert!(
         metric_value(
             &rendered,
-            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"connect_failed\"}",
+            "outline_ws_tun_udp_forward_errors_total{reason=\"connect_failed\"}",
         )
         .is_some()
     );
     assert!(
-        metric_value(&rendered, "outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"}",)
+        metric_value(&rendered, "outline_ws_tun_udp_forward_errors_total{reason=\"other\"}",)
             .is_some()
     );
-    assert!(metric_value(
-        &rendered,
-        "outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv4\"}",
-    )
-    .is_some());
-    assert!(rendered.contains("outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv6\"}"));
-    assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv4\"}"));
-    assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"}"));
-    assert!(rendered.contains(
-        "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv4\",result=\"success\"}"
-    ));
-    assert!(rendered.contains(
-        "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"timeout\"}"
-    ));
-    assert!(rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv4\"}"));
-    assert!(rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv6\"}"));
+    assert!(
+        metric_value(&rendered, "outline_ws_tun_icmp_local_replies_total{ip_family=\"ipv4\"}",)
+            .is_some()
+    );
+    assert!(rendered.contains("outline_ws_tun_icmp_local_replies_total{ip_family=\"ipv6\"}"));
+    assert!(rendered.contains("outline_ws_tun_ip_fragments_total{ip_family=\"ipv4\"}"));
+    assert!(rendered.contains("outline_ws_tun_ip_fragments_total{ip_family=\"ipv6\"}"));
+    assert!(
+        rendered.contains(
+            "outline_ws_tun_ip_reassemblies_total{ip_family=\"ipv4\",result=\"success\"}"
+        )
+    );
+    assert!(
+        rendered.contains(
+            "outline_ws_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"timeout\"}"
+        )
+    );
+    assert!(rendered.contains("outline_ws_tun_ip_fragment_sets_active{ip_family=\"ipv4\"}"));
+    assert!(rendered.contains("outline_ws_tun_ip_fragment_sets_active{ip_family=\"ipv6\"}"));
 }
 
 #[cfg(feature = "tun")]
@@ -810,16 +802,16 @@ fn render_prometheus_exports_ipv6_fragment_activity_counters() {
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     let fragments =
-        metric_value(&rendered, "outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"}")
+        metric_value(&rendered, "outline_ws_tun_ip_fragments_total{ip_family=\"ipv6\"}")
             .expect("ipv6 fragment counter");
     assert!(fragments >= 2.0);
     let reassemblies = metric_value(
         &rendered,
-        "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"success\"}",
+        "outline_ws_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"success\"}",
     )
     .expect("ipv6 reassembly counter");
     assert!(reassemblies >= 1.0);
-    assert!(rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv6\"}"));
+    assert!(rendered.contains("outline_ws_tun_ip_fragment_sets_active{ip_family=\"ipv6\"}"));
 }
 
 #[test]
@@ -828,25 +820,25 @@ fn init_exports_zero_value_request_and_session_series() {
     init();
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
-    assert!(rendered.contains("outline_ws_rust_requests_total{command=\"connect\"} 0"));
-    assert!(rendered.contains("outline_ws_rust_requests_total{command=\"udp_associate\"} 0"));
-    assert!(rendered.contains("outline_ws_rust_requests_total{command=\"udp_in_tcp\"} 0"));
-    assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"tcp\"} 0"));
-    assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"udp\"} 0"));
+    assert!(rendered.contains("outline_ws_requests_total{command=\"connect\"} 0"));
+    assert!(rendered.contains("outline_ws_requests_total{command=\"udp_associate\"} 0"));
+    assert!(rendered.contains("outline_ws_requests_total{command=\"udp_in_tcp\"} 0"));
+    assert!(rendered.contains("outline_ws_sessions_active{protocol=\"tcp\"} 0"));
+    assert!(rendered.contains("outline_ws_sessions_active{protocol=\"udp\"} 0"));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_oversized_dropped_total{cause=\"socks_in_tcp\",direction=\"outgoing\"} 0"
+        "outline_ws_udp_oversized_dropped_total{cause=\"socks_in_tcp\",direction=\"down\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"client_to_upstream\",group=\"direct\",protocol=\"tcp\",uplink=\"direct\"} 0"
+        "outline_ws_bytes_total{direction=\"up\",group=\"direct\",protocol=\"tcp\",uplink=\"direct\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",group=\"direct\",protocol=\"udp\",uplink=\"direct\"} 0"
+        "outline_ws_bytes_total{direction=\"down\",group=\"direct\",protocol=\"udp\",uplink=\"direct\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"client_to_upstream\",group=\"direct\",uplink=\"direct\"} 0"
+        "outline_ws_udp_datagrams_total{direction=\"up\",group=\"direct\",uplink=\"direct\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"direct\",uplink=\"direct\"} 0"
+        "outline_ws_udp_datagrams_total{direction=\"down\",group=\"direct\",uplink=\"direct\"} 0"
     ));
 }
 
@@ -871,13 +863,13 @@ fn uplink_open_connections_gauge_round_trips() {
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(
         rendered.contains(
-            "outline_ws_rust_uplink_open_connections{group=\"main\",transport=\"tcp\",uplink=\"primary\"} 2",
+            "outline_ws_uplink_open_connections{group=\"main\",transport=\"tcp\",uplink=\"primary\"} 2",
         ),
         "tcp gauge missing or wrong in:\n{rendered}"
     );
     assert!(
         rendered.contains(
-            "outline_ws_rust_uplink_open_connections{group=\"main\",transport=\"udp\",uplink=\"secondary\"} 2",
+            "outline_ws_uplink_open_connections{group=\"main\",transport=\"udp\",uplink=\"secondary\"} 2",
         ),
         "udp gauge missing or wrong in:\n{rendered}"
     );
@@ -915,18 +907,18 @@ fn uplink_close_classification_active_vs_inactive_vs_unknown() {
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_connection_close_total{classification=\"active\",group=\"g1\",transport=\"tcp\",uplink=\"senko\"} 1"
+        "outline_ws_uplink_connection_close_total{classification=\"active\",group=\"g1\",transport=\"tcp\",uplink=\"senko\"} 1"
     ), "active close missing in:\n{rendered}");
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_connection_close_total{classification=\"inactive\",group=\"g1\",transport=\"tcp\",uplink=\"nuxt\"} 1"
+        "outline_ws_uplink_connection_close_total{classification=\"inactive\",group=\"g1\",transport=\"tcp\",uplink=\"nuxt\"} 1"
     ), "inactive close missing in:\n{rendered}");
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_connection_close_total{classification=\"active\",group=\"g2\",transport=\"udp\",uplink=\"beta\"} 1"
+        "outline_ws_uplink_connection_close_total{classification=\"active\",group=\"g2\",transport=\"udp\",uplink=\"beta\"} 1"
     ), "per-uplink active close missing in:\n{rendered}");
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_connection_close_total{classification=\"inactive\",group=\"g2\",transport=\"udp\",uplink=\"alpha\"} 1"
+        "outline_ws_uplink_connection_close_total{classification=\"inactive\",group=\"g2\",transport=\"udp\",uplink=\"alpha\"} 1"
     ), "per-uplink inactive close missing in:\n{rendered}");
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_connection_close_total{classification=\"unknown\",group=\"g3\",transport=\"tcp\",uplink=\"edge\"} 1"
+        "outline_ws_uplink_connection_close_total{classification=\"unknown\",group=\"g3\",transport=\"tcp\",uplink=\"edge\"} 1"
     ), "per-flow unknown close missing in:\n{rendered}");
 }
