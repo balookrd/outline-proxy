@@ -90,12 +90,13 @@ pub(in crate::server) fn edge_throttle_ctx(
 struct EdgeThrottleDetector {
     ctx: EdgeThrottleCtx,
     tracker: StallTracker,
+    metrics: Arc<Metrics>,
 }
 
 impl EdgeThrottleDetector {
-    fn new(ctx: EdgeThrottleCtx) -> Self {
+    fn new(ctx: EdgeThrottleCtx, metrics: Arc<Metrics>) -> Self {
         let tracker = StallTracker::new(&ctx.params);
-        Self { ctx, tracker }
+        Self { ctx, tracker, metrics }
     }
 
     /// Feeds one client-facing send's elapsed time and the `bytes` it delivered;
@@ -109,6 +110,7 @@ impl EdgeThrottleDetector {
                 .ctx
                 .conn
                 .send_datagram(Bytes::from(encode_throttle_hint(&self.ctx.session_id)));
+            self.metrics.record_mesh_throttle_hint_sent();
             debug!("edge signalled a throttled client segment to the home");
         }
     }
@@ -226,8 +228,13 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
     mut mesh_recv: RecvStream,
     budget: Duration,
     detect: Option<EdgeThrottleCtx>,
+    metrics: Arc<Metrics>,
 ) -> Result<()> {
     let (mut reader, mut writer) = client.split_io();
+    // `role="edge"` byte counters: up = client→mesh (toward home), down =
+    // mesh→client. Resolved once; incremented per relayed chunk in each leg.
+    let up_bytes = metrics.mesh_bytes_counter("edge", "up", "tcp");
+    let down_bytes = metrics.mesh_bytes_counter("edge", "down", "tcp");
 
     // Uplink: the ONLY writer to `mesh_send`.
     let uplink = async {
@@ -242,6 +249,7 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
                             bail!("mesh relay stalled past the health budget");
                         },
                     }
+                    up_bytes.increment(data.len() as u64);
                 },
                 WsFrame::Close => break,
                 // The edge does not interpret the carrier; drop control frames.
@@ -256,7 +264,7 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
     // time each client-facing send: a send that blocks means the client isn't
     // draining (edge→client throttle).
     let downlink = async {
-        let mut detector = detect.map(EdgeThrottleDetector::new);
+        let mut detector = detect.map(|ctx| EdgeThrottleDetector::new(ctx, Arc::clone(&metrics)));
         while let Some(chunk) = mesh_recv
             .read_chunk(MESH_EDGE_CHUNK, true)
             .await
@@ -278,6 +286,7 @@ pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
                         .context("edge client downlink write")?;
                 },
             }
+            down_bytes.increment(bytes as u64);
         }
         T::finish(&mut writer).await;
         Ok::<(), anyhow::Error>(())
@@ -302,8 +311,14 @@ pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
     mut mesh_recv: RecvStream,
     budget: Duration,
     detect: Option<EdgeThrottleCtx>,
+    metrics: Arc<Metrics>,
 ) -> Result<()> {
     let (mut reader, mut writer) = client.split_io();
+    // `role="edge"` byte + datagram counters, one pair per direction.
+    let up_bytes = metrics.mesh_bytes_counter("edge", "up", "udp");
+    let up_datagrams = metrics.mesh_datagrams_counter("edge", "up");
+    let down_bytes = metrics.mesh_bytes_counter("edge", "down", "udp");
+    let down_datagrams = metrics.mesh_datagrams_counter("edge", "down");
 
     // Uplink: the ONLY writer to `mesh_send`. One client Binary = one datagram.
     let uplink = async {
@@ -319,6 +334,8 @@ pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
                             bail!("mesh relay stalled past the health budget");
                         },
                     }
+                    up_bytes.increment(data.len() as u64);
+                    up_datagrams.increment(1);
                 },
                 WsFrame::Close => break,
                 // The edge does not interpret the carrier; drop control frames.
@@ -332,7 +349,7 @@ pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
     // Downlink: the ONLY writer to the client `writer`. One datagram = one Binary.
     // When detection is on, time each client-facing send (see [`edge_relay`]).
     let downlink = async {
-        let mut detector = detect.map(EdgeThrottleDetector::new);
+        let mut detector = detect.map(|ctx| EdgeThrottleDetector::new(ctx, Arc::clone(&metrics)));
         let mut buf = Vec::new();
         while let Some(len) = read_datagram(&mut mesh_recv, &mut buf)
             .await
@@ -353,6 +370,8 @@ pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
                         .context("edge client downlink datagram write")?;
                 },
             }
+            down_bytes.increment(len as u64);
+            down_datagrams.increment(1);
         }
         T::finish(&mut writer).await;
         Ok::<(), anyhow::Error>(())
@@ -412,9 +431,10 @@ pub(in crate::server) async fn edge_relay_h3(
     pooled: PooledRelay,
     budget: Duration,
     detect: Option<EdgeThrottleCtx>,
+    metrics: Arc<Metrics>,
 ) -> Result<()> {
     let (send, recv, _permit) = pooled.into_parts();
-    edge_relay::<H3Ws>(H3Ws(socket), send, recv, budget, detect).await
+    edge_relay::<H3Ws>(H3Ws(socket), send, recv, budget, detect, metrics).await
 }
 
 /// SS-UDP twin of [`edge_relay_h3`]: splices an h3 client carrier to a mesh
@@ -424,9 +444,10 @@ pub(in crate::server) async fn edge_relay_h3_udp(
     pooled: PooledRelay,
     budget: Duration,
     detect: Option<EdgeThrottleCtx>,
+    metrics: Arc<Metrics>,
 ) -> Result<()> {
     let (send, recv, _permit) = pooled.into_parts();
-    edge_relay_udp::<H3Ws>(H3Ws(socket), send, recv, budget, detect).await
+    edge_relay_udp::<H3Ws>(H3Ws(socket), send, recv, budget, detect, metrics).await
 }
 
 /// Describes a carrier the edge is about to relay to its home. Bundled so the
@@ -490,10 +511,12 @@ pub(in crate::server::transport) async fn try_relay_edge(
         session_id: Some(advert.session_id),
         ..Default::default()
     };
+    let relay_metrics = Arc::clone(metrics);
     let mut response = ws.on_upgrade(move |socket| async move {
         // Hold the pool permit for the relay's whole lifetime (drops here).
         let (send, recv, _permit) = pooled.into_parts();
-        let result = edge_relay::<AxumWs>(AxumWs(socket), send, recv, budget, detect).await;
+        let result =
+            edge_relay::<AxumWs>(AxumWs(socket), send, recv, budget, detect, relay_metrics).await;
         super::finish_ws_session(session, result, kind);
     });
     echo.apply(response.headers_mut());
@@ -535,9 +558,12 @@ pub(in crate::server::transport) async fn try_relay_edge_udp(
         session_id: Some(advert.session_id),
         ..Default::default()
     };
+    let relay_metrics = Arc::clone(metrics);
     let mut response = ws.on_upgrade(move |socket| async move {
         let (send, recv, _permit) = pooled.into_parts();
-        let result = edge_relay_udp::<AxumWs>(AxumWs(socket), send, recv, budget, detect).await;
+        let result =
+            edge_relay_udp::<AxumWs>(AxumWs(socket), send, recv, budget, detect, relay_metrics)
+                .await;
         super::finish_ws_session(session, result, kind);
     });
     echo.apply(response.headers_mut());
@@ -592,9 +618,17 @@ async fn handle_mesh_connection(
             while let Ok(datagram) = conn.read_datagram().await {
                 match parse_control_datagram(&datagram) {
                     Ok(ControlDatagram::ThrottleHint { session_id }) => {
-                        cluster.throttle_registry.route_hint(&session_id);
+                        let outcome = if cluster.throttle_registry.route_hint(&session_id) {
+                            "delivered"
+                        } else {
+                            "dropped"
+                        };
+                        cluster.metrics.record_mesh_throttle_hint_received(outcome);
                     },
-                    Err(error) => debug!(?error, "dropping malformed mesh control datagram"),
+                    Err(error) => {
+                        cluster.metrics.record_mesh_control_datagram_error();
+                        debug!(?error, "dropping malformed mesh control datagram");
+                    },
                 }
             }
         }))
@@ -703,7 +737,11 @@ async fn serve_relayed(
                 padding,
             };
             run_tcp_relay(
-                MeshCarrier::new(stream),
+                MeshCarrier::new(
+                    stream,
+                    cluster.metrics.mesh_bytes_counter("home", "up", "tcp"),
+                    cluster.metrics.mesh_bytes_counter("home", "down", "tcp"),
+                ),
                 &services.tcp_server,
                 &route_ctx,
                 resume,
@@ -732,7 +770,11 @@ async fn serve_relayed(
                 peer: peer_addr.map(|addr| addr.ip()),
             };
             run_vless_relay(
-                MeshCarrier::new(stream),
+                MeshCarrier::new(
+                    stream,
+                    cluster.metrics.mesh_bytes_counter("home", "up", "tcp"),
+                    cluster.metrics.mesh_bytes_counter("home", "down", "tcp"),
+                ),
                 &services.vless_server,
                 &route_ctx,
                 resume,
@@ -761,7 +803,13 @@ async fn serve_relayed(
             // Datagram-framed carrier keeps SS-UDP packet boundaries intact
             // across the mesh; the existing UDP relay owns NAT/park/unpark.
             run_udp_relay(
-                MeshUdpCarrier::new(stream),
+                MeshUdpCarrier::new(
+                    stream,
+                    cluster.metrics.mesh_bytes_counter("home", "up", "udp"),
+                    cluster.metrics.mesh_bytes_counter("home", "down", "udp"),
+                    cluster.metrics.mesh_datagrams_counter("home", "up"),
+                    cluster.metrics.mesh_datagrams_counter("home", "down"),
+                ),
                 Arc::clone(&services.udp_server),
                 route_ctx,
                 resume,

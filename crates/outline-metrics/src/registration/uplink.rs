@@ -126,6 +126,8 @@ pub(super) struct UplinkFields {
     pub(super) uplink_connection_close_total: IntCounterVec,
     pub(super) socks_tcp_strict_aborts_total: IntCounterVec,
     pub(super) reverse_peers: IntGaugeVec,
+    pub(super) soft_switch_total: IntCounterVec,
+    pub(super) resume_lookup_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> UplinkFields {
@@ -443,6 +445,33 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
          that dialed in over QUIC and are live egress for this group).",
         ["group"]
     );
+    let soft_switch_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_rust_soft_switch_total",
+        "Operator-triggered cluster soft-switch migrations attempted per session, by \
+         outcome. Only counted once an operator soft switch is in effect for the group \
+         (`shared_resume` cluster). `migrated` = the session moved to the new edge \
+         cross-node (resume redial + replay succeeded); `redial_failed` = the migration \
+         redial failed, so the session falls back to an RST teardown and reconnects; \
+         `not_ws_family` = the new active uplink is not SS/VLESS-over-WS so it cannot \
+         present the group resume id; `no_candidate` = the new active index resolved to \
+         no dial candidate; `same_uplink` = the switch target equals the session's \
+         current uplink (no-op).",
+        ["group", "outcome"]
+    );
+    let resume_lookup_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_rust_resume_lookup_total",
+        "Resume-cache lookups when dialing an uplink wire, by transport, scope and \
+         result. `scope=group` means the resume id is shared across the group's edges \
+         (cluster `shared_resume`) so a `hit` is a cross-node-capable resume presented \
+         to whichever edge the wire landed on; `scope=uplink` is the standalone \
+         per-uplink resume. `result=hit` = a stored Session ID was presented (a resume \
+         attempt); `miss` = none was cached (a fresh session).",
+        ["transport", "scope", "result"]
+    );
 
     UplinkFields {
         uplink_selected_total,
@@ -482,5 +511,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_connection_close_total,
         socks_tcp_strict_aborts_total,
         reverse_peers,
+        soft_switch_total,
+        resume_lookup_total,
     }
 }

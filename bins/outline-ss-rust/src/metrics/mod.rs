@@ -20,7 +20,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use metrics::{counter, gauge, histogram, with_local_recorder};
+use metrics::{Counter, counter, gauge, histogram, with_local_recorder};
 use metrics_exporter_prometheus::{PrometheusHandle, PrometheusRecorder};
 use parking_lot::RwLock;
 
@@ -560,6 +560,67 @@ impl Metrics {
     /// gauge decrements when the guard drops (relay end or teardown).
     pub fn open_mesh_relay(self: &Arc<Self>) -> MeshRelayGuard {
         MeshRelayGuard::new(self.clone())
+    }
+
+    /// Pre-resolves the `outline_ss_mesh_bytes_total` counter handle for one
+    /// `(role, direction, transport)` triple. Resolve once when a relay starts,
+    /// then `.increment(n)` per chunk in the splice loop — avoids the `counter!`
+    /// label hash on every chunk on the mesh hot path (mirrors [`PerUserCounters`]).
+    /// `role` ∈ {`edge`, `home`}, `direction` ∈ {`up`, `down`}, `transport` ∈
+    /// {`tcp`, `udp`}; all are `&'static` so the label set stays low-cardinality.
+    pub fn mesh_bytes_counter(
+        &self,
+        role: &'static str,
+        direction: &'static str,
+        transport: &'static str,
+    ) -> Counter {
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_mesh_bytes_total",
+                "role"      => role,
+                "direction" => direction,
+                "transport" => transport
+            )
+        })
+    }
+
+    /// Pre-resolves the `outline_ss_mesh_datagrams_total` counter handle for one
+    /// `(role, direction)` pair (SS-UDP only). Same hot-path contract as
+    /// [`Self::mesh_bytes_counter`].
+    pub fn mesh_datagrams_counter(&self, role: &'static str, direction: &'static str) -> Counter {
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_mesh_datagrams_total",
+                "role"      => role,
+                "direction" => direction
+            )
+        })
+    }
+
+    /// Counts one THROTTLE_HINT the edge sent to the home after detecting a
+    /// stalled client segment on a relayed carrier.
+    pub fn record_mesh_throttle_hint_sent(&self) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_mesh_throttle_hints_sent_total").increment(1);
+        });
+    }
+
+    /// Counts one THROTTLE_HINT the home received. `outcome` is `delivered` when
+    /// it routed to a live relay monitor, or `dropped` when no live monitor was
+    /// registered for the session id.
+    pub fn record_mesh_throttle_hint_received(&self, outcome: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_mesh_throttle_hints_received_total", "outcome" => outcome)
+                .increment(1);
+        });
+    }
+
+    /// Counts one malformed mesh control datagram the home dropped on a parse
+    /// failure.
+    pub fn record_mesh_control_datagram_error(&self) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_mesh_control_datagram_errors_total").increment(1);
+        });
     }
 
     /// Counts plaintext bytes the server replayed in a v2 Symmetric

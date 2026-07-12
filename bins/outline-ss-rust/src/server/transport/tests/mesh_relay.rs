@@ -1,13 +1,20 @@
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::Instant;
 
 use super::{EdgeThrottleCtx, EdgeThrottleDetector, StallTracker};
+use crate::metrics::Metrics;
 use crate::server::cluster::mesh::{
     ControlDatagram, MeshEndpoint, MeshIdentity, parse_control_datagram,
 };
+use crate::server::tests::sample_config;
 use crate::server::transport::throughput_monitor::ThrottleDetectParams;
+
+fn test_metrics() -> Arc<Metrics> {
+    Metrics::new(&sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))))
+}
 
 /// Window 1s, fire after 3 sustained stall-windows, 30s cooldown. The
 /// delivered-rate floor is disabled (0) so these cases isolate the streak +
@@ -162,7 +169,7 @@ async fn edge_detector_signals_throttle_hint_over_the_mesh() {
         session_id,
         params: fire_on_first_stall(),
     };
-    let mut detector = EdgeThrottleDetector::new(ctx);
+    let mut detector = EdgeThrottleDetector::new(ctx, test_metrics());
     // 100ms send spans ~10 windows (window 10ms), and 256 KiB over 100ms is
     // ~2.6 MB/s — well past the default 64 KB/s floor — so the hint fires.
     detector.observe_send(Duration::from_millis(100), 262_144);
@@ -199,7 +206,7 @@ async fn edge_detector_stays_quiet_for_a_fast_send() {
         session_id: [1u8; 16],
         params: fire_on_first_stall(),
     };
-    let mut detector = EdgeThrottleDetector::new(ctx);
+    let mut detector = EdgeThrottleDetector::new(ctx, test_metrics());
     // 1ms << 10ms window: zero stalled windows, no hint (regardless of volume).
     detector.observe_send(Duration::from_millis(1), 262_144);
 

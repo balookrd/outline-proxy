@@ -150,8 +150,8 @@ See the "UDP cross-node migration" note in
 - **Survival:** start a session (a download in flight), force the client onto a
   different node (§5c makes this deterministic — kill the active uplink), and the
   download continues.
-- **Metrics:** on each node's `/metrics` (and the ss-rust Grafana dashboard,
-  panels *Mesh Relay Opens* / *Active Mesh Relays*):
+- **Metrics:** on each node's `/metrics` (and the ss-rust Grafana dashboard's
+  *Cluster Mesh* row):
   - `outline_ss_mesh_relay_opened_total{outcome="ok"}` rising ⇒ edges are
     relaying cross-shard sessions to their homes; `{outcome="fail"}` rising ⇒ a
     peer is unreachable (peer down, mesh UDP port blocked, or PSK mismatch) and
@@ -161,6 +161,25 @@ See the "UDP cross-node migration" note in
     demand, not held). Also watch `outline_ss_orphan_resume_hit_total` on the
     home: it climbs whenever a home reattaches a parked upstream for a client
     that arrived via another edge.
+  - **Cluster traffic** (how much data actually crosses the mesh, not just how
+    many relays open): `outline_ss_mesh_bytes_total{role,direction,transport}`
+    and `outline_ss_mesh_datagrams_total{role,direction}`. `role="edge"` is the
+    traffic this node forwards into the cluster; `role="home"` is what it serves
+    for foreign edges — the same relayed session counted from opposite ends. Zero
+    on both means no traffic is crossing the mesh (all sessions are local). Panels
+    *Mesh Throughput — edge/home* and *Mesh Datagram Rate*.
+  - `outline_ss_mesh_throttle_hints_sent_total` /
+    `outline_ss_mesh_throttle_hints_received_total{outcome}` /
+    `outline_ss_mesh_control_datagram_errors_total` track edge→home throttle
+    signalling; a steady `received{outcome="dropped"}` or `control_datagram_errors`
+    rate points at edge/home config/version skew. Panel *Mesh Throttle Hints &
+    Control Errors*.
+  - On the **client** (ws-rust dashboard, *Cluster / Soft-switch* row):
+    `outline_ws_rust_soft_switch_total{outcome}` — operator soft-switch
+    migrations, dominated by `migrated` on a healthy switch; and
+    `outline_ws_rust_resume_lookup_total{transport,scope,result}` —
+    `scope="group",result="hit"` is a cross-node-capable resume presented to a
+    new edge.
 - **⚠️ Integrity on real traffic:** the e2e tests cover the data plane but not
   production traffic. Download a large file through the cluster and **verify its
   sha256** against the original (the risk is silent corruption / reordering, like

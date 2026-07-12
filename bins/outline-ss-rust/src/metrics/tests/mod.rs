@@ -166,6 +166,47 @@ fn renders_mesh_relay_metrics() {
 }
 
 #[test]
+fn renders_mesh_traffic_metrics() {
+    let metrics = Metrics::new(&test_config());
+
+    // Byte counters: an edge forwarding, and a home serving, the same relayed
+    // session from opposite ends. Handles are pre-resolved once, then incremented.
+    metrics.mesh_bytes_counter("edge", "up", "tcp").increment(1_000);
+    metrics.mesh_bytes_counter("edge", "down", "tcp").increment(4_000);
+    metrics.mesh_bytes_counter("home", "up", "udp").increment(500);
+    let dg = metrics.mesh_datagrams_counter("edge", "up");
+    dg.increment(1);
+    dg.increment(1);
+
+    // Throttle-hint accounting: edge sends, home receives (delivered/dropped),
+    // and a malformed control datagram is dropped.
+    metrics.record_mesh_throttle_hint_sent();
+    metrics.record_mesh_throttle_hint_received("delivered");
+    metrics.record_mesh_throttle_hint_received("dropped");
+    metrics.record_mesh_control_datagram_error();
+
+    let rendered = metrics.render_prometheus();
+    assert!(rendered.contains(
+        "outline_ss_mesh_bytes_total{role=\"edge\",direction=\"up\",transport=\"tcp\"} 1000"
+    ));
+    assert!(rendered.contains(
+        "outline_ss_mesh_bytes_total{role=\"edge\",direction=\"down\",transport=\"tcp\"} 4000"
+    ));
+    assert!(rendered.contains(
+        "outline_ss_mesh_bytes_total{role=\"home\",direction=\"up\",transport=\"udp\"} 500"
+    ));
+    assert!(rendered.contains("outline_ss_mesh_datagrams_total{role=\"edge\",direction=\"up\"} 2"));
+    assert!(rendered.contains("outline_ss_mesh_throttle_hints_sent_total 1"));
+    assert!(
+        rendered.contains("outline_ss_mesh_throttle_hints_received_total{outcome=\"delivered\"} 1")
+    );
+    assert!(
+        rendered.contains("outline_ss_mesh_throttle_hints_received_total{outcome=\"dropped\"} 1")
+    );
+    assert!(rendered.contains("outline_ss_mesh_control_datagram_errors_total 1"));
+}
+
+#[test]
 fn no_cert_chain_metric_records_sni_label() {
     let metrics = Metrics::new(&test_config());
     metrics.record_tls_handshake_no_cert_chain(Some("foo.example"));

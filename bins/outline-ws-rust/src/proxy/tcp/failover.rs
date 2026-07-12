@@ -587,6 +587,11 @@ pub(super) async fn connect_tcp_fallback_fresh(
     let mode = uplinks.effective_tcp_mode_for_wire(parent.index, wire_index).await;
     let resume_key = uplinks.resume_cache_key_for(&parent.uplink.name, "tcp");
     let resume_request = global_resume_cache().get(&resume_key);
+    outline_metrics::record_resume_lookup(
+        "tcp",
+        if uplinks.shared_resume() { "group" } else { "uplink" },
+        if resume_request.is_some() { "hit" } else { "miss" },
+    );
     let ws = connect_transport(
         TransportDialOptions::new(cache, url, mode, source)
             .with_network(DialNetworkOptions {
