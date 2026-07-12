@@ -46,23 +46,26 @@ pub(super) struct BytesRecorder<'a> {
 
 impl BytesRecorder<'_> {
     pub(super) fn outgoing(&self, bytes: usize) {
+        // Probe request bytes flow toward the target: `up` in the harmonized
+        // direction vocabulary.
         outline_metrics::add_probe_bytes(
             self.group,
             self.uplink,
             self.transport,
             self.probe,
-            "outgoing",
+            "up",
             bytes,
         );
     }
 
     pub(super) fn incoming(&self, bytes: usize) {
+        // Probe response bytes flow back toward the client: `down`.
         outline_metrics::add_probe_bytes(
             self.group,
             self.uplink,
             self.transport,
             self.probe,
-            "incoming",
+            "down",
             bytes,
         );
     }

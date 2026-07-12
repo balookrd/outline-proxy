@@ -114,7 +114,7 @@ impl TunTcpEngine {
         match flow {
             Some(flow) => self.handle_existing_flow(flow, parsed).await,
             None if (parsed.flags & TCP_FLAG_RST) != 0 => {
-                metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_rst_observed");
+                metrics::record_tun_packet("down", ip_family, "tcp_rst_observed");
                 Ok(())
             },
             None => self.handle_new_flow(key, parsed).await,
@@ -174,21 +174,21 @@ impl TunTcpEngine {
         let ip_family = ip_family_from_version(key.version);
         if flush.window_stalled {
             metrics::record_tun_tcp_event(group_name, uplink_name, "window_stall");
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_stall");
+            metrics::record_tun_packet("down", ip_family, "tcp_window_stall");
         }
         for packet in flush.data_packets {
             self.write_server_data_packet(&packet).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_data");
+            metrics::record_tun_packet("down", ip_family, "tcp_data");
         }
         if let Some(packet) = flush.probe_packet {
             metrics::record_tun_tcp_event(group_name, uplink_name, "zero_window_probe");
             self.inner.writer.write_packet(&packet).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_probe");
+            metrics::record_tun_packet("down", ip_family, "tcp_window_probe");
         }
         if let Some(packet) = flush.fin_packet {
             metrics::record_tun_tcp_event(group_name, uplink_name, "deferred_fin_sent");
             self.inner.writer.write_packet(&packet).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_fin");
+            metrics::record_tun_packet("down", ip_family, "tcp_fin");
         }
         Ok(())
     }
@@ -207,21 +207,21 @@ impl TunTcpEngine {
         let ip_family = ip_family_from_version(key.version);
         if flush.window_stalled {
             metrics::record_tun_tcp_event(group_name, uplink_name, "window_stall");
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_stall");
+            metrics::record_tun_packet("down", ip_family, "tcp_window_stall");
         }
         for packet in flush.data_packets {
             self.write_server_data_or_close_flow(key, &packet).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_data");
+            metrics::record_tun_packet("down", ip_family, "tcp_data");
         }
         if let Some(packet) = flush.probe_packet {
             metrics::record_tun_tcp_event(group_name, uplink_name, "zero_window_probe");
             self.write_tun_packet_or_close_flow(key, &packet).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_probe");
+            metrics::record_tun_packet("down", ip_family, "tcp_window_probe");
         }
         if let Some(packet) = flush.fin_packet {
             metrics::record_tun_tcp_event(group_name, uplink_name, "deferred_fin_sent");
             self.write_tun_packet_or_close_flow(key, &packet).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_fin");
+            metrics::record_tun_packet("down", ip_family, "tcp_fin");
         }
         Ok(())
     }
@@ -239,7 +239,7 @@ impl TunTcpEngine {
         let key = state.key.clone();
         drop(state);
         self.write_tun_packet_or_close_flow(&key, &ack).await?;
-        metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
+        metrics::record_tun_packet("down", ip_family, "tcp_ack");
         Ok(())
     }
 
@@ -256,7 +256,7 @@ impl TunTcpEngine {
         let key = state.key.clone();
         drop(state);
         self.write_tun_packet_or_close_flow(&key, &syn_ack).await?;
-        metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_synack");
+        metrics::record_tun_packet("down", ip_family, "tcp_synack");
         Ok(())
     }
 
@@ -271,7 +271,7 @@ impl TunTcpEngine {
     ) -> Result<()> {
         self.write_tun_packet_or_close_flow(key, &ack).await?;
         metrics::record_tun_tcp_event(group_name, uplink_name, event);
-        metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
+        metrics::record_tun_packet("down", ip_family, "tcp_ack");
         Ok(())
     }
 

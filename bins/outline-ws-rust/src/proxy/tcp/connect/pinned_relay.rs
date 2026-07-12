@@ -81,7 +81,7 @@ async fn await_readable_or_keepalive(
 ///      reset propagates as before.
 ///
 /// Outcomes are surfaced on
-/// `outline_ws_rust_uplink_mid_session_retries_total{outcome}` with
+/// `outline_ws_uplink_mid_session_retries_total{outcome}` with
 /// `outcome ∈ {success, failed_redial, failed_replay,
 /// buffer_overflow}`. The downlink direction is intentionally NOT
 /// replayed — v1 narrows zero-loss replay to the uplink only, so SSH-
@@ -250,7 +250,7 @@ pub(super) async fn run_relay(
                 }
                 metrics::add_bytes(
                     "tcp",
-                    "client_to_upstream",
+                    "up",
                     manager_for_uplink.group_name(),
                     &name_for_uplink,
                     read,
@@ -340,7 +340,7 @@ pub(super) async fn run_relay(
                 if !fc.is_empty() {
                     metrics::add_bytes(
                         "tcp",
-                        "upstream_to_client",
+                        "down",
                         manager_for_downlink.group_name(),
                         &name_for_downlink,
                         fc.len(),
@@ -390,7 +390,7 @@ pub(super) async fn run_relay(
                 chunks_forwarded += 1;
                 metrics::add_bytes(
                     "tcp",
-                    "upstream_to_client",
+                    "down",
                     manager_for_downlink.group_name(),
                     &name_for_downlink,
                     chunk.len(),
@@ -804,7 +804,7 @@ async fn try_soft_switch_migrate(
 /// iteration.
 ///
 /// All non-success paths surface the matching `outcome` value on
-/// `outline_ws_rust_uplink_mid_session_retries_total` so the dashboard
+/// `outline_ws_uplink_mid_session_retries_total` so the dashboard
 /// can attribute each failure to its specific cause without parsing
 /// log messages. The success counter is recorded by the caller after
 /// this function returns `Ok` so that the metric only fires when the

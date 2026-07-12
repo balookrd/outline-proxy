@@ -203,7 +203,7 @@ impl Metrics {
     ) {
         with_local_recorder(&self.recorder, || {
             histogram!(
-                "outline_ss_ws_data_channel_fill",
+                "outline_ss_websocket_data_channel_fill",
                 "transport"    => transport.as_str(),
                 "app_protocol" => app_protocol.as_str()
             )

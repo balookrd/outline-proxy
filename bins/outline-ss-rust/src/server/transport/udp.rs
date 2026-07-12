@@ -392,7 +392,7 @@ where
             Arc::clone(&user_id),
             route.protocol,
             AppProtocol::Shadowsocks,
-            "client_to_target",
+            "up",
         );
         warn!(
             user = packet.user.id(),
@@ -545,7 +545,7 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
                             Transport::Udp,
                             route.protocol,
                             AppProtocol::Shadowsocks,
-                            "in",
+                            "up",
                             data.len(),
                         );
                         if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {

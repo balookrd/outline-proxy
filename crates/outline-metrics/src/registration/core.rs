@@ -17,33 +17,33 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
     let build_info = register_labeled!(
         registry,
         IntGaugeVec,
-        "outline_ws_rust_build_info",
+        "outline_ws_build_info",
         "Build info for outline-ws-rust.",
         ["version"]
     );
     let start_time_seconds = register_scalar!(
         registry,
         Gauge,
-        "outline_ws_rust_start_time_seconds",
+        "outline_ws_start_time_seconds",
         "Process start time in unix seconds."
     );
     let socks_requests_total = register_labeled!(
         registry,
         IntCounterVec,
-        "outline_ws_rust_requests_total",
+        "outline_ws_requests_total",
         "Total SOCKS5 requests accepted by command.",
         ["command"]
     );
     let sessions_active = register_labeled!(
         registry,
         IntGaugeVec,
-        "outline_ws_rust_sessions_active",
+        "outline_ws_sessions_active",
         "Currently active proxy sessions by protocol.",
         ["protocol"]
     );
     let session_duration_seconds = register_histogram!(
         registry,
-        "outline_ws_rust_session_duration_seconds",
+        "outline_ws_session_duration_seconds",
         "Proxy session duration by protocol and result.",
         [0.05, 0.1, 0.25, 0.5, 1.0, 3.0, 10.0, 30.0, 60.0, 300.0, 900.0],
         ["protocol", "result"]
@@ -51,21 +51,21 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
     let bytes_total = register_labeled!(
         registry,
         IntCounterVec,
-        "outline_ws_rust_bytes_total",
+        "outline_ws_bytes_total",
         "Application payload bytes transferred by protocol, direction, group and uplink.",
         ["protocol", "direction", "group", "uplink"]
     );
     let udp_datagrams_total = register_labeled!(
         registry,
         IntCounterVec,
-        "outline_ws_rust_udp_datagrams_total",
+        "outline_ws_udp_datagrams_total",
         "UDP datagrams forwarded by direction, group and uplink.",
         ["direction", "group", "uplink"]
     );
     let udp_oversized_dropped_total = register_labeled!(
         registry,
         IntCounterVec,
-        "outline_ws_rust_udp_oversized_dropped_total",
+        "outline_ws_udp_oversized_dropped_total",
         "Oversized UDP packets dropped before forwarding, by direction and \
          cause (vless_udp / ss_socket / socks_client / socks_relay / \
          socks_direct / socks_in_tcp).",

@@ -119,7 +119,7 @@ pub struct UplinkSnapshot {
     /// endpoints (Unix milliseconds), populated by the periodic cert-check
     /// loop. `None` until the first check completes, for uplinks with no TLS
     /// endpoint (e.g. a plaintext `ws://` uplink), or when the `cert-check` feature is off.
-    /// Surfaced as the `outline_ws_rust_uplink_cert_expiry_timestamp_seconds`
+    /// Surfaced as the `outline_ws_uplink_cert_expiry_timestamp_seconds`
     /// gauge and on the control topology so the dashboard can warn before an
     /// expired cert silently breaks the uplink.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -267,7 +267,7 @@ pub struct UplinkSnapshot {
     /// (CLI `--fingerprint-profile` or top-level `fingerprint_profile`
     /// TOML key). One of the lowercase tokens `none`, `per_host_stable`,
     /// `random`. Surfaced as the `strategy` label on
-    /// `outline_ws_rust_uplink_fingerprint_profile_strategy_info` and
+    /// `outline_ws_uplink_fingerprint_profile_strategy_info` and
     /// as a JSON field on the `/snapshot` control endpoint.
     pub fingerprint_profile_strategy: String,
     /// Active profile **name** (e.g. `chrome-142-macos`) for the

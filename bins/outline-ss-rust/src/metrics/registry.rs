@@ -46,7 +46,7 @@ pub(super) fn build_recorder(idle_timeout: Duration) -> (PrometheusRecorder, Pro
         )
         .expect("invalid WebSocket frame size bucket config")
         .set_buckets_for_metric(
-            Matcher::Full("outline_ss_ws_data_channel_fill".into()),
+            Matcher::Full("outline_ss_websocket_data_channel_fill".into()),
             WS_DATA_CHANNEL_FILL_BUCKETS,
         )
         .expect("invalid WS data channel fill bucket config")
@@ -101,7 +101,7 @@ pub(super) fn register_descriptions() {
         "Sessions torn down by the server because no inbound frame arrived within the pong deadline."
     );
     describe_histogram!(
-        "outline_ss_ws_data_channel_fill",
+        "outline_ss_websocket_data_channel_fill",
         "Depth of the upstream→ws-writer mpsc channel sampled at every push, by app_protocol/transport."
     );
     describe_counter!(
@@ -145,7 +145,7 @@ pub(super) fn register_descriptions() {
         "AEAD framing overhead (response salt + per-chunk length frame + tag) \
          emitted alongside each plaintext chunk in the upstream→client direction. \
          payload + overhead reconciles with outline_ss_websocket_bytes_total \
-         {transport=\"tcp\",direction=\"out\"} for the same labels."
+         {transport=\"tcp\",direction=\"down\"} for the same labels."
     );
     describe_counter!("outline_ss_udp_requests_total", "UDP relay requests by result.");
     describe_histogram!(
@@ -167,6 +167,16 @@ pub(super) fn register_descriptions() {
     describe_counter!(
         "outline_ss_udp_oversized_datagrams_dropped_total",
         "UDP datagrams dropped because they exceeded the maximum payload size supported by the transport path."
+    );
+    describe_counter!(
+        "outline_ss_udp_replay_dropped_total",
+        "UDP datagrams dropped by the SS-2022 anti-replay window (a repeated or \
+         out-of-window sequence number). Shadowsocks-only."
+    );
+    describe_counter!(
+        "outline_ss_udp_replay_store_full_dropped_total",
+        "UDP datagrams dropped because the SS-2022 anti-replay store was at capacity \
+         and could not admit a new sequence number. Shadowsocks-only."
     );
     describe_gauge!(
         "outline_ss_udp_nat_active_entries",

@@ -68,8 +68,8 @@ impl Drop for TransportConnectGuard {
 /// Attached optionally to [`UpstreamTransportGuard`] so the guard's `Drop`
 /// can decrement the per-uplink open-connection gauge and classify the
 /// closing connection against the still-active uplink — see
-/// `outline_ws_rust_uplink_open_connections` and
-/// `outline_ws_rust_uplink_connection_close_total` in the dashboard's
+/// `outline_ws_uplink_open_connections` and
+/// `outline_ws_uplink_connection_close_total` in the dashboard's
 /// `Routing Policy / Inactive uplink leak` section.
 ///
 /// `transport` is the wire-side label (`"tcp"` or `"udp"`), matched against

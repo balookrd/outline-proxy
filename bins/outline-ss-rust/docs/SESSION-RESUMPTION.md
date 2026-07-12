@@ -362,7 +362,7 @@ When the client requested resume **and** advertised both v1 and v2 capabilities 
 
 1. v1 frame (14 bytes) — parsed exactly as in v1; on validation failure, drop session.
 2. v2 frame header (14 bytes) — validate `magic == "ORDR"`, `version == 0x01`, reserved-bit subset of `flags == 0`; on failure, drop session.
-3. If `REPLAY_TRUNCATED` is set and `replay_len == 0`: the client's downstream stream has an irrecoverable gap. Behaviour is governed by `tcp_mid_session_retry_overflow_policy`: `"soft"` continues the session and increments `outline_ws_rust_uplink_mid_session_retries_total{outcome="downlink_truncated"}`; `"hard"` drops the session.
+3. If `REPLAY_TRUNCATED` is set and `replay_len == 0`: the client's downstream stream has an irrecoverable gap. Behaviour is governed by `tcp_mid_session_retry_overflow_policy`: `"soft"` continues the session and increments `outline_ws_uplink_mid_session_retries_total{outcome="downlink_truncated"}`; `"hard"` drops the session.
 4. Otherwise: read exactly `replay_len` plaintext bytes from the transport and write them into the client's SOCKS5 client BEFORE any subsequent fresh-upstream bytes flow. Increment `client_acked_offset` by `replay_len`.
 5. After the v2 payload is consumed, the transport returns to normal read-loop semantics.
 

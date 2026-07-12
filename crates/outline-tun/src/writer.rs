@@ -96,7 +96,7 @@ impl SharedTunWriter {
     ) -> Result<()> {
         // Downlink TSO signal: one super-segment the kernel splits per MSS —
         // how often the write path actually coalesced server→client data.
-        metrics::record_tun_packet("upstream_to_tun", ip_family_str(packet), "tso_supersegment");
+        metrics::record_tun_packet("down", ip_family_str(packet), "tso_supersegment");
         match &self.inner {
             SharedTunWriterInner::Async(fd) => fd
                 .async_io(Interest::WRITABLE, |f| write_tun_packet(f, packet, Some(header)))
@@ -129,11 +129,7 @@ impl SharedTunWriter {
             Some(vnet) => {
                 // Downlink TSO signal: one super-segment the kernel splits per
                 // MSS — how often the write path coalesced server→client data.
-                metrics::record_tun_packet(
-                    "upstream_to_tun",
-                    ip_family_str(header),
-                    "tso_supersegment",
-                );
+                metrics::record_tun_packet("down", ip_family_str(header), "tso_supersegment");
                 Some(vnet)
             },
             None => self.gso_enabled.then_some(VirtioNetHdr::NONE),

@@ -76,15 +76,14 @@ fn run_cross_uplink_case(
         || {
             metrics_scrape(metrics)
                 .map(|m| {
-                    m.sum("outline_ws_rust_uplink_runtime_failures_total", &[("uplink", "up-a")])
-                        >= 1.0
+                    m.sum("outline_ws_uplink_runtime_failures_total", &[("uplink", "up-a")]) >= 1.0
                 })
                 .unwrap_or(false)
         },
         Duration::from_secs(10),
     );
     let m = metrics_scrape(metrics)?;
-    let a_failures = m.sum("outline_ws_rust_uplink_runtime_failures_total", &[("uplink", "up-a")]);
+    let a_failures = m.sum("outline_ws_uplink_runtime_failures_total", &[("uplink", "up-a")]);
     assert!(
         failed_over,
         "expected a runtime failure recorded on the dead up-a; got {a_failures}\nclient log:\n{}",

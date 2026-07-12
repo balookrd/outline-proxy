@@ -99,7 +99,7 @@ async fn drops_oversized_socket_udp_response_and_records_metric() -> Result<()> 
 
     let rendered = metrics.render_prometheus();
     assert!(rendered.contains(
-        "outline_ss_udp_oversized_datagrams_dropped_total{user=\"bob\",protocol=\"socket\",app_protocol=\"shadowsocks\",direction=\"target_to_client\"} 1"
+        "outline_ss_udp_oversized_datagrams_dropped_total{user=\"bob\",protocol=\"socket\",app_protocol=\"shadowsocks\",direction=\"down\"} 1"
     ));
     Ok(())
 }

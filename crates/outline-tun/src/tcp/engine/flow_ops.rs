@@ -33,11 +33,7 @@ impl TunTcpEngine {
         if (packet.flags & TCP_FLAG_SYN) == 0 || (packet.flags & TCP_FLAG_ACK) != 0 {
             let reset = build_reset_response(&packet)?;
             self.inner.writer.write_packet(&reset).await?;
-            metrics::record_tun_packet(
-                "upstream_to_tun",
-                ip_family_from_version(packet.version),
-                "tcp_rst",
-            );
+            metrics::record_tun_packet("down", ip_family_from_version(packet.version), "tcp_rst");
             return Ok(());
         }
 
@@ -54,7 +50,7 @@ impl TunTcpEngine {
                 let reset = build_reset_response(&packet)?;
                 self.inner.writer.write_packet(&reset).await?;
                 metrics::record_tun_packet(
-                    "upstream_to_tun",
+                    "down",
                     ip_family_from_version(packet.version),
                     "tcp_rst",
                 );
@@ -155,11 +151,7 @@ impl TunTcpEngine {
             build_flow_syn_ack_packet(&state, server_isn, packet.sequence_number.wrapping_add(1))?
         };
         self.write_tun_packet_or_close_flow(&key, &syn_ack).await?;
-        metrics::record_tun_packet(
-            "upstream_to_tun",
-            ip_family_from_version(packet.version),
-            "tcp_synack",
-        );
+        metrics::record_tun_packet("down", ip_family_from_version(packet.version), "tcp_synack");
         self.spawn_upstream_connect(
             key,
             target,
@@ -288,11 +280,7 @@ impl TunTcpEngine {
         let _ = close_signal.send(true);
         if let Some(packet) = rst_packet {
             let _ = self.inner.writer.write_packet(&packet).await;
-            metrics::record_tun_packet(
-                "upstream_to_tun",
-                ip_family_from_version(key.version),
-                "tcp_rst",
-            );
+            metrics::record_tun_packet("down", ip_family_from_version(key.version), "tcp_rst");
         }
         close_upstream_writer(upstream_writer).await;
         metrics::record_tun_tcp_event(&group_name, &uplink_name, reason);

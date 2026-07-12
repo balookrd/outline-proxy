@@ -119,12 +119,12 @@ v6) still apply, so the wire-level advertisement is always well-formed.
 Counters and dashboards remain the source of truth for diagnosing
 oversize behaviour:
 
-- `outline_ws_rust_udp_oversized_dropped_total{direction, cause}` —
+- `outline_ws_udp_oversized_dropped_total{direction, cause}` —
   every oversize drop, broken down by cause (`quic_dgram`,
   `vless_quic_dgram`, `vless_udp`, `ss_socket`, …). A spike with no
   matching PTB on the wire means the QUIC-floor gate is keeping a
   client out of TCP fallback.
-- `outline_ws_rust_tun_packet_total{direction="upstream_to_tun"}` —
+- `outline_ws_tun_packets_total{direction="down"}` —
   any synthesised PTB shows up here as one accepted upstream-to-TUN
   packet per emission.
 

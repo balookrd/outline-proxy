@@ -92,7 +92,7 @@ fn run_wire_failover_case(
     // failover label), and the active-wire gauge reads the fallback index.
     let m = metrics_scrape(metrics)?;
     let wire_idx = m.sum(
-        "outline_ws_rust_uplink_active_wire_index",
+        "outline_ws_uplink_active_wire_index",
         &[("uplink", "up-a"), ("transport", "tcp")],
     );
     assert!(wire_idx >= 1.0, "active_wire_index gauge expected >=1, got {wire_idx}");

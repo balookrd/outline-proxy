@@ -121,13 +121,7 @@ impl TunTcpEngine {
                             .await;
                         return;
                     }
-                    metrics::add_bytes(
-                        "tcp",
-                        "client_to_upstream",
-                        &group_name,
-                        &uplink_name,
-                        sent_bytes,
-                    );
+                    metrics::add_bytes("tcp", "up", &group_name, &uplink_name, sent_bytes);
                 }
 
                 // Buffer drained. If the client half-closed, the flush is
