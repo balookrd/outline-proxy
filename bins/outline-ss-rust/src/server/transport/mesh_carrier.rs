@@ -26,6 +26,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
+use metrics::Counter;
 use outline_wire::padding::PaddingScheme;
 use quinn::{RecvStream, SendStream};
 use tokio::sync::mpsc;
@@ -51,30 +52,60 @@ pub(in crate::server) enum MeshMsg {
     Pong,
 }
 
+/// Home-side read half: the mesh recv stream plus the `up` byte counter
+/// (`outline_ss_mesh_bytes_total{role="home",direction="up"}`), incremented per
+/// chunk pulled off the mesh. Bundling the counter with the stream keeps the
+/// static `WsSocket::recv` able to account bytes without a `&self`.
+pub(in crate::server) struct MeshCarrierRead {
+    stream: RecvStream,
+    up: Counter,
+}
+
+/// Home-side write half: the mesh send stream plus the `down` byte counter
+/// (`outline_ss_mesh_bytes_total{role="home",direction="down"}`).
+pub(in crate::server) struct MeshCarrierWrite {
+    stream: SendStream,
+    down: Counter,
+}
+
 /// Wraps a relayed [`MeshStream`] as a [`WsSocket`] carrier for the home-side
 /// accept path.
 pub(in crate::server) struct MeshCarrier {
     stream: MeshStream,
+    up: Counter,
+    down: Counter,
 }
 
 impl MeshCarrier {
-    pub(in crate::server) fn new(stream: MeshStream) -> Self {
-        Self { stream }
+    /// `up`/`down` are the pre-resolved `role="home"` byte counters (up = bytes
+    /// read off the mesh, down = bytes written back onto it), from
+    /// [`crate::metrics::Metrics::mesh_bytes_counter`].
+    pub(in crate::server) fn new(stream: MeshStream, up: Counter, down: Counter) -> Self {
+        Self { stream, up, down }
     }
 }
 
 impl WsSocket for MeshCarrier {
     type Msg = MeshMsg;
-    type Reader = RecvStream;
-    type Writer = SendStream;
+    type Reader = MeshCarrierRead;
+    type Writer = MeshCarrierWrite;
 
     fn split_io(self) -> (Self::Reader, Self::Writer) {
-        (self.stream.recv, self.stream.send)
+        (
+            MeshCarrierRead { stream: self.stream.recv, up: self.up },
+            MeshCarrierWrite {
+                stream: self.stream.send,
+                down: self.down,
+            },
+        )
     }
 
     async fn recv(reader: &mut Self::Reader) -> Result<Option<MeshMsg>> {
-        match reader.read_chunk(MESH_READ_CHUNK, true).await {
-            Ok(Some(chunk)) => Ok(Some(MeshMsg::Binary(chunk.bytes))),
+        match reader.stream.read_chunk(MESH_READ_CHUNK, true).await {
+            Ok(Some(chunk)) => {
+                reader.up.increment(chunk.bytes.len() as u64);
+                Ok(Some(MeshMsg::Binary(chunk.bytes)))
+            },
             // Clean FIN from the peer: the relayed carrier ended.
             Ok(None) => Ok(None),
             Err(e) => Err(anyhow::Error::from(e).context("mesh relay stream read failure")),
@@ -83,13 +114,18 @@ impl WsSocket for MeshCarrier {
 
     async fn send(writer: &mut Self::Writer, msg: MeshMsg) -> Result<()> {
         match msg {
-            MeshMsg::Binary(bytes) => writer
-                .write_all(&bytes)
-                .await
-                .context("mesh relay stream write failure"),
+            MeshMsg::Binary(bytes) => {
+                writer
+                    .stream
+                    .write_all(&bytes)
+                    .await
+                    .context("mesh relay stream write failure")?;
+                writer.down.increment(bytes.len() as u64);
+                Ok(())
+            },
             // Finish signals a clean end of the relayed carrier to the peer.
             MeshMsg::Close => {
-                let _ = writer.finish();
+                let _ = writer.stream.finish();
                 Ok(())
             },
             // No keepalive frames traverse the mesh; QUIC handles liveness.
@@ -98,7 +134,7 @@ impl WsSocket for MeshCarrier {
     }
 
     async fn finish(writer: &mut Self::Writer) {
-        let _ = writer.finish();
+        let _ = writer.stream.finish();
     }
 
     async fn flush(_writer: &mut Self::Writer) -> Result<()> {
@@ -165,6 +201,23 @@ impl WsSocket for MeshCarrier {
     }
 }
 
+/// Home-side SS-UDP read half: the mesh recv stream plus the `up` byte and
+/// datagram counters (`role="home",direction="up"`), incremented per datagram
+/// de-framed off the mesh.
+pub(in crate::server) struct MeshUdpCarrierRead {
+    stream: RecvStream,
+    bytes_up: Counter,
+    datagrams_up: Counter,
+}
+
+/// Home-side SS-UDP write half: the mesh send stream plus the `down` byte and
+/// datagram counters (`role="home",direction="down"`).
+pub(in crate::server) struct MeshUdpCarrierWrite {
+    stream: SendStream,
+    bytes_down: Counter,
+    datagrams_down: Counter,
+}
+
 /// Wraps a relayed [`MeshStream`] as a [`WsSocket`] carrier for the home-side
 /// SS-UDP accept path. Unlike [`MeshCarrier`], the body is length-delimited
 /// datagrams: `recv` reads exactly one datagram and reports it as one `Binary`
@@ -173,29 +226,64 @@ impl WsSocket for MeshCarrier {
 /// byte-stream carrier.
 pub(in crate::server) struct MeshUdpCarrier {
     stream: MeshStream,
+    bytes_up: Counter,
+    bytes_down: Counter,
+    datagrams_up: Counter,
+    datagrams_down: Counter,
 }
 
 impl MeshUdpCarrier {
-    pub(in crate::server) fn new(stream: MeshStream) -> Self {
-        Self { stream }
+    /// Counters are the pre-resolved `role="home"` byte and datagram handles for
+    /// each direction (up = de-framed off the mesh, down = framed onto it), from
+    /// [`crate::metrics::Metrics::mesh_bytes_counter`] /
+    /// [`crate::metrics::Metrics::mesh_datagrams_counter`].
+    pub(in crate::server) fn new(
+        stream: MeshStream,
+        bytes_up: Counter,
+        bytes_down: Counter,
+        datagrams_up: Counter,
+        datagrams_down: Counter,
+    ) -> Self {
+        Self {
+            stream,
+            bytes_up,
+            bytes_down,
+            datagrams_up,
+            datagrams_down,
+        }
     }
 }
 
 impl WsSocket for MeshUdpCarrier {
     type Msg = MeshMsg;
-    type Reader = RecvStream;
-    type Writer = SendStream;
+    type Reader = MeshUdpCarrierRead;
+    type Writer = MeshUdpCarrierWrite;
 
     fn split_io(self) -> (Self::Reader, Self::Writer) {
-        (self.stream.recv, self.stream.send)
+        (
+            MeshUdpCarrierRead {
+                stream: self.stream.recv,
+                bytes_up: self.bytes_up,
+                datagrams_up: self.datagrams_up,
+            },
+            MeshUdpCarrierWrite {
+                stream: self.stream.send,
+                bytes_down: self.bytes_down,
+                datagrams_down: self.datagrams_down,
+            },
+        )
     }
 
     async fn recv(reader: &mut Self::Reader) -> Result<Option<MeshMsg>> {
         // One length-delimited datagram = one Binary frame. A clean stream end
         // at a frame boundary reports the relayed carrier ended.
         let mut buf = Vec::new();
-        match read_datagram(reader, &mut buf).await? {
-            Some(_len) => Ok(Some(MeshMsg::Binary(Bytes::from(buf)))),
+        match read_datagram(&mut reader.stream, &mut buf).await? {
+            Some(len) => {
+                reader.bytes_up.increment(len as u64);
+                reader.datagrams_up.increment(1);
+                Ok(Some(MeshMsg::Binary(Bytes::from(buf))))
+            },
             None => Ok(None),
         }
     }
@@ -203,9 +291,14 @@ impl WsSocket for MeshUdpCarrier {
     async fn send(writer: &mut Self::Writer, msg: MeshMsg) -> Result<()> {
         match msg {
             // Frame one datagram; the peer's `recv` reconstructs the boundary.
-            MeshMsg::Binary(bytes) => write_datagram(writer, &bytes).await,
+            MeshMsg::Binary(bytes) => {
+                write_datagram(&mut writer.stream, &bytes).await?;
+                writer.bytes_down.increment(bytes.len() as u64);
+                writer.datagrams_down.increment(1);
+                Ok(())
+            },
             MeshMsg::Close => {
-                let _ = writer.finish();
+                let _ = writer.stream.finish();
                 Ok(())
             },
             MeshMsg::Ping(_) | MeshMsg::Pong => Ok(()),
@@ -213,7 +306,7 @@ impl WsSocket for MeshUdpCarrier {
     }
 
     async fn finish(writer: &mut Self::Writer) {
-        let _ = writer.finish();
+        let _ = writer.stream.finish();
     }
 
     async fn flush(_writer: &mut Self::Writer) -> Result<()> {

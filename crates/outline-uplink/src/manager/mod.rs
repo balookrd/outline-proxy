@@ -274,6 +274,15 @@ impl UplinkManager {
         &self.inner.group_name
     }
 
+    /// Whether this group shares one resume id across its uplinks
+    /// (`shared_resume`, set when the uplinks are edges of one server-side mesh
+    /// `[cluster]`). A group-shared resume id is what makes a session presentable
+    /// to a different edge — i.e. cross-node-capable. Used to label the resume
+    /// `scope` (`group` vs `uplink`) at metric emission sites.
+    pub fn shared_resume(&self) -> bool {
+        self.inner.load_balancing.shared_resume
+    }
+
     /// Signal all background loops spawned by this manager to stop.
     /// Called by the owner (registry or application) on config reload or shutdown.
     pub fn shutdown(&self) {

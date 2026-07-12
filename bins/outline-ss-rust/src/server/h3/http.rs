@@ -266,7 +266,14 @@ async fn handle_h3_request(
                 let session =
                     metrics.open_websocket_session(Transport::Tcp, Protocol::Http3, app_protocol);
                 let detect = edge_throttle_ctx(&pooled, advert.session_id, &ws_req.path);
-                let result = edge_relay_h3(socket, pooled, cluster.relay_budget, detect).await;
+                let result = edge_relay_h3(
+                    socket,
+                    pooled,
+                    cluster.relay_budget,
+                    detect,
+                    Arc::clone(metrics),
+                )
+                .await;
                 finish_ws_session(session, result, kind);
                 return Ok(());
             }
@@ -305,7 +312,14 @@ async fn handle_h3_request(
             AppProtocol::Shadowsocks,
         );
         let detect = edge_throttle_ctx(&pooled, advert.session_id, &ws_req.path);
-        let result = edge_relay_h3_udp(socket, pooled, cluster.relay_budget, detect).await;
+        let result = edge_relay_h3_udp(
+            socket,
+            pooled,
+            cluster.relay_budget,
+            detect,
+            Arc::clone(&ctx.udp_server.metrics),
+        )
+        .await;
         finish_ws_session(session, result, "ss-udp");
         return Ok(());
     }

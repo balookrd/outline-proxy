@@ -112,6 +112,34 @@ fn render_prometheus_exports_session_histogram() {
 }
 
 #[test]
+fn render_prometheus_exports_cluster_soft_switch_and_resume_metrics() {
+    let _guard = test_guard();
+    init();
+    record_soft_switch("main", "migrated");
+    record_soft_switch("main", "redial_failed");
+    record_resume_lookup("tcp", "group", "hit");
+    record_resume_lookup("udp", "uplink", "miss");
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    assert!(
+        rendered
+            .contains("outline_ws_rust_soft_switch_total{group=\"main\",outcome=\"migrated\"} 1")
+    );
+    assert!(
+        rendered.contains(
+            "outline_ws_rust_soft_switch_total{group=\"main\",outcome=\"redial_failed\"} 1"
+        )
+    );
+    // The prometheus text exposition renders label pairs sorted by label name.
+    assert!(rendered.contains(
+        "outline_ws_rust_resume_lookup_total{result=\"hit\",scope=\"group\",transport=\"tcp\"} 1"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_resume_lookup_total{result=\"miss\",scope=\"uplink\",transport=\"udp\"} 1"
+    ));
+}
+
+#[test]
 fn render_prometheus_exports_uplink_cert_expiry_gauge() {
     let _guard = test_guard();
     init();
