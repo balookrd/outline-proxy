@@ -74,7 +74,7 @@ fn renders_prometheus_metrics() {
         Transport::Tcp,
         Protocol::Http2,
         AppProtocol::Shadowsocks,
-        "in",
+        "up",
         123,
     );
     metrics.record_pong_deadline_disconnect(Transport::Tcp, AppProtocol::Shadowsocks);
@@ -106,7 +106,7 @@ fn renders_prometheus_metrics() {
     assert!(rendered.contains("app_protocol=\"shadowsocks\""));
     assert!(rendered.contains("outline_ss_websocket_frame_size_bytes_bucket"));
     assert!(rendered.contains("outline_ss_websocket_pong_deadline_total"));
-    assert!(rendered.contains("outline_ss_ws_data_channel_fill_bucket"));
+    assert!(rendered.contains("outline_ss_websocket_data_channel_fill_bucket"));
     assert!(rendered.contains("outline_ss_build_info"));
     assert!(rendered.contains("user=\"default\",protocol=\"http2\""));
     assert!(rendered.contains("outline_ss_tcp_upstream_connect_duration_seconds_bucket"));
@@ -277,13 +277,13 @@ fn user_counters_increments_visible_in_render() {
 
     let rendered = metrics.render_prometheus();
     assert!(rendered.contains(
-        "outline_ss_tcp_payload_bytes_total{user=\"alice\",app_protocol=\"vless\",protocol=\"http3\",direction=\"client_to_target\"} 100"
+        "outline_ss_tcp_payload_bytes_total{user=\"alice\",app_protocol=\"vless\",protocol=\"http3\",direction=\"up\"} 100"
     ));
     assert!(rendered.contains(
-        "outline_ss_tcp_payload_bytes_total{user=\"alice\",app_protocol=\"vless\",protocol=\"http3\",direction=\"target_to_client\"} 250"
+        "outline_ss_tcp_payload_bytes_total{user=\"alice\",app_protocol=\"vless\",protocol=\"http3\",direction=\"down\"} 250"
     ));
     assert!(rendered.contains(
-        "outline_ss_udp_payload_bytes_total{user=\"alice\",app_protocol=\"shadowsocks\",protocol=\"http3\",direction=\"target_to_client\"} 64"
+        "outline_ss_udp_payload_bytes_total{user=\"alice\",app_protocol=\"shadowsocks\",protocol=\"http3\",direction=\"down\"} 64"
     ));
 }
 

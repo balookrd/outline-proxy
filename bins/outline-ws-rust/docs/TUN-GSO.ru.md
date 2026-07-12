@@ -116,7 +116,7 @@ uso = true   # downlink UDP USO (требует gso)
    `sha256sum` на дальней стороне.
 4. **UDP (`uso`):** проверьте, что UDP здоров (DNS резолвится, QUIC / YouTube
    играет), и прогоните bulk-UDP; рост счётчика
-   `outline_ws_rust_tun_packets_total{outcome="uso_supersegment"}` означает, что
+   `outline_ws_tun_packets_total{outcome="uso_supersegment"}` означает, что
    downlink-датаграммы коалесцируются.
 5. Сравните CPU и частоту syscall'ов с выключенным состоянием при той же
    скорости: `sudo timeout 5 strace -f -c -p $(pidof outline-ws-rust)` — с `gso`

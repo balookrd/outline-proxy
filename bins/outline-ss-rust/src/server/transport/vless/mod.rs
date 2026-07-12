@@ -370,7 +370,7 @@ where
         Transport::Tcp,
         route.protocol,
         AppProtocol::Vless,
-        "in",
+        "up",
         data.len(),
     );
 

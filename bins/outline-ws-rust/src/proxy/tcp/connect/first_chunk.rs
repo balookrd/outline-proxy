@@ -85,7 +85,7 @@ pub(super) async fn await_first_upstream_chunk(
                             .context("uplink write failed")?;
                         metrics::add_bytes(
                             "tcp",
-                            "client_to_upstream",
+                            "up",
                             ctx.uplinks.group_name(),
                             &active.name,
                             n,

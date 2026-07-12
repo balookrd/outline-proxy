@@ -144,7 +144,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                         limit = MAX_CLIENT_UDP_PACKET_SIZE,
                         "dropping oversized incoming UDP packet"
                     );
-                    metrics::record_dropped_oversized_udp_packet("incoming", "socks_client");
+                    metrics::record_dropped_oversized_udp_packet("up", "socks_client");
                     continue;
                 }
 
@@ -176,17 +176,17 @@ pub(in crate::proxy) async fn serve_udp_associate(
                         limit = MAX_UDP_RELAY_PACKET_SIZE,
                         "dropping oversized outgoing UDP response"
                     );
-                    metrics::record_dropped_oversized_udp_packet("outgoing", "socks_relay");
+                    metrics::record_dropped_oversized_udp_packet("down", "socks_relay");
                     continue;
                 }
                 metrics::add_udp_datagram(
-                    "upstream_to_client",
+                    "down",
                     &response.group_name,
                     &response.uplink_name,
                 );
                 metrics::add_bytes(
                     "udp",
-                    "upstream_to_client",
+                    "down",
                     &response.group_name,
                     &response.uplink_name,
                     response.payload.len(),
@@ -244,7 +244,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                         limit = MAX_UDP_RELAY_PACKET_SIZE,
                         "dropping oversized direct UDP response"
                     );
-                    metrics::record_dropped_oversized_udp_packet("outgoing", "socks_direct");
+                    metrics::record_dropped_oversized_udp_packet("down", "socks_direct");
                     continue;
                 }
                 socket_direct
@@ -252,13 +252,13 @@ pub(in crate::proxy) async fn serve_udp_associate(
                     .await
                     .context("direct UDP relay send failed")?;
                 metrics::add_udp_datagram(
-                    "upstream_to_client",
+                    "down",
                     metrics::DIRECT_GROUP_LABEL,
                     metrics::DIRECT_UPLINK_LABEL,
                 );
                 metrics::add_bytes(
                     "udp",
-                    "upstream_to_client",
+                    "down",
                     metrics::DIRECT_GROUP_LABEL,
                     metrics::DIRECT_UPLINK_LABEL,
                     metric_payload_len,

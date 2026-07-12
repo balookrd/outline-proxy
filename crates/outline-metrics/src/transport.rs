@@ -173,7 +173,7 @@ pub fn record_failover(transport: &'static str, group: &str, from_uplink: &str, 
 /// uplink changed away from the one the session was pinned to (strict
 /// `active_passive` mode). The session is closed with TCP RST so the client
 /// reconnects through the new active uplink — see
-/// `outline_ws_rust_socks_tcp_strict_aborts_total`.
+/// `outline_ws_socks_tcp_strict_aborts_total`.
 pub fn record_socks_tcp_strict_abort(group: &str, uplink: &str, reason: &'static str) {
     METRICS
         .socks_tcp_strict_aborts_total
@@ -183,7 +183,7 @@ pub fn record_socks_tcp_strict_abort(group: &str, uplink: &str, reason: &'static
 
 /// Records the outcome of one mid-session retry attempt on the
 /// pinned-relay path. `outcome` should be one of the canonical values
-/// described on the `outline_ws_rust_uplink_mid_session_retries_total`
+/// described on the `outline_ws_uplink_mid_session_retries_total`
 /// metric registration:
 /// - `success` — retry replayed the v1 uplink suffix and (when v2 was
 ///   engaged) the v2 downlink suffix without truncation;
@@ -213,14 +213,14 @@ pub fn record_mid_session_retry(
 
 /// Counts one operator cluster soft-switch migration attempt for `group`, by
 /// `outcome` (`migrated` / `redial_failed` / `not_ws_family` / `no_candidate` /
-/// `same_uplink`). See `outline_ws_rust_soft_switch_total`.
+/// `same_uplink`). See `outline_ws_soft_switch_total`.
 pub fn record_soft_switch(group: &str, outcome: &'static str) {
     METRICS.soft_switch_total.with_label_values(&[group, outcome]).inc();
 }
 
 /// Counts one resume-cache lookup at an uplink dial, by `transport`
 /// (`tcp`/`udp`), `scope` (`group` for cluster `shared_resume`, else `uplink`)
-/// and `result` (`hit`/`miss`). See `outline_ws_rust_resume_lookup_total`.
+/// and `result` (`hit`/`miss`). See `outline_ws_resume_lookup_total`.
 pub fn record_resume_lookup(transport: &'static str, scope: &'static str, result: &'static str) {
     METRICS
         .resume_lookup_total

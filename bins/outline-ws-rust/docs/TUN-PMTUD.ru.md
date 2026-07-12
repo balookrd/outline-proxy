@@ -121,12 +121,12 @@ advertisement всегда корректен.
 Источник истины для диагностики oversize-поведения — счётчики и
 дашборды:
 
-- `outline_ws_rust_udp_oversized_dropped_total{direction, cause}` —
+- `outline_ws_udp_oversized_dropped_total{direction, cause}` —
   каждый oversize-дроп с разбивкой по причине (`quic_dgram`,
   `vless_quic_dgram`, `vless_udp`, `ss_socket`, …). Всплеск без
   парного PTB на проводе означает что QUIC-floor gate удерживает
   клиента от перехода в TCP fallback.
-- `outline_ws_rust_tun_packet_total{direction="upstream_to_tun"}` —
+- `outline_ws_tun_packets_total{direction="down"}` —
   каждый синтезированный PTB виден здесь как один accepted
   upstream-to-TUN packet на emission.
 

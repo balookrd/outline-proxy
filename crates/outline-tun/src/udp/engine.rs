@@ -137,7 +137,7 @@ impl TunUdpEngine {
                 .await
                 .context("direct UDP send failed")?;
             super::record_udp_xfer(
-                "client_to_upstream",
+                "up",
                 metrics::DIRECT_GROUP_LABEL,
                 metrics::DIRECT_UPLINK_LABEL,
                 packet.payload.len(),
@@ -408,7 +408,7 @@ impl TunUdpEngine {
                     Err(_) => continue,
                 };
                 super::record_udp_xfer(
-                    "upstream_to_client",
+                    "down",
                     metrics::DIRECT_GROUP_LABEL,
                     metrics::DIRECT_UPLINK_LABEL,
                     len,
@@ -417,7 +417,7 @@ impl TunUdpEngine {
                     break;
                 }
                 metrics::record_tun_packet(
-                    "upstream_to_tun",
+                    "down",
                     super::ip_family_from_version(reader_key.version),
                     "accepted",
                 );
@@ -462,7 +462,7 @@ impl TunUdpEngine {
         }
 
         super::record_udp_xfer(
-            "client_to_upstream",
+            "up",
             metrics::DIRECT_GROUP_LABEL,
             metrics::DIRECT_UPLINK_LABEL,
             packet.payload.len(),

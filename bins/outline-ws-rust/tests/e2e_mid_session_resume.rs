@@ -102,7 +102,7 @@ fn run_mid_session_resume(
     let resumed = poll_until(
         || {
             let client_retried = metrics_scrape(metrics)
-                .map(|m| m.sum("outline_ws_rust_uplink_mid_session_retries_total", &[]) >= 1.0)
+                .map(|m| m.sum("outline_ws_uplink_mid_session_retries_total", &[]) >= 1.0)
                 .unwrap_or(false);
             let server_resume_hit =
                 server.logs().map(|l| l.contains("resume hit")).unwrap_or(false);
@@ -112,7 +112,7 @@ fn run_mid_session_resume(
     );
 
     let retries = metrics_scrape(metrics)
-        .map(|m| m.sum("outline_ws_rust_uplink_mid_session_retries_total", &[]))
+        .map(|m| m.sum("outline_ws_uplink_mid_session_retries_total", &[]))
         .unwrap_or(0.0);
     let server_resume_hit = server.logs().map(|l| l.contains("resume hit")).unwrap_or(false);
     assert!(

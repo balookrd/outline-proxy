@@ -112,7 +112,7 @@ impl TunTcpEngine {
                                 }
                                 metrics::add_bytes(
                                     "tcp",
-                                    "upstream_to_client",
+                                    "down",
                                     metrics::DIRECT_GROUP_LABEL,
                                     metrics::DIRECT_UPLINK_LABEL,
                                     n,

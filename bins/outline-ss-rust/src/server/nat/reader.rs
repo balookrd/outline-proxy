@@ -140,7 +140,7 @@ pub(crate) fn record_oversized_socket_response_drop(
         sender
             .map(UdpResponseSender::app_protocol)
             .unwrap_or(crate::metrics::AppProtocol::Shadowsocks),
-        "target_to_client",
+        "down",
     );
     warn!(
         user = user.id(),

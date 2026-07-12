@@ -1023,7 +1023,7 @@ function errSummary(s) {
 }
 // Days before expiry at which an uplink's TLS-cert chip turns amber. The raw
 // `notAfter` is also exported on the topology JSON and the
-// `outline_ws_rust_uplink_cert_expiry_timestamp_seconds` gauge, so operators
+// `outline_ws_uplink_cert_expiry_timestamp_seconds` gauge, so operators
 // who want a different threshold can alert in Prometheus directly.
 const CERT_WARN_DAYS = 14;
 // Render a cert-expiry chip for the Status cell. Nothing for a healthy cert

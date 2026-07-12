@@ -218,7 +218,7 @@ async fn tun_read_loop(
                     // kernel may have left un-finalised, then hand the packet to
                     // the normal classify / dispatch path below.
                     metrics::record_tun_packet(
-                        "tun_to_upstream",
+                        "up",
                         ip_family_name(buf[VIRTIO_NET_HDR_LEN] >> 4),
                         "tcp_gro_superpacket",
                     );
@@ -242,11 +242,7 @@ async fn tun_read_loop(
                     &buf[VIRTIO_NET_HDR_LEN..read]
                 },
                 other => {
-                    metrics::record_tun_packet(
-                        "tun_to_upstream",
-                        "unknown",
-                        "vnet_gso_unsupported",
-                    );
+                    metrics::record_tun_packet("up", "unknown", "vnet_gso_unsupported");
                     debug!(gso_type = other, "dropping unsupported GSO super-packet on TUN read");
                     continue;
                 },
@@ -261,7 +257,7 @@ async fn tun_read_loop(
                 Ok(DefragmentedPacket::ReadyBorrowed) => None,
                 Ok(DefragmentedPacket::ReadyOwned(packet)) => {
                     metrics::record_tun_packet(
-                        "tun_to_upstream",
+                        "up",
                         ip_family_name(version_nibble),
                         "fragment_reassembled",
                     );
@@ -269,7 +265,7 @@ async fn tun_read_loop(
                 },
                 Ok(DefragmentedPacket::Pending) => {
                     metrics::record_tun_packet(
-                        "tun_to_upstream",
+                        "up",
                         ip_family_name(version_nibble),
                         "fragment_buffered",
                     );
@@ -277,7 +273,7 @@ async fn tun_read_loop(
                 },
                 Ok(DefragmentedPacket::Dropped(reason)) => {
                     metrics::record_tun_packet(
-                        "tun_to_upstream",
+                        "up",
                         ip_family_name(version_nibble),
                         "fragment_drop",
                     );
@@ -285,11 +281,7 @@ async fn tun_read_loop(
                     continue;
                 },
                 Err(error) => {
-                    metrics::record_tun_packet(
-                        "tun_to_upstream",
-                        ip_family_name(version_nibble),
-                        "error",
-                    );
+                    metrics::record_tun_packet("up", ip_family_name(version_nibble), "error");
                     debug!(
                         error = %format!("{error:#}"),
                         packet_len = read,
@@ -310,41 +302,25 @@ async fn tun_read_loop(
         let disposition = match classify_packet(packet) {
             Ok(disposition) => disposition,
             Err(error) => {
-                metrics::record_tun_packet(
-                    "tun_to_upstream",
-                    ip_family_name(version_nibble),
-                    "error",
-                );
+                metrics::record_tun_packet("up", ip_family_name(version_nibble), "error");
                 debug!(error = %format!("{error:#}"), packet_len = read, "dropping malformed TUN packet");
                 continue;
             },
         };
         match disposition {
             PacketDisposition::Udp => {
-                metrics::record_tun_packet(
-                    "tun_to_upstream",
-                    ip_family_name(version_nibble),
-                    "accepted",
-                );
+                metrics::record_tun_packet("up", ip_family_name(version_nibble), "accepted");
                 let parsed = match parse_udp_packet(packet) {
                     Ok(parsed) => parsed,
                     Err(error) => {
-                        metrics::record_tun_packet(
-                            "tun_to_upstream",
-                            ip_family_name(version_nibble),
-                            "error",
-                        );
+                        metrics::record_tun_packet("up", ip_family_name(version_nibble), "error");
                         debug!(error = %format!("{error:#}"), packet_len = read, "dropping malformed UDP packet from TUN");
                         continue;
                     },
                 };
                 if let Err(error) = udp_engine.handle_packet(parsed).await {
                     metrics::record_tun_udp_forward_error(classify_tun_udp_forward_error(&error));
-                    metrics::record_tun_packet(
-                        "tun_to_upstream",
-                        ip_family_name(version_nibble),
-                        "udp_error",
-                    );
+                    metrics::record_tun_packet("up", ip_family_name(version_nibble), "udp_error");
                     warn!(
                         error = %format!("{error:#}"),
                         packet_len = read,
@@ -354,17 +330,9 @@ async fn tun_read_loop(
                 }
             },
             PacketDisposition::Tcp => {
-                metrics::record_tun_packet(
-                    "tun_to_upstream",
-                    ip_family_name(version_nibble),
-                    "tcp_observed",
-                );
+                metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_observed");
                 if let Err(error) = tcp_engine.handle_packet(packet).await {
-                    metrics::record_tun_packet(
-                        "tun_to_upstream",
-                        ip_family_name(version_nibble),
-                        "tcp_error",
-                    );
+                    metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_error");
                     warn!(
                         error = %format!("{error:#}"),
                         packet_len = read,
@@ -375,7 +343,7 @@ async fn tun_read_loop(
             PacketDisposition::IcmpEchoRequest => {
                 if echo_reply_suppressed_for_down_group(&routing, packet).await {
                     metrics::record_tun_packet(
-                        "tun_to_upstream",
+                        "up",
                         ip_family_name(version_nibble),
                         "icmp_reply_suppressed",
                     );
@@ -384,7 +352,7 @@ async fn tun_read_loop(
                 match build_icmp_echo_reply_packets(packet) {
                     Ok(replies) => {
                         metrics::record_tun_packet(
-                            "tun_to_upstream",
+                            "up",
                             ip_family_name(version_nibble),
                             "icmp_local_reply",
                         );
@@ -397,7 +365,7 @@ async fn tun_read_loop(
                         }
                         if let Err(error) = writer.write_packets(&replies).await {
                             metrics::record_tun_packet(
-                                "upstream_to_tun",
+                                "down",
                                 ip_family_name(version_nibble),
                                 "error",
                             );
@@ -409,18 +377,14 @@ async fn tun_read_loop(
                         } else {
                             metrics::record_tun_icmp_local_reply(ip_family_name(version_nibble));
                             metrics::record_tun_packet(
-                                "upstream_to_tun",
+                                "down",
                                 ip_family_name(version_nibble),
                                 "icmp_local_reply",
                             );
                         }
                     },
                     Err(error) => {
-                        metrics::record_tun_packet(
-                            "tun_to_upstream",
-                            ip_family_name(version_nibble),
-                            "error",
-                        );
+                        metrics::record_tun_packet("up", ip_family_name(version_nibble), "error");
                         debug!(
                             error = %format!("{error:#}"),
                             packet_len = read,
@@ -430,11 +394,7 @@ async fn tun_read_loop(
                 }
             },
             PacketDisposition::Unsupported(reason) => {
-                metrics::record_tun_packet(
-                    "tun_to_upstream",
-                    ip_family_name(version_nibble),
-                    "unsupported",
-                );
+                metrics::record_tun_packet("up", ip_family_name(version_nibble), "unsupported");
                 debug!(reason, packet_len = read, "ignoring unsupported TUN packet");
             },
         }
@@ -451,7 +411,7 @@ async fn dispatch_udp_gso_superpacket(udp_engine: &TunUdpEngine, packet: &[u8], 
         Ok(datagrams) => datagrams,
         Err(error) => {
             metrics::record_tun_packet(
-                "tun_to_upstream",
+                "up",
                 ip_family_name(version_nibble),
                 "udp_gso_resegment_error",
             );
@@ -466,21 +426,13 @@ async fn dispatch_udp_gso_superpacket(udp_engine: &TunUdpEngine, packet: &[u8], 
     // Counts UDP GRO super-packets the kernel actually delivered — the signal
     // for whether `TUN_F_CSUM|TSO` (without USO) still yields UDP aggregates on
     // this kernel, or UDP truly stays per-datagram (to confirm on the live host).
-    metrics::record_tun_packet(
-        "tun_to_upstream",
-        ip_family_name(version_nibble),
-        "udp_gso_superpacket",
-    );
+    metrics::record_tun_packet("up", ip_family_name(version_nibble), "udp_gso_superpacket");
     debug!(count = datagrams.len(), gso_size, "re-segmented UDP GRO super-packet");
     for parsed in datagrams {
-        metrics::record_tun_packet("tun_to_upstream", ip_family_name(version_nibble), "accepted");
+        metrics::record_tun_packet("up", ip_family_name(version_nibble), "accepted");
         if let Err(error) = udp_engine.handle_packet(parsed).await {
             metrics::record_tun_udp_forward_error(classify_tun_udp_forward_error(&error));
-            metrics::record_tun_packet(
-                "tun_to_upstream",
-                ip_family_name(version_nibble),
-                "udp_error",
-            );
+            metrics::record_tun_packet("up", ip_family_name(version_nibble), "udp_error");
             warn!(
                 error = %format!("{error:#}"),
                 "failed to forward UDP datagram from GSO super-packet"

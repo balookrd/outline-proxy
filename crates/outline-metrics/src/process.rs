@@ -65,7 +65,7 @@ pub fn init() {
     for command in ["connect", "udp_associate", "udp_in_tcp"] {
         let _ = METRICS.socks_requests_total.with_label_values(&[command]);
     }
-    for direction in ["incoming", "outgoing"] {
+    for direction in ["up", "down"] {
         for cause in [
             "vless_udp",
             "ss_socket",
@@ -80,7 +80,7 @@ pub fn init() {
         }
     }
     for protocol in ["tcp", "udp"] {
-        for direction in ["client_to_upstream", "upstream_to_client"] {
+        for direction in ["up", "down"] {
             METRICS
                 .bytes_total
                 .with_label_values(&[
@@ -92,7 +92,7 @@ pub fn init() {
                 .inc_by(0);
         }
     }
-    for direction in ["client_to_upstream", "upstream_to_client"] {
+    for direction in ["up", "down"] {
         METRICS
             .udp_datagrams_total
             .with_label_values(&[direction, super::DIRECT_GROUP_LABEL, super::DIRECT_UPLINK_LABEL])

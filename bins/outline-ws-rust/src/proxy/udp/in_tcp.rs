@@ -114,7 +114,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
                         limit = MAX_CLIENT_UDP_PACKET_SIZE,
                         "dropping oversized incoming UDP-in-TCP packet"
                     );
-                    metrics::record_dropped_oversized_udp_packet("incoming", "socks_in_tcp");
+                    metrics::record_dropped_oversized_udp_packet("up", "socks_in_tcp");
                     continue;
                 }
 
@@ -141,14 +141,10 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
                     "upstream UDP-in-TCP response",
                 )
                 .await?;
-                metrics::add_udp_datagram(
-                    "upstream_to_client",
-                    &response.group_name,
-                    &response.uplink_name,
-                );
+                metrics::add_udp_datagram("down", &response.group_name, &response.uplink_name);
                 metrics::add_bytes(
                     "udp",
-                    "upstream_to_client",
+                    "down",
                     &response.group_name,
                     &response.uplink_name,
                     response.payload.len(),
@@ -182,13 +178,13 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
                 )
                 .await?;
                 metrics::add_udp_datagram(
-                    "upstream_to_client",
+                    "down",
                     metrics::DIRECT_GROUP_LABEL,
                     metrics::DIRECT_UPLINK_LABEL,
                 );
                 metrics::add_bytes(
                     "udp",
-                    "upstream_to_client",
+                    "down",
                     metrics::DIRECT_GROUP_LABEL,
                     metrics::DIRECT_UPLINK_LABEL,
                     metric_payload_len,
@@ -227,7 +223,7 @@ async fn write_udp_tcp_response(
             context,
             "dropping oversized outgoing UDP-in-TCP response"
         );
-        metrics::record_dropped_oversized_udp_packet("outgoing", "socks_in_tcp");
+        metrics::record_dropped_oversized_udp_packet("down", "socks_in_tcp");
         return Ok(());
     }
 

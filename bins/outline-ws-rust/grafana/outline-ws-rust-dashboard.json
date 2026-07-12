@@ -88,7 +88,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (outline_ws_rust_sessions_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (outline_ws_sessions_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
@@ -151,7 +151,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (increase(outline_ws_rust_requests_total{job=~\"$job\",instance=~\"$instance\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (increase(outline_ws_requests_total{job=~\"$job\",instance=~\"$instance\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
@@ -214,7 +214,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (increase(outline_ws_rust_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (increase(outline_ws_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}}",
           "refId": "A"
         }
@@ -277,7 +277,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (increase(outline_ws_rust_uplink_failovers_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (increase(outline_ws_uplink_failovers_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
@@ -383,7 +383,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, command) (rate(outline_ws_rust_requests_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, command) (rate(outline_ws_requests_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} socks5 {{command}}",
           "refId": "A"
         }
@@ -476,7 +476,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, protocol, direction) (rate(outline_ws_rust_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]) * 8)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, protocol, direction) (rate(outline_ws_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]) * 8)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{protocol}} {{direction}} throughput",
           "refId": "A"
         }
@@ -628,17 +628,17 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((outline_ws_rust_uplink_effective_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_uplink_effective_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} effective latency",
           "refId": "A"
         },
         {
-          "expr": "label_replace((outline_ws_rust_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} raw latency",
           "refId": "B"
         },
         {
-          "expr": "label_replace((outline_ws_rust_uplink_effective_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} / clamp_min(outline_ws_rust_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}, 0.001)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_uplink_effective_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} / clamp_min(outline_ws_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}, 0.001)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} latency ratio",
           "refId": "C"
         }
@@ -762,17 +762,17 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((outline_ws_rust_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} raw rtt",
           "refId": "A"
         },
         {
-          "expr": "label_replace((outline_ws_rust_uplink_rtt_ewma_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_uplink_rtt_ewma_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} primary ewma",
           "refId": "B"
         },
         {
-          "expr": "label_replace((outline_ws_rust_uplink_active_wire_rtt_ewma_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_uplink_active_wire_rtt_ewma_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} active-wire ewma",
           "refId": "C"
         }
@@ -894,12 +894,12 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_rust_uplink_runtime_failures_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_uplink_runtime_failures_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} runtime failures",
           "refId": "A"
         },
         {
-          "expr": "label_replace((sum by (instance, from_uplink, to_uplink) (rate(outline_ws_rust_uplink_failovers_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, from_uplink, to_uplink) (rate(outline_ws_uplink_failovers_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} failover {{from_uplink}} -> {{to_uplink}}",
           "refId": "B"
         }
@@ -966,31 +966,31 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "outline_ws_rust_uplink_health_effective{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "expr": "outline_ws_uplink_health_effective{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
         },
         {
-          "expr": "outline_ws_rust_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "expr": "outline_ws_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
           "format": "table",
           "instant": true,
           "refId": "B"
         },
         {
-          "expr": "outline_ws_rust_uplink_standby_ready{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "expr": "outline_ws_uplink_standby_ready{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
           "format": "table",
           "instant": true,
           "refId": "C"
         },
         {
-          "expr": "outline_ws_rust_uplink_penalty_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "expr": "outline_ws_uplink_penalty_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
           "format": "table",
           "instant": true,
           "refId": "D"
         },
         {
-          "expr": "outline_ws_rust_uplink_effective_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "expr": "outline_ws_uplink_effective_latency_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
           "format": "table",
           "instant": true,
           "refId": "E"
@@ -1172,19 +1172,19 @@
       },
       "targets": [
         {
-          "expr": "outline_ws_rust_uplink_active_wire_index{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "expr": "outline_ws_uplink_active_wire_index{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
         },
         {
-          "expr": "outline_ws_rust_uplink_active_wire_pin_remaining_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "expr": "outline_ws_uplink_active_wire_pin_remaining_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
           "format": "table",
           "instant": true,
           "refId": "B"
         },
         {
-          "expr": "outline_ws_rust_uplink_configured_fallbacks_count{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
+          "expr": "outline_ws_uplink_configured_fallbacks{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}",
           "format": "table",
           "instant": true,
           "refId": "C"
@@ -1204,7 +1204,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 28
+        "y": 35
       },
       "id": 138,
       "panels": [],
@@ -1239,7 +1239,7 @@
         "h": 3,
         "w": 6,
         "x": 0,
-        "y": 29
+        "y": 36
       },
       "id": 134,
       "options": {
@@ -1262,7 +1262,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, mode) (outline_ws_rust_selection_mode_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, mode) (outline_ws_selection_mode_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
           "legendFormat": "{{instance_short}} {{mode}}",
           "refId": "A"
@@ -1299,7 +1299,7 @@
         "h": 3,
         "w": 6,
         "x": 6,
-        "y": 29
+        "y": 36
       },
       "id": 135,
       "options": {
@@ -1322,7 +1322,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, scope) (outline_ws_rust_routing_scope_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, scope) (outline_ws_routing_scope_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
           "legendFormat": "{{instance_short}} {{scope}}",
           "refId": "A"
@@ -1364,7 +1364,7 @@
         "h": 3,
         "w": 6,
         "x": 18,
-        "y": 29
+        "y": 36
       },
       "id": 213,
       "options": {
@@ -1387,7 +1387,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace(sum by (instance, strategy) (outline_ws_rust_uplink_fingerprint_profile_strategy_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace(sum by (instance, strategy) (outline_ws_uplink_fingerprint_profile_strategy_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
           "legendFormat": "{{instance_short}} {{strategy}}",
           "refId": "A"
@@ -1424,7 +1424,7 @@
         "h": 3,
         "w": 6,
         "x": 12,
-        "y": 29
+        "y": 36
       },
       "id": 136,
       "options": {
@@ -1447,15 +1447,15 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, uplink) (outline_ws_rust_global_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, uplink) (outline_ws_global_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
           "legendFormat": "{{instance_short}} {{uplink}}",
           "refId": "A"
         },
         {
-          "expr": "label_replace((max by (instance, proto, uplink) (outline_ws_rust_per_uplink_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, proto, uplink) (outline_ws_per_uplink_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
-          "legendFormat": "{{instance_short}} {{uplink}}/{{proto}}",
+          "legendFormat": "{{instance_short}} {{uplink}}/{{transport}}",
           "refId": "B"
         }
       ],
@@ -1494,7 +1494,7 @@
         "h": 3,
         "w": 6,
         "x": 18,
-        "y": 29
+        "y": 36
       },
       "id": 137,
       "options": {
@@ -1517,7 +1517,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_sticky_routes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_sticky_routes{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
           "legendFormat": "{{instance_short}}",
           "refId": "A"
@@ -1594,7 +1594,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 32
+        "y": 39
       },
       "id": 148,
       "options": {
@@ -1613,13 +1613,13 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, uplink) (outline_ws_rust_global_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, uplink) (outline_ws_global_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} active",
           "refId": "A"
         },
         {
-          "expr": "label_replace((max by (instance, proto, uplink) (outline_ws_rust_per_uplink_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{uplink}}/{{proto}} active",
+          "expr": "label_replace((max by (instance, proto, uplink) (outline_ws_per_uplink_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}}/{{transport}} active",
           "refId": "B"
         }
       ],
@@ -1676,7 +1676,7 @@
         "h": 5,
         "w": 6,
         "x": 0,
-        "y": 38
+        "y": 45
       },
       "id": 230,
       "options": {
@@ -1699,7 +1699,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, group, transport) (outline_ws_rust_group_bypass_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, group, transport) (outline_ws_group_bypass_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
           "legendFormat": "{{instance_short}} {{group}}/{{transport}}",
           "refId": "A"
@@ -1789,7 +1789,7 @@
         "h": 5,
         "w": 18,
         "x": 6,
-        "y": 38
+        "y": 45
       },
       "id": 231,
       "options": {
@@ -1808,7 +1808,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, group, transport) (outline_ws_rust_group_bypass_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, group, transport) (outline_ws_group_bypass_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{group}}/{{transport}} direct",
           "refId": "A"
         }
@@ -1817,298 +1817,24 @@
       "type": "timeseries"
     },
     {
+      "type": "row",
+      "title": "Mid-session retries (v1+v2)",
       "collapsed": false,
+      "panels": [],
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 50
       },
-      "id": 106,
-      "panels": [],
-      "title": "Memory & Allocator",
-      "type": "row"
+      "id": 210
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#33A02C",
-                "value": 0
-              },
-              {
-                "color": "#EAB839",
-                "value": 134217728
-              },
-              {
-                "color": "#C15C17",
-                "value": 268435456
-              }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 6,
-        "x": 0,
-        "y": 44
-      },
-      "id": 130,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Current RSS",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#33A02C",
-                "value": 0
-              },
-              {
-                "color": "#EAB839",
-                "value": 65536
-              },
-              {
-                "color": "#E24D42",
-                "value": 1048576
-              }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "thresholds"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 6,
-        "x": 6,
-        "y": 44
-      },
-      "id": 123,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_virtual_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Current Virtual",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#33A02C",
-                "value": 0
-              },
-              {
-                "color": "#EAB839",
-                "value": 67108864
-              },
-              {
-                "color": "#E24D42",
-                "value": 536870912
-              }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 6,
-        "x": 12,
-        "y": 44
-      },
-      "id": 132,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_heap_allocated_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Heap Allocated",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#33A02C",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 3,
-        "w": 6,
-        "x": 18,
-        "y": 44
-      },
-      "id": 133,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "name",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "expr": "label_replace((max by (instance, mode) (outline_ws_rust_process_heap_mode_info{job=~\"$job\",instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{mode}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Allocator Heap Mode",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
+      "description": "Pinned-relay mid-session retry attempts, broken down by outcome. `success` — uplink (v1) and downlink (v2) replay completed without truncation. `failed_redial` — the redial itself or the v1/v2 control-frame consume timed out. `failed_replay` — the v1 uplink replay write failed mid-suffix. `buffer_overflow` — the client's v1 ring buffer overflowed (only seen under `tcp_mid_session_retry_overflow_policy = \"soft\"`). `downlink_truncated` — v2 was engaged and the server returned `REPLAY_TRUNCATED`. Stacked so the success ratio is visible at a glance.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2123,7 +1849,7 @@
             "barAlignment": 0,
             "barWidthFactor": 0.6,
             "drawStyle": "line",
-            "fillOpacity": 0,
+            "fillOpacity": 25,
             "gradientMode": "none",
             "hideFrom": {
               "legend": false,
@@ -2133,11 +1859,106 @@
             "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
-            "pointSize": 5,
+            "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
             },
-            "showPoints": "auto",
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 51
+      },
+      "id": 211,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, outcome) (rate(outline_ws_uplink_mid_session_retries_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{outcome}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Retry Rate by Outcome",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Bytes/sec the client flushed to its SOCKS5 client out of the v2 `ORDR` replay payload, before fresh-upstream traffic resumed. Non-zero means at least one mid-session retry actually exercised the v2 Symmetric Downlink Replay path (not just negotiated it). Pulled from the existing transport bytes counter via the `direction=\"downlink_replay\"` label.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
             "showValues": false,
             "spanNulls": false,
             "stacking": {
@@ -2155,59 +1976,27 @@
               {
                 "color": "green",
                 "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
               }
             ]
           },
-          "unit": "bytes"
+          "unit": "Bps"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* rss$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#1F78C1",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* virtual$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#FF9830",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
-        "h": 6,
-        "w": 24,
-        "x": 0,
-        "y": 47
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 51
       },
-      "id": 26,
+      "id": 212,
       "options": {
         "legend": {
-          "calcs": [],
-          "displayMode": "list",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -2217,40 +2006,38 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "12.4.2",
+      "pluginVersion": "12.4.1",
       "targets": [
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} process rss",
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, group, uplink) (rate(outline_ws_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",direction=\"downlink_replay\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{group}}/{{uplink}}",
+          "range": true,
           "refId": "A"
-        },
-        {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_virtual_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} process virtual",
-          "refId": "B"
         }
       ],
-      "title": "Process Memory",
+      "title": "v2 Downlink Replay Throughput",
       "type": "timeseries"
     },
     {
+      "type": "row",
+      "title": "Inactive Uplink Leak (Global / Per-Uplink)",
       "collapsed": false,
+      "panels": [],
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 53
+        "y": 58
       },
-      "id": 126,
-      "panels": [],
-      "title": "FD, Threads & Transport Pressure",
-      "type": "row"
+      "id": 220
     },
     {
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Live count of upstream transports still attached to an uplink that is no longer the active one for its (group, transport) — i.e. sessions that survived a Global / PerUplink switchover and continue to consume the old uplink's resources until they finish naturally. Non-zero is expected briefly after a switch (TCP cannot migrate); a value that fails to drain over time is the leak signal. Built by subtracting the active-uplink indicator from the open-connection gauge: any uplink with `global_active_uplink_info != 1` (or `per_uplink_active_uplink_info != 1` for the matching transport) but with open connections counts here.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2261,217 +2048,504 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "#33A02C",
+                "color": "green",
                 "value": 0
               },
               {
-                "color": "#EAB839",
-                "value": 128
+                "color": "yellow",
+                "value": 1
               },
               {
-                "color": "#C15C17",
-                "value": 256
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* open fds$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#C15C17",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 0,
-        "y": 54
-      },
-      "id": 30,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_open_fds{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} open fds",
-          "refId": "A"
-        }
-      ],
-      "title": "Open FDs",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#33A02C",
-                "value": 0
-              },
-              {
-                "color": "#EAB839",
-                "value": 32
-              },
-              {
-                "color": "#C15C17",
-                "value": 128
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* threads$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#5794F2",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 4,
-        "x": 4,
-        "y": 54
-      },
-      "id": 152,
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "percentChangeColorMode": "standard",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_threads{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} threads",
-          "refId": "A"
-        }
-      ],
-      "title": "Current Threads",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "decimals": 0,
-          "mappings": [],
-          "max": 100,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "#33A02C",
-                "value": 0
-              },
-              {
-                "color": "#EAB839",
+                "color": "red",
                 "value": 50
-              },
-              {
-                "color": "#C15C17",
-                "value": 80
               }
             ]
           },
-          "unit": "percent"
+          "unit": "short"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* socket fd share$"
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 59
+      },
+      "id": 221,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum(\n  outline_ws_uplink_open_connections{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}\n  unless on(instance, group, uplink) (outline_ws_global_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} == 1)\n  unless on(instance, group, transport, uplink) (outline_ws_per_uplink_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} == 1)\n)",
+          "legendFormat": "stranded",
+          "range": false,
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Stranded Connections on Inactive Uplinks (now)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Currently open upstream transports per uplink, split by `transport` (tcp/udp). After a Global / PerUplink switchover the new active uplink starts climbing while the old one continues to drain — that drain rate is the recovery speed. Cross-check with `outline_ws_global_active_uplink_info` to identify which series belongs to the active vs the stranded uplink.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
             },
-            "properties": [
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
               {
-                "id": "color",
-                "value": {
-                  "mode": "thresholds"
-                }
+                "color": "green",
+                "value": 0
               }
             ]
-          }
-        ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 18,
+        "x": 6,
+        "y": 59
+      },
+      "id": 222,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, group, transport, uplink) (outline_ws_uplink_open_connections{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{group}}/{{uplink}}/{{transport}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Open Connections by Uplink",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Rate of upstream-transport closes on uplinks that were no longer active at close time, broken down by uplink. Spikes after a switchover are normal (stranded TCP sessions finishing naturally); a sustained non-zero rate without a recent switch suggests sessions are being dialled through a non-active uplink — typically a stale sticky route, a warm-standby pool that pre-dates the switch, or a `PerUplink`/`Global` mode misconfiguration. Pairs with the gauge above: integral of this rate ≈ delta of stranded gauge between scrapes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 67
+      },
+      "id": 223,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, group, transport, uplink) (rate(outline_ws_uplink_connection_close_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",classification=\"inactive\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{group}}/{{uplink}}/{{transport}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Inactive Uplink Close Rate (Leak)",
+      "type": "timeseries"
+    },
+    {
+      "type": "row",
+      "collapsed": false,
+      "title": "Cluster / Soft-switch",
+      "id": 300,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 74
+      },
+      "panels": []
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Operator-triggered cluster soft-switch migrations, by outcome. Only fires once an operator soft switch is in effect for a `shared_resume` (cluster) group. `migrated` = the session moved to the new edge cross-node (resume redial + replay succeeded); `redial_failed` = the migration redial failed so the session falls back to an RST teardown and reconnects; `not_ws_family` = the new active uplink cannot present the group resume id (not SS/VLESS-over-WS); `no_candidate` = the new active index had no dial candidate; `same_uplink` = the switch target equals the session's current uplink. A healthy switch is dominated by `migrated`; a spike in the others means sessions are being reset rather than migrated.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 75
+      },
+      "id": 301,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (group, outcome) (rate(outline_ws_soft_switch_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[5m]))",
+          "legendFormat": "{{group}} {{outcome}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Cluster Soft-switch Migrations by Outcome",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Resume-cache lookups when dialing an uplink wire, by transport, scope and result. `scope=group` means the resume id is shared across the group's edges (cluster `shared_resume`) so a `hit` is a cross-node-capable resume presented to whichever edge the wire landed on; `scope=uplink` is the standalone per-uplink resume. `result=hit` = a stored Session ID was presented (a resume attempt, i.e. session continuity across an edge switch); `miss` = a fresh session. On a cluster, a healthy migration shows `scope=group,result=hit` tracking the soft-switch rate.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 75
+      },
+      "id": 302,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (transport, scope, result) (rate(outline_ws_resume_lookup_total{job=~\"$job\",instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{transport}} {{scope}} {{result}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Cluster Resume Lookups (hit/miss)",
+      "type": "timeseries"
+    },
+    {
+      "type": "row",
+      "collapsed": false,
+      "title": "Reverse Tunnel (topology A)",
+      "id": 232,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 82
+      },
+      "panels": []
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
       },
       "gridPos": {
         "h": 4,
-        "w": 4,
-        "x": 8,
-        "y": 54
+        "w": 6,
+        "x": 0,
+        "y": 83
       },
-      "id": 124,
+      "id": 233,
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "percentChangeColorMode": "standard",
@@ -2489,12 +2563,14 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((100 * max by (instance) (outline_ws_rust_process_fd_by_type{job=~\"$job\",instance=~\"$instance\",kind=\"socket\"}) / clamp_min(max by (instance) (outline_ws_rust_process_open_fds{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} socket fd share",
+          "editorMode": "code",
+          "expr": "sum(outline_ws_reverse_peers{job=~\"$job\",instance=~\"$instance\"})",
+          "legendFormat": "live",
+          "range": true,
           "refId": "A"
         }
       ],
-      "title": "Socket FD Share",
+      "title": "Reverse Peers (live)",
       "type": "stat"
     },
     {
@@ -2557,95 +2633,19 @@
           },
           "unit": "short"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* socket fds$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#C15C17",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* pipe fds$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#FF9830",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* anon inode fds$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#EAB839",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* regular file fds$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#1F78C1",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* other fds$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#888888",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 12,
-        "y": 54
+        "h": 7,
+        "w": 18,
+        "x": 6,
+        "y": 83
       },
-      "id": 31,
+      "id": 234,
       "options": {
         "legend": {
           "calcs": [],
-          "displayMode": "list",
+          "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
         },
@@ -2658,647 +2658,14 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, kind) (outline_ws_rust_process_fd_by_type{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{kind}} fds",
+          "editorMode": "code",
+          "expr": "sum by (group) (outline_ws_reverse_peers{job=~\"$job\",instance=~\"$instance\"})",
+          "legendFormat": "{{group}}",
+          "range": true,
           "refId": "A"
         }
       ],
-      "title": "FD Types",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* tcp .*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#1F78C1",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* udp .*"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#33A02C",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 54
-      },
-      "id": 121,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "expr": "label_replace((max by (instance, source, protocol) (outline_ws_rust_upstream_transports_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{source}} {{protocol}} active upstream",
-          "refId": "A"
-        }
-      ],
-      "title": "Upstream Transports Active by Source",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* threads$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#5794F2",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 0,
-        "y": 58
-      },
-      "id": 153,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_threads{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} threads",
-          "refId": "A"
-        }
-      ],
-      "title": "Process Threads",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* http1 active connects$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#1F78C1",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* h2 active connects$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#EAB839",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* h3 active connects$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#C15C17",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 8,
-        "y": 58
-      },
-      "id": 29,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "expr": "label_replace((max by (instance, source, mode) (outline_ws_rust_transport_connects_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{source}} {{mode}} active connects",
-          "refId": "A"
-        }
-      ],
-      "title": "Transport Connects Active by Source",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "cps"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* success$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#33A02C",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* error$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#C15C17",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* started$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#EAB839",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 8,
-        "x": 16,
-        "y": 58
-      },
-      "id": 32,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "expr": "label_replace((sum by (instance, source, mode, result) (rate(outline_ws_rust_transport_connects_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{source}} {{mode}} {{result}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Transport Connect Outcomes by Source",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          },
-          "unit": "cps"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* opened$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#33A02C",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* closed$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#C15C17",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 4,
-        "w": 24,
-        "x": 0,
-        "y": 62
-      },
-      "id": 122,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "expr": "label_replace((sum by (instance, source, protocol, result) (rate(outline_ws_rust_upstream_transports_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{source}} {{protocol}} {{result}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Upstream Transport Lifecycles by Source",
+      "title": "Reverse Peers by Group",
       "type": "timeseries"
     },
     {
@@ -3307,7 +2674,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 66
+        "y": 90
       },
       "id": 107,
       "panels": [],
@@ -3396,7 +2763,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 67
+        "y": 91
       },
       "id": 9,
       "options": {
@@ -3415,7 +2782,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((avg by (instance, uplink, transport, probe) (rate(outline_ws_rust_probe_duration_seconds_sum{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]) / rate(outline_ws_rust_probe_duration_seconds_count{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((avg by (instance, uplink, transport, probe) (rate(outline_ws_probe_duration_seconds_sum{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]) / rate(outline_ws_probe_duration_seconds_count{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} {{probe}} probe latency",
           "refId": "A"
         }
@@ -3550,7 +2917,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 67
+        "y": 91
       },
       "id": 12,
       "options": {
@@ -3569,12 +2936,12 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, transport, outcome) (rate(outline_ws_rust_warm_standby_acquire_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport, outcome) (rate(outline_ws_warm_standby_acquire_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} standby {{outcome}}",
           "refId": "A"
         },
         {
-          "expr": "label_replace((sum by (instance, uplink, transport, result) (rate(outline_ws_rust_warm_standby_refill_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport, result) (rate(outline_ws_warm_standby_refill_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} refill {{result}}",
           "refId": "B"
         }
@@ -3664,7 +3031,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 73
+        "y": 97
       },
       "id": 10,
       "options": {
@@ -3683,7 +3050,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",probe!=\"standby_ws\",result=\"error\"}[$__rate_interval])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",probe!=\"standby_ws\"}[$__rate_interval])), 1e-9)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",probe!=\"standby_ws\",result=\"error\"}[$__rate_interval])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",probe!=\"standby_ws\"}[$__rate_interval])), 1e-9)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} health probe error ratio",
           "refId": "A"
         }
@@ -3773,7 +3140,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 73
+        "y": 97
       },
       "id": 19,
       "options": {
@@ -3792,7 +3159,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",probe=\"standby_ws\",result=\"error\"}[$__rate_interval])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",probe=\"standby_ws\"}[$__rate_interval])), 1e-9)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",probe=\"standby_ws\",result=\"error\"}[$__rate_interval])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",probe=\"standby_ws\"}[$__rate_interval])), 1e-9)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} standby probe error ratio",
           "refId": "A"
         }
@@ -3924,7 +3291,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 79
+        "y": 103
       },
       "id": 200,
       "options": {
@@ -3946,7 +3313,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, family, state) (outline_ws_rust_process_sockets_by_state{job=~\"$job\",instance=~\"$instance\",protocol=\"tcp\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, family, state) (outline_ws_process_sockets_by_state{job=~\"$job\",instance=~\"$instance\",protocol=\"tcp\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{family}} {{state}}",
           "refId": "A"
         }
@@ -4017,7 +3384,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 79
+        "y": 103
       },
       "id": 201,
       "options": {
@@ -4039,7 +3406,7 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, source, protocol) (rate(outline_ws_rust_upstream_transports_total{job=~\"$job\",instance=~\"$instance\",result=\"opened\"}[$__rate_interval])) - sum by (instance, source, protocol) (rate(outline_ws_rust_upstream_transports_total{job=~\"$job\",instance=~\"$instance\",result=\"closed\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, source, protocol) (rate(outline_ws_upstream_transports_total{job=~\"$job\",instance=~\"$instance\",result=\"opened\"}[$__rate_interval])) - sum by (instance, source, protocol) (rate(outline_ws_upstream_transports_total{job=~\"$job\",instance=~\"$instance\",result=\"closed\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{source}} {{protocol}} net",
           "refId": "A"
         }
@@ -4053,7 +3420,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 93
+        "y": 109
       },
       "id": 105,
       "panels": [
@@ -4188,12 +3555,12 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance, uplink) (outline_ws_tun_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{uplink}} active udp flows",
               "refId": "A"
             },
             {
-              "expr": "label_replace((max by (instance) (outline_ws_rust_tun_max_flows{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((max by (instance) (outline_ws_tun_max_flows{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} udp max flows",
               "refId": "B"
             }
@@ -4262,7 +3629,7 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace((sum by (instance) (outline_ws_rust_tun_flows_active{job=~\"$job\",instance=~\"$instance\"}) / clamp_min(max by (instance) (outline_ws_rust_tun_max_flows{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance) (outline_ws_tun_flows_active{job=~\"$job\",instance=~\"$instance\"}) / clamp_min(max by (instance) (outline_ws_tun_max_flows{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} udp flow pressure ratio",
               "refId": "A"
             }
@@ -4386,12 +3753,12 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace((sum by (instance, uplink) (rate(outline_ws_rust_tun_flows_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",event=\"created\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance, uplink) (rate(outline_ws_tun_flows_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",event=\"created\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{uplink}} created",
               "refId": "A"
             },
             {
-              "expr": "label_replace((sum by (instance, uplink) (rate(outline_ws_rust_tun_flows_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",event=~\"idle_timeout|evicted|read_error|send_error|closed\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance, uplink) (rate(outline_ws_tun_flows_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",event=~\"idle_timeout|evicted|read_error|send_error|closed\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{uplink}} closed",
               "refId": "B"
             }
@@ -4484,7 +3851,7 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace((sum by (instance, uplink, event) (rate(outline_ws_rust_tun_flows_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",event=~\"read_error|send_error\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance, uplink, event) (rate(outline_ws_tun_flows_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",event=~\"read_error|send_error\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{uplink}} {{event}}",
               "refId": "A"
             }
@@ -4623,7 +3990,7 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace((sum by (instance, direction, ip_family, outcome) (rate(outline_ws_rust_tun_packets_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance, direction, ip_family, outcome) (rate(outline_ws_tun_packets_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{direction}} {{ip_family}} {{outcome}} packets",
               "refId": "A"
             }
@@ -4762,7 +4129,7 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace((sum by (instance, reason) (rate(outline_ws_rust_tun_udp_forward_errors_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance, reason) (rate(outline_ws_tun_udp_forward_errors_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{reason}}",
               "refId": "A"
             }
@@ -4886,7 +4253,7 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace((sum by (instance, direction, cause) (rate(outline_ws_rust_udp_oversized_dropped_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance, direction, cause) (rate(outline_ws_udp_oversized_dropped_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{direction}} {{cause}}",
               "refId": "A"
             }
@@ -5010,7 +4377,7 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_rust_tun_icmp_local_replies_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_tun_icmp_local_replies_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{ip_family}}",
               "refId": "A"
             }
@@ -5134,12 +4501,12 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace((sum by (instance, ip_family) (outline_ws_rust_tun_ip_fragment_sets_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance, ip_family) (outline_ws_tun_ip_fragment_sets_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{ip_family}} active sets",
               "refId": "A"
             },
             {
-              "expr": "label_replace((sum by (instance, ip_family) (increase(outline_ws_rust_tun_ip_fragments_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance, ip_family) (increase(outline_ws_tun_ip_fragments_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{ip_family}} fragments",
               "refId": "B"
             }
@@ -5293,7 +4660,7 @@
           "pluginVersion": "12.4.2",
           "targets": [
             {
-              "expr": "label_replace((sum by (instance, ip_family, result) (increase(outline_ws_rust_tun_ip_reassemblies_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+              "expr": "label_replace((sum by (instance, ip_family, result) (increase(outline_ws_tun_ip_reassemblies_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
               "legendFormat": "{{instance_short}} {{ip_family}} {{result}}",
               "refId": "A"
             }
@@ -5307,482 +4674,6 @@
     },
     {
       "type": "row",
-      "title": "Mid-session retries (v1+v2)",
-      "collapsed": false,
-      "panels": [],
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 85
-      },
-      "id": 210
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Pinned-relay mid-session retry attempts, broken down by outcome. `success` — uplink (v1) and downlink (v2) replay completed without truncation. `failed_redial` — the redial itself or the v1/v2 control-frame consume timed out. `failed_replay` — the v1 uplink replay write failed mid-suffix. `buffer_overflow` — the client's v1 ring buffer overflowed (only seen under `tcp_mid_session_retry_overflow_policy = \"soft\"`). `downlink_truncated` — v2 was engaged and the server returned `REPLAY_TRUNCATED`. Stacked so the success ratio is visible at a glance.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 25,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 4,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 86
-      },
-      "id": 211,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.1",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "label_replace((sum by (instance, outcome) (rate(outline_ws_rust_uplink_mid_session_retries_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{outcome}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Retry Rate by Outcome",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Bytes/sec the client flushed to its SOCKS5 client out of the v2 `ORDR` replay payload, before fresh-upstream traffic resumed. Non-zero means at least one mid-session retry actually exercised the v2 Symmetric Downlink Replay path (not just negotiated it). Pulled from the existing transport bytes counter via the `direction=\"downlink_replay\"` label.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 25,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 4,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "Bps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 86
-      },
-      "id": 212,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.1",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "label_replace((sum by (instance, group, uplink) (rate(outline_ws_rust_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",direction=\"downlink_replay\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{group}}/{{uplink}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "v2 Downlink Replay Throughput",
-      "type": "timeseries"
-    },
-    {
-      "type": "row",
-      "title": "Inactive Uplink Leak (Global / Per-Uplink)",
-      "collapsed": false,
-      "panels": [],
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 93
-      },
-      "id": 220
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Live count of upstream transports still attached to an uplink that is no longer the active one for its (group, transport) — i.e. sessions that survived a Global / PerUplink switchover and continue to consume the old uplink's resources until they finish naturally. Non-zero is expected briefly after a switch (TCP cannot migrate); a value that fails to drain over time is the leak signal. Built by subtracting the active-uplink indicator from the open-connection gauge: any uplink with `global_active_uplink_info != 1` (or `per_uplink_active_uplink_info != 1` for the matching transport) but with open connections counts here.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 50
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 0,
-        "y": 94
-      },
-      "id": 221,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showPercentChange": false,
-        "textMode": "auto",
-        "wideLayout": true
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sum(\n  outline_ws_rust_uplink_open_connections{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}\n  unless on(instance, group, uplink) (outline_ws_rust_global_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} == 1)\n  unless on(instance, group, transport, uplink) label_replace(outline_ws_rust_per_uplink_active_uplink_info{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"} == 1, \"transport\", \"$1\", \"proto\", \"(.*)\")\n)",
-          "legendFormat": "stranded",
-          "range": false,
-          "instant": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Stranded Connections on Inactive Uplinks (now)",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Currently open upstream transports per uplink, split by `transport` (tcp/udp). After a Global / PerUplink switchover the new active uplink starts climbing while the old one continues to drain — that drain rate is the recovery speed. Cross-check with `outline_ws_rust_global_active_uplink_info` to identify which series belongs to the active vs the stranded uplink.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 4,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 18,
-        "x": 6,
-        "y": 94
-      },
-      "id": 222,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.4.1",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "label_replace((sum by (instance, group, transport, uplink) (outline_ws_rust_uplink_open_connections{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{group}}/{{uplink}}/{{transport}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Open Connections by Uplink",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Rate of upstream-transport closes on uplinks that were no longer active at close time, broken down by uplink. Spikes after a switchover are normal (stranded TCP sessions finishing naturally); a sustained non-zero rate without a recent switch suggests sessions are being dialled through a non-active uplink — typically a stale sticky route, a warm-standby pool that pre-dates the switch, or a `PerUplink`/`Global` mode misconfiguration. Pairs with the gauge above: integral of this rate ≈ delta of stranded gauge between scrapes.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 25,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 4,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "normal"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 24,
-        "x": 0,
-        "y": 102
-      },
-      "id": 223,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "pluginVersion": "12.4.1",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "label_replace((sum by (instance, group, transport, uplink) (rate(outline_ws_rust_uplink_connection_close_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\",classification=\"inactive\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{group}}/{{uplink}}/{{transport}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Inactive Uplink Close Rate (Leak)",
-      "type": "timeseries"
-    },
-    {
-      "type": "row",
       "collapsed": false,
       "title": "TUN Offload (GSO / GRO)",
       "id": 240,
@@ -5790,7 +4681,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 109
+        "y": 110
       },
       "panels": []
     },
@@ -5857,7 +4748,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 110
+        "y": 111
       },
       "id": 241,
       "options": {
@@ -5880,7 +4771,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_rust_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"upstream_to_tun\",outcome=\"tso_supersegment\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"down\",outcome=\"tso_supersegment\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{ip_family}}",
           "range": true,
           "refId": "A"
@@ -5952,7 +4843,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 110
+        "y": 111
       },
       "id": 242,
       "options": {
@@ -5975,7 +4866,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_rust_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"tun_to_upstream\",outcome=\"tcp_gro_superpacket\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"up\",outcome=\"tcp_gro_superpacket\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{ip_family}}",
           "range": true,
           "refId": "A"
@@ -6051,7 +4942,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 110
+        "y": 111
       },
       "id": 243,
       "options": {
@@ -6074,7 +4965,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_rust_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"tun_to_upstream\",outcome=\"udp_gso_superpacket\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"up\",outcome=\"udp_gso_superpacket\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{ip_family}}",
           "range": true,
           "refId": "A"
@@ -6146,7 +5037,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 118
+        "y": 119
       },
       "id": 244,
       "options": {
@@ -6169,7 +5060,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_rust_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"upstream_to_tun\",outcome=\"uso_supersegment\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_tun_packets_total{job=~\"$job\",instance=~\"$instance\",direction=\"down\",outcome=\"uso_supersegment\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{ip_family}}",
           "range": true,
           "refId": "A"
@@ -6179,17 +5070,17 @@
       "type": "timeseries"
     },
     {
-      "type": "row",
       "collapsed": false,
-      "title": "Reverse Tunnel (topology A)",
-      "id": 232,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 126
+        "y": 127
       },
-      "panels": []
+      "id": 106,
+      "panels": [],
+      "title": "Memory & Allocator",
+      "type": "row"
     },
     {
       "datasource": {
@@ -6206,28 +5097,32 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "#33A02C",
                 "value": 0
               },
               {
-                "color": "green",
-                "value": 1
+                "color": "#EAB839",
+                "value": 134217728
+              },
+              {
+                "color": "#C15C17",
+                "value": 268435456
               }
             ]
           },
-          "unit": "short"
+          "unit": "bytes"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 4,
+        "h": 3,
         "w": 6,
         "x": 0,
-        "y": 127
+        "y": 128
       },
-      "id": 233,
+      "id": 130,
       "options": {
-        "colorMode": "value",
+        "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
@@ -6246,14 +5141,613 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "editorMode": "code",
-          "expr": "sum(outline_ws_rust_reverse_peers{job=~\"$job\",instance=~\"$instance\"})",
-          "legendFormat": "live",
-          "range": true,
+          "expr": "label_replace((max by (instance) (outline_ws_process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
       ],
-      "title": "Reverse Peers (live)",
+      "title": "Current RSS",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#33A02C",
+                "value": 0
+              },
+              {
+                "color": "#EAB839",
+                "value": 65536
+              },
+              {
+                "color": "#E24D42",
+                "value": 1048576
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 6,
+        "y": 128
+      },
+      "id": 123,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance) (outline_ws_process_virtual_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Current Virtual",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#33A02C",
+                "value": 0
+              },
+              {
+                "color": "#EAB839",
+                "value": 67108864
+              },
+              {
+                "color": "#E24D42",
+                "value": 536870912
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 12,
+        "y": 128
+      },
+      "id": 132,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance) (outline_ws_process_heap_allocated_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Heap Allocated",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#33A02C",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 18,
+        "y": 128
+      },
+      "id": 133,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "name",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance, mode) (outline_ws_process_heap_mode_info{job=~\"$job\",instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{mode}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Allocator Heap Mode",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* rss$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#1F78C1",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* virtual$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FF9830",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 131
+      },
+      "id": 26,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance) (outline_ws_process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} process rss",
+          "refId": "A"
+        },
+        {
+          "expr": "label_replace((max by (instance) (outline_ws_process_virtual_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} process virtual",
+          "refId": "B"
+        }
+      ],
+      "title": "Process Memory",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 137
+      },
+      "id": 126,
+      "panels": [],
+      "title": "FD, Threads & Transport Pressure",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#33A02C",
+                "value": 0
+              },
+              {
+                "color": "#EAB839",
+                "value": 128
+              },
+              {
+                "color": "#C15C17",
+                "value": 256
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* open fds$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#C15C17",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 138
+      },
+      "id": 30,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance) (outline_ws_process_open_fds{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} open fds",
+          "refId": "A"
+        }
+      ],
+      "title": "Open FDs",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#33A02C",
+                "value": 0
+              },
+              {
+                "color": "#EAB839",
+                "value": 32
+              },
+              {
+                "color": "#C15C17",
+                "value": 128
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* threads$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5794F2",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 138
+      },
+      "id": 152,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance) (outline_ws_process_threads{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} threads",
+          "refId": "A"
+        }
+      ],
+      "title": "Current Threads",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "max": 100,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#33A02C",
+                "value": 0
+              },
+              {
+                "color": "#EAB839",
+                "value": 50
+              },
+              {
+                "color": "#C15C17",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* socket fd share$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 138
+      },
+      "id": 124,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace((100 * max by (instance) (outline_ws_process_fd_by_type{job=~\"$job\",instance=~\"$instance\",kind=\"socket\"}) / clamp_min(max by (instance) (outline_ws_process_open_fds{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} socket fd share",
+          "refId": "A"
+        }
+      ],
+      "title": "Socket FD Share",
       "type": "stat"
     },
     {
@@ -6316,19 +5810,95 @@
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* socket fds$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#C15C17",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* pipe fds$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FF9830",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* anon inode fds$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#EAB839",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* regular file fds$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#1F78C1",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* other fds$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#888888",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
-        "h": 7,
-        "w": 18,
-        "x": 6,
-        "y": 127
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 138
       },
-      "id": 234,
+      "id": 31,
       "options": {
         "legend": {
           "calcs": [],
-          "displayMode": "table",
+          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
@@ -6341,102 +5911,629 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "editorMode": "code",
-          "expr": "sum by (group) (outline_ws_rust_reverse_peers{job=~\"$job\",instance=~\"$instance\"})",
-          "legendFormat": "{{group}}",
-          "range": true,
+          "expr": "label_replace((max by (instance, kind) (outline_ws_process_fd_by_type{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{kind}} fds",
           "refId": "A"
         }
       ],
-      "title": "Reverse Peers by Group",
+      "title": "FD Types",
       "type": "timeseries"
     },
     {
-      "type": "row",
-      "collapsed": false,
-      "title": "Cluster / Soft-switch",
-      "id": 300,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* tcp .*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#1F78C1",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* udp .*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#33A02C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
       "gridPos": {
-        "h": 1,
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 138
+      },
+      "id": 121,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance, source, protocol) (outline_ws_upstream_transports_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{source}} {{protocol}} active upstream",
+          "refId": "A"
+        }
+      ],
+      "title": "Upstream Transports Active by Source",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* threads$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5794F2",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 142
+      },
+      "id": 153,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance) (outline_ws_process_threads{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} threads",
+          "refId": "A"
+        }
+      ],
+      "title": "Process Threads",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* http1 active connects$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#1F78C1",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* h2 active connects$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#EAB839",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* h3 active connects$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#C15C17",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 142
+      },
+      "id": 29,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance, source, mode) (outline_ws_transport_connects_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{source}} {{mode}} active connects",
+          "refId": "A"
+        }
+      ],
+      "title": "Transport Connects Active by Source",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "cps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* success$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#33A02C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* error$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#C15C17",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* started$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#EAB839",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 142
+      },
+      "id": 32,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "expr": "label_replace((sum by (instance, source, mode, result) (rate(outline_ws_transport_connects_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{source}} {{mode}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Transport Connect Outcomes by Source",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "cps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* opened$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#33A02C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* closed$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#C15C17",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
         "w": 24,
         "x": 0,
-        "y": 134
+        "y": 146
       },
-      "panels": []
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Operator-triggered cluster soft-switch migrations, by outcome. Only fires once an operator soft switch is in effect for a `shared_resume` (cluster) group. `migrated` = the session moved to the new edge cross-node (resume redial + replay succeeded); `redial_failed` = the migration redial failed so the session falls back to an RST teardown and reconnects; `not_ws_family` = the new active uplink cannot present the group resume id (not SS/VLESS-over-WS); `no_candidate` = the new active index had no dial candidate; `same_uplink` = the switch target equals the session's current uplink. A healthy switch is dominated by `migrated`; a spike in the others means sessions are being reset rather than migrated.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 135
-      },
-      "id": 301,
+      "id": 122,
       "options": {
         "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
+          "calcs": [],
+          "displayMode": "list",
           "placement": "bottom",
           "showLegend": true
         },
@@ -6449,109 +6546,12 @@
       "pluginVersion": "12.4.2",
       "targets": [
         {
-          "editorMode": "code",
-          "expr": "sum by (group, outcome) (rate(outline_ws_rust_soft_switch_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[5m]))",
-          "legendFormat": "{{group}} {{outcome}}",
-          "range": true,
+          "expr": "label_replace((sum by (instance, source, protocol, result) (rate(outline_ws_upstream_transports_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{source}} {{protocol}} {{result}}",
           "refId": "A"
         }
       ],
-      "title": "Cluster Soft-switch Migrations by Outcome",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "description": "Resume-cache lookups when dialing an uplink wire, by transport, scope and result. `scope=group` means the resume id is shared across the group's edges (cluster `shared_resume`) so a `hit` is a cross-node-capable resume presented to whichever edge the wire landed on; `scope=uplink` is the standalone per-uplink resume. `result=hit` = a stored Session ID was presented (a resume attempt, i.e. session continuity across an edge switch); `miss` = a fresh session. On a cluster, a healthy migration shows `scope=group,result=hit` tracking the soft-switch rate.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 135
-      },
-      "id": 302,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull",
-            "max"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.2",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "sum by (transport, scope, result) (rate(outline_ws_rust_resume_lookup_total{job=~\"$job\",instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{transport}} {{scope}} {{result}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Cluster Resume Lookups (hit/miss)",
+      "title": "Upstream Transport Lifecycles by Source",
       "type": "timeseries"
     }
   ],
@@ -6589,14 +6589,14 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(outline_ws_rust_build_info,instance)",
+        "definition": "label_values(outline_ws_build_info,instance)",
         "includeAll": true,
         "label": "Instance",
         "name": "instance",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(outline_ws_rust_build_info,instance)",
+          "query": "label_values(outline_ws_build_info,instance)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -6614,14 +6614,14 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(outline_ws_rust_build_info{instance=~\"$instance\"},job)",
+        "definition": "label_values(outline_ws_build_info{instance=~\"$instance\"},job)",
         "includeAll": true,
         "label": "Job",
         "name": "job",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(outline_ws_rust_build_info{instance=~\"$instance\"},job)",
+          "query": "label_values(outline_ws_build_info{instance=~\"$instance\"},job)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -6639,14 +6639,14 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(outline_ws_rust_bytes_total{instance=~\"$instance\",job=~\"$job\"},group)",
+        "definition": "label_values(outline_ws_bytes_total{instance=~\"$instance\",job=~\"$job\"},group)",
         "includeAll": true,
         "label": "Group",
         "name": "group",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(outline_ws_rust_bytes_total{instance=~\"$instance\",job=~\"$job\"},group)",
+          "query": "label_values(outline_ws_bytes_total{instance=~\"$instance\",job=~\"$job\"},group)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,

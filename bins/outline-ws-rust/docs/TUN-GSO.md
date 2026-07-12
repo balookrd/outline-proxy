@@ -118,7 +118,7 @@ the CPU win:
 3. **Uplink (`gro`):** upload a large file through the tunnel and check its
    `sha256sum` on the far end.
 4. **UDP (`uso`):** confirm UDP is healthy (DNS resolves, QUIC / YouTube plays)
-   and run a bulk UDP transfer; the `outline_ws_rust_tun_packets_total{outcome=
+   and run a bulk UDP transfer; the `outline_ws_tun_packets_total{outcome=
    "uso_supersegment"}` counter rising means downlink datagrams are coalescing.
 5. Compare CPU and syscall rate against the disabled state at the same
    throughput: `sudo timeout 5 strace -f -c -p $(pidof outline-ws-rust)` — with

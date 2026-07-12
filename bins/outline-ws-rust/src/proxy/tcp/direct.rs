@@ -87,7 +87,7 @@ pub(super) async fn relay_tcp_direct(
             let _ = activity_c2u.try_send(());
             metrics::add_bytes(
                 "tcp",
-                "client_to_upstream",
+                "up",
                 metrics::DIRECT_GROUP_LABEL,
                 metrics::DIRECT_UPLINK_LABEL,
                 read,
@@ -115,7 +115,7 @@ pub(super) async fn relay_tcp_direct(
             let _ = activity_u2c.try_send(());
             metrics::add_bytes(
                 "tcp",
-                "upstream_to_client",
+                "down",
                 metrics::DIRECT_GROUP_LABEL,
                 metrics::DIRECT_UPLINK_LABEL,
                 read,

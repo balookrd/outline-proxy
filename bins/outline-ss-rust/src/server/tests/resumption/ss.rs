@@ -320,10 +320,10 @@ async fn ss_resume_after_ttl_expiry_falls_through_to_fresh() -> Result<()> {
 }
 
 /// Reproducer for the production observation that
-/// `outline_ss_tcp_payload_bytes_total{direction="target_to_client"}`
+/// `outline_ss_tcp_payload_bytes_total{direction="down"}`
 /// stays at zero for SS-over-WS HTTP/1 sessions even when significant
 /// upstream→client traffic flows (visible in `outline_ss_websocket_bytes_total
-/// {direction="out"}`). On http3 sessions in production both directions
+/// {direction="down"}`). On http3 sessions in production both directions
 /// register correctly.
 ///
 /// The test exercises the simplest possible round-trip (echo target,
@@ -352,7 +352,7 @@ async fn ss_h1_round_trip_increments_target_to_client_payload_counter() -> Resul
     let target_line = rendered.lines().find(|line| {
         line.starts_with("outline_ss_tcp_payload_bytes_total")
             && line.contains(r#"protocol="http1""#)
-            && line.contains(r#"direction="target_to_client""#)
+            && line.contains(r#"direction="down""#)
             && line.contains(r#"app_protocol="shadowsocks""#)
     });
     let target_line = target_line.unwrap_or_else(|| {
@@ -373,7 +373,7 @@ async fn ss_h1_round_trip_increments_target_to_client_payload_counter() -> Resul
     let ws_out_bytes = sum_metric(&rendered, |line| {
         line.starts_with("outline_ss_websocket_bytes_total")
             && line.contains(r#"transport="tcp""#)
-            && line.contains(r#"direction="out""#)
+            && line.contains(r#"direction="down""#)
             && line.contains(r#"app_protocol="shadowsocks""#)
             && line.contains(r#"protocol="http1""#)
     });
@@ -391,7 +391,7 @@ async fn ss_h1_round_trip_increments_target_to_client_payload_counter() -> Resul
     let aead_overhead = sum_metric(&rendered, |line| {
         line.starts_with("outline_ss_tcp_aead_overhead_bytes_total")
             && line.contains(r#"protocol="http1""#)
-            && line.contains(r#"direction="target_to_client""#)
+            && line.contains(r#"direction="down""#)
             && line.contains(r#"app_protocol="shadowsocks""#)
     });
     assert_eq!(
@@ -412,7 +412,7 @@ async fn ss_h1_round_trip_increments_target_to_client_payload_counter() -> Resul
 /// (forces resume), then drive a real request/response so upstream has
 /// data to send back. After the second round-trip the
 /// `target_to_client` counter must still be > 0 and within AEAD-framing
-/// distance of `ws_bytes_total{direction="out"}`.
+/// distance of `ws_bytes_total{direction="down"}`.
 #[tokio::test]
 async fn ss_h1_park_resume_round_trip_keeps_target_to_client_in_sync_with_ws_out() -> Result<()> {
     let (target_addr, _accepts) = spawn_echo_target().await?;
@@ -455,13 +455,13 @@ async fn ss_h1_park_resume_round_trip_keeps_target_to_client_in_sync_with_ws_out
     let target_to_client = sum_metric(&rendered, |line| {
         line.starts_with("outline_ss_tcp_payload_bytes_total")
             && line.contains(r#"protocol="http1""#)
-            && line.contains(r#"direction="target_to_client""#)
+            && line.contains(r#"direction="down""#)
             && line.contains(r#"app_protocol="shadowsocks""#)
     });
     let ws_out = sum_metric(&rendered, |line| {
         line.starts_with("outline_ss_websocket_bytes_total")
             && line.contains(r#"transport="tcp""#)
-            && line.contains(r#"direction="out""#)
+            && line.contains(r#"direction="down""#)
             && line.contains(r#"protocol="http1""#)
             && line.contains(r#"app_protocol="shadowsocks""#)
     });
@@ -480,7 +480,7 @@ async fn ss_h1_park_resume_round_trip_keeps_target_to_client_in_sync_with_ws_out
     let aead_overhead = sum_metric(&rendered, |line| {
         line.starts_with("outline_ss_tcp_aead_overhead_bytes_total")
             && line.contains(r#"protocol="http1""#)
-            && line.contains(r#"direction="target_to_client""#)
+            && line.contains(r#"direction="down""#)
             && line.contains(r#"app_protocol="shadowsocks""#)
     });
     assert_eq!(
