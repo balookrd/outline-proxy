@@ -149,8 +149,8 @@ SS-UDP и VLESS-UDP предъявляют групповой shard-несущи
 - **Выживание:** установи сессию (идёт загрузка), принудительно переведи клиента
   на другую ноду (§5c делает это детерминированным — убей активный uplink), и
   загрузка продолжается.
-- **Метрики:** на `/metrics` каждой ноды (и в Grafana-дашборде ss-rust, панели
-  *Mesh Relay Opens* / *Active Mesh Relays*):
+- **Метрики:** на `/metrics` каждой ноды (и в Grafana-дашборде ss-rust, ряд
+  *Cluster Mesh*):
   - рост `outline_ss_mesh_relay_opened_total{outcome="ok"}` ⇒ edge'ы релеят
     cross-shard сессии на свои home; рост `{outcome="fail"}` ⇒ пир недостижим
     (нода упала, mesh UDP-порт закрыт или несовпадение PSK), и edge деградирует
@@ -160,6 +160,25 @@ SS-UDP и VLESS-UDP предъявляют групповой shard-несущи
     требованию, не держатся). Плюс смотри `outline_ss_orphan_resume_hit_total`
     на home: растёт каждый раз, когда home переприкрепляет припаркованный
     upstream для клиента, пришедшего через другой edge.
+  - **Кластерный трафик** (сколько данных реально идёт через mesh, а не только
+    сколько relay открыто): `outline_ss_mesh_bytes_total{role,direction,transport}`
+    и `outline_ss_mesh_datagrams_total{role,direction}`. `role="edge"` — трафик,
+    который эта нода форвардит в кластер; `role="home"` — который она обслуживает
+    для чужих edge'ей: одна и та же relayed-сессия, посчитанная с двух концов.
+    Ноль на обоих = трафик через mesh не идёт (все сессии локальны). Панели
+    *Mesh Throughput — edge/home* и *Mesh Datagram Rate*.
+  - `outline_ss_mesh_throttle_hints_sent_total` /
+    `outline_ss_mesh_throttle_hints_received_total{outcome}` /
+    `outline_ss_mesh_control_datagram_errors_total` — throttle-сигналинг edge→home;
+    устойчивый `received{outcome="dropped"}` или `control_datagram_errors` ⇒
+    расхождение конфига/версий между edge и home. Панель *Mesh Throttle Hints &
+    Control Errors*.
+  - На **клиенте** (дашборд ws-rust, ряд *Cluster / Soft-switch*):
+    `outline_ws_rust_soft_switch_total{outcome}` — операторские soft-switch
+    миграции, на здоровом переключении доминирует `migrated`; и
+    `outline_ws_rust_resume_lookup_total{transport,scope,result}` —
+    `scope="group",result="hit"` = cross-node-способный resume, предъявленный
+    новому edge.
 - **⚠️ Целостность на боевом трафике:** e2e-тесты покрывают data-plane, но не
   боевой трафик. Скачай большой файл через кластер и **сверь sha256** с
   оригиналом (риск тихой порчи / переупорядочивания, как с TUN pump). Держи

@@ -740,18 +740,24 @@ async fn try_soft_switch_migrate(
     }
     let new_index = snapshot.tcp_for(strict_global)?;
     if new_index == current_index {
+        metrics::record_soft_switch(uplinks.group_name(), "same_uplink");
         return None;
     }
     // Resolve the candidate the manager just made active. `tcp_candidates`
     // returns the group's dial-ordered candidates; pick the one at `new_index`.
-    let new_candidate = uplinks
+    let Some(new_candidate) = uplinks
         .tcp_candidates(target)
         .await
         .into_iter()
-        .find(|c| c.index == new_index)?;
+        .find(|c| c.index == new_index)
+    else {
+        metrics::record_soft_switch(uplinks.group_name(), "no_candidate");
+        return None;
+    };
     // Resume-based migration only works on WS-family uplinks (SS-WS / VLESS-WS);
     // a direct-socket or raw-QUIC active cannot present the group resume id.
     if !matches!(new_candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
+        metrics::record_soft_switch(uplinks.group_name(), "not_ws_family");
         return None;
     }
     let new_name: Arc<str> = Arc::from(new_candidate.uplink.name.as_str());
@@ -771,11 +777,15 @@ async fn try_soft_switch_migrate(
     {
         Ok((connected, downlink_replay)) => {
             // The session moved from one uplink to another — record it as a
-            // failover so the dashboard's from→to panel reflects the migration.
+            // failover so the dashboard's from→to panel reflects the migration,
+            // and as a cluster soft-switch so the migration is separable from an
+            // ordinary health failover.
             metrics::record_failover("tcp", uplinks.group_name(), current_name, &new_name);
+            metrics::record_soft_switch(uplinks.group_name(), "migrated");
             Some((new_candidate, connected, downlink_replay))
         },
         Err(error) => {
+            metrics::record_soft_switch(uplinks.group_name(), "redial_failed");
             warn!(
                 from = %current_name,
                 to = %new_name,

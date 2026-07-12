@@ -225,6 +225,36 @@ pub(super) fn register_descriptions() {
         "Relayed sessions this home node is currently serving over the cluster mesh."
     );
     describe_counter!(
+        "outline_ss_mesh_bytes_total",
+        "Still-encrypted application bytes moved over the cluster mesh, by role \
+         (edge = this node forwarding a client to a foreign home; home = this node \
+         serving a relay for a foreign edge), direction (up = toward home/target, \
+         down = toward client) and transport. Edge and home count the same relayed \
+         session from opposite ends: a node's edge series is the traffic it sends \
+         into the cluster, its home series the traffic it receives from other edges."
+    );
+    describe_counter!(
+        "outline_ss_mesh_datagrams_total",
+        "SS-UDP datagrams moved over the cluster mesh, by role and direction. \
+         Pairs with the transport=\"udp\" slice of outline_ss_mesh_bytes_total to \
+         give the mean relayed datagram size."
+    );
+    describe_counter!(
+        "outline_ss_mesh_throttle_hints_sent_total",
+        "THROTTLE_HINT control datagrams an edge sent to a home after detecting a \
+         stalled (throttled) client segment on a relayed carrier."
+    );
+    describe_counter!(
+        "outline_ss_mesh_throttle_hints_received_total",
+        "THROTTLE_HINT control datagrams a home received from edges, by outcome \
+         (delivered = routed to a live relay monitor; dropped = no live monitor for \
+         the session id, e.g. torn down or unknown)."
+    );
+    describe_counter!(
+        "outline_ss_mesh_control_datagram_errors_total",
+        "Malformed mesh control datagrams a home dropped because they failed to parse."
+    );
+    describe_counter!(
         "outline_ss_orphan_downlink_replay_bytes_total",
         "Plaintext bytes replayed to resuming clients via the v2 Symmetric \
          Downlink Replay protocol (`ORDR` frame payload), by transport."

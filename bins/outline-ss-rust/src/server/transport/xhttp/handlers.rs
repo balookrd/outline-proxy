@@ -776,7 +776,15 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 let result = match relay {
                     Some((pooled, budget, detect)) => {
                         let (send, recv, _permit) = pooled.into_parts();
-                        edge_relay::<XhttpDuplex>(socket, send, recv, budget, detect).await
+                        edge_relay::<XhttpDuplex>(
+                            socket,
+                            send,
+                            recv,
+                            budget,
+                            detect,
+                            Arc::clone(&server.metrics),
+                        )
+                        .await
                     },
                     None => {
                         // Served locally (this node is the home): direct carrier,
@@ -821,7 +829,15 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 let result = match relay {
                     Some((pooled, budget, detect)) => {
                         let (send, recv, _permit) = pooled.into_parts();
-                        edge_relay::<XhttpDuplex>(socket, send, recv, budget, detect).await
+                        edge_relay::<XhttpDuplex>(
+                            socket,
+                            send,
+                            recv,
+                            budget,
+                            detect,
+                            Arc::clone(&server.metrics),
+                        )
+                        .await
                     },
                     None => {
                         // Served locally (this node is the home): direct carrier,
@@ -872,7 +888,15 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 let result = match relay {
                     Some((pooled, budget, detect)) => {
                         let (send, recv, _permit) = pooled.into_parts();
-                        edge_relay_udp::<XhttpDuplex>(socket, send, recv, budget, detect).await
+                        edge_relay_udp::<XhttpDuplex>(
+                            socket,
+                            send,
+                            recv,
+                            budget,
+                            detect,
+                            Arc::clone(&server.metrics),
+                        )
+                        .await
                     },
                     // Served locally (this node is the home): direct carrier,
                     // no injected monitor — local detection runs.

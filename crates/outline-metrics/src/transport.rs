@@ -211,6 +211,23 @@ pub fn record_mid_session_retry(
         .inc();
 }
 
+/// Counts one operator cluster soft-switch migration attempt for `group`, by
+/// `outcome` (`migrated` / `redial_failed` / `not_ws_family` / `no_candidate` /
+/// `same_uplink`). See `outline_ws_rust_soft_switch_total`.
+pub fn record_soft_switch(group: &str, outcome: &'static str) {
+    METRICS.soft_switch_total.with_label_values(&[group, outcome]).inc();
+}
+
+/// Counts one resume-cache lookup at an uplink dial, by `transport`
+/// (`tcp`/`udp`), `scope` (`group` for cluster `shared_resume`, else `uplink`)
+/// and `result` (`hit`/`miss`). See `outline_ws_rust_resume_lookup_total`.
+pub fn record_resume_lookup(transport: &'static str, scope: &'static str, result: &'static str) {
+    METRICS
+        .resume_lookup_total
+        .with_label_values(&[transport, scope, result])
+        .inc();
+}
+
 pub fn record_probe(
     group: &str,
     uplink: &str,

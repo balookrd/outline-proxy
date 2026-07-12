@@ -163,6 +163,11 @@ async fn dial_udp_fallback(
             // fallback dial.
             let resume_key = uplinks.resume_cache_key_for(&parent.uplink.name, "udp");
             let resume_request = global_resume_cache().get(&resume_key);
+            metrics::record_resume_lookup(
+                "udp",
+                if uplinks.shared_resume() { "group" } else { "uplink" },
+                if resume_request.is_some() { "hit" } else { "miss" },
+            );
             let (transport, issued, downgraded_from) = UdpWsTransport::connect_with_resume(
                 cache,
                 url,
