@@ -133,6 +133,11 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
 
         let write_tx_writer = write_tx.clone();
         let writer = async move {
+            // Downlink counters cached across responses. Each `UdpResponse`
+            // carries ptr-stable `(group, uplink)` `Arc`s from its group's
+            // downlink task; a failover swaps the uplink `Arc`, re-resolving the
+            // handle onto the new series via `FailoverCounter`.
+            let mut down_counters = metrics::FailoverCounter::new();
             while let Some(response) = responses_rx.recv().await {
                 write_udp_tcp_response(
                     &write_tx_writer,
@@ -141,14 +146,11 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
                     "upstream UDP-in-TCP response",
                 )
                 .await?;
-                metrics::add_udp_datagram("down", &response.group_name, &response.uplink_name);
-                metrics::add_bytes(
-                    "udp",
-                    "down",
-                    &response.group_name,
-                    &response.uplink_name,
-                    response.payload.len(),
-                );
+                down_counters
+                    .get(&response.group_name, &response.uplink_name, |group, uplink| {
+                        metrics::udp_flow_counters("down", group, uplink)
+                    })
+                    .record(response.payload.len());
             }
             Ok::<(), anyhow::Error>(())
         };
@@ -158,6 +160,8 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
             let Some(sock) = direct_socket else {
                 return std::future::pending::<Result<(), anyhow::Error>>().await;
             };
+            // Direct route: constant `(direct, direct)` labels, resolve once.
+            let down_direct = metrics::direct_udp_counters("down");
             loop {
                 // Allocate the receive buffer on demand so an idle association
                 // holds no per-socket buffer between datagrams.
@@ -177,18 +181,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
                     "direct UDP-in-TCP response",
                 )
                 .await?;
-                metrics::add_udp_datagram(
-                    "down",
-                    metrics::DIRECT_GROUP_LABEL,
-                    metrics::DIRECT_UPLINK_LABEL,
-                );
-                metrics::add_bytes(
-                    "udp",
-                    "down",
-                    metrics::DIRECT_GROUP_LABEL,
-                    metrics::DIRECT_UPLINK_LABEL,
-                    metric_payload_len,
-                );
+                down_direct.record(metric_payload_len);
             }
             #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())

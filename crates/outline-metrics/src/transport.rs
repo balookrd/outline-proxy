@@ -1,4 +1,6 @@
 use super::METRICS;
+use prometheus::IntCounter;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 pub const DIRECT_UPLINK_LABEL: &str = "direct";
@@ -96,6 +98,116 @@ pub fn add_udp_datagram(direction: &'static str, group: &str, uplink: &str) {
         .udp_datagrams_total
         .with_label_values(&[direction, group, uplink])
         .inc();
+}
+
+// ── Pre-resolved byte / datagram counter handles ───────────────────────────
+//
+// `add_bytes` / `add_udp_datagram` hash their label tuple and probe the
+// registry on every chunk / datagram. The relay hot paths resolve the concrete
+// `IntCounter` once (per flow / per task / per uplink) via the handles below
+// and then only touch the atomic, dropping the per-frame label hashing that
+// the CPU audit flagged as the top data-plane cost. See
+// [`crate::FailoverCounter`] for the mid-flow failover re-resolve invariant and
+// the counter-vs-histogram caching caveat.
+
+/// Pre-resolved [`outline_ws_bytes_total`] handle for one
+/// `(protocol, direction, group, uplink)` series. Resolve once with
+/// [`flow_bytes_counter`] and call [`add`](Self::add) on the hot loop; the
+/// exported value is identical to the per-call [`add_bytes`] path.
+///
+/// [`outline_ws_bytes_total`]: crate
+#[derive(Clone)]
+pub struct FlowBytesCounter(IntCounter);
+
+impl FlowBytesCounter {
+    /// Adds `bytes` to the resolved counter (saturating at `u64::MAX`), exactly
+    /// as [`add_bytes`] does.
+    #[inline]
+    pub fn add(&self, bytes: usize) {
+        self.0.inc_by(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+}
+
+/// Resolves the [`FlowBytesCounter`] for one label tuple. The series and value
+/// are identical to [`add_bytes`]; this only pre-pays the registry lookup so a
+/// hot loop can cache the handle.
+pub fn flow_bytes_counter(
+    protocol: &str,
+    direction: &str,
+    group: &str,
+    uplink: &str,
+) -> FlowBytesCounter {
+    FlowBytesCounter(
+        METRICS
+            .bytes_total
+            .with_label_values(&[protocol, direction, group, uplink]),
+    )
+}
+
+/// Pre-resolved datagram + byte counter pair for one UDP `(direction, group,
+/// uplink)`. Every UDP relay site bumps both `outline_ws_udp_datagrams_total`
+/// and `outline_ws_bytes_total{protocol="udp"}`, so they are bundled to resolve
+/// together and stay in lock-step. Both are `IntCounter`s (cache-safe).
+#[derive(Clone)]
+pub struct UdpFlowCounters {
+    datagrams: IntCounter,
+    bytes: IntCounter,
+}
+
+impl UdpFlowCounters {
+    /// Records one datagram carrying `bytes` payload — mirrors
+    /// [`add_udp_datagram`] plus [`add_bytes`]`("udp", …)` in a single call.
+    #[inline]
+    pub fn record(&self, bytes: usize) {
+        self.datagrams.inc();
+        self.bytes.inc_by(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+}
+
+/// Resolves the [`UdpFlowCounters`] pair for one UDP label tuple. Equivalent to
+/// resolving `udp_datagrams_total{direction,group,uplink}` and
+/// `bytes_total{protocol="udp",direction,group,uplink}`.
+pub fn udp_flow_counters(direction: &str, group: &str, uplink: &str) -> UdpFlowCounters {
+    UdpFlowCounters {
+        datagrams: METRICS
+            .udp_datagrams_total
+            .with_label_values(&[direction, group, uplink]),
+        bytes: METRICS
+            .bytes_total
+            .with_label_values(&["udp", direction, group, uplink]),
+    }
+}
+
+// Direct-route traffic carries the constant `(group, uplink) = (direct,
+// direct)` labels, so its handles are process-global. Back each of the four
+// cells with a `LazyLock` so a per-datagram direct read-loop (which has no
+// per-task local to cache in) resolves the handle exactly once.
+static DIRECT_TCP_UP: LazyLock<FlowBytesCounter> =
+    LazyLock::new(|| flow_bytes_counter("tcp", "up", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL));
+static DIRECT_TCP_DOWN: LazyLock<FlowBytesCounter> =
+    LazyLock::new(|| flow_bytes_counter("tcp", "down", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL));
+static DIRECT_UDP_UP: LazyLock<UdpFlowCounters> =
+    LazyLock::new(|| udp_flow_counters("up", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL));
+static DIRECT_UDP_DOWN: LazyLock<UdpFlowCounters> =
+    LazyLock::new(|| udp_flow_counters("down", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL));
+
+/// Cached [`FlowBytesCounter`] for direct-route TCP traffic. `direction` is
+/// `"up"` (client→target) or `"down"` (target→client); any other value maps to
+/// `"down"`.
+pub fn direct_tcp_bytes(direction: &str) -> &'static FlowBytesCounter {
+    match direction {
+        "up" => &DIRECT_TCP_UP,
+        _ => &DIRECT_TCP_DOWN,
+    }
+}
+
+/// Cached [`UdpFlowCounters`] for direct-route UDP traffic. `direction` is
+/// `"up"` / `"down"` as in [`direct_tcp_bytes`].
+pub fn direct_udp_counters(direction: &str) -> &'static UdpFlowCounters {
+    match direction {
+        "up" => &DIRECT_UDP_UP,
+        _ => &DIRECT_UDP_DOWN,
+    }
 }
 
 pub fn record_dropped_oversized_udp_packet(direction: &'static str, cause: &'static str) {

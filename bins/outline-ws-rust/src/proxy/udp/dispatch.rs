@@ -59,14 +59,7 @@ pub(super) async fn send_udp_direct(
     sock.send_to(payload, target_addr)
         .await
         .context("direct UDP send failed")?;
-    metrics::add_udp_datagram("up", metrics::DIRECT_GROUP_LABEL, metrics::DIRECT_UPLINK_LABEL);
-    metrics::add_bytes(
-        "udp",
-        "up",
-        metrics::DIRECT_GROUP_LABEL,
-        metrics::DIRECT_UPLINK_LABEL,
-        metric_payload_len,
-    );
+    metrics::direct_udp_counters("up").record(metric_payload_len);
     Ok(())
 }
 

@@ -4,7 +4,6 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::wire::{ip_family_from_version, ip_to_target};
-use outline_metrics as metrics;
 use outline_uplink::{TransportKind, UplinkManager};
 use socks5_proto::TargetAddr;
 
@@ -50,14 +49,6 @@ fn build_udp_payload(target: &TargetAddr, payload: &[u8]) -> Result<Vec<u8>> {
     let mut out = target.to_wire_bytes()?;
     out.extend_from_slice(payload);
     Ok(out)
-}
-
-/// Record a UDP datagram and its byte count in one call. Every site that
-/// emits `add_udp_datagram` also emits the matching `add_bytes("udp", ...)`,
-/// so collapsing them removes the risk of one getting out of sync.
-pub(super) fn record_udp_xfer(direction: &'static str, group: &str, uplink: &str, bytes: usize) {
-    metrics::add_udp_datagram(direction, group, uplink);
-    metrics::add_bytes("udp", direction, group, uplink, bytes);
 }
 
 /// Returns `true` when a flow bound to `flow_index` must be torn down
