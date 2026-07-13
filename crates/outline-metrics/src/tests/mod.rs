@@ -4,6 +4,9 @@ use crate::snapshot_types::{UplinkManagerSnapshot, UplinkSnapshot};
 use parking_lot::{Mutex, MutexGuard};
 use std::sync::LazyLock;
 
+mod counter_cache;
+mod transport;
+
 static METRICS_TEST_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn test_guard() -> MutexGuard<'static, ()> {

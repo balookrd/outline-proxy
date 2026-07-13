@@ -35,6 +35,12 @@ impl TunTcpEngine {
     ) {
         let engine = self.clone();
         tokio::spawn(async move {
+            // Downlink byte counter, cached across reads. `key_group_and_uplink`
+            // hands back ptr-stable `Arc<str>` clones for the flow's group and
+            // uplink; a mid-flow failover swaps `uplink_name` for a fresh `Arc`,
+            // which re-resolves the handle onto the new series (old series stops
+            // growing) via the `Arc::ptr_eq` check inside `FailoverCounter`.
+            let mut down_bytes = metrics::FailoverCounter::new();
             loop {
                 let manager = { flow.lock().await.routing.manager.clone() };
                 if manager.strict_active_uplink_for(TransportKind::Tcp) {
@@ -165,13 +171,11 @@ impl TunTcpEngine {
                                     engine.close_flow(&key, "write_tun_error").await;
                                     return;
                                 }
-                                metrics::add_bytes(
-                                    "tcp",
-                                    "down",
-                                    &group_name,
-                                    &uplink_name,
-                                    chunk_len,
-                                );
+                                down_bytes
+                                    .get(&group_name, &uplink_name, |group, uplink| {
+                                        metrics::flow_bytes_counter("tcp", "down", group, uplink)
+                                    })
+                                    .add(chunk_len);
                             },
                             Err(error) => {
                                 warn!(error = %format!("{error:#}"), "failed to build TUN TCP data packet");

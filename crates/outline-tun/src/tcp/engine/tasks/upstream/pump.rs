@@ -48,6 +48,10 @@ impl TunTcpEngine {
         mut close_rx: watch::Receiver<bool>,
     ) {
         let engine = self.clone();
+        // The pump owns a fixed `(group, uplink)` for its whole lifetime (the
+        // task is respawned on failover), so resolve the uplink byte counter
+        // once here instead of hashing the label tuple on every batch.
+        let up_bytes = metrics::flow_bytes_counter("tcp", "up", &group_name, &uplink_name);
         tokio::spawn(async move {
             loop {
                 // Snapshot whether we are currently advertising a *closed*
@@ -121,7 +125,7 @@ impl TunTcpEngine {
                             .await;
                         return;
                     }
-                    metrics::add_bytes("tcp", "up", &group_name, &uplink_name, sent_bytes);
+                    up_bytes.add(sent_bytes);
                 }
 
                 // Buffer drained. If the client half-closed, the flush is

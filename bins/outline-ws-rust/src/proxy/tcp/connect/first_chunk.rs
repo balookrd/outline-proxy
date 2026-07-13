@@ -47,6 +47,10 @@ pub(super) async fn await_first_upstream_chunk(
     let mut attempt_timeout = ctx.initial_attempt_timeout;
     let mut deadline = tokio::time::Instant::now() + attempt_timeout;
 
+    // The uplink is fixed for this attempt, so resolve the uplink byte counter
+    // once rather than hashing the label tuple on every forwarded client chunk.
+    let up_bytes = metrics::flow_bytes_counter("tcp", "up", ctx.uplinks.group_name(), &active.name);
+
     loop {
         if *client_half_closed {
             // Chunk 0 is read once per connection; the small `to_vec` keeps this
@@ -83,13 +87,7 @@ pub(super) async fn await_first_upstream_chunk(
                             .send_chunk(&rbuf[..n])
                             .await
                             .context("uplink write failed")?;
-                        metrics::add_bytes(
-                            "tcp",
-                            "up",
-                            ctx.uplinks.group_name(),
-                            &active.name,
-                            n,
-                        );
+                        up_bytes.add(n);
                         // Do not treat client→upstream bytes during phase 1
                         // as proof that the uplink is healthy yet.  A broken
                         // uplink can still accept writes and then reset or
