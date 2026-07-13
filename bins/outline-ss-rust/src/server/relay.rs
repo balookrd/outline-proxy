@@ -102,7 +102,11 @@ where
     let user_counters = metrics.user_counters(&user_id);
     let target_to_client = user_counters.tcp_out(app_protocol, protocol);
     let aead_overhead_out = user_counters.tcp_aead_out(app_protocol, protocol);
-    let mut out_buf = BytesMut::with_capacity(MAX_CHUNK_SIZE);
+    // Reused per-connection ciphertext buffer. Empty (and unallocated) until
+    // the first ready read, so a parked/idle session holds nothing; the first
+    // `encrypt_chunk` reserves exactly what it needs, and `split()` reallocs
+    // periodically anyway, so an upfront reserve buys nothing in steady state.
+    let mut out_buf = BytesMut::new();
     let mut saw_payload = false;
     loop {
         // Cancel arm: when no cancel is registered we substitute a future
