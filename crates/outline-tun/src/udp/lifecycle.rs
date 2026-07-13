@@ -296,6 +296,13 @@ impl TunUdpEngine {
                 manager.clone(),
             );
 
+            // Uplink datagram+byte counters, cached across the drain. The group
+            // is fixed for the flow; a mid-flow failover swaps `uplink_name` for
+            // a fresh `Arc` (below), which re-resolves the handle onto the new
+            // uplink's series via `FailoverCounter`'s `Arc::ptr_eq` check.
+            let group_label: Arc<str> = Arc::from(manager.group_name());
+            let mut up_counters = metrics::FailoverCounter::new();
+
             // Drain the outbound queue. `recv` yields `None` when the flow
             // record (holding the sender) is removed — the flow's teardown
             // signal — at which point the reader and transport drop here.
@@ -322,12 +329,11 @@ impl TunUdpEngine {
                     Err(_) => continue,
                 };
                 match transport.send_packet(&payload).await {
-                    Ok(()) => super::record_udp_xfer(
-                        "up",
-                        manager.group_name(),
-                        &uplink_name,
-                        payload.len(),
-                    ),
+                    Ok(()) => up_counters
+                        .get(&group_label, &uplink_name, |group, uplink| {
+                            metrics::udp_flow_counters("up", group, uplink)
+                        })
+                        .record(payload.len()),
                     Err(error) if is_dropped_oversized_udp_error(&error) => {
                         engine.emit_pmtud_after_oversize_drop(&key, &error).await;
                     },
@@ -369,12 +375,14 @@ impl TunUdpEngine {
                                 if let Err(retry_error) = transport.send_packet(&payload).await {
                                     warn!(flow_id, error = %format!("{retry_error:#}"), "TUN UDP resend after reconnect failed");
                                 } else {
-                                    super::record_udp_xfer(
-                                        "up",
-                                        manager.group_name(),
-                                        &uplink_name,
-                                        payload.len(),
-                                    );
+                                    // `uplink_name` was just swapped to the
+                                    // replacement's `Arc`, so this re-resolves
+                                    // onto the new uplink's series.
+                                    up_counters
+                                        .get(&group_label, &uplink_name, |group, uplink| {
+                                            metrics::udp_flow_counters("up", group, uplink)
+                                        })
+                                        .record(payload.len());
                                 }
                             },
                             Err(error) => {
@@ -425,6 +433,12 @@ impl TunUdpEngine {
     ) -> AbortOnDrop {
         let engine = self.clone();
         AbortOnDrop::new(tokio::spawn(async move {
+            // Downlink datagram+byte counters, cached across reads. The group is
+            // fixed for the flow; `uplink_name` (re-read from the flow record
+            // each iteration) swaps to a fresh `Arc` on failover, re-resolving
+            // the handle onto the new series via `FailoverCounter`.
+            let group_label: Arc<str> = Arc::from(manager.group_name());
+            let mut down_counters = metrics::FailoverCounter::new();
             let result = async {
                 let mut carried_over: Option<Bytes> = None;
                 loop {
@@ -486,12 +500,11 @@ impl TunUdpEngine {
                             None => Arc::from("unknown"),
                         }
                     };
-                    super::record_udp_xfer(
-                        "down",
-                        manager.group_name(),
-                        &uplink_name,
-                        total_payload,
-                    );
+                    down_counters
+                        .get(&group_label, &uplink_name, |group, uplink| {
+                            metrics::udp_flow_counters("down", group, uplink)
+                        })
+                        .record(total_payload);
 
                     let batch_len = batch.len();
                     if batch_len > 1 {

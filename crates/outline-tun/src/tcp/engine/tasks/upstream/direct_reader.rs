@@ -25,6 +25,9 @@ impl TunTcpEngine {
         mut close_rx: watch::Receiver<bool>,
     ) {
         let engine = self.clone();
+        // Direct flows carry the constant `(direct, direct)` labels, so the
+        // downlink byte counter is process-global — resolve it once.
+        let down_bytes = metrics::direct_tcp_bytes("down");
         tokio::spawn(async move {
             loop {
                 // Wait for readability (or close) without holding a receive
@@ -110,13 +113,7 @@ impl TunTcpEngine {
                                     engine.close_flow(&key, "write_tun_error").await;
                                     return;
                                 }
-                                metrics::add_bytes(
-                                    "tcp",
-                                    "down",
-                                    metrics::DIRECT_GROUP_LABEL,
-                                    metrics::DIRECT_UPLINK_LABEL,
-                                    n,
-                                );
+                                down_bytes.add(n);
                             },
                             Err(error) => {
                                 warn!(

@@ -31,6 +31,7 @@ async fn replacing_active_udp_transport_closes_previous_reader() {
     let active_transport = ArcSwap::from_pointee(ActiveUdpTransport {
         index: 1,
         uplink_name: Arc::from("old"),
+        up_counters: metrics::udp_flow_counters("up", "test", "old"),
         transport: Arc::clone(&old_transport),
     });
 
@@ -43,6 +44,7 @@ async fn replacing_active_udp_transport_closes_previous_reader() {
         ActiveUdpTransport {
             index: 2,
             uplink_name: Arc::from("new"),
+            up_counters: metrics::udp_flow_counters("up", "test", "new"),
             transport: Arc::clone(&new_transport),
         },
     )

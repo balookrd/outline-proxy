@@ -163,6 +163,9 @@ pub(in crate::proxy) async fn serve_udp_associate(
         let client_udp_addr_writer = Arc::clone(&client_udp_addr);
         let socket_writer = Arc::clone(&udp_socket);
         let writer = async move {
+            // Downlink counters cached across responses; a failover swaps the
+            // response's uplink `Arc`, re-resolving onto the new series.
+            let mut down_counters = metrics::FailoverCounter::new();
             while let Some(response) = responses_rx.recv().await {
                 let client_addr = *client_udp_addr_writer.get().ok_or_else(|| {
                     anyhow!("received UDP response before client sent any packet")
@@ -179,18 +182,11 @@ pub(in crate::proxy) async fn serve_udp_associate(
                     metrics::record_dropped_oversized_udp_packet("down", "socks_relay");
                     continue;
                 }
-                metrics::add_udp_datagram(
-                    "down",
-                    &response.group_name,
-                    &response.uplink_name,
-                );
-                metrics::add_bytes(
-                    "udp",
-                    "down",
-                    &response.group_name,
-                    &response.uplink_name,
-                    response.payload.len(),
-                );
+                down_counters
+                    .get(&response.group_name, &response.uplink_name, |group, uplink| {
+                        metrics::udp_flow_counters("down", group, uplink)
+                    })
+                    .record(response.payload.len());
                 socket_writer
                     .send_to(&packet, client_addr)
                     .await
@@ -220,6 +216,8 @@ pub(in crate::proxy) async fn serve_udp_associate(
             let Some(sock) = direct_socket else {
                 return std::future::pending::<Result<(), anyhow::Error>>().await;
             };
+            // Direct route: constant `(direct, direct)` labels, resolve once.
+            let down_direct = metrics::direct_udp_counters("down");
             loop {
                 // Allocate the receive buffer on demand so an idle association
                 // holds no per-socket buffer between datagrams.
@@ -251,18 +249,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                     .send_to(&packet, client_addr)
                     .await
                     .context("direct UDP relay send failed")?;
-                metrics::add_udp_datagram(
-                    "down",
-                    metrics::DIRECT_GROUP_LABEL,
-                    metrics::DIRECT_UPLINK_LABEL,
-                );
-                metrics::add_bytes(
-                    "udp",
-                    "down",
-                    metrics::DIRECT_GROUP_LABEL,
-                    metrics::DIRECT_UPLINK_LABEL,
-                    metric_payload_len,
-                );
+                down_direct.record(metric_payload_len);
             }
             #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())

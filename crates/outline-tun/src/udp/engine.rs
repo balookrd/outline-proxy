@@ -136,12 +136,7 @@ impl TunUdpEngine {
                 .send_to(&packet.payload, target_addr)
                 .await
                 .context("direct UDP send failed")?;
-            super::record_udp_xfer(
-                "up",
-                metrics::DIRECT_GROUP_LABEL,
-                metrics::DIRECT_UPLINK_LABEL,
-                packet.payload.len(),
-            );
+            metrics::direct_udp_counters("up").record(packet.payload.len());
             return Ok(());
         }
 
@@ -378,6 +373,9 @@ impl TunUdpEngine {
         let writer = self.inner.writer.clone();
         let reader_key = key.clone();
         let direct_flows = Arc::clone(&self.inner.direct_flows);
+        // Direct flows carry constant `(direct, direct)` labels; resolve the
+        // downlink datagram+byte counters once for the reader's lifetime.
+        let down_counters = metrics::direct_udp_counters("down");
         let reader = AbortOnDrop::new(tokio::spawn(async move {
             loop {
                 // Park on readiness without holding a receive buffer, so an
@@ -407,12 +405,7 @@ impl TunUdpEngine {
                     Ok(p) => p,
                     Err(_) => continue,
                 };
-                super::record_udp_xfer(
-                    "down",
-                    metrics::DIRECT_GROUP_LABEL,
-                    metrics::DIRECT_UPLINK_LABEL,
-                    len,
-                );
+                down_counters.record(len);
                 if writer.write_packet(&response_packet).await.is_err() {
                     break;
                 }
@@ -461,12 +454,7 @@ impl TunUdpEngine {
             self.enqueue_close_direct(flow, "evicted");
         }
 
-        super::record_udp_xfer(
-            "up",
-            metrics::DIRECT_GROUP_LABEL,
-            metrics::DIRECT_UPLINK_LABEL,
-            packet.payload.len(),
-        );
+        metrics::direct_udp_counters("up").record(packet.payload.len());
         metrics::record_tun_flow_created(metrics::DIRECT_GROUP_LABEL, metrics::DIRECT_UPLINK_LABEL);
         info!(
             flow_id,

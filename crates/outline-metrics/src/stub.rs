@@ -83,6 +83,47 @@ pub fn add_bytes(
 ) {
 }
 pub fn add_udp_datagram(_direction: &'static str, _group: &str, _uplink: &str) {}
+
+#[derive(Clone, Default)]
+pub struct FlowBytesCounter;
+
+impl FlowBytesCounter {
+    #[inline]
+    pub fn add(&self, _bytes: usize) {}
+}
+
+pub fn flow_bytes_counter(
+    _protocol: &str,
+    _direction: &str,
+    _group: &str,
+    _uplink: &str,
+) -> FlowBytesCounter {
+    FlowBytesCounter
+}
+
+#[derive(Clone, Default)]
+pub struct UdpFlowCounters;
+
+impl UdpFlowCounters {
+    #[inline]
+    pub fn record(&self, _bytes: usize) {}
+}
+
+pub fn udp_flow_counters(_direction: &str, _group: &str, _uplink: &str) -> UdpFlowCounters {
+    UdpFlowCounters
+}
+
+static DIRECT_TCP_BYTES: FlowBytesCounter = FlowBytesCounter;
+static DIRECT_UDP_COUNTERS: UdpFlowCounters = UdpFlowCounters;
+
+pub fn direct_tcp_bytes(_direction: &str) -> &'static FlowBytesCounter {
+    &DIRECT_TCP_BYTES
+}
+
+pub fn direct_udp_counters(_direction: &str) -> &'static UdpFlowCounters {
+    &DIRECT_UDP_COUNTERS
+}
+
 pub fn record_dropped_oversized_udp_packet(_direction: &'static str, _cause: &'static str) {}
 pub fn record_uplink_selected(_transport: &'static str, _group: &str, _uplink: &str) {}
 pub fn record_runtime_failure(_transport: &'static str, _group: &str, _uplink: &str) {}

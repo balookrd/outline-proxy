@@ -207,6 +207,14 @@ pub(super) async fn run_relay(
         let mut uplink_writer = writer;
         let uplink = async move {
             let mut chunks_sent: u64 = 0;
+            // The pinned relay keeps a fixed uplink for the whole leg, so
+            // resolve the uplink byte counter once instead of per chunk.
+            let up_bytes = metrics::flow_bytes_counter(
+                "tcp",
+                "up",
+                manager_for_uplink.group_name(),
+                &name_for_uplink,
+            );
             loop {
                 let buf = {
                     let cr_guard = cr_for_uplink.lock().await;
@@ -248,13 +256,7 @@ pub(super) async fn run_relay(
                     uplink_writer.close().await?;
                     break;
                 }
-                metrics::add_bytes(
-                    "tcp",
-                    "up",
-                    manager_for_uplink.group_name(),
-                    &name_for_uplink,
-                    read,
-                );
+                up_bytes.add(read);
                 // Push BEFORE send so the buffer's `total_sent` matches
                 // the bytes the server will see if the send succeeds.
                 // Order matters for the Ack-Prefix offset semantics:
@@ -336,15 +338,18 @@ pub(super) async fn run_relay(
         let mut downlink_reader = reader;
         let downlink_first_chunk = first_chunk_for_iter.take();
         let downlink = async move {
+            // The pinned relay keeps a fixed uplink for the whole leg, so
+            // resolve the downlink byte counter once and reuse it for the
+            // first chunk and every subsequent chunk.
+            let down_bytes = metrics::flow_bytes_counter(
+                "tcp",
+                "down",
+                manager_for_downlink.group_name(),
+                &name_for_downlink,
+            );
             let already_forwarded = if let Some(fc) = downlink_first_chunk {
                 if !fc.is_empty() {
-                    metrics::add_bytes(
-                        "tcp",
-                        "down",
-                        manager_for_downlink.group_name(),
-                        &name_for_downlink,
-                        fc.len(),
-                    );
+                    down_bytes.add(fc.len());
                     let mut cw_guard = cw_for_downlink.lock().await;
                     cw_guard.write_all(&fc).await.map_err(ClientIo::WriteFailed)?;
                     drop(cw_guard);
@@ -388,13 +393,7 @@ pub(super) async fn run_relay(
                     break;
                 }
                 chunks_forwarded += 1;
-                metrics::add_bytes(
-                    "tcp",
-                    "down",
-                    manager_for_downlink.group_name(),
-                    &name_for_downlink,
-                    chunk.len(),
-                );
+                down_bytes.add(chunk.len());
                 let mut cw_guard = cw_for_downlink.lock().await;
                 cw_guard.write_all(&chunk).await.map_err(ClientIo::WriteFailed)?;
                 drop(cw_guard);

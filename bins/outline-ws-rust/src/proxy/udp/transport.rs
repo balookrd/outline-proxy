@@ -19,6 +19,11 @@ pub(super) struct ActiveUdpTransport {
     pub(super) index: usize,
     pub(super) uplink_name: Arc<str>,
     pub(super) transport: Arc<UdpSessionTransport>,
+    /// Pre-resolved `up`-direction datagram + byte counters for this uplink's
+    /// `(group, uplink)` series. Resolved once here (on select / failover) so
+    /// the per-datagram send path skips the label hashing `add_udp_datagram` /
+    /// `add_bytes` would pay on every packet.
+    pub(super) up_counters: metrics::UdpFlowCounters,
 }
 
 /// Acquire a UDP transport for `candidate`, falling back to each configured
@@ -296,6 +301,11 @@ pub(super) async fn select_udp_transport(
                 return Ok(ActiveUdpTransport {
                     index: candidate.index,
                     uplink_name: Arc::from(candidate.uplink.name.as_str()),
+                    up_counters: metrics::udp_flow_counters(
+                        "up",
+                        uplinks.group_name(),
+                        candidate.uplink.name.as_str(),
+                    ),
                     transport: Arc::new(transport),
                 });
             },

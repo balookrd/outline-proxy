@@ -70,6 +70,8 @@ pub(super) async fn relay_tcp_direct(
     let activity_u2c = activity_tx;
 
     let c2u = async move {
+        // Direct route: constant `(direct, direct)` labels, resolve once.
+        let up_bytes = metrics::direct_tcp_bytes("up");
         loop {
             // Park on readability without holding a buffer; allocate it only
             // once data is ready and drop it before the next park, so an idle
@@ -85,19 +87,15 @@ pub(super) async fn relay_tcp_direct(
                 break;
             }
             let _ = activity_c2u.try_send(());
-            metrics::add_bytes(
-                "tcp",
-                "up",
-                metrics::DIRECT_GROUP_LABEL,
-                metrics::DIRECT_UPLINK_LABEL,
-                read,
-            );
+            up_bytes.add(read);
             upstream_write.write_all(&buf[..read]).await?;
         }
         upstream_write.shutdown().await?;
         Ok::<(), anyhow::Error>(())
     };
     let u2c = async move {
+        // Direct route: constant `(direct, direct)` labels, resolve once.
+        let down_bytes = metrics::direct_tcp_bytes("down");
         loop {
             // Park on readability without holding a buffer; allocate it only
             // once data is ready and drop it before the next park, so an idle
@@ -113,13 +111,7 @@ pub(super) async fn relay_tcp_direct(
                 break;
             }
             let _ = activity_u2c.try_send(());
-            metrics::add_bytes(
-                "tcp",
-                "down",
-                metrics::DIRECT_GROUP_LABEL,
-                metrics::DIRECT_UPLINK_LABEL,
-                read,
-            );
+            down_bytes.add(read);
             client_write.write_all(&buf[..read]).await?;
         }
         client_write.shutdown().await?;

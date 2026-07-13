@@ -8,7 +8,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
 
-use outline_metrics as metrics;
 use outline_transport::is_dropped_oversized_udp_error;
 use outline_uplink::{UplinkManager, UplinkRegistry};
 use socks5_proto::TargetAddr;
@@ -50,9 +49,7 @@ impl GroupUdpContext {
         reconcile_global_udp_transport(&self.manager, &self.active, target).await?;
         let snapshot = self.active.load_full();
         let transport = Arc::clone(&snapshot.transport);
-        let uplink_name = snapshot.uplink_name.clone();
         let active_index = snapshot.index;
-        let group = self.manager.group_name();
         if let Err(error) = transport.send_packet(payload).await {
             if is_dropped_oversized_udp_error(&error) {
                 return Ok(());
@@ -72,8 +69,8 @@ impl GroupUdpContext {
                 }
                 return Err(error);
             }
-            metrics::add_udp_datagram("up", group, &replacement.uplink_name);
-            metrics::add_bytes("udp", "up", group, &replacement.uplink_name, payload.len());
+            // The replacement carries its own pre-resolved uplink counters.
+            replacement.up_counters.record(payload.len());
             // NOTE: do NOT report liveness here. This is the client→upstream
             // (send) direction — writing a datagram into the tunnel does not
             // prove the data path delivers. A degraded server can keep
@@ -84,8 +81,7 @@ impl GroupUdpContext {
             // (and, once it stops failing, the runtime-failure window lapsing)
             // — mirroring the TUN UDP path, which never reported send liveness.
         } else {
-            metrics::add_udp_datagram("up", group, &uplink_name);
-            metrics::add_bytes("udp", "up", group, &uplink_name, payload.len());
+            snapshot.up_counters.record(payload.len());
         }
         Ok(())
     }
