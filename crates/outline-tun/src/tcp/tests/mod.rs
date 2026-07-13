@@ -2197,6 +2197,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         keepalive_probes_sent: 0,
         last_keepalive_probe_at: None,
         reported: super::state_machine::ReportedFlowMetrics::default(),
+        flow_gauges: None,
         timestamps: super::state_machine::FlowTimestamps {
             created_at: Instant::now(),
             status_since: Instant::now(),

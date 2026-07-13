@@ -133,6 +133,57 @@ fn renders_prometheus_metrics() {
 }
 
 #[test]
+fn websocket_binary_frame_counters_accumulate_in_render() {
+    let metrics = Metrics::new(&test_config());
+    // Same label combination twice: the cached counter handle must accumulate
+    // rather than resolve a fresh series each call.
+    metrics.record_websocket_binary_frame(
+        Transport::Tcp,
+        Protocol::Http2,
+        AppProtocol::Shadowsocks,
+        "up",
+        100,
+    );
+    metrics.record_websocket_binary_frame(
+        Transport::Tcp,
+        Protocol::Http2,
+        AppProtocol::Shadowsocks,
+        "up",
+        40,
+    );
+    // A different direction resolves a distinct cached cell.
+    metrics.record_websocket_binary_frame(
+        Transport::Tcp,
+        Protocol::Http2,
+        AppProtocol::Shadowsocks,
+        "down",
+        7,
+    );
+
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.contains(
+            "outline_ss_websocket_frames_total{transport=\"tcp\",protocol=\"http2\",app_protocol=\"shadowsocks\",direction=\"up\"} 2"
+        ),
+        "frame count for up direction wrong:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "outline_ss_websocket_bytes_total{transport=\"tcp\",protocol=\"http2\",app_protocol=\"shadowsocks\",direction=\"up\"} 140"
+        ),
+        "byte sum for up direction wrong:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "outline_ss_websocket_bytes_total{transport=\"tcp\",protocol=\"http2\",app_protocol=\"shadowsocks\",direction=\"down\"} 7"
+        ),
+        "byte sum for down direction wrong:\n{rendered}"
+    );
+    // The companion frame-size histogram still resolves per call.
+    assert!(rendered.contains("outline_ss_websocket_frame_size_bytes_bucket"));
+}
+
+#[test]
 fn user_counters_cache_returns_same_handles() {
     let metrics = Metrics::new(&test_config());
     let user: Arc<str> = Arc::from("default");

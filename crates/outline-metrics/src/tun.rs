@@ -190,3 +190,104 @@ pub fn add_tun_tcp_smoothed_rtt_seconds(group: &str, uplink: &str, delta: f64) {
         .with_label_values(&[group, uplink])
         .add(delta);
 }
+
+// ── Pre-resolved per-flow gauge handles ────────────────────────────────────
+
+/// Thin handle over a `(group, uplink)`-labelled integer gauge, hiding the
+/// `prometheus` type from consumers so the crate's public surface stays
+/// backend-agnostic.
+#[derive(Clone, Debug)]
+pub struct TunFlowGaugeI64(prometheus::IntGauge);
+
+impl TunFlowGaugeI64 {
+    #[inline]
+    pub fn add(&self, delta: i64) {
+        self.0.add(delta);
+    }
+}
+
+/// Thin handle over a `(group, uplink)`-labelled float gauge.
+#[derive(Clone, Debug)]
+pub struct TunFlowGaugeF64(prometheus::Gauge);
+
+impl TunFlowGaugeF64 {
+    #[inline]
+    pub fn add(&self, delta: f64) {
+        self.0.add(delta);
+    }
+}
+
+/// Pre-resolved handles for the 14 per-flow TUN TCP gauges of one
+/// `(group, uplink)` pair.
+///
+/// `sync_flow_metrics` runs on every accepted TCP packet and touches all 14
+/// gauges; resolving each via `with_label_values` there hashes the
+/// `(group, uplink)` label pair 14× per packet — the dominant TUN data-plane
+/// metrics cost. Resolve this once per flow (re-resolving only when the flow
+/// fails over to a different uplink), then `.add()` straight into the atomic.
+#[derive(Clone, Debug)]
+pub struct TunTcpFlowGauges {
+    pub flows_active: TunFlowGaugeI64,
+    pub inflight_segments: TunFlowGaugeI64,
+    pub inflight_bytes: TunFlowGaugeI64,
+    pub pending_server_bytes: TunFlowGaugeI64,
+    pub buffered_client_segments: TunFlowGaugeI64,
+    pub zero_window_flows: TunFlowGaugeI64,
+    pub backlog_pressure_flows: TunFlowGaugeI64,
+    pub ack_progress_stall_flows: TunFlowGaugeI64,
+    pub congestion_window_bytes: TunFlowGaugeI64,
+    pub slow_start_threshold_bytes: TunFlowGaugeI64,
+    pub backlog_pressure_seconds: TunFlowGaugeF64,
+    pub ack_progress_stall_seconds: TunFlowGaugeF64,
+    pub retransmission_timeout_seconds: TunFlowGaugeF64,
+    pub smoothed_rtt_seconds: TunFlowGaugeF64,
+}
+
+/// Resolves the 14 per-flow gauge handles for `(group, uplink)`. The resulting
+/// series and label values are identical to the per-call `add_tun_tcp_*`
+/// helpers — this only pre-pays the registry lookup once instead of per packet.
+pub fn tun_tcp_flow_gauges(group: &str, uplink: &str) -> TunTcpFlowGauges {
+    let labels = [group, uplink];
+    TunTcpFlowGauges {
+        flows_active: TunFlowGaugeI64(METRICS.tun_tcp_flows_active.with_label_values(&labels)),
+        inflight_segments: TunFlowGaugeI64(
+            METRICS.tun_tcp_inflight_segments.with_label_values(&labels),
+        ),
+        inflight_bytes: TunFlowGaugeI64(METRICS.tun_tcp_inflight_bytes.with_label_values(&labels)),
+        pending_server_bytes: TunFlowGaugeI64(
+            METRICS.tun_tcp_pending_server_bytes.with_label_values(&labels),
+        ),
+        buffered_client_segments: TunFlowGaugeI64(
+            METRICS.tun_tcp_buffered_client_segments.with_label_values(&labels),
+        ),
+        zero_window_flows: TunFlowGaugeI64(
+            METRICS.tun_tcp_zero_window_flows.with_label_values(&labels),
+        ),
+        backlog_pressure_flows: TunFlowGaugeI64(
+            METRICS.tun_tcp_backlog_pressure_flows.with_label_values(&labels),
+        ),
+        ack_progress_stall_flows: TunFlowGaugeI64(
+            METRICS.tun_tcp_ack_progress_stall_flows.with_label_values(&labels),
+        ),
+        congestion_window_bytes: TunFlowGaugeI64(
+            METRICS.tun_tcp_congestion_window_bytes.with_label_values(&labels),
+        ),
+        slow_start_threshold_bytes: TunFlowGaugeI64(
+            METRICS.tun_tcp_slow_start_threshold_bytes.with_label_values(&labels),
+        ),
+        backlog_pressure_seconds: TunFlowGaugeF64(
+            METRICS.tun_tcp_backlog_pressure_seconds.with_label_values(&labels),
+        ),
+        ack_progress_stall_seconds: TunFlowGaugeF64(
+            METRICS.tun_tcp_ack_progress_stall_seconds.with_label_values(&labels),
+        ),
+        retransmission_timeout_seconds: TunFlowGaugeF64(
+            METRICS
+                .tun_tcp_retransmission_timeout_seconds
+                .with_label_values(&labels),
+        ),
+        smoothed_rtt_seconds: TunFlowGaugeF64(
+            METRICS.tun_tcp_smoothed_rtt_seconds.with_label_values(&labels),
+        ),
+    }
+}
