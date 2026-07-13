@@ -131,6 +131,7 @@ impl TunTcpEngine {
             keepalive_probes_sent: 0,
             last_keepalive_probe_at: None,
             reported: super::super::state_machine::ReportedFlowMetrics::default(),
+            flow_gauges: None,
             timestamps: FlowTimestamps {
                 created_at: now,
                 status_since: now,

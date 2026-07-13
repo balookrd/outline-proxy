@@ -1,3 +1,4 @@
+mod frame_counters;
 mod guards;
 mod labels;
 mod process_memory;
@@ -52,6 +53,11 @@ pub struct Metrics {
     /// SNIs cannot blow up Prometheus cardinality. Once full, every
     /// new SNI is folded into a single `<overflow>` bucket.
     pub(super) tls_no_cert_chain_snis: DashMap<Arc<str>, ()>,
+    /// Lazily-resolved binary-frame counter handles keyed by the bounded label
+    /// product, so the per-frame hot path skips the `counter!` registry lookup.
+    /// See [`frame_counters`] for why only counters (not the frame-size
+    /// histogram) are cached here.
+    frame_counters: frame_counters::FrameCounterMatrix,
     pub(super) recorder: PrometheusRecorder,
     pub(super) handle: PrometheusHandle,
 }
@@ -70,6 +76,7 @@ impl Metrics {
             client_last_seen: DashMap::new(),
             user_counters_cache: DashMap::new(),
             tls_no_cert_chain_snis: DashMap::new(),
+            frame_counters: frame_counters::FrameCounterMatrix::new(),
             recorder,
             handle,
         });
@@ -219,23 +226,15 @@ impl Metrics {
         direction: &'static str,
         bytes: usize,
     ) {
+        // Counters are pre-resolved once per label combination and never
+        // idle-evicted, so the hot path is a plain atomic add with no label
+        // hashing. The frame-size histogram is the only idle-evicted kind here,
+        // so it must keep resolving through `histogram!` (a stale cached handle
+        // would lose samples after an eviction) — see `frame_counters`.
+        self.frame_counters
+            .get(&self.recorder, transport, protocol, app_protocol, direction)
+            .record(bytes);
         with_local_recorder(&self.recorder, || {
-            counter!(
-                "outline_ss_websocket_frames_total",
-                "transport"    => transport.as_str(),
-                "protocol"     => protocol.as_str(),
-                "app_protocol" => app_protocol.as_str(),
-                "direction"    => direction
-            )
-            .increment(1);
-            counter!(
-                "outline_ss_websocket_bytes_total",
-                "transport"    => transport.as_str(),
-                "protocol"     => protocol.as_str(),
-                "app_protocol" => app_protocol.as_str(),
-                "direction"    => direction
-            )
-            .increment(bytes as u64);
             histogram!(
                 "outline_ss_websocket_frame_size_bytes",
                 "transport"    => transport.as_str(),

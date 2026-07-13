@@ -213,3 +213,41 @@ pub fn add_tun_tcp_congestion_window_bytes(_group: &str, _uplink: &str, _delta: 
 pub fn add_tun_tcp_slow_start_threshold_bytes(_group: &str, _uplink: &str, _delta: i64) {}
 pub fn add_tun_tcp_retransmission_timeout_seconds(_group: &str, _uplink: &str, _delta: f64) {}
 pub fn add_tun_tcp_smoothed_rtt_seconds(_group: &str, _uplink: &str, _delta: f64) {}
+
+#[derive(Clone, Debug, Default)]
+pub struct TunFlowGaugeI64;
+
+impl TunFlowGaugeI64 {
+    #[inline]
+    pub fn add(&self, _delta: i64) {}
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TunFlowGaugeF64;
+
+impl TunFlowGaugeF64 {
+    #[inline]
+    pub fn add(&self, _delta: f64) {}
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct TunTcpFlowGauges {
+    pub flows_active: TunFlowGaugeI64,
+    pub inflight_segments: TunFlowGaugeI64,
+    pub inflight_bytes: TunFlowGaugeI64,
+    pub pending_server_bytes: TunFlowGaugeI64,
+    pub buffered_client_segments: TunFlowGaugeI64,
+    pub zero_window_flows: TunFlowGaugeI64,
+    pub backlog_pressure_flows: TunFlowGaugeI64,
+    pub ack_progress_stall_flows: TunFlowGaugeI64,
+    pub congestion_window_bytes: TunFlowGaugeI64,
+    pub slow_start_threshold_bytes: TunFlowGaugeI64,
+    pub backlog_pressure_seconds: TunFlowGaugeF64,
+    pub ack_progress_stall_seconds: TunFlowGaugeF64,
+    pub retransmission_timeout_seconds: TunFlowGaugeF64,
+    pub smoothed_rtt_seconds: TunFlowGaugeF64,
+}
+
+pub fn tun_tcp_flow_gauges(_group: &str, _uplink: &str) -> TunTcpFlowGauges {
+    TunTcpFlowGauges::default()
+}

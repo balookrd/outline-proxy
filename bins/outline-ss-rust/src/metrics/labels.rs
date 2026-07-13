@@ -5,10 +5,19 @@ pub enum Transport {
 }
 
 impl Transport {
+    pub const VARIANTS_COUNT: usize = 2;
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Tcp => "tcp",
             Self::Udp => "udp",
+        }
+    }
+
+    pub const fn as_index(self) -> usize {
+        match self {
+            Self::Tcp => 0,
+            Self::Udp => 1,
         }
     }
 }

@@ -1804,6 +1804,7 @@ fn eviction_test_flow_state(
         keepalive_probes_sent: 0,
         last_keepalive_probe_at: None,
         reported: super::super::state_machine::ReportedFlowMetrics::default(),
+        flow_gauges: None,
         timestamps: super::super::state_machine::FlowTimestamps {
             created_at: last_seen,
             status_since: last_seen,

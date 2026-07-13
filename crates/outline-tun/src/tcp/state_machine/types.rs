@@ -327,12 +327,28 @@ pub(in crate::tcp) struct TcpFlowState {
     /// sync code (`sync_flow_metrics` / `clear_flow_metrics`); used to
     /// compute +/- deltas so the gauge accumulates correctly.
     pub(in crate::tcp) reported: ReportedFlowMetrics,
+    /// Pre-resolved per-`(group, uplink)` gauge handles for this flow, filled
+    /// lazily on the first metric sync and re-resolved when the flow fails over
+    /// to a different uplink. Kept next to (not inside) `reported` so the sync
+    /// code can borrow the handles and the last-emitted deltas disjointly.
+    pub(in crate::tcp) flow_gauges: Option<CachedFlowGauges>,
     pub(in crate::tcp) timestamps: FlowTimestamps,
     /// Most recently scheduled maintenance deadline for this flow.  A heap
     /// entry in `FlowScheduler` is considered live only when its deadline
     /// matches this value; any other popped entry is a stale leftover from
     /// a previous `sync_flow_metrics_and_schedule` call and is dropped.
     pub(in crate::tcp) next_scheduled_deadline: Option<Instant>,
+}
+
+/// Cached gauge handles bound to the uplink they were resolved for. The
+/// `sync_flow_metrics` hot path skips the 14 per-packet `with_label_values`
+/// probes while the flow stays on `uplink`; a runtime failover swaps
+/// `routing.uplink_name` to a fresh `Arc`, and the sync code re-resolves the
+/// handles for the new uplink so emitted series match the per-call path
+/// bit-for-bit.
+pub(in crate::tcp) struct CachedFlowGauges {
+    pub(in crate::tcp) uplink: Arc<str>,
+    pub(in crate::tcp) handles: outline_metrics::TunTcpFlowGauges,
 }
 
 /// Cache of last values emitted to Prometheus gauges for this flow.

@@ -922,3 +922,46 @@ fn uplink_close_classification_active_vs_inactive_vs_unknown() {
         "outline_ws_uplink_connection_close_total{classification=\"unknown\",group=\"g3\",transport=\"tcp\",uplink=\"edge\"} 1"
     ), "per-flow unknown close missing in:\n{rendered}");
 }
+
+#[cfg(feature = "tun")]
+#[test]
+fn tun_tcp_flow_gauges_emit_same_series_as_per_call_helpers() {
+    let _guard = test_guard();
+    init();
+
+    // Pre-resolved per-flow handles must land on exactly the same
+    // `(group, uplink)` series the per-call `add_tun_tcp_*` helpers would,
+    // including the value accumulated across repeated `.add()` calls.
+    let handles = tun_tcp_flow_gauges("fg_grp", "fg_up");
+    handles.flows_active.add(1);
+    handles.inflight_bytes.add(4096);
+    handles.inflight_bytes.add(-96); // net 4000
+    handles.smoothed_rtt_seconds.add(0.25);
+
+    // A failover to a second uplink resolves a distinct handle set → distinct
+    // series, exactly like re-calling the per-call path with a new label.
+    let after_failover = tun_tcp_flow_gauges("fg_grp", "fg_up2");
+    after_failover.inflight_bytes.add(128);
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    assert!(
+        rendered.contains("outline_ws_tun_tcp_flows_active{group=\"fg_grp\",uplink=\"fg_up\"} 1"),
+        "flows_active series missing:\n{rendered}"
+    );
+    assert!(
+        rendered
+            .contains("outline_ws_tun_tcp_inflight_bytes{group=\"fg_grp\",uplink=\"fg_up\"} 4000"),
+        "inflight_bytes net value wrong:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "outline_ws_tun_tcp_smoothed_rtt_seconds{group=\"fg_grp\",uplink=\"fg_up\"} 0.25"
+        ),
+        "smoothed_rtt gauge missing:\n{rendered}"
+    );
+    assert!(
+        rendered
+            .contains("outline_ws_tun_tcp_inflight_bytes{group=\"fg_grp\",uplink=\"fg_up2\"} 128"),
+        "post-failover uplink series missing:\n{rendered}"
+    );
+}
