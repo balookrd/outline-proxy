@@ -69,17 +69,18 @@ pub use self::transport::{
 };
 #[cfg(all(feature = "prometheus", feature = "tun"))]
 pub use self::tun::{
-    add_tun_tcp_ack_progress_stall_flows, add_tun_tcp_ack_progress_stall_seconds,
-    add_tun_tcp_async_connects_active, add_tun_tcp_backlog_pressure_flows,
-    add_tun_tcp_backlog_pressure_seconds, add_tun_tcp_buffered_client_segments,
-    add_tun_tcp_congestion_window_bytes, add_tun_tcp_flows_active, add_tun_tcp_inflight_bytes,
-    add_tun_tcp_inflight_segments, add_tun_tcp_pending_server_bytes,
-    add_tun_tcp_retransmission_timeout_seconds, add_tun_tcp_slow_start_threshold_bytes,
-    add_tun_tcp_smoothed_rtt_seconds, add_tun_tcp_zero_window_flows, record_tun_flow_closed,
-    record_tun_flow_created, record_tun_icmp_local_reply, record_tun_ip_fragment_received,
-    record_tun_ip_reassembly, record_tun_packet, record_tun_tcp_async_connect,
-    record_tun_tcp_event, record_tun_tcp_sniff, record_tun_udp_forward_error, record_tun_udp_sniff,
-    set_tun_config, set_tun_ip_fragment_sets_active,
+    TunFlowGaugeF64, TunFlowGaugeI64, TunTcpFlowGauges, add_tun_tcp_ack_progress_stall_flows,
+    add_tun_tcp_ack_progress_stall_seconds, add_tun_tcp_async_connects_active,
+    add_tun_tcp_backlog_pressure_flows, add_tun_tcp_backlog_pressure_seconds,
+    add_tun_tcp_buffered_client_segments, add_tun_tcp_congestion_window_bytes,
+    add_tun_tcp_flows_active, add_tun_tcp_inflight_bytes, add_tun_tcp_inflight_segments,
+    add_tun_tcp_pending_server_bytes, add_tun_tcp_retransmission_timeout_seconds,
+    add_tun_tcp_slow_start_threshold_bytes, add_tun_tcp_smoothed_rtt_seconds,
+    add_tun_tcp_zero_window_flows, record_tun_flow_closed, record_tun_flow_created,
+    record_tun_icmp_local_reply, record_tun_ip_fragment_received, record_tun_ip_reassembly,
+    record_tun_packet, record_tun_tcp_async_connect, record_tun_tcp_event, record_tun_tcp_sniff,
+    record_tun_udp_forward_error, record_tun_udp_sniff, set_tun_config,
+    set_tun_ip_fragment_sets_active, tun_tcp_flow_gauges,
 };
 
 #[cfg(feature = "prometheus")]
