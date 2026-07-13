@@ -178,6 +178,12 @@ pub(super) fn register_descriptions() {
         "UDP datagrams dropped because the SS-2022 anti-replay store was at capacity \
          and could not admit a new sequence number. Shadowsocks-only."
     );
+    describe_counter!(
+        "outline_ss_xhttp_sessions_rejected_total",
+        "XHTTP session-creating requests rejected before a registry entry or relay task \
+         was allocated, because a process-wide cap was reached (reason=\"max_sessions\" or \
+         \"max_relay_tasks\"). Bounds the pre-auth session/task footprint."
+    );
     describe_gauge!(
         "outline_ss_udp_nat_active_entries",
         "Current number of active UDP NAT table entries."

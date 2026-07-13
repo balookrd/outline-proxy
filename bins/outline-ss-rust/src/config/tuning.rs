@@ -67,6 +67,23 @@ pub struct TuningProfile {
     /// rotating `client_session_id` on every packet to inflate memory between
     /// eviction sweeps. `0` disables the cap.
     pub udp_replay_max_sessions: usize,
+    /// Process-wide ceiling on the number of live XHTTP sessions the registry
+    /// will hold concurrently. Each session pins a `DashMap` entry plus (once
+    /// its relay spawns) up to `DOWNLINK_BUFFER_BYTES_CAP` +
+    /// `UPLINK_REORDER_BUFFER_BYTES_CAP` of buffered bytes. Because a session
+    /// is created on the first request bearing a fresh, well-formed session id
+    /// — before Shadowsocks / VLESS authentication runs inside the relay — this
+    /// caps the pre-auth footprint an attacker with a valid base path can force
+    /// by spraying unique ids. When full, requests that would create a *new*
+    /// session are rejected with HTTP 503; requests for an already-live id
+    /// (resume / repeat) are always served. `0` disables the cap.
+    pub xhttp_max_sessions: usize,
+    /// Process-wide ceiling on in-flight XHTTP relay tasks across all sessions.
+    /// Mirrors `udp_max_concurrent_relay_tasks`: a burst of session-creating
+    /// requests cannot spawn an unbounded number of relay tasks. When the
+    /// ceiling is reached the session-creating request is rejected with HTTP
+    /// 503 and no task is spawned. `0` disables the cap.
+    pub xhttp_max_concurrent_relay_tasks: usize,
     /// Per-session bounded mpsc capacity for the WebSocket writer fan-in
     /// (upstream-reader → WS-writer for TCP relay, NAT-reader → WS-writer
     /// for UDP relay).
@@ -99,6 +116,8 @@ impl TuningProfile {
         udp_nat_max_entries: 4_096,
         udp_max_concurrent_relay_tasks: 1_024,
         udp_replay_max_sessions: 16_384,
+        xhttp_max_sessions: 16_384,
+        xhttp_max_concurrent_relay_tasks: 1_024,
         // Memory-conscious deployments keep this small at the cost of a
         // tighter throughput ceiling per session — fine for scenarios
         // with hundreds of low-bitrate sessions.
@@ -122,6 +141,8 @@ impl TuningProfile {
         udp_nat_max_entries: 16_384,
         udp_max_concurrent_relay_tasks: 2_048,
         udp_replay_max_sessions: 65_536,
+        xhttp_max_sessions: 65_536,
+        xhttp_max_concurrent_relay_tasks: 2_048,
         // 64 chunks × 16 KiB ≈ 1 MiB worst-case per-session in-flight.
         // Restores the throughput headroom video clients need to keep
         // their playback buffer healthy without starving the WS writer.
@@ -145,6 +166,8 @@ impl TuningProfile {
         udp_nat_max_entries: 65_536,
         udp_max_concurrent_relay_tasks: 4_096,
         udp_replay_max_sessions: 262_144,
+        xhttp_max_sessions: 262_144,
+        xhttp_max_concurrent_relay_tasks: 4_096,
         // 128 chunks × 16 KiB ≈ 2 MiB worst-case per-session in-flight.
         // Sized for high-bandwidth-delay-product links where short WS
         // writer stalls would otherwise back-pressure the upstream
@@ -230,6 +253,8 @@ impl TuningProfile {
         // `udp_max_concurrent_relay_tasks == 0` is a valid opt-out.
         // `udp_replay_max_sessions == 0` is a valid opt-out.
         // `udp_nat_max_entries == 0` is a valid opt-out.
+        // `xhttp_max_sessions == 0` is a valid opt-out.
+        // `xhttp_max_concurrent_relay_tasks == 0` is a valid opt-out.
 
         if self.ws_data_channel_capacity == 0 {
             bail!("tuning.ws_data_channel_capacity must be > 0");
@@ -284,6 +309,12 @@ impl TuningProfile {
         if let Some(v) = o.udp_replay_max_sessions {
             self.udp_replay_max_sessions = v;
         }
+        if let Some(v) = o.xhttp_max_sessions {
+            self.xhttp_max_sessions = v;
+        }
+        if let Some(v) = o.xhttp_max_concurrent_relay_tasks {
+            self.xhttp_max_concurrent_relay_tasks = v;
+        }
         if let Some(v) = o.ws_data_channel_capacity {
             self.ws_data_channel_capacity = v;
         }
@@ -332,6 +363,10 @@ pub struct TuningOverrides {
     pub udp_max_concurrent_relay_tasks: Option<usize>,
     #[serde(default)]
     pub udp_replay_max_sessions: Option<usize>,
+    #[serde(default)]
+    pub xhttp_max_sessions: Option<usize>,
+    #[serde(default)]
+    pub xhttp_max_concurrent_relay_tasks: Option<usize>,
     #[serde(default)]
     pub ws_data_channel_capacity: Option<usize>,
 }

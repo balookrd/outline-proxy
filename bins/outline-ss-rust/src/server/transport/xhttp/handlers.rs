@@ -43,9 +43,9 @@ use super::super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::padding::post_response_headers;
 use super::{
-    AttachOutcome, FIN_HEADER, SEQ_HEADER, UplinkIngestError, XhttpDuplex, XhttpRegistry,
-    XhttpSession, XhttpSubmode, generate_anonymous_session_id, generate_padding_header,
-    is_valid_session_id, masquerade_response_headers,
+    AttachOutcome, FIN_HEADER, RelayPermit, SEQ_HEADER, UplinkIngestError, XhttpDuplex,
+    XhttpRegistry, XhttpSession, XhttpSubmode, generate_anonymous_session_id,
+    generate_padding_header, is_valid_session_id, masquerade_response_headers,
 };
 
 /// Cap on the bytes a single POST may carry, to bound memory per
@@ -312,12 +312,25 @@ async fn xhttp_get(
         &state.parent.services.orphan_registry,
         headers,
     );
-    let (session, created) = state
+    let (session, created) = match state
         .registry
-        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create));
+        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+    {
+        Some(pair) => pair,
+        None => {
+            state
+                .parent
+                .services
+                .tcp_server
+                .metrics
+                .record_xhttp_session_rejected(protocol, "max_sessions");
+            warn!(base = %state.base_path, "xhttp session registry at capacity; rejecting session");
+            return short_status(StatusCode::SERVICE_UNAVAILABLE);
+        },
+    };
 
-    if created {
-        spawn_relay(
+    if created
+        && !spawn_relay(
             Arc::clone(&session),
             &state.parent.services,
             Arc::clone(&state.registry),
@@ -327,7 +340,9 @@ async fn xhttp_get(
             peer_addr,
             resume_for_create,
             edge,
-        );
+        )
+    {
+        return short_status(StatusCode::SERVICE_UNAVAILABLE);
     }
 
     match session.try_attach_get() {
@@ -408,9 +423,22 @@ async fn xhttp_post(
         &headers,
     );
     let (session, created) = if seq == 0 {
-        state
+        match state
             .registry
             .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+        {
+            Some(pair) => pair,
+            None => {
+                state
+                    .parent
+                    .services
+                    .tcp_server
+                    .metrics
+                    .record_xhttp_session_rejected(protocol, "max_sessions");
+                warn!(base = %state.base_path, "xhttp session registry at capacity; rejecting session");
+                return short_status(StatusCode::SERVICE_UNAVAILABLE);
+            },
+        }
     } else {
         match state.registry.get(&session_id) {
             Some(s) => (s, false),
@@ -422,8 +450,8 @@ async fn xhttp_post(
         return short_status(StatusCode::GONE);
     }
 
-    if created {
-        spawn_relay(
+    if created
+        && !spawn_relay(
             Arc::clone(&session),
             &state.parent.services,
             Arc::clone(&state.registry),
@@ -433,7 +461,9 @@ async fn xhttp_post(
             peer_addr,
             resume_for_create,
             edge,
-        );
+        )
+    {
+        return short_status(StatusCode::SERVICE_UNAVAILABLE);
     }
 
     let bytes = match axum::body::to_bytes(body, MAX_POST_BYTES).await {
@@ -530,14 +560,27 @@ async fn xhttp_stream_one(
         &state.parent.services.orphan_registry,
         &headers,
     );
-    let (session, created) = state
+    let (session, created) = match state
         .registry
-        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create));
+        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+    {
+        Some(pair) => pair,
+        None => {
+            state
+                .parent
+                .services
+                .tcp_server
+                .metrics
+                .record_xhttp_session_rejected(protocol, "max_sessions");
+            warn!(base = %state.base_path, "xhttp session registry at capacity; rejecting session");
+            return short_status(StatusCode::SERVICE_UNAVAILABLE);
+        },
+    };
     if session.is_closed() {
         return short_status(StatusCode::GONE);
     }
-    if created {
-        spawn_relay(
+    if created
+        && !spawn_relay(
             Arc::clone(&session),
             &state.parent.services,
             Arc::clone(&state.registry),
@@ -547,7 +590,9 @@ async fn xhttp_stream_one(
             peer_addr,
             resume_for_create,
             edge,
-        );
+        )
+    {
+        return short_status(StatusCode::SERVICE_UNAVAILABLE);
     }
     // Claim the downlink slot so a parallel packet-up GET on the
     // same id cannot race for the response body. A second
@@ -736,7 +781,12 @@ async fn open_xhttp_mesh(
 /// home over the mesh instead of served locally, falling back to a fresh local
 /// session if the mesh open fails. SS-UDP relays too, but datagram-framed
 /// (`edge_relay_udp`) so per-packet boundaries survive the mesh hop.
+/// Returns `false` when the process-wide relay-task ceiling
+/// (`tuning.xhttp_max_concurrent_relay_tasks`) is reached: no task is spawned,
+/// the just-created registry slot is torn down, and the caller must reject the
+/// request with HTTP 503. Returns `true` once the relay task is spawned.
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 pub(in crate::server::transport::xhttp) fn spawn_relay(
     session: Arc<XhttpSession>,
     services: &Arc<Services>,
@@ -747,7 +797,26 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
     peer_addr: SocketAddr,
     resume: ResumeContext,
     edge: Option<EdgeRelayPlan>,
-) {
+) -> bool {
+    // Reserve a slot against the global relay-task ceiling before spawning.
+    // Held for the relay task's lifetime (moved into the spawned future) so
+    // the semaphore reflects in-flight work.
+    let relay_permit = match registry.try_acquire_relay_permit() {
+        RelayPermit::Acquired(permit) => permit,
+        RelayPermit::AtCapacity => {
+            // `get_or_create` already inserted the registry slot; tear it down
+            // so a session with no relay driving it does not linger until idle
+            // eviction. The caller responds 503.
+            session.close();
+            registry.remove(&session.id);
+            services
+                .tcp_server
+                .metrics
+                .record_xhttp_session_rejected(protocol, "max_relay_tasks");
+            warn!(base = %base_path, "xhttp global relay-task limit reached; rejecting session");
+            return false;
+        },
+    };
     let session_for_task = Arc::clone(&session);
     let session_id = Arc::clone(&session.id);
     match route {
@@ -770,6 +839,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                     .metrics
                     .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Vless);
             tokio::spawn(async move {
+                let _relay_permit = relay_permit;
                 let relay =
                     open_xhttp_mesh(edge, CarrierKind::VlessXhttp, &relay_path, peer_addr).await;
                 let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
@@ -823,6 +893,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 AppProtocol::Shadowsocks,
             );
             tokio::spawn(async move {
+                let _relay_permit = relay_permit;
                 let relay =
                     open_xhttp_mesh(edge, CarrierKind::SsXhttp, &relay_path, peer_addr).await;
                 let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
@@ -878,6 +949,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 AppProtocol::Shadowsocks,
             );
             tokio::spawn(async move {
+                let _relay_permit = relay_permit;
                 // A foreign-shard resume relays to the home over the mesh with
                 // datagram framing (SS-UDP packets are atomic — a byte splice
                 // would break the home's per-packet AEAD); otherwise the session
@@ -910,6 +982,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
             });
         },
     }
+    true
 }
 
 /// Demote benign h3-shutdown / probe-rejection so dashboards stay

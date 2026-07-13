@@ -52,7 +52,7 @@ pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_con
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
 pub(in crate::server) use vless::{VlessWsRouteCtx, VlessWsServerCtx, handle_vless_h3_connection};
 pub(in crate::server) use xhttp::{
-    XhttpAppProtocol, XhttpAxumState, XhttpH3Ctx, XhttpRegistry, XhttpRoute,
+    XhttpAppProtocol, XhttpAxumState, XhttpH3Ctx, XhttpRegistry, XhttpRegistryLimits, XhttpRoute,
     generate_anonymous_xhttp_session_id, handle_xhttp_h3_request, xhttp_handler,
     xhttp_handler_no_session, xhttp_handler_with_path_seq,
 };
