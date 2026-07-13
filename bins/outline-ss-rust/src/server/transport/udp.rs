@@ -308,7 +308,6 @@ where
         return Err(anyhow!("udp packet is missing a complete target address"));
     };
     let payload = &packet.payload[consumed..];
-    let target_display = target.to_string();
     if session.session_recorded.swap(true, Ordering::Relaxed) {
         server.metrics.record_client_last_seen(Arc::clone(&user_id));
     } else {
@@ -332,7 +331,7 @@ where
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
         path = %route.path,
-        target = %target_display,
+        target = %target,
         resolved = %resolved,
         "udp datagram relay"
     );
