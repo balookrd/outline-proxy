@@ -66,6 +66,7 @@ fn build_test_state(
         },
         None,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),

@@ -34,7 +34,7 @@ use super::{
         AuthPolicy, AuthUsersSnapshot, RouteRegistry, RoutesSnapshot, Services, TransportRoute,
         UdpServices, UserKeySlice, VlessTransportRoute,
     },
-    transport::{HttpFallbackContext, sni_fallback::SniFallbackContext},
+    transport::{HttpFallbackContext, XhttpRegistryLimits, sni_fallback::SniFallbackContext},
 };
 use arc_swap::ArcSwap;
 
@@ -198,6 +198,10 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         },
         Some(orphan_registry),
         config.tuning.ws_data_channel_capacity,
+        XhttpRegistryLimits {
+            max_sessions: config.tuning.xhttp_max_sessions,
+            max_relay_tasks: config.tuning.xhttp_max_concurrent_relay_tasks,
+        },
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::clone(&auth_users),

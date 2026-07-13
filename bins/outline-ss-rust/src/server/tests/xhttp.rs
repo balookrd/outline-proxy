@@ -112,6 +112,7 @@ pub(super) async fn setup_xhttp_server_with_resumption_v2(
         },
         orphan_registry,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let xhttp_registry = Arc::clone(&services.xhttp_registry);
     let auth = Arc::new(AuthPolicy {
@@ -1052,7 +1053,9 @@ async fn xhttp_get_drop_then_reconnect_resumes_downlink_ring() -> Result<()> {
     let client = http_client();
     let session_id = "drop-resume-session";
     let url = format!("http://{listen_addr}/xh/{session_id}");
-    let (session, created) = registry.get_or_create(session_id, None);
+    let (session, created) = registry
+        .get_or_create(session_id, None)
+        .expect("registry has capacity");
     assert!(created, "registry should mint a fresh session for a new id");
 
     // ── GET-A: read one downlink chunk, then drop the body ──────

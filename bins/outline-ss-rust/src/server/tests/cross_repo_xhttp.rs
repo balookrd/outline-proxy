@@ -634,6 +634,7 @@ async fn setup_xhttp_h3_server(
         },
         orphan_registry,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let xhttp_registry = Arc::clone(&services.xhttp_registry);
     let auth = Arc::new(AuthPolicy {
@@ -903,6 +904,7 @@ async fn setup_xhttp_h2_tls_server_with_resumption(
         },
         orphan_registry,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let xhttp_registry = Arc::clone(&services.xhttp_registry);
     let auth = Arc::new(AuthPolicy {

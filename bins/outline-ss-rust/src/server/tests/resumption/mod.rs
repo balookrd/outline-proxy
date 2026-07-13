@@ -197,6 +197,7 @@ async fn spawn_test_server(
         },
         Some(orphan_registry),
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),
