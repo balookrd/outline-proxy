@@ -130,12 +130,23 @@ async fn xhttp_h3_get(
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
     let edge =
         xhttp_edge_plan(ctx.cluster.as_ref(), &ctx.services.orphan_registry, &request_headers);
-    let (session, created) = ctx
+    let (session, created) = match ctx
         .registry
-        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create));
+        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+    {
+        Some(pair) => pair,
+        None => {
+            ctx.services
+                .tcp_server
+                .metrics
+                .record_xhttp_session_rejected(protocol, "max_sessions");
+            warn!(base = %ctx.base_path, "xhttp session registry at capacity; rejecting session");
+            return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
+        },
+    };
 
-    if created {
-        spawn_relay(
+    if created
+        && !spawn_relay(
             Arc::clone(&session),
             &ctx.services,
             Arc::clone(&ctx.registry),
@@ -145,7 +156,9 @@ async fn xhttp_h3_get(
             peer_addr,
             resume_for_create,
             edge,
-        );
+        )
+    {
+        return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
     }
 
     match session.try_attach_get() {
@@ -209,8 +222,20 @@ async fn xhttp_h3_post(
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
     let edge = xhttp_edge_plan(ctx.cluster.as_ref(), &ctx.services.orphan_registry, &headers);
     let (session, created) = if seq == 0 {
-        ctx.registry
+        match ctx
+            .registry
             .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+        {
+            Some(pair) => pair,
+            None => {
+                ctx.services
+                    .tcp_server
+                    .metrics
+                    .record_xhttp_session_rejected(protocol, "max_sessions");
+                warn!(base = %ctx.base_path, "xhttp session registry at capacity; rejecting session");
+                return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
+            },
+        }
     } else {
         match ctx.registry.get(&session_id) {
             Some(s) => (s, false),
@@ -222,8 +247,8 @@ async fn xhttp_h3_post(
         return finish_with_status(stream, StatusCode::GONE).await;
     }
 
-    if created {
-        spawn_relay(
+    if created
+        && !spawn_relay(
             Arc::clone(&session),
             &ctx.services,
             Arc::clone(&ctx.registry),
@@ -233,7 +258,9 @@ async fn xhttp_h3_post(
             peer_addr,
             resume_for_create,
             edge,
-        );
+        )
+    {
+        return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
     }
 
     let mut body_parts: Vec<Bytes> = Vec::new();
@@ -341,14 +368,25 @@ async fn xhttp_h3_stream_one(
     let ack_prefix_for_response = resume_for_create.ack_prefix_requested;
     let symmetric_replay_for_response = resume_for_create.symmetric_replay_requested;
     let edge = xhttp_edge_plan(ctx.cluster.as_ref(), &ctx.services.orphan_registry, &headers);
-    let (session, created) = ctx
+    let (session, created) = match ctx
         .registry
-        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create));
+        .get_or_create(&session_id, xhttp_issued_id(&edge, &resume_for_create))
+    {
+        Some(pair) => pair,
+        None => {
+            ctx.services
+                .tcp_server
+                .metrics
+                .record_xhttp_session_rejected(protocol, "max_sessions");
+            warn!(base = %ctx.base_path, "xhttp session registry at capacity; rejecting session");
+            return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
+        },
+    };
     if session.is_closed() {
         return finish_with_status(stream, StatusCode::GONE).await;
     }
-    if created {
-        spawn_relay(
+    if created
+        && !spawn_relay(
             Arc::clone(&session),
             &ctx.services,
             Arc::clone(&ctx.registry),
@@ -358,7 +396,9 @@ async fn xhttp_h3_stream_one(
             peer_addr,
             resume_for_create,
             edge,
-        );
+        )
+    {
+        return finish_with_status(stream, StatusCode::SERVICE_UNAVAILABLE).await;
     }
     match session.try_attach_get() {
         AttachOutcome::Ok => {},

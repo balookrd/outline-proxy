@@ -35,7 +35,7 @@ use std::{
 use bytes::Bytes;
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 use crate::server::resumption::SessionId;
 
@@ -43,6 +43,9 @@ mod duplex;
 mod h3;
 pub(in crate::server) mod handlers;
 mod padding;
+
+#[cfg(test)]
+mod tests;
 
 pub(in crate::server) use duplex::XhttpDuplex;
 pub(in crate::server) use generate_anonymous_session_id as generate_anonymous_xhttp_session_id;
@@ -93,28 +96,95 @@ const UPLINK_REORDER_MAX_GAP: u64 = 64;
 /// client picks a new edge) is not yet eviction-eligible.
 pub(in crate::server) const SESSION_IDLE_EVICTION: Duration = Duration::from_secs(180);
 
+/// Process-wide caps for [`XhttpRegistry`]. Sourced from `[tuning]`
+/// (`xhttp_max_sessions` / `xhttp_max_concurrent_relay_tasks`); `0` on either
+/// field disables that cap.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::server) struct XhttpRegistryLimits {
+    /// Max concurrent sessions the registry may hold; `0` = unbounded.
+    pub(in crate::server) max_sessions: usize,
+    /// Max concurrent relay tasks (global semaphore permits); `0` = unbounded.
+    pub(in crate::server) max_relay_tasks: usize,
+}
+
+impl XhttpRegistryLimits {
+    /// No caps — used by tests that do not exercise the bounds.
+    #[cfg(test)]
+    pub(in crate::server) fn unbounded() -> Self {
+        Self { max_sessions: 0, max_relay_tasks: 0 }
+    }
+}
+
+/// Outcome of reserving a global relay-task slot before `spawn_relay` spawns
+/// the per-session relay task. Mirrors the UDP relay's `relay_semaphore`.
+pub(in crate::server) enum RelayPermit {
+    /// A slot was reserved. Holds the owned permit (`None` when no global cap
+    /// is configured); the caller must keep it alive for the relay task's
+    /// lifetime so the semaphore reflects in-flight work.
+    Acquired(Option<OwnedSemaphorePermit>),
+    /// The global relay-task ceiling is reached; the caller must not spawn.
+    AtCapacity,
+}
+
 /// Process-wide store of live XHTTP sessions, keyed by client-
 /// chosen opaque id. Cheap to clone (`Arc`).
-#[derive(Default)]
+///
+// TODO(bounded): add an optional per-source-IP session cap so a single peer
+// cannot consume the whole `max_sessions` budget. Deferred because a session's
+// source IP would have to be threaded onto `XhttpSession` and the per-IP
+// counter decremented on *every* teardown path (relay-task exit, idle
+// eviction's `retain`, the seq-gap `close`), which is easy to leak; the global
+// `max_sessions` cap plus the relay-task semaphore already bound the aggregate
+// footprint, so per-IP fairness is a separate, self-contained follow-up.
 pub(in crate::server) struct XhttpRegistry {
     sessions: DashMap<Arc<str>, Arc<XhttpSession>>,
+    /// Ceiling on concurrent sessions; `0` = unbounded. Enforced only on
+    /// creation of a *new* session — an existing id is always served.
+    max_sessions: usize,
+    /// Global relay-task semaphore; `None` = unbounded. Reserved in
+    /// `spawn_relay` and held for the relay task's lifetime.
+    relay_semaphore: Option<Arc<Semaphore>>,
 }
 
 impl XhttpRegistry {
-    pub(in crate::server) fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+    pub(in crate::server) fn with_limits(limits: XhttpRegistryLimits) -> Arc<Self> {
+        let relay_semaphore =
+            (limits.max_relay_tasks > 0).then(|| Arc::new(Semaphore::new(limits.max_relay_tasks)));
+        Arc::new(Self {
+            sessions: DashMap::new(),
+            max_sessions: limits.max_sessions,
+            relay_semaphore,
+        })
     }
 
-    /// Returns `(session, created)` — the bool tells the caller
+    /// Returns `Some((session, created))` — the bool tells the caller
     /// whether they are the side that should spawn the relay task.
     /// Atomic: two concurrent requests with the same id race once,
     /// the loser sees `created = false` and just attaches.
+    ///
+    /// Returns `None` when the registry is at `max_sessions` and the id is not
+    /// already live: the caller rejects with HTTP 503 without inserting an
+    /// entry or spawning a task. An already-live id (resume / repeat request)
+    /// is served regardless of the cap — the cap gates creation only.
     pub(in crate::server) fn get_or_create(
         &self,
         session_id: &str,
         issued_resume_id: Option<SessionId>,
-    ) -> (Arc<XhttpSession>, bool) {
+    ) -> Option<(Arc<XhttpSession>, bool)> {
         let key: Arc<str> = Arc::from(session_id);
+        // Fast path: an existing session is always served, never rejected by
+        // the cap. The read guard is released before the `len()` check below.
+        if let Some(existing) = self.sessions.get(&key) {
+            return Some((Arc::clone(existing.value()), false));
+        }
+        // New session: enforce the cap before taking the shard write-lock in
+        // `entry()`. `len()` acquires per-shard read locks, so reading it while
+        // holding a shard write-lock could deadlock a concurrent `len()`
+        // (mirrors `ReplayStore`). The check/insert race is benign for a soft
+        // bound — at most a few racing callers slip past the cap.
+        if self.max_sessions > 0 && self.sessions.len() >= self.max_sessions {
+            return None;
+        }
         let mut created = false;
         let session = self
             .sessions
@@ -125,7 +195,19 @@ impl XhttpRegistry {
             })
             .value()
             .clone();
-        (session, created)
+        Some((session, created))
+    }
+
+    /// Reserve a slot against the global relay-task ceiling. `AtCapacity` means
+    /// the caller must not spawn a relay (and should reject with 503).
+    pub(in crate::server) fn try_acquire_relay_permit(&self) -> RelayPermit {
+        match &self.relay_semaphore {
+            Some(sem) => match Arc::clone(sem).try_acquire_owned() {
+                Ok(permit) => RelayPermit::Acquired(Some(permit)),
+                Err(_) => RelayPermit::AtCapacity,
+            },
+            None => RelayPermit::Acquired(None),
+        }
     }
 
     pub(in crate::server) fn get(&self, session_id: &str) -> Option<Arc<XhttpSession>> {

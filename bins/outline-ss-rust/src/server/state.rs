@@ -19,6 +19,7 @@ use super::replay::ReplayStore;
 use super::resumption::OrphanRegistry;
 use super::transport::{
     HttpFallbackContext, UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx, XhttpRegistry,
+    XhttpRegistryLimits,
 };
 
 use super::dns_cache::DnsCache;
@@ -92,6 +93,7 @@ impl Services {
     /// `orphan_registry` in tests / setups that do not exercise
     /// session-resumption — a permanently disabled (no-op) registry will
     /// be substituted.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
         metrics: Arc<Metrics>,
         dns_cache: Arc<DnsCache>,
@@ -100,6 +102,7 @@ impl Services {
         udp: UdpServices,
         orphan_registry: Option<Arc<OrphanRegistry>>,
         ws_data_channel_capacity: usize,
+        xhttp_limits: XhttpRegistryLimits,
     ) -> Self {
         let orphan_registry = orphan_registry
             .unwrap_or_else(|| Arc::new(OrphanRegistry::new_disabled(Arc::clone(&metrics))));
@@ -135,7 +138,7 @@ impl Services {
             udp_server,
             vless_server,
             orphan_registry,
-            xhttp_registry: XhttpRegistry::new(),
+            xhttp_registry: XhttpRegistry::with_limits(xhttp_limits),
         }
     }
 }

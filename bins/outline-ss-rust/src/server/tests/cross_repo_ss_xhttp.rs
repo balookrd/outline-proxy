@@ -86,6 +86,7 @@ async fn setup_ss_xhttp_server(
         },
         None,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -283,6 +284,7 @@ async fn setup_ss_combined_xhttp_server(
         },
         None,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(

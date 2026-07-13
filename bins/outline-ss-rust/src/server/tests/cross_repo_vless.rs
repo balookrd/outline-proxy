@@ -112,6 +112,7 @@ async fn setup_vless_ws_server(
         },
         None,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -283,6 +284,7 @@ async fn setup_vless_ws_h3_server(
         },
         None,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -434,6 +436,7 @@ async fn setup_vless_ws_server_with_resumption_inner(
         },
         orphan_registry,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -938,6 +941,7 @@ async fn setup_vless_ws_h3_server_with_resumption(
         },
         orphan_registry,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -1116,6 +1120,7 @@ async fn setup_vless_ws_h2_tls_server_with_resumption(
         },
         orphan_registry,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -1286,6 +1291,7 @@ async fn setup_vless_ws_h1_only_server_with_resumption(
         },
         orphan_registry,
         16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
