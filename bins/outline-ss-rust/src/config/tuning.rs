@@ -84,6 +84,16 @@ pub struct TuningProfile {
     /// ceiling is reached the session-creating request is rejected with HTTP
     /// 503 and no task is spawned. `0` disables the cap.
     pub xhttp_max_concurrent_relay_tasks: usize,
+    /// Process-wide ceiling on the number of entries in the upstream DNS
+    /// cache. Entries are keyed by `(port, prefer_ipv4_upstream, host)` and the
+    /// host comes straight from the client-supplied destination, so without a
+    /// cap a client resolving unique names grows the map for the whole
+    /// TTL + stale-grace window (an hour) — reclaim happens only on the periodic
+    /// sweep. When full, `insert` evicts by approximate LRU (expired entries
+    /// first), so a hot working set survives a flood of one-shot names. Each
+    /// entry costs roughly 120 bytes plus its resolved socket addresses.
+    /// `0` disables the cap, restoring the unbounded sweep-only cache.
+    pub dns_cache_max_entries: usize,
     /// Per-session bounded mpsc capacity for the WebSocket writer fan-in
     /// (upstream-reader → WS-writer for TCP relay, NAT-reader → WS-writer
     /// for UDP relay).
@@ -118,6 +128,7 @@ impl TuningProfile {
         udp_replay_max_sessions: 16_384,
         xhttp_max_sessions: 16_384,
         xhttp_max_concurrent_relay_tasks: 1_024,
+        dns_cache_max_entries: 16_384,
         // Memory-conscious deployments keep this small at the cost of a
         // tighter throughput ceiling per session — fine for scenarios
         // with hundreds of low-bitrate sessions.
@@ -143,6 +154,7 @@ impl TuningProfile {
         udp_replay_max_sessions: 65_536,
         xhttp_max_sessions: 65_536,
         xhttp_max_concurrent_relay_tasks: 2_048,
+        dns_cache_max_entries: 65_536,
         // 64 chunks × 16 KiB ≈ 1 MiB worst-case per-session in-flight.
         // Restores the throughput headroom video clients need to keep
         // their playback buffer healthy without starving the WS writer.
@@ -168,6 +180,9 @@ impl TuningProfile {
         udp_replay_max_sessions: 262_144,
         xhttp_max_sessions: 262_144,
         xhttp_max_concurrent_relay_tasks: 4_096,
+        // ~262k entries × (~120 B + sockaddrs) ≈ 30-40 MiB worst case — the
+        // ceiling only matters when a client sprays unique names at it.
+        dns_cache_max_entries: 262_144,
         // 128 chunks × 16 KiB ≈ 2 MiB worst-case per-session in-flight.
         // Sized for high-bandwidth-delay-product links where short WS
         // writer stalls would otherwise back-pressure the upstream
@@ -255,6 +270,8 @@ impl TuningProfile {
         // `udp_nat_max_entries == 0` is a valid opt-out.
         // `xhttp_max_sessions == 0` is a valid opt-out.
         // `xhttp_max_concurrent_relay_tasks == 0` is a valid opt-out.
+        // `dns_cache_max_entries == 0` is a valid opt-out (unbounded cache,
+        // reclaimed only by the periodic stale-grace sweep).
 
         if self.ws_data_channel_capacity == 0 {
             bail!("tuning.ws_data_channel_capacity must be > 0");
@@ -315,6 +332,9 @@ impl TuningProfile {
         if let Some(v) = o.xhttp_max_concurrent_relay_tasks {
             self.xhttp_max_concurrent_relay_tasks = v;
         }
+        if let Some(v) = o.dns_cache_max_entries {
+            self.dns_cache_max_entries = v;
+        }
         if let Some(v) = o.ws_data_channel_capacity {
             self.ws_data_channel_capacity = v;
         }
@@ -367,6 +387,8 @@ pub struct TuningOverrides {
     pub xhttp_max_sessions: Option<usize>,
     #[serde(default)]
     pub xhttp_max_concurrent_relay_tasks: Option<usize>,
+    #[serde(default)]
+    pub dns_cache_max_entries: Option<usize>,
     #[serde(default)]
     pub ws_data_channel_capacity: Option<usize>,
 }
