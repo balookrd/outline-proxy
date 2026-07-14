@@ -13,6 +13,10 @@ mod types;
 pub(super) use congestion::{
     next_retransmission_deadline, note_ack_progress, note_congestion_event, process_server_ack,
 };
+#[cfg(test)]
+pub(super) use congestion::{
+    rebuild_unacked_accounting, server_segment_is_sacked, server_segment_len,
+};
 #[allow(unused_imports)]
 pub(super) use deliver::{DeliverOutcome, apply_inbound_and_flush, clear_delayed_ack};
 #[allow(unused_imports)]

@@ -729,6 +729,8 @@ async fn process_server_ack_marks_sacked_segments_without_cumulative_ack() {
         },
     ]);
 
+    super::rebuild_unacked_accounting(&mut state);
+
     let effect = super::process_server_ack(&mut state, 1000, &[(1004, 1008)]);
     assert_eq!(effect.bytes_acked, 0);
     assert!(!effect.retransmit_now);
@@ -800,6 +802,8 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
         },
     ]);
 
+    super::rebuild_unacked_accounting(&mut state);
+
     let effect = super::process_server_ack(&mut state, 1004, &[(1008, 1012)]);
     assert_eq!(effect.bytes_acked, 4);
     assert!(!effect.grow_congestion_window);
@@ -847,6 +851,8 @@ async fn process_server_ack_exits_fast_recovery_once_recovery_point_is_acked() {
             app_limited: false,
         },
     ]);
+
+    super::rebuild_unacked_accounting(&mut state);
 
     let effect = super::process_server_ack(&mut state, 1008, &[]);
     assert_eq!(effect.bytes_acked, 8);
@@ -896,6 +902,7 @@ async fn fast_retransmit_resends_a_hole_at_most_once_per_episode() {
         unacked_segment(1012, b"DDDD"),
         unacked_segment(1016, b"EEEE"),
     ]);
+    super::rebuild_unacked_accounting(&mut state);
 
     // Three dup-ACKs (cum=1000) with SACK covering 1004..1012 enter fast
     // recovery and request the first (and only) retransmit of the hole.
@@ -962,6 +969,134 @@ async fn rto_retransmit_bumps_the_rto_counter() {
     let seg = &state.unacked_server_segments[0];
     assert_eq!(seg.rto_retransmits, 1, "RTO resend is the dead-path signal");
     assert_eq!(seg.retransmits, 1);
+}
+
+// --- Incremental in-flight (pipe) accounting equivalence ------------------
+//
+// `pipe_bytes` / `pipe_segments` / `earliest_unsacked_sent` are maintained
+// incrementally at every push / ACK / SACK / retransmit site so the hot-path
+// reads are O(1). These pin that the running counters stay bit-for-bit equal to
+// a full scan of the unacked queue through every mutation shape — a drift would
+// silently skew the congestion window.
+
+fn scan_pipe_accounting(state: &super::TcpFlowState) -> (usize, usize, Option<Instant>) {
+    let mut bytes = 0usize;
+    let mut segments = 0usize;
+    let mut earliest: Option<Instant> = None;
+    for segment in &state.unacked_server_segments {
+        if !super::server_segment_is_sacked(state, segment) {
+            bytes += super::server_segment_len(segment);
+            segments += 1;
+            earliest = Some(match earliest {
+                Some(current) => current.min(segment.last_sent),
+                None => segment.last_sent,
+            });
+        }
+    }
+    (bytes, segments, earliest)
+}
+
+#[track_caller]
+fn assert_accounting_matches(state: &super::TcpFlowState, context: &str) {
+    let (bytes, segments, earliest) = scan_pipe_accounting(state);
+    assert_eq!(state.pipe_bytes, bytes, "pipe_bytes drifted after {context}");
+    assert_eq!(state.pipe_segments, segments, "pipe_segments drifted after {context}");
+    assert_eq!(
+        state.earliest_unsacked_sent, earliest,
+        "earliest_unsacked_sent drifted after {context}"
+    );
+}
+
+#[tokio::test]
+async fn incremental_pipe_accounting_matches_scan_through_ack_sack_retransmit() {
+    let mut state = tcp_flow_state_for_tests().await;
+    state.last_client_ack = 1000;
+    state.server_seq = 1024;
+    state.recovery_epoch = 1;
+    state.client_window = 65535;
+    state.client_window_end = 1024u32.wrapping_add(65535);
+    state.retransmission_timeout = Duration::from_millis(200);
+
+    // Six 4-byte segments (1000..1024) with strictly increasing send instants.
+    let base = Instant::now() - Duration::from_secs(1);
+    let mut queue = VecDeque::new();
+    for index in 0..6u32 {
+        let mut segment = unacked_segment(1000 + index * 4, b"DATA");
+        segment.last_sent = base + Duration::from_millis(index as u64);
+        segment.first_sent = segment.last_sent;
+        queue.push_back(segment);
+    }
+    state.unacked_server_segments = queue;
+    super::rebuild_unacked_accounting(&mut state);
+    assert_accounting_matches(&state, "manual build");
+    assert_eq!((state.pipe_bytes, state.pipe_segments), (24, 6));
+
+    // Partial cumulative ACK frees the first two segments (1000, 1004).
+    super::process_server_ack(&mut state, 1008, &[]);
+    assert_accounting_matches(&state, "partial cumulative ACK");
+    assert_eq!((state.pipe_bytes, state.pipe_segments), (16, 4));
+
+    // A dup ACK (cum unchanged) carrying a SACK block pulls 1012..1020 (the
+    // 1012 and 1016 segments) out of the pipe, leaving 1008 and 1020 un-SACKed.
+    super::process_server_ack(&mut state, 1008, &[(1012, 1020)]);
+    assert_accounting_matches(&state, "SACK block");
+    assert_eq!((state.pipe_bytes, state.pipe_segments), (8, 2));
+
+    // Fast-retransmit the 1008 hole: its send instant is rewritten to now,
+    // reordering the queue — the earliest cache must fall back to the exact min.
+    let sdp = super::retransmit_oldest_unacked_packet(&mut state).unwrap().unwrap();
+    let mut packet = sdp.header.clone();
+    for chunk in &sdp.payload {
+        packet.extend_from_slice(chunk);
+    }
+    assert_eq!(super::parse_tcp_packet(&packet).unwrap().sequence_number, 1008);
+    assert!(state.unacked_reordered, "a retransmit past the tail reorders send instants");
+    assert_accounting_matches(&state, "fast retransmit");
+    assert_eq!((state.pipe_bytes, state.pipe_segments), (8, 2));
+
+    // An RTO resend of the still-old 1020 segment (also un-SACKed) keeps books.
+    let _ = super::retransmit_due_segment(&mut state).unwrap().unwrap();
+    assert_accounting_matches(&state, "RTO retransmit");
+
+    // Cumulative ACK past everything drains the queue: pipe empty, cache cleared.
+    super::process_server_ack(&mut state, 1024, &[]);
+    assert_accounting_matches(&state, "final drain");
+    assert_eq!((state.pipe_bytes, state.pipe_segments), (0, 0));
+    assert_eq!(state.earliest_unsacked_sent, None);
+    assert!(!state.unacked_reordered);
+}
+
+#[tokio::test]
+async fn flush_fills_exactly_the_send_window_and_tracks_pipe() {
+    // The flush loop decrements `available_window` per write instead of
+    // recomputing it; this pins that it still emits exactly one window's worth
+    // and that the incremental pipe accounting equals the emitted total.
+    let mut state = tcp_flow_state_for_tests().await;
+    let mss = super::MAX_SERVER_SEGMENT_PAYLOAD;
+    // cwnd is generous so the peer receive window is the binding limit.
+    state.congestion_window = mss * 100;
+    state.slow_start_threshold = mss * 100;
+    state.server_seq = 1000;
+    // Advertise exactly 5 MSS + 100 bytes of send window.
+    let window = (mss * 5 + 100) as u32;
+    state.client_window = window;
+    state.client_window_end = 1000u32.wrapping_add(window);
+    // Queue far more than the window so the window is what caps the flush.
+    state.pending_server_data = VecDeque::from([vec![7u8; mss * 20].into()]);
+    state.pending_server_bytes_total = mss * 20;
+
+    let flush = super::state_machine::flush_server_output(&mut state).unwrap();
+    let emitted: usize = flush
+        .data_packets
+        .iter()
+        .map(|packet| packet.payload.iter().map(|chunk| chunk.len()).sum::<usize>())
+        .sum();
+    assert_eq!(emitted, window as usize, "flush emits exactly the send window");
+    assert_eq!(state.pipe_bytes, window as usize);
+    assert_eq!(state.server_seq, 1000u32.wrapping_add(window));
+    assert_accounting_matches(&state, "windowed flush");
+    // 5 full MSS segments + 1 short (100-byte) segment.
+    assert_eq!(state.pipe_segments, 6);
 }
 
 #[tokio::test]
@@ -1307,6 +1442,7 @@ async fn timeout_congestion_event_reduces_cwnd_and_backs_off_rto() {
         delivered_snapshot: 0,
         app_limited: false,
     }]);
+    super::rebuild_unacked_accounting(&mut state);
 
     super::note_congestion_event(&mut state, true);
     assert_eq!(state.congestion_window, super::MAX_SERVER_SEGMENT_PAYLOAD);
@@ -1710,6 +1846,7 @@ async fn process_server_ack_handles_snd_nxt_wrap() {
             app_limited: false,
         },
     ]);
+    super::rebuild_unacked_accounting(&mut state);
 
     let ack = base.wrapping_add(8);
     let effect = super::process_server_ack(&mut state, ack, &[]);
@@ -2188,6 +2325,10 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         pending_client_data: VecDeque::new(),
         unacked_server_segments: VecDeque::new(),
         sack_scoreboard: Vec::new(),
+        pipe_bytes: 0,
+        pipe_segments: 0,
+        earliest_unsacked_sent: None,
+        unacked_reordered: false,
         pending_client_segments: VecDeque::new(),
         server_fin_pending: false,
         zero_window_probe_backoff: super::TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL,
