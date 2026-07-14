@@ -331,8 +331,16 @@ fn record_delivery(
     // whole ACKed flight by the short gap since one recent segment left, and
     // over-estimates BtlBw by the ratio between the two (worst under loss, which
     // pushes the sample onto ever fresher segments).
+    //
+    // Floored by the flight's send interval: bytes cannot have arrived faster
+    // than we managed to put them on the wire. Without that floor, an ACK landing
+    // a moment after the previous one divides a whole flight's worth of released
+    // bytes by a near-zero gap — the common case in loss recovery, where the
+    // sample skips the retransmitted (older) segments and lands on one sent
+    // mid-recovery, while the ACK that closes the hole frees everything at once.
     if let Some(sample) = rate_sample {
-        let interval = now.saturating_duration_since(sample.prior_mstamp).as_secs_f64();
+        let ack_interval = now.saturating_duration_since(sample.prior_mstamp);
+        let interval = ack_interval.max(sample.send_interval).as_secs_f64();
         if interval > 0.0 {
             let delivered = bbr.delivered.saturating_sub(sample.prior_delivered);
             let rate = (delivered as f64 / interval) as u64;

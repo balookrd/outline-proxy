@@ -190,8 +190,18 @@ fn push_unacked_segments(
     app_limited: bool,
 ) {
     let sent_at = Instant::now();
+    // Sending into an empty pipe starts a new flight. Restart both anchors from
+    // now: the flight's send interval is measured from here, and `delivered_at`
+    // must not still point at an ACK from before an idle gap — that would stretch
+    // the rate interval across the whole gap and under-read the path. Canonical
+    // BBR does the same in `tcp_rate_skb_sent` when `!tp->packets_out`.
+    if state.pipe_segments == 0 {
+        state.first_tx_mstamp = sent_at;
+        state.bbr.delivered_at = sent_at;
+    }
     let delivered_snapshot = state.bbr.delivered;
     let delivered_at_snapshot = state.bbr.delivered_at;
+    let first_tx_snapshot = state.first_tx_mstamp;
     let total: usize = chunks.iter().map(Bytes::len).sum();
     let mut offset = 0;
     let mut sequence_number = start_sequence;
@@ -210,6 +220,7 @@ fn push_unacked_segments(
             fast_retransmit_epoch: 0,
             delivered_snapshot,
             delivered_at_snapshot,
+            first_tx_snapshot,
             app_limited,
         });
         // Freshly-sent data sits above every SACKed range, so it enters the
@@ -321,6 +332,7 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
         fast_retransmit_epoch: 0,
         delivered_snapshot: state.bbr.delivered,
         delivered_at_snapshot: state.bbr.delivered_at,
+        first_tx_snapshot: state.first_tx_mstamp,
         app_limited: true,
     });
     state.pipe_bytes += 1;

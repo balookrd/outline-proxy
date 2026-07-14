@@ -1802,6 +1802,7 @@ fn eviction_test_flow_state(
         sack_scoreboard: Vec::new(),
         pipe_bytes: 0,
         pipe_segments: 0,
+        first_tx_mstamp: Instant::now(),
         earliest_unsacked_sent: None,
         unacked_reordered: false,
         pending_client_segments: VecDeque::new(),
