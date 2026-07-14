@@ -64,6 +64,32 @@ struct Entry {
     payload: Vec<u8>,
 }
 
+/// Decides whether an evicted entry's buffer is worth reusing for a chunk of
+/// `chunk_len` bytes.
+///
+/// The ring's capacity accounts *payload* bytes, so an entry whose buffer is
+/// far larger than the bytes it holds would let the ring's real footprint drift
+/// above `capacity_bytes`. Keeping a retired buffer only while its capacity is
+/// within 2× the incoming chunk bounds that drift at 2× the configured ring
+/// size — a buffer grown by one bulk chunk is dropped rather than pinned by a
+/// tail of small ones.
+fn reusable(buffer: Vec<u8>, chunk_len: usize) -> Option<Vec<u8>> {
+    (buffer.capacity() <= chunk_len.saturating_mul(2)).then_some(buffer)
+}
+
+/// Moves `chunk` into `recycled` when the push had a buffer to reuse, otherwise
+/// allocates an exactly-sized one.
+fn store(recycled: Option<Vec<u8>>, chunk: &[u8]) -> Vec<u8> {
+    match recycled {
+        Some(mut buffer) => {
+            buffer.clear();
+            buffer.extend_from_slice(chunk);
+            buffer
+        },
+        None => chunk.to_vec(),
+    }
+}
+
 /// Bounded FIFO ring of downlink chunks indexed by absolute byte
 /// offset. Constructed once per session at upstream-handshake time
 /// (when v2 is enabled) and lives for the session's whole lifetime,
@@ -164,16 +190,24 @@ impl DownlinkRing {
             self.total_sent = self.total_sent.saturating_add(chunk.len() as u64);
             return;
         }
-        // Chunk fits whole; evict oldest entries until it does.
+        // Chunk fits whole; evict oldest entries until it does. The payload
+        // buffer of an evicted entry is recycled as this chunk's storage, so a
+        // relay running against a full ring — the steady state on any bulk
+        // download — records each chunk without allocating.
+        let mut recycled: Option<Vec<u8>> = None;
         while self.current_bytes + chunk.len() > self.capacity_bytes {
             let evicted = self
                 .entries
                 .pop_front()
                 .expect("loop condition implies entries is non-empty");
             self.current_bytes = self.current_bytes.saturating_sub(evicted.payload.len());
+            if let Some(buffer) = reusable(evicted.payload, chunk.len()) {
+                recycled = Some(buffer);
+            }
         }
         let offset = self.total_sent;
-        self.entries.push_back(Entry { offset, payload: chunk.to_vec() });
+        self.entries
+            .push_back(Entry { offset, payload: store(recycled, chunk) });
         self.current_bytes += chunk.len();
         self.total_sent = self.total_sent.saturating_add(chunk.len() as u64);
     }

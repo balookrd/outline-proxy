@@ -65,6 +65,33 @@ fn encrypts_ss2022_chacha_udp_response() {
     assert!(packet.len() > super::super::primitives::XNONCE_LEN);
 }
 
+#[test]
+fn legacy_decrypt_leaves_the_scratch_buffer_in_the_thread_local() {
+    // Runs on a fresh thread so the thread-local scratch starts empty and the
+    // assertion cannot be satisfied by an unrelated test that ran before us.
+    // The legacy branch used to `mem::take` the scratch and hand it out as the
+    // plaintext `Vec`, so every legacy datagram allocated a new one.
+    std::thread::spawn(|| {
+        let users = users(CipherKind::Aes256Gcm, "secret-a", "secret-b");
+        assert_eq!(super::DECRYPT_SCRATCH.with(|cell| cell.borrow().capacity()), 0);
+
+        let ciphertext = encrypt_udp_packet(&users[0], b"udp payload").unwrap();
+        let packet = decrypt_udp_packet(users.as_ref(), &ciphertext).unwrap();
+        assert_eq!(packet.session, UdpCipherMode::Legacy);
+        assert_eq!(packet.payload, b"udp payload");
+
+        let retained = super::DECRYPT_SCRATCH.with(|cell| cell.borrow().capacity());
+        assert!(retained > 0, "legacy decrypt must leave the scratch buffer in the pool");
+
+        // A second datagram reuses that same allocation rather than growing.
+        let ciphertext = encrypt_udp_packet(&users[0], b"udp payload").unwrap();
+        decrypt_udp_packet(users.as_ref(), &ciphertext).unwrap();
+        assert_eq!(super::DECRYPT_SCRATCH.with(|cell| cell.borrow().capacity()), retained);
+    })
+    .join()
+    .expect("scratch-reuse assertions");
+}
+
 proptest::proptest! {
     // decrypt_udp_packet on arbitrary bytes must never panic.
     #[test]

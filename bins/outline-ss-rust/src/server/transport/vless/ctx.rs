@@ -21,7 +21,7 @@ use super::super::super::{
     resumption::{OrphanRegistry, SessionId},
 };
 use super::super::resume_headers::ResumeContext;
-use super::super::vless_mux::MuxState;
+use super::super::vless_mux::{MuxRouteCtx, MuxServerCtx, MuxState};
 
 pub(in crate::server::transport) const MAX_VLESS_HEADER_BUFFER: usize = 512;
 
@@ -142,11 +142,22 @@ pub(in crate::server::transport) struct UdpUpstream {
     pub(in crate::server::transport) client_buffer: BytesMut,
 }
 
+/// VLESS-mux upstream: the mux state plus the two context structs its frame
+/// handlers take. Both contexts are pure `Arc`-clone snapshots of the session's
+/// server / route and never change once the mux is established, so they are
+/// built once here rather than reassembled — four to five atomic increments —
+/// on every inbound mux data frame.
+pub(in crate::server::transport) struct MuxUpstream {
+    pub(in crate::server::transport) mux: MuxState,
+    pub(in crate::server::transport) server: MuxServerCtx,
+    pub(in crate::server::transport) route: MuxRouteCtx,
+}
+
 pub(in crate::server::transport) enum UpstreamSession {
     None,
     Tcp(TcpUpstream),
     Udp(UdpUpstream),
-    Mux(MuxState),
+    Mux(MuxUpstream),
 }
 
 pub(in crate::server::transport) struct VlessRelayState {
