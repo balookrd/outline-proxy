@@ -30,8 +30,6 @@ mod process;
 #[cfg(feature = "prometheus")]
 mod registration;
 #[cfg(feature = "prometheus")]
-mod reverse;
-#[cfg(feature = "prometheus")]
 mod session;
 #[cfg(feature = "prometheus")]
 mod snapshot;
@@ -54,8 +52,6 @@ use std::sync::LazyLock;
 pub use self::process::{init, update_process_memory};
 #[cfg(feature = "prometheus")]
 pub use self::registration::uplink::normalize_other_runtime_failure_detail;
-#[cfg(feature = "prometheus")]
-pub use self::reverse::set_reverse_peers;
 #[cfg(feature = "prometheus")]
 pub use self::session::{SessionTracker, track_session};
 #[cfg(feature = "prometheus")]
@@ -220,7 +216,6 @@ struct Metrics {
     uplink_open_connections: IntGaugeVec,
     uplink_connection_close_total: IntCounterVec,
     socks_tcp_strict_aborts_total: IntCounterVec,
-    reverse_peers: IntGaugeVec,
     soft_switch_total: IntCounterVec,
     resume_lookup_total: IntCounterVec,
 }
