@@ -326,6 +326,12 @@ pub(in crate::tcp) struct TcpFlowState {
     /// Running count of the un-SACKed segments in `unacked_server_segments`
     /// (== `count_segments_in_pipe`). Maintained alongside [`Self::pipe_bytes`].
     pub(in crate::tcp) pipe_segments: usize,
+    /// When the current flight started going out: set to the send instant
+    /// whenever data is sent into an empty pipe. Snapshotted into each segment as
+    /// `first_tx_snapshot`, and `first_sent - first_tx_snapshot` is that
+    /// segment's send interval — the floor on the BBR rate interval. Canonical
+    /// BBR's `tp->first_tx_mstamp` (`tcp_rate_skb_sent`).
+    pub(in crate::tcp) first_tx_mstamp: Instant,
     /// Cached earliest `last_sent` among the un-SACKed segments, so
     /// `next_retransmission_deadline` is `earliest + rto` in O(1) instead of a
     /// min-scan of the queue on every `reschedule_flow`. `None` when nothing
@@ -494,6 +500,10 @@ pub(in crate::tcp) struct ServerSegment {
     /// instant at which `delivered` held that value, so it is the correct start
     /// of the interval the sample divides by. See [`RateSample`].
     pub(in crate::tcp) delivered_at_snapshot: Instant,
+    /// Value of `first_tx_mstamp` — the instant the current flight started going
+    /// out — when this segment was first sent. `first_sent - first_tx_snapshot`
+    /// is the flight's send interval, the floor on the rate interval.
+    pub(in crate::tcp) first_tx_snapshot: Instant,
     /// Whether the flow was application-limited (downlink buffer drained, not
     /// bandwidth-limited) when this segment was sent. Such a sample only raises
     /// the BtlBw estimate, never lowers it — an idle gap is not a slow path.
@@ -555,6 +565,15 @@ pub(in crate::tcp) struct RateSample {
     /// When `delivered` last equalled `prior_delivered`: the instant of the last
     /// ACK before this segment was sent.
     pub(in crate::tcp) prior_mstamp: Instant,
+    /// How long this flight had been going out when this segment left: the
+    /// segment's send instant minus the flight's first send instant. Bytes cannot
+    /// have been *delivered* faster than we managed to *send* them, so the rate
+    /// interval is `max(send_interval, ack_interval)` — without this floor, an
+    /// ACK arriving a moment after the previous one divides a whole flight's
+    /// worth of released bytes by a near-zero gap. That is the common case in
+    /// loss recovery, where the sample skips the retransmitted (older) segments
+    /// and lands on one sent mid-recovery. `interval_us` in `tcp_rate_gen`.
+    pub(in crate::tcp) send_interval: Duration,
     pub(in crate::tcp) app_limited: bool,
 }
 
