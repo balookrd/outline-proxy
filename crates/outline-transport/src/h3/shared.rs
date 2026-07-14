@@ -54,10 +54,54 @@ const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // on every DNS rotation (round-robin CDN, failover, etc.), leaving the old
 // QUIC connection alive in the map forever because `is_open()` stays `true`
 // until the server eventually drops the idle connection.  A hostname-based key
-// means there is at most one shared H3 connection per logical server: when the
-// DNS answer changes, the old connection is kept until it fails naturally, at
-// which point a fresh connection is made to the (now re-resolved) new address.
-pub(super) type H3ConnectionKey = crate::shared_cache::ConnectionKey;
+// means the DNS answer changing keeps the old connection until it fails
+// naturally, at which point a fresh connection is made to the (now re-resolved)
+// new address.
+//
+// The key additionally carries a `slot` (0..`H3_CARRIER_FANOUT`) so a logical
+// server is served by several *independent* shared QUIC connections rather than
+// a single one. New dials are round-robined across the slots. Multiplexing the
+// whole host onto one shared connection means any connection-level close
+// (server-side `H3_INTERNAL_ERROR`, a qpack/protocol fault, an idle timeout)
+// tears down *every* flow to that server at once — including long-lived SSE
+// streams. Spreading flows across N carriers bounds that blast radius to the
+// ~1/N flows that happen to sit on the collapsing carrier, and the reduced
+// per-carrier stream concurrency also shrinks the race window that triggers the
+// collapse in the first place.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct H3ConnectionKey {
+    base: crate::shared_cache::ConnectionKey,
+    slot: u8,
+}
+
+impl H3ConnectionKey {
+    pub(super) fn with_slot(
+        server_name: &str,
+        server_port: u16,
+        fwmark: Option<u32>,
+        slot: u8,
+    ) -> Self {
+        Self {
+            base: crate::shared_cache::ConnectionKey::new(server_name, server_port, fwmark),
+            slot,
+        }
+    }
+}
+
+// Number of independent shared QUIC connections ("carriers") kept per logical
+// server. Four keeps the reconnect blast radius to ~1/4 of a server's flows
+// while adding only a handful of extra QUIC handshakes / keep-alive PINGs. See
+// the `H3ConnectionKey` comment above for the rationale.
+const H3_CARRIER_FANOUT: u64 = 4;
+
+// Process-wide round-robin cursor that spreads new dials across the
+// `H3_CARRIER_FANOUT` carrier slots. `Relaxed` is sufficient: we only need
+// approximately-even distribution, not a strict global order.
+static H3_CARRIER_RR: AtomicU64 = AtomicU64::new(0);
+
+fn next_h3_carrier_slot() -> u8 {
+    (H3_CARRIER_RR.fetch_add(1, Ordering::Relaxed) % H3_CARRIER_FANOUT) as u8
+}
 
 // ── Shared connection ─────────────────────────────────────────────────────────
 
@@ -282,6 +326,11 @@ struct H3Dialer {
     /// alongside `resume` for the same reason — the trait signature
     /// stays unchanged.
     profile: Option<&'static crate::fingerprint_profile::Profile>,
+    /// Carrier slot (round-robin, 0..`H3_CARRIER_FANOUT`) this dial targets so
+    /// its flows land on one of the N independent shared QUIC connections
+    /// rather than all sharing a single carrier. Chosen once per
+    /// `connect_websocket_h3` call and folded into every key this dialer makes.
+    slot: u8,
 }
 
 impl crate::shared_dial::WsDialer for H3Dialer {
@@ -306,7 +355,7 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         server_port: u16,
         fwmark: Option<u32>,
     ) -> H3ConnectionKey {
-        H3ConnectionKey::new(server_name, server_port, fwmark)
+        H3ConnectionKey::with_slot(server_name, server_port, fwmark, self.slot)
     }
 
     async fn establish(
@@ -359,7 +408,11 @@ pub(crate) async fn connect_websocket_h3(
         .ok_or_else(|| anyhow!("URL is missing port"))?;
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
-    let dialer = H3Dialer { resume, profile };
+    let dialer = H3Dialer {
+        resume,
+        profile,
+        slot: next_h3_carrier_slot(),
+    };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused
