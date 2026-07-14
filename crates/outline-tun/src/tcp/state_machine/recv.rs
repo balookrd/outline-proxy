@@ -141,10 +141,27 @@ pub(in crate::tcp) fn queue_future_segment(
     let payload_start = packet.sequence_number;
     let payload_end = payload_start.wrapping_add(packet.payload.len() as u32);
     let mut cursor = payload_start;
-    let existing_segments = pending_segments.iter().cloned().collect::<Vec<_>>();
-    for existing in existing_segments {
+    // Pass 1, read-only: walk the queue and note which byte ranges of this
+    // segment fall into holes between the already-buffered ones. Only the ranges
+    // are collected — a `(seq, start, end)` triple each — never the segments.
+    //
+    // The queue used to be cloned wholesale here (`iter().cloned().collect()`),
+    // purely so the loop could insert into it while walking it. That paid an
+    // allocation plus one atomic refcount bump per buffered `Bytes` on *every*
+    // out-of-order packet, and it is the reassembly queue that is longest
+    // exactly when out-of-order packets are arriving — the loss-recovery path.
+    // Splitting the walk from the insertion removes the clone: the holes are
+    // decided against the pre-insert queue either way (the old snapshot was, by
+    // construction, the queue before any of this packet's parts landed), so the
+    // outcome is identical.
+    //
+    // `holes` stays empty — and `Vec::new` unallocated — unless this segment
+    // actually straddles a buffered one, which the common append-at-the-end case
+    // never does.
+    let mut holes: Vec<(u32, usize, usize)> = Vec::new();
+    for existing in pending_segments.iter() {
         let existing_start = existing.sequence_number;
-        let existing_end = buffered_client_segment_data_end(&existing);
+        let existing_end = buffered_client_segment_data_end(existing);
         if !seq_gt(existing_end, cursor) {
             continue;
         }
@@ -159,15 +176,7 @@ pub(in crate::tcp) fn queue_future_segment(
             };
             let start_offset = cursor.wrapping_sub(payload_start) as usize;
             let end_offset = end.wrapping_sub(payload_start) as usize;
-            insert_client_segment(
-                pending_segments,
-                BufferedClientSegment {
-                    sequence_number: cursor,
-                    flags: packet.flags & TCP_FLAG_ACK,
-                    payload: packet.payload.slice(start_offset..end_offset),
-                },
-                expected_seq,
-            );
+            holes.push((cursor, start_offset, end_offset));
         }
         if seq_gt(existing_end, cursor) {
             cursor = existing_end;
@@ -175,6 +184,20 @@ pub(in crate::tcp) fn queue_future_segment(
         if !seq_gt(payload_end, cursor) {
             break;
         }
+    }
+    // Pass 2: materialise them, in ascending sequence order — the same order the
+    // old loop inserted them in, and the order `insert_client_segment` keeps the
+    // queue sorted by.
+    for (sequence_number, start_offset, end_offset) in holes {
+        insert_client_segment(
+            pending_segments,
+            BufferedClientSegment {
+                sequence_number,
+                flags: packet.flags & TCP_FLAG_ACK,
+                payload: packet.payload.slice(start_offset..end_offset),
+            },
+            expected_seq,
+        );
     }
     if seq_gt(payload_end, cursor) {
         let start_offset = cursor.wrapping_sub(payload_start) as usize;
