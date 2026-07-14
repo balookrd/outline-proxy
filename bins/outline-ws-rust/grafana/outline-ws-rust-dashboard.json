@@ -4904,6 +4904,522 @@
         "x": 0,
         "y": 119
       },
+      "id": 250,
+      "panels": [],
+      "title": "TUN Downlink Congestion (BBR)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "What BBR believes the last hop can carry (`estimate`) and how fast it is actually pouring into it (`pacing`, after the STARTUP/PROBE gain and both ceilings). Both gauges are sums over flows, so they are divided by the active-flow count here.\n\nRead it against the real capacity of the last hop. An estimate far above what the link can do means BBR is over-reading the path and will pace into it until packets drop — the failure that capped the TUN downlink at ~5-10 Mbit (estimate sat at ~741 Mbit per flow). Estimate in the tens of Mbit on a Wi-Fi last hop is healthy.\n\n`loss cap` is the loss-driven ceiling, averaged over the flows it is actually holding down (0 = no flow capped). Watch for it pinned near its 1 Mbit floor: that means the last hop keeps dropping and the cap cannot climb back.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 120
+      },
+      "id": 251,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace(8 * sum by (instance, group, uplink) (outline_ws_tun_tcp_bbr_btlbw_bytes_per_second{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) / (sum by (instance, group, uplink) (outline_ws_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} estimate",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "label_replace(8 * sum by (instance, group, uplink) (outline_ws_tun_tcp_bbr_pacing_rate_bytes_per_second{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) / (sum by (instance, group, uplink) (outline_ws_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} pacing",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "label_replace(8 * sum by (instance, group, uplink) (outline_ws_tun_tcp_bbr_loss_cap_bytes_per_second{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) / (sum by (instance, group, uplink) (outline_ws_tun_tcp_bbr_loss_capped_flows{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} loss cap",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "BBR bandwidth estimate vs pacing rate (avg per flow)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "min-RTT is the best round-trip the path has shown (BBR's basis for the BDP); smoothed RTT is what it is answering in right now. The **gap between them is standing queue** — buffer we are filling ourselves.\n\nHealthy: the two track each other. A smoothed RTT several times the min means bufferbloat on the last hop, and loss is usually already following. During the ~5-10 Mbit ceiling this ran 21 ms against a 2 ms min (12x); after the rate-sample fix it settled at ~2.8 ms against ~0.9 ms.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 120
+      },
+      "id": 252,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace(sum by (instance, group, uplink) (outline_ws_tun_tcp_bbr_min_rtt_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) / (sum by (instance, group, uplink) (outline_ws_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} min-RTT",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "label_replace(sum by (instance, group, uplink) (outline_ws_tun_tcp_smoothed_rtt_seconds{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) / (sum by (instance, group, uplink) (outline_ws_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} smoothed",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "RTT: min vs smoothed (avg per flow) - queue we are building",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Rate of loss episodes (fast-recovery entry or RTO) across TUN TCP flows. **The primary health signal for the downlink.**\n\nOccasional blips are normal — BBR probes upward by design and a Wi-Fi last hop will drop the odd packet. A sustained rate means we are overrunning the last hop: each episode also halves the Reno window, and a window crushed by repeated loss becomes the real throughput limit regardless of what BBR thinks.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 128
+      },
+      "id": 253,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, group, uplink) (rate(outline_ws_tun_tcp_bbr_loss_episodes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "BBR loss episodes/s",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Flows whose BBR rate is currently throttled by the loss-driven cap: each loss episode multiplies the cap by 0.85, and loss-free rounds relax it back toward the estimate.\n\nA few capped flows on a lossy hop are the mechanism working. Many flows pinned here — especially with the cap sitting near its 1 Mbit floor — means the last hop keeps dropping and the cap can never recover.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 128
+      },
+      "id": 254,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace((sum by (instance, group, uplink) (outline_ws_tun_tcp_bbr_loss_capped_flows{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Flows held down by the loss cap",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The Reno congestion window and the bytes actually unacknowledged, per flow. The effective send window is `min(reno_cwnd, bbr_inflight_cap)` — so when loss crushes cwnd, **Reno, not BBR, is what binds throughput**: roughly `cwnd / RTT`.\n\nThat is exactly how the ~5-10 Mbit ceiling arose: cwnd sat at 11.7 KB against a 21 ms RTT ≈ 4.4 Mbit per flow. Pair this with the RTT panel to compute the ceiling a flow can reach.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 128
+      },
+      "id": 255,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "label_replace(sum by (instance, group, uplink) (outline_ws_tun_tcp_congestion_window_bytes{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) / (sum by (instance, group, uplink) (outline_ws_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} cwnd",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "label_replace(sum by (instance, group, uplink) (outline_ws_tun_tcp_inflight_bytes{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) / (sum by (instance, group, uplink) (outline_ws_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} in-flight",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Congestion window & in-flight (avg per flow)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 135
+      },
       "id": 106,
       "panels": [],
       "title": "Memory & Allocator",
@@ -4945,7 +5461,7 @@
         "h": 3,
         "w": 6,
         "x": 0,
-        "y": 120
+        "y": 136
       },
       "id": 130,
       "options": {
@@ -5027,7 +5543,7 @@
         "h": 3,
         "w": 6,
         "x": 6,
-        "y": 120
+        "y": 136
       },
       "id": 123,
       "options": {
@@ -5094,7 +5610,7 @@
         "h": 3,
         "w": 6,
         "x": 12,
-        "y": 120
+        "y": 136
       },
       "id": 132,
       "options": {
@@ -5153,7 +5669,7 @@
         "h": 3,
         "w": 6,
         "x": 18,
-        "y": 120
+        "y": 136
       },
       "id": 133,
       "options": {
@@ -5281,7 +5797,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 123
+        "y": 139
       },
       "id": 26,
       "options": {
@@ -5319,7 +5835,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 129
+        "y": 145
       },
       "id": 126,
       "panels": [],
@@ -5378,7 +5894,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 130
+        "y": 146
       },
       "id": 30,
       "options": {
@@ -5461,7 +5977,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 130
+        "y": 146
       },
       "id": 152,
       "options": {
@@ -5546,7 +6062,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 130
+        "y": 146
       },
       "id": 124,
       "options": {
@@ -5719,7 +6235,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 130
+        "y": 146
       },
       "id": 31,
       "options": {
@@ -5843,7 +6359,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 130
+        "y": 146
       },
       "id": 121,
       "options": {
@@ -5952,7 +6468,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 134
+        "y": 150
       },
       "id": 153,
       "options": {
@@ -6091,7 +6607,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 134
+        "y": 150
       },
       "id": 29,
       "options": {
@@ -6230,7 +6746,7 @@
         "h": 4,
         "w": 8,
         "x": 16,
-        "y": 134
+        "y": 150
       },
       "id": 32,
       "options": {
@@ -6354,7 +6870,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 138
+        "y": 154
       },
       "id": 122,
       "options": {
