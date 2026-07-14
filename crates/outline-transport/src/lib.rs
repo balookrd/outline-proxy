@@ -157,6 +157,11 @@ mod tcp_transport;
 mod tls;
 mod tls_fingerprint;
 mod udp_transport;
+/// Client-side uplink replay ring — the client→server half of session
+/// resumption. Lives here, next to [`downlink_replay`], so every ingress
+/// (SOCKS5 relay and the TUN engine, which is a separate crate) can replay
+/// its unacked tail after a carrier dies.
+pub mod uplink_replay;
 pub mod vless;
 // Note: protocol-agnostic socket helpers now live in the `outline-net` crate.
 mod mode_health;

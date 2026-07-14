@@ -19,9 +19,9 @@ use outline_uplink::{OverflowPolicy, TransportKind, UplinkManager, UplinkTranspo
 
 use super::super::failover::{ActiveTcpUplink, ConnectedTcpUplink, redial_for_mid_session_retry};
 use super::super::session::{DriveExit, IdleGuard, UplinkOutcome, drive_tcp_session_tasks};
-use super::ring_buffer::{ClientUpstreamRingBuffer, ReplayError};
 use crate::client_io::ClientIo;
 use crate::proxy::TcpTimeouts;
+use outline_transport::uplink_replay::{ClientUpstreamRingBuffer, ReplayError};
 
 enum UplinkIo {
     Readable,
