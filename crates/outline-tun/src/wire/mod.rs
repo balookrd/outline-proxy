@@ -224,6 +224,22 @@ pub(crate) fn locate_ipv6_upper_layer(packet: &[u8]) -> Result<(u8, usize, usize
     Ok((info.next_header, info.payload_offset, info.total_len))
 }
 
+/// Provenance of a packet's L4 (TCP/UDP) checksum by the time an engine parses it.
+///
+/// The TCP parser validates the checksum over the whole segment — a full pass
+/// over the payload. That pass is worth paying for a checksum we did not
+/// produce, and pure waste for one we just wrote ourselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum L4Checksum {
+    /// The checksum on the wire is the sender's (or the kernel handed the packet
+    /// over with the checksum already final). Validate it.
+    Unverified,
+    /// [`recompute_transport_checksum`] rewrote this packet's checksum in this
+    /// very read-loop iteration, over these exact bytes. Re-validating it would
+    /// only re-check our own arithmetic.
+    Recomputed,
+}
+
 /// Recompute a received packet's TCP/UDP checksum in place.
 ///
 /// With `IFF_VNET_HDR`, the kernel may hand us packets whose L4 checksum field is
@@ -234,11 +250,22 @@ pub(crate) fn locate_ipv6_upper_layer(packet: &[u8]) -> Result<(u8, usize, usize
 /// this restores a valid checksum from the (trusted) payload. Only the 2-byte
 /// checksum field is touched; a no-op for non-TCP/UDP, fragmented, or malformed
 /// packets.
-pub(crate) fn recompute_transport_checksum(packet: &mut [u8]) {
-    match packet.first().map(|b| b >> 4) {
+///
+/// Returns [`L4Checksum::Recomputed`] only when the checksum field was actually
+/// rewritten. Every early return below (short packet, IP fragment, non-TCP/UDP
+/// protocol, checksum field beyond the stated length) leaves the sender's
+/// checksum in place, and the parser must still validate it — hence
+/// [`L4Checksum::Unverified`] in those cases.
+pub(crate) fn recompute_transport_checksum(packet: &mut [u8]) -> L4Checksum {
+    let recomputed = match packet.first().map(|b| b >> 4) {
         Some(4) => recompute_ipv4_transport_checksum(packet),
         Some(6) => recompute_ipv6_transport_checksum(packet),
-        _ => {},
+        _ => false,
+    };
+    if recomputed {
+        L4Checksum::Recomputed
+    } else {
+        L4Checksum::Unverified
     }
 }
 
@@ -250,26 +277,26 @@ fn transport_checksum_field_offset(protocol: u8) -> Option<usize> {
     }
 }
 
-fn recompute_ipv4_transport_checksum(packet: &mut [u8]) {
+fn recompute_ipv4_transport_checksum(packet: &mut [u8]) -> bool {
     if packet.len() < IPV4_HEADER_LEN {
-        return;
+        return false;
     }
     let ihl = usize::from(packet[0] & 0x0f) * 4;
     let total_len = usize::from(u16::from_be_bytes([packet[2], packet[3]]));
     if ihl < IPV4_HEADER_LEN || total_len < ihl || total_len > packet.len() {
-        return;
+        return false;
     }
     // Fragments carry only part of the L4 payload — never recompute.
     let fragment_field = u16::from_be_bytes([packet[6], packet[7]]);
     if (fragment_field & 0x3fff) != 0 {
-        return;
+        return false;
     }
     let protocol = packet[9];
     let Some(field) = transport_checksum_field_offset(protocol) else {
-        return;
+        return false;
     };
     if ihl + field + 2 > total_len {
-        return;
+        return false;
     }
     let source = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
     let destination = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
@@ -281,20 +308,21 @@ fn recompute_ipv4_transport_checksum(packet: &mut [u8]) {
         checksum = 0xffff;
     }
     packet[ihl + field..ihl + field + 2].copy_from_slice(&checksum.to_be_bytes());
+    true
 }
 
-fn recompute_ipv6_transport_checksum(packet: &mut [u8]) {
+fn recompute_ipv6_transport_checksum(packet: &mut [u8]) -> bool {
     let Ok((next_header, l4_offset, total_len)) = locate_ipv6_upper_layer(packet) else {
-        return;
+        return false;
     };
     if next_header == IPV6_NEXT_HEADER_FRAGMENT {
-        return;
+        return false;
     }
     let Some(field) = transport_checksum_field_offset(next_header) else {
-        return;
+        return false;
     };
     if l4_offset + field + 2 > total_len || total_len > packet.len() {
-        return;
+        return false;
     }
     let mut source = [0u8; 16];
     source.copy_from_slice(&packet[8..24]);
@@ -309,6 +337,7 @@ fn recompute_ipv6_transport_checksum(packet: &mut [u8]) {
         checksum = 0xffff;
     }
     packet[l4_offset + field..l4_offset + field + 2].copy_from_slice(&checksum.to_be_bytes());
+    true
 }
 
 #[cfg(test)]

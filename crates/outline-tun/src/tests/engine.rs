@@ -6,9 +6,9 @@ use outline_uplink::{
 };
 use shadowsocks_crypto::CipherKind;
 
-use super::echo_reply_suppressed_for_down_group;
+use super::{echo_reply_suppressed_for_down_group, packet_l4_checksum};
 use crate::routing::TunRouting;
-use crate::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN};
+use crate::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN, L4Checksum};
 
 /// Single-uplink manager (TCP + UDP capable, probes disabled) with the
 /// ICMP suppression and bypass flags under test. A freshly-built manager
@@ -192,4 +192,16 @@ async fn replies_when_down_group_bypasses_to_direct() {
 
     let packet = ipv4_echo_request_to([8, 8, 8, 8]);
     assert!(!echo_reply_suppressed_for_down_group(&routing, &packet).await);
+}
+
+/// A reassembled packet carries the *sender's* L4 checksum (it rides in the
+/// first fragment, and the read loop's recompute deliberately declines to fold a
+/// fragment), so reassembly must always downgrade the provenance — otherwise the
+/// parser would skip validating a checksum this process never produced.
+#[test]
+fn reassembly_downgrades_checksum_provenance_to_unverified() {
+    assert_eq!(packet_l4_checksum(L4Checksum::Recomputed, false), L4Checksum::Recomputed);
+    assert_eq!(packet_l4_checksum(L4Checksum::Recomputed, true), L4Checksum::Unverified);
+    assert_eq!(packet_l4_checksum(L4Checksum::Unverified, false), L4Checksum::Unverified);
+    assert_eq!(packet_l4_checksum(L4Checksum::Unverified, true), L4Checksum::Unverified);
 }

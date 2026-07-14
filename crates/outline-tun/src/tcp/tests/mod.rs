@@ -33,7 +33,7 @@ fn parse_action_response(packet: &[u8]) -> Vec<u8> {
 }
 
 fn handle_stateless_packet(packet: &[u8]) -> Result<Option<Vec<u8>>, anyhow::Error> {
-    let parsed = super::parse_tcp_packet(packet)?;
+    let parsed = super::parse_tcp_packet_unverified(packet)?;
     if (parsed.flags & TCP_FLAG_RST) != 0 {
         return Ok(None);
     }
@@ -105,7 +105,7 @@ fn parsed_tcp_packet_keeps_payload() {
         TCP_FLAG_ACK,
         b"abc",
     );
-    let parsed: ParsedTcpPacket = super::parse_tcp_packet(&packet).unwrap();
+    let parsed: ParsedTcpPacket = super::parse_tcp_packet_unverified(&packet).unwrap();
     assert_eq!(parsed.flags, TCP_FLAG_ACK);
     assert_eq!(parsed.payload, b"abc"[..]);
     assert_eq!(parsed.sequence_number, 1);
@@ -304,7 +304,7 @@ fn parse_tcp_packet_extracts_window_scale_and_sack_blocks() {
         &[3, 3, 7, 4, 2, 1, 1, 5, 10, 0, 0, 0, 120, 0, 0, 0, 140, 1, 1, 1],
         &[],
     );
-    let parsed = super::parse_tcp_packet(&packet).unwrap();
+    let parsed = super::parse_tcp_packet_unverified(&packet).unwrap();
     assert_eq!(parsed.window_scale, Some(7));
     assert!(parsed.sack_permitted);
     assert_eq!(parsed.sack_blocks, vec![(120, 140)]);
@@ -324,7 +324,7 @@ fn parse_tcp_packet_extracts_mss_and_timestamps() {
         &[2, 4, 0x05, 0xb4, 8, 10, 0, 0, 0, 9, 0, 0, 0, 7, 1, 1],
         &[],
     );
-    let parsed = super::parse_tcp_packet(&packet).unwrap();
+    let parsed = super::parse_tcp_packet_unverified(&packet).unwrap();
     assert_eq!(parsed.max_segment_size, Some(1460));
     assert_eq!(parsed.timestamp_value, Some(9));
     assert_eq!(parsed.timestamp_echo_reply, Some(7));
@@ -344,7 +344,7 @@ fn parse_tcp_packet_rejects_invalid_ipv4_header_checksum() {
         b"hello",
     );
     packet[12] ^= 0x01;
-    let error = super::parse_tcp_packet(&packet).unwrap_err();
+    let error = super::parse_tcp_packet_unverified(&packet).unwrap_err();
     assert!(error.to_string().contains("invalid IPv4 header checksum"));
 }
 
@@ -362,7 +362,7 @@ fn parse_tcp_packet_rejects_invalid_tcp_checksum_ipv4() {
         b"hello",
     );
     packet[IPV4_HEADER_LEN + 7] ^= 0x01;
-    let error = super::parse_tcp_packet(&packet).unwrap_err();
+    let error = super::parse_tcp_packet_unverified(&packet).unwrap_err();
     assert!(error.to_string().contains("invalid TCP checksum"));
 }
 
@@ -383,7 +383,7 @@ fn parse_tcp_packet_rejects_invalid_tcp_checksum_ipv6() {
         b"hello",
     );
     packet[IPV6_HEADER_LEN + 5] ^= 0x01;
-    let error = super::parse_tcp_packet(&packet).unwrap_err();
+    let error = super::parse_tcp_packet_unverified(&packet).unwrap_err();
     assert!(error.to_string().contains("invalid TCP checksum"));
 }
 
@@ -404,7 +404,7 @@ fn parse_tcp_packet_accepts_ipv6_destination_options_before_tcp() {
         &tcp_option_pad(vec![2, 4, 0x05, 0xb4]),
         b"hello",
     );
-    let parsed = super::parse_tcp_packet(&packet).unwrap();
+    let parsed = super::parse_tcp_packet_unverified(&packet).unwrap();
     assert_eq!(parsed.version, super::IpVersion::V6);
     assert_eq!(parsed.source_port, 40004);
     assert_eq!(parsed.destination_port, 443);
@@ -429,7 +429,7 @@ fn parse_tcp_packet_rejects_ipv6_fragment_header() {
         &[],
         b"hello",
     );
-    let error = super::parse_tcp_packet(&packet).unwrap_err();
+    let error = super::parse_tcp_packet_unverified(&packet).unwrap_err();
     assert!(error.to_string().contains("IPv6 fragments are not supported"));
 }
 
@@ -477,7 +477,7 @@ fn randomized_tcp_packet_round_trip_and_mutation_smoke() {
             );
             assert_ipv4_header_checksum_valid(&packet);
             assert_transport_checksum_valid(&packet, IP_PROTOCOL_TCP);
-            let parsed = super::parse_tcp_packet(&packet).unwrap();
+            let parsed = super::parse_tcp_packet_unverified(&packet).unwrap();
             assert_eq!(parsed.version, super::IpVersion::V4);
             assert_eq!(parsed.sequence_number, sequence_number);
             assert_eq!(parsed.acknowledgement_number, acknowledgement_number);
@@ -485,7 +485,7 @@ fn randomized_tcp_packet_round_trip_and_mutation_smoke() {
             assert_eq!(parsed.payload, payload);
 
             let mutated = flip_packet_byte(&packet, transport_offset(&packet) + 4);
-            assert!(super::parse_tcp_packet(&mutated).is_err());
+            assert!(super::parse_tcp_packet_unverified(&mutated).is_err());
         } else {
             let client_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, rng.random_range(2..=250));
             let remote_ip = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, rng.random_range(2..=250));
@@ -502,7 +502,7 @@ fn randomized_tcp_packet_round_trip_and_mutation_smoke() {
                 &payload,
             );
             assert_transport_checksum_valid(&packet, IP_PROTOCOL_TCP);
-            let parsed = super::parse_tcp_packet(&packet).unwrap();
+            let parsed = super::parse_tcp_packet_unverified(&packet).unwrap();
             assert_eq!(parsed.version, super::IpVersion::V6);
             assert_eq!(parsed.sequence_number, sequence_number);
             assert_eq!(parsed.acknowledgement_number, acknowledgement_number);
@@ -510,7 +510,7 @@ fn randomized_tcp_packet_round_trip_and_mutation_smoke() {
             assert_eq!(parsed.payload, payload);
 
             let mutated = flip_packet_byte(&packet, transport_offset(&packet) + 4);
-            assert!(super::parse_tcp_packet(&mutated).is_err());
+            assert!(super::parse_tcp_packet_unverified(&mutated).is_err());
         }
     }
 }
@@ -570,7 +570,7 @@ async fn build_flow_syn_ack_advertises_mss_and_timestamps() {
     state.server_timestamp_offset = 7;
 
     let packet = super::build_flow_syn_ack_packet(&state, 900, 101).unwrap();
-    let parsed = super::parse_tcp_packet(&packet).unwrap();
+    let parsed = super::parse_tcp_packet_unverified(&packet).unwrap();
     assert_eq!(parsed.flags, TCP_FLAG_SYN | TCP_FLAG_ACK);
     assert_eq!(parsed.max_segment_size, Some(super::MAX_SERVER_SEGMENT_PAYLOAD as u16));
     assert!(parsed.sack_permitted);
@@ -916,7 +916,7 @@ async fn fast_retransmit_resends_a_hole_at_most_once_per_episode() {
     for chunk in &sdp.payload {
         pkt.extend_from_slice(chunk);
     }
-    assert_eq!(super::parse_tcp_packet(&pkt).unwrap().sequence_number, 1000);
+    assert_eq!(super::parse_tcp_packet_unverified(&pkt).unwrap().sequence_number, 1000);
     let hole = &state.unacked_server_segments[0];
     assert_eq!(hole.sequence_number, 1000);
     assert_eq!(hole.retransmits, 1, "Karn counter bumps on every wire put-back");
@@ -1049,7 +1049,7 @@ async fn incremental_pipe_accounting_matches_scan_through_ack_sack_retransmit() 
     for chunk in &sdp.payload {
         packet.extend_from_slice(chunk);
     }
-    assert_eq!(super::parse_tcp_packet(&packet).unwrap().sequence_number, 1008);
+    assert_eq!(super::parse_tcp_packet_unverified(&packet).unwrap().sequence_number, 1008);
     assert!(state.unacked_reordered, "a retransmit past the tail reorders send instants");
     assert_accounting_matches(&state, "fast retransmit");
     assert_eq!((state.pipe_bytes, state.pipe_segments), (8, 2));
@@ -1312,7 +1312,7 @@ async fn build_flow_ack_packet_advertises_sack_blocks_for_buffered_segments() {
     let packet =
         super::build_flow_ack_packet(&state, state.server_seq, state.rcv_nxt, TCP_FLAG_ACK)
             .unwrap();
-    let parsed = super::parse_tcp_packet(&packet).unwrap();
+    let parsed = super::parse_tcp_packet_unverified(&packet).unwrap();
     assert_eq!(parsed.sack_blocks, vec![(112, 116), (120, 124)]);
 }
 
@@ -1348,7 +1348,7 @@ async fn build_flow_ack_packet_limits_sack_blocks_when_timestamps_are_enabled() 
     let packet =
         super::build_flow_ack_packet(&state, state.server_seq, state.rcv_nxt, TCP_FLAG_ACK)
             .unwrap();
-    let parsed = super::parse_tcp_packet(&packet).unwrap();
+    let parsed = super::parse_tcp_packet_unverified(&packet).unwrap();
     assert_eq!(parsed.sack_blocks, vec![(112, 116), (120, 124), (128, 132)]);
     assert_eq!(parsed.timestamp_echo_reply, Some(55));
 }
@@ -1406,7 +1406,7 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
     for chunk in &sdp.payload {
         packet.extend_from_slice(chunk);
     }
-    let parsed = super::parse_tcp_packet(&packet).unwrap();
+    let parsed = super::parse_tcp_packet_unverified(&packet).unwrap();
     assert_eq!(parsed.sequence_number, 1000);
     assert_eq!(parsed.payload, b"AAAA"[..]);
 }
@@ -2222,6 +2222,157 @@ pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
         sniff_direct_reresolve: false,
     }
 }
+// --- L4-checksum provenance (skipping the redundant validation pass) --------
+//
+// Under IFF_VNET_HDR the kernel hands us packets with an un-finalised L4
+// checksum (`F_NEEDS_CSUM`); the read loop folds the segment itself to produce
+// the real checksum. Validating that checksum afterwards walks the whole
+// payload a second time only to confirm our own arithmetic, so the parser skips
+// it — but only for a checksum the read loop actually produced.
+
+/// The kernel's CHECKSUM_PARTIAL hand-off: the L4 checksum field does not hold
+/// a valid checksum yet. Modelled by blanking it, as `recompute_*` expects.
+fn offload_checksum_field(packet: &mut [u8], l4_offset: usize) {
+    packet[l4_offset + 16..l4_offset + 18].fill(0);
+}
+
+fn payload_of_len(len: usize) -> Vec<u8> {
+    (0..len).map(|index| (index % 251) as u8).collect()
+}
+
+/// Skipping validation must not change *anything* the parser produces: for every
+/// payload size — empty (pure ACK), 1 byte, the MSS boundary either side, and a
+/// GRO-sized super-segment — and with TCP options present (they move the payload
+/// offset), the recomputed parse equals the validated parse field for field.
+#[test]
+fn recomputed_parse_matches_validated_parse_ipv4() {
+    let option_sets: [&[u8]; 2] = [&[], &[2, 4, 0x05, 0xb4, 8, 10, 0, 0, 0, 9, 0, 0, 0, 7, 1, 1]];
+    for payload_len in [0usize, 1, 536, 1447, 1448, 1449, 16_384] {
+        for options in option_sets {
+            let payload = payload_of_len(payload_len);
+            let packet = build_client_packet_with_options(
+                Ipv4Addr::new(10, 0, 0, 2),
+                Ipv4Addr::new(8, 8, 8, 8),
+                40004,
+                443,
+                10,
+                100,
+                2048,
+                TCP_FLAG_ACK,
+                options,
+                &payload,
+            );
+            let validated = super::parse_tcp_packet_unverified(&packet).unwrap();
+
+            let mut offloaded = packet.clone();
+            offload_checksum_field(&mut offloaded, IPV4_HEADER_LEN);
+            assert_eq!(
+                crate::wire::recompute_transport_checksum(&mut offloaded),
+                crate::wire::L4Checksum::Recomputed
+            );
+            let recomputed =
+                super::wire::parse_tcp_packet(&offloaded, crate::wire::L4Checksum::Recomputed)
+                    .unwrap();
+
+            assert_eq!(recomputed, validated, "payload_len={payload_len} options={options:?}");
+            assert_eq!(recomputed.payload.len(), payload_len);
+            assert_eq!(&recomputed.payload[..], &payload[..], "payload must arrive intact");
+        }
+    }
+}
+
+#[test]
+fn recomputed_parse_matches_validated_parse_ipv6() {
+    for payload_len in [0usize, 1, 1448, 16_384] {
+        let payload = payload_of_len(payload_len);
+        let packet = build_client_ipv6_packet_with_options(
+            Ipv6Addr::LOCALHOST,
+            Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2),
+            40004,
+            443,
+            10,
+            100,
+            2048,
+            TCP_FLAG_ACK,
+            &[],
+            &payload,
+        );
+        let validated = super::parse_tcp_packet_unverified(&packet).unwrap();
+
+        let mut offloaded = packet.clone();
+        offload_checksum_field(&mut offloaded, IPV6_HEADER_LEN);
+        assert_eq!(
+            crate::wire::recompute_transport_checksum(&mut offloaded),
+            crate::wire::L4Checksum::Recomputed
+        );
+        let recomputed =
+            super::wire::parse_tcp_packet(&offloaded, crate::wire::L4Checksum::Recomputed).unwrap();
+
+        assert_eq!(recomputed, validated, "payload_len={payload_len}");
+        assert_eq!(&recomputed.payload[..], &payload[..]);
+    }
+}
+
+/// The skip is an optimisation, not a relaxation: a packet is only ever parsed
+/// with validation skipped *after* the read loop repaired its checksum, and the
+/// repaired packet still passes the full validation it no longer runs.
+#[test]
+fn recompute_repairs_the_offloaded_checksum_the_parser_then_trusts() {
+    let payload = payload_of_len(1448);
+    let packet = build_client_packet(
+        Ipv4Addr::new(10, 0, 0, 2),
+        Ipv4Addr::new(8, 8, 8, 8),
+        40004,
+        443,
+        10,
+        100,
+        2048,
+        TCP_FLAG_ACK,
+        &payload,
+    );
+
+    // As the kernel delivers it: the checksum field is not valid yet, so the
+    // plain (no-vnet) path would reject the packet outright.
+    let mut offloaded = packet.clone();
+    offload_checksum_field(&mut offloaded, IPV4_HEADER_LEN);
+    let error = super::parse_tcp_packet_unverified(&offloaded).unwrap_err();
+    assert!(error.to_string().contains("invalid TCP checksum"));
+
+    // The read loop's recompute is what makes it valid …
+    assert_eq!(
+        crate::wire::recompute_transport_checksum(&mut offloaded),
+        crate::wire::L4Checksum::Recomputed
+    );
+    let parsed =
+        super::wire::parse_tcp_packet(&offloaded, crate::wire::L4Checksum::Recomputed).unwrap();
+    assert_eq!(&parsed.payload[..], &payload[..]);
+
+    // … and the repaired packet also passes the validation the parser skipped,
+    // producing the identical result. Skipping it costs no correctness.
+    assert_eq!(super::parse_tcp_packet_unverified(&offloaded).unwrap(), parsed);
+}
+
+/// A corrupt checksum is still rejected on every path where the read loop did
+/// not produce it — the guard against the skip being applied too widely.
+#[test]
+fn corrupt_checksum_is_still_rejected_without_recompute() {
+    let mut packet = build_client_packet(
+        Ipv4Addr::new(10, 0, 0, 2),
+        Ipv4Addr::new(8, 8, 8, 8),
+        40004,
+        443,
+        10,
+        100,
+        2048,
+        TCP_FLAG_ACK,
+        b"payload",
+    );
+    packet[IPV4_HEADER_LEN + 16] ^= 0x01;
+
+    let error = super::parse_tcp_packet_unverified(&packet).unwrap_err();
+    assert!(error.to_string().contains("invalid TCP checksum"));
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_client_packet(
     client_ip: Ipv4Addr,
