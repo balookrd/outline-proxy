@@ -4,6 +4,7 @@ mod deliver;
 mod packets;
 mod policy;
 mod recv;
+mod resume;
 mod send;
 mod seq;
 mod transitions;
@@ -42,6 +43,8 @@ pub(super) use recv::{
     normalize_trimmed_segment, queue_future_segment, queue_future_segment_with_recv_window,
     trim_packet_to_receive_window,
 };
+#[allow(unused_imports)]
+pub(super) use resume::{FlowResume, TUN_UPLINK_REPLAY_RING_BYTES};
 #[allow(unused_imports)]
 pub(super) use send::{
     assess_server_backlog_pressure, clear_flow_metrics, flush_server_output,

@@ -17,6 +17,7 @@ use outline_uplink::UplinkManager;
 
 use super::super::TcpFlowKey;
 use super::super::engine::scheduler::FlowScheduler;
+use super::resume::FlowResume;
 
 /// Abstraction over the upstream TCP write half — tunneled (Shadowsocks
 /// framing) or direct (plain bytes).
@@ -272,6 +273,13 @@ pub(in crate::tcp) struct TcpFlowState {
     /// tracking (`unacked_server_segments`) stays per-MSS regardless.
     pub(in crate::tcp) gso_enabled: bool,
     pub(in crate::tcp) routing: FlowRouting,
+    /// What a future carrier migration would need to re-attach this flow's
+    /// server-parked upstream on a fresh carrier: the flow's own Session ID, the
+    /// uplink replay ring, and the downstream-accepted byte offset. Armed on a
+    /// successful tunneled connect (see `tasks/upstream/connect.rs`); stays
+    /// [`FlowResume::disarmed`] on a direct flow. Recording only — nothing in
+    /// the engine acts on it yet.
+    pub(in crate::tcp) resume: FlowResume,
     pub(in crate::tcp) signals: FlowControlSignals,
     pub(in crate::tcp) status: TcpFlowStatus,
     pub(in crate::tcp) rcv_nxt: u32,
