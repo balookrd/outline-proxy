@@ -21,6 +21,7 @@ use super::super::{
     TCP_INITIAL_CWND_SEGMENTS, TCP_INITIAL_RTO, TCP_SERVER_RECV_WINDOW_CAPACITY,
     TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL, TcpFlowKey,
 };
+use super::eviction::eviction_index_needs_refresh;
 use super::{TunTcpEngine, close_upstream_writer, ip_family_from_version, ip_to_target};
 use crate::TunRoute;
 
@@ -141,6 +142,7 @@ impl TunTcpEngine {
                 status_since: now,
                 last_seen: now,
             },
+            eviction_indexed_at: now,
             next_scheduled_deadline: None,
         }));
 
@@ -315,12 +317,26 @@ impl TunTcpEngine {
         }
     }
 
-    pub(super) fn record_flow_activity(&self, state: &TcpFlowState) {
+    /// Refresh the flow's position in the eviction (LRU) index after its
+    /// `last_seen` advanced.
+    ///
+    /// Runs on every accepted packet and every downlink chunk, so it must not
+    /// touch the engine-wide eviction lock on each call: the index is only
+    /// re-keyed once `last_seen` has moved a whole `TCP_EVICTION_INDEX_QUANTUM`
+    /// past the value already indexed (tracked per flow in
+    /// `eviction_indexed_at`, so the decision itself is lock-free). See
+    /// [`eviction_index_needs_refresh`] for why a coarse LRU order is enough.
+    pub(super) fn record_flow_activity(&self, state: &mut TcpFlowState) {
         if matches!(state.status, TcpFlowStatus::Closed) {
             return;
         }
+        let last_seen = state.timestamps.last_seen;
+        if !eviction_index_needs_refresh(state.eviction_indexed_at, last_seen) {
+            return;
+        }
+        state.eviction_indexed_at = last_seen;
         self.inner
             .eviction_index
-            .upsert(state.key.clone(), state.id, state.timestamps.last_seen);
+            .upsert(state.key.clone(), state.id, last_seen);
     }
 }

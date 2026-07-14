@@ -81,7 +81,7 @@ impl TunTcpEngine {
         }
 
         absorb_accepted_client_packet(&mut state, &packet);
-        self.record_flow_activity(&state);
+        self.record_flow_activity(&mut state);
 
         if state.status == TcpFlowStatus::SynReceived {
             if completes_syn_received_handshake(

@@ -1195,11 +1195,14 @@ async fn tun_tcp_flow_limit_uses_activity_eviction_index() {
         .await
         .unwrap();
 
+    // Activity on the first flow moves it off the eviction head. The bump has to
+    // clear `TCP_EVICTION_INDEX_QUANTUM`: a sub-quantum advance deliberately
+    // leaves the index untouched so the packet path never takes the eviction lock.
     let first_flow = engine.lookup_flow(&first_key).await.unwrap();
     {
         let mut state = first_flow.lock().await;
-        state.timestamps.last_seen = now + Duration::from_millis(2);
-        engine.record_flow_activity(&state);
+        state.timestamps.last_seen = now + Duration::from_secs(2);
+        engine.record_flow_activity(&mut state);
     }
 
     engine
@@ -1814,6 +1817,7 @@ fn eviction_test_flow_state(
             status_since: last_seen,
             last_seen,
         },
+        eviction_indexed_at: last_seen,
         next_scheduled_deadline: None,
     }
 }

@@ -167,6 +167,19 @@ const TCP_CONNECT_FAILURE_CACHE_CAP: usize = 4096;
 /// The per-flow maintenance task is the primary idle-cleanup path; this
 /// loop is a safety net against task panics / spurious exits.
 const TUN_TCP_FLOW_CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
+/// Granularity of the flow eviction (LRU) index. `last_seen` advances on every
+/// accepted packet and every downlink chunk, but re-indexing costs a `BTreeSet`
+/// remove + insert behind the engine-wide eviction mutex, so a flow is only
+/// re-indexed once its `last_seen` has advanced by at least this much. Chosen
+/// orders of magnitude below the idle timeout that decides which flows are
+/// genuinely stale, so the coarser order still ranks a flow taking traffic above
+/// one that has gone quiet. See `engine::eviction::eviction_index_needs_refresh`.
+const TCP_EVICTION_INDEX_QUANTUM: Duration = Duration::from_secs(1);
+/// How long a flow must have been quiet before the GC tick reclaims the capacity
+/// its per-flow queues grew to during a transfer. Well above the ACK cadence of
+/// a live transfer, so an active flow is never shrunk only to regrow on the next
+/// chunk. See `state_machine::reclaim_flow_queue_capacity`.
+const TCP_QUEUE_RECLAIM_IDLE: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct TcpFlowKey {

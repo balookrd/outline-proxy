@@ -56,10 +56,32 @@ pub(super) fn commit_flow_changes(state: &mut TcpFlowState, tcp: &TunTcpConfig) 
 
 /// Recompute the flow's next maintenance deadline and push it onto the
 /// scheduler.  Old heap entries are never removed — the loop re-validates
-/// popped entries against `next_scheduled_deadline` and discards stale
-/// ones.  To avoid unbounded heap growth we only push when the deadline
-/// moves earlier (or no entry exists); later deadlines just wake the loop
-/// so it can re-sleep against the updated horizon.
+/// popped entries against `next_scheduled_deadline` and discards true
+/// orphans.  To avoid unbounded heap growth we only push when the deadline
+/// moves earlier (or no entry exists).
+///
+/// A *later* deadline needs neither a push nor a wake-up. That matters on the
+/// hot path: committing new data moves the RTO deadline out, so this is the
+/// common case on essentially every packet, and nudging the single maintenance
+/// task here made it spin once per packet (wake → lock the heap in `drain_due`
+/// → nothing due → lock it again in `peek_deadline` → sleep against the very
+/// same horizon).
+///
+/// Safe because of this invariant: **every live flow whose canonical deadline
+/// is `Some(d)` has a heap entry at or before `d`.** It holds inductively:
+///
+/// * the push branch inserts an entry at exactly `d`;
+/// * the no-push branch only ever moves `d` *later*, so the entry that covered
+///   the previous (earlier) canonical deadline still covers the new one;
+/// * the maintenance loop processes any popped entry with `scheduled_at <= d`
+///   (`2ec72b5`) and re-arms the flow at its current deadline via the `Wait`
+///   arm, which restores the invariant for the entry it consumed.
+///
+/// So a flow is always revisited at or before its deadline — including the
+/// partial-ACK case where the RTO deadline recedes and nothing is pushed for
+/// it, which is exactly what `2ec72b5` fixed. And since a later deadline leaves
+/// the heap untouched, the loop's sleep target (the heap minimum) is still
+/// valid: there is nothing for a wake-up to re-evaluate.
 fn reschedule_flow(state: &mut TcpFlowState, tcp: &TunTcpConfig) {
     if state.status == TcpFlowStatus::Closed {
         state.next_scheduled_deadline = None;
@@ -75,8 +97,6 @@ fn reschedule_flow(state: &mut TcpFlowState, tcp: &TunTcpConfig) {
             state.next_scheduled_deadline = Some(new_deadline);
             if push {
                 state.signals.scheduler.schedule(state.key.clone(), new_deadline);
-            } else {
-                state.signals.scheduler.wake();
             }
         },
         None => {

@@ -10,6 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 
 use crate::TunRoute;
+use crate::utils::{maybe_shrink_vec, maybe_shrink_vecdeque};
 use crate::vnet::VirtioNetHdr;
 use outline_transport::{SocketTcpWriter, VlessTcpWriter, WsTcpWriter};
 use outline_uplink::UplinkManager;
@@ -356,11 +357,43 @@ pub(in crate::tcp) struct TcpFlowState {
     /// code can borrow the handles and the last-emitted deltas disjointly.
     pub(in crate::tcp) flow_gauges: Option<CachedFlowGauges>,
     pub(in crate::tcp) timestamps: FlowTimestamps,
+    /// The `timestamps.last_seen` value currently reflected in the engine's
+    /// `FlowEvictionIndex`. Kept next to the flow state so `record_flow_activity`
+    /// can decide *without taking the engine-wide eviction lock* whether this
+    /// packet advanced `last_seen` far enough (a whole `TCP_EVICTION_INDEX_QUANTUM`)
+    /// to be worth re-indexing.
+    pub(in crate::tcp) eviction_indexed_at: Instant,
     /// Most recently scheduled maintenance deadline for this flow.  A heap
     /// entry in `FlowScheduler` is considered live only when its deadline
     /// matches this value; any other popped entry is a stale leftover from
     /// a previous `sync_flow_metrics_and_schedule` call and is dropped.
     pub(in crate::tcp) next_scheduled_deadline: Option<Instant>,
+}
+
+/// Give back the capacity the per-flow queues grew to during a transfer.
+///
+/// The queues are sized by the transfer's BDP / window peak and are drained with
+/// `pop_front` / `split_to`, which never returns the allocation — so a flow that
+/// pulled one large download and then went quiet keeps holding it for as long as
+/// it lives (a `ServerSegment` is ~96 B, so a few hundred in-flight segments are
+/// tens of KB), multiplied by every live-but-idle flow.
+///
+/// Called from the GC tick for flows that have been quiet for
+/// `TCP_QUEUE_RECLAIM_IDLE`, never from the packet path: shrinking a queue that
+/// is about to refill just trades RSS for allocator churn. The `maybe_shrink_*`
+/// helpers are additionally self-gating (they only act on a queue that is mostly
+/// empty and above a floor capacity), so a repeat visit to an already-reclaimed
+/// flow is a no-op.
+///
+/// Capacity only. Every running counter (`pipe_bytes`, `pipe_segments`,
+/// `pending_server_bytes_total`, …) tracks queue *contents*, which this leaves
+/// untouched.
+pub(in crate::tcp) fn reclaim_flow_queue_capacity(state: &mut TcpFlowState) {
+    maybe_shrink_vecdeque(&mut state.pending_server_data);
+    maybe_shrink_vecdeque(&mut state.pending_client_data);
+    maybe_shrink_vecdeque(&mut state.unacked_server_segments);
+    maybe_shrink_vecdeque(&mut state.pending_client_segments);
+    maybe_shrink_vec(&mut state.sack_scoreboard);
 }
 
 /// Cached gauge handles bound to the uplink they were resolved for. The

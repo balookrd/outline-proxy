@@ -19,6 +19,12 @@ pub fn maybe_shrink_vecdeque<T>(deque: &mut VecDeque<T>) {
     }
 }
 
+pub fn maybe_shrink_vec<T>(vec: &mut Vec<T>) {
+    if should_shrink(vec.len(), vec.capacity()) {
+        vec.shrink_to_fit();
+    }
+}
+
 fn should_shrink(len: usize, capacity: usize) -> bool {
     capacity >= SHRINK_MIN_CAPACITY && len.saturating_mul(4) <= capacity
 }
