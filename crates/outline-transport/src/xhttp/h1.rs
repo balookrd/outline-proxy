@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use http::{Method, Request, Version};
+use http::{HeaderMap, HeaderValue, Method, Request, Version};
 use http_body_util::BodyExt;
 use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
@@ -297,6 +297,26 @@ async fn driver_loop_h1(
         }
     }));
 
+    // Per-POST request template, built once per session. Unlike h2/h3,
+    // h1 also carries an explicit `Content-Length`; it is seeded with a
+    // placeholder here so its slot sits in the same position the old
+    // per-POST builder produced (Host, Content-Length, then the
+    // fingerprint headers). Each POST clones this map and overwrites the
+    // Content-Length value in place — `HeaderMap::insert` on an existing
+    // key keeps the entry's position, so the wire header order stays
+    // byte-identical while the fingerprint `apply` runs only once.
+    let base_headers = match build_post_headers(&target, profile) {
+        Ok(headers) => headers,
+        Err(error) => {
+            warn!(?error, "xhttp/h1 POST header template build failed");
+            let _ = in_tx
+                .send_control(Err(io_ws_err("xhttp/h1 POST header build failed")))
+                .await;
+            return;
+        },
+    };
+    let uri_prefix = target.uri_seq_prefix();
+
     // POST loop: strictly serialised on the uplink connection.
     // h1 only allows one in-flight request per socket, and pipelining
     // is too unreliable through CDN/proxy intermediaries to risk —
@@ -329,7 +349,7 @@ async fn driver_loop_h1(
             let _ = in_tx.send_control(Err(io_ws_err("xhttp/h1 uplink not ready"))).await;
             break;
         }
-        if let Err(error) = post_one(&mut up_send, target.as_ref(), seq, bytes, profile).await {
+        if let Err(error) = post_one(&mut up_send, &uri_prefix, &base_headers, seq, bytes).await {
             warn!(?error, seq, "xhttp/h1 POST failed");
             let _ = in_tx
                 .send_control(Err(io_ws_err("xhttp/h1 uplink POST failed")))
@@ -344,31 +364,53 @@ async fn driver_loop_h1(
     debug!("xhttp/h1 driver exiting");
 }
 
+/// Header map shared by every packet-up POST in an h1 session: `Host`,
+/// a placeholder `Content-Length`, then the browser fingerprint headers.
+/// Built once per session; each POST clones it and overwrites the
+/// Content-Length in place. The insertion order matches the old per-POST
+/// builder so `HeaderMap`'s iteration (and thus the wire header order)
+/// is byte-identical.
+pub(super) fn build_post_headers(
+    target: &XhttpTarget,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
+) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        http::header::HOST,
+        HeaderValue::try_from(target.authority.as_str())
+            .context("invalid xhttp/h1 authority for POST host header")?,
+    );
+    headers.insert(http::header::CONTENT_LENGTH, HeaderValue::from(0_usize));
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply(
+            profile,
+            &mut headers,
+            crate::fingerprint_profile::SecFetchPreset::XhrCors,
+        );
+    }
+    Ok(headers)
+}
+
 async fn post_one(
     send: &mut http1::SendRequest<RequestBody>,
-    target: &XhttpTarget,
+    uri_prefix: &str,
+    base_headers: &HeaderMap,
     seq: u64,
     payload: bytes::Bytes,
-    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<()> {
     // Path-based seq matches xray / sing-box's `PlacementPath` default
     // and mirrors the h2/h3 siblings — the wire URL stays byte-identical
     // across all three carriers.
+    let content_length = payload.len();
     let mut req = Request::builder()
         .method(Method::POST)
-        .uri(target.full_uri_with_seq(seq))
+        .uri(format!("{uri_prefix}{seq}"))
         .version(Version::HTTP_11)
-        .header(http::header::HOST, target.authority.as_str())
-        .header(http::header::CONTENT_LENGTH, payload.len())
         .body(full_request_body(payload))
         .context("failed to build xhttp/h1 POST request")?;
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply(
-            profile,
-            req.headers_mut(),
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
+    let mut headers = base_headers.clone();
+    headers.insert(http::header::CONTENT_LENGTH, HeaderValue::from(content_length));
+    *req.headers_mut() = headers;
     let resp = send
         .send_request(req)
         .await

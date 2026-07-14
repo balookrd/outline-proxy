@@ -463,14 +463,21 @@ impl UdpWsTransport {
 
     async fn decrypt_udp_bytes(&self, bytes: &[u8]) -> Result<Vec<u8>> {
         if let Some(state) = &self.ss2022 {
-            let expected_client_session_id = state.lock().await.client_session_id;
+            // One lock spans the whole read-decrypt-update path: the SS2022
+            // decrypt is synchronous, so there is no await between reading
+            // `client_session_id` and committing the replay state. Holding a
+            // single guard both halves the per-datagram lock traffic (was two
+            // acquire/release round trips) and makes the replay check + update
+            // atomic against a concurrent reader instead of racing across the
+            // gap the old two-lock form left open. Mirrors `send_packet`,
+            // which already holds one lock across the synchronous encrypt.
+            let mut state = state.lock().await;
             let (session_id, packet_id, payload) = decrypt_udp_packet_2022(
                 self.cipher,
                 &self.master_key,
-                expected_client_session_id,
+                state.client_session_id,
                 bytes,
             )?;
-            let mut state = state.lock().await;
             if let Some(last_server_packet_id) = state.last_server_packet_id
                 && state.server_session_id == Some(session_id)
                 && packet_id <= last_server_packet_id
@@ -484,6 +491,10 @@ impl UdpWsTransport {
         Ok(decrypt_udp_packet(self.cipher, &self.master_key, bytes)?)
     }
 }
+
+#[cfg(test)]
+#[path = "tests/udp_transport.rs"]
+mod tests;
 
 /// Protocol-agnostic UDP session transport. Present as a single public type
 /// across the proxy, TUN, and uplink layers so callers don't need to branch

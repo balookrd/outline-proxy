@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use bytes::Bytes;
-use http::{Method, Request, Version};
+use http::{HeaderMap, HeaderValue, Method, Request, Version};
 use http_body_util::{BodyExt, StreamBody};
 use hyper::client::conn::http2;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -503,6 +503,24 @@ async fn driver_loop_h2(
         }
     }));
 
+    // Per-POST request template, built once per session: every POST in
+    // this session carries the same host + fingerprint headers and the
+    // same URL prefix, so we precompute both here and only clone the
+    // header map / append the seq per frame instead of re-running the
+    // fingerprint `apply` and re-`format!`-ing the whole absolute URI on
+    // every uplink write.
+    let base_headers = match build_post_headers(&target, profile) {
+        Ok(headers) => Arc::new(headers),
+        Err(error) => {
+            warn!(?error, "xhttp h2 POST header template build failed");
+            let _ = in_tx
+                .send_control(Err(io_ws_err("xhttp h2 POST header build failed")))
+                .await;
+            return;
+        },
+    };
+    let uri_prefix: Arc<str> = Arc::from(target.uri_seq_prefix());
+
     // POST loop: pop messages, send them with monotonically-
     // increasing seq. Pipelined — we spawn the actual hyper send
     // as a sub-task so successive POSTs can overlap on the wire.
@@ -526,7 +544,8 @@ async fn driver_loop_h2(
         let seq = next_seq;
         next_seq = next_seq.saturating_add(1);
         let mut send = send_request.clone();
-        let target = Arc::clone(&target);
+        let base_headers = Arc::clone(&base_headers);
+        let uri_prefix = Arc::clone(&uri_prefix);
         let in_tx_for_err = in_tx.clone();
         // Hyper requires `ready().await` before issuing a new
         // stream; doing it inline serialises POSTs against
@@ -542,7 +561,7 @@ async fn driver_loop_h2(
             // The permit rides the POST: these bytes are still resident until
             // hyper has written them, so the budget must keep covering them.
             let _permit = permit;
-            if let Err(error) = post_one(send, target.as_ref(), seq, bytes, profile).await {
+            if let Err(error) = post_one(send, &uri_prefix, &base_headers, seq, bytes).await {
                 warn!(?error, seq, "xhttp POST failed");
                 let _ = in_tx_for_err
                     .send_control(Err(io_ws_err("xhttp uplink POST failed")))
@@ -553,12 +572,38 @@ async fn driver_loop_h2(
     debug!("xhttp driver exiting");
 }
 
+/// Header map shared by every packet-up POST in an h2 session: the
+/// `Host` header plus the browser fingerprint headers. Built once per
+/// session and cloned per POST — the clone reproduces the exact header
+/// order the old per-POST `Request::builder` + `apply` path produced
+/// (`HeaderMap::clone` preserves iteration order), so the anti-DPI
+/// fingerprint stays byte-identical.
+pub(super) fn build_post_headers(
+    target: &XhttpTarget,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
+) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        http::header::HOST,
+        HeaderValue::try_from(target.authority.as_str())
+            .context("invalid xhttp authority for POST host header")?,
+    );
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply(
+            profile,
+            &mut headers,
+            crate::fingerprint_profile::SecFetchPreset::XhrCors,
+        );
+    }
+    Ok(headers)
+}
+
 async fn post_one(
     mut send: http2::SendRequest<RequestBody>,
-    target: &XhttpTarget,
+    uri_prefix: &str,
+    base_headers: &HeaderMap,
     seq: u64,
     payload: Bytes,
-    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<()> {
     // Path-based seq (`<base>/<session>/<seq>`) is xray / sing-box's
     // default placement; the server matches both shapes but emitting
@@ -567,18 +612,11 @@ async fn post_one(
     // from a vanilla xray one.
     let mut req = Request::builder()
         .method(Method::POST)
-        .uri(target.full_uri_with_seq(seq))
+        .uri(format!("{uri_prefix}{seq}"))
         .version(Version::HTTP_2)
-        .header(http::header::HOST, target.authority.as_str())
         .body(full_request_body(payload))
         .context("failed to build xhttp POST request")?;
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply(
-            profile,
-            req.headers_mut(),
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
+    *req.headers_mut() = base_headers.clone();
     let resp = send
         .send_request(req)
         .await
