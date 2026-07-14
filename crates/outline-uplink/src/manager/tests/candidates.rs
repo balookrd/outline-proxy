@@ -465,3 +465,81 @@ async fn downstream_throttle_sets_cooldown_and_counts() {
         "the other transport's counter is untouched"
     );
 }
+
+fn lb_per_flow() -> LoadBalancingConfig {
+    LoadBalancingConfig {
+        mode: LoadBalancingMode::ActiveActive,
+        routing_scope: RoutingScope::PerFlow,
+        ..lb_global()
+    }
+}
+
+/// up-a is multi-wire (its status can move `active_wire` onto a fallback), up-b
+/// is single-wire; equal weight, so the order is decided by score alone.
+fn per_flow_manager() -> UplinkManager {
+    UplinkManager::new_for_test(
+        "main",
+        vec![dead_uplink("up-a", 1.0), healthy_uplink("up-b", 1.0)],
+        probe_enabled(),
+        lb_per_flow(),
+    )
+    .unwrap()
+}
+
+/// Candidate ordering ranks uplinks by the RTT of the wire that is **actually
+/// carrying traffic**: once `active_wire` has moved to a fallback, that
+/// fallback's EWMA — not primary's — is the uplink's score.
+///
+/// Guards the candidate-building fast path: it now copies a scoring projection
+/// out from under the status lock instead of cloning the whole `UplinkStatus`,
+/// and the per-wire EWMA slots (a `Vec` on the status) are exactly the input a
+/// projection is most likely to drop. Dropping it would score up-a by primary's
+/// stale 10 ms and hand it every flow, even though its live wire measures 200 ms.
+#[tokio::test]
+async fn candidate_order_ranks_by_active_wire_rtt() {
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+
+    let manager = per_flow_manager();
+    manager.test_set_tcp_health(0, true, 10).await;
+    manager.test_set_tcp_health(1, true, 50).await;
+    // up-a has descended onto its first fallback wire, which measures 200 ms.
+    manager.inner.with_status_mut(0, |s| {
+        s.tcp.active_wire = 1;
+        s.tcp.fallback_rtt_ewma = vec![Some(Duration::from_millis(200))];
+    });
+
+    let order: Vec<usize> = manager
+        .tcp_candidates(&target)
+        .await
+        .iter()
+        .map(|c| c.index)
+        .collect();
+    assert_eq!(
+        order.first().copied(),
+        Some(1),
+        "up-a rides a 200 ms fallback wire, so the 50 ms up-b must be preferred; got {order:?}",
+    );
+
+    // Same statuses, except up-a is back on its primary wire (10 ms) — it must
+    // win the flow again. A fresh manager keeps the earlier sticky route from
+    // masking the re-ranking.
+    let manager = per_flow_manager();
+    manager.test_set_tcp_health(0, true, 10).await;
+    manager.test_set_tcp_health(1, true, 50).await;
+    manager.inner.with_status_mut(0, |s| {
+        s.tcp.active_wire = 0;
+        s.tcp.fallback_rtt_ewma = vec![Some(Duration::from_millis(200))];
+    });
+
+    let order: Vec<usize> = manager
+        .tcp_candidates(&target)
+        .await
+        .iter()
+        .map(|c| c.index)
+        .collect();
+    assert_eq!(
+        order.first().copied(),
+        Some(0),
+        "with up-a back on its 10 ms primary wire it must outrank up-b; got {order:?}",
+    );
+}

@@ -375,8 +375,23 @@ pub(super) async fn reconcile_global_udp_transport(
         return Ok(());
     }
 
-    let current_active = uplinks.active_uplink_index_for_transport(TransportKind::Udp).await;
     let selected = active_transport.load().index;
+    // Fast path: compare against the lock-free snapshot the manager publishes on
+    // every active-uplink mutation. This runs per datagram in strict scopes, and
+    // the datagram that finds a switch is the rare one — taking the manager's
+    // async RwLock on every packet just to learn "still the same uplink" is what
+    // this pre-check exists to avoid. The authoritative read below still gates
+    // the actual switch, so a snapshot that has not been published yet only
+    // delays reconciliation to the next datagram (or to the downlink task, which
+    // is woken by the very same watch channel).
+    let snapshot_active = uplinks
+        .active_uplinks_snapshot()
+        .udp_for(uplinks.strict_global_active_uplink());
+    if snapshot_active == Some(selected) || snapshot_active.is_none() {
+        return Ok(());
+    }
+
+    let current_active = uplinks.active_uplink_index_for_transport(TransportKind::Udp).await;
     if current_active == Some(selected) || current_active.is_none() {
         return Ok(());
     }

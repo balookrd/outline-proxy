@@ -1,4 +1,5 @@
-//! Regression coverage for the combined-SS warm-standby refill discriminator.
+//! Warm-standby pool behaviour: refill discriminator (combined-SS) and refill
+//! scheduling on acquisition.
 //!
 //! On a combined-SS uplink one URL carries both the TCP and UDP legs, told
 //! apart by a hidden discriminator in the WS `/{token}` segment. The warm-
@@ -9,19 +10,21 @@
 //! every packet then feeds the TCP decryptor and no echo returns (combined-SS
 //! UDP looks dead while VLESS-UDP, which has no standby pool, keeps working).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::{accept_async, accept_hdr_async};
 use url::Url;
 
 use outline_wire::xhttp::{SsPathKind, decode_kind};
 
 use crate::config::{TransportMode, UplinkConfig};
-use crate::types::{TransportKind, UplinkManager};
+use crate::types::{TransportKind, UplinkCandidate, UplinkManager};
 
 use super::{lb, make_uplink, probe_disabled};
 
@@ -143,5 +146,106 @@ async fn combined_ss_tcp_standby_refill_dials_tcp_leg() {
     );
 
     let _ = shutdown_tx.send(());
+    task.abort();
+}
+
+/// A mock WS server that hangs up on the first `stale_first` connections right
+/// after the handshake and keeps every later one open. Lets a test stage a pool
+/// whose head entries are already dead by the time they are taken. The returned
+/// counter tracks accepted connections, i.e. how many dials the client made.
+async fn spawn_ws_server_with_stale_head(
+    stale_first: usize,
+) -> (Url, Arc<AtomicUsize>, JoinHandle<()>) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let accepted_in_task = Arc::clone(&accepted);
+    let task = tokio::spawn(async move {
+        // Sockets accepted after the stale head are parked here so they stay
+        // open (dropping them would close the pooled client streams too).
+        let mut live = Vec::new();
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { break };
+            let seen = accepted_in_task.fetch_add(1, Ordering::SeqCst);
+            match accept_async(stream).await {
+                // Handshake completed, then FIN: the client's pooled stream is
+                // now stale and its acquisition-time peek will discard it.
+                Ok(ws) if seen < stale_first => drop(ws),
+                Ok(ws) => live.push(ws),
+                Err(_) => break,
+            }
+        }
+    });
+    (Url::parse(&format!("ws://{addr}/tcp")).unwrap(), accepted, task)
+}
+
+/// Taking from a pool whose head entries went stale must schedule exactly ONE
+/// refill, and that refill must restore the pool to `desired`.
+///
+/// The take path used to spawn a refill task per `pop_front()`, so walking past
+/// K stale entries fired K+1 tasks — each resolving a standby context (a status
+/// read) and bouncing off the refill mutex with nothing to do, because the first
+/// task had already refilled the pool. The single refill has to cover every slot
+/// the walk drained, not just the entry handed to the caller.
+#[tokio::test]
+async fn stale_pool_entries_schedule_a_single_refill() {
+    const DESIRED: usize = 3;
+    const STALE: usize = 2;
+
+    let (url, accepted, task) = spawn_ws_server_with_stale_head(STALE).await;
+
+    let mut config = lb();
+    config.warm_standby_tcp = DESIRED;
+    config.warm_standby_udp = 0;
+    let uplink = make_uplink("standby", url.as_str());
+    let manager =
+        UplinkManager::new_for_test("test", vec![uplink.clone()], probe_disabled(), config)
+            .unwrap();
+
+    // Fill the pool: the first STALE entries land dead (server hung up), the
+    // rest are live.
+    manager.maintain_pool(0, TransportKind::Tcp).await;
+    assert_eq!(manager.inner.standby_pools[0].tcp.len_hint(), DESIRED);
+    // Let the server's FIN reach the pooled streams so the peek sees them closed.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let candidate = UplinkCandidate { index: 0, uplink: uplink.into() };
+    let taken = manager.try_take_tcp_standby(&candidate).await;
+    assert!(
+        taken.is_some(),
+        "the take must walk past the {STALE} stale entries and hand out the live one",
+    );
+
+    assert_eq!(
+        manager.inner.standby_pools[0]
+            .refill_gate(TransportKind::Tcp)
+            .spawned(),
+        1,
+        "one take must schedule one refill, however many stale entries it discarded",
+    );
+
+    // The single refill covers every drained slot, so the pool converges back to
+    // `desired` (the taken stream is not returned to the pool).
+    let refilled = tokio::time::timeout(Duration::from_secs(5), async {
+        while manager.inner.standby_pools[0].tcp.len_hint() < DESIRED {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        refilled.is_ok(),
+        "the refill must restore the pool to {DESIRED}, got {}",
+        manager.inner.standby_pools[0].tcp.len_hint(),
+    );
+    assert_eq!(
+        manager.inner.standby_pools[0]
+            .refill_gate(TransportKind::Tcp)
+            .spawned(),
+        1,
+        "refilling must not schedule further refills",
+    );
+    // Staging dialed DESIRED, the refill re-dialed the drained slots.
+    assert_eq!(accepted.load(Ordering::SeqCst), 2 * DESIRED);
+
     task.abort();
 }

@@ -74,8 +74,8 @@ impl UplinkManager {
         if !matches!(uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return configured;
         }
-        let status = self.inner.read_status(index);
-        capped_or_configured(&status.tcp, configured)
+        self.inner
+            .with_status(index, |status| capped_or_configured(&status.tcp, configured))
     }
 
     /// Same as `effective_tcp_mode`, but for the UDP-over-WS /
@@ -86,8 +86,8 @@ impl UplinkManager {
         if !matches!(uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
             return configured;
         }
-        let status = self.inner.read_status(index);
-        capped_or_configured(&status.udp, configured)
+        self.inner
+            .with_status(index, |status| capped_or_configured(&status.udp, configured))
     }
 
     /// Pops one connection from the TCP standby pool without falling back to
@@ -405,9 +405,22 @@ impl UplinkManager {
         }
     }
 
+    /// Queue a background refill of the `(index, transport)` pool, coalescing
+    /// with a refill that is already queued.
+    ///
+    /// Callers on the take path fire this once per acquisition, but several
+    /// sessions can acquire from the same pool at once; without the gate each of
+    /// them spawned a task that resolved the standby context (itself a status
+    /// read), took the refill mutex, saw the pool back at `desired` and exited.
+    /// The gate collapses that burst into one task — see [`RefillGate`] for why
+    /// the claim is released before the work rather than after.
     pub(crate) fn spawn_refill(&self, index: usize, transport: TransportKind) {
+        if !self.inner.standby_pools[index].refill_gate(transport).try_claim() {
+            return;
+        }
         let manager = self.clone();
         tokio::spawn(async move {
+            manager.inner.standby_pools[index].refill_gate(transport).release();
             manager.refill_pool(index, transport).await;
         });
     }

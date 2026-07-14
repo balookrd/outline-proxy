@@ -6,9 +6,14 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::config::TransportMode;
+use crate::selection::{StatusView, TransportStatusView};
 use crate::types::TransportKind;
 
 use super::carrier_descent_state::CarrierDescentState;
+
+#[cfg(test)]
+#[path = "tests/status.rs"]
+mod tests;
 
 /// All per-transport runtime state for a single uplink.
 ///
@@ -216,9 +221,141 @@ impl UplinkStatus {
             TransportKind::Udp => &self.udp,
         }
     }
+
+    /// `Copy` projection of the fields the selection path reads *after* it has
+    /// released the status lock — see [`SelectionView`].
+    pub(crate) fn selection_view(&self) -> SelectionView {
+        SelectionView {
+            tcp: self.tcp.selection_view(),
+            udp: self.udp.selection_view(),
+        }
+    }
+}
+
+/// The per-transport slice of [`SelectionView`].
+///
+/// `base_latency` is resolved eagerly (while the status lock is held) because
+/// it is a pure function of the status — active-wire EWMA, then primary's EWMA,
+/// then the last probe sample — and resolving it here is what lets the view drop
+/// the per-wire `Vec`s.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TransportSelectionView {
+    pub(crate) healthy: Option<bool>,
+    pub(crate) cooldown_until: Option<Instant>,
+    pub(crate) consecutive_successes: u32,
+    pub(crate) penalty: PenaltyState,
+    pub(crate) descent_window_until: Option<Instant>,
+    pub(crate) base_latency: Option<Duration>,
+}
+
+/// Everything the scoring / gating layer reads off an [`UplinkStatus`], as a
+/// flat `Copy` struct.
+///
+/// Candidate building runs per connection and per uplink, so it used to clone a
+/// whole [`UplinkStatus`] — a `String` (`last_error`, most often `Some(..)`
+/// exactly on the flapping uplinks) plus three per-wire `Vec`s — for every
+/// candidate, none of which the selection ever reads. This view carries only the
+/// scalars selection actually consults, so the hot path copies bytes instead of
+/// allocating.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SelectionView {
+    pub(crate) tcp: TransportSelectionView,
+    pub(crate) udp: TransportSelectionView,
+}
+
+impl SelectionView {
+    pub(crate) fn of(&self, kind: TransportKind) -> &TransportSelectionView {
+        match kind {
+            TransportKind::Tcp => &self.tcp,
+            TransportKind::Udp => &self.udp,
+        }
+    }
+}
+
+impl TransportStatusView for TransportSelectionView {
+    fn healthy(&self) -> Option<bool> {
+        self.healthy
+    }
+
+    fn cooldown_until(&self) -> Option<Instant> {
+        self.cooldown_until
+    }
+
+    fn penalty(&self) -> PenaltyState {
+        self.penalty
+    }
+
+    fn descent_window_until(&self) -> Option<Instant> {
+        self.descent_window_until
+    }
+
+    fn base_latency(&self) -> Option<Duration> {
+        self.base_latency
+    }
+}
+
+impl StatusView for SelectionView {
+    type Transport = TransportSelectionView;
+
+    fn transport(&self, kind: TransportKind) -> &Self::Transport {
+        self.of(kind)
+    }
+}
+
+impl TransportStatusView for PerTransportStatus {
+    fn healthy(&self) -> Option<bool> {
+        self.healthy
+    }
+
+    fn cooldown_until(&self) -> Option<Instant> {
+        self.cooldown_until
+    }
+
+    fn penalty(&self) -> PenaltyState {
+        self.penalty
+    }
+
+    fn descent_window_until(&self) -> Option<Instant> {
+        self.descent.until()
+    }
+
+    fn base_latency(&self) -> Option<Duration> {
+        // Prefer the active wire's measured RTT so cross-uplink scoring
+        // compares the latency of the wire that is **actually carrying
+        // traffic**. When the dial loop / probe walk has moved `active_wire`
+        // off primary, primary's `rtt_ewma` may belong to a completely
+        // different (now-broken) wire — using it would mis-rank this uplink
+        // against its peers.
+        //
+        // Fall back to primary's `rtt_ewma`, then to the latest probe
+        // `latency`, when the active wire has no per-wire sample yet (cold
+        // start right after a wire flip). The first per-wire probe writes
+        // the slot within one cycle, so this stale-primary window is bounded.
+        self.active_wire_rtt_ewma().or(self.rtt_ewma).or(self.latency)
+    }
+}
+
+impl StatusView for UplinkStatus {
+    type Transport = PerTransportStatus;
+
+    fn transport(&self, kind: TransportKind) -> &Self::Transport {
+        self.of(kind)
+    }
 }
 
 impl PerTransportStatus {
+    /// `Copy` projection of this transport's selection-relevant fields.
+    pub(crate) fn selection_view(&self) -> TransportSelectionView {
+        TransportSelectionView {
+            healthy: self.healthy,
+            cooldown_until: self.cooldown_until,
+            consecutive_successes: self.consecutive_successes,
+            penalty: self.penalty,
+            descent_window_until: self.descent.until(),
+            base_latency: self.base_latency(),
+        }
+    }
+
     /// RTT EWMA for the wire that `new sessions currently land on`
     /// (i.e. [`Self::active_wire`]). Returns the primary's
     /// [`Self::rtt_ewma`] when `active_wire == 0` and the corresponding
