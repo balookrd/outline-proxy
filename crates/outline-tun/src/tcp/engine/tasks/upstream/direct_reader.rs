@@ -10,8 +10,11 @@ use outline_metrics as metrics;
 
 use super::super::super::super::TcpFlowKey;
 use super::super::super::super::maintenance::commit_flow_changes;
-use super::super::super::super::state_machine::{TcpFlowState, TcpFlowStatus, flush_server_output};
+use super::super::super::super::state_machine::{
+    TcpFlowState, TcpFlowStatus, assess_server_backlog_pressure, flush_server_output,
+};
 use super::super::super::TunTcpEngine;
+use super::backlog::BacklogGate;
 
 impl TunTcpEngine {
     /// Simpler reader for direct (non-tunneled) TCP flows: reads raw bytes
@@ -30,6 +33,19 @@ impl TunTcpEngine {
         let down_bytes = metrics::direct_tcp_bytes("down");
         tokio::spawn(async move {
             loop {
+                // Downlink backpressure. Parking here stops draining the socket,
+                // so the kernel receive buffer fills and the window we advertise
+                // to the origin shrinks — throttling it at the source, the way a
+                // tunnelled flow throttles the carrier via WS/QUIC stream credit.
+                // Without this a fast origin feeding a slow client grew
+                // `pending_server_data` without bound.
+                if matches!(
+                    engine.await_downlink_backlog_room(&key, &flow, &mut close_rx).await,
+                    BacklogGate::Stop
+                ) {
+                    return;
+                }
+
                 // Wait for readability (or close) without holding a receive
                 // buffer; allocate it only once data is ready and drop it
                 // before the next park, so an idle direct flow holds no
@@ -85,7 +101,7 @@ impl TunTcpEngine {
                     },
                     Ok(n) => {
                         let chunk = Bytes::from(buf);
-                        let flush = {
+                        let (flush, backlog_pressure) = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
                                 return;
@@ -95,9 +111,31 @@ impl TunTcpEngine {
                             state.pending_server_bytes_total += chunk.len();
                             state.pending_server_data.push_back(chunk);
                             let flush = flush_server_output(&mut state);
+                            let backlog_pressure = assess_server_backlog_pressure(
+                                &mut state,
+                                &engine.inner.tcp,
+                                Instant::now(),
+                                flush.as_ref().map(|flush| flush.window_stalled).unwrap_or(false),
+                            );
                             commit_flow_changes(&mut state, &engine.inner.tcp);
-                            flush
+                            (flush, backlog_pressure)
                         };
+
+                        if backlog_pressure.should_abort {
+                            engine.abort_tun_tcp_backlog(&key, &flow, &backlog_pressure).await;
+                            return;
+                        } else if backlog_pressure.exceeded {
+                            debug!(
+                                pending_bytes = backlog_pressure.pending_bytes,
+                                limit_bytes = engine.inner.tcp.max_pending_server_bytes,
+                                over_limit_ms = backlog_pressure.over_limit_ms.unwrap_or_default(),
+                                no_progress_ms =
+                                    backlog_pressure.no_progress_ms.unwrap_or_default(),
+                                window_stalled = backlog_pressure.window_stalled,
+                                "direct TUN TCP flow is under backlog pressure, delaying abort"
+                            );
+                        }
+
                         match flush {
                             Ok(flush) => {
                                 if let Err(error) = engine

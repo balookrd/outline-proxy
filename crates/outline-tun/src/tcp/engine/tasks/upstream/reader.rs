@@ -1,7 +1,6 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use anyhow::anyhow;
 use tokio::sync::{Mutex, watch};
 use tracing::{debug, warn};
 
@@ -12,18 +11,11 @@ use outline_uplink::TransportKind;
 use super::super::super::super::TcpFlowKey;
 use super::super::super::super::maintenance::commit_flow_changes;
 use super::super::super::super::state_machine::{
-    ServerBacklogPressure, ServerFlush, TcpFlowState, TcpFlowStatus,
-    assess_server_backlog_pressure, flush_server_output, pending_server_bytes, server_fin_sent,
-    server_window_stalled,
+    ServerFlush, TcpFlowState, TcpFlowStatus, assess_server_backlog_pressure, flush_server_output,
+    server_fin_sent,
 };
-use super::super::super::{TunTcpEngine, key_group_and_uplink, key_uplink_name};
-
-/// How often the downlink-backpressure pause re-evaluates the flow while it
-/// waits for the client to drain. A safety re-check in case the `server_drain`
-/// wake-up is missed (notify has no stored permit across iterations), and the
-/// cadence at which a genuinely stalled flow's no-progress abort is observed
-/// while the reader is parked and not otherwise reading.
-const SERVER_BACKLOG_RECHECK_INTERVAL: Duration = Duration::from_millis(200);
+use super::super::super::{TunTcpEngine, key_group_and_uplink};
+use super::backlog::BacklogGate;
 
 impl TunTcpEngine {
     pub(in crate::tcp::engine) fn spawn_upstream_reader(
@@ -59,54 +51,11 @@ impl TunTcpEngine {
                     }
                 }
 
-                // Downlink backpressure: while the per-flow downlink buffer is
-                // over the soft limit, stop draining the carrier and wait for
-                // the client to ACK and make room. Not reading lets the WS/QUIC
-                // stream flow-control throttle the server, so a slow client no
-                // longer grows `pending_server_data` into the hard-limit RST
-                // that tore down healthy large downloads. A genuinely stalled
-                // client (window shut, no ACK progress) is still reaped here.
-                loop {
-                    let (over_limit, pressure, drain) = {
-                        let mut state = flow.lock().await;
-                        if matches!(state.status, TcpFlowStatus::Closed) {
-                            return;
-                        }
-                        let drain = state.signals.server_drain.clone();
-                        if pending_server_bytes(&state) <= engine.inner.tcp.max_pending_server_bytes
-                        {
-                            (false, None, drain)
-                        } else {
-                            let stalled = server_window_stalled(&state);
-                            let pressure = assess_server_backlog_pressure(
-                                &mut state,
-                                &engine.inner.tcp,
-                                Instant::now(),
-                                stalled,
-                            );
-                            commit_flow_changes(&mut state, &engine.inner.tcp);
-                            (true, Some(pressure), drain)
-                        }
-                    };
-                    if !over_limit {
-                        break;
-                    }
-                    if let Some(pressure) = pressure
-                        && pressure.should_abort
-                    {
-                        engine.abort_tun_tcp_backlog(&key, &flow, &pressure).await;
-                        return;
-                    }
-                    tokio::select! {
-                        _ = close_rx.changed() => {
-                            if *close_rx.borrow() {
-                                debug!("upstream TCP flow reader cancelled");
-                                return;
-                            }
-                        }
-                        _ = drain.notified() => {}
-                        _ = tokio::time::sleep(SERVER_BACKLOG_RECHECK_INTERVAL) => {}
-                    }
+                if matches!(
+                    engine.await_downlink_backlog_room(&key, &flow, &mut close_rx).await,
+                    BacklogGate::Stop
+                ) {
+                    return;
                 }
 
                 let read_result = tokio::select! {
@@ -252,41 +201,5 @@ impl TunTcpEngine {
                 }
             }
         });
-    }
-
-    /// Tear down a TUN TCP flow whose downlink buffer hit the backlog abort
-    /// condition: report the uplink runtime failure (so the penalty system can
-    /// fail over), log the diagnostic snapshot, and RST the flow. Shared by the
-    /// backpressure-pause path and the post-read assessment so both emit an
-    /// identical failure signal.
-    async fn abort_tun_tcp_backlog(
-        &self,
-        key: &TcpFlowKey,
-        flow: &Arc<Mutex<TcpFlowState>>,
-        pressure: &ServerBacklogPressure,
-    ) {
-        let uplink_name = key_uplink_name(flow).await;
-        let (uplink_index, flow_manager) = {
-            let state = flow.lock().await;
-            (state.routing.uplink_index, state.routing.manager.clone())
-        };
-        let error = anyhow!("server backlog limit exceeded for TUN TCP flow");
-        self.report_tcp_runtime_failure(&flow_manager, uplink_index, &error)
-            .await;
-        let (cooldown_ms, penalty_ms) = flow_manager
-            .runtime_failure_debug_state(uplink_index, TransportKind::Tcp)
-            .await;
-        warn!(
-            uplink = %uplink_name,
-            uplink_index,
-            cooldown_ms,
-            penalty_ms,
-            pending_bytes = pressure.pending_bytes,
-            limit_bytes = self.inner.tcp.max_pending_server_bytes,
-            grace_ms = pressure.over_limit_ms.unwrap_or_default(),
-            no_progress_ms = pressure.no_progress_ms.unwrap_or_default(),
-            "closing TUN TCP flow after server backlog limit"
-        );
-        self.abort_flow_with_rst(key, "server_backlog_limit").await;
     }
 }
