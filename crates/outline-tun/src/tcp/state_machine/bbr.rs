@@ -195,14 +195,25 @@ pub(in crate::tcp) fn pacing_active(state: &TcpFlowState) -> bool {
     state.bbr.btlbw_bps > 0
 }
 
+/// The rate (bytes/sec) the flush is currently pacing this flow at — gain
+/// applied to BtlBw, then clamped by the configured ceiling and the loss cap.
+/// Exported as a metric; the pacer itself uses the private form.
+pub(in crate::tcp) fn pacing_rate(state: &TcpFlowState) -> u64 {
+    pacing_rate_from(&state.bbr)
+}
+
 /// Record a loss episode (fast-recovery entry or RTO): back the loss-driven
 /// bandwidth cap off one multiplicative step, down to a floor. Plain BBR would
 /// keep pacing at the burst-inflated BtlBw straight into a lossy last hop; this
 /// pulls the effective rate (pacing + in-flight) below it so the drops stop.
-/// The cap relaxes back toward BtlBw on subsequent loss-free rounds. No-op
-/// before BBR has a bandwidth estimate (the small initial Reno window bounds
-/// the burst until then).
+/// The cap relaxes back toward BtlBw on subsequent loss-free rounds. No-op for
+/// the cap before BBR has a bandwidth estimate (the small initial Reno window
+/// bounds the burst until then) — the episode is still counted.
 pub(in crate::tcp) fn note_loss(bbr: &mut BbrState) {
+    // Counted ahead of the no-estimate bail-out: the counter answers "is the
+    // last hop still dropping?", which holds whether or not BBR yet has an
+    // estimate for the cap to bite on.
+    bbr.loss_episodes = bbr.loss_episodes.saturating_add(1);
     if bbr.btlbw_bps == 0 {
         return;
     }
@@ -287,7 +298,14 @@ fn record_delivery(
     {
         bbr.round_count = bbr.round_count.saturating_add(1);
         bbr.next_round_delivered = bbr.delivered;
-        if bbr.mode == BbrMode::Startup {
+        // An app-limited round carries no evidence about the path: BtlBw failed
+        // to grow because we had nothing to send, not because the pipe is full.
+        // Feeding it to the plateau check ends the ramp early and parks BtlBw at
+        // whatever rate the application happened to ask for — a chunked video
+        // player, which idles between segment requests, otherwise strands the
+        // flow at a fraction of the link. Canonical BBR skips these rounds too
+        // (`bbr_check_full_bw_reached()` bails on `rs->is_app_limited`).
+        if bbr.mode == BbrMode::Startup && !sample.app_limited {
             check_startup_full_pipe(bbr);
         }
         // AIMD relax of the loss cap: grow it back toward BtlBw only on a round
