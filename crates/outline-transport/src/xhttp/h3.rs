@@ -18,9 +18,8 @@ use bytes::{Buf, Bytes};
 use h3::client::SendRequest;
 use http::{Method, Request, Version};
 use rustls::pki_types::ServerName;
-use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
+use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, warn};
 use url::Url;
 
@@ -32,9 +31,9 @@ use crate::resumption::SessionId;
 
 use super::stream::io_ws_err;
 use super::{
-    ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
+    ACK_PREFIX_HEADER, InboundSender, OutboundReceiver, RESUME_CAPABLE_HEADER,
     RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, SsPathKind, XhttpStream, XhttpSubmode,
-    XhttpTarget, generate_session_id,
+    XhttpTarget, generate_session_id, inbound_channel, outbound_channel,
 };
 
 /// Same dial budget the h2 path uses — keeps fallback windows
@@ -110,8 +109,8 @@ pub(super) async fn connect_xhttp_h3(
             session_id: session_id.clone(),
         });
 
-        let (in_tx, in_rx) = mpsc::channel::<Result<Message, WsError>>(INBOUND_CHANNEL_CAPACITY);
-        let (out_tx, out_rx) = mpsc::channel::<Message>(OUTBOUND_CHANNEL_CAPACITY);
+        let (in_tx, in_rx) = inbound_channel();
+        let (out_tx, out_rx) = outbound_channel();
 
         let (issued_session_id, ack_prefix_echo, symmetric_replay_echo, driver, active_submode) =
             match submode {
@@ -373,8 +372,8 @@ async fn open_h3_get(
 async fn driver_loop_h3(
     send_request: SendRequest<h3_quinn::OpenStreams, Bytes>,
     target: Arc<XhttpTarget>,
-    in_tx: mpsc::Sender<Result<Message, WsError>>,
-    mut out_rx: mpsc::Receiver<Message>,
+    in_tx: InboundSender,
+    mut out_rx: OutboundReceiver,
     body_stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) {
@@ -384,23 +383,28 @@ async fn driver_loop_h3(
     let _drain_task = AbortOnDrop::new(tokio::spawn(async move {
         if let Err(error) = drain_h3_body(body_stream, &drain_in_tx).await {
             debug!(?error, "xhttp/h3 GET reader exited");
-            let _ = drain_in_tx.send(Err(io_ws_err("xhttp/h3 downlink ended"))).await;
+            let _ = drain_in_tx
+                .send_control(Err(io_ws_err("xhttp/h3 downlink ended")))
+                .await;
         } else {
-            let _ = drain_in_tx.send(Ok(Message::Close(None))).await;
+            let _ = drain_in_tx.send_control(Ok(Message::Close(None))).await;
         }
     }));
 
     let mut next_seq: u64 = 0;
     loop {
-        let msg = match out_rx.recv().await {
-            Some(msg) => msg,
+        let queued = match out_rx.recv().await {
+            Some(queued) => queued,
             None => break,
         };
+        let (msg, permit) = queued.into_parts();
         let bytes = match msg {
             Message::Binary(b) => b,
             Message::Ping(_) | Message::Pong(_) => continue,
             Message::Text(_) => {
-                let _ = in_tx.send(Err(io_ws_err("xhttp/h3 does not carry text"))).await;
+                let _ = in_tx
+                    .send_control(Err(io_ws_err("xhttp/h3 does not carry text")))
+                    .await;
                 continue;
             },
             Message::Close(_) => break,
@@ -412,10 +416,13 @@ async fn driver_loop_h3(
         let target = Arc::clone(&target);
         let in_tx_for_err = in_tx.clone();
         tokio::spawn(async move {
+            // Permit rides the POST — the bytes are resident until h3 has sent
+            // them, so the queue budget must keep covering them.
+            let _permit = permit;
             if let Err(error) = post_one(send, target.as_ref(), seq, bytes, profile).await {
                 warn!(?error, seq, "xhttp/h3 POST failed");
                 let _ = in_tx_for_err
-                    .send(Err(io_ws_err("xhttp/h3 uplink POST failed")))
+                    .send_control(Err(io_ws_err("xhttp/h3 uplink POST failed")))
                     .await;
             }
         });
@@ -501,8 +508,8 @@ async fn driver_loop_h3_stream_one(
     // it via `H3_NO_ERROR`. The handle is otherwise unused — stream-one
     // never opens a second request.
     _send_request_guard: SendRequest<h3_quinn::OpenStreams, Bytes>,
-    in_tx: mpsc::Sender<Result<Message, WsError>>,
-    mut out_rx: mpsc::Receiver<Message>,
+    in_tx: InboundSender,
+    mut out_rx: OutboundReceiver,
     stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
 ) {
     let (mut send_half, recv_half) = stream.split();
@@ -512,16 +519,18 @@ async fn driver_loop_h3_stream_one(
         if let Err(error) = drain_h3_body(recv_half, &drain_in_tx).await {
             debug!(?error, "xhttp/h3 stream-one downlink reader exited");
             let _ = drain_in_tx
-                .send(Err(io_ws_err("xhttp/h3 stream-one downlink ended")))
+                .send_control(Err(io_ws_err("xhttp/h3 stream-one downlink ended")))
                 .await;
         } else {
-            let _ = drain_in_tx.send(Ok(Message::Close(None))).await;
+            let _ = drain_in_tx.send_control(Ok(Message::Close(None))).await;
         }
     }));
     // Uplink pump: every Binary message becomes a body chunk on
     // the send half. Calling `finish()` at exit closes the request
     // body cleanly so the server sees EOF and can park or tear down.
-    while let Some(msg) = out_rx.recv().await {
+    // The permit is released only once `send_data` has taken the bytes.
+    while let Some(queued) = out_rx.recv().await {
+        let (msg, _permit) = queued.into_parts();
         match msg {
             Message::Binary(b) => {
                 if let Err(error) = send_half.send_data(b).await {
@@ -531,7 +540,7 @@ async fn driver_loop_h3_stream_one(
             },
             Message::Ping(_) | Message::Pong(_) => continue,
             Message::Text(_) => {
-                let _ = in_tx.send(Err(io_ws_err("xhttp does not carry text"))).await;
+                let _ = in_tx.send_control(Err(io_ws_err("xhttp does not carry text"))).await;
                 continue;
             },
             Message::Close(_) => break,
@@ -547,7 +556,7 @@ async fn driver_loop_h3_stream_one(
 /// produces.
 async fn drain_h3_body<S>(
     mut stream: h3::client::RequestStream<S, Bytes>,
-    in_tx: &mpsc::Sender<Result<Message, WsError>>,
+    in_tx: &InboundSender,
 ) -> Result<()>
 where
     S: h3::quic::RecvStream,
@@ -565,7 +574,11 @@ where
         let mut chunk = chunk;
         let remaining = chunk.remaining();
         let bytes = chunk.copy_to_bytes(remaining);
-        if !bytes.is_empty() && in_tx.send(Ok(Message::Binary(bytes))).await.is_err() {
+        if bytes.is_empty() {
+            continue;
+        }
+        let len = bytes.len();
+        if in_tx.send(Ok(Message::Binary(bytes)), len).await.is_err() {
             return Ok(());
         }
     }
