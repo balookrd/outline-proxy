@@ -5,7 +5,7 @@ use anyhow::Result;
 use super::super::super::TCP_FLAG_ACK;
 use super::super::congestion::{
     current_retransmission_timeout, fast_retransmit_index, preferred_retransmit_index,
-    server_segment_is_sacked,
+    rebuild_unacked_accounting, server_segment_is_sacked,
 };
 use super::super::packets::{build_flow_ack_packet, build_flow_data_header};
 use super::super::types::{ServerDataPacket, TcpFlowState, TcpFlowStatus};
@@ -84,6 +84,9 @@ pub(in crate::tcp) fn retransmit_oldest_unacked_packet(
             segment.payload.clone(),
         )
     };
+    // Rewriting `last_sent` can reorder send instants; refresh the earliest /
+    // reordered accounting (pipe membership is unchanged — still un-SACKed).
+    rebuild_unacked_accounting(state);
     // A retransmit is always a single MSS segment, never a TSO super-segment.
     let header = build_flow_data_header(
         state,
@@ -130,6 +133,9 @@ pub(in crate::tcp) fn retransmit_due_segment(
             segment.payload.clone(),
         )
     };
+    // Rewriting `last_sent` can reorder send instants; refresh the earliest /
+    // reordered accounting (pipe membership is unchanged — still un-SACKed).
+    rebuild_unacked_accounting(state);
     let header = build_flow_data_header(
         state,
         sequence_number,

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::super::{
@@ -96,41 +97,145 @@ fn range_fully_covered(scoreboard: &[SequenceRange], start: u32, end: u32) -> bo
     false
 }
 
+/// Whether `segment` is fully covered by `scoreboard`. Split from
+/// [`server_segment_is_sacked`] so the incremental accounting can probe the
+/// scoreboard while holding a disjoint borrow of the segment queue.
+fn segment_is_sacked_in(scoreboard: &[SequenceRange], segment: &ServerSegment) -> bool {
+    let end = segment
+        .sequence_number
+        .wrapping_add(server_segment_len(segment) as u32);
+    range_fully_covered(scoreboard, segment.sequence_number, end)
+}
+
 pub(in crate::tcp) fn server_segment_is_sacked(
     state: &TcpFlowState,
     segment: &ServerSegment,
 ) -> bool {
-    let end = segment
-        .sequence_number
-        .wrapping_add(server_segment_len(segment) as u32);
-    range_fully_covered(&state.sack_scoreboard, segment.sequence_number, end)
+    segment_is_sacked_in(&state.sack_scoreboard, segment)
+}
+
+/// Scan the unacked queue against the current scoreboard and return the exact
+/// `(pipe_bytes, pipe_segments, earliest_unsacked_sent, reordered)` tuple. This
+/// is the O(N·scoreboard) reference computation; the running counters on
+/// `TcpFlowState` must always equal it. Used both to rebuild the counters when
+/// the scoreboard changes and, in debug builds, to cross-check them.
+fn unacked_accounting_snapshot(
+    segments: &VecDeque<ServerSegment>,
+    scoreboard: &[SequenceRange],
+) -> (usize, usize, Option<Instant>, bool) {
+    let mut pipe_bytes = 0usize;
+    let mut pipe_segments = 0usize;
+    let mut earliest: Option<Instant> = None;
+    let mut previous_sent: Option<Instant> = None;
+    let mut reordered = false;
+    for segment in segments {
+        if let Some(previous) = previous_sent
+            && segment.last_sent < previous
+        {
+            reordered = true;
+        }
+        previous_sent = Some(segment.last_sent);
+        if !segment_is_sacked_in(scoreboard, segment) {
+            pipe_bytes += server_segment_len(segment);
+            pipe_segments += 1;
+            earliest = Some(match earliest {
+                Some(current) => current.min(segment.last_sent),
+                None => segment.last_sent,
+            });
+        }
+    }
+    (pipe_bytes, pipe_segments, earliest, reordered)
+}
+
+/// Recompute the incremental in-flight accounting from scratch. Called when the
+/// SACK scoreboard changes (a segment may have moved in or out of the pipe) and
+/// after a retransmit reorders send instants — never on the per-write flush
+/// path. Also usable from tests that build `unacked_server_segments` /
+/// `sack_scoreboard` by hand, mirroring how `pending_server_bytes_total` is
+/// re-synced there.
+pub(in crate::tcp) fn rebuild_unacked_accounting(state: &mut TcpFlowState) {
+    let (pipe_bytes, pipe_segments, earliest, reordered) =
+        unacked_accounting_snapshot(&state.unacked_server_segments, &state.sack_scoreboard);
+    state.pipe_bytes = pipe_bytes;
+    state.pipe_segments = pipe_segments;
+    state.earliest_unsacked_sent = earliest;
+    state.unacked_reordered = reordered;
+}
+
+/// After a cumulative ACK popped a prefix of the queue, refresh the cached
+/// earliest un-SACKed send instant. On the loss-free path `last_sent` is
+/// non-decreasing by position, so the first remaining un-SACKed segment holds
+/// the minimum (O(1)–O(sacked-prefix)); a prior retransmit that reordered send
+/// instants falls back to the exact rescan (which also re-clears the flag once
+/// order is restored). `pipe_bytes` / `pipe_segments` are maintained inline by
+/// the pop loop, so this only touches the earliest cache.
+fn refresh_earliest_after_pop(state: &mut TcpFlowState) {
+    if state.unacked_server_segments.is_empty() {
+        state.earliest_unsacked_sent = None;
+        state.unacked_reordered = false;
+        return;
+    }
+    if state.unacked_reordered {
+        rebuild_unacked_accounting(state);
+    } else {
+        state.earliest_unsacked_sent = state
+            .unacked_server_segments
+            .iter()
+            .find(|segment| !segment_is_sacked_in(&state.sack_scoreboard, segment))
+            .map(|segment| segment.last_sent);
+    }
+}
+
+/// Debug-only: assert the running counters equal the scan reference. Runs on
+/// every hot-path read (`bytes_in_pipe` / `count_segments_in_pipe` /
+/// `next_retransmission_deadline`), so a missed update site — the one way this
+/// change could silently skew the congestion window — trips in debug/tests
+/// immediately without costing anything in release.
+#[inline]
+fn debug_assert_unacked_accounting(state: &TcpFlowState) {
+    #[cfg(not(debug_assertions))]
+    let _ = state;
+    #[cfg(debug_assertions)]
+    {
+        let (pipe_bytes, pipe_segments, earliest, reordered) =
+            unacked_accounting_snapshot(&state.unacked_server_segments, &state.sack_scoreboard);
+        debug_assert_eq!(state.pipe_bytes, pipe_bytes, "pipe_bytes drifted from the scan version");
+        debug_assert_eq!(
+            state.pipe_segments, pipe_segments,
+            "pipe_segments drifted from the scan version"
+        );
+        debug_assert_eq!(
+            state.earliest_unsacked_sent, earliest,
+            "earliest_unsacked_sent drifted from the scan version"
+        );
+        // A stale-true `unacked_reordered` is safe (it only forces one extra
+        // exact rescan); a stale-false would trust front ordering wrongly.
+        if reordered {
+            debug_assert!(
+                state.unacked_reordered,
+                "unacked_reordered is false but the queue is actually reordered"
+            );
+        }
+    }
 }
 
 pub(in crate::tcp) fn bytes_in_pipe(state: &TcpFlowState) -> usize {
-    state
-        .unacked_server_segments
-        .iter()
-        .filter(|segment| !server_segment_is_sacked(state, segment))
-        .map(server_segment_len)
-        .sum()
+    debug_assert_unacked_accounting(state);
+    state.pipe_bytes
 }
 
 pub(in crate::tcp) fn count_segments_in_pipe(state: &TcpFlowState) -> usize {
-    state
-        .unacked_server_segments
-        .iter()
-        .filter(|segment| !server_segment_is_sacked(state, segment))
-        .count()
+    debug_assert_unacked_accounting(state);
+    state.pipe_segments
 }
 
 pub(in crate::tcp) fn next_retransmission_deadline(state: &TcpFlowState) -> Option<Instant> {
-    let rto = state.retransmission_timeout;
+    debug_assert_unacked_accounting(state);
+    // `rto` is constant across the queue, so `min(last_sent) + rto` equals the
+    // old `min(last_sent + rto)`.
     state
-        .unacked_server_segments
-        .iter()
-        .filter(|segment| !server_segment_is_sacked(state, segment))
-        .map(|segment| segment.last_sent + rto)
-        .min()
+        .earliest_unsacked_sent
+        .map(|sent| sent + state.retransmission_timeout)
 }
 
 fn enter_fast_recovery(state: &mut TcpFlowState) {
@@ -168,18 +273,28 @@ pub(in crate::tcp) fn process_server_ack(
     acknowledgement_number: u32,
     sack_blocks: &[(u32, u32)],
 ) -> AckEffect {
+    // Extend the scoreboard with any new SACK blocks now, but defer trimming
+    // ranges at/below the cumulative ACK until *after* the pop loop below.
+    // Trimming first would drop the range that still marks an already-SACKed
+    // (already out-of-pipe) segment, so the pop loop would then see it as
+    // un-SACKed and subtract it from the pipe a second time (underflow).
     let scoreboard_advanced =
         update_sack_scoreboard(&mut state.sack_scoreboard, acknowledgement_number, sack_blocks);
-    trim_sack_scoreboard(&mut state.sack_scoreboard, acknowledgement_number);
+    // A new SACK block can move segments out of the pipe; rebuild the running
+    // accounting once here (O(N)) rather than rescanning on every read. A
+    // cumulative-only ACK (no new block) leaves every still-queued segment's
+    // coverage unchanged, so the inline updates in the pop loop keep the
+    // counters exact without a rebuild.
+    if scoreboard_advanced {
+        rebuild_unacked_accounting(state);
+    }
 
-    if state.unacked_server_segments.is_empty() {
+    let effect = if state.unacked_server_segments.is_empty() {
         state.last_client_ack = acknowledgement_number;
         state.duplicate_ack_count = 0;
         state.fast_recovery_end = None;
-        return AckEffect::none();
-    }
-
-    if seq_gt(acknowledgement_number, state.last_client_ack) {
+        AckEffect::none()
+    } else if seq_gt(acknowledgement_number, state.last_client_ack) {
         state.last_client_ack = acknowledgement_number;
         state.duplicate_ack_count = 0;
         let mut bytes_acked = 0usize;
@@ -189,25 +304,34 @@ pub(in crate::tcp) fn process_server_ack(
             let segment_end = segment
                 .sequence_number
                 .wrapping_add(server_segment_len(segment) as u32);
-            if seq_ge(acknowledgement_number, segment_end) {
-                let segment = state.unacked_server_segments.pop_front().expect("front exists");
-                bytes_acked = bytes_acked.saturating_add(server_segment_len(&segment));
-                if segment.retransmits == 0 {
-                    rtt_sample = Some(segment.first_sent.elapsed());
-                    // BBR delivery-rate sample from the oldest cleanly-acked
-                    // segment of this ACK (longest interval = least noisy).
-                    if rate_sample.is_none() {
-                        rate_sample = Some(RateSample {
-                            prior_delivered: segment.delivered_snapshot,
-                            sent_at: segment.first_sent,
-                            app_limited: segment.app_limited,
-                        });
-                    }
-                }
-            } else {
+            if !seq_ge(acknowledgement_number, segment_end) {
                 break;
             }
+            // A SACKed segment was already removed from the pipe when the
+            // scoreboard covered it, so only un-SACKed segments decrement here.
+            let was_sacked = segment_is_sacked_in(&state.sack_scoreboard, segment);
+            let segment = state.unacked_server_segments.pop_front().expect("front exists");
+            let segment_len = server_segment_len(&segment);
+            if !was_sacked {
+                state.pipe_bytes -= segment_len;
+                state.pipe_segments -= 1;
+            }
+            bytes_acked = bytes_acked.saturating_add(segment_len);
+            if segment.retransmits == 0 {
+                rtt_sample = Some(segment.first_sent.elapsed());
+                // BBR delivery-rate sample from the oldest cleanly-acked
+                // segment of this ACK (longest interval = least noisy).
+                if rate_sample.is_none() {
+                    rate_sample = Some(RateSample {
+                        prior_delivered: segment.delivered_snapshot,
+                        sent_at: segment.first_sent,
+                        app_limited: segment.app_limited,
+                    });
+                }
+            }
         }
+        // The popped prefix may have held the earliest un-SACKed send instant.
+        refresh_earliest_after_pop(state);
 
         let mut grow_congestion_window = true;
         let mut retransmit_now = false;
@@ -259,7 +383,14 @@ pub(in crate::tcp) fn process_server_ack(
         }
     } else {
         AckEffect::none()
-    }
+    };
+
+    // Now drop scoreboard ranges at/below the cumulative ACK. Every segment
+    // at/below `ack` has already been popped, so this cannot change the SACKed
+    // status of any remaining (seq >= ack) segment — the running counters and
+    // earliest cache computed above stay exact.
+    trim_sack_scoreboard(&mut state.sack_scoreboard, acknowledgement_number);
+    effect
 }
 
 fn highest_sacked_end(state: &TcpFlowState) -> Option<u32> {

@@ -39,6 +39,13 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<ServerDataPacket>> 
     state.bbr.pacing_next_at = None;
 
     let mut packets = Vec::new();
+    // Both bounds shrink by exactly `payload_len` per iteration: `server_seq`
+    // advances (so `send_window_remaining` drops) and the pipe grows (so
+    // `congestion_window_remaining` drops), while cwnd / the BBR cap / the peer
+    // window are constant across a flush (no ACK is processed in this loop). So
+    // compute the send window once and decrement it per write instead of
+    // recomputing `congestion_window_remaining` — an O(pipe) call — after every
+    // emitted segment (the source of the quadratic flush).
     let mut available_window =
         send_window_remaining(state).min(congestion_window_remaining(state) as u32);
     let max_payload_per_segment = server_max_segment_payload(state);
@@ -131,8 +138,7 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<ServerDataPacket>> 
         }
         reset_zero_window_persist(state);
         packets.push(ServerDataPacket { header, payload, vnet });
-        available_window =
-            send_window_remaining(state).min(congestion_window_remaining(state) as u32);
+        available_window = available_window.saturating_sub(payload_len as u32);
     }
 
     Ok(packets)
@@ -190,7 +196,7 @@ fn push_unacked_segments(
     let mut sequence_number = start_sequence;
     while offset < total {
         let end = (offset + mss).min(total);
-        let segment_len = (end - offset) as u32;
+        let segment_len = end - offset;
         state.unacked_server_segments.push_back(ServerSegment {
             sequence_number,
             acknowledgement_number,
@@ -204,9 +210,18 @@ fn push_unacked_segments(
             delivered_snapshot,
             app_limited,
         });
-        sequence_number = sequence_number.wrapping_add(segment_len);
+        // Freshly-sent data sits above every SACKed range, so it enters the
+        // pipe un-SACKed (`flags` carry no SYN/FIN here, so its length equals
+        // its payload). Keep the running pipe counters in step with the O(1)
+        // reads in `flush_server_data` / `sync_flow_metrics`.
+        state.pipe_bytes += segment_len;
+        state.pipe_segments += 1;
+        sequence_number = sequence_number.wrapping_add(segment_len as u32);
         offset = end;
     }
+    // `sent_at` (== now) is >= every earlier send instant, so it is the earliest
+    // only when nothing un-SACKed was in flight before this push.
+    state.earliest_unsacked_sent.get_or_insert(sent_at);
 }
 
 /// The `[start, end)` byte range of the logical payload formed by concatenating
@@ -288,19 +303,26 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
         | TcpFlowStatus::TimeWait
         | TcpFlowStatus::Closed => {},
     }
+    // A FIN is only queued when the unacked queue is empty (guarded above), so
+    // the pipe was 0 / earliest None: this lone segment (length 1 for the FIN
+    // flag) becomes the whole pipe.
+    let sent_at = Instant::now();
     state.unacked_server_segments.push_back(ServerSegment {
         sequence_number,
         acknowledgement_number: state.rcv_nxt,
         flags: TCP_FLAG_FIN | TCP_FLAG_ACK,
         payload: Bytes::new(),
-        last_sent: Instant::now(),
-        first_sent: Instant::now(),
+        last_sent: sent_at,
+        first_sent: sent_at,
         retransmits: 0,
         rto_retransmits: 0,
         fast_retransmit_epoch: 0,
         delivered_snapshot: state.bbr.delivered,
         app_limited: true,
     });
+    state.pipe_bytes += 1;
+    state.pipe_segments += 1;
+    state.earliest_unsacked_sent.get_or_insert(sent_at);
     Ok(Some(packet))
 }
 
