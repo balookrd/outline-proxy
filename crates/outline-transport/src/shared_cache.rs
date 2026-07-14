@@ -209,6 +209,11 @@ where
     /// — e.g. the H3 slot-picker weighing each carrier's live-stream count —
     /// can do so without churning the map. The caller decides what to do with
     /// a stale entry (`is_open()` == false).
+    ///
+    /// H3-only: the slot-picker is the sole caller, and it is compiled out
+    /// without the `h3` feature — hence the gate, so a non-h3 build does not
+    /// carry (and warn about) an unused method.
+    #[cfg(feature = "h3")]
     pub(crate) async fn peek(&self, key: &K) -> Option<Arc<V>> {
         let map = self.map.read().await;
         map.get(key).cloned()
