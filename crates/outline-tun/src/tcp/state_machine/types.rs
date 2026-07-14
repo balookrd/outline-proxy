@@ -486,9 +486,14 @@ pub(in crate::tcp) struct ServerSegment {
     /// behaviour) instead of once per incoming partial SACK.
     pub(in crate::tcp) fast_retransmit_epoch: u64,
     /// Value of `bbr.delivered` at the moment this segment was first sent. On
-    /// ACK, `(bbr.delivered_now - delivered_snapshot) / (now - first_sent)` is
-    /// the BBR delivery-rate sample for this segment.
+    /// ACK, `(bbr.delivered_now - delivered_snapshot) / (now -
+    /// delivered_at_snapshot)` is the BBR delivery-rate sample for this segment.
     pub(in crate::tcp) delivered_snapshot: u64,
+    /// Value of `bbr.delivered_at` — the instant of the last ACK — at the moment
+    /// this segment was first sent. Pairs with `delivered_snapshot`: it is the
+    /// instant at which `delivered` held that value, so it is the correct start
+    /// of the interval the sample divides by. See [`RateSample`].
+    pub(in crate::tcp) delivered_at_snapshot: Instant,
     /// Whether the flow was application-limited (downlink buffer drained, not
     /// bandwidth-limited) when this segment was sent. Such a sample only raises
     /// the BtlBw estimate, never lowers it — an idle gap is not a slow path.
@@ -534,11 +539,22 @@ pub(in crate::tcp) struct ServerBacklogPressure {
 /// BBR delivery-rate sample, taken from the oldest cleanly-acked segment of an
 /// ACK (retransmitted segments are skipped, like RTT samples under Karn's
 /// algorithm). The rate is `(delivered_now - prior_delivered) / (now -
-/// sent_at)`.
+/// prior_mstamp)`.
+///
+/// Both ends of that fraction must be anchored to the *same* instant, which is
+/// when `delivered` last equalled `prior_delivered` — not when the segment was
+/// sent. Anchoring the denominator to the send instant divides every byte the
+/// ACK released (including ones sent long before) by the short interval since
+/// one recent segment left, inflating the estimate. Loss makes it worse: the
+/// oldest segments become retransmits and get skipped, so the sample anchors to
+/// an ever fresher segment. This is `prior_mstamp` in canonical BBR
+/// (`tp->delivered_mstamp` snapshotted into each skb).
 #[derive(Debug, Clone, Copy)]
 pub(in crate::tcp) struct RateSample {
     pub(in crate::tcp) prior_delivered: u64,
-    pub(in crate::tcp) sent_at: Instant,
+    /// When `delivered` last equalled `prior_delivered`: the instant of the last
+    /// ACK before this segment was sent.
+    pub(in crate::tcp) prior_mstamp: Instant,
     pub(in crate::tcp) app_limited: bool,
 }
 

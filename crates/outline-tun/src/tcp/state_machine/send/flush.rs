@@ -191,6 +191,7 @@ fn push_unacked_segments(
 ) {
     let sent_at = Instant::now();
     let delivered_snapshot = state.bbr.delivered;
+    let delivered_at_snapshot = state.bbr.delivered_at;
     let total: usize = chunks.iter().map(Bytes::len).sum();
     let mut offset = 0;
     let mut sequence_number = start_sequence;
@@ -208,6 +209,7 @@ fn push_unacked_segments(
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot,
+            delivered_at_snapshot,
             app_limited,
         });
         // Freshly-sent data sits above every SACKed range, so it enters the
@@ -318,6 +320,7 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
         rto_retransmits: 0,
         fast_retransmit_epoch: 0,
         delivered_snapshot: state.bbr.delivered,
+        delivered_at_snapshot: state.bbr.delivered_at,
         app_limited: true,
     });
     state.pipe_bytes += 1;
