@@ -144,6 +144,26 @@ impl UplinkManager {
             .await
     }
 
+    /// Redial variant for the wire-handover paths (chunk-0 recovery, retry
+    /// after a stale standby socket).
+    ///
+    /// Presents this session's own `resume_request` so the server can
+    /// re-attach a still-parked upstream instead of opening a fresh one to the
+    /// destination. Deliberately does *not* advertise Ack-Prefix / Symmetric
+    /// Replay: those make the server emit replay control frames, and only the
+    /// mid-session retry orchestrator owns the ring buffer needed to actually
+    /// replay the byte tail. A wire handover has no ring, so it must not ask
+    /// for frames it cannot honour.
+    pub async fn connect_tcp_ws_redial(
+        &self,
+        candidate: &UplinkCandidate,
+        source: &'static str,
+        resume_request: Option<SessionId>,
+    ) -> Result<TransportStream> {
+        self.connect_tcp_ws_fresh_internal(candidate, source, resume_request, false, false, 0)
+            .await
+    }
+
     /// Redial variant for the mid-session retry / soft-switch path.
     ///
     /// Presents `resume_request` (the Session ID **this session** was issued
