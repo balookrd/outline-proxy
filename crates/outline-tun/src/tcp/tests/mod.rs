@@ -228,6 +228,76 @@ fn queue_future_segment_deduplicates_identical_packet() {
     assert_eq!(pending.len(), 1);
 }
 
+/// A segment that straddles several already-buffered ones must be split into
+/// exactly the holes between them: the buffered bytes win, the new segment only
+/// fills the gaps (including the leading and trailing ones). This is the path
+/// that inserts into the queue while walking it — the reason the walk used to
+/// run over a full clone of the queue.
+#[test]
+fn queue_future_segment_fills_every_hole_between_buffered_segments() {
+    let mut pending = VecDeque::new();
+    let expected_seq = 100;
+    for (sequence_number, payload) in
+        [(110u32, Bytes::from_static(b"DDD")), (120, Bytes::from_static(b"III"))]
+    {
+        queue_future_segment(
+            &mut pending,
+            &TrimmedSegment {
+                sequence_number,
+                flags: TCP_FLAG_ACK,
+                payload,
+            },
+            expected_seq,
+        );
+    }
+
+    // [105, 125): overlaps both buffered segments and leaves three holes —
+    // before, between, and after them.
+    let straddling: Vec<u8> = (0..20u8).map(|index| b'a' + index).collect();
+    queue_future_segment(
+        &mut pending,
+        &TrimmedSegment {
+            sequence_number: 105,
+            flags: TCP_FLAG_ACK,
+            payload: Bytes::from(straddling),
+        },
+        expected_seq,
+    );
+
+    let queued: Vec<(u32, &[u8])> = pending
+        .iter()
+        .map(|segment| (segment.sequence_number, &segment.payload[..]))
+        .collect();
+    assert_eq!(
+        queued,
+        vec![
+            (105, b"abcde".as_slice()),
+            (110, b"DDD".as_slice()),
+            (113, b"ijklmno".as_slice()),
+            (120, b"III".as_slice()),
+            (123, b"st".as_slice()),
+        ],
+        "buffered bytes must survive; only the holes come from the new segment"
+    );
+
+    // And the whole thing reassembles into one contiguous stream.
+    queue_future_segment(
+        &mut pending,
+        &TrimmedSegment {
+            sequence_number: 100,
+            flags: TCP_FLAG_ACK,
+            payload: Bytes::from_static(b"AAAAA"),
+        },
+        expected_seq,
+    );
+    let mut sequence = expected_seq;
+    let mut payload = Vec::new();
+    assert!(!drain_ready_buffered_segments(&mut sequence, &mut pending, &mut payload));
+    assert_eq!(sequence, 125);
+    assert_eq!(payload.concat(), b"AAAAAabcdeDDDijklmnoIIIst");
+    assert!(pending.is_empty());
+}
+
 #[test]
 fn drain_ready_buffered_segments_reassembles_contiguous_tail() {
     let mut expected_seq = 103;
