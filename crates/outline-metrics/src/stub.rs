@@ -271,6 +271,14 @@ impl TunFlowGaugeF64 {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct TunFlowCounterU64;
+
+impl TunFlowCounterU64 {
+    #[inline]
+    pub fn inc_by(&self, _delta: u64) {}
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct TunTcpFlowGauges {
     pub flows_active: TunFlowGaugeI64,
     pub inflight_segments: TunFlowGaugeI64,
@@ -286,6 +294,12 @@ pub struct TunTcpFlowGauges {
     pub ack_progress_stall_seconds: TunFlowGaugeF64,
     pub retransmission_timeout_seconds: TunFlowGaugeF64,
     pub smoothed_rtt_seconds: TunFlowGaugeF64,
+    pub bbr_btlbw_bytes_per_second: TunFlowGaugeI64,
+    pub bbr_pacing_rate_bytes_per_second: TunFlowGaugeI64,
+    pub bbr_loss_cap_bytes_per_second: TunFlowGaugeI64,
+    pub bbr_loss_capped_flows: TunFlowGaugeI64,
+    pub bbr_min_rtt_seconds: TunFlowGaugeF64,
+    pub bbr_loss_episodes_total: TunFlowCounterU64,
 }
 
 pub fn tun_tcp_flow_gauges(_group: &str, _uplink: &str) -> TunTcpFlowGauges {

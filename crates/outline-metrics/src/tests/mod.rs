@@ -968,3 +968,37 @@ fn tun_tcp_flow_gauges_emit_same_series_as_per_call_helpers() {
         "post-failover uplink series missing:\n{rendered}"
     );
 }
+
+#[cfg(feature = "tun")]
+#[test]
+fn tun_tcp_bbr_handles_emit_gauges_and_a_monotonic_loss_counter() {
+    // Reads absolute counter values, so it must hold the guard: `init()` resets
+    // counter vecs, wiping every series — unique labels do not protect it.
+    let _guard = test_guard();
+    init();
+
+    let handles = tun_tcp_flow_gauges("bbr_grp", "bbr_up");
+    handles.bbr_btlbw_bytes_per_second.add(10_000_000);
+    handles.bbr_pacing_rate_bytes_per_second.add(8_500_000);
+    handles.bbr_loss_cap_bytes_per_second.add(8_500_000);
+    handles.bbr_loss_capped_flows.add(1);
+    handles.bbr_min_rtt_seconds.add(0.02);
+    handles.bbr_loss_episodes_total.inc_by(2);
+    handles.bbr_loss_episodes_total.inc_by(1);
+
+    // A flow closing unwinds its gauge contributions; the counter never rewinds.
+    handles.bbr_loss_cap_bytes_per_second.add(-8_500_000);
+    handles.bbr_loss_capped_flows.add(-1);
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    for expected in [
+        "outline_ws_tun_tcp_bbr_btlbw_bytes_per_second{group=\"bbr_grp\",uplink=\"bbr_up\"} 10000000",
+        "outline_ws_tun_tcp_bbr_pacing_rate_bytes_per_second{group=\"bbr_grp\",uplink=\"bbr_up\"} 8500000",
+        "outline_ws_tun_tcp_bbr_loss_cap_bytes_per_second{group=\"bbr_grp\",uplink=\"bbr_up\"} 0",
+        "outline_ws_tun_tcp_bbr_loss_capped_flows{group=\"bbr_grp\",uplink=\"bbr_up\"} 0",
+        "outline_ws_tun_tcp_bbr_min_rtt_seconds{group=\"bbr_grp\",uplink=\"bbr_up\"} 0.02",
+        "outline_ws_tun_tcp_bbr_loss_episodes_total{group=\"bbr_grp\",uplink=\"bbr_up\"} 3",
+    ] {
+        assert!(rendered.contains(expected), "missing `{expected}` in:\n{rendered}");
+    }
+}

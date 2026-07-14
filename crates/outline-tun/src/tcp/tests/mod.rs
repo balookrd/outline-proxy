@@ -648,6 +648,57 @@ async fn build_flow_syn_ack_advertises_mss_and_timestamps() {
     assert!(parsed.timestamp_value.unwrap_or_default() >= 7);
 }
 
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn bbr_metrics_export_loss_cap_gauges_and_episode_counter() {
+    let mut state = tcp_flow_state_for_tests().await;
+    // Labels unique to this test: the series below are asserted by absolute
+    // value, and other tests in this binary sync flows concurrently under the
+    // helper's shared "test" labels.
+    state.routing.group_name = Arc::from("bbr_metrics_grp");
+    state.routing.uplink_name = Arc::from("bbr_metrics_up");
+    state.bbr.btlbw_bps = 10_000_000;
+    state.bbr.min_rtt = Duration::from_millis(20);
+    state.bbr.pacing_gain = 1.0;
+
+    // Two RTO loss episodes: the cap backs off multiplicatively (10 MB/s → 8.5 →
+    // 7.225) and the pacing rate follows it below the raw BtlBw.
+    super::state_machine::note_congestion_event(&mut state, true);
+    super::state_machine::note_congestion_event(&mut state, true);
+    assert_eq!(state.bbr.loss_episodes, 2);
+    assert_eq!(state.bbr.loss_cap_bps, 7_225_000);
+
+    super::state_machine::sync_flow_metrics(&mut state);
+    let rendered = outline_metrics::render_prometheus(&[]).expect("render metrics");
+    let labels = "{group=\"bbr_metrics_grp\",uplink=\"bbr_metrics_up\"}";
+    for expected in [
+        format!("outline_ws_tun_tcp_bbr_btlbw_bytes_per_second{labels} 10000000"),
+        format!("outline_ws_tun_tcp_bbr_pacing_rate_bytes_per_second{labels} 7225000"),
+        format!("outline_ws_tun_tcp_bbr_loss_cap_bytes_per_second{labels} 7225000"),
+        format!("outline_ws_tun_tcp_bbr_loss_capped_flows{labels} 1"),
+        format!("outline_ws_tun_tcp_bbr_min_rtt_seconds{labels} 0.02"),
+        format!("outline_ws_tun_tcp_bbr_loss_episodes_total{labels} 2"),
+    ] {
+        assert!(rendered.contains(&expected), "missing `{expected}` in:\n{rendered}");
+    }
+
+    // Closing the flow unwinds the gauges to zero, but the counter is monotonic:
+    // it must keep the two episodes this flow contributed.
+    super::state_machine::clear_flow_metrics(&mut state);
+    let after_close = outline_metrics::render_prometheus(&[]).expect("render metrics");
+    for expected in [
+        format!("outline_ws_tun_tcp_bbr_loss_cap_bytes_per_second{labels} 0"),
+        format!("outline_ws_tun_tcp_bbr_loss_capped_flows{labels} 0"),
+        format!("outline_ws_tun_tcp_bbr_pacing_rate_bytes_per_second{labels} 0"),
+        format!("outline_ws_tun_tcp_bbr_loss_episodes_total{labels} 2"),
+    ] {
+        assert!(
+            after_close.contains(&expected),
+            "missing `{expected}` after close in:\n{after_close}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn flush_server_data_emits_gso_super_segment_tracked_per_mss() {
     let mut state = tcp_flow_state_for_tests().await;
