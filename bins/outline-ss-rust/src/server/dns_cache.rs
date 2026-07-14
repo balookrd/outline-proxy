@@ -3,12 +3,20 @@
 //!
 //! The map itself — keyed by `(port, prefer_ipv4_upstream, host)`, raw-entry
 //! probing, stale-fallback reads, janitor sweep — is the shared
-//! [`outline_net::dns_cache::DnsCache`] core (unbounded flavour; the
-//! periodic task calls [`DnsCache::sweep_expired`]). This wrapper adds the
+//! [`outline_net::dns_cache::DnsCache`] core. This wrapper adds the
 //! server-only singleflight layer: concurrent misses on the same key
 //! coalesce onto one in-flight `lookup_host` future. TCP callers consume
 //! the whole slice for Happy Eyeballs ordering; UDP callers pick the first
 //! entry.
+//!
+//! The host half of the key is the client-supplied destination, so the
+//! production cache is built bounded ([`DnsCache::with_capacity`], sized by
+//! `tuning.dns_cache_max_entries`): a client resolving unique names is capped
+//! by insert-time approximate-LRU eviction instead of growing the map for the
+//! whole TTL + stale-grace window. The periodic [`DnsCache::sweep_expired`]
+//! tick still runs — it purges entries past the stale-grace fallback window
+//! that eviction may never reach — and is the *only* reclaim path when the
+//! cap is disabled ([`DnsCache::new`], the unbounded flavour).
 
 use std::{
     collections::HashMap as StdHashMap,
@@ -37,9 +45,26 @@ pub(super) struct DnsCache {
 }
 
 impl DnsCache {
+    /// Unbounded cache: entries are reclaimed only by the periodic
+    /// [`Self::sweep_expired`] janitor. Prefer [`Self::with_capacity`] on
+    /// paths that resolve client-controlled hosts.
     pub(super) fn new(ttl: Duration) -> Arc<Self> {
+        Self::wrap(outline_net::dns_cache::DnsCache::new(ttl))
+    }
+
+    /// Cache bounded to `max_entries` (insert-time approximate-LRU eviction).
+    /// `max_entries == 0` is the documented opt-out and yields the unbounded
+    /// [`Self::new`] flavour.
+    pub(super) fn with_capacity(ttl: Duration, max_entries: usize) -> Arc<Self> {
+        match max_entries {
+            0 => Self::new(ttl),
+            cap => Self::wrap(outline_net::dns_cache::DnsCache::with_capacity(ttl, cap)),
+        }
+    }
+
+    fn wrap(core: outline_net::dns_cache::DnsCache) -> Arc<Self> {
         Arc::new_cyclic(|me| Self {
-            core: outline_net::dns_cache::DnsCache::new(ttl),
+            core,
             in_flight: Mutex::new(StdHashMap::new()),
             me: me.clone(),
         })
