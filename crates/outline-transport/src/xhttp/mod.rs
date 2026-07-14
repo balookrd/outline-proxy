@@ -63,6 +63,10 @@ mod tests_sink_backpressure;
 #[path = "tests/carrier_h3.rs"]
 mod tests_carrier_h3;
 
+#[cfg(test)]
+#[path = "tests/post_headers.rs"]
+mod tests_post_headers;
+
 // Re-exports kept at the previous `super::*` paths so sibling carrier
 // modules (`h1`, `h2`, `h3`) and the rest of the crate keep working
 // after the file split — h1 still does `use super::{XhttpStream, …}`.
@@ -294,18 +298,18 @@ impl XhttpTarget {
         format!("{}://{}{}/{}", self.scheme, self.authority, self.base_path, self.session_id,)
     }
 
-    /// Packet-up uplink POST URL: appends the per-packet `seq` to
-    /// the path, matching xray / sing-box's `PlacementPath` default
-    /// (`<base>/<session>/<seq>`). The server still accepts the
-    /// older header-based form (`X-Xhttp-Seq`) for backward
-    /// compatibility, but this client now emits the path form so
-    /// the wire shape is identical to what xray-family clients
-    /// produce — the same byte stream in either ecosystem.
-    pub(super) fn full_uri_with_seq(&self, seq: u64) -> String {
-        format!(
-            "{}://{}{}/{}/{seq}",
-            self.scheme, self.authority, self.base_path, self.session_id,
-        )
+    /// Prefix shared by every packet-up POST URL in this session:
+    /// `<scheme>://<authority><base_path>/<session_id>/`. The dial path
+    /// builds this once and each POST appends only the decimal `seq`
+    /// (`<base>/<session>/<seq>`), which matches xray / sing-box's
+    /// `PlacementPath` default — the server still accepts the older
+    /// header-based form (`X-Xhttp-Seq`) but this client emits the path
+    /// form so the wire shape is byte-identical to xray-family clients.
+    /// Computing the prefix per session instead of per POST keeps the
+    /// hot uplink loop from re-`format!`-ing the whole absolute URI on
+    /// every frame.
+    pub(super) fn uri_seq_prefix(&self) -> String {
+        format!("{}://{}{}/{}/", self.scheme, self.authority, self.base_path, self.session_id)
     }
 
     /// Same as [`Self::full_uri`] but with a `?mode=...` selector
