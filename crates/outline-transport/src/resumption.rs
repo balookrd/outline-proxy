@@ -9,9 +9,11 @@
 //! reattached without reopening the connection to the destination.
 //!
 //! This module is intentionally kept small: the `SessionId` newtype,
-//! the resume cache, and re-exports of the wire vocabulary shared with
+//! the resume cache (UDP only — TCP sessions own their ID, see
+//! [`ResumeCache`]), and re-exports of the wire vocabulary shared with
 //! the server through `outline_wire::resume`. Higher-level plumbing
-//! (per-uplink cache, retry semantics) lives in `outline-uplink`.
+//! (dial wiring, retry semantics) lives in `outline-uplink` and the
+//! client's TCP proxy.
 //!
 //! See also the lifecycle table in the server spec — this client only
 //! ever surfaces `Resume-Capable: 1` (no ID yet) or
@@ -184,31 +186,39 @@ pub(crate) fn parse_resume_response_echo(
     }
 }
 
-/// Process-wide cache of the last server-issued [`SessionId`] for each
-/// logical uplink. Callers (the warm-standby refill, fresh dials in
-/// `connect_tcp_ws_fresh`, the probe path that wants to opt-in) read
-/// the cached ID before dialing and write the new ID returned in the
-/// upgrade response.
+/// Process-wide cache of the last server-issued [`SessionId`] for a
+/// coarse-grained key. Callers read the cached ID before dialing and
+/// write the new ID returned in the upgrade response.
 ///
-/// The cache is intentionally last-write-wins per key. Multiple
-/// concurrent dials to the same uplink will overwrite each other's
-/// entries; on a parking-storm, only the most recently dialed session
-/// is reachable by ID, the others are simply un-resumable. This is an
-/// acceptable simplification for the motivating scenario (intermittent
-/// QUIC↔TCP path flap on a small number of uplinks); a more
-/// fine-grained scheme (per-stream, per-route) can layer on top later
-/// without breaking this API.
+/// The cache is last-write-wins per key, so it is only sound where one
+/// key really does identify one resumable session at a time.
+///
+/// **TCP does not use this.** A `SessionId` identifies a *session*, and
+/// keying it per uplink gave every concurrent TCP session one shared
+/// slot: a fresh dial of session B could present the ID parked by
+/// session A, and since the server treats the parked target as
+/// authoritative on a resume hit (ignoring the target in the new
+/// handshake), B would be spliced onto A's destination. The TCP client
+/// now carries the ID on the session itself — a fresh dial presents
+/// nothing and reads the minted ID off the `TransportStream`
+/// (`issued_session_id()`), and only a redial of that same session
+/// presents it back.
+///
+/// The live users are the SS-UDP path — [`global_resume_cache`] keyed
+/// `<resume-scope>#udp`, where the key genuinely names a single
+/// long-lived datagram session per uplink — and VLESS-UDP via
+/// [`global_vless_udp_resume_cache`], keyed per `<resume-scope>#<target>`.
 #[derive(Default)]
 pub struct ResumeCache {
     inner: Mutex<ResumeCacheInner>,
 }
 
-/// Hard cap on cached resume entries. Keys are `<uplink>#<transport>`,
-/// so the live population is two entries per configured uplink — far
-/// below this cap in practice. The cap is a safety valve keeping the
-/// process-wide cache bounded if keys ever become more dynamic; on
-/// overflow the oldest-inserted entry is evicted (resume is
-/// best-effort, so an evicted entry only costs a missed resume).
+/// Hard cap on cached resume entries. Keys are `<scope>#udp` in the
+/// SS-UDP cache — one entry per configured uplink — and
+/// `<scope>#<target>` in the VLESS-UDP cache, which is the dynamic one
+/// this cap actually bounds. On overflow the oldest-inserted entry is
+/// evicted (resume is best-effort, so an evicted entry only costs a
+/// missed resume).
 const RESUME_CACHE_CAPACITY: usize = 1_024;
 
 /// Live entries plus their first-insertion order. The two collections
@@ -280,9 +290,14 @@ impl ResumeCache {
     }
 }
 
-/// Returns the process-wide [`ResumeCache`]. Initialised on first
-/// access. All callers sharing the same `outline-transport` crate
-/// instance see the same cache.
+/// Returns the process-wide [`ResumeCache`] used by the **SS-UDP** path
+/// (key `<resume-scope>#udp`). Initialised on first access; all callers
+/// sharing the same `outline-transport` crate instance see the same
+/// cache.
+///
+/// The TCP path deliberately does not read or write this cache — see
+/// [`ResumeCache`] for why one slot per uplink is unsound for TCP
+/// sessions.
 pub fn global_resume_cache() -> &'static ResumeCache {
     static CACHE: OnceLock<ResumeCache> = OnceLock::new();
     CACHE.get_or_init(ResumeCache::default)
@@ -293,9 +308,9 @@ pub fn global_resume_cache() -> &'static ResumeCache {
 ///
 /// Kept separate from [`global_resume_cache`] on purpose: VLESS-UDP fans one
 /// uplink out to many per-target sessions, each with its own Session ID, so
-/// this key space is far more dynamic than the two-slots-per-uplink TCP/SS
+/// this key space is far more dynamic than the one-slot-per-uplink SS-UDP
 /// cache. Sharing one bounded cache would let a burst of UDP targets evict the
-/// long-lived TCP resume ids (and vice versa). Isolating them keeps each
+/// long-lived SS-UDP resume ids (and vice versa). Isolating them keeps each
 /// transport's `RESUME_CACHE_CAPACITY` budget to itself.
 ///
 /// Durability across mux re-creation is what enables cross-node VLESS-UDP

@@ -154,6 +154,9 @@ async fn run_relay_keepalive_does_not_extend_idle_timeout() {
         reader: TcpReader::Socket(reader),
         source: TcpUplinkSource::FreshDial,
         wire_index: 0,
+        // Direct-socket carrier: the server never issued a Session ID, so this
+        // session has nothing to present on a redial.
+        session_id: None,
     };
 
     let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -343,6 +346,9 @@ async fn run_relay_attempts_redial_on_mid_session_runtime_failure() {
         // active in the first place.
         source: TcpUplinkSource::FreshDial,
         wire_index: 0,
+        // Direct-socket carrier: the server never issued a Session ID, so this
+        // session has nothing to present on a redial.
+        session_id: None,
     };
 
     let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -450,6 +456,9 @@ async fn run_relay_aborts_with_rst_on_active_uplink_switch() {
         reader: TcpReader::Socket(reader),
         source: TcpUplinkSource::FreshDial,
         wire_index: 0,
+        // Direct-socket carrier: the server never issued a Session ID, so this
+        // session has nothing to present on a redial.
+        session_id: None,
     };
 
     let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -572,6 +581,9 @@ async fn run_relay_does_not_abort_in_active_active_mode() {
         reader: TcpReader::Socket(reader),
         source: TcpUplinkSource::FreshDial,
         wire_index: 0,
+        // Direct-socket carrier: the server never issued a Session ID, so this
+        // session has nothing to present on a redial.
+        session_id: None,
     };
 
     let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -711,6 +723,9 @@ async fn run_relay_soft_switch_migrates_via_resume_redial() {
         reader: TcpReader::Socket(reader),
         source: TcpUplinkSource::FreshDial,
         wire_index: 0,
+        // Direct-socket carrier: the server never issued a Session ID, so this
+        // session has nothing to present on a redial.
+        session_id: None,
     };
 
     let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

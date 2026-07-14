@@ -11,7 +11,7 @@ use tracing::debug;
 
 use outline_metrics as metrics;
 use outline_transport::{
-    DialNetworkOptions, DialResumeOptions, TransportDialOptions, TransportOperation,
+    DialNetworkOptions, DialResumeOptions, SessionId, TransportDialOptions, TransportOperation,
     TransportStream, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, connect_transport,
     global_resume_cache,
 };
@@ -43,15 +43,24 @@ const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
 /// Composes the cache key used by the cross-transport resumption
 /// helpers in [`outline_transport::global_resume_cache`]. The form
 /// `<uplink_name>#<transport>` keeps TCP and UDP entries separate so
-/// the next TCP reconnect cannot pick up a UDP-session ID by accident.
+/// the next reconnect cannot pick up another transport's Session ID by
+/// accident.
 ///
-/// Importantly, the key is **identity-level** — keyed on the parent
-/// uplink's display name only — so a fallback dial (different wire
-/// family, same uplink) presents the *same* X-Outline-Resume token as
-/// the primary dial. The server-side resume mechanism re-attaches the
-/// upstream session across wire switches, enabling seamless handover
-/// from e.g. VLESS to WS on the same uplink without renegotiating the
-/// upstream conversation.
+/// **SS-UDP only.** The TCP path does not use this cache: a Session ID
+/// identifies one *session*, not one uplink, and a single slot per
+/// uplink meant a fresh dial of session B could present session A's
+/// parked ID — on a resume hit the server re-attaches A's upstream and
+/// B silently lands on the wrong destination (the parked target is
+/// authoritative server-side). TCP now carries the ID on the session
+/// itself: a fresh dial presents none, and only a redial of a given
+/// session presents the ID that session was issued. SS-UDP keeps the
+/// cache because its sessions are keyed per uplink + destination and
+/// re-created wholesale, not per client flow.
+///
+/// The key is **identity-level** — the parent uplink's display name, or
+/// the group name under `shared_resume` — so a fallback dial (different
+/// wire family, same uplink) presents the same X-Outline-Resume token as
+/// the primary dial.
 pub(crate) fn resume_cache_key(uplink_name: &str, transport: &str) -> String {
     format!("{uplink_name}#{transport}")
 }
@@ -115,57 +124,83 @@ impl UplinkManager {
     }
 
     /// Dials a fresh TCP WebSocket connection, bypassing the standby pool.
+    ///
+    /// A fresh dial is a **new session**: it presents no `X-Outline-Resume`
+    /// ID and lets the server mint one (returned on the stream via
+    /// [`TransportStream::issued_session_id`]). Whoever ends up owning the
+    /// stream owns that ID and is the only party allowed to present it back
+    /// on a redial — see [`Self::connect_tcp_ws_redial_with_ack_prefix`].
+    ///
     /// The Ack-Prefix capability is *not* advertised — the dial path used
     /// by initial session setup keeps legacy resume-only semantics. Use
-    /// [`Self::connect_tcp_ws_fresh_with_ack_prefix`] from the
+    /// [`Self::connect_tcp_ws_redial_with_ack_prefix`] from the
     /// pinned-relay mid-session retry path to opt in.
     pub async fn connect_tcp_ws_fresh(
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<TransportStream> {
-        self.connect_tcp_ws_fresh_internal(candidate, source, false, false, 0)
+        self.connect_tcp_ws_fresh_internal(candidate, source, None, false, false, 0)
             .await
     }
 
-    /// Same as [`Self::connect_tcp_ws_fresh`] but advertises
-    /// `X-Outline-Resume-Ack-Prefix: 1` on the upgrade so the server
-    /// emits the v1 control frame on a successful resume hit. Caller
-    /// must consume it via the SS reader's
-    /// `upstream_acked_offset()` (Phase 2.3.d) before treating bytes
-    /// as upstream payload. Used exclusively by the pinned-relay
-    /// mid-session retry orchestrator.
-    pub async fn connect_tcp_ws_fresh_with_ack_prefix(
+    /// Redial variant for the mid-session retry / soft-switch path.
+    ///
+    /// Presents `resume_request` (the Session ID **this session** was issued
+    /// on its previous carrier, `None` if it never got one) and advertises
+    /// `X-Outline-Resume-Ack-Prefix: 1` so the server emits the v1 control
+    /// frame on a successful resume hit. Caller must consume it via the SS
+    /// reader's `upstream_acked_offset()` before treating bytes as upstream
+    /// payload.
+    ///
+    /// The ID is passed in explicitly rather than read from a process-global
+    /// cache: the cache had one slot per uplink, so a concurrent session
+    /// could — and on a parking storm would — present a *different* session's
+    /// ID and get re-attached to that session's upstream.
+    pub async fn connect_tcp_ws_redial_with_ack_prefix(
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
+        resume_request: Option<SessionId>,
     ) -> Result<TransportStream> {
-        self.connect_tcp_ws_fresh_internal(candidate, source, true, false, 0)
+        self.connect_tcp_ws_fresh_internal(candidate, source, resume_request, true, false, 0)
             .await
     }
 
     /// Variant used by the v2 Symmetric Downlink Replay retry path:
-    /// advertises both v1 and v2 capabilities, and reports the
-    /// caller's `client_acked_offset` via the
-    /// `X-Outline-Resume-Down-Acked` request header so the server can
+    /// presents this session's `resume_request` ID, advertises both v1 and
+    /// v2 capabilities, and reports the caller's `client_acked_offset` via
+    /// the `X-Outline-Resume-Down-Acked` request header so the server can
     /// emit a precise replay slice. Caller is expected to gate this
     /// on `LoadBalancingConfig::tcp_symmetric_replay_enabled` and to
     /// have advertised v1 already (the dialer's local v2-on-v1 gate
     /// double-checks this on the response side).
-    pub async fn connect_tcp_ws_fresh_with_symmetric_replay(
+    pub async fn connect_tcp_ws_redial_with_symmetric_replay(
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
+        resume_request: Option<SessionId>,
         client_acked_offset: u64,
     ) -> Result<TransportStream> {
-        self.connect_tcp_ws_fresh_internal(candidate, source, true, true, client_acked_offset)
-            .await
+        self.connect_tcp_ws_fresh_internal(
+            candidate,
+            source,
+            resume_request,
+            true,
+            true,
+            client_acked_offset,
+        )
+        .await
     }
 
     async fn connect_tcp_ws_fresh_internal(
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
+        // The Session ID to present as `X-Outline-Resume`. `None` on every
+        // fresh dial (the server mints a new one); `Some` only on a redial
+        // of the session that was issued this exact ID.
+        resume_request: Option<SessionId>,
         ack_prefix_requested: bool,
         symmetric_replay_requested: bool,
         client_acked_offset: u64,
@@ -192,14 +227,14 @@ impl UplinkManager {
             .tcp_dial_url()
             .ok_or_else(|| anyhow!("uplink {} missing tcp dial URL", candidate.uplink.name))?;
         let started = Instant::now();
-        // Cross-transport session resumption: present the last Session
-        // ID this uplink received so an outline-ss-rust server with the
-        // feature enabled can re-attach to a still-parked upstream.
-        // Cache key is the uplink's display name — unique within a
-        // group, stable across reconnects. The store-if-issued at the
-        // bottom records the new ID for the next reconnect.
-        let resume_key = resume_cache_key(self.resume_scope(&candidate.uplink.name), "tcp");
-        let resume_request = global_resume_cache().get(&resume_key);
+        // Session resumption is per-session, not per-uplink: `resume_request`
+        // is whatever the *caller* owns (`None` on a fresh dial). The ID the
+        // server issues for this carrier rides back on the `TransportStream`
+        // (`issued_session_id()`) and is picked up by whoever takes ownership
+        // of the stream — including the warm-standby pool, whose entries are
+        // handed to a session that then owns their ID. Nothing is stashed in
+        // a process-global slot, so a concurrent session can no longer
+        // present an ID that was minted for somebody else.
         let ws = crate::dial::dial_in_uplink_scope(
             &candidate.uplink,
             connect_transport(
@@ -219,7 +254,6 @@ impl UplinkManager {
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
-        global_resume_cache().store_if_issued(resume_key, ws.issued_session_id());
         // Feed the on-demand dial latency into the RTT EWMA so real
         // connection quality is reflected in routing scores, not just probe
         // ping/pong times.
