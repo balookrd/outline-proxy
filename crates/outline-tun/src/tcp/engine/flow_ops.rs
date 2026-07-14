@@ -125,6 +125,7 @@ impl TunTcpEngine {
             sack_scoreboard: Vec::new(),
             pipe_bytes: 0,
             pipe_segments: 0,
+            first_tx_mstamp: now,
             earliest_unsacked_sent: None,
             unacked_reordered: false,
             pending_client_segments: VecDeque::new(),

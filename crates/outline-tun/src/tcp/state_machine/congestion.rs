@@ -325,6 +325,9 @@ pub(in crate::tcp) fn process_server_ack(
                     rate_sample = Some(RateSample {
                         prior_delivered: segment.delivered_snapshot,
                         prior_mstamp: segment.delivered_at_snapshot,
+                        send_interval: segment
+                            .first_sent
+                            .saturating_duration_since(segment.first_tx_snapshot),
                         app_limited: segment.app_limited,
                     });
                 }

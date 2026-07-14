@@ -9,6 +9,9 @@ fn sample(prior_delivered: u64, prior_mstamp: Instant, app_limited: bool) -> Rat
     RateSample {
         prior_delivered,
         prior_mstamp,
+        // Default to an instantaneous flight, so the ACK interval governs unless
+        // a test sets this explicitly.
+        send_interval: Duration::ZERO,
         app_limited,
     }
 }
@@ -109,6 +112,35 @@ fn delivery_rate_is_measured_from_the_last_ack_not_the_send_instant() {
     assert!(
         (bbr.btlbw_bps as i64 - 4_380_952).abs() < 100_000,
         "BtlBw should be the honest ~4.4 MB/s, got {} B/s",
+        bbr.btlbw_bps
+    );
+}
+
+/// Loss recovery: the flight's older segments are retransmits, so the sample
+/// skips them and anchors to a segment sent *during* recovery, whose last-ACK
+/// instant is only 1 ms old. The cumulative ACK that finally closes the hole
+/// then releases 60 KB at once — bytes that had been stuck in that hole for the
+/// 20 ms the flight took to go out. Dividing 60 KB by the 1 ms ACK interval
+/// reads 60 MB/s (≈480 Mbit), which is what the live path reported under load.
+///
+/// We spent 20 ms sending those bytes, so they cannot have been delivered faster
+/// than that. Canonical BBR takes `max(send_interval, ack_interval)` for exactly
+/// this reason (`tcp_rate_gen`), giving an honest ~3 MB/s.
+#[test]
+fn a_short_ack_interval_cannot_outrun_the_time_we_spent_sending() {
+    let t0 = Instant::now();
+    let mut bbr = BbrState::new(t0, 0);
+
+    let now = t0 + Duration::from_millis(21);
+    let last_ack = now - Duration::from_millis(1);
+    let mut sample = sample(0, last_ack, false);
+    sample.send_interval = Duration::from_millis(20);
+
+    record_delivery(&mut bbr, 60_000, Some(sample), Some(Duration::from_millis(21)), now);
+
+    assert!(
+        bbr.btlbw_bps < 6_000_000,
+        "BtlBw inflated to {} B/s: the 1 ms ACK gap outran the 20 ms we spent sending",
         bbr.btlbw_bps
     );
 }
