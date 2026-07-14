@@ -32,6 +32,12 @@ pub(super) struct TunFields {
     pub(super) tun_tcp_slow_start_threshold_bytes: IntGaugeVec,
     pub(super) tun_tcp_retransmission_timeout_seconds: GaugeVec,
     pub(super) tun_tcp_smoothed_rtt_seconds: GaugeVec,
+    pub(super) tun_tcp_bbr_btlbw_bytes_per_second: IntGaugeVec,
+    pub(super) tun_tcp_bbr_pacing_rate_bytes_per_second: IntGaugeVec,
+    pub(super) tun_tcp_bbr_loss_cap_bytes_per_second: IntGaugeVec,
+    pub(super) tun_tcp_bbr_loss_capped_flows: IntGaugeVec,
+    pub(super) tun_tcp_bbr_min_rtt_seconds: GaugeVec,
+    pub(super) tun_tcp_bbr_loss_episodes_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> TunFields {
@@ -242,6 +248,48 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         "Aggregated smoothed RTT for active TUN TCP flows.",
         ["group", "uplink"]
     );
+    let tun_tcp_bbr_btlbw_bytes_per_second = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_tun_tcp_bbr_btlbw_bytes_per_second",
+        "Aggregated raw BBR bottleneck-bandwidth estimate for active TUN TCP flows, before the configured ceiling and the loss cap.",
+        ["group", "uplink"]
+    );
+    let tun_tcp_bbr_pacing_rate_bytes_per_second = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_tun_tcp_bbr_pacing_rate_bytes_per_second",
+        "Aggregated effective BBR pacing rate for active TUN TCP flows, after the pacing gain, the configured ceiling and the loss cap.",
+        ["group", "uplink"]
+    );
+    let tun_tcp_bbr_loss_cap_bytes_per_second = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_tun_tcp_bbr_loss_cap_bytes_per_second",
+        "Aggregated loss-driven BBR bandwidth cap for active TUN TCP flows; a flow contributes 0 while its cap is inactive.",
+        ["group", "uplink"]
+    );
+    let tun_tcp_bbr_loss_capped_flows = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_tun_tcp_bbr_loss_capped_flows",
+        "Current number of TUN TCP flows whose BBR rate is held down by the loss-driven cap.",
+        ["group", "uplink"]
+    );
+    let tun_tcp_bbr_min_rtt_seconds = register_labeled!(
+        registry,
+        GaugeVec,
+        "outline_ws_tun_tcp_bbr_min_rtt_seconds",
+        "Aggregated BBR windowed-min RTT estimate for active TUN TCP flows.",
+        ["group", "uplink"]
+    );
+    let tun_tcp_bbr_loss_episodes_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_tun_tcp_bbr_loss_episodes_total",
+        "BBR loss episodes (fast-recovery entry or RTO) observed on TUN TCP flows.",
+        ["group", "uplink"]
+    );
 
     TunFields {
         tun_packets_total,
@@ -274,5 +322,11 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         tun_tcp_slow_start_threshold_bytes,
         tun_tcp_retransmission_timeout_seconds,
         tun_tcp_smoothed_rtt_seconds,
+        tun_tcp_bbr_btlbw_bytes_per_second,
+        tun_tcp_bbr_pacing_rate_bytes_per_second,
+        tun_tcp_bbr_loss_cap_bytes_per_second,
+        tun_tcp_bbr_loss_capped_flows,
+        tun_tcp_bbr_min_rtt_seconds,
+        tun_tcp_bbr_loss_episodes_total,
     }
 }

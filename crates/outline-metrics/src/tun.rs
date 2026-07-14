@@ -217,14 +217,30 @@ impl TunFlowGaugeF64 {
     }
 }
 
-/// Pre-resolved handles for the 14 per-flow TUN TCP gauges of one
-/// `(group, uplink)` pair.
+/// Thin handle over a `(group, uplink)`-labelled monotonic counter.
 ///
-/// `sync_flow_metrics` runs on every accepted TCP packet and touches all 14
-/// gauges; resolving each via `with_label_values` there hashes the
-/// `(group, uplink)` label pair 14× per packet — the dominant TUN data-plane
-/// metrics cost. Resolve this once per flow (re-resolving only when the flow
-/// fails over to a different uplink), then `.add()` straight into the atomic.
+/// Counter-only by construction: histograms are the one metric kind under
+/// idle-eviction, so caching a histogram handle across a flow's lifetime would
+/// silently buffer samples into a series the renderer no longer drains.
+#[derive(Clone, Debug)]
+pub struct TunFlowCounterU64(prometheus::IntCounter);
+
+impl TunFlowCounterU64 {
+    #[inline]
+    pub fn inc_by(&self, delta: u64) {
+        self.0.inc_by(delta);
+    }
+}
+
+/// Pre-resolved handles for the per-flow TUN TCP gauges (plus the one BBR
+/// counter) of a single `(group, uplink)` pair.
+///
+/// `sync_flow_metrics` runs on every accepted TCP packet and touches all of
+/// them; resolving each via `with_label_values` there hashes the
+/// `(group, uplink)` label pair once per metric per packet — the dominant TUN
+/// data-plane metrics cost. Resolve this once per flow (re-resolving only when
+/// the flow fails over to a different uplink), then `.add()` / `.inc_by()`
+/// straight into the atomic.
 #[derive(Clone, Debug)]
 pub struct TunTcpFlowGauges {
     pub flows_active: TunFlowGaugeI64,
@@ -241,11 +257,18 @@ pub struct TunTcpFlowGauges {
     pub ack_progress_stall_seconds: TunFlowGaugeF64,
     pub retransmission_timeout_seconds: TunFlowGaugeF64,
     pub smoothed_rtt_seconds: TunFlowGaugeF64,
+    pub bbr_btlbw_bytes_per_second: TunFlowGaugeI64,
+    pub bbr_pacing_rate_bytes_per_second: TunFlowGaugeI64,
+    pub bbr_loss_cap_bytes_per_second: TunFlowGaugeI64,
+    pub bbr_loss_capped_flows: TunFlowGaugeI64,
+    pub bbr_min_rtt_seconds: TunFlowGaugeF64,
+    /// Monotonic: unlike the gauges, a closing flow must *not* unwind it.
+    pub bbr_loss_episodes_total: TunFlowCounterU64,
 }
 
-/// Resolves the 14 per-flow gauge handles for `(group, uplink)`. The resulting
-/// series and label values are identical to the per-call `add_tun_tcp_*`
-/// helpers — this only pre-pays the registry lookup once instead of per packet.
+/// Resolves the per-flow handles for `(group, uplink)`. The resulting series and
+/// label values are identical to the per-call `add_tun_tcp_*` helpers — this
+/// only pre-pays the registry lookup once instead of per packet.
 pub fn tun_tcp_flow_gauges(group: &str, uplink: &str) -> TunTcpFlowGauges {
     let labels = [group, uplink];
     TunTcpFlowGauges {
@@ -288,6 +311,28 @@ pub fn tun_tcp_flow_gauges(group: &str, uplink: &str) -> TunTcpFlowGauges {
         ),
         smoothed_rtt_seconds: TunFlowGaugeF64(
             METRICS.tun_tcp_smoothed_rtt_seconds.with_label_values(&labels),
+        ),
+        bbr_btlbw_bytes_per_second: TunFlowGaugeI64(
+            METRICS.tun_tcp_bbr_btlbw_bytes_per_second.with_label_values(&labels),
+        ),
+        bbr_pacing_rate_bytes_per_second: TunFlowGaugeI64(
+            METRICS
+                .tun_tcp_bbr_pacing_rate_bytes_per_second
+                .with_label_values(&labels),
+        ),
+        bbr_loss_cap_bytes_per_second: TunFlowGaugeI64(
+            METRICS
+                .tun_tcp_bbr_loss_cap_bytes_per_second
+                .with_label_values(&labels),
+        ),
+        bbr_loss_capped_flows: TunFlowGaugeI64(
+            METRICS.tun_tcp_bbr_loss_capped_flows.with_label_values(&labels),
+        ),
+        bbr_min_rtt_seconds: TunFlowGaugeF64(
+            METRICS.tun_tcp_bbr_min_rtt_seconds.with_label_values(&labels),
+        ),
+        bbr_loss_episodes_total: TunFlowCounterU64(
+            METRICS.tun_tcp_bbr_loss_episodes_total.with_label_values(&labels),
         ),
     }
 }
