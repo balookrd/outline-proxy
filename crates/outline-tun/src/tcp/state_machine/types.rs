@@ -307,6 +307,29 @@ pub(in crate::tcp) struct TcpFlowState {
     pub(in crate::tcp) pending_client_data: VecDeque<Bytes>,
     pub(in crate::tcp) unacked_server_segments: VecDeque<ServerSegment>,
     pub(in crate::tcp) sack_scoreboard: Vec<SequenceRange>,
+    /// Running byte total of the un-SACKed segments in `unacked_server_segments`
+    /// (`Σ server_segment_len` over segments not fully covered by the SACK
+    /// scoreboard) — i.e. the in-flight "pipe". Maintained incrementally at the
+    /// push / ACK / SACK / retransmit sites so `bytes_in_pipe` is O(1) instead
+    /// of a full scan of the queue (each element itself an O(scoreboard) SACK
+    /// probe) on every `congestion_window_remaining` call inside the flush loop.
+    /// A `debug_assert` cross-checks it against the scan version on every read.
+    pub(in crate::tcp) pipe_bytes: usize,
+    /// Running count of the un-SACKed segments in `unacked_server_segments`
+    /// (== `count_segments_in_pipe`). Maintained alongside [`Self::pipe_bytes`].
+    pub(in crate::tcp) pipe_segments: usize,
+    /// Cached earliest `last_sent` among the un-SACKed segments, so
+    /// `next_retransmission_deadline` is `earliest + rto` in O(1) instead of a
+    /// min-scan of the queue on every `reschedule_flow`. `None` when nothing
+    /// un-SACKed is in flight.
+    pub(in crate::tcp) earliest_unsacked_sent: Option<Instant>,
+    /// True when a retransmit rewrote a segment's `last_sent` out of position,
+    /// so `last_sent` is no longer non-decreasing by queue position. On the
+    /// loss-free (monotonic) path the earliest send instant is the first
+    /// un-SACKed segment, refreshed in O(1) after an ACK; once set this forces
+    /// the exact min-rescan instead. Self-clears once the reordered segment
+    /// drains and order is restored.
+    pub(in crate::tcp) unacked_reordered: bool,
     pub(in crate::tcp) pending_client_segments: VecDeque<BufferedClientSegment>,
     pub(in crate::tcp) server_fin_pending: bool,
     pub(in crate::tcp) zero_window_probe_backoff: Duration,
