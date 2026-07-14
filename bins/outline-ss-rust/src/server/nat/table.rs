@@ -140,6 +140,14 @@ impl NatTable {
         self.entries.get(key).and_then(|cell| cell.get().cloned())
     }
 
+    /// Whether a live entry is registered for `key`. Same lookup as
+    /// [`Self::try_get`] without cloning the `Arc` — used by callers that only
+    /// need liveness, e.g. the SS-UDP stream reconciling the set of NAT keys it
+    /// still owns against the entries that idle eviction has since dropped.
+    pub(crate) fn contains(&self, key: &NatKey) -> bool {
+        self.entries.get(key).is_some_and(|cell| cell.get().is_some())
+    }
+
     /// Returns the existing NAT entry for `key`, or creates a new one: binds a
     /// UDP socket, applies `fwmark` if set, and starts a background reader task
     /// that delivers upstream responses to the registered client session.

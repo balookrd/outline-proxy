@@ -34,7 +34,7 @@ mod tcp;
 mod udp;
 
 pub(in crate::server::transport) use ctx::{
-    UdpUpstream, UpstreamSession, VlessFrameError, VlessRelayOutcome, VlessRelayState,
+    MuxUpstream, UdpUpstream, UpstreamSession, VlessFrameError, VlessRelayOutcome, VlessRelayState,
     VlessWsOutbound,
 };
 pub(in crate::server) use ctx::{VlessWsRouteCtx, VlessWsServerCtx};
@@ -250,7 +250,7 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
                 shutdown_unparked_tcp(tcp.writer, tcp.guard).await;
             },
             UpstreamSession::Mux(mut mux) => {
-                mux.shutdown().await;
+                mux.mux.shutdown().await;
             },
             UpstreamSession::Udp(_) | UpstreamSession::None => {},
         }
@@ -313,7 +313,7 @@ async fn try_park_vless_mux(
     session_id: SessionId,
 ) -> bool {
     let mux = match std::mem::replace(&mut state.upstream, UpstreamSession::None) {
-        UpstreamSession::Mux(mux) => mux,
+        UpstreamSession::Mux(mux) => mux.mux,
         other => {
             // Should not happen given the caller's match, but keep the
             // cleanup honest by restoring whatever we found.
@@ -410,22 +410,15 @@ where
             .await?;
             return Ok(());
         },
-        UpstreamSession::Mux(mux) => {
-            let mux_server = MuxServerCtx {
-                dns_cache: Arc::clone(&server.dns_cache),
-                prefer_ipv4_upstream: server.prefer_ipv4_upstream,
-                outbound_ipv6: server.outbound_ipv6.clone(),
-                metrics: Arc::clone(&server.metrics),
-            };
-            let mux_route = MuxRouteCtx {
-                protocol: route.protocol,
-                path: Arc::clone(&route.path),
-            };
+        UpstreamSession::Mux(upstream) => {
+            // Contexts were snapshotted when the mux upstream was established;
+            // the frame path borrows them instead of rebuilding a throwaway
+            // pair of `Arc` clones per data frame.
             vless_mux::handle_client_bytes(
-                mux,
+                &mut upstream.mux,
                 &data,
-                &mux_server,
-                &mux_route,
+                &upstream.server,
+                &upstream.route,
                 outbound.data_tx,
                 outbound.make_binary,
             )
@@ -548,30 +541,20 @@ where
                 );
                 state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
                 state.authenticated_user = Some(user);
-                state.upstream = UpstreamSession::Mux(mux);
+                state.upstream = UpstreamSession::Mux(mux_upstream(mux, server, route));
 
                 // Forward any post-handshake bytes carried by the
                 // current frame into the freshly-attached mux.
                 let leftover = state.header_buffer.split_off(request.consumed);
                 state.header_buffer.clear();
                 if !leftover.is_empty()
-                    && let UpstreamSession::Mux(mux) = &mut state.upstream
+                    && let UpstreamSession::Mux(upstream) = &mut state.upstream
                 {
-                    let mux_server = MuxServerCtx {
-                        dns_cache: Arc::clone(&server.dns_cache),
-                        prefer_ipv4_upstream: server.prefer_ipv4_upstream,
-                        outbound_ipv6: server.outbound_ipv6.clone(),
-                        metrics: Arc::clone(&server.metrics),
-                    };
-                    let mux_route = MuxRouteCtx {
-                        protocol: route.protocol,
-                        path: Arc::clone(&route.path),
-                    };
                     vless_mux::handle_client_bytes(
-                        mux,
+                        &mut upstream.mux,
                         &leftover,
-                        &mux_server,
-                        &mux_route,
+                        &upstream.server,
+                        &upstream.route,
                         outbound.data_tx,
                         outbound.make_binary,
                     )
@@ -603,36 +586,47 @@ where
         .map_err(|error| anyhow!("failed to queue vless mux response header: {error}"))?;
 
     let user_counters = server.metrics.user_counters(&user.label_arc());
-    let mut mux = MuxState::new(user.clone(), Arc::clone(&user_counters));
+    let mux = MuxState::new(user.clone(), Arc::clone(&user_counters));
     state.user_counters = Some(user_counters);
     state.authenticated_user = Some(user);
+
+    let mut upstream = mux_upstream(mux, server, route);
 
     let leftover = state.header_buffer.split_off(request.consumed);
     state.header_buffer.clear();
     if !leftover.is_empty() {
-        let mux_server = MuxServerCtx {
-            dns_cache: Arc::clone(&server.dns_cache),
-            prefer_ipv4_upstream: server.prefer_ipv4_upstream,
-            outbound_ipv6: server.outbound_ipv6.clone(),
-            metrics: Arc::clone(&server.metrics),
-        };
-        let mux_route = MuxRouteCtx {
-            protocol: route.protocol,
-            path: Arc::clone(&route.path),
-        };
         vless_mux::handle_client_bytes(
-            &mut mux,
+            &mut upstream.mux,
             &leftover,
-            &mux_server,
-            &mux_route,
+            &upstream.server,
+            &upstream.route,
             outbound.data_tx,
             outbound.make_binary,
         )
         .await?;
     }
 
-    state.upstream = UpstreamSession::Mux(mux);
+    state.upstream = UpstreamSession::Mux(upstream);
     Ok(())
+}
+
+/// Snapshots the session's server / route context alongside a freshly
+/// established (or resumed) mux, so the per-frame path can borrow them instead
+/// of rebuilding both structs — and their `Arc` clones — on every data frame.
+fn mux_upstream(mux: MuxState, server: &VlessWsServerCtx, route: &VlessWsRouteCtx) -> MuxUpstream {
+    MuxUpstream {
+        mux,
+        server: MuxServerCtx {
+            dns_cache: Arc::clone(&server.dns_cache),
+            prefer_ipv4_upstream: server.prefer_ipv4_upstream,
+            outbound_ipv6: server.outbound_ipv6.clone(),
+            metrics: Arc::clone(&server.metrics),
+        },
+        route: MuxRouteCtx {
+            protocol: route.protocol,
+            path: Arc::clone(&route.path),
+        },
+    }
 }
 
 pub(super) async fn handle_vless_connection(

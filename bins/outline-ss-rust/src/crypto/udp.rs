@@ -183,17 +183,13 @@ fn try_decrypt_udp_packet_for_user(
 
     let (salt, ciphertext) = packet.split_at(salt_len);
     let (less_safe, from_cache) = resolve_session_key(user, user_index, salt, cache)?;
-    let plaintext = DECRYPT_SCRATCH.with(|cell| {
-        let mut buf = cell.borrow_mut();
-        buf.clear();
-        buf.extend_from_slice(ciphertext);
-        match less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut buf) {
-            Ok(slice) => {
-                let len = slice.len();
-                let mut out = std::mem::take(&mut *buf);
-                out.truncate(len);
-                Some(out)
-            },
+    // Copy the plaintext out of the thread-local scratch rather than taking the
+    // buffer: `mem::take` would leave the thread-local empty and make the next
+    // legacy datagram allocate a fresh scratch. Same discipline as the SS-2022
+    // branches above, which return a copy through `with_scratch`.
+    let plaintext = with_scratch(ciphertext, |buf| {
+        match less_safe.open_in_place(nonce_zero(), Aad::empty(), buf) {
+            Ok(slice) => Some(slice.to_vec()),
             Err(_) => None,
         }
     });

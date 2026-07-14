@@ -89,35 +89,98 @@ pub(in crate::server) struct UdpRouteCtx {
     pub(in crate::server) padding: PaddingScheme,
 }
 
-/// Per-session mutable state shared across concurrent datagram tasks.
-#[derive(Clone)]
+/// Set size at (and above) which [`StreamNatKeys::track`] reconciles the
+/// tracked keys against the live NAT table. Also the floor of the adaptive
+/// threshold: a stream fanning out to many *live* targets re-arms at twice its
+/// live-key count, so the O(n) sweep stays amortised O(1) per datagram.
+const NAT_KEYS_RECONCILE_FLOOR: usize = 64;
+
+/// NAT keys one SS-UDP stream is the active outbound responder of.
+///
+/// Inserted on every successful `register_session`; drained on park-on-drop.
+/// `HashSet` collapses the dedup check into a single hash lookup — the original
+/// `Vec<NatKey>` form did a linear `contains()` under the lock on every
+/// datagram.
+///
+/// Bounded-resource guard: a NAT entry that goes idle is evicted from
+/// [`NatTable`] on its own timer, which used to leave its key behind here
+/// forever, so a long-lived stream's set grew with every unique target it ever
+/// touched. [`Self::track`] therefore reconciles against the live table once
+/// the set crosses [`NAT_KEYS_RECONCILE_FLOOR`], dropping keys whose entry is
+/// gone. The set is thus bounded by the stream's live NAT entries (themselves
+/// capped by `udp_nat_max_entries`) plus the keys inserted since the last
+/// reconcile.
+#[derive(Default)]
+struct StreamNatKeys {
+    keys: HashSet<NatKey>,
+    /// Set size that arms the next reconcile pass.
+    reconcile_at: usize,
+}
+
+impl StreamNatKeys {
+    fn new() -> Self {
+        Self {
+            keys: HashSet::new(),
+            reconcile_at: NAT_KEYS_RECONCILE_FLOOR,
+        }
+    }
+
+    /// Records `key` as owned by this stream, reconciling the set against the
+    /// live NAT table when it has grown past the current threshold. `is_live`
+    /// reports whether a key still has an entry in the table.
+    fn track(&mut self, key: NatKey, is_live: impl Fn(&NatKey) -> bool) {
+        self.keys.insert(key);
+        if self.keys.len() < self.reconcile_at {
+            return;
+        }
+        self.keys.retain(|key| is_live(key));
+        self.reconcile_at = self.keys.len().saturating_mul(2).max(NAT_KEYS_RECONCILE_FLOOR);
+    }
+
+    /// Adopts keys re-pointed at this stream by a resume hit. Their entries
+    /// were just confirmed live by the resume path, so no reconcile is needed.
+    fn adopt(&mut self, keys: impl IntoIterator<Item = NatKey>) {
+        self.keys.extend(keys);
+    }
+
+    /// Drains every tracked key (park-on-drop).
+    fn take(&mut self) -> HashSet<NatKey> {
+        self.reconcile_at = NAT_KEYS_RECONCILE_FLOOR;
+        std::mem::take(&mut self.keys)
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.keys.len()
+    }
+}
+
+/// Per-session mutable state shared across concurrent datagram tasks. Shared as
+/// a single `Arc` — the per-datagram fan-out clones that one handle rather than
+/// deep-cloning a struct of six `Arc` fields (six atomic increments per
+/// datagram, six decrements when the relay future completes).
 struct UdpSessionState {
-    session_recorded: Arc<AtomicBool>,
-    cached_user_index: Arc<AtomicUsize>,
+    session_recorded: AtomicBool,
+    cached_user_index: AtomicUsize,
     /// Stream-unique identifier issued at WS-Upgrade time and used by
     /// the SS-UDP park / resume paths to address NAT entries' sender
     /// slots without trampling a concurrently-reconnected stream.
     stream_id: u64,
-    /// NAT keys this stream is the active outbound responder of.
-    /// Inserted on every successful `register_session`; drained on
-    /// park-on-drop. `HashSet` collapses the dedup check into a single
-    /// hash lookup — the previous `Vec<NatKey>` form did a linear
-    /// `contains()` under the lock on every datagram. Wrapped in a
-    /// `parking_lot::Mutex` since the hot path is per-datagram and
-    /// async-await isn't needed.
-    nat_keys: Arc<Mutex<HashSet<NatKey>>>,
+    /// NAT keys this stream owns. `parking_lot::Mutex` since the hot path is
+    /// per-datagram and async-await isn't needed.
+    nat_keys: Mutex<StreamNatKeys>,
     /// User the stream authenticated as (set once on the first
     /// successful AEAD decrypt). Captured early so park-on-drop can
     /// stash it as the parked entry's owner. `OnceLock` keeps the
     /// per-datagram read on the hot path lock-free (plain atomic
     /// acquire load); the one-time write CAS is taken at most once
     /// per stream.
-    authenticated_user_id: Arc<OnceLock<Arc<str>>>,
+    authenticated_user_id: OnceLock<Arc<str>>,
     /// Session ID the client offered for resumption, parsed at
     /// WS-Upgrade. Consumed (`take()`) on the first authenticated
     /// datagram by the resume path; subsequent datagrams see `None`
     /// and skip the resume attempt unconditionally.
-    pending_resume_request: Arc<Mutex<Option<SessionId>>>,
+    pending_resume_request: Mutex<Option<SessionId>>,
     /// Session ID the server minted for this stream (the
     /// `X-Outline-Session` response header value). Used as the
     /// registry key on park.
@@ -133,7 +196,7 @@ struct UdpSessionState {
     /// behaviour (resumption disabled / no issued id). The `OnceCell`
     /// serialises concurrent in-flight datagrams so none races ahead
     /// with the wrong scope.
-    nat_scope: Arc<OnceCell<Option<NatScope>>>,
+    nat_scope: OnceCell<Option<NatScope>>,
 }
 
 /// Resolves this stream's NAT scope ([`NatKey::scope`]) once, folding in the
@@ -207,7 +270,7 @@ async fn resolve_nat_scope(
         }
     }
     if reattached > 0 {
-        session.nat_keys.lock().extend(keys_for_self);
+        session.nat_keys.lock().adopt(keys_for_self);
         info!(
             user = %user_id,
             path,
@@ -381,10 +444,13 @@ where
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
     entry.register_session(response_sender, packet.session.clone(), session.stream_id);
-    // Track the NAT key as one this stream owns, for park-on-drop.
-    // `HashSet::insert` is a no-op on duplicates and avoids the linear
-    // scan that the prior `Vec` form paid on every datagram.
-    session.nat_keys.lock().insert(nat_key);
+    // Track the NAT key as one this stream owns, for park-on-drop. Insertion is
+    // a no-op on duplicates; past the reconcile threshold the set is swept
+    // against the live NAT table so idle-evicted targets do not accumulate.
+    session
+        .nat_keys
+        .lock()
+        .track(nat_key, |key| server.nat_table.contains(key));
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
         server.metrics.record_udp_oversized_datagram_dropped(
@@ -447,16 +513,16 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     let (outbound_data_tx, outbound_data_rx) =
         mpsc::channel::<T::Msg>(server.ws_data_channel_capacity);
     let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
-    let session = UdpSessionState {
-        session_recorded: Arc::new(AtomicBool::new(false)),
-        cached_user_index: Arc::new(AtomicUsize::new(UDP_CACHED_USER_INDEX_EMPTY)),
+    let session = Arc::new(UdpSessionState {
+        session_recorded: AtomicBool::new(false),
+        cached_user_index: AtomicUsize::new(UDP_CACHED_USER_INDEX_EMPTY),
         stream_id: next_ss_udp_stream_id(),
-        nat_keys: Arc::new(Mutex::new(HashSet::new())),
-        authenticated_user_id: Arc::new(OnceLock::new()),
-        pending_resume_request: Arc::new(Mutex::new(resume.requested_resume)),
+        nat_keys: Mutex::new(StreamNatKeys::new()),
+        authenticated_user_id: OnceLock::new(),
+        pending_resume_request: Mutex::new(resume.requested_resume),
         issued_session_id: resume.issued_session_id,
-        nat_scope: Arc::new(OnceCell::new()),
-    };
+        nat_scope: OnceCell::new(),
+    });
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
     // Per-carrier downstream-throttle monitor. A direct carrier (`None`) builds
     // it from the route and drives the local detection tick (`Some` only on a
@@ -583,7 +649,7 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
                         let tx = outbound_data_tx.clone();
                         let server = Arc::clone(&server);
                         let route = Arc::clone(&route);
-                        let session = session.clone();
+                        let session = Arc::clone(&session);
                         let monitor = throttle_monitor.clone();
                         in_flight.push(async move {
                             if let Err(error) = handle_udp_datagram_common(
@@ -665,7 +731,7 @@ async fn park_ss_udp_stream_on_drop(
     // concurrent with a redial on another task). The guard clears on every
     // return; the park commits under it.
     let _reservation = server.orphan_registry.reserve_park(session_id);
-    let nat_keys: HashSet<NatKey> = std::mem::take(&mut *session.nat_keys.lock());
+    let nat_keys: HashSet<NatKey> = session.nat_keys.lock().take();
     if nat_keys.is_empty() {
         return;
     }
@@ -719,3 +785,7 @@ pub(in crate::server) async fn handle_udp_h3_connection(
 ) -> Result<()> {
     run_udp_relay::<H3Ws>(H3Ws(socket), server, route, resume, None).await
 }
+
+#[cfg(test)]
+#[path = "tests/udp.rs"]
+mod tests;

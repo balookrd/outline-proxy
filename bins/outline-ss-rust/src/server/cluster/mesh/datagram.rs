@@ -56,7 +56,8 @@ where
     Ok(())
 }
 
-/// Reads one datagram into `buf` (cleared and resized to the datagram length).
+/// Reads one datagram into `buf` (cleared, then refilled with exactly the
+/// datagram's bytes — `buf.len()` equals the returned length on success).
 ///
 /// Returns `Ok(None)` on a clean stream end **at a frame boundary** (the peer
 /// finished the stream with no partial length prefix pending), `Ok(Some(len))`
@@ -90,11 +91,22 @@ where
         bail!("mesh UDP datagram length {len} exceeds max {MAX_UDP_DATAGRAM}");
     }
     buf.clear();
-    buf.resize(len, 0);
-    reader
-        .read_exact(buf)
+    buf.reserve(len);
+    // Fill the vector's spare capacity directly instead of `resize(len, 0)` +
+    // `read_exact`: the resize memsets up to `MAX_UDP_DATAGRAM` bytes to zero on
+    // every datagram, only for the read to overwrite them immediately. Reading
+    // through a `take`-limited `read_to_end` writes into uninitialised spare
+    // capacity, so the datagram lands with no zero-fill pass. A short read means
+    // the peer ended the stream mid-payload — the same truncation `read_exact`
+    // reported, surfaced with the frame's own diagnostics.
+    let read = (&mut *reader)
+        .take(len as u64)
+        .read_to_end(buf)
         .await
         .context("reading mesh datagram payload")?;
+    if read != len {
+        bail!("truncated mesh datagram payload: {read} of {len} bytes");
+    }
     Ok(Some(len))
 }
 
