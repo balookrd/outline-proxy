@@ -32,10 +32,9 @@ use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
-use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
+use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, warn};
 use url::Url;
 
@@ -48,10 +47,10 @@ use crate::resumption::SessionId;
 
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
 use super::{
-    ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
+    ACK_PREFIX_HEADER, InboundSender, OutboundReceiver, RESUME_CAPABLE_HEADER,
     RESUME_REQUEST_HEADER, RequestBody, SsPathKind, XhttpStream, XhttpSubmode, XhttpTarget,
-    default_port_for, empty_request_body, full_request_body, generate_session_id,
-    parse_ack_prefix_echo, parse_session_response,
+    default_port_for, empty_request_body, full_request_body, generate_session_id, inbound_channel,
+    outbound_channel, parse_ack_prefix_echo, parse_session_response,
 };
 
 /// Same dial budget as the h2/h3 paths — keeps fallback windows
@@ -132,8 +131,8 @@ pub(super) async fn connect_xhttp_h1(
             session_id: session_id.clone(),
         });
 
-        let (in_tx, in_rx) = mpsc::channel::<Result<Message, WsError>>(INBOUND_CHANNEL_CAPACITY);
-        let (out_tx, out_rx) = mpsc::channel::<Message>(OUTBOUND_CHANNEL_CAPACITY);
+        let (in_tx, in_rx) = inbound_channel();
+        let (out_tx, out_rx) = outbound_channel();
 
         // Open the GET synchronously so the resume-id round-trip
         // completes before we hand the stream to the caller. Mirrors
@@ -278,8 +277,8 @@ async fn open_h1_get(
 async fn driver_loop_h1(
     mut up_send: http1::SendRequest<RequestBody>,
     target: Arc<XhttpTarget>,
-    in_tx: mpsc::Sender<Result<Message, WsError>>,
-    mut out_rx: mpsc::Receiver<Message>,
+    in_tx: InboundSender,
+    mut out_rx: OutboundReceiver,
     body: hyper::body::Incoming,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) {
@@ -290,9 +289,11 @@ async fn driver_loop_h1(
     let _drain_task = AbortOnDrop::new(tokio::spawn(async move {
         if let Err(error) = drain_hyper_body(body, &drain_in_tx).await {
             debug!(?error, "xhttp/h1 GET reader exited");
-            let _ = drain_in_tx.send(Err(io_ws_err("xhttp/h1 downlink ended"))).await;
+            let _ = drain_in_tx
+                .send_control(Err(io_ws_err("xhttp/h1 downlink ended")))
+                .await;
         } else {
-            let _ = drain_in_tx.send(Ok(Message::Close(None))).await;
+            let _ = drain_in_tx.send_control(Ok(Message::Close(None))).await;
         }
     }));
 
@@ -302,15 +303,20 @@ async fn driver_loop_h1(
     // await each POST to completion before starting the next.
     let mut next_seq: u64 = 0;
     loop {
-        let msg = match out_rx.recv().await {
-            Some(msg) => msg,
+        let queued = match out_rx.recv().await {
+            Some(queued) => queued,
             None => break,
         };
+        // The permit is held for the whole POST: the bytes stay resident until
+        // hyper has written them out.
+        let (msg, _permit) = queued.into_parts();
         let bytes = match msg {
             Message::Binary(b) => b,
             Message::Ping(_) | Message::Pong(_) => continue,
             Message::Text(_) => {
-                let _ = in_tx.send(Err(io_ws_err("xhttp/h1 does not carry text"))).await;
+                let _ = in_tx
+                    .send_control(Err(io_ws_err("xhttp/h1 does not carry text")))
+                    .await;
                 continue;
             },
             Message::Close(_) => break,
@@ -320,12 +326,14 @@ async fn driver_loop_h1(
         next_seq = next_seq.saturating_add(1);
         if let Err(error) = up_send.ready().await {
             warn!(?error, "xhttp h1 uplink connection lost while waiting for capacity");
-            let _ = in_tx.send(Err(io_ws_err("xhttp/h1 uplink not ready"))).await;
+            let _ = in_tx.send_control(Err(io_ws_err("xhttp/h1 uplink not ready"))).await;
             break;
         }
         if let Err(error) = post_one(&mut up_send, target.as_ref(), seq, bytes, profile).await {
             warn!(?error, seq, "xhttp/h1 POST failed");
-            let _ = in_tx.send(Err(io_ws_err("xhttp/h1 uplink POST failed"))).await;
+            let _ = in_tx
+                .send_control(Err(io_ws_err("xhttp/h1 uplink POST failed")))
+                .await;
             // A single POST failure tears the keep-alive socket down
             // (hyper's connection task will exit on the next read), so
             // breaking the driver loop here matches reality — we

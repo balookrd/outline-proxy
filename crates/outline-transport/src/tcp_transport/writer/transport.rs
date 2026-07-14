@@ -1,5 +1,6 @@
 use crate::TransportOperation;
 use crate::carrier_padding::{self, CarrierPadding};
+use crate::carrier_queue::{self, BudgetedSender};
 use crate::{AbortOnDrop, TransportStream};
 use anyhow::{Context, Result, anyhow};
 use futures_util::SinkExt;
@@ -10,11 +11,6 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::warn;
 
-/// Buffer size for the WS writer's data channel. Sized to absorb
-/// bursts up to ~4 MB at the 16 KB SS2022 chunk boundary so a long
-/// upload doesn't stall on the per-channel cap; the underlying
-/// transport (h2/h3 flow control or native WS) is the real bound.
-const WS_DATA_CHANNEL_CAPACITY: usize = 256;
 /// Control frames are tiny and rare (Ping/Pong/Close); a deeper
 /// queue would only delay close propagation.
 const WS_CTRL_CHANNEL_CAPACITY: usize = 8;
@@ -34,7 +30,7 @@ pub trait WriteTransport: Send + 'static {
 
 #[doc(hidden)]
 pub struct WsWriteTransport {
-    data_tx: Option<mpsc::Sender<Message>>,
+    data_tx: Option<BudgetedSender<Message>>,
     /// Kept alive for its `AbortOnDrop` — aborts the writer task on drop.
     _writer_task: Option<AbortOnDrop>,
     /// Process-wide carrier padding read at spawn. Disabled by default, in
@@ -49,7 +45,10 @@ impl WsWriteTransport {
     /// must be passed to the paired reader so that Pong responses go through
     /// the priority channel.
     pub(super) fn spawn(sink: WsSink) -> (Self, mpsc::Sender<Message>) {
-        let (data_tx, mut data_rx) = mpsc::channel::<Message>(WS_DATA_CHANNEL_CAPACITY);
+        // Data frames are bounded by bytes (the writer coalesces up to
+        // `FRAME_SOFT_CAP` per message); control frames keep their own tiny
+        // unbudgeted queue so a Close never waits behind a congested uplink.
+        let (data_tx, mut data_rx) = carrier_queue::channel::<Message>();
         let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(WS_CTRL_CHANNEL_CAPACITY);
         let padding = carrier_padding::effective_carrier_padding();
         // Idle cover traffic on the uplink, when enabled. `None` keeps the
@@ -97,11 +96,17 @@ impl WsWriteTransport {
                             None => ctrl_open = false,
                         },
                         msg = data_rx.recv() => match msg {
-                            Some(m) => {
+                            Some(queued) => {
+                                // The byte permit is released only once the frame
+                                // has reached the sink: freeing it at dequeue would
+                                // let the queue refill while these bytes are still
+                                // buffered downstream.
+                                let (m, permit) = queued.into_parts();
                                 if let Err(error) = ws_sink.send(m).await {
                                     warn!(%error, "ws writer data send failed, terminating writer task");
                                     return;
                                 }
+                                drop(permit);
                                 arm_cover(cover_sleep.as_mut(), &cover);
                             }
                             None => { let _ = ws_sink.close().await; return; }
@@ -117,11 +122,13 @@ impl WsWriteTransport {
                     tokio::select! {
                         biased;
                         msg = data_rx.recv() => match msg {
-                            Some(m) => {
+                            Some(queued) => {
+                                let (m, permit) = queued.into_parts();
                                 if let Err(error) = ws_sink.send(m).await {
                                     warn!(%error, "ws writer data send failed, terminating writer task");
                                     return;
                                 }
+                                drop(permit);
                                 arm_cover(cover_sleep.as_mut(), &cover);
                             }
                             None => {
@@ -195,7 +202,8 @@ impl WriteTransport for WsWriteTransport {
         } else {
             frame
         };
-        tx.send(Message::Binary(payload.into()))
+        let bytes = payload.len();
+        tx.send(Message::Binary(payload.into()), bytes)
             .await
             .context("failed to send encrypted frame")
     }

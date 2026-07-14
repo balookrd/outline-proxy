@@ -212,6 +212,18 @@ cargo release-musl-aarch64
 - Горячие TCP/UDP/TUN paths должны избегать лишних allocations, глобальных locks
   и O(n) scans. Если линейный обход остается, он должен быть ограничен холодным
   путем, лимитом или понятным backpressure.
+- Carrier-очереди ограничены БАЙТАМИ, а не числом сообщений:
+  `crates/outline-transport/src/carrier_queue.rs` (`CARRIER_QUEUE_BYTES`, плюс
+  `CARRIER_QUEUE_SLOTS` как вторичный guard против флуда мелких фреймов). Через
+  него идут WS data-канал (SS/VLESS/датаграммы) и обе XHTTP-очереди
+  (inbound/outbound + request-body канал stream-one). Причина: SS/VLESS
+  `send_chunks` коалесцирует запись до `FRAME_SOFT_CAP` (256 KiB) на сообщение,
+  поэтому слотовый bound (256) означал ~64 MB на очередь на сессию ровно тогда,
+  когда носитель congested. Продюсер берёт permit'ы по байтам; потребитель
+  освобождает их ТОЛЬКО после того, как фрейм ушёл в носитель (в XHTTP permit
+  едет вместе с POST-таском / боди-фреймом, поэтому бюджет покрывает и in-flight
+  байты). Не возвращай слотовый bound, не дропай permit на dequeue и не заводи
+  вторую копию `FRAME_SOFT_CAP` — она намеренно одна на оба writer'а.
 - Метрики, tracing и dashboard helpers не должны менять поведение relay paths
   при выключенных feature flags. Stub-реализации обязаны компилироваться и
   сохранять публичные типы там, где они используются другими crates.

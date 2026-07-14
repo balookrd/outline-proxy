@@ -128,6 +128,7 @@ use tokio::net::TcpStream;
 pub use resumption::{ResumeCache, SessionId, global_resume_cache};
 
 pub mod carrier_padding;
+mod carrier_queue;
 #[cfg(feature = "cert-check")]
 pub mod cert_check;
 pub mod collections;

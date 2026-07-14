@@ -31,11 +31,8 @@ use tokio_tungstenite::tungstenite::protocol::{Message, frame::coding::CloseCode
 use tracing::{debug, warn};
 
 use crate::carrier_padding::{self, CarrierPadding};
+use crate::carrier_queue::{self, BudgetedSender};
 
-/// Sized to match the SS TCP writer's WS data buffer so VLESS
-/// frame pipes get the same burst window. Real upper bound is the
-/// underlying transport's flow control.
-const WS_DATA_CHANNEL_CAPACITY: usize = 256;
 /// Pings/Pongs/Close are tiny and rare; a deeper queue would only
 /// delay close propagation.
 const WS_CTRL_CHANNEL_CAPACITY: usize = 8;
@@ -90,12 +87,15 @@ fn spawn_ws_writer(
     cover: Option<CarrierPadding>,
 ) -> (
     AbortOnDrop,
-    mpsc::Sender<Message>,
+    BudgetedSender<Message>,
     mpsc::Sender<Message>,
     SplitStream<TransportStream>,
 ) {
     let (sink, stream) = ws_stream.split();
-    let (data_tx, mut data_rx) = mpsc::channel::<Message>(WS_DATA_CHANNEL_CAPACITY);
+    // Byte-budgeted data queue: VLESS coalesces up to `FRAME_SOFT_CAP` per
+    // frame, datagram carriers put one packet per frame — bounding by bytes
+    // fits both without throttling either. Control frames stay unbudgeted.
+    let (data_tx, mut data_rx) = carrier_queue::channel::<Message>();
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(WS_CTRL_CHANNEL_CAPACITY);
     let task = tokio::spawn(async move {
         let mut ws_sink = sink;
@@ -131,15 +131,19 @@ fn spawn_ws_writer(
                         None => ctrl_open = false,
                     },
                     msg = data_rx.recv() => match msg {
-                        Some(Message::Close(_)) => {
-                            let _ = ws_sink.close().await;
-                            return;
-                        }
-                        Some(m) => {
+                        Some(queued) => {
+                            // The byte permit lives until the frame reaches the
+                            // sink — see `carrier_queue`.
+                            let (m, permit) = queued.into_parts();
+                            if matches!(m, Message::Close(_)) {
+                                let _ = ws_sink.close().await;
+                                return;
+                            }
                             if let Err(error) = ws_sink.send(m).await {
                                 warn!(%error, "ws frame writer data send failed, terminating writer task");
                                 return;
                             }
+                            drop(permit);
                             arm_cover(cover_sleep.as_mut(), &cover);
                         }
                         None => { let _ = ws_sink.close().await; return; }
@@ -155,15 +159,17 @@ fn spawn_ws_writer(
                 tokio::select! {
                     biased;
                     msg = data_rx.recv() => match msg {
-                        Some(Message::Close(_)) => {
-                            let _ = ws_sink.close().await;
-                            return;
-                        }
-                        Some(m) => {
+                        Some(queued) => {
+                            let (m, permit) = queued.into_parts();
+                            if matches!(m, Message::Close(_)) {
+                                let _ = ws_sink.close().await;
+                                return;
+                            }
                             if let Err(error) = ws_sink.send(m).await {
                                 warn!(%error, "ws frame writer data send failed, terminating writer task");
                                 return;
                             }
+                            drop(permit);
                             arm_cover(cover_sleep.as_mut(), &cover);
                         }
                         None => { let _ = ws_sink.close().await; return; }
@@ -225,7 +231,7 @@ fn spawn_keepalive(ctrl_tx: mpsc::Sender<Message>, interval: Duration) -> AbortO
 /// WebSocket [`FrameSink`]. Wraps each `send_frame` payload in a single
 /// `Message::Binary` so VLESS request-header / chunk boundaries survive.
 pub struct WsFrameSink {
-    data_tx: Option<mpsc::Sender<Message>>,
+    data_tx: Option<BudgetedSender<Message>>,
     _writer_task: AbortOnDrop,
     _keepalive_task: Option<AbortOnDrop>,
     /// Process-wide carrier padding read at construction. Disabled by default,
@@ -258,7 +264,8 @@ impl FrameSink for WsFrameSink {
         } else {
             data
         };
-        tx.send(Message::Binary(payload))
+        let bytes = payload.len();
+        tx.send(Message::Binary(payload), bytes)
             .await
             .context(TransportOperation::WebSocketSend)
     }
@@ -445,7 +452,7 @@ pub fn from_ws_frames(
 /// Reads run in a background task draining into a bounded mpsc so the
 /// receive side is `&self`-safe and can be polled from any task.
 pub struct WsDatagramChannel {
-    data_tx: mpsc::Sender<Message>,
+    data_tx: BudgetedSender<Message>,
     downlink_rx: Mutex<mpsc::Receiver<Result<Bytes>>>,
     _writer_task: AbortOnDrop,
     _reader_task: AbortOnDrop,
@@ -455,8 +462,9 @@ pub struct WsDatagramChannel {
 #[async_trait]
 impl DatagramChannel for WsDatagramChannel {
     async fn send_datagram(&self, data: Bytes) -> Result<()> {
+        let bytes = data.len();
         self.data_tx
-            .send(Message::Binary(data))
+            .send(Message::Binary(data), bytes)
             .await
             .context(TransportOperation::WebSocketSend)
     }
@@ -471,7 +479,8 @@ impl DatagramChannel for WsDatagramChannel {
     }
 
     async fn close(&self) {
-        let _ = self.data_tx.send(Message::Close(None)).await;
+        // Unbudgeted: a Close must propagate even when the data queue is full.
+        let _ = self.data_tx.send_control(Message::Close(None)).await;
     }
 }
 

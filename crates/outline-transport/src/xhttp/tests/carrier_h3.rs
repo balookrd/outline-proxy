@@ -7,16 +7,13 @@
 //! session (e.g. an idle push socket) then tripped the 300s reaper and
 //! capped the carrier to h2 even though H3 was healthy.
 
-use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
-
 use crate::guards::AbortOnDrop;
 use crate::ws_stream::TransportStream;
-use crate::xhttp::{XhttpStream, XhttpSubmode};
+use crate::xhttp::{XhttpStream, XhttpSubmode, inbound_channel, outbound_channel};
 
 fn dummy_xhttp_stream(carrier_is_h3: bool) -> XhttpStream {
-    let (_in_tx, in_rx) = mpsc::channel::<Result<Message, _>>(1);
-    let (out_tx, _out_rx) = mpsc::channel::<Message>(1);
+    let (_in_tx, in_rx) = inbound_channel();
+    let (out_tx, _out_rx) = outbound_channel();
     let driver = AbortOnDrop::new(tokio::spawn(async {
         std::future::pending::<()>().await;
     }));

@@ -32,8 +32,11 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
 use rand::RngCore;
 use std::convert::Infallible;
+use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use url::Url;
 
+use crate::carrier_queue::{self, BudgetedSender, BudgetedSink, Queued};
 use crate::config::TransportMode;
 use crate::dns_cache::DnsCache;
 use crate::resumption::SessionId;
@@ -140,21 +143,38 @@ pub(super) fn full_request_body(payload: Bytes) -> RequestBody {
 /// path segment without bloating logs.
 const SESSION_ID_BYTES: usize = 16;
 
-/// Cap for the per-session inbound (downlink) channel. Frames in
-/// flight are already capped by h2 flow control on the wire; this
-/// in-memory buffer smooths the gap between the driver task drain
-/// and `Stream::poll_next`. Sized for ~4 MB inflight at the 16 KB
-/// SS2022 chunk size — enough to cover BDP on a 1 Gbps × 30 ms link
-/// without forcing the reader to round-trip after every chunk.
-/// `pub(super)` so the h3 sibling module reuses the same sizing.
-pub(super) const INBOUND_CHANNEL_CAPACITY: usize = 256;
+/// Per-session downlink queue: the driver task drains the GET body into it and
+/// `Stream::poll_next` pops from it. Bounded by bytes rather than by frame
+/// count — see [`crate::carrier_queue`]. The permit is released the moment the
+/// reader takes the frame, so the budget tracks what is actually queued.
+pub(super) type InboundSender = BudgetedSender<Result<Message, WsError>>;
+pub(super) type InboundReceiver = mpsc::Receiver<Queued<Result<Message, WsError>>>;
 
-/// Cap for the per-session outbound (uplink) channel. Same sizing
-/// rationale as the inbound cap. With the `PollSender`-based Sink
-/// the channel applies real back-pressure to bulk uploads, so the
-/// larger window only widens the burst tolerance — it does not
-/// cause unbounded memory growth.
-pub(super) const OUTBOUND_CHANNEL_CAPACITY: usize = 256;
+/// Per-session uplink queue, drained by the driver into POSTs (packet-up) or
+/// the request body (stream-one). The producer is `TransportStream`'s
+/// `Sink<Message>`, hence the [`BudgetedSink`] half. A frame's permit is held
+/// until its bytes have actually been handed to hyper / h3, so the budget
+/// covers the POSTs in flight too, not just the queue.
+pub(super) type OutboundReceiver = mpsc::Receiver<Queued<Message>>;
+
+pub(super) fn inbound_channel() -> (InboundSender, InboundReceiver) {
+    carrier_queue::channel()
+}
+
+pub(super) fn outbound_channel() -> (BudgetedSink<Message>, OutboundReceiver) {
+    carrier_queue::sink_channel()
+}
+
+/// Payload bytes a message charges against the queue budget. Control frames
+/// (Close/Ping/Pong) carry no payload worth accounting for; they ride the
+/// unbudgeted path.
+pub(super) fn message_bytes(msg: &Message) -> usize {
+    match msg {
+        Message::Binary(b) => b.len(),
+        Message::Text(t) => t.len(),
+        _ => 0,
+    }
+}
 
 /// Dials an XHTTP session against `url`. The host and port come from
 /// `url`; the **path component** of `url` is the XHTTP base — the
