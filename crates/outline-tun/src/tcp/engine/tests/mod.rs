@@ -25,6 +25,7 @@ use tokio_tungstenite::{MaybeTlsStream, accept_async};
 use url::Url;
 
 mod direct_backpressure;
+mod resume;
 
 use super::super::state_machine::TcpFlowStatus;
 use super::super::tests::{
@@ -1761,6 +1762,7 @@ fn eviction_test_flow_state(
             },
             upstream_writer: None,
         },
+        resume: super::super::state_machine::FlowResume::disarmed(),
         signals: super::super::state_machine::FlowControlSignals {
             close_signal,
             upstream_pump: Arc::new(tokio::sync::Notify::new()),
