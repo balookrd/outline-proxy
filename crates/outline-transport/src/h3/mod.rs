@@ -25,7 +25,7 @@ use pin_project_lite::pin_project;
 use tokio_tungstenite::tungstenite::protocol::frame::{CloseFrame, Utf8Bytes, coding::CloseCode};
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 
-use shared::SharedH3Connection;
+use shared::{CarrierActiveGuard, SharedH3Connection};
 use vendored::{RawH3WsStream, SockudoCloseReason, SockudoError, SockudoMessage};
 
 // ── H3WsStream ────────────────────────────────────────────────────────────────
@@ -34,6 +34,11 @@ pin_project! {
     pub(crate) struct H3WsStream {
         #[pin]
         inner: RawH3WsStream,
+        // Decrements this carrier's live-stream count on drop. Ordered before
+        // `_shared_connection` so the count is updated while the carrier is
+        // still alive. A plain (non-pinned) field: pin_project drops it
+        // normally, running its `Drop`.
+        _active: CarrierActiveGuard,
         // Keep the shared connection alive for as long as this websocket stream
         // is active so the underlying HTTP/3 state does not get torn down.
         _shared_connection: Arc<SharedH3Connection>,
