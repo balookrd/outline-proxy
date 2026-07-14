@@ -70,8 +70,17 @@ pub(super) async fn redial_current_uplink_and_replay(
     half_close_error_ctx: &'static str,
 ) -> Result<()> {
     let wire_index = uplinks.active_wire(active.index, TransportKind::Tcp);
-    let reconnected =
-        connect_tcp_specific_wire_fresh(uplinks, &active.candidate, target, wire_index).await?;
+    // Present *this* session's own id so the server can re-attach the upstream
+    // it parked when the previous carrier died. `replace_transport` then adopts
+    // whatever id the server minted on the hit.
+    let reconnected = connect_tcp_specific_wire_fresh(
+        uplinks,
+        &active.candidate,
+        target,
+        wire_index,
+        active.session_id,
+    )
+    .await?;
     active.replace_transport(reconnected);
     replay.replay_to(&mut active.writer, replay_error_ctx).await?;
     if client_half_closed {
