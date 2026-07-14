@@ -50,6 +50,30 @@ async fn preserves_boundaries_across_multiple_datagrams() {
 }
 
 #[tokio::test]
+async fn reused_buffer_carries_no_residue_from_the_previous_datagram() {
+    // The read path fills the vector's spare capacity without zeroing it first,
+    // so a shorter datagram read into a buffer that just held a longer one must
+    // still expose exactly its own bytes — `buf` itself, not just `buf[..len]`.
+    let long: Vec<u8> = vec![0xAA; 4096];
+    let short: Vec<u8> = vec![0x11; 7];
+
+    let mut wire: Vec<u8> = Vec::new();
+    write_datagram(&mut wire, &long).await.unwrap();
+    write_datagram(&mut wire, &short).await.unwrap();
+
+    let mut src: &[u8] = &wire;
+    let mut buf = Vec::new();
+    let len = read_datagram(&mut src, &mut buf).await.unwrap().unwrap();
+    assert_eq!(len, long.len());
+    assert_eq!(buf, long);
+
+    let len = read_datagram(&mut src, &mut buf).await.unwrap().unwrap();
+    assert_eq!(len, short.len());
+    assert_eq!(buf, short, "buffer kept residue from the previous datagram");
+    assert!(src.is_empty());
+}
+
+#[tokio::test]
 async fn clean_eof_at_boundary_returns_none() {
     let mut src: &[u8] = &[];
     let mut buf = Vec::new();
