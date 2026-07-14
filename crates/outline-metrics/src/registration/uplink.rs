@@ -125,7 +125,6 @@ pub(super) struct UplinkFields {
     pub(super) uplink_open_connections: IntGaugeVec,
     pub(super) uplink_connection_close_total: IntCounterVec,
     pub(super) socks_tcp_strict_aborts_total: IntCounterVec,
-    pub(super) reverse_peers: IntGaugeVec,
     pub(super) soft_switch_total: IntCounterVec,
     pub(super) resume_lookup_total: IntCounterVec,
 }
@@ -437,14 +436,6 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
          the TUN-side event labels: `global_switch` for an active-uplink flip.",
         ["group", "uplink", "reason"]
     );
-    let reverse_peers = register_labeled!(
-        registry,
-        IntGaugeVec,
-        "outline_ws_reverse_peers",
-        "Currently-connected reverse-tunnel peers per group (topology A: ss servers \
-         that dialed in over QUIC and are live egress for this group).",
-        ["group"]
-    );
     let soft_switch_total = register_labeled!(
         registry,
         IntCounterVec,
@@ -510,7 +501,6 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_open_connections,
         uplink_connection_close_total,
         socks_tcp_strict_aborts_total,
-        reverse_peers,
         soft_switch_total,
         resume_lookup_total,
     }
