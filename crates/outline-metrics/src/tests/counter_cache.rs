@@ -1,9 +1,16 @@
 //! Tests for [`crate::FailoverCounter`]: the `(group, uplink)` handle cache
 //! must re-resolve onto the new series when a flow fails over mid-stream, and
 //! must not re-resolve while the label `Arc`s stay ptr-stable.
+//!
+//! These assert on absolute counter values, so they must hold [`test_guard`]:
+//! `init()` calls `bytes_total.reset()`, which drops *every* child series of the
+//! vec — unique labels are no defence. Racing an `init()` test would orphan the
+//! cached handle (it keeps incrementing a detached `IntCounter`) while the
+//! assertion re-creates the series at zero.
 
 use std::sync::Arc;
 
+use super::test_guard;
 use crate::{FailoverCounter, flow_bytes_counter};
 
 fn down_bytes_series(group: &str, uplink: &str) -> u64 {
@@ -15,6 +22,7 @@ fn down_bytes_series(group: &str, uplink: &str) -> u64 {
 
 #[test]
 fn reresolves_on_uplink_change_and_leaves_old_series_frozen() {
+    let _guard = test_guard();
     let group: Arc<str> = Arc::from("fo_grp");
     let uplink_a: Arc<str> = Arc::from("fo_up_a");
     let uplink_b: Arc<str> = Arc::from("fo_up_b");
@@ -49,6 +57,7 @@ fn reresolves_on_uplink_change_and_leaves_old_series_frozen() {
 
 #[test]
 fn resolves_once_while_labels_are_ptr_stable() {
+    let _guard = test_guard();
     let group: Arc<str> = Arc::from("fo_resolve_grp");
     let uplink_a: Arc<str> = Arc::from("fo_resolve_a");
     let uplink_b: Arc<str> = Arc::from("fo_resolve_b");
@@ -95,6 +104,7 @@ fn caches_across_ptr_stable_arc_clones() {
     // Cloning an `Arc` preserves its allocation pointer, so passing fresh clones
     // of a stable label each call (as `key_group_and_uplink` does) still hits
     // the cache — the exported value must be exact.
+    let _guard = test_guard();
     let group: Arc<str> = Arc::from("fo_stable_grp");
     let uplink: Arc<str> = Arc::from("fo_stable_up");
 
