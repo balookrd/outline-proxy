@@ -16,7 +16,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::{Buf, Bytes};
 use h3::client::SendRequest;
-use http::{Method, Request, Version};
+use http::{HeaderMap, Method, Request, Version};
 use rustls::pki_types::ServerName;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -391,6 +391,15 @@ async fn driver_loop_h3(
         }
     }));
 
+    // Per-POST request template, built once per session: h3 puts the
+    // authority in the `:authority` pseudo-header (from the URI), so a
+    // packet-up POST carries only the browser fingerprint headers. We
+    // clone this map per POST and append the seq to the URL prefix
+    // instead of re-running `apply` and re-`format!`-ing the URI per
+    // frame.
+    let base_headers = Arc::new(build_post_headers(profile));
+    let uri_prefix: Arc<str> = Arc::from(target.uri_seq_prefix());
+
     let mut next_seq: u64 = 0;
     loop {
         let queued = match out_rx.recv().await {
@@ -413,13 +422,14 @@ async fn driver_loop_h3(
         let seq = next_seq;
         next_seq = next_seq.saturating_add(1);
         let send = send_request.clone();
-        let target = Arc::clone(&target);
+        let base_headers = Arc::clone(&base_headers);
+        let uri_prefix = Arc::clone(&uri_prefix);
         let in_tx_for_err = in_tx.clone();
         tokio::spawn(async move {
             // Permit rides the POST — the bytes are resident until h3 has sent
             // them, so the queue budget must keep covering them.
             let _permit = permit;
-            if let Err(error) = post_one(send, target.as_ref(), seq, bytes, profile).await {
+            if let Err(error) = post_one(send, &uri_prefix, &base_headers, seq, bytes).await {
                 warn!(?error, seq, "xhttp/h3 POST failed");
                 let _ = in_tx_for_err
                     .send_control(Err(io_ws_err("xhttp/h3 uplink POST failed")))
@@ -428,6 +438,24 @@ async fn driver_loop_h3(
         });
     }
     debug!("xhttp/h3 driver exiting");
+}
+
+/// Header map shared by every packet-up POST in an h3 session: just the
+/// browser fingerprint headers (the authority rides the `:authority`
+/// pseudo-header). Built once per session and cloned per POST; the clone
+/// reproduces the exact order the old per-POST `apply` produced.
+pub(super) fn build_post_headers(
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
+) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply(
+            profile,
+            &mut headers,
+            crate::fingerprint_profile::SecFetchPreset::XhrCors,
+        );
+    }
+    headers
 }
 
 /// Stream-one carrier on h3: a single bidirectional QUIC stream.
@@ -587,10 +615,10 @@ where
 
 async fn post_one(
     mut send: SendRequest<h3_quinn::OpenStreams, Bytes>,
-    target: &XhttpTarget,
+    uri_prefix: &str,
+    base_headers: &HeaderMap,
     seq: u64,
     payload: Bytes,
-    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<()> {
     // Path-based seq matches xray / sing-box's default placement and
     // mirrors the h2 sibling — keep the wire shape identical across
@@ -598,17 +626,11 @@ async fn post_one(
     // negotiated by looking at the uplink URLs.
     let mut req = Request::builder()
         .method(Method::POST)
-        .uri(target.full_uri_with_seq(seq))
+        .uri(format!("{uri_prefix}{seq}"))
         .version(Version::HTTP_3)
         .body(())
         .context("failed to build xhttp/h3 POST request")?;
-    if let Some(profile) = profile {
-        crate::fingerprint_profile::apply(
-            profile,
-            req.headers_mut(),
-            crate::fingerprint_profile::SecFetchPreset::XhrCors,
-        );
-    }
+    *req.headers_mut() = base_headers.clone();
     let mut stream = send
         .send_request(req)
         .await

@@ -460,6 +460,15 @@ fn spawn_vless_udp_mux_session_reader<S: VlessUdpMuxSession>(
                 return;
             },
         };
+        // Reusable scratch for the SOCKS5 re-frame. Each downlink datagram is
+        // `prefix || payload`; instead of allocating a fresh `BytesMut` per
+        // packet we grow one buffer and split each framed datagram off it.
+        // `reserve` reclaims the backing allocation once the consumer drops the
+        // previous frame (refcount back to 1), so a steady downlink reuses one
+        // allocation rather than one per packet. The payload copy stays: it
+        // lives in the session's shared reassembly buffer, so a contiguous
+        // SOCKS5 frame needs one copy regardless.
+        let mut scratch = BytesMut::new();
         loop {
             let payload = tokio::select! {
                 biased;
@@ -479,12 +488,16 @@ fn spawn_vless_udp_mux_session_reader<S: VlessUdpMuxSession>(
                     }
                 },
             };
-            let mut framed = BytesMut::with_capacity(prefix.len() + payload.len());
-            framed.extend_from_slice(&prefix);
-            framed.extend_from_slice(&payload);
-            if downlink_tx.send(Ok(framed.freeze())).await.is_err() {
+            scratch.reserve(prefix.len() + payload.len());
+            scratch.extend_from_slice(&prefix);
+            scratch.extend_from_slice(&payload);
+            if downlink_tx.send(Ok(scratch.split().freeze())).await.is_err() {
                 return;
             }
         }
     }))
 }
+
+#[cfg(test)]
+#[path = "tests/udp_mux_core.rs"]
+mod tests;
