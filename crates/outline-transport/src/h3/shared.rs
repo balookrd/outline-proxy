@@ -58,16 +58,17 @@ const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // naturally, at which point a fresh connection is made to the (now re-resolved)
 // new address.
 //
-// The key additionally carries a `slot` (0..`H3_CARRIER_FANOUT`) so a logical
+// The key additionally carries a `slot` (0..`H3_CARRIER_MAX`) so a logical
 // server is served by several *independent* shared QUIC connections rather than
-// a single one. New dials are round-robined across the slots. Multiplexing the
-// whole host onto one shared connection means any connection-level close
-// (server-side `H3_INTERNAL_ERROR`, a qpack/protocol fault, an idle timeout)
-// tears down *every* flow to that server at once — including long-lived SSE
-// streams. Spreading flows across N carriers bounds that blast radius to the
-// ~1/N flows that happen to sit on the collapsing carrier, and the reduced
-// per-carrier stream concurrency also shrinks the race window that triggers the
-// collapse in the first place.
+// a single one. New dials are placed by `choose_slot` on the least-loaded
+// carrier under a per-carrier cap, keeping at least `H3_CARRIER_MIN` carriers
+// alive for isolation. Multiplexing the whole host onto one shared connection
+// means any connection-level close (server-side `H3_INTERNAL_ERROR`, a
+// qpack/protocol fault, an idle timeout) tears down *every* flow to that server
+// at once — including long-lived SSE streams. Spreading flows across carriers
+// bounds that blast radius to the flows that happen to sit on the collapsing
+// carrier, and the reduced per-carrier stream concurrency also shrinks the race
+// window that triggers the collapse in the first place.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct H3ConnectionKey {
     base: crate::shared_cache::ConnectionKey,
@@ -88,19 +89,94 @@ impl H3ConnectionKey {
     }
 }
 
-// Number of independent shared QUIC connections ("carriers") kept per logical
-// server. Four keeps the reconnect blast radius to ~1/4 of a server's flows
-// while adding only a handful of extra QUIC handshakes / keep-alive PINGs. See
-// the `H3ConnectionKey` comment above for the rationale.
-const H3_CARRIER_FANOUT: u64 = 4;
+// Carrier-pool policy. Flows to a logical server are spread across several
+// independent shared QUIC connections ("carriers"), each a distinct `slot` in
+// the cache key, so a single connection-level collapse only takes down the
+// streams on one carrier instead of every flow at once.
+//
+//  * MIN — always keep at least this many carriers once there is traffic, so
+//    even a lightly-loaded host (a handful of flows) isolates a long-lived SSE
+//    stream from the bulk of the traffic. Without a floor, a low flow count
+//    would pack everything back onto one carrier and re-expose the SSE.
+//  * CAP — soft ceiling on live streams per carrier. Past it the picker opens
+//    another carrier, bounding the absolute blast radius under heavy load and
+//    keeping per-carrier stream concurrency (hence the collapse race window)
+//    small.
+//  * MAX — hard ceiling on carriers per host. Once every slot is populated and
+//    full, streams pack beyond CAP (soft) rather than opening an unbounded
+//    number of QUIC connections / keep-alive PINGs.
+const H3_CARRIER_MIN: u8 = 4;
+const H3_CARRIER_CAP: u64 = 32;
+const H3_CARRIER_MAX: u8 = 16;
 
-// Process-wide round-robin cursor that spreads new dials across the
-// `H3_CARRIER_FANOUT` carrier slots. `Relaxed` is sufficient: we only need
-// approximately-even distribution, not a strict global order.
-static H3_CARRIER_RR: AtomicU64 = AtomicU64::new(0);
+/// Pure carrier-selection policy, factored out of `pick_h3_carrier_slot` so it
+/// can be unit-tested without a live registry.
+///
+/// `loads[i]` is `Some(active_streams)` for the carrier in slot `i` when it is
+/// open, or `None` when that slot is empty (or holds a dead carrier the caller
+/// will re-dial). The returned slot index is always `< loads.len()`.
+///
+/// Policy, in order:
+///   1. Below the MIN carrier floor → open the first empty slot for isolation.
+///   2. Otherwise pack onto the least-loaded open carrier under CAP.
+///   3. If every open carrier is at CAP → open the first empty slot (grow).
+///   4. If none is empty either (MAX carriers, all full) → soft-overflow onto
+///      the least-loaded carrier overall.
+///
+/// Ties resolve to the lowest slot index, which makes selection deterministic
+/// and self-balancing: successive dials fill slot 0, then 1, … up to the floor,
+/// then keep the pool evenly loaded.
+fn choose_slot(loads: &[Option<u64>], min: u8, cap: u64) -> u8 {
+    let mut populated: u8 = 0;
+    let mut first_empty: Option<u8> = None;
+    let mut best_under_cap: Option<(u8, u64)> = None;
+    let mut least_overall: Option<(u8, u64)> = None;
 
-fn next_h3_carrier_slot() -> u8 {
-    (H3_CARRIER_RR.fetch_add(1, Ordering::Relaxed) % H3_CARRIER_FANOUT) as u8
+    for (slot, load) in loads.iter().enumerate() {
+        let slot = slot as u8;
+        match *load {
+            Some(active) => {
+                populated += 1;
+                if least_overall.is_none_or(|(_, a)| active < a) {
+                    least_overall = Some((slot, active));
+                }
+                if active < cap && best_under_cap.is_none_or(|(_, a)| active < a) {
+                    best_under_cap = Some((slot, active));
+                }
+            },
+            None if first_empty.is_none() => first_empty = Some(slot),
+            None => {},
+        }
+    }
+
+    if populated < min
+        && let Some(empty) = first_empty
+    {
+        return empty;
+    }
+    if let Some((slot, _)) = best_under_cap {
+        return slot;
+    }
+    if let Some(empty) = first_empty {
+        return empty;
+    }
+    least_overall.map_or(0, |(slot, _)| slot)
+}
+
+/// Inspect every carrier slot for `(server_name, server_port, fwmark)` and pick
+/// the one a fresh dial should target, per [`choose_slot`]. Read-only: uses
+/// `peek` so probing the pool never evicts a stale entry.
+async fn pick_h3_carrier_slot(server_name: &str, server_port: u16, fwmark: Option<u32>) -> u8 {
+    let mut loads: Vec<Option<u64>> = Vec::with_capacity(H3_CARRIER_MAX as usize);
+    for slot in 0..H3_CARRIER_MAX {
+        let key = H3ConnectionKey::with_slot(server_name, server_port, fwmark, slot);
+        let load = match h3_registry().peek(&key).await {
+            Some(conn) if conn.is_open() => Some(conn.active()),
+            _ => None,
+        };
+        loads.push(load);
+    }
+    choose_slot(&loads, H3_CARRIER_MIN, H3_CARRIER_CAP)
 }
 
 // ── Shared connection ─────────────────────────────────────────────────────────
@@ -124,13 +200,43 @@ pub(super) struct SharedH3Connection {
     // (observed at close by the driver task) to correlate session_death bursts
     // with a single underlying connection's death.
     streams_opened: Arc<AtomicU64>,
+    // Live (not-yet-dropped) WS streams currently multiplexed on this carrier.
+    // Unlike `streams_opened` (monotonic, diagnostic) this rises and falls with
+    // real usage: `CarrierActiveGuard` increments it when a stream is handed out
+    // and decrements it on drop. The slot-picker reads it to keep each carrier
+    // under `H3_CARRIER_CAP`, which both bounds the reconnect blast radius and
+    // caps the per-carrier stream concurrency that opens the collapse race.
+    active_streams: Arc<AtomicU64>,
     _connection_guard: H3ConnectionGuard,
     _driver_task: AbortOnDrop,
+}
+
+/// RAII counter for the live streams on a single carrier. Cloned off the
+/// carrier's `active_streams` when a `H3WsStream` is created and dropped with
+/// it, so the count always reflects the streams actually alive on that carrier.
+pub(super) struct CarrierActiveGuard(Arc<AtomicU64>);
+
+impl CarrierActiveGuard {
+    fn new(active_streams: Arc<AtomicU64>) -> Self {
+        active_streams.fetch_add(1, Ordering::Relaxed);
+        Self(active_streams)
+    }
+}
+
+impl Drop for CarrierActiveGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl SharedH3Connection {
     pub(super) fn is_open(&self) -> bool {
         !self.closed.load(Ordering::Relaxed) && self.connection.close_reason().is_none()
+    }
+
+    /// Number of live WS streams currently multiplexed on this carrier.
+    pub(super) fn active(&self) -> u64 {
+        self.active_streams.load(Ordering::Relaxed)
     }
 
     pub(super) async fn open_websocket(
@@ -220,6 +326,7 @@ impl SharedH3Connection {
         Ok((
             H3WsStream {
                 inner: vendored::client_ws_stream(stream, 90_000),
+                _active: CarrierActiveGuard::new(Arc::clone(&self.active_streams)),
                 _shared_connection: Arc::clone(self),
             },
             negotiated,
@@ -326,10 +433,10 @@ struct H3Dialer {
     /// alongside `resume` for the same reason — the trait signature
     /// stays unchanged.
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-    /// Carrier slot (round-robin, 0..`H3_CARRIER_FANOUT`) this dial targets so
-    /// its flows land on one of the N independent shared QUIC connections
-    /// rather than all sharing a single carrier. Chosen once per
-    /// `connect_websocket_h3` call and folded into every key this dialer makes.
+    /// Carrier slot (0..`H3_CARRIER_MAX`) this dial targets so its flows land on
+    /// one of the independent shared QUIC connections rather than all sharing a
+    /// single carrier. Chosen once per `connect_websocket_h3` call by
+    /// `pick_h3_carrier_slot` and folded into every key this dialer makes.
     slot: u8,
 }
 
@@ -408,11 +515,8 @@ pub(crate) async fn connect_websocket_h3(
         .ok_or_else(|| anyhow!("URL is missing port"))?;
     let path = websocket_path(url);
     let profile = crate::fingerprint_profile::select(url);
-    let dialer = H3Dialer {
-        resume,
-        profile,
-        slot: next_h3_carrier_slot(),
-    };
+    let slot = pick_h3_carrier_slot(host, port, fwmark).await;
+    let dialer = H3Dialer { resume, profile, slot };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused
@@ -512,6 +616,7 @@ async fn connect_h3_connection(
         send_request: Mutex::new(send_request),
         closed: AtomicBool::new(false),
         streams_opened,
+        active_streams: Arc::new(AtomicU64::new(0)),
         _connection_guard: H3ConnectionGuard(connection_handle),
         _driver_task: driver_task,
     })

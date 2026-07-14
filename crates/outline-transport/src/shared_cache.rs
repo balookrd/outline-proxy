@@ -203,6 +203,17 @@ where
         self.locks.get_lock(key)
     }
 
+    /// Read-only lookup: return whatever is currently cached under `key`
+    /// (open or stale) without evicting anything. Takes only a read-lock and
+    /// has no side effects, so callers that want to *inspect* several entries
+    /// — e.g. the H3 slot-picker weighing each carrier's live-stream count —
+    /// can do so without churning the map. The caller decides what to do with
+    /// a stale entry (`is_open()` == false).
+    pub(crate) async fn peek(&self, key: &K) -> Option<Arc<V>> {
+        let map = self.map.read().await;
+        map.get(key).cloned()
+    }
+
     /// Look up an open cached connection for `key`, evicting a stale entry if
     /// one is found.  Takes only a read-lock on the happy path.
     pub(crate) async fn cached(&self, key: &K) -> Option<Arc<V>> {
