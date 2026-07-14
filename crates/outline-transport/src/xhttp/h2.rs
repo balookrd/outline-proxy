@@ -21,11 +21,11 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
-use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
-use tokio_util::sync::PollSender;
+use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, warn};
 use url::Url;
 
+use crate::carrier_queue::{CARRIER_QUEUE_SLOTS, Queued};
 use crate::config::TransportMode;
 use crate::dns::resolve_host_with_preference;
 use crate::dns_cache::DnsCache;
@@ -35,10 +35,10 @@ use crate::{TransportOperation, connect_tcp_socket};
 
 use super::stream::{BoxedIo, drain_hyper_body, io_ws_err};
 use super::{
-    ACK_PREFIX_HEADER, INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
+    ACK_PREFIX_HEADER, InboundSender, OutboundReceiver, RESUME_CAPABLE_HEADER,
     RESUME_REQUEST_HEADER, RequestBody, SsPathKind, XhttpStream, XhttpSubmode, XhttpTarget,
-    default_port_for, empty_request_body, full_request_body, generate_session_id,
-    parse_ack_prefix_echo, parse_session_response, resolve_effective_submode,
+    default_port_for, empty_request_body, full_request_body, generate_session_id, inbound_channel,
+    outbound_channel, parse_ack_prefix_echo, parse_session_response, resolve_effective_submode,
 };
 
 /// Time budget for the initial dial: TCP + TLS + h2 handshake +
@@ -100,8 +100,8 @@ pub(super) async fn connect_xhttp_h2(
         let send_request = h2_handshake(server_addr, &host, use_tls, fwmark).await?;
         let session_id = generate_session_id(combined_ss_kind)?;
 
-        let (in_tx, in_rx) = mpsc::channel::<Result<Message, WsError>>(INBOUND_CHANNEL_CAPACITY);
-        let (out_tx, out_rx) = mpsc::channel::<Message>(OUTBOUND_CHANNEL_CAPACITY);
+        let (in_tx, in_rx) = inbound_channel();
+        let (out_tx, out_rx) = outbound_channel();
 
         let authority = if port == default_port_for(use_tls) {
             host.clone()
@@ -217,14 +217,13 @@ pub(super) async fn connect_xhttp_h2(
             "xhttp session opened"
         );
         Ok::<_, anyhow::Error>((
-            XhttpStream {
-                incoming: in_rx,
-                outgoing: PollSender::new(out_tx),
-                closed: false,
+            XhttpStream::from_channels(
+                in_rx,
+                out_tx,
+                AbortOnDrop::new(driver),
                 active_submode,
-                carrier_is_h3: false,
-                _driver: AbortOnDrop::new(driver),
-            },
+                false,
+            ),
             issued_session_id,
             ack_prefix_echo,
             symmetric_replay_echo,
@@ -319,15 +318,21 @@ async fn open_h2_stream_one(
     bool,
     bool,
     hyper::body::Incoming,
-    mpsc::Sender<hyper::body::Frame<Bytes>>,
+    mpsc::Sender<Queued<hyper::body::Frame<Bytes>>>,
 )> {
-    // Sized to match `OUTBOUND_CHANNEL_CAPACITY` so a long-lived
-    // stream-one POST has the same burst window as packet-up; h2
-    // flow control on the wire still bounds real memory.
+    // The request-body channel is the second hop of the uplink queue, so its
+    // frames carry the permit they were admitted with: the driver moves each
+    // permit over from the outbound queue instead of charging the budget
+    // twice, and it is released only when hyper takes the frame. The slot cap
+    // is the same secondary guard the outbound queue uses.
     let (frame_tx, frame_rx) =
-        mpsc::channel::<hyper::body::Frame<Bytes>>(OUTBOUND_CHANNEL_CAPACITY);
+        mpsc::channel::<Queued<hyper::body::Frame<Bytes>>>(CARRIER_QUEUE_SLOTS);
     let body_stream = futures_util::stream::unfold(frame_rx, |mut rx| async move {
-        rx.recv().await.map(|frame| (Ok::<_, Infallible>(frame), rx))
+        rx.recv().await.map(|queued| {
+            let (frame, permit) = queued.into_parts();
+            drop(permit);
+            (Ok::<_, Infallible>(frame), rx)
+        })
     });
     let body: RequestBody = StreamBody::new(body_stream).boxed();
 
@@ -376,10 +381,10 @@ async fn open_h2_stream_one(
 }
 
 async fn driver_loop_h2_stream_one(
-    in_tx: mpsc::Sender<Result<Message, WsError>>,
-    mut out_rx: mpsc::Receiver<Message>,
+    in_tx: InboundSender,
+    mut out_rx: OutboundReceiver,
     body: hyper::body::Incoming,
-    frame_tx: mpsc::Sender<hyper::body::Frame<Bytes>>,
+    frame_tx: mpsc::Sender<Queued<hyper::body::Frame<Bytes>>>,
 ) {
     // Spawn the response-body drain as a sub-task so the uplink
     // pump below can run concurrently. The shape mirrors
@@ -389,26 +394,35 @@ async fn driver_loop_h2_stream_one(
         if let Err(error) = drain_hyper_body(body, &drain_in_tx).await {
             debug!(?error, "xhttp stream-one downlink reader exited");
             let _ = drain_in_tx
-                .send(Err(io_ws_err("xhttp stream-one downlink ended")))
+                .send_control(Err(io_ws_err("xhttp stream-one downlink ended")))
                 .await;
         } else {
-            let _ = drain_in_tx.send(Ok(Message::Close(None))).await;
+            let _ = drain_in_tx.send_control(Ok(Message::Close(None))).await;
         }
     }));
 
     // Uplink pump: every Message::Binary becomes a body frame on
     // the request stream. Closing `frame_tx` (we drop it on exit)
-    // ends the request body and lets the server see EOF.
-    while let Some(msg) = out_rx.recv().await {
+    // ends the request body and lets the server see EOF. Each frame keeps the
+    // budget permit it was admitted with until hyper takes it off the body
+    // channel, so the queue's byte bound spans both hops.
+    while let Some(queued) = out_rx.recv().await {
+        let is_binary = matches!(queued.item(), Message::Binary(_));
+        if is_binary {
+            let framed = queued.map(|msg| match msg {
+                Message::Binary(b) => hyper::body::Frame::data(b),
+                _ => unreachable!("checked Binary above"),
+            });
+            if frame_tx.send(framed).await.is_err() {
+                break;
+            }
+            continue;
+        }
+        let (msg, _permit) = queued.into_parts();
         match msg {
-            Message::Binary(b) => {
-                if frame_tx.send(hyper::body::Frame::data(b)).await.is_err() {
-                    break;
-                }
-            },
             Message::Ping(_) | Message::Pong(_) => continue,
             Message::Text(_) => {
-                let _ = in_tx.send(Err(io_ws_err("xhttp does not carry text"))).await;
+                let _ = in_tx.send_control(Err(io_ws_err("xhttp does not carry text"))).await;
                 continue;
             },
             Message::Close(_) => break,
@@ -467,8 +481,8 @@ where
 async fn driver_loop_h2(
     send_request: http2::SendRequest<RequestBody>,
     target: Arc<XhttpTarget>,
-    in_tx: mpsc::Sender<Result<Message, WsError>>,
-    mut out_rx: mpsc::Receiver<Message>,
+    in_tx: InboundSender,
+    mut out_rx: OutboundReceiver,
     body: hyper::body::Incoming,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) {
@@ -480,12 +494,12 @@ async fn driver_loop_h2(
     let _drain_task = AbortOnDrop::new(tokio::spawn(async move {
         if let Err(error) = drain_hyper_body(body, &drain_in_tx).await {
             debug!(?error, "xhttp GET reader exited");
-            let _ = drain_in_tx.send(Err(io_ws_err("xhttp downlink ended"))).await;
+            let _ = drain_in_tx.send_control(Err(io_ws_err("xhttp downlink ended"))).await;
         } else {
             // Clean EOF on the response body — surface a Close so
             // upstream sees a recognisable shutdown rather than a
             // silent stop.
-            let _ = drain_in_tx.send(Ok(Message::Close(None))).await;
+            let _ = drain_in_tx.send_control(Ok(Message::Close(None))).await;
         }
     }));
 
@@ -494,15 +508,16 @@ async fn driver_loop_h2(
     // as a sub-task so successive POSTs can overlap on the wire.
     let mut next_seq: u64 = 0;
     loop {
-        let msg = match out_rx.recv().await {
-            Some(msg) => msg,
+        let queued = match out_rx.recv().await {
+            Some(queued) => queued,
             None => break,
         };
+        let (msg, permit) = queued.into_parts();
         let bytes = match msg {
             Message::Binary(b) => b,
             Message::Ping(_) | Message::Pong(_) => continue,
             Message::Text(_) => {
-                let _ = in_tx.send(Err(io_ws_err("xhttp does not carry text"))).await;
+                let _ = in_tx.send_control(Err(io_ws_err("xhttp does not carry text"))).await;
                 continue;
             },
             Message::Close(_) => break,
@@ -520,13 +535,18 @@ async fn driver_loop_h2(
         // POST runs to completion concurrently.
         if let Err(error) = send.ready().await {
             warn!(?error, "xhttp h2 connection lost while waiting for capacity");
-            let _ = in_tx.send(Err(io_ws_err("xhttp h2 stream not ready"))).await;
+            let _ = in_tx.send_control(Err(io_ws_err("xhttp h2 stream not ready"))).await;
             break;
         }
         tokio::spawn(async move {
+            // The permit rides the POST: these bytes are still resident until
+            // hyper has written them, so the budget must keep covering them.
+            let _permit = permit;
             if let Err(error) = post_one(send, target.as_ref(), seq, bytes, profile).await {
                 warn!(?error, seq, "xhttp POST failed");
-                let _ = in_tx_for_err.send(Err(io_ws_err("xhttp uplink POST failed"))).await;
+                let _ = in_tx_for_err
+                    .send_control(Err(io_ws_err("xhttp uplink POST failed")))
+                    .await;
             }
         });
     }

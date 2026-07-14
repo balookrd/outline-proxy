@@ -8,26 +8,25 @@ use std::task::{Context, Poll};
 use futures_util::{Sink, Stream};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
-use tokio_util::sync::PollSender;
 
+use crate::carrier_queue::BudgetedSink;
 use crate::guards::AbortOnDrop;
 
-use super::XhttpSubmode;
+use super::{InboundReceiver, InboundSender, XhttpSubmode, message_bytes};
 
 /// Outbound stream returned by [`super::connect_xhttp`]. Implements the
 /// same `Stream<Item = Result<Message, WsError>>` + `Sink<Message>`
 /// surface as the WebSocket adapters so it slots into existing
 /// dispatch without bespoke handling.
 pub(crate) struct XhttpStream {
-    pub(super) incoming: mpsc::Receiver<Result<Message, WsError>>,
-    /// Wraps the raw `mpsc::Sender` so `Sink::poll_ready` can honor
-    /// the channel's capacity instead of always reporting ready.
-    /// `PollSender` reserves a permit asynchronously and stashes the
-    /// waker, which is what gives bulk uploads real back-pressure
-    /// rather than a `start_send` that fails-fast on `Full`.
-    pub(super) outgoing: PollSender<Message>,
+    pub(super) incoming: InboundReceiver,
+    /// Byte-budgeted uplink queue. `Sink::poll_ready` pends until the queue
+    /// has room for the frame — by bytes and by slots — which is what gives
+    /// bulk uploads real back-pressure rather than a `start_send` that
+    /// fails-fast on `Full` (or a slot-only bound that admits 256 × 256 KiB).
+    /// See [`crate::carrier_queue`].
+    pub(super) outgoing: BudgetedSink<Message>,
     pub(super) closed: bool,
     /// Submode the dialer landed on. Differs from the URL-requested
     /// submode when the inline stream-one→packet-up retry kicked in,
@@ -81,15 +80,15 @@ impl XhttpStream {
     /// `XhttpStream` (closed flag, channel typing) private to this
     /// module while giving carrier modules a single way in.
     pub(super) fn from_channels(
-        incoming: mpsc::Receiver<Result<Message, WsError>>,
-        outgoing: mpsc::Sender<Message>,
+        incoming: InboundReceiver,
+        outgoing: BudgetedSink<Message>,
         driver: AbortOnDrop,
         active_submode: XhttpSubmode,
         carrier_is_h3: bool,
     ) -> Self {
         Self {
             incoming,
-            outgoing: PollSender::new(outgoing),
+            outgoing,
             closed: false,
             active_submode,
             carrier_is_h3,
@@ -102,22 +101,46 @@ impl Stream for XhttpStream {
     type Item = Result<Message, WsError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.incoming.poll_recv(cx)
+        // Handing the frame to the reader releases its budget permit: the bytes
+        // are no longer queued, they are the caller's.
+        self.incoming
+            .poll_recv(cx)
+            .map(|queued| queued.map(|q| q.into_parts().0))
     }
 }
 
 impl Sink<Message> for XhttpStream {
     type Error = WsError;
 
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         if self.closed {
             return Poll::Ready(Err(io_ws_err("xhttp outgoing closed")));
         }
-        // Reserve a permit — pending until the driver drains the
-        // outbound channel. This is the back-pressure signal that
-        // bulk uploads need: without it the writer above us treats
-        // a full channel as a fatal Sink error and aborts.
-        match self.outgoing.poll_reserve(cx) {
+        // Drives any previously-staged frame into the queue, so the caller only
+        // sees `Ready` once we can actually take another one. Pending until the
+        // driver frees budget and a slot — the back-pressure signal bulk
+        // uploads need; without it the writer above treats a full queue as a
+        // fatal Sink error and aborts.
+        self.poll_flush(cx)
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+        if self.closed {
+            return Err(io_ws_err("xhttp stream already closed"));
+        }
+        // The caller observed `Ready` from `poll_ready`, so nothing is staged.
+        // The frame is admitted to the queue by the `poll_flush` that
+        // `SinkExt::send` drives next, once its bytes fit the budget.
+        let bytes = message_bytes(&item);
+        self.outgoing.stage(item, bytes);
+        Ok(())
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        if self.closed {
+            return Poll::Ready(Err(io_ws_err("xhttp outgoing closed")));
+        }
+        match self.outgoing.poll_flush_queue(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
             Poll::Ready(Err(_)) => {
                 self.closed = true;
@@ -127,34 +150,14 @@ impl Sink<Message> for XhttpStream {
         }
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-        if self.closed {
-            return Err(io_ws_err("xhttp stream already closed"));
-        }
-        // Caller must have observed `Ready` from `poll_ready`, so a
-        // permit is already reserved; `send_item` only fails if the
-        // receiver was dropped between then and now.
-        self.outgoing.send_item(item).map_err(|_| {
-            self.closed = true;
-            io_ws_err("xhttp outgoing closed")
-        })
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // No application-level buffer beyond the reserved permit.
-        // h2 flow control + the bounded channel itself are the
-        // flushing layers and they self-drain.
-        Poll::Ready(Ok(()))
-    }
-
     fn poll_close(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
         self.closed = true;
-        // Closes our half of the channel. The driver task observes
-        // this through `outbound.recv()` returning None and exits,
-        // which aborts the GET sub-task.
+        // Closes our half of the queue. The driver task observes this through
+        // `outbound.recv()` returning None and exits, which aborts the GET
+        // sub-task.
         self.outgoing.close();
         Poll::Ready(Ok(()))
     }
@@ -169,7 +172,7 @@ pub(super) fn io_ws_err(msg: &'static str) -> WsError {
 /// handlers, both of which produce `hyper::body::Incoming`.
 pub(super) async fn drain_hyper_body(
     mut body: hyper::body::Incoming,
-    in_tx: &mpsc::Sender<Result<Message, WsError>>,
+    in_tx: &InboundSender,
 ) -> anyhow::Result<()> {
     use anyhow::Context as _;
     use http_body_util::BodyExt;
@@ -177,10 +180,12 @@ pub(super) async fn drain_hyper_body(
         let frame = frame.context("xhttp GET body frame error")?;
         if let Ok(data) = frame.into_data()
             && !data.is_empty()
-            && in_tx.send(Ok(Message::Binary(data))).await.is_err()
         {
-            // Consumer gave up — exit cleanly.
-            return Ok(());
+            let bytes = data.len();
+            if in_tx.send(Ok(Message::Binary(data)), bytes).await.is_err() {
+                // Consumer gave up — exit cleanly.
+                return Ok(());
+            }
         }
     }
     Ok(())

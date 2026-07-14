@@ -8,6 +8,7 @@ use bytes::Bytes;
 use socks5_proto::TargetAddr;
 use tokio::sync::oneshot;
 
+use crate::carrier_queue::FRAME_SOFT_CAP;
 use crate::{
     TransportStream, UpstreamTransportGuard, WsClosed, frame_io_ws::carrier_liveness,
     resumption::SessionId,
@@ -18,11 +19,6 @@ use super::header::{
     VLESS_CMD_TCP, VLESS_VERSION, build_request_header, build_vless_tcp_request_header_with_resume,
     parse_response_addons_session_id,
 };
-
-/// Soft cap on a coalesced VLESS data frame built by [`VlessTcpWriter::send_chunks`], bounding
-/// the writer's peak allocation and WS message size instead of building one window-sized buffer
-/// per pump iteration. The reader reassembles raw bytes across frames, so splitting is transparent.
-const FRAME_SOFT_CAP: usize = 256 * 1024;
 
 /// VLESS TCP writer. Emits the request header on the first `send_chunk`
 /// concatenated with the payload into a single frame; subsequent frames

@@ -2,6 +2,7 @@ mod ss2022;
 mod transport;
 
 use crate::UpstreamTransportGuard;
+use crate::carrier_queue::FRAME_SOFT_CAP;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use outline_wire::ss2022::Ss2022Error;
@@ -17,13 +18,6 @@ use tracing::debug;
 
 use ss2022::{Ss2022TcpWriterState, build_ss2022_request_header};
 use transport::{SocketWriteTransport, WriteTransport, WsSink, WsWriteTransport};
-
-/// Soft cap on a coalesced ciphertext frame built by [`TcpShadowsocksWriter::send_chunks`].
-/// A single pump batch can span a full uplink receive window (multiple MiB); flushing the
-/// frame once it passes this bound keeps the writer's peak allocation (and the WS message
-/// size) small instead of building one window-sized buffer. The reader reassembles bytes
-/// across frames, so splitting is transparent on the wire.
-const FRAME_SOFT_CAP: usize = 256 * 1024;
 
 pub struct TcpShadowsocksWriter<T: WriteTransport> {
     transport: T,
