@@ -14,9 +14,9 @@ use socks5_proto::TargetAddr;
 use super::super::super::super::TcpFlowKey;
 use super::super::super::super::maintenance::commit_flow_changes;
 use super::super::super::super::state_machine::{
-    TcpFlowState, TcpFlowStatus, UpstreamWriter, clear_flow_metrics, client_fin_seen,
+    FlowResume, TcpFlowState, TcpFlowStatus, UpstreamWriter, clear_flow_metrics, client_fin_seen,
 };
-use super::super::super::connect::select_tcp_candidate_and_connect;
+use super::super::super::connect::{ConnectedTunTcpUplink, select_tcp_candidate_and_connect};
 use super::super::super::{TunTcpEngine, close_upstream_writer, target_socket_addr};
 use crate::sniff::{SNIFF_PEEK_CAP, SniffOutcome, sniff_host};
 
@@ -271,6 +271,10 @@ impl TunTcpEngine {
                     clear_flow_metrics(&mut state);
                     state.routing.uplink_name = Arc::from("direct");
                     state.routing.upstream_writer = Some(Arc::clone(&upstream_writer));
+                    // `state.resume` stays disarmed: a direct flow owns a plain
+                    // socket to the origin, so there is no carrier to migrate off
+                    // and no server-parked upstream to re-attach. Paying for a
+                    // replay ring here would be pure copy cost.
                     let notify = state.signals.upstream_pump.clone();
                     commit_flow_changes(&mut state, &engine.inner.tcp);
                     let group_name = state.routing.group_name.clone();
@@ -350,7 +354,12 @@ impl TunTcpEngine {
                 ) => result,
             };
 
-            let (candidate, upstream_writer, upstream_reader) = match connected {
+            let ConnectedTunTcpUplink {
+                candidate,
+                writer: upstream_writer,
+                reader: upstream_reader,
+                session_id,
+            } = match connected {
                 Ok(Ok(connected)) => connected,
                 Ok(Err(error)) => {
                     metrics::record_tun_tcp_async_connect("failed");
@@ -383,6 +392,13 @@ impl TunTcpEngine {
                 state.routing.uplink_index = candidate.index;
                 state.routing.uplink_name = Arc::from(candidate.uplink.name.as_str());
                 state.routing.upstream_writer = Some(Arc::clone(&upstream_writer));
+                // Arm the flow's resume accounting with the Session ID this flow
+                // was just issued: from here the pump mirrors every uplink chunk
+                // into the flow's replay ring and the reader counts every
+                // downstream payload byte, so a future migration onto a fresh
+                // carrier has the exact tail (and offset) it needs. Recording
+                // only — the carrier-death path is unchanged.
+                state.resume = FlowResume::armed(session_id);
                 let notify = state.signals.upstream_pump.clone();
                 commit_flow_changes(&mut state, &engine.inner.tcp);
                 let group_name = state.routing.group_name.clone();

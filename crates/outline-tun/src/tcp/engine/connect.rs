@@ -6,18 +6,33 @@ use tracing::{debug, info, warn};
 
 use outline_metrics as metrics;
 use outline_transport::{
-    TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter, UplinkConnectionBinding,
-    UpstreamTransportGuard,
+    SessionId, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
+    UplinkConnectionBinding, UpstreamTransportGuard,
 };
 use outline_uplink::UplinkTransport;
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
 use socks5_proto::TargetAddr;
 
+/// A TUN TCP flow's freshly-established upstream: the uplink it landed on, the
+/// transport halves, and the Session ID the server minted for **this flow**.
+///
+/// The id is per-flow, never per-uplink: on a resume hit the server ignores the
+/// handshake target and re-attaches whatever upstream is parked under the id, so
+/// one flow presenting another's id would be spliced onto that flow's
+/// destination. It travels with the halves it was issued alongside so it cannot
+/// drift apart from them. `None` against a server without resumption.
+pub(super) struct ConnectedTunTcpUplink {
+    pub(super) candidate: UplinkCandidate,
+    pub(super) writer: TcpWriter,
+    pub(super) reader: TcpReader,
+    pub(super) session_id: Option<SessionId>,
+}
+
 pub(super) async fn select_tcp_candidate_and_connect(
     uplinks: &UplinkManager,
     target: &TargetAddr,
     client: Option<&str>,
-) -> Result<(UplinkCandidate, TcpWriter, TcpReader)> {
+) -> Result<ConnectedTunTcpUplink> {
     let mut last_error = None;
     let mut failed_uplink = None::<String>;
     let strict_transport = uplinks.strict_active_uplink_for(TransportKind::Tcp);
@@ -46,7 +61,7 @@ pub(super) async fn select_tcp_candidate_and_connect(
             }
             progressed = true;
             match connect_tcp_uplink(uplinks, &candidate, target).await {
-                Ok((writer, reader)) => {
+                Ok((writer, reader, session_id)) => {
                     if failed_uplink.is_some() {
                         uplinks
                             .confirm_runtime_failover_uplink_for(
@@ -80,7 +95,7 @@ pub(super) async fn select_tcp_candidate_and_connect(
                             "runtime TCP failover activated for TUN flow"
                         );
                     }
-                    return Ok((candidate, writer, reader));
+                    return Ok(ConnectedTunTcpUplink { candidate, writer, reader, session_id });
                 },
                 Err(error) => {
                     uplinks
@@ -108,7 +123,7 @@ async fn connect_tcp_uplink(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
     target: &TargetAddr,
-) -> Result<(TcpWriter, TcpReader)> {
+) -> Result<(TcpWriter, TcpReader, Option<SessionId>)> {
     // Scope the per-uplink padding override over the whole dial + build. The
     // transport reads `effective_carrier_padding` when it splits/spawns the
     // writer (`do_tcp_ss_setup` / `vless_tcp_pair_from_ws`), which runs AFTER
@@ -119,7 +134,7 @@ async fn connect_tcp_uplink(
     // per-uplink dials plain and the padded server path drops it while the
     // (correctly scoped) probe stays green. Mirrors the SOCKS path in
     // `outline-ws-rust`'s `proxy/tcp/failover.rs::connect_tcp_uplink`.
-    let (writer, reader) = outline_uplink::dial::with_uplink_padding_scope(
+    let (writer, reader, session_id) = outline_uplink::dial::with_uplink_padding_scope(
         &candidate.uplink,
         connect_tcp_uplink_inner(uplinks, candidate, target),
     )
@@ -133,14 +148,14 @@ async fn connect_tcp_uplink(
             Some(handle) => reader.with_throttle_handle(handle),
             None => reader,
         };
-    Ok((writer, reader))
+    Ok((writer, reader, session_id))
 }
 
 async fn connect_tcp_uplink_inner(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
     target: &TargetAddr,
-) -> Result<(TcpWriter, TcpReader)> {
+) -> Result<(TcpWriter, TcpReader, Option<SessionId>)> {
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
 
     // Variant A: try a standby pool connection first.  If it turns out to be
@@ -175,7 +190,7 @@ async fn do_tcp_ss_setup(
     target: &TargetAddr,
     keepalive_interval: Option<std::time::Duration>,
     binding: UplinkConnectionBinding,
-) -> Result<(TcpWriter, TcpReader)> {
+) -> Result<(TcpWriter, TcpReader, Option<SessionId>)> {
     let shared_conn_info = ws_stream.shared_connection_info();
     let lifetime = UpstreamTransportGuard::new_with_uplink("tun_tcp", "tcp", binding);
     let diag = outline_transport::WsReadDiag {
@@ -186,13 +201,23 @@ async fn do_tcp_ss_setup(
         target: target.to_string(),
     };
 
-    // Snapshot the Ack-Prefix negotiation outcome before any
-    // consume — both VLESS's `vless_tcp_pair_from_ws` and SS-WS's
-    // `.split()` take ownership of the underlying stream halves,
-    // after which the accessor on the enum is gone. TUN engine
-    // never opts in today (the mid-session retry path is the only
-    // opt-in caller), so the bit will be `false`; wiring it now
-    // keeps the reader ready for future opt-in callers.
+    // Snapshot the resume negotiation outcome before any consume — both VLESS's
+    // `vless_tcp_pair_from_ws` and SS-WS's `.split()` take ownership of the
+    // underlying stream halves, after which the accessors on the enum are gone.
+    //
+    // `issued_session_id` is the id the server minted for THIS flow's stream;
+    // the flow stores it (alongside its uplink replay ring and its
+    // downstream-accepted offset) so a future carrier migration can present it
+    // and have the parked upstream re-attached byte-exact.
+    //
+    // `ack_prefix_advertised_by_server` is still `false` here, and deliberately
+    // so: the initial dial is a *fresh* dial (`resume_request: None`,
+    // `ack_prefix_requested: false`), and the server only emits the v1 `ORSM` /
+    // v2 `ORDR` control frames on a resume HIT. Advertising a capability we
+    // cannot yet honour would make the server emit frames nobody consumes. The
+    // flow now *records* everything a replay would need; the opt-in belongs to
+    // the redial that actually performs the migration, not to this dial.
+    let issued_session_id = ws_stream.issued_session_id();
     let expect_ack_prefix = ws_stream.ack_prefix_advertised_by_server();
 
     if uplink.transport == UplinkTransport::Vless {
@@ -209,7 +234,7 @@ async fn do_tcp_ss_setup(
             keepalive_interval,
         );
         let reader = TcpReader::Vless(reader).with_expect_ack_prefix(expect_ack_prefix);
-        return Ok((TcpWriter::Vless(writer), reader));
+        return Ok((TcpWriter::Vless(writer), reader, issued_session_id));
     }
 
     let (ws_sink, ws_stream) = ws_stream.split();
@@ -227,5 +252,5 @@ async fn do_tcp_ss_setup(
         .send_chunk(&target.to_wire_bytes()?)
         .await
         .context("failed to send target address")?;
-    Ok((TcpWriter::Ws(writer), TcpReader::Ws(Box::new(reader))))
+    Ok((TcpWriter::Ws(writer), TcpReader::Ws(Box::new(reader)), issued_session_id))
 }

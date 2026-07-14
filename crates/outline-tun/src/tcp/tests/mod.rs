@@ -2723,6 +2723,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
                 writer
             })))),
         },
+        resume: super::state_machine::FlowResume::armed(None),
         signals: super::state_machine::FlowControlSignals {
             close_signal,
             upstream_pump: Arc::new(tokio::sync::Notify::new()),

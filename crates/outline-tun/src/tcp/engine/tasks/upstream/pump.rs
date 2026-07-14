@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use tokio::sync::{Mutex, Notify, watch};
+use tracing::debug;
 
 use outline_metrics as metrics;
 use outline_uplink::UplinkManager;
@@ -94,6 +95,14 @@ impl TunTcpEngine {
                                 None => break,
                             }
                         }
+                        // Mirror the batch into the flow's replay ring BEFORE the
+                        // send, chunk by chunk in wire order: the ring's
+                        // `total_sent` must equal the byte stream the server sees
+                        // if the send succeeds. A chunk we pushed but failed to
+                        // send stays in the ring, so a future replay re-emits it —
+                        // exactly the offset semantics the SOCKS5 pinned relay
+                        // relies on. Recording only; nothing consumes the ring yet.
+                        record_uplink_batch(&mut state, &batch, &group_name, &uplink_name);
                         batch
                     };
                     if batch.is_empty() {
@@ -180,5 +189,42 @@ impl TunTcpEngine {
                 }
             }
         });
+    }
+}
+
+/// Appends the batch this pump iteration is about to write upstream to the
+/// flow's uplink replay ring, so a future carrier migration can replay the tail
+/// the server has not acked yet.
+///
+/// A chunk too large for the ring downgrades the flow to non-resumable — the
+/// ring is dropped and no further chunk is recorded, because a ring with a hole
+/// in it is worse than no ring at all (it would let a later replay silently skip
+/// bytes). It does **not** disturb the flow: the batch is sent exactly as
+/// before, and the flow keeps serving until it ends on its own terms. Losing a
+/// hypothetical future migration is never a reason to FIN/RST a working
+/// connection.
+///
+/// No-op on a flow that is already non-resumable (direct flows, and flows that
+/// already overflowed), so the cost on those paths is one branch.
+fn record_uplink_batch(
+    state: &mut TcpFlowState,
+    batch: &[Bytes],
+    group_name: &str,
+    uplink_name: &str,
+) {
+    if !state.resume.is_resumable() {
+        return;
+    }
+    for chunk in batch {
+        if let Err(error) = state.resume.record_uplink_chunk(chunk) {
+            metrics::record_tun_tcp_event(group_name, uplink_name, "replay_ring_overflow");
+            debug!(
+                uplink = %uplink_name,
+                error = ?error,
+                "uplink chunk exceeds the flow's replay ring cap; flow is no longer \
+                 byte-exact resumable and keeps serving without one"
+            );
+            return;
+        }
     }
 }

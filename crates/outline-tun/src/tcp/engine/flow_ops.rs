@@ -11,9 +11,9 @@ use outline_metrics as metrics;
 
 use super::super::maintenance::commit_flow_changes;
 use super::super::state_machine::{
-    BbrState, FlowControlSignals, FlowRouting, FlowTimestamps, TcpFlowState, TcpFlowStatus,
-    build_flow_packet, build_flow_syn_ack_packet, clear_flow_metrics, decode_client_window,
-    set_flow_status,
+    BbrState, FlowControlSignals, FlowResume, FlowRouting, FlowTimestamps, TcpFlowState,
+    TcpFlowStatus, build_flow_packet, build_flow_syn_ack_packet, clear_flow_metrics,
+    decode_client_window, set_flow_status,
 };
 use super::super::wire::{ParsedTcpPacket, build_reset_response};
 use super::super::{
@@ -83,6 +83,9 @@ impl TunTcpEngine {
                 route: route.clone(),
                 upstream_writer: None,
             },
+            // No carrier yet: the connect task arms this with the Session ID the
+            // server issues for this flow (tunneled flows only).
+            resume: FlowResume::disarmed(),
             signals: FlowControlSignals {
                 close_signal,
                 upstream_pump: Arc::new(Notify::new()),

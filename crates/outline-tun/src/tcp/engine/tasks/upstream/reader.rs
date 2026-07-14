@@ -82,6 +82,15 @@ impl TunTcpEngine {
                             state.timestamps.last_seen = Instant::now();
                             engine.record_flow_activity(&mut state);
                             state.pending_server_bytes_total += chunk.len();
+                            // v2 `X-Outline-Resume-Down-Acked` accounting: the
+                            // flow has *accepted* these bytes the moment they land
+                            // in its downlink buffer — from here our own TCP state
+                            // machine owns delivering (and retransmitting) them to
+                            // the TUN client, so a resume must never ask the server
+                            // to replay them again. Counting at the client's ACK
+                            // instead would make the server re-send bytes we
+                            // already hold. Recording only; no redial reads it yet.
+                            state.resume.record_downlink_payload(chunk.len());
                             state.pending_server_data.push_back(chunk);
                             let flush = flush_server_output(&mut state);
                             let backlog_pressure = assess_server_backlog_pressure(
