@@ -298,14 +298,19 @@ fn record_delivery(
     {
         bbr.round_count = bbr.round_count.saturating_add(1);
         bbr.next_round_delivered = bbr.delivered;
-        // An app-limited round carries no evidence about the path: BtlBw failed
-        // to grow because we had nothing to send, not because the pipe is full.
-        // Feeding it to the plateau check ends the ramp early and parks BtlBw at
-        // whatever rate the application happened to ask for — a chunked video
-        // player, which idles between segment requests, otherwise strands the
-        // flow at a fraction of the link. Canonical BBR skips these rounds too
-        // (`bbr_check_full_bw_reached()` bails on `rs->is_app_limited`).
-        if bbr.mode == BbrMode::Startup && !sample.app_limited {
+        // Canonical BBR skips app-limited rounds here
+        // (`bbr_check_full_bw_reached()` bails on `rs->is_app_limited`). Do NOT
+        // copy that rule until `RateSample::app_limited` means what it does
+        // there. Ours is set from `pending_server_data.is_empty()` after a write
+        // (`send/flush.rs`), and this stack drains its queue on nearly every
+        // flush — so the flag is set on most segments of a *bandwidth*-limited
+        // bulk transfer too. Gating on it therefore never ends STARTUP, which
+        // pins pacing and cwnd at the 2.885 STARTUP gain, overruns the last hop,
+        // and collapses `loss_cap_bps` onto its floor (reverted: it turned a
+        // 5-10 Mbit ceiling into stalled downloads). Fixing this means teaching
+        // `app_limited` to mean "the app could not fill the window", not "the
+        // queue happens to be empty".
+        if bbr.mode == BbrMode::Startup {
             check_startup_full_pipe(bbr);
         }
         // AIMD relax of the loss cap: grow it back toward BtlBw only on a round
