@@ -177,6 +177,14 @@ pub(super) async fn run_relay(
     // against the parent uplink as if every wire had been tried, undoing
     // the per-wire suppression added in `report_runtime_failure_for_wire`.
     let mut current_wire_index: u8 = active.wire_index;
+    // This session's own server-issued Session ID (`None` against a server
+    // without resumption, or on a direct-socket carrier). It is the ONLY id
+    // this session may ever present as `X-Outline-Resume`: on a resume hit the
+    // server ignores the handshake target and re-attaches whatever upstream is
+    // parked under the id, so presenting an id minted for another session would
+    // silently splice this session onto that session's destination. Refreshed
+    // after every successful redial — the server mints a new id on the hit.
+    let mut session_id = active.session_id;
     // The first chunk is what chunk-0 failover already received from the
     // upstream — it must be flushed downstream before we start reading
     // from the new SS reader. Iteration 0 owns it; subsequent iterations
@@ -477,6 +485,7 @@ pub(super) async fn run_relay(
                     symmetric_replay_max_bytes,
                     client_acked_now,
                     overflow_policy,
+                    session_id,
                 )
                 .await
                 {
@@ -493,11 +502,15 @@ pub(super) async fn run_relay(
                         writer: new_writer,
                         reader: new_reader,
                         wire_index: new_wire_index,
+                        session_id: new_session_id,
                         ..
                     } = connected;
                     writer = new_writer;
                     reader = new_reader;
                     current_wire_index = new_wire_index;
+                    // The new edge minted a fresh id for this session; a further
+                    // redial must present *that* one, not the retired one.
+                    session_id = new_session_id;
                     // Flush the v2 downlink replay suffix (if any) to the client
                     // before the next iteration reads fresh upstream bytes.
                     first_chunk_for_iter = downlink_replay;
@@ -552,6 +565,7 @@ pub(super) async fn run_relay(
                     symmetric_replay_max_bytes,
                     client_acked_now,
                     overflow_policy,
+                    session_id,
                 )
                 .await
                 {
@@ -582,11 +596,15 @@ pub(super) async fn run_relay(
                     writer: new_writer,
                     reader: new_reader,
                     wire_index: new_wire_index,
+                    session_id: new_session_id,
                     ..
                 } = connected;
                 writer = new_writer;
                 reader = new_reader;
                 current_wire_index = new_wire_index;
+                // The redial (resume hit or fresh session) minted a new id for
+                // this session; the next retry must present *that* one.
+                session_id = new_session_id;
                 // v2 replay payload (when the server emitted one)
                 // becomes the next iteration's `first_chunk_for_iter`
                 // so the downlink task flushes it to the SOCKS5
@@ -713,11 +731,13 @@ fn force_client_rst(
 /// uplink tail cannot be replayed byte-exact), the new active is not a WS-family
 /// uplink (cannot present the group resume id), or the redial/resume failed.
 ///
-/// The migration reuses [`try_mid_session_retry`] against the *new* candidate:
-/// under `shared_resume` the resume-cache scope is the group, so dialling the
-/// new edge presents the same `X-Outline-Resume` id and the server re-attaches
-/// the parked upstream (Ack-Prefix uplink replay + v2 downlink replay included).
-/// The park-before-resume barrier on the server makes that redial race-free.
+/// The migration reuses [`try_mid_session_retry`] against the *new* candidate,
+/// presenting **this session's own** `X-Outline-Resume` id (`session_id`): the
+/// id is server-minted and carries the cluster shard, so the new edge relays to
+/// the home that holds the parked upstream and re-attaches it (Ack-Prefix uplink
+/// replay + v2 downlink replay included). The park-before-resume barrier on the
+/// server makes that redial race-free. A session with no id (`None`) cannot be
+/// migrated byte-exact and falls through to the RST teardown.
 #[allow(clippy::too_many_arguments)]
 async fn try_soft_switch_migrate(
     uplinks: &UplinkManager,
@@ -733,6 +753,7 @@ async fn try_soft_switch_migrate(
     symmetric_replay_max_bytes: usize,
     client_acked_offset: u64,
     overflow_policy: OverflowPolicy,
+    session_id: Option<outline_transport::SessionId>,
 ) -> Option<(outline_uplink::UplinkCandidate, ConnectedTcpUplink, Option<Vec<u8>>)> {
     // Byte-exact migration needs the mid-session-retry ring (for the uplink
     // replay) and a shared cluster resume id; without both, RST is the honest
@@ -779,6 +800,7 @@ async fn try_soft_switch_migrate(
         symmetric_replay_max_bytes,
         client_acked_offset,
         overflow_policy,
+        session_id,
     )
     .await
     {
@@ -805,10 +827,11 @@ async fn try_soft_switch_migrate(
 }
 
 /// Performs one mid-session retry attempt. Re-dials the same uplink with
-/// the Ack-Prefix capability bit set, validates the server-reported
-/// `up_acked` offset, replays the buffered uplink tail starting at that
-/// offset, and returns the fresh transport ready for the next relay
-/// iteration.
+/// the Ack-Prefix capability bit set and **this session's own** Session ID
+/// (`session_id`, `None` if the server never issued one) as the resume
+/// request, validates the server-reported `up_acked` offset, replays the
+/// buffered uplink tail starting at that offset, and returns the fresh
+/// transport ready for the next relay iteration.
 ///
 /// All non-success paths surface the matching `outcome` value on
 /// `outline_ws_uplink_mid_session_retries_total` so the dashboard
@@ -828,6 +851,7 @@ async fn try_mid_session_retry(
     symmetric_replay_max_bytes: usize,
     client_acked_offset: u64,
     overflow_policy: OverflowPolicy,
+    session_id: Option<outline_transport::SessionId>,
 ) -> Result<(ConnectedTcpUplink, Option<Vec<u8>>)> {
     let group_name = uplinks.group_name();
 
@@ -866,6 +890,8 @@ async fn try_mid_session_retry(
         wire_index,
         symmetric_replay_enabled,
         client_acked_offset,
+        // This session's own id — never a cached, uplink-wide one.
+        session_id,
     )
     .await
     {

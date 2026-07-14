@@ -5,9 +5,9 @@ use futures_util::StreamExt;
 use tracing::{debug, warn};
 
 use outline_transport::{
-    DialNetworkOptions, DialResumeOptions, SsPathKind, TcpReader, TcpShadowsocksReader,
+    DialNetworkOptions, DialResumeOptions, SessionId, SsPathKind, TcpReader, TcpShadowsocksReader,
     TcpShadowsocksWriter, TcpWriter, TransportDialOptions, UplinkConnectionBinding,
-    UpstreamTransportGuard, connect_transport, global_resume_cache,
+    UpstreamTransportGuard, connect_transport,
 };
 use outline_uplink::{
     FallbackTransport, TransportKind, UplinkCandidate, UplinkManager, UplinkTransport,
@@ -31,6 +31,18 @@ pub(super) struct ConnectedTcpUplink {
     /// to [`ActiveTcpUplink`] so the chunk-0 failover step can attempt
     /// other wires of the same uplink before jumping to a different one.
     pub(super) wire_index: u8,
+    /// The Session ID the server minted **for this session** on this
+    /// carrier (`X-Outline-Session` on the upgrade response), if the
+    /// server has resumption enabled. `None` on direct-socket / non-WS
+    /// carriers and against servers without resumption.
+    ///
+    /// This ID belongs to the session, not to the uplink: only a redial
+    /// of *this* session may present it back as `X-Outline-Resume`. A
+    /// fresh dial always presents nothing — on a resume hit the server
+    /// ignores the handshake target and re-attaches the parked upstream,
+    /// so replaying somebody else's ID would silently connect this
+    /// session to the wrong destination.
+    pub(super) session_id: Option<SessionId>,
 }
 
 /// All mutable state that tracks the currently-active uplink during the
@@ -53,6 +65,11 @@ pub(super) struct ActiveTcpUplink {
     /// know which wires of this same uplink remain to try before
     /// jumping to a different uplink.
     pub(super) wire_index: u8,
+    /// Session ID this session was issued on its current carrier — see
+    /// [`ConnectedTcpUplink::session_id`]. Every chunk-0 failover step
+    /// replaces the carrier and therefore the ID; the pinned relay picks
+    /// the final value up and owns it for the rest of the session.
+    pub(super) session_id: Option<SessionId>,
 }
 
 impl ActiveTcpUplink {
@@ -65,6 +82,7 @@ impl ActiveTcpUplink {
             reader: connected.reader,
             source: connected.source,
             wire_index: connected.wire_index,
+            session_id: connected.session_id,
         }
     }
 
@@ -82,6 +100,7 @@ impl ActiveTcpUplink {
         self.reader = reconnected.reader;
         self.source = reconnected.source;
         self.wire_index = reconnected.wire_index;
+        self.session_id = reconnected.session_id;
     }
 
     /// Replace only the transport (writer/reader/source) while keeping the
@@ -92,6 +111,7 @@ impl ActiveTcpUplink {
         self.reader = reconnected.reader;
         self.source = reconnected.source;
         self.wire_index = reconnected.wire_index;
+        self.session_id = reconnected.session_id;
     }
 
     /// Replace the transport with a fresh dial of a *different* wire on
@@ -103,6 +123,7 @@ impl ActiveTcpUplink {
         self.reader = reconnected.reader;
         self.source = reconnected.source;
         self.wire_index = reconnected.wire_index;
+        self.session_id = reconnected.session_id;
     }
 }
 
@@ -322,6 +343,10 @@ async fn connect_tcp_uplink_primary(
     if let Some(ws) = uplinks.try_take_tcp_standby(candidate).await {
         let setup = WireSetup::from_uplink(&candidate.uplink);
         let binding = tcp_binding(uplinks, setup.name);
+        // Read the ID off the stream *before* `do_tcp_ss_setup` consumes it:
+        // a pooled standby carrier was dialed fresh (no resume request), so
+        // the ID the server minted for it now belongs to this session.
+        let session_id = ws.issued_session_id();
         match do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval, binding).await {
             Ok((writer, reader)) => {
                 return Ok(ConnectedTcpUplink {
@@ -329,6 +354,7 @@ async fn connect_tcp_uplink_primary(
                     reader,
                     source: TcpUplinkSource::Standby,
                     wire_index: 0,
+                    session_id,
                 });
             },
             Err(e) => {
@@ -353,6 +379,8 @@ pub(super) async fn connect_tcp_uplink_fresh(
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "socks_tcp").await?;
     let setup = WireSetup::from_uplink(&candidate.uplink);
     let binding = tcp_binding(uplinks, setup.name);
+    // Capture before `do_tcp_ss_setup` takes ownership of the stream.
+    let session_id = ws.issued_session_id();
     let (writer, reader) =
         do_tcp_ss_setup(ws, &setup, target, "socks_tcp", keepalive_interval, binding).await?;
     Ok(ConnectedTcpUplink {
@@ -360,6 +388,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
         reader,
         source: TcpUplinkSource::FreshDial,
         wire_index: 0,
+        session_id,
     })
 }
 
@@ -385,6 +414,13 @@ pub(super) async fn connect_tcp_uplink_fresh(
 /// instead of slamming a known-dead primary URL and ballooning the
 /// parent uplink's runtime-failure streak.
 ///
+/// `resume_request` is the Session ID **this session** was issued on the
+/// carrier that just died (`ConnectedTcpUplink::session_id`), or `None`
+/// if it never got one. It is passed in explicitly — never looked up in
+/// a shared cache — because a resume hit re-attaches whatever upstream
+/// is parked under the ID, so presenting another session's ID would
+/// hand this session the wrong destination.
+///
 /// Returns the fresh `(TcpWriter, TcpReader)` ready for replay; the
 /// caller is responsible for inspecting `reader.upstream_acked_offset()`
 /// and pushing replay bytes through the writer before resuming the
@@ -396,6 +432,7 @@ pub(super) async fn redial_for_mid_session_retry(
     wire_index: u8,
     symmetric_replay_enabled: bool,
     client_acked_offset: u64,
+    resume_request: Option<SessionId>,
 ) -> Result<ConnectedTcpUplink> {
     // Padding scope wraps the dial + transport build (see `connect_tcp_uplink`).
     outline_uplink::dial::with_uplink_padding_scope(
@@ -407,11 +444,13 @@ pub(super) async fn redial_for_mid_session_retry(
             wire_index,
             symmetric_replay_enabled,
             client_acked_offset,
+            resume_request,
         ),
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn redial_for_mid_session_retry_inner(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
@@ -425,6 +464,8 @@ async fn redial_for_mid_session_retry_inner(
     // emit a precise downlink replay slice on the resume hit.
     symmetric_replay_enabled: bool,
     client_acked_offset: u64,
+    // This session's own Session ID, presented as `X-Outline-Resume`.
+    resume_request: Option<SessionId>,
 ) -> Result<ConnectedTcpUplink> {
     if wire_index == 0 {
         if !matches!(candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless,) {
@@ -436,21 +477,26 @@ async fn redial_for_mid_session_retry_inner(
             );
         }
         let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+        record_tcp_resume_lookup(uplinks, resume_request);
         let ws = if symmetric_replay_enabled {
             uplinks
-                .connect_tcp_ws_fresh_with_symmetric_replay(
+                .connect_tcp_ws_redial_with_symmetric_replay(
                     candidate,
                     "socks_tcp_retry",
+                    resume_request,
                     client_acked_offset,
                 )
                 .await?
         } else {
             uplinks
-                .connect_tcp_ws_fresh_with_ack_prefix(candidate, "socks_tcp_retry")
+                .connect_tcp_ws_redial_with_ack_prefix(candidate, "socks_tcp_retry", resume_request)
                 .await?
         };
         let setup = WireSetup::from_uplink(&candidate.uplink);
         let binding = tcp_binding(uplinks, setup.name);
+        // The server mints a new ID on the resume hit too — capture it before
+        // the stream is consumed so the session can redial again later.
+        let session_id = ws.issued_session_id();
         let (writer, reader) =
             do_tcp_ss_setup(ws, &setup, target, "socks_tcp_retry", keepalive_interval, binding)
                 .await?;
@@ -459,6 +505,7 @@ async fn redial_for_mid_session_retry_inner(
             reader,
             source: TcpUplinkSource::FreshDial,
             wire_index: 0,
+            session_id,
         });
     }
 
@@ -499,9 +546,25 @@ async fn redial_for_mid_session_retry_inner(
             symmetric_replay_requested: symmetric_replay_enabled,
             client_acked_offset,
             source: "socks_tcp_retry",
+            resume_request,
         },
     )
     .await
+}
+
+/// Records the resume-lookup outcome for a TCP dial: a `hit` is a redial that
+/// carries the session's own Session ID, a `miss` is a dial with nothing to
+/// present (fresh session, or a session the server never issued an ID for).
+///
+/// Reported per group when the group shares one resume scope (a mesh cluster,
+/// `shared_resume`), else per uplink — the label mirrors what the resume id
+/// actually spans.
+fn record_tcp_resume_lookup(uplinks: &UplinkManager, resume_request: Option<SessionId>) {
+    outline_metrics::record_resume_lookup(
+        "tcp",
+        if uplinks.shared_resume() { "group" } else { "uplink" },
+        if resume_request.is_some() { "hit" } else { "miss" },
+    );
 }
 
 /// Per-wire dial options for [`connect_tcp_fallback_fresh`].
@@ -518,12 +581,16 @@ async fn redial_for_mid_session_retry_inner(
 /// `"socks_tcp_fb"` (fresh fallback dial), `"socks_tcp_retry"` is what the
 /// mid-session retry uses so the dashboard can attribute the dial to the
 /// retry orchestrator.
+///
+/// `resume_request` is the redialing session's own Session ID; it stays `None`
+/// on every fresh-dial path (a new session must not resume anything).
 #[derive(Clone, Copy)]
 pub(super) struct FallbackDialOptions {
     pub(super) ack_prefix_requested: bool,
     pub(super) symmetric_replay_requested: bool,
     pub(super) client_acked_offset: u64,
     pub(super) source: &'static str,
+    pub(super) resume_request: Option<SessionId>,
 }
 
 impl Default for FallbackDialOptions {
@@ -533,6 +600,7 @@ impl Default for FallbackDialOptions {
             symmetric_replay_requested: false,
             client_acked_offset: 0,
             source: "socks_tcp_fb",
+            resume_request: None,
         }
     }
 }
@@ -540,9 +608,11 @@ impl Default for FallbackDialOptions {
 /// Dial one fallback transport on the parent uplink. Returns a fully-set-up
 /// `ConnectedTcpUplink` indistinguishable from the primary path.
 ///
-/// Bypasses the standby pool, mode-downgrade window, and cross-transport
-/// resume cache (well — resume cache *is* shared by design now, see the
-/// resume-handover commit). Per-wire RTT samples **are** fed back into the
+/// Bypasses the standby pool and the mode-downgrade window. Resume is
+/// caller-driven: a fresh fallback dial presents no Session ID
+/// (`FallbackDialOptions::default()`), a mid-session-retry fallback dial
+/// presents the redialing session's own ID. Per-wire RTT samples **are** fed
+/// back into the
 /// uplink's EWMA on success: when a sticky fallback is the active wire,
 /// the score-based selection between uplinks must reflect the active wire's
 /// real latency rather than a stale primary-probe measurement. Strict per-
@@ -568,11 +638,11 @@ pub(super) async fn connect_tcp_fallback_fresh(
     // taken from the fallback's configured value (no per-fallback downgrade
     // tracking yet — Phase 2 follow-up).
     //
-    // Resume-cache participation: keyed on the parent's uplink name (not
-    // the wire), so the X-Outline-Resume token issued for a primary dial
-    // is presented on the fallback dial too — server-side re-attaches the
-    // upstream session, enabling handover-via-resume across wire switches
-    // without renegotiating the upstream conversation.
+    // Resume participation: the ID travels with the *session*, not the wire,
+    // so a session redialing onto a fallback wire presents the ID it was
+    // issued on the wire that just died and the server re-attaches its parked
+    // upstream — handover-via-resume across wire switches, without ever
+    // presenting an ID minted for a different session.
     let url = fallback.tcp_dial_url().ok_or_else(|| {
         anyhow!(
             "uplink {} fallback ({}) missing TCP dial URL",
@@ -585,13 +655,8 @@ pub(super) async fn connect_tcp_fallback_fresh(
     // `XhttpH2` → `XhttpH1`) and lives in
     // `PerTransportStatus::fallback_mode_downgrades[wire_index - 1]`.
     let mode = uplinks.effective_tcp_mode_for_wire(parent.index, wire_index).await;
-    let resume_key = uplinks.resume_cache_key_for(&parent.uplink.name, "tcp");
-    let resume_request = global_resume_cache().get(&resume_key);
-    outline_metrics::record_resume_lookup(
-        "tcp",
-        if uplinks.shared_resume() { "group" } else { "uplink" },
-        if resume_request.is_some() { "hit" } else { "miss" },
-    );
+    let resume_request = options.resume_request;
+    record_tcp_resume_lookup(uplinks, resume_request);
     let ws = connect_transport(
         TransportDialOptions::new(cache, url, mode, source)
             .with_network(DialNetworkOptions {
@@ -600,6 +665,9 @@ pub(super) async fn connect_tcp_fallback_fresh(
             })
             .with_combined_ss_kind(fallback.combined_ss_kind(SsPathKind::Tcp))
             .with_resume(DialResumeOptions {
+                // `None` on initial-dial / chunk-0 wire-handover paths
+                // (`FallbackDialOptions::default()`); `Some` only when the
+                // mid-session retry redials a session that owns an ID.
                 resume_request,
                 // Initial-dial / chunk-0 wire-handover paths pass
                 // `FallbackDialOptions::default()` (all three off); the
@@ -630,9 +698,11 @@ pub(super) async fn connect_tcp_fallback_fresh(
             requested,
         );
     }
-    global_resume_cache().store_if_issued(resume_key, ws.issued_session_id());
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
     let binding = tcp_binding(uplinks, setup.name);
+    // Capture before `do_tcp_ss_setup` takes ownership of the stream: this ID
+    // belongs to the session that dialed this wire, and to nobody else.
+    let session_id = ws.issued_session_id();
     let (writer, reader) =
         do_tcp_ss_setup(ws, &setup, target, source, keepalive_interval, binding).await?;
     // Feed the dial latency into the uplink's RTT EWMA — see SS branch
@@ -652,6 +722,7 @@ pub(super) async fn connect_tcp_fallback_fresh(
         reader,
         source: TcpUplinkSource::FreshDial,
         wire_index,
+        session_id,
     })
 }
 

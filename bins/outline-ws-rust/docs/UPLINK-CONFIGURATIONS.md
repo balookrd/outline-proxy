@@ -43,10 +43,13 @@ weight = 1.0
   in.
 - **UDP fallback chain:** `ws_h3 → ws_h2 → ws_h1`. Same logic on the
   UDP-WS path.
-- **Resume:** TCP and UDP each get their own slot in
-  `global_resume_cache` (`<uplink>#tcp` / `<uplink>#udp`). Inline
-  H3→H2→H1 fallback inside `connect_transport` carries the
-  same `resume_request` token across all three carriers.
+- **Resume:** the TCP Session ID belongs to the **session**, not to the
+  uplink: a fresh dial presents no `X-Outline-Resume` and the server
+  mints a new ID for it; only a redial of that same session (mid-session
+  retry, cluster soft-switch) presents the ID that session was issued.
+  UDP keeps its own `global_resume_cache` slot (`<uplink>#udp`). Inline
+  H3→H2→H1 fallback inside `connect_transport` carries whatever
+  `resume_request` the dial started with across all three carriers.
 
 ## 2. Shadowsocks over XHTTP
 
@@ -256,9 +259,9 @@ weight = 1.0
 - **UDP fallback chain:** `ws_h3 → ws_h2 → ws_h1`. UDP is multiplexed
   in the same WS session as TCP, so the carrier is shared and the
   downgrade marker propagates across both directions.
-- **Resume:** one `<uplink>#tcp` slot covers TCP. UDP rides the same
-  WS session, so it follows TCP's reconnects implicitly (no separate
-  UDP resume token).
+- **Resume:** the TCP Session ID is per-session (presented only when
+  that session redials). UDP rides the same WS session, so it follows
+  TCP's reconnects implicitly (no separate UDP resume token).
 
 ## 4. VLESS over XHTTP (H3)
 
@@ -293,12 +296,12 @@ weight = 1.0
   a bidirectional packet-up driver on the same connection, so UDP
   rides alongside TCP in the same carrier and downgrades
   synchronously.
-- **Resume:** the `<uplink>#tcp` slot is reused across every step of
-  the `xhttp_h3 → xhttp_h2 → xhttp_h1` carrier switch — the same
-  `resume_request` token is presented on each carrier, so the server
-  re-attaches the parked upstream instead of opening a fresh session.
-  UDP rides the same XHTTP carrier and inherits TCP's reconnect
-  behaviour.
+- **Resume:** a redialing session's own token is reused across every
+  step of the `xhttp_h3 → xhttp_h2 → xhttp_h1` carrier switch — the
+  same `resume_request` is presented on each carrier, so the server
+  re-attaches that session's parked upstream instead of opening a fresh
+  session. A first dial carries no token. UDP rides the same XHTTP
+  carrier and inherits TCP's reconnect behaviour.
 
 **h1 carrier shape.** Unlike h2 / h3, HTTP/1.1 cannot multiplex a
 streaming GET against concurrent POSTs on a single connection, so the
@@ -498,12 +501,12 @@ Snapshot fields:
 
 ## Summary
 
-| Configuration         | TCP chain                  | UDP chain                            | TCP resume        | UDP resume                |
-|-----------------------|----------------------------|--------------------------------------|-------------------|---------------------------|
-| Native SS             | none                       | none                                 | —                 | —                         |
-| SS / WS / H3          | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (`#tcp`)      | yes (`#udp`)              |
-| VLESS / WS / H3       | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (`#tcp`)      | shared with TCP carrier   |
-| VLESS / XHTTP / H3    | `xhttp_h3 → xhttp_h2→ xhttp_h1` | `xhttp_h3 → xhttp_h2 → xhttp_h1` | yes (`#tcp`) | shared with TCP carrier   |
+| Configuration         | TCP chain                  | UDP chain                            | TCP resume          | UDP resume                |
+|-----------------------|----------------------------|--------------------------------------|---------------------|---------------------------|
+| Native SS             | none                       | none                                 | —                   | —                         |
+| SS / WS / H3          | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (per-session)   | yes (`#udp`)              |
+| VLESS / WS / H3       | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (per-session)   | shared with TCP carrier   |
+| VLESS / XHTTP / H3    | `xhttp_h3 → xhttp_h2→ xhttp_h1` | `xhttp_h3 → xhttp_h2 → xhttp_h1` | yes (per-session) | shared with TCP carrier   |
 
 ## Top-level `[outline]` shape
 
@@ -1101,28 +1104,40 @@ authoritative for routing and the host cache governs the inline
 
 ## Session resumption mechanics
 
-`global_resume_cache` is a process-wide map keyed by
-`<uplink_name>#tcp` / `<uplink_name>#udp`. The slot stores the last
-Session ID the server issued for that uplink + direction.
+A Session ID is **server-minted and owned by one session**. On a resume
+hit the server ignores the target in the new handshake — the parked
+target is authoritative — and re-attaches whatever upstream is parked
+under the presented ID. So an ID may only ever be presented back by the
+session it was issued to.
 
-On dial, the cached ID (if any) is presented to the server as a
-`resume_request`:
+**TCP.** Every dial advertises `X-Outline-Resume-Capable: 1`, so the
+server mints an ID and returns it in `X-Outline-Session: <hex>`. The
+client reads that ID off the carrier
+(`TransportStream::issued_session_id()`) and stores it *on the session*:
 
-- **WS path** — sent as the `X-Outline-Resume` request header alongside
-  `X-Outline-Resume-Capable: 1`. The same token is reused if the dial
-  falls back inline (h3 → h2 → h1).
-- **XHTTP path** — sent as `X-Outline-Resume`; the same token is
-  re-used across every step of the
-  `xhttp_h3 → xhttp_h2 → xhttp_h1` carrier switch.
+- **A fresh dial presents no `X-Outline-Resume`.** It is a new session
+  and has nothing to resume. (There is deliberately no per-uplink cache
+  to read from: one shared slot per uplink meant a fresh dial of session
+  B could present session A's parked ID and get spliced onto A's
+  destination.)
+- **A redial of an existing session presents that session's own ID** —
+  the mid-session retry path (`redial_for_mid_session_retry`) and the
+  cluster soft-switch migration. The redial hit mints a new ID, which
+  replaces the old one on the session.
+- Within one dial, the token (whatever it is — `None` on a fresh dial)
+  is carried across an inline carrier fallback: `h3 → h2 → h1` on the WS
+  path, `xhttp_h3 → xhttp_h2 → xhttp_h1` on the XHTTP path.
 
-If the server replies with a `X-Outline-Session: <hex>` header (or the
-VLESS equivalent in addons), the new ID is stored back into the slot
-asynchronously, ready for the next reconnect.
+`outline_ws_resume_lookup_total{transport="tcp",result}` counts `hit` for
+a redial that carried an ID and `miss` for a dial that had none.
 
-UDP slots are separate so a TCP reconnect cannot pick up a UDP-side
-Session ID by accident, and vice versa. Configurations where UDP rides
-the TCP carrier (VLESS/WS, VLESS/XHTTP) do not maintain a separate
-UDP slot — UDP follows TCP's lifetime.
+**UDP** still uses the process-wide `global_resume_cache`, keyed
+`<resume-scope>#udp` (plus `global_vless_udp_resume_cache`, keyed
+`<resume-scope>#<target>`, for VLESS-UDP): a UDP session is one
+long-lived per-uplink (or per-target) entity, so a single slot really
+does name a single session. Configurations where UDP rides the TCP
+carrier (VLESS/WS, VLESS/XHTTP) keep no UDP slot — UDP follows TCP's
+lifetime.
 
 ## Browser fingerprint diversification
 
@@ -1677,25 +1692,28 @@ mode-downgrade cap) but no longer changes `active_wire`.
 - If a session's chunk-0 stalls (no first byte from upstream within
   `tcp_chunk0_failover_timeout`), the chunk-0 failover loop now first
   tries every **other wire on the same uplink** (Phase A) before
-  jumping to a different uplink (Phase B). The X-Outline-Resume token
-  issued for the failed wire rides into the wire-handover dial via
-  the identity-level resume cache (see "Resume across wire switches"
-  below), so handover-via-resume is seamless on a feature-enabled
-  outline-ss-rust server. Wire-handover events surface on the
+  jumping to a different uplink (Phase B). The wire-handover dial is a
+  **fresh** dial: it presents no `X-Outline-Resume` token, so the new
+  wire opens a new upstream conversation (chunk-0 stall means no
+  upstream bytes had arrived anyway). Wire-handover events surface on the
   failover counter as `transport="tcp_wire"`; cross-uplink failovers
   keep `transport="tcp"`.
 
 #### Resume across wire switches
 
-- Fallback TCP and UDP dials participate in
-  `outline_transport::global_resume_cache()` keyed on
-  `<uplink_name>#<transport>` — the **same identity-level key** the
-  primary path uses. A primary VLESS dial that issued an
-  `X-Outline-Resume` session id followed by a fallback WS dial after
-  primary fails presents that token on the fallback dial; the
-  server-side resume mechanism re-attaches the upstream session.
-  Works for any combination where both wires carry the WS-resume
-  header (WS, VLESS-WS, VLESS-XHTTP).
+- Resume follows the **session**, not the wire. A session that is
+  redialled mid-stream (mid-session retry, cluster soft-switch) presents
+  the `X-Outline-Resume` token *it* was issued on the wire that just
+  died — whichever wire it lands on next. So a session established on a
+  primary VLESS wire and redialled onto a fallback WS wire still
+  re-attaches its parked upstream server-side. Works for any combination
+  where both wires carry the WS-resume header (WS, VLESS-WS,
+  VLESS-XHTTP).
+- What is **not** shared is the token itself: there is no per-uplink
+  resume slot any more, so a dial can never present a token minted for a
+  different session (which, on a hit, would have re-attached that
+  session's upstream and silently connected this one to the wrong
+  destination).
 
 #### Liveness override
 
@@ -1758,8 +1776,9 @@ mode-downgrade cap) but no longer changes `active_wire`.
   `fallback_mode_downgrades` and `effective_*_mode_for_wire`), so a
   fallback wire that observes its own carrier downgrade caps only
   its own slot.
-- The DNS cache, per-uplink fingerprint scope, and the resume cache
-  **are** preserved across wire switches.
+- The DNS cache and the per-uplink fingerprint scope **are** preserved
+  across wire switches, and so is a redialling session's own resume
+  token (it travels with the session, not with the wire).
 - The RTT EWMA is now **per-wire**. Primary's measurement lives in
   the existing `rtt_ewma` slot on `PerTransportStatus`; each fallback
   wire has its own slot in `fallback_rtt_ewma` (lazy-extended on
