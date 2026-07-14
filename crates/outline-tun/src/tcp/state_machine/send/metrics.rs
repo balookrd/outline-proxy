@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use outline_metrics as metrics;
 
+use super::super::bbr::pacing_rate;
 use super::super::congestion::{bytes_in_pipe, count_segments_in_pipe};
 use super::super::types::{CachedFlowGauges, TcpFlowState};
 use super::buffer::pending_server_bytes;
@@ -50,6 +51,14 @@ pub(in crate::tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
         .smoothed_rtt
         .map(|duration| duration.as_micros() as u64)
         .unwrap_or(0);
+    let bbr_btlbw_bps = state.bbr.btlbw_bps;
+    // The rate actually shaping the flush (gain × BtlBw, clamped by the
+    // configured ceiling and the loss cap) — not the raw estimate above.
+    let bbr_pacing_rate_bps = pacing_rate(state);
+    let bbr_loss_cap_bps = state.bbr.loss_cap_bps;
+    let bbr_loss_capped = bbr_loss_cap_bps > 0;
+    let bbr_min_rtt_us = state.bbr.min_rtt.as_micros() as u64;
+    let bbr_loss_episodes = state.bbr.loss_episodes;
 
     ensure_flow_gauges(state);
     // Disjoint borrows: `gauges` reads `state.flow_gauges`, the deltas below
@@ -122,6 +131,35 @@ pub(in crate::tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
         &gauges.smoothed_rtt_seconds,
         smoothed_rtt_us,
         &mut reported.smoothed_rtt_us,
+    );
+    apply_u64_gauge_delta(
+        &gauges.bbr_btlbw_bytes_per_second,
+        bbr_btlbw_bps,
+        &mut reported.bbr_btlbw_bps,
+    );
+    apply_u64_gauge_delta(
+        &gauges.bbr_pacing_rate_bytes_per_second,
+        bbr_pacing_rate_bps,
+        &mut reported.bbr_pacing_rate_bps,
+    );
+    apply_u64_gauge_delta(
+        &gauges.bbr_loss_cap_bytes_per_second,
+        bbr_loss_cap_bps,
+        &mut reported.bbr_loss_cap_bps,
+    );
+    if bbr_loss_capped != reported.bbr_loss_capped {
+        gauges.bbr_loss_capped_flows.add(if bbr_loss_capped { 1 } else { -1 });
+        reported.bbr_loss_capped = bbr_loss_capped;
+    }
+    apply_u64_seconds_gauge_delta(
+        &gauges.bbr_min_rtt_seconds,
+        bbr_min_rtt_us,
+        &mut reported.bbr_min_rtt_us,
+    );
+    apply_u64_counter_delta(
+        &gauges.bbr_loss_episodes_total,
+        bbr_loss_episodes,
+        &mut reported.bbr_loss_episodes,
     );
 }
 
@@ -213,6 +251,38 @@ pub(in crate::tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
             .add(-((reported.smoothed_rtt_us as f64) / 1_000_000.0));
         reported.smoothed_rtt_us = 0;
     }
+    if reported.bbr_btlbw_bps != 0 {
+        gauges
+            .bbr_btlbw_bytes_per_second
+            .add(-clamp_i64(reported.bbr_btlbw_bps));
+        reported.bbr_btlbw_bps = 0;
+    }
+    if reported.bbr_pacing_rate_bps != 0 {
+        gauges
+            .bbr_pacing_rate_bytes_per_second
+            .add(-clamp_i64(reported.bbr_pacing_rate_bps));
+        reported.bbr_pacing_rate_bps = 0;
+    }
+    if reported.bbr_loss_cap_bps != 0 {
+        gauges
+            .bbr_loss_cap_bytes_per_second
+            .add(-clamp_i64(reported.bbr_loss_cap_bps));
+        reported.bbr_loss_cap_bps = 0;
+    }
+    if reported.bbr_loss_capped {
+        gauges.bbr_loss_capped_flows.add(-1);
+        reported.bbr_loss_capped = false;
+    }
+    if reported.bbr_min_rtt_us != 0 {
+        gauges
+            .bbr_min_rtt_seconds
+            .add(-((reported.bbr_min_rtt_us as f64) / 1_000_000.0));
+        reported.bbr_min_rtt_us = 0;
+    }
+    // `bbr_loss_episodes_total` is deliberately absent: it is a counter, and a
+    // closing flow may not rewind history. `reported.bbr_loss_episodes` is left
+    // at its last value too — zeroing it would re-add every episode of this flow
+    // if the state were ever synced again after a clear, double-counting them.
 }
 
 fn apply_usize_gauge_delta(gauge: &metrics::TunFlowGaugeI64, current: usize, reported: &mut usize) {
@@ -233,4 +303,30 @@ fn apply_u64_seconds_gauge_delta(
         gauge.add(delta / 1_000_000.0);
         *reported = current;
     }
+}
+
+/// Delta-apply a `u64` quantity (bytes/sec rates) to an `i64` gauge.
+fn apply_u64_gauge_delta(gauge: &metrics::TunFlowGaugeI64, current: u64, reported: &mut u64) {
+    if current == *reported {
+        return;
+    }
+    gauge.add(clamp_i64(current) - clamp_i64(*reported));
+    *reported = current;
+}
+
+/// Add the newly observed part of a monotonic counter. `current` is monotonic by
+/// construction (`BbrState::loss_episodes` only ever grows), so `saturating_sub`
+/// is a guard, not an expected path; the counter is never rewound.
+fn apply_u64_counter_delta(counter: &metrics::TunFlowCounterU64, current: u64, reported: &mut u64) {
+    let delta = current.saturating_sub(*reported);
+    if delta != 0 {
+        counter.inc_by(delta);
+        *reported = current;
+    }
+}
+
+/// Real rates never approach `i64::MAX` bytes/sec; the clamp only keeps a bogus
+/// estimate from wrapping the gauge delta into a negative jump.
+fn clamp_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }

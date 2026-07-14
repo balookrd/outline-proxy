@@ -149,6 +149,18 @@ impl Metrics {
             tun_tcp_retransmission_timeout_seconds: tun.tun_tcp_retransmission_timeout_seconds,
             #[cfg(feature = "tun")]
             tun_tcp_smoothed_rtt_seconds: tun.tun_tcp_smoothed_rtt_seconds,
+            #[cfg(feature = "tun")]
+            tun_tcp_bbr_btlbw_bytes_per_second: tun.tun_tcp_bbr_btlbw_bytes_per_second,
+            #[cfg(feature = "tun")]
+            tun_tcp_bbr_pacing_rate_bytes_per_second: tun.tun_tcp_bbr_pacing_rate_bytes_per_second,
+            #[cfg(feature = "tun")]
+            tun_tcp_bbr_loss_cap_bytes_per_second: tun.tun_tcp_bbr_loss_cap_bytes_per_second,
+            #[cfg(feature = "tun")]
+            tun_tcp_bbr_loss_capped_flows: tun.tun_tcp_bbr_loss_capped_flows,
+            #[cfg(feature = "tun")]
+            tun_tcp_bbr_min_rtt_seconds: tun.tun_tcp_bbr_min_rtt_seconds,
+            #[cfg(feature = "tun")]
+            tun_tcp_bbr_loss_episodes_total: tun.tun_tcp_bbr_loss_episodes_total,
         }
     }
 }

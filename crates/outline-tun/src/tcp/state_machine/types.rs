@@ -221,6 +221,12 @@ pub(in crate::tcp) struct BbrState {
     /// per-round relaxation of `loss_cap_bps` so the cap only grows on a clean
     /// round.
     pub(in crate::tcp) loss_in_round: bool,
+    /// Monotonic count of loss episodes seen by this flow (each `note_loss`
+    /// call: fast-recovery entry or RTO). Never decreases, so the metrics sync
+    /// can export it as a Prometheus counter by delta — telling "the loss cap is
+    /// parked at the floor because loss keeps arriving" apart from "the cap is
+    /// stuck low although loss stopped".
+    pub(in crate::tcp) loss_episodes: u64,
 }
 
 impl BbrState {
@@ -252,6 +258,7 @@ impl BbrState {
             max_rate_bps,
             loss_cap_bps: 0,
             loss_in_round: false,
+            loss_episodes: 0,
         }
     }
 }
@@ -427,6 +434,15 @@ pub(in crate::tcp) struct ReportedFlowMetrics {
     pub(in crate::tcp) slow_start_threshold: usize,
     pub(in crate::tcp) retransmission_timeout_us: u64,
     pub(in crate::tcp) smoothed_rtt_us: u64,
+    pub(in crate::tcp) bbr_btlbw_bps: u64,
+    pub(in crate::tcp) bbr_pacing_rate_bps: u64,
+    pub(in crate::tcp) bbr_loss_cap_bps: u64,
+    pub(in crate::tcp) bbr_loss_capped: bool,
+    pub(in crate::tcp) bbr_min_rtt_us: u64,
+    /// Last `BbrState::loss_episodes` value already added to the counter. Unlike
+    /// every other field here this one is *not* unwound on close: the counter it
+    /// feeds is monotonic, so `clear_flow_metrics` must leave both alone.
+    pub(in crate::tcp) bbr_loss_episodes: u64,
 }
 
 #[derive(Debug)]
