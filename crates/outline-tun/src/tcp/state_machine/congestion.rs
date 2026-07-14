@@ -324,7 +324,7 @@ pub(in crate::tcp) fn process_server_ack(
                 if rate_sample.is_none() {
                     rate_sample = Some(RateSample {
                         prior_delivered: segment.delivered_snapshot,
-                        sent_at: segment.first_sent,
+                        prior_mstamp: segment.delivered_at_snapshot,
                         app_limited: segment.app_limited,
                     });
                 }

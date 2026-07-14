@@ -833,6 +833,7 @@ async fn process_server_ack_marks_sacked_segments_without_cumulative_ack() {
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
         super::ServerSegment {
@@ -846,6 +847,7 @@ async fn process_server_ack_marks_sacked_segments_without_cumulative_ack() {
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
     ]);
@@ -880,6 +882,7 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
         super::ServerSegment {
@@ -893,6 +896,7 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
         super::ServerSegment {
@@ -906,6 +910,7 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
         super::ServerSegment {
@@ -919,6 +924,7 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
     ]);
@@ -956,6 +962,7 @@ async fn process_server_ack_exits_fast_recovery_once_recovery_point_is_acked() {
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
         super::ServerSegment {
@@ -969,6 +976,7 @@ async fn process_server_ack_exits_fast_recovery_once_recovery_point_is_acked() {
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
     ]);
@@ -1004,6 +1012,7 @@ fn unacked_segment(seq: u32, payload: &'static [u8]) -> super::ServerSegment {
         rto_retransmits: 0,
         fast_retransmit_epoch: 0,
         delivered_snapshot: 0,
+        delivered_at_snapshot: Instant::now(),
         app_limited: false,
     }
 }
@@ -1492,6 +1501,7 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
         super::ServerSegment {
@@ -1505,6 +1515,7 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
         super::ServerSegment {
@@ -1518,6 +1529,7 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
     ]);
@@ -1561,6 +1573,7 @@ async fn timeout_congestion_event_reduces_cwnd_and_backs_off_rto() {
         rto_retransmits: 0,
         fast_retransmit_epoch: 0,
         delivered_snapshot: 0,
+        delivered_at_snapshot: Instant::now(),
         app_limited: false,
     }]);
     super::rebuild_unacked_accounting(&mut state);
@@ -1951,6 +1964,7 @@ async fn process_server_ack_handles_snd_nxt_wrap() {
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
         super::ServerSegment {
@@ -1964,6 +1978,7 @@ async fn process_server_ack_handles_snd_nxt_wrap() {
             rto_retransmits: 0,
             fast_retransmit_epoch: 0,
             delivered_snapshot: 0,
+            delivered_at_snapshot: Instant::now(),
             app_limited: false,
         },
     ]);
@@ -1997,6 +2012,7 @@ async fn process_server_ack_stale_ack_across_wrap_is_rejected() {
         rto_retransmits: 0,
         fast_retransmit_epoch: 0,
         delivered_snapshot: 0,
+        delivered_at_snapshot: Instant::now(),
         app_limited: false,
     }]);
 
