@@ -24,6 +24,8 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{MaybeTlsStream, accept_async};
 use url::Url;
 
+mod direct_backpressure;
+
 use super::super::state_machine::TcpFlowStatus;
 use super::super::tests::{
     build_client_packet, build_client_packet_with_options, test_tun_tcp_config,
@@ -1952,6 +1954,21 @@ impl TunCapture {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("timed out waiting for captured TUN packet");
+    }
+
+    /// Non-blocking counterpart of [`TunCapture::next_packet`]: hands back the
+    /// next fully-written packet if one is already in the capture, `None`
+    /// otherwise. Lets a test assert on the *absence* of a packet (say, an RST)
+    /// without waiting out a timeout it would then have to interpret.
+    async fn try_next_packet(&mut self) -> Option<Vec<u8>> {
+        let data = tokio::fs::read(&self.path).await.unwrap_or_default();
+        let remaining = data.get(self.offset..)?;
+        let packet_len = packet_length(remaining)?;
+        if remaining.len() < packet_len {
+            return None;
+        }
+        self.offset += packet_len;
+        Some(remaining[..packet_len].to_vec())
     }
 }
 
