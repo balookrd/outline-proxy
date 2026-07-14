@@ -155,7 +155,13 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs),
         config.tuning.udp_replay_max_sessions,
     );
-    let dns_cache = DnsCache::new(Duration::from_secs(UDP_DNS_CACHE_TTL_SECS));
+    // Bounded: the cache key carries the client-supplied destination host, so
+    // an unbounded map would grow for the whole TTL + stale-grace window on a
+    // client that resolves unique names. `0` opts out (unbounded, sweep-only).
+    let dns_cache = DnsCache::with_capacity(
+        Duration::from_secs(UDP_DNS_CACHE_TTL_SECS),
+        config.tuning.dns_cache_max_entries,
+    );
     let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::clone(&tcp_routes),
         udp: Arc::clone(&udp_routes),
