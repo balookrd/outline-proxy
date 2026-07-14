@@ -13,7 +13,7 @@ use super::super::selection::{
     strict_gate_transport, supports_transport_for_scope,
 };
 use super::super::types::{TransportKind, Uplink, UplinkCandidate, UplinkManager};
-use super::status::UplinkStatus;
+use super::status::SelectionView;
 
 #[cfg(test)]
 #[path = "tests/candidates.rs"]
@@ -25,7 +25,11 @@ pub(crate) struct CandidateState {
     pub(crate) uplink: Uplink,
     pub(crate) healthy: bool,
     pub(crate) score: Option<Duration>,
-    pub(crate) status: UplinkStatus,
+    /// Scoring projection of the uplink's status, copied out from under the
+    /// status lock. Deliberately NOT the whole `UplinkStatus`: selection never
+    /// reads `last_error` or the per-wire `Vec`s, and cloning them per candidate
+    /// per connection allocated on the hot path for nothing.
+    pub(crate) status: SelectionView,
 }
 
 fn higher_weight_first(left_weight: f64, right_weight: f64) -> Ordering {
@@ -44,7 +48,7 @@ fn transport_reason_label(transport: TransportKind) -> &'static str {
 }
 
 fn transport_failover_detail(
-    status: &UplinkStatus,
+    status: &SelectionView,
     transport: TransportKind,
     now: Instant,
     include_probe_health: bool,
@@ -433,26 +437,35 @@ impl UplinkManager {
             .filter(|(index, _)| self.inner.admin_enabled(*index))
             .filter(|(_, uplink)| supports_transport_for_scope(uplink, transport, scope))
             .map(|(index, uplink)| {
-                let status = self.inner.read_status(index);
+                // Health and score are resolved under the status lock (both are
+                // pure reads), and only the `Copy` scoring projection escapes it
+                // — no `UplinkStatus` clone per candidate.
+                let (healthy, score, status) = self.inner.with_status(index, |status| {
+                    (
+                        selection_health(
+                            status,
+                            uplink,
+                            transport,
+                            now,
+                            scope,
+                            &self.inner.load_balancing,
+                        ),
+                        selection_score(
+                            status,
+                            uplink.weight,
+                            transport,
+                            now,
+                            &self.inner.load_balancing,
+                            scope,
+                        ),
+                        status.selection_view(),
+                    )
+                });
                 CandidateState {
                     index,
                     uplink: uplink.clone(),
-                    healthy: selection_health(
-                        &status,
-                        uplink,
-                        transport,
-                        now,
-                        scope,
-                        &self.inner.load_balancing,
-                    ),
-                    score: selection_score(
-                        &status,
-                        uplink.weight,
-                        transport,
-                        now,
-                        &self.inner.load_balancing,
-                        scope,
-                    ),
+                    healthy,
+                    score,
                     status,
                 }
             })

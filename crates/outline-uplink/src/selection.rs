@@ -4,16 +4,41 @@ use tokio::time::Instant;
 
 use crate::config::{LoadBalancingConfig, RoutingScope};
 
-use super::manager::status::UplinkStatus;
+use super::manager::status::{PenaltyState, UplinkStatus};
 use super::penalty::current_penalty;
 use super::types::{TransportKind, Uplink};
 
-pub(crate) fn effective_health(
-    status: &UplinkStatus,
+/// The per-transport fields the scoring / gating layer reads.
+///
+/// Implemented twice: by the full `PerTransportStatus` (probe, snapshot and
+/// reporting paths already hold the status under its lock) and by the `Copy`
+/// `TransportSelectionView` the per-connection candidate path copies out from
+/// under that lock instead of cloning the whole status. One trait keeps a single
+/// implementation of every scoring rule, so the two paths cannot drift.
+pub(crate) trait TransportStatusView {
+    fn healthy(&self) -> Option<bool>;
+    fn cooldown_until(&self) -> Option<Instant>;
+    fn penalty(&self) -> PenaltyState;
+    /// Raw deadline of the carrier-descent window (`Some` even when expired).
+    fn descent_window_until(&self) -> Option<Instant>;
+    /// Penalty-free latency this transport is ranked by. See
+    /// [`scoring_base_latency`].
+    fn base_latency(&self) -> Option<Duration>;
+}
+
+/// A status (full or projected) that can hand out both of its transport halves.
+pub(crate) trait StatusView {
+    type Transport: TransportStatusView;
+
+    fn transport(&self, kind: TransportKind) -> &Self::Transport;
+}
+
+pub(crate) fn effective_health<S: StatusView>(
+    status: &S,
     transport: TransportKind,
     now: Instant,
 ) -> bool {
-    status.of(transport).healthy == Some(true) && !cooldown_active(status, transport, now)
+    status.transport(transport).healthy() == Some(true) && !cooldown_active(status, transport, now)
 }
 
 /// Liveness override for uplinks with `[[outline.uplinks.fallbacks]]`
@@ -157,34 +182,37 @@ pub(crate) fn strict_gate_transport(
     }
 }
 
-pub(crate) fn cooldown_active(
-    status: &UplinkStatus,
+pub(crate) fn cooldown_active<S: StatusView>(
+    status: &S,
     transport: TransportKind,
     now: Instant,
 ) -> bool {
-    status.of(transport).cooldown_until.is_some_and(|until| until > now)
+    status
+        .transport(transport)
+        .cooldown_until()
+        .is_some_and(|until| until > now)
 }
 
-pub(crate) fn cooldown_remaining(
-    status: &UplinkStatus,
+pub(crate) fn cooldown_remaining<S: StatusView>(
+    status: &S,
     transport: TransportKind,
     now: Instant,
 ) -> Duration {
     status
-        .of(transport)
-        .cooldown_until
+        .transport(transport)
+        .cooldown_until()
         .map_or(Duration::ZERO, |t| t.saturating_duration_since(now))
 }
 
-pub(crate) fn effective_latency(
-    status: &UplinkStatus,
+pub(crate) fn effective_latency<S: StatusView>(
+    status: &S,
     transport: TransportKind,
     now: Instant,
     config: &LoadBalancingConfig,
 ) -> Option<Duration> {
-    let ts = status.of(transport);
-    let base = scoring_base_latency(status, transport);
-    let mut penalty = current_penalty(&ts.penalty, now, config);
+    let ts = status.transport(transport);
+    let base = ts.base_latency();
+    let mut penalty = current_penalty(&ts.penalty(), now, config);
     // While an H3 downgrade is active for this transport, add failure_penalty_max
     // on top of the existing penalty.  This keeps the uplink's score high enough
     // that active-active flows (per-flow scope) prefer the backup uplink and do not
@@ -194,7 +222,7 @@ pub(crate) fn effective_latency(
     // the EWMA and the failure penalty decays, causing flows to shift back to
     // primary.  Once mode_downgrade_until expires, those flows then try H3,
     // encounter the same failure, and the whole cycle repeats.
-    if ts.descent.window_active(now) {
+    if ts.descent_window_until().is_some_and(|until| until > now) {
         let extra = config.failure_penalty_max;
         penalty = Some(penalty.unwrap_or_default().saturating_add(extra));
     }
@@ -206,23 +234,14 @@ pub(crate) fn effective_latency(
     }
 }
 
-pub(crate) fn scoring_base_latency(
-    status: &UplinkStatus,
+/// Penalty-free latency an uplink is ranked by: the active wire's measured RTT,
+/// falling back to primary's EWMA and then to the last probe sample. The rule
+/// itself lives in [`TransportStatusView::base_latency`].
+pub(crate) fn scoring_base_latency<S: StatusView>(
+    status: &S,
     transport: TransportKind,
 ) -> Option<Duration> {
-    let ts = status.of(transport);
-    // Prefer the active wire's measured RTT so cross-uplink scoring
-    // compares the latency of the wire that is **actually carrying
-    // traffic**. When the dial loop / probe walk has moved `active_wire`
-    // off primary, primary's `rtt_ewma` may belong to a completely
-    // different (now-broken) wire — using it would mis-rank this uplink
-    // against its peers.
-    //
-    // Fall back to primary's `rtt_ewma`, then to the latest probe
-    // `latency`, when the active wire has no per-wire sample yet (cold
-    // start right after a wire flip). The first per-wire probe writes
-    // the slot within one cycle, so this stale-primary window is bounded.
-    ts.active_wire_rtt_ewma().or(ts.rtt_ewma).or(ts.latency)
+    status.transport(transport).base_latency()
 }
 
 pub(crate) fn weighted_latency_score(base: Option<Duration>, weight: f64) -> Option<Duration> {
@@ -231,8 +250,8 @@ pub(crate) fn weighted_latency_score(base: Option<Duration>, weight: f64) -> Opt
     Some(Duration::from_secs_f64(base.as_secs_f64() / weight))
 }
 
-pub(crate) fn score_latency(
-    status: &UplinkStatus,
+pub(crate) fn score_latency<S: StatusView>(
+    status: &S,
     weight: f64,
     transport: TransportKind,
     now: Instant,
@@ -241,16 +260,16 @@ pub(crate) fn score_latency(
     weighted_latency_score(effective_latency(status, transport, now, config), weight)
 }
 
-pub(crate) fn base_score_latency(
-    status: &UplinkStatus,
+pub(crate) fn base_score_latency<S: StatusView>(
+    status: &S,
     weight: f64,
     transport: TransportKind,
 ) -> Option<Duration> {
     weighted_latency_score(scoring_base_latency(status, transport), weight)
 }
 
-pub(crate) fn selection_score(
-    status: &UplinkStatus,
+pub(crate) fn selection_score<S: StatusView>(
+    status: &S,
     weight: f64,
     transport: TransportKind,
     now: Instant,
@@ -270,8 +289,8 @@ pub(crate) fn selection_score(
     }
 }
 
-pub(crate) fn global_selection_score_latency(
-    status: &UplinkStatus,
+pub(crate) fn global_selection_score_latency<S: StatusView>(
+    status: &S,
     weight: f64,
     now: Instant,
     config: &LoadBalancingConfig,

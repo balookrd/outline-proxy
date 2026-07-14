@@ -105,14 +105,23 @@ impl<'a> StandbyCtx<'a> {
     /// Pops one pooled WS stream and returns it if it passes the liveness
     /// pre-flight (`is_connection_alive` + 1 ms peek). Stale entries are
     /// discarded with a `"stale"` metric; `None` means the pool was drained
-    /// without finding a usable entry. Each successful pop schedules a
-    /// background refill so the pool does not bleed below `desired`.
+    /// without finding a usable entry.
+    ///
+    /// A take that removed anything from the pool — the returned stream, the
+    /// stale entries it walked past, or both — schedules exactly ONE background
+    /// refill, which restores every drained slot in a single pass. Spawning per
+    /// `pop_front()` meant a take that discarded K stale entries fired K refill
+    /// tasks, K-1 of which found the pool already back at `desired` and did
+    /// nothing but resolve a standby context and bounce off the refill mutex.
     pub(super) async fn try_take_alive(&self, candidate_name: &str) -> Option<TransportStream> {
         use tokio_tungstenite::tungstenite::protocol::Message;
 
-        loop {
-            let mut ws = self.pool.lock().await.pop_front()?;
-            self.manager.spawn_refill(self.index, self.transport);
+        let mut popped_any = false;
+        let taken = loop {
+            let Some(mut ws) = self.pool.lock().await.pop_front() else {
+                break None;
+            };
+            popped_any = true;
 
             // Check the underlying shared connection (H2/H3) first — if a
             // previous open_websocket timeout marked it as broken, the 1ms
@@ -145,7 +154,16 @@ impl<'a> StandbyCtx<'a> {
                 transport = ?self.transport,
                 "using warm-standby websocket"
             );
-            return Some(ws);
+            break Some(ws);
+        };
+
+        // Refill after the walk, so the loop's discards are covered by the same
+        // task as the entry we handed out. Skipped when the pool was already
+        // empty: nothing was drained, and the caller's fresh dial plus the
+        // maintenance sweep already own that case.
+        if popped_any {
+            self.manager.spawn_refill(self.index, self.transport);
         }
+        taken
     }
 }
