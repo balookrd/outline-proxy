@@ -9,8 +9,10 @@
 
 pub mod dns_cache;
 pub mod ip_alias;
+pub mod relay_buf;
 
 pub use ip_alias::{IpAliasError, IpAliasTable};
+pub use relay_buf::{RELAY_BUF_IDLE_GRACE, RelayReadBuf, STREAM_INITIAL_READ_CAPACITY};
 
 #[cfg(not(target_os = "linux"))]
 use anyhow::bail;

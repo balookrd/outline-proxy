@@ -1,6 +1,7 @@
 use crate::TransportOperation;
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
+use outline_net::RelayReadBuf;
 use outline_wire::padding::PaddingDecoder;
 use outline_wire::ss2022::Ss2022Error;
 use parking_lot::Mutex as SyncMutex;
@@ -28,6 +29,9 @@ use super::{
 use crate::resumption::SessionId;
 
 const MAX_UDP_SOCKET_PACKET_SIZE: usize = 65_507;
+/// Receive window for the raw-socket SS path: the largest SS payload plus room
+/// for the AEAD framing that rides in front of it.
+const UDP_SOCKET_RECV_CAPACITY: usize = SHADOWSOCKS_MAX_PAYLOAD + 128;
 
 struct Ss2022UdpState {
     client_session_id: u64,
@@ -42,6 +46,13 @@ enum UdpTransport {
     Channel(Arc<dyn DatagramChannel>),
     Socket {
         socket: UdpSocket,
+        /// Receive buffer reused across datagrams. `read_packet` is the only
+        /// reader, so the lock is uncontended — it exists solely to reach the
+        /// buffer through `&self`. Sized for the largest datagram the socket
+        /// can deliver: a short window would truncate it. Boxed to keep
+        /// `UdpWsTransport` (and every enum that carries it by value) the same
+        /// size as before — the raw-socket path allocates it exactly once.
+        recv_buf: Box<Mutex<RelayReadBuf>>,
     },
 }
 
@@ -188,7 +199,10 @@ impl UdpWsTransport {
         let (close_signal, _close_rx) = watch::channel(false);
         let master_key = cipher.derive_master_key(password)?;
         Ok(Self {
-            transport: UdpTransport::Socket { socket },
+            transport: UdpTransport::Socket {
+                socket,
+                recv_buf: Box::new(Mutex::new(RelayReadBuf::fixed(UDP_SOCKET_RECV_CAPACITY))),
+            },
             cipher,
             master_key,
             ss2022: cipher.is_ss2022().then(|| {
@@ -327,7 +341,7 @@ impl UdpWsTransport {
                 };
                 chan.send_datagram(datagram).await
             },
-            UdpTransport::Socket { socket } => {
+            UdpTransport::Socket { socket, .. } => {
                 if packet.len() > MAX_UDP_SOCKET_PACKET_SIZE {
                     warn!(
                         packet_len = packet.len(),
@@ -360,43 +374,43 @@ impl UdpWsTransport {
 
     pub async fn read_packet(&self) -> Result<Bytes> {
         match &self.transport {
-            UdpTransport::Socket { socket } => {
+            UdpTransport::Socket { socket, recv_buf } => {
                 let mut close_rx = self.close_signal.subscribe();
                 if *close_rx.borrow() {
                     bail!("udp transport closed");
                 }
+                let mut recv_buf = recv_buf.lock().await;
                 loop {
-                    tokio::select! {
-                        _ = close_rx.changed() => {
-                            if *close_rx.borrow() {
-                                bail!("udp transport closed");
+                    let ready = async {
+                        tokio::select! {
+                            _ = close_rx.changed() => {
+                                if *close_rx.borrow() {
+                                    bail!("udp transport closed");
+                                }
+                                bail!("udp transport close state changed unexpectedly");
                             }
-                            bail!("udp transport close state changed unexpectedly");
-                        }
-                        ready = socket.readable() => {
-                            ready.context("failed to await UDP shadowsocks socket")?;
-                            // Allocate only once a datagram is ready, so an idle
-                            // UDP flow holds no per-flow receive buffer. The buffer
-                            // is dropped before the next park.
-                            let mut buf = Vec::with_capacity(SHADOWSOCKS_MAX_PAYLOAD + 128);
-                            match socket.try_recv_buf(&mut buf) {
-                                Ok(len) => {
-                                    return self
-                                        .decrypt_udp_bytes(&buf[..len])
-                                        .await
-                                        .map(Bytes::from);
-                                },
-                                Err(ref error)
-                                    if error.kind() == std::io::ErrorKind::WouldBlock =>
-                                {
-                                    continue;
-                                },
-                                Err(error) => {
-                                    return Err(error)
-                                        .context("failed to read UDP shadowsocks packet");
-                                },
+                            ready = socket.readable() => {
+                                ready.context("failed to await UDP shadowsocks socket")
                             }
                         }
+                    };
+                    // The buffer is reused across datagrams while the flow is
+                    // busy and handed back once the park outlives the idle
+                    // grace, so an idle UDP flow still holds no receive buffer.
+                    recv_buf.park(ready).await?;
+                    match socket.try_recv_buf(recv_buf.ready()) {
+                        Ok(_) => {
+                            return self
+                                .decrypt_udp_bytes(recv_buf.filled())
+                                .await
+                                .map(Bytes::from);
+                        },
+                        Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            continue;
+                        },
+                        Err(error) => {
+                            return Err(error).context("failed to read UDP shadowsocks packet");
+                        },
                     }
                 }
             },
