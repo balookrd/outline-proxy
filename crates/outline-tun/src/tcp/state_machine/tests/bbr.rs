@@ -3,8 +3,14 @@ use std::time::{Duration, Instant};
 use super::super::types::{BbrMode, BbrState, RateSample};
 use super::*;
 
-fn sample(prior_delivered: u64, sent_at: Instant, app_limited: bool) -> RateSample {
-    RateSample { prior_delivered, sent_at, app_limited }
+/// `prior_mstamp` is the instant `delivered` last equalled `prior_delivered` —
+/// i.e. the last ACK before that segment was sent, not the send instant itself.
+fn sample(prior_delivered: u64, prior_mstamp: Instant, app_limited: bool) -> RateSample {
+    RateSample {
+        prior_delivered,
+        prior_mstamp,
+        app_limited,
+    }
 }
 
 #[test]
@@ -76,6 +82,35 @@ fn app_limited_sample_only_raises_never_lowers_btlbw() {
     let round_mark = bbr.next_round_delivered;
     record_delivery(&mut bbr, 1_000, Some(sample(round_mark, t1, true)), None, t2);
     assert_eq!(bbr.btlbw_bps, high, "app-limited low sample lowered BtlBw");
+}
+
+/// An ACK 21 ms after the previous one releases 92 KB, so the delivery rate is
+/// 92_000 / 0.021 ≈ 4.4 MB/s. Loss turned the flight's oldest segments into
+/// retransmits, and only a cleanly-sent segment yields a rate sample, so the
+/// sample anchors to a segment sent at t0+20ms — 1 ms before this ACK. Dividing
+/// by that 1 ms reads 92 MB/s: 21x the truth, and worst exactly when loss is
+/// heaviest and BBR most needs to back off. The interval must therefore run from
+/// `prior_mstamp` (t0, the last ACK), which is the instant the numerator counts
+/// from.
+#[test]
+fn delivery_rate_is_measured_from_the_last_ack_not_the_send_instant() {
+    let t0 = Instant::now();
+    let mut bbr = BbrState::new(t0, 0);
+
+    let now = t0 + Duration::from_millis(21);
+    record_delivery(
+        &mut bbr,
+        92_000,
+        Some(sample(0, t0, false)),
+        Some(Duration::from_millis(21)),
+        now,
+    );
+
+    assert!(
+        (bbr.btlbw_bps as i64 - 4_380_952).abs() < 100_000,
+        "BtlBw should be the honest ~4.4 MB/s, got {} B/s",
+        bbr.btlbw_bps
+    );
 }
 
 #[test]

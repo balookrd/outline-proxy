@@ -324,8 +324,15 @@ fn record_delivery(
     // Delivery-rate sample → BtlBw windowed-max. An app-limited sample (buffer
     // drained, so the rate reflects our supply, not the path) may only raise the
     // estimate, never lower it.
+    //
+    // The interval runs from `prior_mstamp` — when `delivered` last equalled the
+    // sample's `prior_delivered` — so it spans exactly the bytes the numerator
+    // counts. Measuring it from the segment's send instant instead divides the
+    // whole ACKed flight by the short gap since one recent segment left, and
+    // over-estimates BtlBw by the ratio between the two (worst under loss, which
+    // pushes the sample onto ever fresher segments).
     if let Some(sample) = rate_sample {
-        let interval = now.saturating_duration_since(sample.sent_at).as_secs_f64();
+        let interval = now.saturating_duration_since(sample.prior_mstamp).as_secs_f64();
         if interval > 0.0 {
             let delivered = bbr.delivered.saturating_sub(sample.prior_delivered);
             let rate = (delivered as f64 / interval) as u64;
