@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
+use outline_net::{RelayReadBuf, STREAM_INITIAL_READ_CAPACITY};
 use outline_transport::TcpWriter;
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 
@@ -30,8 +31,10 @@ enum UplinkIo {
 /// Wait until the client read half is readable (→ [`UplinkIo::Readable`]) or,
 /// if a keepalive interval is configured and elapses first, send an upstream
 /// keepalive (→ [`UplinkIo::KeepaliveSent`]). Parks on readiness rather than on
-/// `read(buf)` so the caller allocates the receive buffer only once data is
-/// actually present — an idle pinned relay then holds no per-connection buffer.
+/// `read(buf)` so the receive buffer is only live while data is actually
+/// present — the caller runs this through [`RelayReadBuf::park`], which hands
+/// the buffer back once the park outlives the idle grace, so an idle pinned
+/// relay holds no per-connection buffer.
 async fn await_readable_or_keepalive(
     client_read: &OwnedReadHalf,
     keepalive_interval: Option<Duration>,
@@ -215,31 +218,36 @@ pub(super) async fn run_relay(
                 manager_for_uplink.group_name(),
                 &name_for_uplink,
             );
+            // One read buffer for the whole leg, reused across chunks. Stream
+            // reads are never truncated by a short buffer, so the window starts
+            // at 16 KiB and doubles (up to the SS max-payload chunk ceiling)
+            // only once a read saturates it — a small request no longer sizes
+            // its read at 64 KiB, a bulk upload still gets there. `park`
+            // releases the allocation while the client half stays quiet.
+            let mut read_buf =
+                RelayReadBuf::adaptive(STREAM_INITIAL_READ_CAPACITY, SHADOWSOCKS_MAX_PAYLOAD);
             loop {
-                let buf = {
+                let read = {
                     let cr_guard = cr_for_uplink.lock().await;
-                    match await_readable_or_keepalive(
-                        &cr_guard,
-                        keepalive_interval,
-                        &mut uplink_writer,
-                    )
-                    .await?
+                    match read_buf
+                        .park(await_readable_or_keepalive(
+                            &cr_guard,
+                            keepalive_interval,
+                            &mut uplink_writer,
+                        ))
+                        .await?
                     {
                         UplinkIo::Readable => {},
                         UplinkIo::KeepaliveSent => continue,
                     }
-                    // Allocate only once the client half is readable; an idle
-                    // pinned relay then holds no per-connection read buffer.
-                    let mut buf = Vec::with_capacity(SHADOWSOCKS_MAX_PAYLOAD);
-                    match cr_guard.try_read_buf(&mut buf) {
-                        Ok(_) => buf,
+                    match cr_guard.try_read_buf(read_buf.ready()) {
+                        Ok(read) => read,
                         Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             continue;
                         },
                         Err(error) => return Err(ClientIo::ReadFailed(error).into()),
                     }
                 };
-                let read = buf.len();
                 if read == 0 {
                     // Client-side EOF. Signal upstream half-close (Close
                     // frame for WS, half-close FIN for sockets) and
@@ -265,7 +273,7 @@ pub(super) async fn run_relay(
                 // a future replay will re-emit it.
                 if let Some(r) = &ring_for_uplink {
                     let mut r_guard = r.lock().await;
-                    if let Err(push_err) = r_guard.push(&buf[..read]) {
+                    if let Err(push_err) = r_guard.push(read_buf.filled()) {
                         // Single-chunk overflow: replay can never
                         // reconstruct this byte range. The configured
                         // policy decides whether the active session
@@ -311,7 +319,7 @@ pub(super) async fn run_relay(
                         }
                     }
                 }
-                uplink_writer.send_chunk(&buf[..read]).await?;
+                uplink_writer.send_chunk(read_buf.filled()).await?;
                 let _ = activity_for_uplink.send(());
                 chunks_sent += 1;
                 if chunks_sent == 1 {

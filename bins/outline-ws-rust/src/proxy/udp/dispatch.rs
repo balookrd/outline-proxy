@@ -14,6 +14,17 @@ use super::group::GroupUdpContext;
 
 pub(super) const MAX_CLIENT_UDP_PACKET_SIZE: usize = SHADOWSOCKS_MAX_PAYLOAD;
 pub(super) const MAX_UDP_RELAY_PACKET_SIZE: usize = 65_507;
+/// Receive window for every UDP socket on the relay paths.
+///
+/// A datagram read into a shorter buffer is silently truncated by the kernel,
+/// so this must cover the largest datagram a socket can hand us — 65_527 bytes
+/// over IPv6 (a 65_535-byte payload length minus the 8-byte UDP header), above
+/// the 65_507-byte IPv4 ceiling. Sized at the u16 maximum, matching the window
+/// the SOCKS5 receive loop has always used. Oversize *relayed* packets are a
+/// separate concern: they are still dropped with a WARN against
+/// [`MAX_UDP_RELAY_PACKET_SIZE`] / [`MAX_CLIENT_UDP_PACKET_SIZE`] after the
+/// read, rather than being truncated inside it.
+pub(super) const MAX_RECV_UDP_DATAGRAM_SIZE: usize = u16::MAX as usize;
 
 pub(super) fn udp_metric_payload_len(target: &TargetAddr, payload_len: usize) -> Result<usize> {
     Ok(target.to_wire_bytes()?.len().saturating_add(payload_len))

@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
+use outline_net::RelayReadBuf;
 use outline_uplink::UplinkRegistry;
 use socks5_proto::{
     SOCKS_REP_SUCCESS, TargetAddr, read_udp_tcp_packet, send_reply, socket_addr_to_target,
@@ -16,7 +17,7 @@ use socks5_proto::{
 use crate::proxy::ProxyConfig;
 
 use super::dispatch::{
-    MAX_CLIENT_UDP_PACKET_SIZE, MAX_UDP_RELAY_PACKET_SIZE, send_tunneled_udp, send_udp_direct,
+    MAX_CLIENT_UDP_PACKET_SIZE, MAX_RECV_UDP_DATAGRAM_SIZE, send_tunneled_udp, send_udp_direct,
     udp_metric_payload_len,
 };
 use super::group::{AssocGroupMap, UdpResponse, resolve_group_context};
@@ -162,12 +163,16 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
             };
             // Direct route: constant `(direct, direct)` labels, resolve once.
             let down_direct = metrics::direct_udp_counters("down");
+            // Reused receive buffer, sized for the largest datagram the socket
+            // can deliver (a short window truncates); `park` releases it while
+            // the direct socket is idle, so a quiet association holds nothing.
+            let mut recv_buf = RelayReadBuf::fixed(MAX_RECV_UDP_DATAGRAM_SIZE);
             loop {
-                // Allocate the receive buffer on demand so an idle association
-                // holds no per-socket buffer between datagrams.
-                sock.readable().await.context("direct UDP readiness failed")?;
-                let mut buf = Vec::with_capacity(MAX_UDP_RELAY_PACKET_SIZE);
-                let (len, src_addr) = match sock.try_recv_buf_from(&mut buf) {
+                recv_buf
+                    .park(sock.readable())
+                    .await
+                    .context("direct UDP readiness failed")?;
+                let (len, src_addr) = match sock.try_recv_buf_from(recv_buf.ready()) {
                     Ok(v) => v,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => return Err(error).context("direct UDP recv failed"),
@@ -177,7 +182,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
                 write_udp_tcp_response(
                     &write_tx_direct,
                     &target,
-                    &buf[..len],
+                    &recv_buf.filled()[..len],
                     "direct UDP-in-TCP response",
                 )
                 .await?;

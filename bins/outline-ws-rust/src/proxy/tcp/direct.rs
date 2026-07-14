@@ -8,6 +8,7 @@ use tracing::info;
 
 use crate::proxy::TcpTimeouts;
 use outline_metrics as metrics;
+use outline_net::{RelayReadBuf, STREAM_INITIAL_READ_CAPACITY};
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use socks5_proto::{SOCKS_REP_SUCCESS, TargetAddr, send_reply, socket_addr_to_target};
 
@@ -72,13 +73,18 @@ pub(super) async fn relay_tcp_direct(
     let c2u = async move {
         // Direct route: constant `(direct, direct)` labels, resolve once.
         let up_bytes = metrics::direct_tcp_bytes("up");
+        // One read buffer per direction, reused across reads. A stream read is
+        // never truncated by a short buffer — it just leaves the rest in the
+        // socket — so the window starts at 16 KiB and only doubles (up to the
+        // 64 KiB relay chunk ceiling) once a read saturates it: a request-sized
+        // read no longer pays for the maximum, a bulk upload still reaches it.
+        // `park` releases the allocation once the session goes quiet, keeping
+        // the property that an idle direct session holds no relay buffer.
+        let mut read_buf =
+            RelayReadBuf::adaptive(STREAM_INITIAL_READ_CAPACITY, SHADOWSOCKS_MAX_PAYLOAD);
         loop {
-            // Park on readability without holding a buffer; allocate it only
-            // once data is ready and drop it before the next park, so an idle
-            // direct TCP session holds no per-direction relay buffer.
-            client_read.readable().await?;
-            let mut buf = Vec::with_capacity(SHADOWSOCKS_MAX_PAYLOAD);
-            let read = match client_read.try_read_buf(&mut buf) {
+            read_buf.park(client_read.readable()).await?;
+            let read = match client_read.try_read_buf(read_buf.ready()) {
                 Ok(read) => read,
                 Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                 Err(error) => return Err(error.into()),
@@ -88,7 +94,7 @@ pub(super) async fn relay_tcp_direct(
             }
             let _ = activity_c2u.try_send(());
             up_bytes.add(read);
-            upstream_write.write_all(&buf[..read]).await?;
+            upstream_write.write_all(read_buf.filled()).await?;
         }
         upstream_write.shutdown().await?;
         Ok::<(), anyhow::Error>(())
@@ -96,13 +102,12 @@ pub(super) async fn relay_tcp_direct(
     let u2c = async move {
         // Direct route: constant `(direct, direct)` labels, resolve once.
         let down_bytes = metrics::direct_tcp_bytes("down");
+        // Same adaptive window as the uplink half; see the comment there.
+        let mut read_buf =
+            RelayReadBuf::adaptive(STREAM_INITIAL_READ_CAPACITY, SHADOWSOCKS_MAX_PAYLOAD);
         loop {
-            // Park on readability without holding a buffer; allocate it only
-            // once data is ready and drop it before the next park, so an idle
-            // direct TCP session holds no per-direction relay buffer.
-            upstream_read.readable().await?;
-            let mut buf = Vec::with_capacity(SHADOWSOCKS_MAX_PAYLOAD);
-            let read = match upstream_read.try_read_buf(&mut buf) {
+            read_buf.park(upstream_read.readable()).await?;
+            let read = match upstream_read.try_read_buf(read_buf.ready()) {
                 Ok(read) => read,
                 Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                 Err(error) => return Err(error.into()),
@@ -112,7 +117,7 @@ pub(super) async fn relay_tcp_direct(
             }
             let _ = activity_u2c.try_send(());
             down_bytes.add(read);
-            client_write.write_all(&buf[..read]).await?;
+            client_write.write_all(read_buf.filled()).await?;
         }
         client_write.shutdown().await?;
         Ok::<(), anyhow::Error>(())

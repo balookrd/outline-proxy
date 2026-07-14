@@ -8,6 +8,7 @@ use tokio::sync::{OnceCell, mpsc};
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
+use outline_net::RelayReadBuf;
 use outline_uplink::UplinkRegistry;
 use socks5_proto::{
     SOCKS_REP_SUCCESS, TargetAddr, UdpFragmentReassembler, build_udp_packet, parse_udp_request,
@@ -18,8 +19,8 @@ use crate::client_io::ClientIo;
 use crate::proxy::ProxyConfig;
 
 use super::dispatch::{
-    MAX_CLIENT_UDP_PACKET_SIZE, MAX_UDP_RELAY_PACKET_SIZE, send_tunneled_udp, send_udp_direct,
-    udp_metric_payload_len,
+    MAX_CLIENT_UDP_PACKET_SIZE, MAX_RECV_UDP_DATAGRAM_SIZE, MAX_UDP_RELAY_PACKET_SIZE,
+    send_tunneled_udp, send_udp_direct, udp_metric_payload_len,
 };
 use super::group::{AssocGroupMap, UdpResponse, resolve_group_context};
 use super::routing::{
@@ -73,17 +74,23 @@ pub(in crate::proxy) async fn serve_udp_associate(
         let uplink = async move {
             let mut reassembler = UdpFragmentReassembler::default();
             let mut route_cache: UdpRouteCache = new_udp_route_cache();
+            // One receive buffer, reused across datagrams. A datagram read into
+            // a short buffer is truncated by the kernel, so the window always
+            // covers the largest datagram the socket can deliver — the saving is
+            // the reuse, not the size. `park` releases the allocation once the
+            // association goes quiet, keeping the original property that an idle
+            // association holds no receive buffer.
+            let mut recv_buf = RelayReadBuf::fixed(MAX_RECV_UDP_DATAGRAM_SIZE);
             // Per-client affinity key for this association (the client's source
             // IP). Computed once; consulted only under routing_scope =
             // "per_client", ignored by every other scope.
             let client_id = client_peer_ip.to_string();
             loop {
-                // Park on readability without holding a buffer; allocate it
-                // only once a datagram is ready and drop it before the next
-                // park, so an idle UDP association holds no receive buffer.
-                socket_uplink.readable().await.map_err(ClientIo::ReadFailed)?;
-                let mut buf = Vec::with_capacity(65_535);
-                let (len, addr) = match socket_uplink.try_recv_buf_from(&mut buf) {
+                recv_buf
+                    .park(socket_uplink.readable())
+                    .await
+                    .map_err(ClientIo::ReadFailed)?;
+                let (len, addr) = match socket_uplink.try_recv_buf_from(recv_buf.ready()) {
                     Ok(v) => v,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => return Err(ClientIo::ReadFailed(error).into()),
@@ -103,7 +110,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                     },
                 }
 
-                let packet = parse_udp_request(&buf[..len])?;
+                let packet = parse_udp_request(&recv_buf.filled()[..len])?;
                 let Some(datagram) = reassembler.push_fragment(packet)? else {
                     continue;
                 };
@@ -218,12 +225,14 @@ pub(in crate::proxy) async fn serve_udp_associate(
             };
             // Direct route: constant `(direct, direct)` labels, resolve once.
             let down_direct = metrics::direct_udp_counters("down");
+            // Reused receive buffer, released while the direct socket is idle.
+            let mut recv_buf = RelayReadBuf::fixed(MAX_RECV_UDP_DATAGRAM_SIZE);
             loop {
-                // Allocate the receive buffer on demand so an idle association
-                // holds no per-socket buffer between datagrams.
-                sock.readable().await.context("direct UDP readiness failed")?;
-                let mut buf = Vec::with_capacity(MAX_UDP_RELAY_PACKET_SIZE);
-                let (len, src_addr) = match sock.try_recv_buf_from(&mut buf) {
+                recv_buf
+                    .park(sock.readable())
+                    .await
+                    .context("direct UDP readiness failed")?;
+                let (len, src_addr) = match sock.try_recv_buf_from(recv_buf.ready()) {
                     Ok(v) => v,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => return Err(error).context("direct UDP recv failed"),
@@ -233,7 +242,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
                 })?;
                 let target = socket_addr_to_target(src_addr);
                 let metric_payload_len = udp_metric_payload_len(&target, len)?;
-                let packet = build_udp_packet(&target, &buf[..len])?;
+                let packet = build_udp_packet(&target, &recv_buf.filled()[..len])?;
                 if packet.len() > MAX_UDP_RELAY_PACKET_SIZE {
                     warn!(
                         %client_addr,
