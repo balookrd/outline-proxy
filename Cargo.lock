@@ -1939,7 +1939,6 @@ dependencies = [
  "outline-uplink",
  "outline-wire",
  "parking_lot",
- "quinn",
  "rand",
  "rcgen",
  "rustls",
