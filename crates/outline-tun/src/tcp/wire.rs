@@ -10,7 +10,7 @@ use bytes::Bytes;
 
 use super::{TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_RST, TCP_FLAG_SYN};
 use crate::wire::{
-    checksum16, checksum16_parts, ipv4_payload_checksum, ipv6_payload_checksum,
+    L4Checksum, checksum16, checksum16_parts, ipv4_payload_checksum, ipv6_payload_checksum,
     locate_ipv6_upper_layer,
 };
 
@@ -21,7 +21,7 @@ pub(super) use crate::wire::{
     IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, IPV6_NEXT_HEADER_TCP, IpVersion,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedTcpPacket {
     pub(crate) version: IpVersion,
     pub(crate) source_ip: IpAddr,
@@ -52,16 +52,30 @@ struct ParsedTcpOptions {
     timestamp_echo_reply: Option<u32>,
 }
 
-pub(crate) fn parse_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
+/// Parse an inbound TCP/IP packet.
+///
+/// `checksum` records where the segment's TCP checksum came from. The IP header
+/// checksum is always verified (20 bytes); the *TCP* checksum covers the whole
+/// segment, so validating it walks the entire payload — and that walk is skipped
+/// for a checksum this process just wrote itself (see [`L4Checksum`]).
+pub(crate) fn parse_tcp_packet(packet: &[u8], checksum: L4Checksum) -> Result<ParsedTcpPacket> {
     let version = packet.first().ok_or_else(|| anyhow!("empty TUN TCP packet"))? >> 4;
     match version {
-        4 => parse_ipv4_tcp_packet(packet),
-        6 => parse_ipv6_tcp_packet(packet),
+        4 => parse_ipv4_tcp_packet(packet, checksum),
+        6 => parse_ipv6_tcp_packet(packet, checksum),
         other => bail!("unsupported IP version in TUN TCP packet: {other}"),
     }
 }
 
-fn parse_ipv4_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
+/// Test shim: parse a packet carrying a sender-produced checksum, which is what
+/// every test packet builder emits. Production call sites state the provenance
+/// explicitly instead of defaulting to one.
+#[cfg(test)]
+pub(crate) fn parse_tcp_packet_unverified(packet: &[u8]) -> Result<ParsedTcpPacket> {
+    parse_tcp_packet(packet, L4Checksum::Unverified)
+}
+
+fn parse_ipv4_tcp_packet(packet: &[u8], checksum: L4Checksum) -> Result<ParsedTcpPacket> {
     if packet.len() < IPV4_HEADER_LEN + TCP_HEADER_LEN {
         bail!("short IPv4 TCP packet");
     }
@@ -90,10 +104,11 @@ fn parse_ipv4_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
         IpAddr::V4(src),
         IpAddr::V4(dst),
         &packet[header_len..total_len],
+        checksum,
     )
 }
 
-fn parse_ipv6_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
+fn parse_ipv6_tcp_packet(packet: &[u8], checksum: L4Checksum) -> Result<ParsedTcpPacket> {
     if packet.len() < IPV6_HEADER_LEN + TCP_HEADER_LEN {
         bail!("short IPv6 TCP packet");
     }
@@ -113,6 +128,7 @@ fn parse_ipv6_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
         IpAddr::V6(Ipv6Addr::from(src)),
         IpAddr::V6(Ipv6Addr::from(dst)),
         &packet[segment_offset..total_len],
+        checksum,
     )
 }
 
@@ -121,11 +137,25 @@ fn parse_tcp_segment(
     source_ip: IpAddr,
     destination_ip: IpAddr,
     segment: &[u8],
+    checksum: L4Checksum,
 ) -> Result<ParsedTcpPacket> {
     if segment.len() < TCP_HEADER_LEN {
         bail!("short TCP segment");
     }
-    validate_tcp_checksum(version, source_ip, destination_ip, segment)?;
+    match checksum {
+        L4Checksum::Unverified => {
+            validate_tcp_checksum(version, source_ip, destination_ip, segment)?;
+        },
+        // The read loop already folded this exact segment to produce the
+        // checksum now sitting in it (the kernel handed the packet over with
+        // `F_NEEDS_CSUM`), so validating is a second full pass over the payload
+        // that can only ever confirm our own arithmetic. Keep the pass in debug
+        // builds as a standing proof that the skip is sound.
+        L4Checksum::Recomputed => debug_assert!(
+            matches!(tcp_checksum_valid(version, source_ip, destination_ip, segment), Ok(true)),
+            "a recomputed TCP checksum must validate"
+        ),
+    }
     let header_len = usize::from(segment[12] >> 4) * 4;
     if header_len < TCP_HEADER_LEN || segment.len() < header_len {
         bail!("invalid TCP header length");
@@ -157,22 +187,33 @@ fn parse_tcp_segment(
     })
 }
 
+/// Fold the pseudo-header and the whole segment (header + payload) and report
+/// whether the carried checksum is correct. This walks every payload byte — the
+/// single most expensive step of parsing a data segment.
+fn tcp_checksum_valid(
+    version: IpVersion,
+    source_ip: IpAddr,
+    destination_ip: IpAddr,
+    segment: &[u8],
+) -> Result<bool> {
+    match (version, source_ip, destination_ip) {
+        (IpVersion::V4, IpAddr::V4(source_ip), IpAddr::V4(destination_ip)) => Ok(
+            ipv4_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, segment) == 0,
+        ),
+        (IpVersion::V6, IpAddr::V6(source_ip), IpAddr::V6(destination_ip)) => Ok(
+            ipv6_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, segment) == 0,
+        ),
+        _ => bail!("unexpected address family while validating TCP checksum"),
+    }
+}
+
 fn validate_tcp_checksum(
     version: IpVersion,
     source_ip: IpAddr,
     destination_ip: IpAddr,
     segment: &[u8],
 ) -> Result<()> {
-    let checksum_valid = match (version, source_ip, destination_ip) {
-        (IpVersion::V4, IpAddr::V4(source_ip), IpAddr::V4(destination_ip)) => {
-            ipv4_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, segment) == 0
-        },
-        (IpVersion::V6, IpAddr::V6(source_ip), IpAddr::V6(destination_ip)) => {
-            ipv6_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, segment) == 0
-        },
-        _ => bail!("unexpected address family while validating TCP checksum"),
-    };
-    if !checksum_valid {
+    if !tcp_checksum_valid(version, source_ip, destination_ip, segment)? {
         bail!("invalid TCP checksum");
     }
     Ok(())

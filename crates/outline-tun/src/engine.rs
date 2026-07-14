@@ -29,7 +29,7 @@ use crate::vnet::{
     VIRTIO_NET_HDR_GSO_ECN, VIRTIO_NET_HDR_GSO_NONE, VIRTIO_NET_HDR_GSO_TCPV4,
     VIRTIO_NET_HDR_GSO_TCPV6, VIRTIO_NET_HDR_GSO_UDP_L4, VIRTIO_NET_HDR_LEN, VirtioNetHdr,
 };
-use crate::wire::ip_to_target;
+use crate::wire::{L4Checksum, ip_to_target, recompute_transport_checksum};
 use crate::writer::SharedTunWriter;
 
 #[cfg(test)]
@@ -186,6 +186,13 @@ async fn tun_read_loop(
         // recompute: `recompute_transport_checksum` sizes off the 16-bit IP
         // total_len, so a UDP aggregate takes a separate re-segmentation path
         // and never reaches recompute here.
+        //
+        // Whether the recompute below actually rewrote the L4 checksum is
+        // carried to the parser: a checksum we produced ourselves over these
+        // exact bytes does not need a second full pass over the payload to be
+        // believed. Everything the kernel hands over with a final checksum
+        // (`flags == 0`, or no vnet header at all) stays `Unverified`.
+        let mut read_checksum = L4Checksum::Unverified;
         let input_packet = if gso_enabled {
             if read <= VIRTIO_NET_HDR_LEN {
                 debug!(read, "dropping short TUN read (no packet after vnet header)");
@@ -223,9 +230,8 @@ async fn tun_read_loop(
                         "tcp_gro_superpacket",
                     );
                     if header.flags != 0 {
-                        crate::wire::recompute_transport_checksum(
-                            &mut buf[VIRTIO_NET_HDR_LEN..read],
-                        );
+                        read_checksum =
+                            recompute_transport_checksum(&mut buf[VIRTIO_NET_HDR_LEN..read]);
                     }
                     &buf[VIRTIO_NET_HDR_LEN..read]
                 },
@@ -235,9 +241,8 @@ async fn tun_read_loop(
                     // / forwarded hop). Recompute, then hand it to the normal
                     // classify / dispatch path below.
                     if header.flags != 0 {
-                        crate::wire::recompute_transport_checksum(
-                            &mut buf[VIRTIO_NET_HDR_LEN..read],
-                        );
+                        read_checksum =
+                            recompute_transport_checksum(&mut buf[VIRTIO_NET_HDR_LEN..read]);
                     }
                     &buf[VIRTIO_NET_HDR_LEN..read]
                 },
@@ -291,6 +296,7 @@ async fn tun_read_loop(
                 },
             }
         };
+        let packet_checksum = packet_l4_checksum(read_checksum, owned_packet.is_some());
         let packet_storage;
         let packet = if let Some(packet) = owned_packet {
             packet_storage = packet;
@@ -331,7 +337,7 @@ async fn tun_read_loop(
             },
             PacketDisposition::Tcp => {
                 metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_observed");
-                if let Err(error) = tcp_engine.handle_packet(packet).await {
+                if let Err(error) = tcp_engine.handle_packet(packet, packet_checksum).await {
                     metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_error");
                     warn!(
                         error = %format!("{error:#}"),
@@ -398,6 +404,23 @@ async fn tun_read_loop(
                 debug!(reason, packet_len = read, "ignoring unsupported TUN packet");
             },
         }
+    }
+}
+
+/// L4-checksum provenance of the packet the engines finally parse.
+///
+/// `read_checksum` is what the read itself established (see
+/// [`recompute_transport_checksum`]). A packet that came out of the
+/// defragmenter is a *reassembled* one, and its L4 checksum is the sender's:
+/// it rides in the first fragment, and the recompute deliberately skips
+/// fragments (it can only fold a whole L4 payload, which no single fragment
+/// carries). Such a packet must still be validated, so reassembly always
+/// downgrades the provenance back to [`L4Checksum::Unverified`].
+fn packet_l4_checksum(read_checksum: L4Checksum, reassembled: bool) -> L4Checksum {
+    if reassembled {
+        L4Checksum::Unverified
+    } else {
+        read_checksum
     }
 }
 

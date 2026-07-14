@@ -28,7 +28,7 @@ use super::super::state_machine::TcpFlowStatus;
 use super::super::tests::{
     build_client_packet, build_client_packet_with_options, test_tun_tcp_config,
 };
-use super::super::wire::{IPV6_HEADER_LEN, parse_tcp_packet};
+use super::super::wire::{IPV6_HEADER_LEN, parse_tcp_packet_unverified};
 use super::super::{
     TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_RST, TCP_FLAG_SYN, TCP_TIME_WAIT_TIMEOUT, TcpFlowKey,
 };
@@ -54,7 +54,7 @@ async fn tun_tcp_reassembles_out_of_order_client_segments_end_to_end() {
     let remote_port = 80;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -68,7 +68,7 @@ async fn tun_tcp_reassembles_out_of_order_client_segments_end_to_end() {
         .await
         .unwrap();
 
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(syn_ack.flags, TCP_FLAG_SYN | TCP_FLAG_ACK);
     assert_eq!(syn_ack.acknowledgement_number, 101);
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
@@ -79,7 +79,7 @@ async fn tun_tcp_reassembles_out_of_order_client_segments_end_to_end() {
     assert_eq!(consumed, target.to_wire_bytes().unwrap().len());
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -94,7 +94,7 @@ async fn tun_tcp_reassembles_out_of_order_client_segments_end_to_end() {
         .unwrap();
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -107,12 +107,12 @@ async fn tun_tcp_reassembles_out_of_order_client_segments_end_to_end() {
         ))
         .await
         .unwrap();
-    let gap_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let gap_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(gap_ack.acknowledgement_number, 101);
     assert!(upstream.try_recv_chunk().await.is_none());
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -125,7 +125,7 @@ async fn tun_tcp_reassembles_out_of_order_client_segments_end_to_end() {
         ))
         .await
         .unwrap();
-    let full_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let full_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(full_ack.acknowledgement_number, 107);
     assert_eq!(upstream.recv_chunk().await, b"ABCDEF");
 }
@@ -193,7 +193,7 @@ async fn tun_tcp_sniffs_tls_sni_and_overrides_target_with_domain() {
     let remote_port = 443;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -206,7 +206,7 @@ async fn tun_tcp_sniffs_tls_sni_and_overrides_target_with_domain() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(syn_ack.flags, TCP_FLAG_SYN | TCP_FLAG_ACK);
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
 
@@ -214,7 +214,7 @@ async fn tun_tcp_sniffs_tls_sni_and_overrides_target_with_domain() {
     // target, so the connect task sniffs it instead of timing out to the IP.
     let hello = tls_client_hello_with_sni("example.com");
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -247,7 +247,7 @@ async fn open_flow(
     client_isn: u32,
 ) -> u32 {
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -260,7 +260,7 @@ async fn open_flow(
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(syn_ack.flags, TCP_FLAG_SYN | TCP_FLAG_ACK);
     syn_ack.sequence_number.wrapping_add(1)
 }
@@ -288,7 +288,7 @@ async fn tun_tcp_sniffs_http_host_and_overrides_target_with_domain() {
 
     let request = b"GET /index.html HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\n\r\n";
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -333,7 +333,7 @@ async fn tun_tcp_non_sniffable_first_chunk_dials_by_ip() {
 
     let blob = b"\x00\x01\x02\x03 binary protocol, not TLS or HTTP";
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -383,7 +383,7 @@ async fn tun_tcp_sniffed_excluded_host_dials_by_ip() {
 
     let hello = tls_client_hello_with_sni("example.com");
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -458,7 +458,7 @@ async fn tun_tcp_pump_delivers_sequential_client_chunks_in_order() {
     let remote_port = 80;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -471,12 +471,12 @@ async fn tun_tcp_pump_delivers_sequential_client_chunks_in_order() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -491,7 +491,7 @@ async fn tun_tcp_pump_delivers_sequential_client_chunks_in_order() {
         .unwrap();
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -507,7 +507,7 @@ async fn tun_tcp_pump_delivers_sequential_client_chunks_in_order() {
     assert_eq!(upstream.recv_chunk().await, b"ABC");
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -544,7 +544,7 @@ async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
     let remote_port = 443;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -557,12 +557,12 @@ async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -577,13 +577,13 @@ async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
         .unwrap();
 
     upstream.send_chunk(b"ABCDEFGH").await;
-    let first_data = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let first_data = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(first_data.payload, b"ABCD"[..]);
     assert_eq!(first_data.sequence_number, server_next_seq);
 
     for _ in 0..3 {
         engine
-            .handle_packet(&build_client_packet(
+            .handle_packet_unverified(&build_client_packet(
                 client_ip,
                 remote_ip,
                 client_port,
@@ -598,12 +598,12 @@ async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
             .unwrap();
     }
 
-    let retransmitted = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let retransmitted = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(retransmitted.payload, b"ABCD"[..]);
     assert_eq!(retransmitted.sequence_number, server_next_seq);
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -617,7 +617,7 @@ async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
         .await
         .unwrap();
 
-    let second_data = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let second_data = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(second_data.payload, b"EFGH"[..]);
     assert_eq!(second_data.sequence_number, server_next_seq.wrapping_add(4));
 }
@@ -643,7 +643,7 @@ async fn tun_tcp_sends_zero_window_probe_and_resumes_after_window_reopens() {
     let remote_port = 80;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -656,12 +656,12 @@ async fn tun_tcp_sends_zero_window_probe_and_resumes_after_window_reopens() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -676,12 +676,12 @@ async fn tun_tcp_sends_zero_window_probe_and_resumes_after_window_reopens() {
         .unwrap();
 
     upstream.send_chunk(b"AB").await;
-    let probe = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let probe = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(probe.payload, b"A"[..]);
     assert_eq!(probe.sequence_number, server_next_seq);
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -695,7 +695,7 @@ async fn tun_tcp_sends_zero_window_probe_and_resumes_after_window_reopens() {
         .await
         .unwrap();
 
-    let data = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let data = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(data.payload, b"AB"[..]);
     assert_eq!(data.sequence_number, server_next_seq);
 }
@@ -721,7 +721,7 @@ async fn tun_tcp_defers_fin_until_buffered_server_data_is_acked() {
     let remote_port = 80;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -734,12 +734,12 @@ async fn tun_tcp_defers_fin_until_buffered_server_data_is_acked() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -754,14 +754,14 @@ async fn tun_tcp_defers_fin_until_buffered_server_data_is_acked() {
         .unwrap();
 
     upstream.send_chunk(b"ABCD").await;
-    let first_data = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let first_data = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(first_data.payload, b"AB"[..]);
 
     upstream.close().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -775,11 +775,11 @@ async fn tun_tcp_defers_fin_until_buffered_server_data_is_acked() {
         .await
         .unwrap();
 
-    let second_data = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let second_data = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(second_data.payload, b"CD"[..]);
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -793,7 +793,7 @@ async fn tun_tcp_defers_fin_until_buffered_server_data_is_acked() {
         .await
         .unwrap();
 
-    let fin = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let fin = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(fin.flags, TCP_FLAG_FIN | TCP_FLAG_ACK);
     assert!(fin.payload.is_empty());
 }
@@ -819,7 +819,7 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
     let remote_port = 443;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -832,12 +832,12 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -852,7 +852,7 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
         .unwrap();
 
     upstream.send_chunk(b"AB").await;
-    let first_data = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let first_data = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(first_data.payload, b"AB"[..]);
 
     let key = TcpFlowKey {
@@ -874,7 +874,7 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
         super::super::maintenance::commit_flow_changes(&mut state, &engine.inner.tcp);
     }
 
-    let retransmitted = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let retransmitted = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(retransmitted.sequence_number, first_data.sequence_number);
     assert_eq!(retransmitted.payload, b"AB"[..]);
 }
@@ -908,7 +908,7 @@ async fn tun_tcp_retransmits_after_partial_ack_moves_deadline_later() {
     let remote_port = 443;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -921,12 +921,12 @@ async fn tun_tcp_retransmits_after_partial_ack_moves_deadline_later() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -943,11 +943,11 @@ async fn tun_tcp_retransmits_after_partial_ack_moves_deadline_later() {
     // Three separate downlink segments so there is an oldest to clear and a
     // still-unacked tail whose deadline lands later.
     upstream.send_chunk(b"AAAA").await;
-    let seg1 = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let seg1 = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     upstream.send_chunk(b"BBBB").await;
-    let seg2 = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let seg2 = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     upstream.send_chunk(b"CCCC").await;
-    let seg3 = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let seg3 = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(seg1.payload, b"AAAA"[..]);
     assert_eq!(seg2.payload, b"BBBB"[..]);
     assert_eq!(seg3.payload, b"CCCC"[..]);
@@ -956,7 +956,7 @@ async fn tun_tcp_retransmits_after_partial_ack_moves_deadline_later() {
     // 200 ms floor) — the deadline moves *earlier* here, so it is pushed.
     let ack_seg1 = seg1.sequence_number.wrapping_add(seg1.payload.len() as u32);
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -975,7 +975,7 @@ async fn tun_tcp_retransmits_after_partial_ack_moves_deadline_later() {
     // maintenance loop's re-plan of the earlier stale entry re-arms it.
     let ack_seg2 = seg2.sequence_number.wrapping_add(seg2.payload.len() as u32);
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -991,7 +991,7 @@ async fn tun_tcp_retransmits_after_partial_ack_moves_deadline_later() {
 
     // seg3 must still be RTO-retransmitted. Before the scheduler fix the flow
     // fell off the scheduler here and this `next_packet` would never arrive.
-    let retransmitted = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let retransmitted = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(retransmitted.sequence_number, seg3.sequence_number);
     assert_eq!(retransmitted.payload, b"CCCC"[..]);
 }
@@ -1017,7 +1017,7 @@ async fn tun_tcp_invalid_high_ack_triggers_challenge_ack() {
     let remote_port = 443;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1030,12 +1030,12 @@ async fn tun_tcp_invalid_high_ack_triggers_challenge_ack() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1050,7 +1050,7 @@ async fn tun_tcp_invalid_high_ack_triggers_challenge_ack() {
         .unwrap();
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1064,7 +1064,7 @@ async fn tun_tcp_invalid_high_ack_triggers_challenge_ack() {
         .await
         .unwrap();
 
-    let ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(ack.flags, TCP_FLAG_ACK);
     assert_eq!(ack.acknowledgement_number, 1001);
 }
@@ -1097,7 +1097,7 @@ async fn tun_tcp_invalid_rst_in_window_is_challenge_acked() {
     };
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1110,12 +1110,12 @@ async fn tun_tcp_invalid_rst_in_window_is_challenge_acked() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1130,7 +1130,7 @@ async fn tun_tcp_invalid_rst_in_window_is_challenge_acked() {
         .unwrap();
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1144,7 +1144,7 @@ async fn tun_tcp_invalid_rst_in_window_is_challenge_acked() {
         .await
         .unwrap();
 
-    let ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(ack.flags, TCP_FLAG_ACK);
     assert_eq!(ack.acknowledgement_number, 1001);
     assert!(engine.inner.flows.contains_key(&key));
@@ -1245,7 +1245,7 @@ async fn tun_tcp_unexpected_syn_in_established_flow_is_challenge_acked() {
     let remote_port = 443;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1258,12 +1258,12 @@ async fn tun_tcp_unexpected_syn_in_established_flow_is_challenge_acked() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1278,7 +1278,7 @@ async fn tun_tcp_unexpected_syn_in_established_flow_is_challenge_acked() {
         .unwrap();
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1292,7 +1292,7 @@ async fn tun_tcp_unexpected_syn_in_established_flow_is_challenge_acked() {
         .await
         .unwrap();
 
-    let ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(ack.flags, TCP_FLAG_ACK);
     assert_eq!(ack.acknowledgement_number, 1001);
 }
@@ -1318,7 +1318,7 @@ async fn tun_tcp_paws_rejects_stale_timestamp_segment() {
     let remote_port = 443;
 
     engine
-        .handle_packet(&build_client_packet_with_options(
+        .handle_packet_unverified(&build_client_packet_with_options(
             client_ip,
             remote_ip,
             client_port,
@@ -1332,12 +1332,12 @@ async fn tun_tcp_paws_rejects_stale_timestamp_segment() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet_with_options(
+        .handle_packet_unverified(&build_client_packet_with_options(
             client_ip,
             remote_ip,
             client_port,
@@ -1353,7 +1353,7 @@ async fn tun_tcp_paws_rejects_stale_timestamp_segment() {
         .unwrap();
 
     engine
-        .handle_packet(&build_client_packet_with_options(
+        .handle_packet_unverified(&build_client_packet_with_options(
             client_ip,
             remote_ip,
             client_port,
@@ -1368,7 +1368,7 @@ async fn tun_tcp_paws_rejects_stale_timestamp_segment() {
         .await
         .unwrap();
 
-    let ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(ack.flags, TCP_FLAG_ACK);
     assert_eq!(ack.acknowledgement_number, 1001);
     assert!(upstream.try_recv_chunk().await.is_none());
@@ -1395,7 +1395,7 @@ async fn tun_tcp_respects_peer_mss_for_server_segments() {
     let remote_port = 443;
 
     engine
-        .handle_packet(&build_client_packet_with_options(
+        .handle_packet_unverified(&build_client_packet_with_options(
             client_ip,
             remote_ip,
             client_port,
@@ -1409,12 +1409,12 @@ async fn tun_tcp_respects_peer_mss_for_server_segments() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1429,7 +1429,7 @@ async fn tun_tcp_respects_peer_mss_for_server_segments() {
         .unwrap();
 
     upstream.send_chunk(&vec![b'X'; 1000]).await;
-    let data = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let data = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(data.payload.len(), 600);
 }
 
@@ -1462,7 +1462,7 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
     };
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1475,12 +1475,12 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1495,7 +1495,7 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
         .unwrap();
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1508,7 +1508,7 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
         ))
         .await
         .unwrap();
-    let fin_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let fin_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(fin_ack.flags, TCP_FLAG_ACK);
     assert_eq!(fin_ack.acknowledgement_number, 502);
     let flow = engine
@@ -1523,7 +1523,7 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
     ));
 
     upstream.close().await;
-    let server_fin = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let server_fin = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(server_fin.flags, TCP_FLAG_FIN | TCP_FLAG_ACK);
     let flow = engine
         .inner
@@ -1534,7 +1534,7 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
     assert_eq!(flow.lock().await.status, TcpFlowStatus::LastAck);
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1572,7 +1572,7 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
     let remote_port = 80;
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1585,7 +1585,7 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
         ))
         .await
         .unwrap();
-    let syn_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let syn_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
     let _ = upstream.expect_target().await;
 
@@ -1598,7 +1598,7 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
     };
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1613,11 +1613,11 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
         .unwrap();
 
     upstream.close().await;
-    let server_fin = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let server_fin = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(server_fin.flags, TCP_FLAG_FIN | TCP_FLAG_ACK);
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1639,7 +1639,7 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
     assert_eq!(flow.lock().await.status, TcpFlowStatus::FinWait2);
 
     engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             client_ip,
             remote_ip,
             client_port,
@@ -1652,7 +1652,7 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
         ))
         .await
         .unwrap();
-    let final_ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
+    let final_ack = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
     assert_eq!(final_ack.flags, TCP_FLAG_ACK);
     assert_eq!(final_ack.acknowledgement_number, 702);
 
@@ -1700,7 +1700,7 @@ async fn new_flow_is_removed_when_synack_write_fails() {
     );
 
     let error = engine
-        .handle_packet(&build_client_packet(
+        .handle_packet_unverified(&build_client_packet(
             Ipv4Addr::new(10, 0, 0, 2),
             Ipv4Addr::new(8, 8, 8, 8),
             40010,

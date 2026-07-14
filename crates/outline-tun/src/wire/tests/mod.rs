@@ -3,9 +3,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use socks5_proto::TargetAddr;
 
 use super::{
-    IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_TCP, IPV6_NEXT_HEADER_UDP, checksum16,
-    checksum16_parts, ipv4_payload_checksum, ipv6_payload_checksum, recompute_transport_checksum,
-    target_socket_addr,
+    IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, IPV6_NEXT_HEADER_TCP,
+    IPV6_NEXT_HEADER_UDP, L4Checksum, checksum16, checksum16_parts, ipv4_payload_checksum,
+    ipv6_payload_checksum, recompute_transport_checksum, target_socket_addr,
 };
 
 #[test]
@@ -125,7 +125,7 @@ fn recompute_restores_ipv4_udp_checksum() {
     let valid = ipv4_payload_checksum(src, dst, IPV6_NEXT_HEADER_UDP, &pkt[IPV4_HEADER_LEN..]);
     pkt[IPV4_HEADER_LEN + 6..IPV4_HEADER_LEN + 8].fill(0);
 
-    recompute_transport_checksum(&mut pkt);
+    assert_eq!(recompute_transport_checksum(&mut pkt), L4Checksum::Recomputed);
 
     let u = IPV4_HEADER_LEN;
     assert_eq!(u16::from_be_bytes([pkt[u + 6], pkt[u + 7]]), valid);
@@ -144,7 +144,7 @@ fn recompute_restores_ipv4_tcp_checksum() {
     let valid = ipv4_payload_checksum(src, dst, IPV6_NEXT_HEADER_TCP, &pkt[IPV4_HEADER_LEN..]);
     pkt[IPV4_HEADER_LEN + 16..IPV4_HEADER_LEN + 18].fill(0);
 
-    recompute_transport_checksum(&mut pkt);
+    assert_eq!(recompute_transport_checksum(&mut pkt), L4Checksum::Recomputed);
 
     let u = IPV4_HEADER_LEN;
     assert_eq!(u16::from_be_bytes([pkt[u + 16], pkt[u + 17]]), valid);
@@ -173,9 +173,73 @@ fn recompute_restores_ipv6_tcp_checksum() {
     let valid = ipv6_payload_checksum(src, dst, IPV6_NEXT_HEADER_TCP, &pkt[IPV6_HEADER_LEN..]);
     pkt[IPV6_HEADER_LEN + 16..IPV6_HEADER_LEN + 18].fill(0);
 
-    recompute_transport_checksum(&mut pkt);
+    assert_eq!(recompute_transport_checksum(&mut pkt), L4Checksum::Recomputed);
 
     let u = IPV6_HEADER_LEN;
     assert_eq!(u16::from_be_bytes([pkt[u + 16], pkt[u + 17]]), valid);
     assert_eq!(ipv6_payload_checksum(src, dst, IPV6_NEXT_HEADER_TCP, &pkt[u..]), 0);
+}
+
+// The parser skips checksum validation for a packet reported as `Recomputed`,
+// so a recompute that silently declined to rewrite the field while still
+// claiming `Recomputed` would let a corrupt checksum through unchecked. Every
+// path that leaves the sender's checksum in place must report `Unverified`.
+
+fn tcp_segment_with_broken_checksum() -> Vec<u8> {
+    let mut tcp = vec![0u8; 20 + 12];
+    tcp[0..2].copy_from_slice(&50000u16.to_be_bytes());
+    tcp[2..4].copy_from_slice(&443u16.to_be_bytes());
+    tcp[12] = 5 << 4;
+    tcp[13] = 0x10;
+    tcp[16..18].copy_from_slice(&0xdeadu16.to_be_bytes());
+    tcp[20..].copy_from_slice(b"tcp-payload!");
+    tcp
+}
+
+#[test]
+fn recompute_declines_ipv4_fragment() {
+    let (mut pkt, ..) = build_ipv4(IPV6_NEXT_HEADER_TCP, &tcp_segment_with_broken_checksum());
+    // More-fragments bit: only part of the L4 payload is here, so the checksum
+    // cannot be folded — the field must be left alone.
+    pkt[6..8].copy_from_slice(&0x2000u16.to_be_bytes());
+    let before = pkt.clone();
+
+    assert_eq!(recompute_transport_checksum(&mut pkt), L4Checksum::Unverified);
+    assert_eq!(pkt, before, "a declined recompute must not touch the packet");
+}
+
+#[test]
+fn recompute_declines_non_transport_protocol() {
+    // ICMP: no L4 checksum field this code knows how to place.
+    let (mut pkt, ..) = build_ipv4(1, &tcp_segment_with_broken_checksum());
+    let before = pkt.clone();
+
+    assert_eq!(recompute_transport_checksum(&mut pkt), L4Checksum::Unverified);
+    assert_eq!(pkt, before);
+}
+
+#[test]
+fn recompute_declines_truncated_packet() {
+    let mut pkt = vec![0x45u8, 0, 0];
+
+    assert_eq!(recompute_transport_checksum(&mut pkt), L4Checksum::Unverified);
+    assert_eq!(recompute_transport_checksum(&mut []), L4Checksum::Unverified);
+}
+
+#[test]
+fn recompute_declines_ipv6_fragment() {
+    let tcp = tcp_segment_with_broken_checksum();
+    let fragment_header = [IPV6_NEXT_HEADER_TCP, 0, 0, 0, 0, 0, 0, 0];
+    let payload_len = fragment_header.len() + tcp.len();
+    let mut pkt = vec![0u8; IPV6_HEADER_LEN + payload_len];
+    pkt[0] = 0x60;
+    pkt[4..6].copy_from_slice(&(payload_len as u16).to_be_bytes());
+    pkt[6] = IPV6_NEXT_HEADER_FRAGMENT;
+    pkt[7] = 64;
+    pkt[IPV6_HEADER_LEN..IPV6_HEADER_LEN + fragment_header.len()].copy_from_slice(&fragment_header);
+    pkt[IPV6_HEADER_LEN + fragment_header.len()..].copy_from_slice(&tcp);
+    let before = pkt.clone();
+
+    assert_eq!(recompute_transport_checksum(&mut pkt), L4Checksum::Unverified);
+    assert_eq!(pkt, before);
 }
