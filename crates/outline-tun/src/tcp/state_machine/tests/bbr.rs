@@ -191,6 +191,34 @@ fn zero_ceiling_leaves_bandwidth_uncapped() {
 }
 
 #[test]
+fn loss_episodes_count_monotonically_even_without_an_estimate() {
+    let mut bbr = BbrState::new(Instant::now(), 0);
+    assert_eq!(bbr.loss_episodes, 0);
+
+    // No BtlBw sample yet: the cap stays inactive, but the episode is still
+    // counted — the counter reports last-hop loss, not cap activity.
+    note_loss(&mut bbr);
+    assert_eq!(bbr.loss_episodes, 1);
+    assert_eq!(bbr.loss_cap_bps, 0, "no estimate → nothing to cap");
+
+    bbr.btlbw_bps = 10_000_000;
+    bbr.pacing_gain = 1.0;
+    note_loss(&mut bbr);
+    assert_eq!(bbr.loss_episodes, 2);
+    assert_eq!(bbr.loss_cap_bps, 8_500_000);
+
+    // Relaxing the cap back to inactive must not rewind the episode count.
+    for _ in 0..200 {
+        relax_loss_cap(&mut bbr, false);
+        if bbr.loss_cap_bps == 0 {
+            break;
+        }
+    }
+    assert_eq!(bbr.loss_cap_bps, 0);
+    assert_eq!(bbr.loss_episodes, 2, "counter is monotonic");
+}
+
+#[test]
 fn loss_backs_off_pacing_cap_and_relaxes_on_clean_rounds() {
     let mut bbr = BbrState::new(Instant::now(), 0);
     bbr.btlbw_bps = 10_000_000;
@@ -251,4 +279,51 @@ fn loss_cap_shrinks_the_bdp_and_inflight() {
     );
     // 8.5 MB/s × 10 ms ≈ 85 KB.
     assert!((bdp_capped as i64 - 85_000).abs() < 5_000, "bdp={bdp_capped}");
+}
+
+/// Drives one round: an ACK covering a segment sent at `sent_at`, delivering
+/// `bytes` over a 10 ms interval. `app_limited` marks the queue as having been
+/// empty when that segment left, i.e. the rate reflects our supply, not the path.
+fn drive_round(bbr: &mut BbrState, now: &mut Instant, bytes: u64, app_limited: bool) {
+    let sent_at = *now;
+    let prior = bbr.delivered.max(bbr.next_round_delivered);
+    *now += Duration::from_millis(10);
+    record_delivery(
+        bbr,
+        bytes,
+        Some(sample(prior, sent_at, app_limited)),
+        Some(Duration::from_millis(10)),
+        *now,
+    );
+}
+
+#[test]
+fn app_limited_rounds_do_not_end_startup() {
+    let t0 = Instant::now();
+    let mut bbr = BbrState::new(t0, 0);
+    let mut now = t0;
+
+    // One bandwidth-limited round establishes an estimate and seeds `full_bw`.
+    drive_round(&mut bbr, &mut now, 12_000, false);
+    assert_eq!(bbr.mode, BbrMode::Startup);
+    assert_eq!(bbr.full_bw_count, 0);
+    let ramped = bbr.btlbw_bps;
+    assert!(ramped > 0);
+
+    // Now the client is a video player idling between chunk requests: the send
+    // queue drains, so every sample is app-limited and carries a rate far below
+    // the path's capacity. BtlBw cannot grow — but that is because we had
+    // nothing to send, not because the pipe is full, so STARTUP must keep
+    // ramping. (Canonical BBR: `bbr_check_full_bw_reached()` returns early on
+    // `rs->is_app_limited`.)
+    for _ in 0..BBR_STARTUP_FULL_BW_COUNT + 1 {
+        drive_round(&mut bbr, &mut now, 1_200, true);
+    }
+
+    assert_eq!(bbr.btlbw_bps, ramped, "app-limited samples must not lower BtlBw");
+    assert_eq!(
+        bbr.full_bw_count, 0,
+        "app-limited rounds must not count toward the STARTUP plateau — counting \
+         them ends the ramp early and parks BtlBw at whatever the app supplied"
+    );
 }
