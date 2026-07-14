@@ -67,8 +67,15 @@ impl FlowScheduler {
         self.wake.notified().await;
     }
 
-    /// Wake the loop without scheduling — used for tests and forced drains.
-    pub(in crate::tcp) fn wake(&self) {
-        self.wake.notify_one();
+    /// Every `(deadline, key)` currently on the heap, in no particular order.
+    /// Used by the reschedule tests to assert the coverage invariant that lets
+    /// a *later* deadline skip the push (see `reschedule_flow`).
+    #[cfg(test)]
+    pub(in crate::tcp) fn entries_for_tests(&self) -> Vec<(Instant, TcpFlowKey)> {
+        self.heap
+            .lock()
+            .iter()
+            .map(|Reverse(entry)| (entry.deadline, entry.key.clone()))
+            .collect()
     }
 }

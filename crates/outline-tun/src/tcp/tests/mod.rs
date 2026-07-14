@@ -2068,6 +2068,138 @@ async fn note_recent_client_timestamp_records_when_enabled() {
     assert_eq!(state.recent_client_timestamp, Some(100));
 }
 
+// --- Maintenance rescheduling ----------------------------------------------
+//
+// `reschedule_flow` pushes a scheduler entry only when the deadline moves
+// *earlier*; a later deadline (the common case — committing new data pushes the
+// RTO out) rides on the entry that is already on the heap, and does not even
+// wake the maintenance loop, whose sleep target is the unchanged heap minimum.
+// The whole construction rests on one invariant: a live flow whose canonical
+// deadline is `Some(d)` always has a heap entry at or before `d`, which the
+// loop's `scheduled_at <= d` filter turns into a re-plan that re-arms the flow.
+// Losing that is what `2ec72b5` fixed (the flow fell off the scheduler and its
+// RTO retransmit never fired); `tun_tcp_retransmits_after_partial_ack_moves_
+// deadline_later` guards the end-to-end symptom, this one guards the invariant.
+
+#[tokio::test]
+async fn later_deadline_keeps_the_flow_covered_by_the_existing_heap_entry() {
+    let mut state = tcp_flow_state_for_tests().await;
+    let tcp = test_tun_tcp_config();
+    let scheduler = Arc::clone(&state.signals.scheduler);
+
+    super::maintenance::commit_flow_changes(&mut state, &tcp);
+    let first = state
+        .next_scheduled_deadline
+        .expect("a live flow always has a deadline");
+    let entries = scheduler.entries_for_tests();
+    assert_eq!(entries.len(), 1, "the first deadline is always pushed");
+    assert_eq!(entries[0].0, first);
+    assert_eq!(entries[0].1, state.key);
+
+    // Fresh traffic on the flow: `last_seen` advances, so the idle deadline —
+    // and with it the flow's canonical deadline — recedes.
+    state.timestamps.last_seen = Instant::now() + Duration::from_secs(5);
+    super::maintenance::commit_flow_changes(&mut state, &tcp);
+    let later = state.next_scheduled_deadline.expect("still live");
+    assert!(later > first, "the new deadline must be later than the pushed one");
+
+    // Heap-growth guard: no entry is pushed for a later deadline...
+    let entries = scheduler.entries_for_tests();
+    assert_eq!(entries.len(), 1, "a later deadline must not grow the heap");
+    // ...and none is needed. The entry already on the heap fires at or before the
+    // canonical deadline, so the maintenance loop pops it, re-plans, and re-arms
+    // the flow at its current deadline. The flow can never be lost.
+    assert!(
+        entries[0].0 <= later,
+        "flow left uncovered: heap entry {:?} fires after its deadline {:?}",
+        entries[0].0,
+        later,
+    );
+
+    // An *earlier* deadline is the case that genuinely needs a new entry (nothing
+    // on the heap would fire in time), and it gets one.
+    state.delayed_ack_deadline = Some(Instant::now());
+    super::maintenance::commit_flow_changes(&mut state, &tcp);
+    let earlier = state.next_scheduled_deadline.expect("still live");
+    assert!(earlier < later);
+    let entries = scheduler.entries_for_tests();
+    assert_eq!(entries.len(), 2, "an earlier deadline is pushed");
+    assert!(entries.iter().any(|(deadline, _)| *deadline == earlier));
+}
+
+// --- Per-flow queue capacity ------------------------------------------------
+
+#[tokio::test]
+async fn reclaim_returns_idle_queue_capacity_without_touching_the_accounting() {
+    let mut state = tcp_flow_state_for_tests().await;
+    let burst = 1024usize;
+
+    // A transfer's worth of queued data on every per-flow queue.
+    for index in 0..burst {
+        state.pending_server_data.push_back(Bytes::from_static(b"DATA"));
+        state.pending_server_bytes_total += 4;
+        state.pending_client_data.push_back(Bytes::from_static(b"DATA"));
+        state.pending_client_segments.push_back(BufferedClientSegment {
+            sequence_number: 5000 + index as u32 * 4,
+            flags: TCP_FLAG_ACK,
+            payload: Bytes::from_static(b"DATA"),
+        });
+        state
+            .unacked_server_segments
+            .push_back(unacked_segment(1000 + index as u32 * 4, b"DATA"));
+    }
+    super::rebuild_unacked_accounting(&mut state);
+    assert_accounting_matches(&state, "queued burst");
+    assert!(state.pending_server_data.capacity() >= burst);
+
+    // The transfer completes: the queues drain, but `pop_front` / `clear` keep
+    // the peak allocation, which is what an idle flow used to hold forever.
+    state.pending_server_data.clear();
+    state.pending_server_bytes_total = 0;
+    state.pending_client_data.clear();
+    state.pending_client_segments.clear();
+    state.unacked_server_segments.clear();
+    super::rebuild_unacked_accounting(&mut state);
+    assert!(
+        state.pending_server_data.capacity() >= burst,
+        "a drained deque keeps its capacity — that is the leak being reclaimed",
+    );
+
+    super::state_machine::reclaim_flow_queue_capacity(&mut state);
+
+    assert!(state.pending_server_data.capacity() < burst, "downlink queue not reclaimed");
+    assert!(state.pending_client_data.capacity() < burst, "uplink queue not reclaimed");
+    assert!(state.unacked_server_segments.capacity() < burst, "unacked queue not reclaimed");
+    assert!(
+        state.pending_client_segments.capacity() < burst,
+        "reassembly queue not reclaimed"
+    );
+
+    // Capacity only: the running counters track contents and must be untouched.
+    assert_eq!(state.pending_server_bytes_total, 0);
+    assert_eq!((state.pipe_bytes, state.pipe_segments), (0, 0));
+    assert_accounting_matches(&state, "capacity reclaim");
+}
+
+#[tokio::test]
+async fn reclaim_leaves_a_still_loaded_queue_alone() {
+    let mut state = tcp_flow_state_for_tests().await;
+
+    // A flow that is quiet but still holds a full downlink backlog (a stalled
+    // client, say) must not have its queue shrunk out from under the data.
+    for _ in 0..1024 {
+        state.pending_server_data.push_back(Bytes::from_static(b"DATA"));
+        state.pending_server_bytes_total += 4;
+    }
+    let capacity = state.pending_server_data.capacity();
+
+    super::state_machine::reclaim_flow_queue_capacity(&mut state);
+
+    assert_eq!(state.pending_server_data.len(), 1024, "reclaim must not drop data");
+    assert_eq!(state.pending_server_data.capacity(), capacity, "a loaded queue is left alone");
+    assert_eq!(state.pending_server_bytes_total, 4096);
+}
+
 pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
     TunTcpConfig {
         connect_timeout: Duration::from_secs(5),
@@ -2344,6 +2476,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
             status_since: Instant::now(),
             last_seen: Instant::now(),
         },
+        eviction_indexed_at: Instant::now(),
         next_scheduled_deadline: None,
     }
 }

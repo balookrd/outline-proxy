@@ -64,5 +64,5 @@ pub(super) use types::{
     AckEffect, BbrMode, BbrState, BufferedClientSegment, ClientSegmentView, FlowControlSignals,
     FlowRouting, FlowTimestamps, RateSample, ReportedFlowMetrics, SequenceRange,
     ServerBacklogPressure, ServerDataPacket, ServerFlush, ServerSegment, TcpFlowState,
-    TcpFlowStatus,
+    TcpFlowStatus, reclaim_flow_queue_capacity,
 };
