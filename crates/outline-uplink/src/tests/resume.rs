@@ -27,7 +27,9 @@ use tokio_tungstenite::tungstenite::http::{HeaderMap, HeaderValue};
 use url::Url;
 
 use outline_transport::{SessionId, global_resume_cache};
-use outline_wire::resume::{RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER};
+use outline_wire::resume::{
+    ACK_PREFIX_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER,
+};
 
 use crate::types::{UplinkCandidate, UplinkManager};
 
@@ -152,6 +154,41 @@ async fn fresh_tcp_dial_presents_no_resume_id() {
 /// different id is cached for the uplink. This is the mid-session-retry /
 /// soft-switch path: the id is threaded in explicitly by the session that owns
 /// it, and the shared cache is never consulted.
+#[tokio::test]
+async fn wire_handover_redial_presents_the_id_without_asking_for_replay() {
+    let re_minted = SessionId::from_bytes([0x44; 16]);
+    let (url, mut headers_rx, shutdown_tx, task) = spawn_resume_server(vec![re_minted]).await;
+
+    let our_session = SessionId::from_bytes([0x55; 16]);
+    let uplink = make_uplink("handover-uplink", url.as_str());
+
+    let manager =
+        UplinkManager::new_for_test("test", vec![uplink.clone()], probe_disabled(), lb()).unwrap();
+    let candidate = UplinkCandidate { index: 0, uplink: uplink.into() };
+
+    let ws = manager
+        .connect_tcp_ws_redial(&candidate, "test", Some(our_session))
+        .await
+        .expect("wire-handover redial must succeed against the mock server");
+
+    let headers = next_headers(&mut headers_rx).await;
+    assert_eq!(
+        headers.get(RESUME_REQUEST_HEADER).and_then(|v| v.to_str().ok()),
+        Some(our_session.to_hex().as_str()),
+        "a wire handover must present this session's own id so a parked upstream is re-attached",
+    );
+    // A handover has no ring buffer, so it must not ask the server for replay
+    // control frames it would be unable to honour.
+    assert!(
+        headers.get(ACK_PREFIX_HEADER).is_none(),
+        "a wire handover must not advertise Ack-Prefix: it owns no replay ring",
+    );
+    assert_eq!(ws.issued_session_id(), Some(re_minted));
+
+    let _ = shutdown_tx.send(());
+    task.abort();
+}
+
 #[tokio::test]
 async fn redial_presents_the_sessions_own_id_not_a_cached_one() {
     let re_minted = SessionId::from_bytes([0x22; 16]);

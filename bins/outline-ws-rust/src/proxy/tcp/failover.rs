@@ -265,6 +265,12 @@ async fn connect_tcp_uplink_inner(
 /// [`connect_tcp_uplink`] which iterates wires internally and picks the
 /// first one to succeed; the chunk-0 failover loop already knows which
 /// wire just failed and wants to skip it.
+///
+/// No resume id is presented here, unlike [`connect_tcp_specific_wire_fresh`]:
+/// `wire_index == 0` is served from the warm-standby pool, and a pooled socket
+/// already completed its upgrade under its *own* Session ID. Resume is a
+/// property of the handshake, so it can only be requested by a dial we make
+/// ourselves.
 pub(super) async fn connect_tcp_specific_wire(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
@@ -301,16 +307,22 @@ pub(super) async fn connect_tcp_specific_wire(
 /// [`connect_tcp_specific_wire`] which goes through the standby pool on
 /// `wire_index == 0` — that would be wrong here because the wire that just
 /// failed may have a stale standby socket queued.
+///
+/// Because every wire here is dialled fresh, the session's own `resume_request`
+/// can be presented: on a hit the server re-attaches the upstream it parked
+/// when the previous carrier died, so the handover does not reopen the
+/// connection to the destination.
 pub(super) async fn connect_tcp_specific_wire_fresh(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
     target: &TargetAddr,
     wire_index: u8,
+    resume_request: Option<SessionId>,
 ) -> Result<ConnectedTcpUplink> {
     // Padding scope wraps the dial + transport build (see `connect_tcp_uplink`).
     outline_uplink::dial::with_uplink_padding_scope(&candidate.uplink, async move {
         if wire_index == 0 {
-            connect_tcp_uplink_fresh(uplinks, candidate, target).await
+            connect_tcp_uplink_fresh(uplinks, candidate, target, resume_request).await
         } else {
             let idx = (wire_index - 1) as usize;
             let fallback = candidate.uplink.fallbacks.get(idx).ok_or_else(|| {
@@ -322,7 +334,10 @@ pub(super) async fn connect_tcp_specific_wire_fresh(
                 fallback,
                 target,
                 wire_index,
-                FallbackDialOptions::default(),
+                FallbackDialOptions {
+                    resume_request,
+                    ..FallbackDialOptions::default()
+                },
             )
             .await
         }
@@ -367,16 +382,25 @@ async fn connect_tcp_uplink_primary(
         }
     }
 
-    connect_tcp_uplink_fresh(uplinks, candidate, target).await
+    // Initial dial of a brand-new session — no prior Session ID to present.
+    connect_tcp_uplink_fresh(uplinks, candidate, target, None).await
 }
 
+/// `resume_request` is this session's own Session ID when the caller is
+/// re-dialing a session that already exists (chunk-0 wire handover, retry after
+/// a stale standby socket), and `None` for a brand-new session. Presenting it
+/// lets the server re-attach a still-parked upstream rather than open a fresh
+/// connection to the destination.
 pub(super) async fn connect_tcp_uplink_fresh(
     uplinks: &UplinkManager,
     candidate: &UplinkCandidate,
     target: &TargetAddr,
+    resume_request: Option<SessionId>,
 ) -> Result<ConnectedTcpUplink> {
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
-    let ws = uplinks.connect_tcp_ws_fresh(candidate, "socks_tcp").await?;
+    let ws = uplinks
+        .connect_tcp_ws_redial(candidate, "socks_tcp", resume_request)
+        .await?;
     let setup = WireSetup::from_uplink(&candidate.uplink);
     let binding = tcp_binding(uplinks, setup.name);
     // Capture before `do_tcp_ss_setup` takes ownership of the stream.
