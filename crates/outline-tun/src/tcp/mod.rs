@@ -19,9 +19,11 @@ pub use self::engine::TunTcpEngine;
 #[cfg(test)]
 pub(crate) use self::state_machine::UpstreamWriter;
 #[cfg(test)]
-pub(crate) use self::wire::parse_tcp_packet as parse_tcp_packet_for_tests;
+pub(crate) use self::wire::parse_tcp_packet_unverified as parse_tcp_packet_for_tests;
 #[cfg(test)]
-use self::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN, build_reset_response, parse_tcp_packet};
+use self::wire::{
+    IPV4_HEADER_LEN, IPV6_HEADER_LEN, build_reset_response, parse_tcp_packet_unverified,
+};
 use self::wire::{
     ParsedTcpPacket, build_data_header_custom, build_gso_tcp_header, build_response_packet_custom,
 };

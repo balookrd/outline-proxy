@@ -11,6 +11,7 @@ use super::state_machine::{
 };
 use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
+use crate::wire::L4Checksum;
 use crate::{SharedTunWriter, TunRouting};
 use outline_metrics as metrics;
 use outline_uplink::{TransportKind, UplinkManager};
@@ -100,8 +101,19 @@ impl TunTcpEngine {
         &self.inner.dns_cache
     }
 
-    pub async fn handle_packet(&self, packet: &[u8]) -> Result<()> {
-        let parsed = parse_tcp_packet(packet)?;
+    /// Test shim: feed a packet whose checksum came from the sender (what the
+    /// test packet builders emit), mirroring the no-vnet read path.
+    #[cfg(test)]
+    pub(crate) async fn handle_packet_unverified(&self, packet: &[u8]) -> Result<()> {
+        self.handle_packet(packet, L4Checksum::Unverified).await
+    }
+
+    /// Feed one inbound TCP packet from the TUN read loop. `checksum` states
+    /// where the segment's TCP checksum came from — see [`L4Checksum`]. Crate
+    /// -internal: the read loop is the only caller, and it is the only place
+    /// that knows the provenance.
+    pub(crate) async fn handle_packet(&self, packet: &[u8], checksum: L4Checksum) -> Result<()> {
+        let parsed = parse_tcp_packet(packet, checksum)?;
         let key = TcpFlowKey {
             version: parsed.version,
             client_ip: parsed.source_ip,
