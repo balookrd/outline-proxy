@@ -129,6 +129,12 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         sniff_direct_reresolve: tcp_section
             .and_then(|section| section.sniff_direct_reresolve)
             .unwrap_or(false),
+        // Default on: it costs nothing where it cannot help (a server without
+        // resumption never issues a Session ID, so those flows are not even
+        // eligible) and it only ever engages on a confirmed resume hit.
+        carrier_migration: tcp_section
+            .and_then(|section| section.carrier_migration)
+            .unwrap_or(true),
     };
     if tcp.connect_timeout < Duration::from_secs(1) {
         bail!("tun.tcp.connect_timeout_secs must be at least 1");

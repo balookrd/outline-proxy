@@ -16,6 +16,7 @@ use super::super::super::super::state_machine::{
 };
 use super::super::super::{TunTcpEngine, key_group_and_uplink};
 use super::backlog::BacklogGate;
+use super::migrate::MigrationOutcome;
 
 impl TunTcpEngine {
     pub(in crate::tcp::engine) fn spawn_upstream_reader(
@@ -149,7 +150,8 @@ impl TunTcpEngine {
                         // can switch to a backup uplink or fall back to H2/H1.
                         // Clean WebSocket closes (FIN, Close frame) do not
                         // indicate an uplink problem and are not reported.
-                        if !upstream_reader.closed_cleanly() {
+                        let carrier_died = !upstream_reader.closed_cleanly();
+                        if carrier_died {
                             let (uplink_index, flow_manager) = {
                                 let state = flow.lock().await;
                                 (state.routing.uplink_index, state.routing.manager.clone())
@@ -164,6 +166,27 @@ impl TunTcpEngine {
                                     .await;
                             }
                         }
+
+                        // The carrier died under a flow that was working. The
+                        // server still holds this flow's upstream, parked under
+                        // the Session ID it minted for it — so try to re-attach it
+                        // on a fresh carrier and carry on, rather than handing the
+                        // application a disconnect it never had to see.
+                        //
+                        // Only a *dirty* death qualifies: a clean close is the
+                        // server telling us the upstream itself reached EOF, which
+                        // is a real FIN and must stay one. And migration happens
+                        // only on a confirmed resume hit — anything less falls
+                        // through to the teardown below, unchanged. See
+                        // `migrate.rs`.
+                        if carrier_died
+                            && let MigrationOutcome::Migrated(fresh_reader) =
+                                engine.try_migrate_carrier(&key, &flow).await
+                        {
+                            upstream_reader = *fresh_reader;
+                            continue;
+                        }
+
                         debug!(error = %format!("{error:#}"), "upstream TCP flow reader ended");
                         let flush = {
                             let mut state = flow.lock().await;

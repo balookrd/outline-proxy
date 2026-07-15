@@ -39,6 +39,15 @@ tracing = "0.1"
 
 [dev-dependencies]
 outline-uplink = { path = "../outline-uplink", default-features = false, features = ["test-helpers"] }
+# Resume wire vocabulary (the `ORSM` / `ORDR` control frames), so the carrier-
+# migration tests can drive a mock server that emits exactly what the real one
+# does instead of hand-rolling the bytes.
+outline-wire = { path = "../outline-wire" }
+# `SO_LINGER = 0` on the mock upstream's socket, so a test can kill a carrier the
+# way the network does — with a RST, which is what the client reads as a dirty
+# carrier death. A plain drop sends a FIN, which is a *clean* close and means
+# "upstream reached EOF" — a different thing entirely.
+socket2 = "0.6"
 tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 url = { version = "2.5", features = ["serde"] }

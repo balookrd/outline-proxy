@@ -228,6 +228,27 @@ listen = "[::1]:9090"
 # bad anycast IP). `sniff_override_exclude` still applies. Default false (direct
 # keeps the zero-latency literal-IP dial).
 # sniff_direct_reresolve = false
+#
+# Carrier migration. A tunnelled flow shares its carrier (one H3/H2/H1
+# connection) with every other flow on the uplink, so when that carrier collapses
+# they all lose their transport at once — and the app sees a dead connection.
+# But the upstream sockets are not gone: the server parks each one under the
+# Session ID it minted for that flow (see the server's `[resumption]` and
+# `docs/SESSION-RESUMPTION.md`). With this on (default), such a flow re-dials a
+# fresh carrier, presents its own id, has the parked upstream re-attached,
+# replays the byte gap in BOTH directions (Ack-Prefix v1 uplink + Symmetric
+# Downlink Replay v2), and keeps running — the application never sees the
+# disconnect.
+#
+# It engages ONLY on a CONFIRMED server-side resume hit: the server proves the
+# re-attach by emitting the v1 control frame, and anything short of that (a miss,
+# an expired park, a gap we cannot replay byte-exact) falls through to the
+# ordinary FIN/RST teardown — a silently spliced byte stream would be far worse
+# than an honest disconnect. Server-side resumption is OFF by default, and a
+# server without it never issues a Session ID, so this knob is INERT against one
+# — not merely harmless. At most 2 attempts per flow, inside the server's 30 s
+# park TTL. Set false to keep the pre-migration behaviour.
+# carrier_migration = true
 
 # ── Direct (bypass) routing ──────────────────────────────────────────────────
 # SO_MARK applied to sockets used by `via = "direct"` routes (both TCP connect
