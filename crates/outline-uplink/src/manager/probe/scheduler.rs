@@ -78,19 +78,22 @@ pub(super) async fn run_probe_attempt_with_timeout(
     warm_tcp_slot: Option<WarmTcpProbeSlot>,
     warm_udp_slot: Option<WarmUdpProbeSlot>,
 ) -> Result<ProbeOutcome> {
-    // Outer probe-cycle deadline budget: each enabled application-level
-    // sub-probe (ws / http / tcp-tunnel / tls / dns) may cost up to
-    // `probe.timeout` on the wire. Without `tls` here, a config that uses
-    // only `[probe.tls] + [probe.dns]` lands `tcp_budget = 0`, the cycle
-    // gets `timeout_duration = 1 × probe.timeout + 1s` instead of the
-    // intended `2 × probe.timeout + 1s`, and a TLS handshake that runs
-    // close to the per-attempt deadline can be aborted by the outer
-    // wrapper before `record_attempt` finalises — leaving `probe="tls"`
-    // metrics flat at zero while DNS still passes.
-    let tcp_budget =
-        (probe.ws.enabled || probe.http.is_some() || probe.tcp.is_some() || probe.tls.is_some())
-            as u32;
-    let udp_budget = (uplink.supports_udp() && (probe.ws.enabled || probe.dns.is_some())) as u32;
+    // Outer probe-cycle deadline budget: this is only a backstop now — each
+    // plane owns per-stage `probe.timeout` deadlines internally, and the two
+    // planes run concurrently, so the real wall-clock ceiling is ~2 ×
+    // `probe.timeout` (one plane's carrier stage + app stage, back to back).
+    // We still budget the *sum* of every enabled sub-probe stage so the outer
+    // wrapper never aborts a plane mid-handshake before `record_attempt`
+    // finalises its metric — a slack ceiling is fine, a tight one truncates
+    // `probe="tls"` metrics at zero. Carrier (ws) and app (http/tcp/tls, dns)
+    // are now separate stages, so each contributes its own `probe.timeout`.
+    let tcp_budget = probe.ws.enabled as u32
+        + (probe.http.is_some() || probe.tcp.is_some() || probe.tls.is_some()) as u32;
+    let udp_budget = if uplink.supports_udp() {
+        probe.ws.enabled as u32 + probe.dns.is_some() as u32
+    } else {
+        0
+    };
     let transport_budgets = (tcp_budget + udp_budget).max(1);
     let timeout_duration = probe
         .timeout
@@ -261,11 +264,16 @@ impl UplinkManager {
                     .await
                     .expect("probe execution semaphore closed");
                 // Retry the probe up to `attempts` times within one cycle.
-                // As soon as any attempt returns Ok we accept that result and
-                // stop; only if every attempt fails do we propagate the error.
-                // This makes each probe cycle resilient to transient network
-                // blips that would otherwise needlessly increment the
-                // consecutive-failure counter.
+                // As soon as an attempt reports a *fully* healthy outcome we
+                // accept it and stop; a partial failure (a plane's
+                // `transport_ok`/`carrier_ok` came back false) or a hard error
+                // (outer-deadline abort / task panic) is retried. This makes
+                // each cycle resilient to transient network blips that would
+                // otherwise needlessly increment the consecutive-failure
+                // counter. `probe_uplink` is itself infallible now — a
+                // single-plane timeout resolves to `*_ok = false` rather than
+                // an `Err` — so the retry gate keys on the outcome contents,
+                // not just `Ok`/`Err`.
                 let mut outcome = Err(anyhow!("no probe attempts"));
                 for attempt in 0..probe_attempts {
                     outcome = run_probe_attempt_with_timeout(
@@ -280,7 +288,13 @@ impl UplinkManager {
                         warm_udp_slot.clone(),
                     )
                     .await;
-                    if outcome.is_ok() {
+                    let fully_ok = matches!(
+                        &outcome,
+                        Ok(o) if o.tcp_ok
+                            && o.tcp_carrier_ok
+                            && (!o.udp_applicable || (o.udp_ok && o.udp_carrier_ok))
+                    );
+                    if fully_ok {
                         break;
                     }
                     if attempt + 1 < probe_attempts {

@@ -153,7 +153,9 @@ fn probe_enabled() -> ProbeConfig {
 fn probe_ok() -> ProbeOutcome {
     ProbeOutcome {
         tcp_ok: true,
+        tcp_carrier_ok: true,
         udp_ok: true,
+        udp_carrier_ok: true,
         udp_applicable: true,
         tcp_latency: Some(Duration::from_millis(30)),
         udp_latency: Some(Duration::from_millis(30)),

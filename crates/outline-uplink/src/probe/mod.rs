@@ -18,9 +18,10 @@ mod tests;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use tokio::sync::Semaphore;
 use tokio::time::{Instant, timeout};
+use tracing::warn;
 
 use outline_transport::DnsCache;
 
@@ -43,6 +44,38 @@ pub(crate) fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
     crate::error_classify::is_expected_standby_probe_failure(error)
 }
 
+/// Outcome of a single transport plane's (TCP or UDP) probe cycle.
+///
+/// Splits the two signals the old single `bool` conflated:
+///
+/// * `carrier_ok` — the *outer* carrier handshake to our own uplink server
+///   (WS/TLS upgrade or QUIC handshake) came up. This is what the
+///   `H3 → H2 → H1` mode-downgrade cascade keys on, because a downgrade only
+///   changes the outer carrier between us and the uplink server. Sourced from
+///   the connectivity-only WS sub-probe (or a live warm pipe proving the same
+///   handshake still works).
+/// * `transport_ok` — the *inner* data path all the way to a real product edge
+///   (TLS handshake / HTTP exchange / DNS round-trip through the tunnel)
+///   succeeded. This is the site-reachability signal that drives health and
+///   wire-failover. A slow or dead exit leg fails this while `carrier_ok`
+///   stays true — and must NOT trip the carrier downgrade, since dropping the
+///   outer carrier to a lower HTTP version cannot fix a problem that lives
+///   past the uplink server.
+///
+/// When no dedicated carrier (WS) sub-probe runs — `[probe.ws] enabled = false`
+/// with no warm pipe — there is no independent carrier signal, so `carrier_ok`
+/// mirrors `transport_ok` to preserve the legacy "any probe failure caps the
+/// carrier" behaviour.
+struct PlaneProbe {
+    transport_ok: bool,
+    carrier_ok: bool,
+    /// UDP only: false when the uplink has no UDP dial URL (probe not
+    /// applicable). Always true for the TCP plane.
+    applicable: bool,
+    latency: Option<Duration>,
+    downgraded_from: Option<TransportMode>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn probe_uplink(
     cache: &DnsCache,
@@ -55,8 +88,15 @@ pub(crate) async fn probe_uplink(
     warm_tcp_slot: Option<WarmTcpProbeSlot>,
     warm_udp_slot: Option<WarmUdpProbeSlot>,
 ) -> Result<ProbeOutcome> {
-    let (tcp_ok, tcp_latency, tcp_downgraded_from) = timeout(
-        probe.timeout,
+    // Run the two planes concurrently. They share nothing but the read-mostly
+    // DNS cache and the dial-limit semaphore, and running them in parallel is
+    // load-bearing now that each plane owns per-stage timeouts internally: a
+    // TCP app-stage that stalls for the full `probe.timeout` no longer delays
+    // — let alone masks — the UDP plane. A timeout or error inside one plane
+    // resolves that plane to `*_ok = false`; it never turns into a whole-probe
+    // `Err`, so a stalled TCP-TLS handshake can no longer knock the healthy
+    // UDP/QUIC carrier down with it.
+    let (tcp, udp) = tokio::join!(
         run_tcp_probe(
             cache,
             group,
@@ -66,24 +106,19 @@ pub(crate) async fn probe_uplink(
             effective_tcp_mode,
             warm_tcp_slot,
         ),
-    )
-    .await
-    .map_err(|_| anyhow!("tcp probe timed out after {:?}", probe.timeout))??;
-    let (udp_ok, udp_applicable, udp_latency, udp_downgraded_from) = timeout(
-        probe.timeout,
         run_udp_probe(cache, group, uplink, probe, dial_limit, effective_udp_mode, warm_udp_slot),
-    )
-    .await
-    .map_err(|_| anyhow!("udp probe timed out after {:?}", probe.timeout))??;
+    );
 
     Ok(ProbeOutcome {
-        tcp_ok,
-        udp_ok,
-        udp_applicable,
-        tcp_latency,
-        udp_latency,
-        tcp_downgraded_from,
-        udp_downgraded_from,
+        tcp_ok: tcp.transport_ok,
+        tcp_carrier_ok: tcp.carrier_ok,
+        udp_ok: udp.transport_ok,
+        udp_carrier_ok: udp.carrier_ok,
+        udp_applicable: udp.applicable,
+        tcp_latency: tcp.latency,
+        udp_latency: udp.latency,
+        tcp_downgraded_from: tcp.downgraded_from,
+        udp_downgraded_from: udp.downgraded_from,
     })
 }
 
@@ -95,7 +130,7 @@ async fn run_tcp_probe(
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: crate::config::TransportMode,
     warm_tcp_slot: Option<WarmTcpProbeSlot>,
-) -> Result<(bool, Option<Duration>, Option<TransportMode>)> {
+) -> PlaneProbe {
     let started = Instant::now();
     let mut downgraded_from: Option<TransportMode> = None;
     // The WS sub-probe verifies that the TCP+TLS+WebSocket-upgrade
@@ -113,32 +148,68 @@ async fn run_tcp_probe(
             use crate::manager::probe::warm_tcp::peek_matches;
             peek_matches(slot, effective_tcp_mode)
         });
-    if probe.ws.enabled && !ws_warm_elided {
-        let ws_attempt = async {
-            match uplink.transport {
-                UplinkTransport::Ss | UplinkTransport::Vless => {
-                    let url = uplink
-                        .tcp_dial_url()
-                        .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
-                    run_ws_probe(
-                        cache,
-                        group,
-                        &uplink.name,
-                        "tcp",
-                        url,
-                        effective_tcp_mode,
-                        uplink.fwmark,
-                        uplink.combined_ss_kind(SsPathKind::Tcp),
-                        Arc::clone(&dial_limit),
-                        probe.timeout,
-                    )
-                    .await
-                },
-            }
-        };
-        let marker = record_attempt(group, &uplink.name, "tcp", "ws", ws_attempt).await?;
-        downgraded_from = downgraded_from.or(marker);
-    }
+    // ── Carrier-liveness stage ──────────────────────────────────────────
+    // Establish whether the outer carrier to *our* uplink server is up. This
+    // is the only signal allowed to drive the H3→H2→H1 mode-downgrade: the
+    // cascade rewrites the outer carrier, so a failure of the far exit leg
+    // (measured by the app stage below) must not reach it. A live warm pipe
+    // counts as proof the same handshake still works this cycle.
+    let (carrier_ok, carrier_probe_ran) = if ws_warm_elided {
+        (true, true)
+    } else if probe.ws.enabled
+        && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ss)
+    {
+        match uplink.tcp_dial_url() {
+            None => {
+                warn!(uplink = %uplink.name, "tcp probe: uplink missing dial URL");
+                return PlaneProbe {
+                    transport_ok: false,
+                    carrier_ok: false,
+                    applicable: true,
+                    latency: Some(started.elapsed()),
+                    downgraded_from,
+                };
+            },
+            Some(url) => {
+                let ws_attempt = run_ws_probe(
+                    cache,
+                    group,
+                    &uplink.name,
+                    "tcp",
+                    url,
+                    effective_tcp_mode,
+                    uplink.fwmark,
+                    uplink.combined_ss_kind(SsPathKind::Tcp),
+                    Arc::clone(&dial_limit),
+                    probe.timeout,
+                );
+                match timeout(
+                    probe.timeout,
+                    record_attempt(group, &uplink.name, "tcp", "ws", ws_attempt),
+                )
+                .await
+                {
+                    Ok(Ok(marker)) => {
+                        downgraded_from = downgraded_from.or(marker);
+                        (true, true)
+                    },
+                    Ok(Err(_)) | Err(_) => (false, true),
+                }
+            },
+        }
+    } else {
+        // No dedicated carrier probe this cycle — fold the decision into the
+        // app stage below (legacy behaviour when `[probe.ws] enabled = false`).
+        (true, false)
+    };
+
+    // ── App / data-path stage ───────────────────────────────────────────
+    // Reachability through the tunnel to a real product edge. Failures here
+    // (dead/slow exit, silent upstream after ClientHello) mark the plane
+    // unhealthy and drive wire-failover, but leave the carrier alone.
+    // Skipped entirely when the carrier is already known down: an app
+    // handshake cannot succeed over a dead carrier, and spending it would
+    // just burn a doomed dial.
     // TLS handshake-only sub-probe takes precedence over the application-level
     // HTTP/TCP variants: when configured, it most closely reproduces the
     // user-flow `chunk0_timeout` failure mode (silent upstream after
@@ -146,9 +217,11 @@ async fn run_tcp_probe(
     // exclusive with `[probe.http]` / `[probe.tcp]` for the same reason
     // those two are: only one application-level probe runs per cycle to
     // bound the per-cycle handshake count.
-    if let Some(tls_probe) = &probe.tls {
+    let app_ok: Option<bool> = if !carrier_ok {
+        Some(false)
+    } else if let Some(tls_probe) = &probe.tls {
         let target_spec = tls_probe.next_target();
-        let (ok, marker) = record_attempt(
+        let attempt = record_attempt(
             group,
             &uplink.name,
             "tcp",
@@ -161,14 +234,17 @@ async fn run_tcp_probe(
                 Arc::clone(&dial_limit),
                 effective_tcp_mode,
             ),
-        )
-        .await?;
-        downgraded_from = downgraded_from.or(marker);
-        return Ok((ok, Some(started.elapsed()), downgraded_from));
-    }
-    if let Some(http_probe) = &probe.http {
+        );
+        match timeout(probe.timeout, attempt).await {
+            Ok(Ok((ok, marker))) => {
+                downgraded_from = downgraded_from.or(marker);
+                Some(ok)
+            },
+            Ok(Err(_)) | Err(_) => Some(false),
+        }
+    } else if let Some(http_probe) = &probe.http {
         let url = http_probe.next_url();
-        let (ok, marker) = record_attempt(
+        let attempt = record_attempt(
             group,
             &uplink.name,
             "tcp",
@@ -182,13 +258,16 @@ async fn run_tcp_probe(
                 effective_tcp_mode,
                 warm_tcp_slot.as_ref(),
             ),
-        )
-        .await?;
-        downgraded_from = downgraded_from.or(marker);
-        return Ok((ok, Some(started.elapsed()), downgraded_from));
-    }
-    if let Some(tcp_probe) = &probe.tcp {
-        let (ok, marker) = record_attempt(
+        );
+        match timeout(probe.timeout, attempt).await {
+            Ok(Ok((ok, marker))) => {
+                downgraded_from = downgraded_from.or(marker);
+                Some(ok)
+            },
+            Ok(Err(_)) | Err(_) => Some(false),
+        }
+    } else if let Some(tcp_probe) = &probe.tcp {
+        let attempt = record_attempt(
             group,
             &uplink.name,
             "tcp",
@@ -201,15 +280,39 @@ async fn run_tcp_probe(
                 Arc::clone(&dial_limit),
                 effective_tcp_mode,
             ),
-        )
-        .await?;
-        downgraded_from = downgraded_from.or(marker);
-        return Ok((ok, Some(started.elapsed()), downgraded_from));
+        );
+        match timeout(probe.timeout, attempt).await {
+            Ok(Ok((ok, marker))) => {
+                downgraded_from = downgraded_from.or(marker);
+                Some(ok)
+            },
+            Ok(Err(_)) | Err(_) => Some(false),
+        }
+    } else {
+        // Only a WS carrier probe (or nothing) configured: no separate data
+        // path to validate — the plane's health is the carrier's health.
+        None
+    };
+
+    // No app sub-probe ran: latency is meaningful only when *some* probe
+    // (carrier or app) actually dialled. Mirror the pre-split contract where
+    // a pure ws-probe reported elapsed time and a fully-unconfigured probe
+    // reported `None`.
+    let any_probe_ran = carrier_probe_ran || app_ok.is_some();
+    let latency = any_probe_ran.then(|| started.elapsed());
+    let transport_ok = app_ok.unwrap_or(carrier_ok);
+    // When no dedicated carrier probe ran, there is no independent carrier
+    // signal — mirror it from transport health so an app failure still caps
+    // the carrier exactly as it did before the split.
+    let carrier_ok = if carrier_probe_ran { carrier_ok } else { transport_ok };
+
+    PlaneProbe {
+        transport_ok,
+        carrier_ok,
+        applicable: true,
+        latency,
+        downgraded_from,
     }
-    if probe.ws.enabled {
-        return Ok((true, Some(started.elapsed()), downgraded_from));
-    }
-    Ok((true, None, downgraded_from))
 }
 
 async fn run_udp_probe(
@@ -220,9 +323,15 @@ async fn run_udp_probe(
     dial_limit: Arc<Semaphore>,
     effective_udp_mode: crate::config::TransportMode,
     warm_udp_slot: Option<WarmUdpProbeSlot>,
-) -> Result<(bool, bool, Option<Duration>, Option<TransportMode>)> {
+) -> PlaneProbe {
     if !uplink.supports_udp() {
-        return Ok((false, false, None, None));
+        return PlaneProbe {
+            transport_ok: false,
+            carrier_ok: false,
+            applicable: false,
+            latency: None,
+            downgraded_from: None,
+        };
     }
 
     let started = Instant::now();
@@ -240,34 +349,59 @@ async fn run_udp_probe(
             use crate::manager::probe::warm_udp::peek_matches;
             peek_matches(slot, effective_udp_mode)
         });
-    if probe.ws.enabled && !ws_warm_elided {
-        let ws_attempt = async {
-            match uplink.transport {
-                UplinkTransport::Ss | UplinkTransport::Vless => {
-                    let url = uplink
-                        .udp_dial_url()
-                        .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
-                    run_ws_probe(
-                        cache,
-                        group,
-                        &uplink.name,
-                        "udp",
-                        url,
-                        effective_udp_mode,
-                        uplink.fwmark,
-                        uplink.combined_ss_kind(SsPathKind::Udp),
-                        Arc::clone(&dial_limit),
-                        probe.timeout,
-                    )
-                    .await
-                },
-            }
-        };
-        let marker = record_attempt(group, &uplink.name, "udp", "ws", ws_attempt).await?;
-        downgraded_from = downgraded_from.or(marker);
-    }
-    if let Some(dns_probe) = &probe.dns {
-        let (ok, marker) = record_attempt(
+    // ── Carrier-liveness stage (UDP/QUIC handshake to our uplink server) ──
+    let (carrier_ok, carrier_probe_ran) = if ws_warm_elided {
+        (true, true)
+    } else if probe.ws.enabled
+        && matches!(uplink.transport, UplinkTransport::Vless | UplinkTransport::Ss)
+    {
+        match uplink.udp_dial_url() {
+            None => {
+                warn!(uplink = %uplink.name, "udp probe: uplink missing dial URL");
+                return PlaneProbe {
+                    transport_ok: false,
+                    carrier_ok: false,
+                    applicable: true,
+                    latency: Some(started.elapsed()),
+                    downgraded_from,
+                };
+            },
+            Some(url) => {
+                let ws_attempt = run_ws_probe(
+                    cache,
+                    group,
+                    &uplink.name,
+                    "udp",
+                    url,
+                    effective_udp_mode,
+                    uplink.fwmark,
+                    uplink.combined_ss_kind(SsPathKind::Udp),
+                    Arc::clone(&dial_limit),
+                    probe.timeout,
+                );
+                match timeout(
+                    probe.timeout,
+                    record_attempt(group, &uplink.name, "udp", "ws", ws_attempt),
+                )
+                .await
+                {
+                    Ok(Ok(marker)) => {
+                        downgraded_from = downgraded_from.or(marker);
+                        (true, true)
+                    },
+                    Ok(Err(_)) | Err(_) => (false, true),
+                }
+            },
+        }
+    } else {
+        (true, false)
+    };
+
+    // ── App / data-path stage (DNS round-trip through the tunnel) ────────
+    let app_ok: Option<bool> = if !carrier_ok {
+        Some(false)
+    } else if let Some(dns_probe) = &probe.dns {
+        let attempt = record_attempt(
             group,
             &uplink.name,
             "udp",
@@ -281,13 +415,28 @@ async fn run_udp_probe(
                 effective_udp_mode,
                 warm_udp_slot.as_ref(),
             ),
-        )
-        .await?;
-        downgraded_from = downgraded_from.or(marker);
-        return Ok((ok, true, Some(started.elapsed()), downgraded_from));
+        );
+        match timeout(probe.timeout, attempt).await {
+            Ok(Ok((ok, marker))) => {
+                downgraded_from = downgraded_from.or(marker);
+                Some(ok)
+            },
+            Ok(Err(_)) | Err(_) => Some(false),
+        }
+    } else {
+        None
+    };
+
+    let any_probe_ran = carrier_probe_ran || app_ok.is_some();
+    let latency = any_probe_ran.then(|| started.elapsed());
+    let transport_ok = app_ok.unwrap_or(carrier_ok);
+    let carrier_ok = if carrier_probe_ran { carrier_ok } else { transport_ok };
+
+    PlaneProbe {
+        transport_ok,
+        carrier_ok,
+        applicable: true,
+        latency,
+        downgraded_from,
     }
-    if probe.ws.enabled {
-        return Ok((true, true, Some(started.elapsed()), downgraded_from));
-    }
-    Ok((true, true, None, downgraded_from))
 }
