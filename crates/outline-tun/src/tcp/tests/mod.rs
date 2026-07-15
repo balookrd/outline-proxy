@@ -1238,6 +1238,107 @@ async fn flush_fills_exactly_the_send_window_and_tracks_pipe() {
     assert_eq!(state.pipe_segments, 6);
 }
 
+/// Random SACK blocks within `[low, high)`, each a valid non-empty range. The
+/// blocks are deliberately allowed to straddle segment boundaries and overlap —
+/// the point is to stress the scoreboard/pipe bookkeeping with shapes the
+/// hand-written equivalence test never reaches.
+fn random_sack_blocks(rng: &mut StdRng, low: u32, high: u32) -> Vec<(u32, u32)> {
+    let span = high.wrapping_sub(low);
+    if span == 0 {
+        return Vec::new();
+    }
+    let count = rng.random_range(0..=3);
+    let mut blocks = Vec::with_capacity(count);
+    for _ in 0..count {
+        let a = low.wrapping_add(rng.random_range(0..=span));
+        let b = low.wrapping_add(rng.random_range(0..=span));
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        if end > start {
+            blocks.push((start, end));
+        }
+    }
+    blocks
+}
+
+/// Property test — the executable stand-in for the release assert-build that the
+/// perf runbook called for. The debug cross-check that guards the incremental
+/// `pipe_bytes` / `pipe_segments` / `earliest_unsacked_sent` against a missed
+/// update site is compiled out of release (`#[cfg(debug_assertions)]`), so a
+/// drift would silently skew the congestion window on the live gateway and only
+/// show up as throughput decay weeks later. This drives thousands of randomized
+/// push / ACK / SACK / fast-retransmit steps across several seeds and asserts
+/// the running counters equal a full scan after *every* mutation — covering the
+/// ACK×SACK×retransmit interleavings the single deterministic sequence above
+/// cannot enumerate. Tests run with debug_assertions on, so the internal
+/// cross-check fires here too; this adds an independent scan and exercises the
+/// real mutation sites through their public entry points.
+#[tokio::test]
+async fn incremental_pipe_accounting_survives_randomized_ack_sack_retransmit() {
+    let mss = super::MAX_SERVER_SEGMENT_PAYLOAD;
+    for seed in [0x1u64, 0xdead_beef, 0x5eed_face, 0xf00d_cafe, 42, 0xa5a5_a5a5] {
+        let mut rng = seeded_rng(seed);
+        let mut state = tcp_flow_state_for_tests().await;
+        // Generous windows so the flush path can actually push new segments;
+        // congestion growth/back-off during the run still varies burst sizes.
+        state.congestion_window = mss * 64;
+        state.slow_start_threshold = mss * 64;
+
+        for step in 0..600u32 {
+            match rng.random_range(0..100u32) {
+                // Push new data through the real flush path (push_unacked_segments).
+                0..=34 => {
+                    let window = (mss * 40) as u32;
+                    state.client_window = window;
+                    state.client_window_end = state.server_seq.wrapping_add(window);
+                    let len = rng.random_range(1..=mss * 6);
+                    state.pending_server_data.push_back(vec![0xABu8; len].into());
+                    state.pending_server_bytes_total += len;
+                    let _ = super::state_machine::flush_server_output(&mut state).unwrap();
+                },
+                // Cumulative ACK (possibly carrying SACK blocks): pops a prefix
+                // and, on a new SACK block, rebuilds the accounting.
+                35..=74 => {
+                    let span = state.server_seq.wrapping_sub(state.last_client_ack);
+                    if span > 0 {
+                        let ack = state.last_client_ack.wrapping_add(rng.random_range(0..=span));
+                        let sacks =
+                            random_sack_blocks(&mut rng, state.last_client_ack, state.server_seq);
+                        super::process_server_ack(&mut state, ack, &sacks);
+                    }
+                },
+                // Pure duplicate ACK carrying SACK blocks (no cumulative advance).
+                75..=89 => {
+                    let sacks =
+                        random_sack_blocks(&mut rng, state.last_client_ack, state.server_seq);
+                    let ack = state.last_client_ack;
+                    if !sacks.is_empty() {
+                        super::process_server_ack(&mut state, ack, &sacks);
+                    }
+                },
+                // Fast-retransmit the oldest hole: rewrites a segment's send
+                // instant (reordering the queue) and rebuilds the earliest cache.
+                // Bump the recovery epoch first so the hole is fresh for resend.
+                _ => {
+                    if !state.unacked_server_segments.is_empty() {
+                        state.recovery_epoch = state.recovery_epoch.wrapping_add(1);
+                        let _ = super::retransmit_oldest_unacked_packet(&mut state).unwrap();
+                    }
+                },
+            }
+            assert_accounting_matches(&state, &format!("seed {seed:#x} step {step}"));
+        }
+
+        // Drain everything: the queue empties, the counters bottom out at zero,
+        // and the earliest/reordered caches clear.
+        let final_ack = state.server_seq;
+        super::process_server_ack(&mut state, final_ack, &[]);
+        assert_accounting_matches(&state, &format!("seed {seed:#x} final drain"));
+        assert_eq!((state.pipe_bytes, state.pipe_segments), (0, 0));
+        assert_eq!(state.earliest_unsacked_sent, None);
+        assert!(!state.unacked_reordered);
+    }
+}
+
 #[tokio::test]
 async fn advertised_window_collapses_when_uplink_buffer_fills_and_reopens_on_drain() {
     // Uplink back-pressure runs through the advertised receive window: as the
