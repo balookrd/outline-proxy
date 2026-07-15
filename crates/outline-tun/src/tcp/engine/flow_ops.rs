@@ -81,7 +81,11 @@ impl TunTcpEngine {
                 group_name: Arc::from(manager.group_name()),
                 manager: manager.clone(),
                 route: route.clone(),
-                upstream_writer: None,
+                // The literal IP the client addressed. Connection sniffing may
+                // replace it with the domain it recovers from the first client
+                // bytes, before the dial (`tasks/upstream/connect.rs`).
+                target: target.clone(),
+                upstream_carrier: None,
             },
             // No carrier yet: the connect task arms this with the Session ID the
             // server issues for this flow (tunneled flows only).
@@ -89,6 +93,7 @@ impl TunTcpEngine {
             signals: FlowControlSignals {
                 close_signal,
                 upstream_pump: Arc::new(Notify::new()),
+                carrier_migration: Arc::new(Notify::new()),
                 server_drain: Arc::new(Notify::new()),
                 scheduler,
                 idle_timeout,
@@ -257,7 +262,7 @@ impl TunTcpEngine {
             group_name,
             uplink_name,
             _duration,
-            upstream_writer,
+            upstream_carrier,
             close_signal,
             rst_packet,
         ) = {
@@ -282,7 +287,7 @@ impl TunTcpEngine {
                 state.routing.group_name.clone(),
                 state.routing.uplink_name.clone(),
                 state.timestamps.created_at.elapsed(),
-                state.routing.upstream_writer.clone(),
+                state.routing.upstream_carrier.clone(),
                 state.signals.close_signal.clone(),
                 rst_packet,
             )
@@ -293,14 +298,14 @@ impl TunTcpEngine {
             let _ = self.inner.writer.write_packet(&packet).await;
             metrics::record_tun_packet("down", ip_family_from_version(key.version), "tcp_rst");
         }
-        close_upstream_writer(upstream_writer).await;
+        close_upstream_writer(upstream_carrier).await;
         metrics::record_tun_tcp_event(&group_name, &uplink_name, reason);
         debug!(flow_id, uplink = %uplink_name, reason, "aborted TUN TCP flow");
     }
 
     pub(super) async fn close_flow(&self, key: &TcpFlowKey, reason: &'static str) {
         if let Some((_, flow)) = self.inner.flows.remove(key) {
-            let (flow_id, group_name, uplink_name, _duration, upstream_writer, close_signal) = {
+            let (flow_id, group_name, uplink_name, _duration, upstream_carrier, close_signal) = {
                 let mut state = flow.lock().await;
                 set_flow_status(&mut state, TcpFlowStatus::Closed);
                 clear_flow_metrics(&mut state);
@@ -310,12 +315,12 @@ impl TunTcpEngine {
                     state.routing.group_name.clone(),
                     state.routing.uplink_name.clone(),
                     state.timestamps.created_at.elapsed(),
-                    state.routing.upstream_writer.clone(),
+                    state.routing.upstream_carrier.clone(),
                     state.signals.close_signal.clone(),
                 )
             };
             let _ = close_signal.send(true);
-            close_upstream_writer(upstream_writer).await;
+            close_upstream_writer(upstream_carrier).await;
             metrics::record_tun_tcp_event(&group_name, &uplink_name, reason);
             debug!(flow_id, uplink = %uplink_name, reason, "closed TUN TCP flow");
         }

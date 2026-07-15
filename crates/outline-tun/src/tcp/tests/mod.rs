@@ -2373,6 +2373,7 @@ pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
         sniff_timeout: Duration::from_millis(300),
         sniff_override_exclude: Vec::new().into(),
         sniff_direct_reresolve: false,
+        carrier_migration: true,
     }
 }
 // --- L4-checksum provenance (skipping the redundant validation pass) --------
@@ -2711,22 +2712,26 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
                 )
                 .await,
             },
-            upstream_writer: Some(Arc::new(Mutex::new(crate::tcp::UpstreamWriter::TunneledWs({
-                let (writer, _ctrl_tx) = TcpShadowsocksWriter::connect(
-                    sink,
-                    cipher,
-                    &master_key,
-                    super::UpstreamTransportGuard::new("test", "tcp"),
-                )
-                .await
-                .unwrap();
-                writer
-            })))),
+            target: socks5_proto::TargetAddr::IpV4("8.8.8.8".parse().unwrap(), 443),
+            upstream_carrier: Some(Arc::new(Mutex::new(crate::tcp::UpstreamCarrier::new(
+                crate::tcp::UpstreamWriter::TunneledWs({
+                    let (writer, _ctrl_tx) = TcpShadowsocksWriter::connect(
+                        sink,
+                        cipher,
+                        &master_key,
+                        super::UpstreamTransportGuard::new("test", "tcp"),
+                    )
+                    .await
+                    .unwrap();
+                    writer
+                }),
+            )))),
         },
         resume: super::state_machine::FlowResume::armed(None),
         signals: super::state_machine::FlowControlSignals {
             close_signal,
             upstream_pump: Arc::new(tokio::sync::Notify::new()),
+            carrier_migration: Arc::new(tokio::sync::Notify::new()),
             server_drain: Arc::new(tokio::sync::Notify::new()),
             scheduler: Arc::new(super::engine::scheduler::FlowScheduler::new()),
             idle_timeout: std::time::Duration::from_secs(60),

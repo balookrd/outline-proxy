@@ -6,6 +6,7 @@ use bytes::Bytes;
 use tokio::sync::{Mutex, Notify, watch};
 
 use anyhow::{Context, Result};
+use socks5_proto::TargetAddr;
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 
@@ -71,6 +72,35 @@ impl UpstreamWriter {
     }
 }
 
+/// The flow's upstream write half, plus the epoch of the carrier it belongs to.
+///
+/// The two travel together behind one mutex on purpose. A carrier migration
+/// replaces `writer` in place (the pump keeps writing to the same `Arc` and does
+/// not need respawning) and stamps the new `epoch` in the same critical section;
+/// the pump, which sampled the epoch when it took its batch out of the flow's
+/// buffer and mirrored it into the replay ring, compares the two before it
+/// writes. Equal means "this is still the carrier I accounted that batch
+/// against" — send it. Different means a migration has since replayed the ring,
+/// batch included, onto a fresh carrier — so the pump must drop the batch rather
+/// than put those bytes on the wire a second time.
+///
+/// Bundling them is what makes that check atomic: an epoch kept anywhere else
+/// could change between the pump's read of it and its write to the writer.
+pub struct UpstreamCarrier {
+    pub(in crate::tcp) writer: UpstreamWriter,
+    /// `0` for the carrier the flow connected on; incremented by each committed
+    /// migration. Mirrors `FlowResume::carrier_epoch`, which is the copy the
+    /// pump reads under the *flow* lock.
+    pub(in crate::tcp) epoch: u64,
+}
+
+impl UpstreamCarrier {
+    /// The carrier a flow connects on: epoch `0`, no migration behind it.
+    pub(in crate::tcp) fn new(writer: UpstreamWriter) -> Self {
+        Self { writer, epoch: 0 }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::tcp) enum TcpFlowStatus {
     SynReceived,
@@ -86,7 +116,7 @@ pub(in crate::tcp) enum TcpFlowStatus {
 
 /// Routing/binding data for a flow — which group and uplink it lives on,
 /// how to reach the upstream, and which route (tunneled vs direct) it was
-/// opened for. Fixed after flow creation except `upstream_writer` /
+/// opened for. Fixed after flow creation except `upstream_carrier` /
 /// `uplink_index` / `uplink_name`, which are updated on runtime failover.
 pub(in crate::tcp) struct FlowRouting {
     pub(in crate::tcp) uplink_index: usize,
@@ -99,7 +129,14 @@ pub(in crate::tcp) struct FlowRouting {
     /// The route this flow was created for — `Group` for tunneled flows,
     /// `Direct` for local-socket direct route.
     pub(in crate::tcp) route: TunRoute,
-    pub(in crate::tcp) upstream_writer: Option<Arc<Mutex<UpstreamWriter>>>,
+    /// The destination this flow dialled: the literal IP the client addressed,
+    /// or the domain connection sniffing recovered from its first bytes. Held so
+    /// a carrier migration re-dials the same destination the flow established
+    /// on. (On a resume *hit* the server ignores the handshake target and
+    /// re-attaches the parked upstream — but the handshake still carries one,
+    /// and the honest value is the one this flow actually used.)
+    pub(in crate::tcp) target: TargetAddr,
+    pub(in crate::tcp) upstream_carrier: Option<Arc<Mutex<UpstreamCarrier>>>,
 }
 
 /// External notification channels a flow exposes — the close broadcaster
@@ -113,10 +150,18 @@ pub(in crate::tcp) struct FlowControlSignals {
     pub(in crate::tcp) close_signal: watch::Sender<bool>,
     /// Wakes the per-flow upstream pump task after the read-loop appends
     /// client payload to `pending_client_data` (or marks a half-close).
-    /// The pump is the sole writer to `upstream_writer` after connect, so
+    /// The pump is the sole writer to `upstream_carrier` after connect, so
     /// the read-loop hands work off through the buffer + this notify and
     /// never blocks on upstream backpressure itself.
     pub(in crate::tcp) upstream_pump: Arc<Notify>,
+    /// Wakes the pump when a carrier migration reaches a verdict — committed
+    /// (the pump resumes on the fresh carrier) or abandoned (the pump falls back
+    /// to the teardown it would have done anyway). A pump that fails a send on a
+    /// dead carrier parks on this rather than resetting the flow out from under
+    /// a migration that is about to save it. Notified with `notify_one`, so a
+    /// verdict reached before the pump parks is kept as a permit and the wakeup
+    /// is never lost.
+    pub(in crate::tcp) carrier_migration: Arc<Notify>,
     /// Wakes the per-flow upstream *reader* after the client ACKs and
     /// `flush_server_output` drains `pending_server_data` below the soft
     /// limit. The reader pauses draining the carrier while the downlink
@@ -273,12 +318,13 @@ pub(in crate::tcp) struct TcpFlowState {
     /// tracking (`unacked_server_segments`) stays per-MSS regardless.
     pub(in crate::tcp) gso_enabled: bool,
     pub(in crate::tcp) routing: FlowRouting,
-    /// What a future carrier migration would need to re-attach this flow's
-    /// server-parked upstream on a fresh carrier: the flow's own Session ID, the
-    /// uplink replay ring, and the downstream-accepted byte offset. Armed on a
-    /// successful tunneled connect (see `tasks/upstream/connect.rs`); stays
-    /// [`FlowResume::disarmed`] on a direct flow. Recording only — nothing in
-    /// the engine acts on it yet.
+    /// What a carrier migration needs to re-attach this flow's server-parked
+    /// upstream on a fresh carrier: the flow's own Session ID, the uplink replay
+    /// ring, the downstream-accepted byte offset, and the bookkeeping that keeps
+    /// the reader (which migrates) and the pump (which must not fight it) in
+    /// step. Armed on a successful tunneled connect (see
+    /// `tasks/upstream/connect.rs`); stays [`FlowResume::disarmed`] on a direct
+    /// flow, which has no carrier to migrate off.
     pub(in crate::tcp) resume: FlowResume,
     pub(in crate::tcp) signals: FlowControlSignals,
     pub(in crate::tcp) status: TcpFlowStatus,

@@ -334,6 +334,13 @@ pub(super) struct TunTcpSection {
     /// IP. Fixes bypassed domains the client resolved (via a tunnelled / foreign
     /// resolver) to a dead/unreachable IP. Requires `sniffing`. Default false.
     pub(super) sniff_direct_reresolve: Option<bool>,
+    /// Keep a tunnelled flow alive when its shared carrier dies: re-dial, have
+    /// the server re-attach the upstream it parked, replay the byte gap both
+    /// ways, and carry on instead of resetting the application's connection.
+    /// Engages only on a **confirmed** server-side resume hit, so it is inert
+    /// against a server with resumption disabled (the default server-side).
+    /// Default true.
+    pub(super) carrier_migration: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

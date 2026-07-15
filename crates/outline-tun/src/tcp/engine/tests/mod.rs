@@ -25,6 +25,7 @@ use tokio_tungstenite::{MaybeTlsStream, accept_async};
 use url::Url;
 
 mod direct_backpressure;
+mod migrate;
 mod resume;
 
 use super::super::state_machine::TcpFlowStatus;
@@ -1760,12 +1761,14 @@ fn eviction_test_flow_state(
                 name: Arc::from("test"),
                 manager: manager.clone(),
             },
-            upstream_writer: None,
+            target: TargetAddr::IpV4(Ipv4Addr::new(8, 8, 8, 8), 443),
+            upstream_carrier: None,
         },
         resume: super::super::state_machine::FlowResume::disarmed(),
         signals: super::super::state_machine::FlowControlSignals {
             close_signal,
             upstream_pump: Arc::new(tokio::sync::Notify::new()),
+            carrier_migration: Arc::new(tokio::sync::Notify::new()),
             server_drain: Arc::new(tokio::sync::Notify::new()),
             scheduler: Arc::clone(&engine.inner.scheduler),
             idle_timeout: engine.inner.idle_timeout,

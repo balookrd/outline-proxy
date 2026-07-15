@@ -44,7 +44,10 @@ pub(super) use recv::{
     trim_packet_to_receive_window,
 };
 #[allow(unused_imports)]
-pub(super) use resume::{FlowResume, TUN_UPLINK_REPLAY_RING_BYTES};
+pub(super) use resume::{
+    FlowResume, TUN_TCP_MIGRATION_DEADLINE, TUN_TCP_MIGRATION_MAX_ATTEMPTS,
+    TUN_UPLINK_REPLAY_RING_BYTES,
+};
 #[allow(unused_imports)]
 pub(super) use send::{
     assess_server_backlog_pressure, clear_flow_metrics, flush_server_output,
@@ -61,7 +64,6 @@ pub(super) use transitions::{
     reset_zero_window_persist, server_fin_awaiting_ack, server_fin_sent, set_flow_status,
     transition_on_client_fin, transition_on_server_fin_ack,
 };
-pub(crate) use types::UpstreamWriter;
 #[allow(unused_imports)]
 pub(super) use types::{
     AckEffect, BbrMode, BbrState, BufferedClientSegment, ClientSegmentView, FlowControlSignals,
@@ -69,3 +71,4 @@ pub(super) use types::{
     ServerBacklogPressure, ServerDataPacket, ServerFlush, ServerSegment, TcpFlowState,
     TcpFlowStatus, reclaim_flow_queue_capacity,
 };
+pub(crate) use types::{UpstreamCarrier, UpstreamWriter};

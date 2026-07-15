@@ -440,6 +440,12 @@ listen = "[::1]:9090"
 # resolver and dial that IP instead of the client's literal IP — fixes bypassed
 # domains the client resolved to a dead/unreachable IP. Default false.
 # sniff_direct_reresolve = false
+# Carrier migration (default on): when the shared carrier a tunnelled flow rides
+# dies, re-dial, have the server re-attach the upstream it parked, replay the
+# byte gap both ways, and keep the flow running instead of resetting the app's
+# connection. Engages ONLY on a confirmed server-side resume hit, so it is inert
+# against a server with resumption disabled (the server default). See "TUN Mode".
+# carrier_migration = true
 
 # [outline.probe] acts as a template inherited by every [[uplink_group]].
 # Individual groups can override any field via [uplink_group.probe].
@@ -878,6 +884,23 @@ This is intended for real operations, but it is still not equivalent to a kernel
 The bypass relies on the direct path's local socket to reach the destination. On hosts where TUN catches the default route, that socket would loop straight back into TUN; on Linux set `direct_fwmark` and add a matching `ip rule fwmark X lookup Y` so the bypassed flow escapes the loop. Without `direct_fwmark` and a corresponding policy-routing rule, the process logs a startup warning.
 
 Default: `false`. Both ports must be matched together — IKEv2 stacks move IKE_AUTH off port 500 mid-session via NAT_DETECTION, so bypassing only 4500 still breaks the handshake.
+
+### Carrier migration (surviving a dead carrier)
+
+A tunnelled TUN flow does not own its transport: it shares one **carrier** — a single H3/H2/H1 connection — with every other flow on that uplink. When the carrier collapses (an H3 connection-level error takes down everything multiplexed on it at once), every flow riding it loses its transport in the same instant, and each application sees its connection die.
+
+The upstream sockets, however, are not gone. The server moves each one into its orphan registry, keyed by the Session ID it minted for that flow, and holds it for 30 s ([`docs/SESSION-RESUMPTION.md`](../outline-ss-rust/docs/SESSION-RESUMPTION.md)). With `[tun.tcp] carrier_migration = true` (the default) a flow whose carrier dies re-dials a fresh one, presents **its own** Session ID, gets the parked upstream re-attached, and closes the byte gap in both directions before resuming: the **Ack-Prefix Protocol (v1)** tells it exactly how many uplink bytes the server actually forwarded, so it replays only the tail that was lost in flight, and **Symmetric Downlink Replay (v2)** hands back the downstream bytes the dead carrier never delivered, which are flushed to the application ahead of anything the new carrier produces. The application observes no disconnect — no FIN, no RST, no gap, no duplicate byte.
+
+**It engages only on a confirmed resume hit.** A redial that presents an id can miss — the park expired, or the server has resumption off — and on a miss the server opens a *fresh* upstream to the destination, starting the byte stream from zero. Continuing a flow on that would splice a brand-new stream onto a half-finished one and hand the application a corrupt result that looks like success. So the client migrates only when the server *proves* the re-attach by emitting the v1 control frame (which it emits only after the orphan-take succeeded — the capability header on the upgrade response is not proof, since the server echoes it hit or miss). Everything else — a miss, a timeout, an unparseable frame, a replay the client can no longer reproduce byte-exact, a truncated downstream slice — falls through to the ordinary teardown, unchanged.
+
+Consequences worth knowing:
+
+- **Server-side resumption is off by default**, and a server without it never issues a Session ID — so those flows are never even eligible, and the knob costs nothing there. Turn on the server's `[resumption]` to get any of this.
+- **Direct (`via = "direct"`) flows never migrate**: they own a plain socket to the origin, so there is no carrier to migrate off and nothing parked to re-attach.
+- Bounded: at most **2 attempts per flow**, none started more than 20 s after the first (the server's park TTL is 30 s), and the uplink replay ring is capped at 64 KiB per flow — a flow that sends a single chunk larger than that loses its ring, and with it the ability to prove byte-exactness, so it tears down as before rather than resuming with a hole.
+- Observable on `outline_ws_rust_tun_tcp_events_total{event=…}`: `carrier_migrated`, `carrier_migration_miss`, `carrier_migration_dial_failed`, `carrier_migration_replay_failed`.
+
+Set `carrier_migration = false` to restore the pre-migration behaviour (a dead carrier becomes a FIN/RST immediately).
 
 ### TUN PMTUD safety gate
 
