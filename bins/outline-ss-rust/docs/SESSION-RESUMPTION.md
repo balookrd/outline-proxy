@@ -8,6 +8,8 @@ This document specifies the wire format and runtime semantics of the cross-trans
 
 Session resumption lets a compatible client move an existing logical session from one ingress transport to another (e.g. from WebSocket-over-HTTP/3 to WebSocket-over-HTTP/2) **without re-establishing the upstream connection** to the destination host. This addresses environments where the network path between the client and the server suffers from intermittent UDP loss or path instability that breaks QUIC but tolerates TCP, and vice versa.
 
+The same machinery lets the `outline-ws-rust` TUN client survive the death of a shared carrier. Many flows multiplex onto one QUIC connection; when it collapses (connection-level `H3_INTERNAL_ERROR`, an idle timeout), every flow on it would otherwise be reset. Instead the client re-dials the same uplink, presents each flow's Session ID, and re-attaches its parked upstream — the application never sees a disconnect. This consumer needs **both** protocol halves: v1 (Ack-Prefix) replays the uplink tail, and v2 (Symmetric Downlink Replay) replays the downstream bytes the server had already emitted onto the dead carrier. For a download or SSE flow — where the payload travels downstream — v2 is not optional: without it the migrated flow comes back with a hole in the server's reply. It also parks many flows for one user at once, so `orphan_per_user_cap` must be sized well above its SOCKS-oriented default (see [Resource exhaustion](#resource-exhaustion)).
+
 ### What is preserved
 
 - The `TcpStream` to the upstream target (for TCP relays).
