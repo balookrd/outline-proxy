@@ -322,3 +322,38 @@ ws_path_udp = "/dave/udp"
                                          # raise to absorb upstream-vs-WS write
                                          # speed mismatches under bursty video,
                                          # lower to cap per-session memory.
+
+# Cross-transport session resumption. When a client's carrier (e.g. a shared
+# HTTP/3 QUIC connection) dies mid-flow, the server keeps that flow's upstream
+# TcpStream parked under the Session ID it minted, so the client can re-dial on
+# a fresh carrier, present the same id, and re-attach the upstream instead of
+# reconnecting to the destination. This is what lets the outline-ws-rust TUN
+# client migrate a live TCP flow off a dead carrier transparently
+# (`[tun.tcp] carrier_migration`), so a long-lived download or SSE stream is
+# not torn down when one carrier collapses.
+#
+# Disabled by default — opt in explicitly. See docs/SESSION-RESUMPTION.md.
+# [session_resumption]
+# enabled = true                 # master switch (v1 Ack-Prefix uplink replay)
+# orphan_ttl_tcp_secs = 30       # how long a parked TCP upstream waits for the
+                                 # client to come back; must exceed the client's
+                                 # migration deadline (20s in outline-ws-rust)
+# orphan_ttl_udp_secs = 30
+# orphan_per_user_cap = 128      # max sessions one user may keep parked at once.
+                                 # The default (4) is tuned for SOCKS, where a
+                                 # user runs a handful of sessions. A TUN client
+                                 # parks EVERY flow that rode a collapsing carrier
+                                 # (up to the client's per-carrier stream cap, 32)
+                                 # at once, so 4 would let only 4 of them migrate.
+                                 # Size this to a few carriers' worth of flows.
+# orphan_global_cap = 10000      # process-wide LRU ceiling on parked sessions
+# downlink_buffer_bytes = 65536  # v2 Symmetric Downlink Replay ring, per session.
+                                 # 0 (default) disables v2: only the uplink gap is
+                                 # replayed, so the DOWNSTREAM bytes lost on the
+                                 # dead carrier are gone — a hole in the server's
+                                 # reply. REQUIRED for a download/SSE flow to
+                                 # migrate without a gap. Match the client's ring
+                                 # (64 KiB). Memory: charged per session (active
+                                 # AND parked); worst case orphan_global_cap ×
+                                 # this ≈ 640 MiB at the defaults — lower
+                                 # orphan_global_cap on a small VPS.
