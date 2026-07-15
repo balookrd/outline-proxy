@@ -32,20 +32,31 @@ fn merge_sequence_ranges(mut ranges: Vec<SequenceRange>, anchor: u32) -> Vec<Seq
     merged
 }
 
-fn trim_sack_scoreboard(scoreboard: &mut Vec<SequenceRange>, cumulative_ack: u32) {
+/// Drop scoreboard ranges at/below `cumulative_ack` and clip the left edge of a
+/// range that straddles it. Returns `true` when a left edge was actually clipped
+/// (`range.start < cumulative_ack`) — the only trim outcome that can flip a
+/// still-queued segment's SACKed status: a segment straddling the ACK
+/// (`seq < ack < end`) is not popped, so clipping the block that covered it
+/// re-opens a hole and moves it back into the pipe. Dropping a range wholly at or
+/// below the ACK only touches segments that were already popped, so it needs no
+/// signal. The caller rebuilds the running accounting on a `true`.
+fn trim_sack_scoreboard(scoreboard: &mut Vec<SequenceRange>, cumulative_ack: u32) -> bool {
     let mut ranges = Vec::with_capacity(scoreboard.len());
+    let mut clipped = false;
     for mut range in scoreboard.drain(..) {
         if !seq_gt(range.end, cumulative_ack) {
             continue;
         }
         if seq_lt(range.start, cumulative_ack) {
             range.start = cumulative_ack;
+            clipped = true;
         }
         if seq_gt(range.end, range.start) {
             ranges.push(range);
         }
     }
     *scoreboard = merge_sequence_ranges(ranges, cumulative_ack);
+    clipped
 }
 
 fn update_sack_scoreboard(
@@ -388,11 +399,20 @@ pub(in crate::tcp) fn process_server_ack(
         AckEffect::none()
     };
 
-    // Now drop scoreboard ranges at/below the cumulative ACK. Every segment
-    // at/below `ack` has already been popped, so this cannot change the SACKed
-    // status of any remaining (seq >= ack) segment — the running counters and
-    // earliest cache computed above stay exact.
-    trim_sack_scoreboard(&mut state.sack_scoreboard, acknowledgement_number);
+    // Now drop scoreboard ranges at/below the cumulative ACK. A segment that
+    // straddles the ACK (`seq < ack < end`) is still queued, so if the trim
+    // clips the left edge of a block that fully covered it, that segment falls
+    // back out of the SACKed set and into the pipe — the running counters and
+    // earliest cache computed above no longer reflect it. Rebuild once in that
+    // case. (A cumulative-only ACK cannot produce this against an honest peer —
+    // it would require a SACK block below the cumulative ACK — so on the honest
+    // path `clipped` is false and this costs nothing; it keeps the accounting
+    // exact against a malformed or reneging peer, where a release build would
+    // otherwise skew the congestion window silently.)
+    let clipped = trim_sack_scoreboard(&mut state.sack_scoreboard, acknowledgement_number);
+    if clipped {
+        rebuild_unacked_accounting(state);
+    }
     effect
 }
 
