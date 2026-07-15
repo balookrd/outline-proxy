@@ -14,14 +14,17 @@
 //!      (the v2 `X-Outline-Resume-Down-Acked` value the server needs to compute
 //!      its downlink replay slice).
 //!
-//! This module holds exactly that state and nothing else. **It only records.**
-//! Nothing here dials, redials, or changes what happens when a carrier dies —
-//! the migration itself is a separate change. Mirrors the accounting the SOCKS5
-//! pinned relay already does inline
+//! This module holds exactly that state, plus the bookkeeping that keeps the
+//! two tasks touching a carrier — the upstream reader (which drives the
+//! migration) and the upstream pump (which must not fight it) — in step. The
+//! migration itself lives in `engine/tasks/upstream/migrate.rs`. Mirrors the
+//! accounting the SOCKS5 pinned relay already does inline
 //! (`bins/outline-ws-rust/src/proxy/tcp/connect/pinned_relay.rs`).
 
+use std::time::{Duration, Instant};
+
 use outline_transport::SessionId;
-use outline_transport::uplink_replay::{ClientUpstreamRingBuffer, PushError};
+use outline_transport::uplink_replay::{ClientUpstreamRingBuffer, PushError, ReplayError};
 
 /// Byte cap of one flow's uplink replay ring.
 ///
@@ -38,8 +41,46 @@ use outline_transport::uplink_replay::{ClientUpstreamRingBuffer, PushError};
 /// oversized-chunk path below is a guardrail rather than an expected event.
 pub(in crate::tcp) const TUN_UPLINK_REPLAY_RING_BYTES: usize = 64 * 1024;
 
-/// What a future carrier migration needs to re-attach this flow's parked
-/// upstream on a new carrier without losing or duplicating a byte.
+/// How many carrier migrations one flow may attempt over its whole lifetime.
+///
+/// A migration only pays off when the carrier died under a flow that is
+/// otherwise healthy; a flow whose carriers keep dying is being told something,
+/// and retrying forever would just keep re-dialling a broken uplink while the
+/// application waits. Two attempts cover the case this exists for — a shared H3
+/// carrier collapsing, and the replacement being unlucky — after which the flow
+/// tears down as it did before.
+pub(in crate::tcp) const TUN_TCP_MIGRATION_MAX_ATTEMPTS: u8 = 2;
+
+/// How long after the *first* migration attempt a flow may still start another.
+///
+/// The server parks an orphaned upstream for 30 s
+/// (`bins/outline-ss-rust/docs/SESSION-RESUMPTION.md`), so an attempt starting
+/// later than this can only ever miss — and a miss costs a wasted dial plus the
+/// wait for a control frame that will never come, while the application sits
+/// there. Give up and tear down honestly instead.
+pub(in crate::tcp) const TUN_TCP_MIGRATION_DEADLINE: Duration = Duration::from_secs(20);
+
+/// Where a flow is in the carrier-migration handshake. Read by the upstream pump
+/// to decide whether a failed send means "the flow is dead" (as it always did)
+/// or "wait, the reader is re-attaching this flow to a live carrier".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::tcp) enum MigrationPhase {
+    /// No migration in progress. The flow's carrier is whatever the last commit
+    /// installed (or the original one).
+    Idle,
+    /// The reader is dialling / confirming / replaying. The pump must not push
+    /// anything new into the replay ring while this is set — a chunk pushed
+    /// after the migration snapshotted the ring would be replayed by nobody and
+    /// dropped by the pump's epoch check.
+    InFlight,
+    /// This flow will never migrate again: it missed, it could not replay
+    /// byte-exact, or it spent its budget. The pump falls back to the original
+    /// teardown on the next failed send.
+    Abandoned,
+}
+
+/// What a carrier migration needs to re-attach this flow's parked upstream on a
+/// new carrier without losing or duplicating a byte.
 ///
 /// A flow is *resumable* while it holds a replay ring. It stops being resumable
 /// the moment the ring can no longer reconstruct the uplink byte stream
@@ -54,11 +95,12 @@ pub(in crate::tcp) struct FlowResume {
     /// whatever upstream is parked under the id, so a shared id would splice one
     /// flow onto another flow's destination.
     ///
-    /// Recorded but not yet read outside tests: the only consumer is the redial
-    /// that migrates the flow, which does not exist yet. It is captured now so
-    /// that when it does, the id is the one this flow was actually issued rather
-    /// than whatever happened to be cached for the uplink.
-    #[allow(dead_code)]
+    /// Refreshed on every committed migration: the server mints a *new* id on
+    /// the resume hit, and the next migration must present that one.
+    ///
+    /// `None` also carries a decision: a server with resumption disabled never
+    /// mints an id, so such a flow is never eligible to migrate and never pays
+    /// for a dial that could only miss.
     pub(in crate::tcp) session_id: Option<SessionId>,
     /// Bounded tail of the bytes this flow sent upstream, addressed by absolute
     /// offset. `None` once the flow is no longer replayable (never armed, or
@@ -74,6 +116,22 @@ pub(in crate::tcp) struct FlowResume {
     /// outlives every per-flow task. An `Arc` would buy nothing but an
     /// allocation per flow.
     client_acked_offset: u64,
+    /// Bumped once per *committed* carrier migration, in the same critical
+    /// section that snapshots the replay ring. The pump reads it when it pops a
+    /// batch and compares it against the epoch stamped on the carrier it is
+    /// about to write to: a mismatch means a migration replaced the carrier
+    /// after the batch went into the ring, so the replay already re-emitted
+    /// those bytes and sending them again would duplicate them. See
+    /// `engine/tasks/upstream/migrate.rs` for the full ordering argument.
+    carrier_epoch: u64,
+    phase: MigrationPhase,
+    /// Migrations started (not necessarily committed). Capped by
+    /// [`TUN_TCP_MIGRATION_MAX_ATTEMPTS`].
+    attempts: u8,
+    /// When the first attempt began — the clock the
+    /// [`TUN_TCP_MIGRATION_DEADLINE`] runs against, so a flow cannot keep
+    /// re-dialling past the server's park TTL.
+    first_attempt_at: Option<Instant>,
 }
 
 impl FlowResume {
@@ -85,6 +143,10 @@ impl FlowResume {
             session_id: None,
             replay: None,
             client_acked_offset: 0,
+            carrier_epoch: 0,
+            phase: MigrationPhase::Idle,
+            attempts: 0,
+            first_attempt_at: None,
         }
     }
 
@@ -105,6 +167,10 @@ impl FlowResume {
             session_id,
             replay: Some(ClientUpstreamRingBuffer::new(capacity_bytes)),
             client_acked_offset: 0,
+            carrier_epoch: 0,
+            phase: MigrationPhase::Idle,
+            attempts: 0,
+            first_attempt_at: None,
         }
     }
 
@@ -113,23 +179,107 @@ impl FlowResume {
         self.replay.is_some()
     }
 
-    /// The replay ring, for callers that need its offsets (`total_sent`,
-    /// `oldest_offset`) or its tail. `None` once the flow is no longer
-    /// resumable.
-    ///
-    /// Read by tests today; the migration redial is what will read it in
-    /// anger (`replay_from(server_acked_offset)`).
-    #[allow(dead_code)]
+    /// The replay ring itself, for tests that assert on its offsets
+    /// (`total_sent`, `oldest_offset`) or its contents. Production reads the
+    /// tail through [`Self::replay_from`], which is the only shape a migration
+    /// ever needs.
+    #[cfg(test)]
     pub(in crate::tcp) fn replay(&self) -> Option<&ClientUpstreamRingBuffer> {
         self.replay.as_ref()
     }
 
-    /// Cumulative downstream payload bytes accepted from the server — what the
-    /// migration redial will send as `X-Outline-Resume-Down-Acked`. Read by
-    /// tests today; there is no redial to send it yet.
-    #[allow(dead_code)]
+    /// The uplink bytes the server has *not* confirmed forwarding, per its own
+    /// `up_acked` report on a resume hit — exactly what the migration must
+    /// re-send on the new carrier, and nothing else.
+    ///
+    /// The errors are the two ways the server's claim and our ring disagree, and
+    /// both are fatal to the migration (never to correctness): `OffsetEvicted`
+    /// means the bytes it wants are older than anything we still hold, and
+    /// `OffsetAhead` means it claims to have forwarded bytes we never sent. In
+    /// either case we cannot reproduce the stream, so the flow must tear down
+    /// rather than continue with a hole in it.
+    pub(in crate::tcp) fn replay_from(&self, up_acked: u64) -> Result<Vec<u8>, ReplayError> {
+        match self.replay.as_ref() {
+            Some(ring) => ring.replay_from(up_acked),
+            // Unreachable via the migration path (`can_attempt_migration` gates
+            // on the ring), but a torn stream is the worst thing this code can
+            // produce — so answer with the error that tears down, not `Ok`.
+            None => Err(ReplayError::OffsetEvicted {
+                requested: up_acked,
+                oldest_available: u64::MAX,
+            }),
+        }
+    }
+
+    /// Cumulative downstream payload bytes accepted from the server — the
+    /// `X-Outline-Resume-Down-Acked` value the migration redial presents so the
+    /// server can compute the exact downstream slice we never saw.
     pub(in crate::tcp) fn client_acked_offset(&self) -> u64 {
         self.client_acked_offset
+    }
+
+    /// Epoch of the carrier this flow's ring is currently accounted against. See
+    /// [`Self::carrier_epoch`] (the field) for what the pump does with it.
+    pub(in crate::tcp) fn carrier_epoch(&self) -> u64 {
+        self.carrier_epoch
+    }
+
+    /// Whether a migration is dialling / confirming / replaying right now.
+    pub(in crate::tcp) fn migration_in_flight(&self) -> bool {
+        self.phase == MigrationPhase::InFlight
+    }
+
+    /// Whether this flow may still *start* a migration.
+    ///
+    /// Every clause is a way the migration could not be proven byte-exact, and
+    /// so a way it must not be attempted at all:
+    ///
+    /// * `enabled` — the operator turned it off (`[tun.tcp] carrier_migration`).
+    /// * no Session ID — the server never issued one (resumption disabled, or a
+    ///   direct flow), so there is nothing parked to re-attach and a dial could
+    ///   only ever produce a *fresh* upstream spliced onto a live stream.
+    /// * no ring — an oversized chunk already cost this flow its uplink replay
+    ///   (see [`Self::record_uplink_chunk`]); we could re-attach but not
+    ///   reproduce the tail.
+    /// * abandoned / budget / deadline — see [`MigrationPhase::Abandoned`],
+    ///   [`TUN_TCP_MIGRATION_MAX_ATTEMPTS`], [`TUN_TCP_MIGRATION_DEADLINE`].
+    pub(in crate::tcp) fn can_attempt_migration(&self, enabled: bool, now: Instant) -> bool {
+        enabled
+            && self.phase != MigrationPhase::Abandoned
+            && self.session_id.is_some()
+            && self.replay.is_some()
+            && self.attempts < TUN_TCP_MIGRATION_MAX_ATTEMPTS
+            && self
+                .first_attempt_at
+                .is_none_or(|started| now.duration_since(started) < TUN_TCP_MIGRATION_DEADLINE)
+    }
+
+    /// Claims one attempt from the budget and marks the flow as migrating. Call
+    /// only after [`Self::can_attempt_migration`] returned `true`, under the
+    /// same flow lock, so two tasks cannot both claim the last attempt.
+    pub(in crate::tcp) fn begin_migration(&mut self, now: Instant) {
+        self.phase = MigrationPhase::InFlight;
+        self.attempts = self.attempts.saturating_add(1);
+        self.first_attempt_at.get_or_insert(now);
+    }
+
+    /// Commits a migration whose resume hit is confirmed: adopts the id the
+    /// server minted on the hit (the retired one is dead the moment it is
+    /// re-used) and bumps the carrier epoch.
+    ///
+    /// MUST be called in the same flow-lock critical section that snapshots the
+    /// replay tail — the epoch is what tells the pump whether the batch in its
+    /// hand is inside that snapshot or after it.
+    pub(in crate::tcp) fn commit_migration(&mut self, session_id: Option<SessionId>) {
+        self.session_id = session_id;
+        self.carrier_epoch = self.carrier_epoch.wrapping_add(1);
+        self.phase = MigrationPhase::Idle;
+    }
+
+    /// Gives up on migrating this flow, for good. The caller then falls through
+    /// to the unchanged teardown.
+    pub(in crate::tcp) fn abandon_migration(&mut self) {
+        self.phase = MigrationPhase::Abandoned;
     }
 
     /// Records a payload chunk handed to the upstream writer. Called with

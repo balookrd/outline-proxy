@@ -7,7 +7,8 @@ use dashmap::DashMap;
 use tokio::sync::Mutex;
 
 use super::state_machine::{
-    ServerDataPacket, ServerFlush, UpstreamWriter, build_flow_ack_packet, build_flow_syn_ack_packet,
+    ServerDataPacket, ServerFlush, UpstreamCarrier, build_flow_ack_packet,
+    build_flow_syn_ack_packet,
 };
 use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
@@ -314,12 +315,12 @@ impl TunTcpEngine {
     }
 }
 
-pub(super) async fn close_upstream_writer(upstream_writer: Option<Arc<Mutex<UpstreamWriter>>>) {
-    let Some(upstream_writer) = upstream_writer else {
+pub(super) async fn close_upstream_writer(carrier: Option<Arc<Mutex<UpstreamCarrier>>>) {
+    let Some(carrier) = carrier else {
         return;
     };
-    let mut upstream_writer = upstream_writer.lock().await;
-    let _ = upstream_writer.close().await;
+    let mut carrier = carrier.lock().await;
+    let _ = carrier.writer.close().await;
 }
 
 pub(super) async fn key_uplink_name(flow: &Arc<Mutex<TcpFlowState>>) -> Arc<str> {

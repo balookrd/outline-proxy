@@ -147,4 +147,19 @@ pub struct TunTcpConfig {
     /// also be on. `sniff_override_exclude` still applies (excluded hosts keep
     /// the client's IP). Default `false` — direct keeps dialling the literal IP.
     pub sniff_direct_reresolve: bool,
+    /// Carrier migration: when a tunnelled flow's shared carrier (one H3/H2/H1
+    /// connection multiplexing many flows) dies, re-dial a fresh carrier, have
+    /// the server re-attach the upstream it parked, replay the byte gap in both
+    /// directions, and keep the flow running — instead of turning the dead
+    /// carrier into a FIN/RST the application sees. Default `true`.
+    ///
+    /// It only ever engages on a **confirmed server-side resume hit** (the
+    /// server emits the v1 Ack-Prefix control frame, which it does only when it
+    /// really re-attached the parked upstream). A server with resumption
+    /// disabled never mints a Session ID, so its flows are never even eligible
+    /// — the knob is inert there, not merely harmless. Anything short of a
+    /// confirmed hit (miss, expired park, replay gap, timeout) falls through to
+    /// the unchanged teardown: a spliced byte stream is far worse than an honest
+    /// disconnect. Set `false` to keep the pre-migration behaviour.
+    pub carrier_migration: bool,
 }

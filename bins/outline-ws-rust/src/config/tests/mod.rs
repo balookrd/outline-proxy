@@ -374,6 +374,40 @@ async fn load_config_enables_tun_when_configured() {
     assert_eq!(config.tun.as_ref().unwrap().tcp.max_buffered_client_segments, 2048);
     assert_eq!(config.tun.as_ref().unwrap().tcp.max_buffered_client_bytes, 65_536);
     assert_eq!(config.tun.as_ref().unwrap().tcp.max_retransmits, 6);
+    // Carrier migration is on unless the operator says otherwise: it only ever
+    // engages on a confirmed server-side resume hit, so it is inert against a
+    // server that does not have resumption enabled.
+    assert!(config.tun.as_ref().unwrap().tcp.carrier_migration);
+}
+
+#[cfg(feature = "tun")]
+#[tokio::test]
+async fn tun_carrier_migration_can_be_turned_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    tokio::fs::write(
+        &path,
+        r#"
+        [outline]
+        [[outline.uplinks]]
+        name = "u1"
+        tcp_ws_url = "ws://127.0.0.1:9/tcp"
+        password = "pw"
+
+        [tun]
+        path = "/dev/tun0"
+        name = "tun0"
+
+        [tun.tcp]
+        carrier_migration = false
+        "#,
+    )
+    .await
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert!(!config.tun.as_ref().unwrap().tcp.carrier_migration);
 }
 
 #[cfg(feature = "tun")]

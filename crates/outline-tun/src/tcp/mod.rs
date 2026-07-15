@@ -17,7 +17,7 @@ mod tests;
 
 pub use self::engine::TunTcpEngine;
 #[cfg(test)]
-pub(crate) use self::state_machine::UpstreamWriter;
+pub(crate) use self::state_machine::{UpstreamCarrier, UpstreamWriter};
 #[cfg(test)]
 pub(crate) use self::wire::parse_tcp_packet_unverified as parse_tcp_packet_for_tests;
 #[cfg(test)]
