@@ -703,7 +703,9 @@ fn probe_failure_walks_xhttp_downgrade_chain_h3_h2_h1() {
     // configured (still-H3) mode here, so the cap stalled at H2 forever.
     let outcome_with_h2_failed = ProbeOutcome {
         tcp_ok: false,
+        tcp_carrier_ok: false,
         udp_ok: false,
+        udp_carrier_ok: false,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -724,6 +726,97 @@ fn probe_failure_walks_xhttp_downgrade_chain_h3_h2_h1() {
     );
     let cap = manager.read_status_for_test(0).tcp.descent.capped_to();
     assert_eq!(cap, Some(TransportMode::XhttpH1), "second failure caps H2 → H1");
+}
+
+// Carrier-health vs site-reachability split: the H3→H2→H1 cascade rewrites the
+// outer carrier between us and the uplink server, so only a *carrier* handshake
+// failure may drive it. A dead/slow exit leg (site-reachability fails while the
+// carrier stays up) must leave the carrier alone — capping it there would
+// strand traffic on a slower carrier (TCP-over-TCP) without touching the real
+// problem, which lives past the uplink server.
+#[test]
+fn site_failure_with_live_carrier_does_not_cap_h3() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary(); // configured XhttpH3
+    cfg.fallbacks = vec![ws_fallback(false)];
+    // min_failures = 1 so a single failing cycle would cap immediately if the
+    // trigger keyed on transport health — making the "no cap" assertion sharp.
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Exit leg dead/slow: the app (site-reachability) probe fails, but the
+    // carrier handshake to our uplink server is alive.
+    let outcome = ProbeOutcome {
+        tcp_ok: false,
+        tcp_carrier_ok: true,
+        udp_ok: false,
+        udp_carrier_ok: true,
+        udp_applicable: false,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        outcome,
+        TransportMode::XhttpH3,
+        TransportMode::XhttpH3,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.descent.capped_to(),
+        None,
+        "a site-reachability failure with a live carrier must not cap the carrier",
+    );
+}
+
+#[test]
+fn carrier_failure_caps_h3_independently_of_site_health() {
+    use crate::config::TransportMode;
+    use crate::manager::probe::outcome::ProbeOutcome;
+
+    let mut cfg = vless_xhttp_primary();
+    cfg.fallbacks = vec![ws_fallback(false)];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // Carrier handshake down. `tcp_ok = true` cannot really co-occur with a
+    // dead carrier — pinning it true here isolates the trigger: the cap must
+    // key on `tcp_carrier_ok`, not `tcp_ok`.
+    let outcome = ProbeOutcome {
+        tcp_ok: true,
+        tcp_carrier_ok: false,
+        udp_ok: true,
+        udp_carrier_ok: true,
+        udp_applicable: false,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    };
+    let uplink = manager.uplinks()[0].clone();
+    let mut tcp_recovery = Vec::new();
+    let mut udp_recovery = Vec::new();
+    let _ = manager.process_probe_ok(
+        0,
+        &uplink,
+        outcome,
+        TransportMode::XhttpH3,
+        TransportMode::XhttpH3,
+        &mut tcp_recovery,
+        &mut udp_recovery,
+    );
+    assert_eq!(
+        manager.read_status_for_test(0).tcp.descent.capped_to(),
+        Some(TransportMode::XhttpH2),
+        "a carrier handshake failure must cap H3 → H2 regardless of site health",
+    );
 }
 
 #[test]
@@ -773,7 +866,9 @@ fn xhttp_step_down_gated_by_min_failures() {
 
     let make_failed_outcome = || ProbeOutcome {
         tcp_ok: false,
+        tcp_carrier_ok: false,
         udp_ok: false,
+        udp_carrier_ok: false,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -837,7 +932,9 @@ fn xhttp_walk_up_after_consecutive_successes_on_capped_carrier() {
 
     let make_ok_outcome = || ProbeOutcome {
         tcp_ok: true,
+        tcp_carrier_ok: true,
         udp_ok: true,
+        udp_carrier_ok: true,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -902,7 +999,9 @@ fn xhttp_walk_up_holds_below_min_failures() {
 
     let outcome = ProbeOutcome {
         tcp_ok: true,
+        tcp_carrier_ok: true,
         udp_ok: true,
+        udp_carrier_ok: true,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -950,7 +1049,9 @@ fn xhttp_walk_up_holds_at_one_below_configured() {
 
     let make_ok = || ProbeOutcome {
         tcp_ok: true,
+        tcp_carrier_ok: true,
         udp_ok: true,
+        udp_carrier_ok: true,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -993,7 +1094,9 @@ fn xhttp_recovery_push_for_vless_when_walk_up_does_not_clear_cap() {
 
     let outcome = ProbeOutcome {
         tcp_ok: true,
+        tcp_carrier_ok: true,
         udp_ok: true,
+        udp_carrier_ok: true,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -1059,7 +1162,9 @@ fn xhttp_recovery_cooldown_blocks_recovery_push_until_expiry() {
     // queue another recovery probe — the cooldown is in effect.
     let outcome = ProbeOutcome {
         tcp_ok: true,
+        tcp_carrier_ok: true,
         udp_ok: true,
+        udp_carrier_ok: true,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -1111,7 +1216,9 @@ fn xhttp_post_recovery_grace_absorbs_consecutive_probe_fails_until_min_failures(
 
     let make_failed = || ProbeOutcome {
         tcp_ok: false,
+        tcp_carrier_ok: false,
         udp_ok: false,
+        udp_carrier_ok: false,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -1171,7 +1278,9 @@ fn xhttp_post_recovery_grace_counter_reset_by_probe_success_between_fails() {
 
     let make_failed = || ProbeOutcome {
         tcp_ok: false,
+        tcp_carrier_ok: false,
         udp_ok: false,
+        udp_carrier_ok: false,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -1180,7 +1289,9 @@ fn xhttp_post_recovery_grace_counter_reset_by_probe_success_between_fails() {
     };
     let make_ok = || ProbeOutcome {
         tcp_ok: true,
+        tcp_carrier_ok: true,
         udp_ok: true,
+        udp_carrier_ok: true,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -1421,7 +1532,9 @@ fn xhttp_recovery_streak_reset_when_cap_changes_via_descent() {
     // immediately, so the cap descends one rank to H1.
     let outcome = ProbeOutcome {
         tcp_ok: false,
+        tcp_carrier_ok: false,
         udp_ok: false,
+        udp_carrier_ok: false,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -1502,7 +1615,9 @@ fn ws_walk_up_holds_at_one_below_configured() {
 
     let make_ok = || ProbeOutcome {
         tcp_ok: true,
+        tcp_carrier_ok: true,
         udp_ok: true,
+        udp_carrier_ok: true,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -1629,7 +1744,9 @@ fn ws_chain_walks_full_h3_h2_h1_descent() {
 
     let make_failed = || ProbeOutcome {
         tcp_ok: false,
+        tcp_carrier_ok: false,
         udp_ok: false,
+        udp_carrier_ok: false,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -1707,7 +1824,9 @@ fn xhttp_post_recovery_grace_renewed_by_probe_success_across_wide_gap() {
 
     let make_ok = || ProbeOutcome {
         tcp_ok: true,
+        tcp_carrier_ok: true,
         udp_ok: true,
+        udp_carrier_ok: true,
         udp_applicable: true,
         tcp_latency: None,
         udp_latency: None,
@@ -2056,7 +2175,9 @@ fn probe_recovery_snaps_active_wire_back_to_primary() {
         0,
         ProbeOutcome {
             tcp_ok: true,
+            tcp_carrier_ok: true,
             udp_ok: false,
+            udp_carrier_ok: false,
             udp_applicable: false,
             tcp_latency: None,
             udp_latency: None,
@@ -2075,7 +2196,9 @@ fn probe_recovery_snaps_active_wire_back_to_primary() {
         0,
         ProbeOutcome {
             tcp_ok: true,
+            tcp_carrier_ok: true,
             udp_ok: false,
+            udp_carrier_ok: false,
             udp_applicable: false,
             tcp_latency: None,
             udp_latency: None,
@@ -2257,7 +2380,9 @@ async fn probe_failure_advances_active_wire_without_dials() {
         0,
         ProbeOutcome {
             tcp_ok: false,
+            tcp_carrier_ok: false,
             udp_ok: false,
+            udp_carrier_ok: false,
             udp_applicable: false,
             tcp_latency: None,
             udp_latency: None,
@@ -2273,7 +2398,9 @@ async fn probe_failure_advances_active_wire_without_dials() {
         0,
         ProbeOutcome {
             tcp_ok: false,
+            tcp_carrier_ok: false,
             udp_ok: false,
+            udp_carrier_ok: false,
             udp_applicable: false,
             tcp_latency: None,
             udp_latency: None,
@@ -2307,7 +2434,9 @@ async fn probe_failure_does_not_advance_when_no_fallback_configured() {
             0,
             ProbeOutcome {
                 tcp_ok: false,
+                tcp_carrier_ok: false,
                 udp_ok: false,
+                udp_carrier_ok: false,
                 udp_applicable: false,
                 tcp_latency: None,
                 udp_latency: None,
@@ -3131,7 +3260,9 @@ fn shuffle_timer_suppresses_probe_driven_early_failback() {
     let uplink_handle = manager.uplinks()[0].clone();
     let ok_outcome = || crate::manager::probe::outcome::ProbeOutcome {
         tcp_ok: true,
+        tcp_carrier_ok: true,
         udp_ok: true,
+        udp_carrier_ok: true,
         udp_applicable: true,
         tcp_latency: Some(std::time::Duration::from_millis(50)),
         udp_latency: Some(std::time::Duration::from_millis(50)),
@@ -3181,7 +3312,9 @@ fn shuffle_timer_unset_keeps_legacy_early_failback() {
     let uplink_handle = manager.uplinks()[0].clone();
     let ok_outcome = || crate::manager::probe::outcome::ProbeOutcome {
         tcp_ok: true,
+        tcp_carrier_ok: true,
         udp_ok: true,
+        udp_carrier_ok: true,
         udp_applicable: true,
         tcp_latency: Some(std::time::Duration::from_millis(50)),
         udp_latency: Some(std::time::Duration::from_millis(50)),

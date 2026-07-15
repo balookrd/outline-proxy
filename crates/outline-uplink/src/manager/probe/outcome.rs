@@ -12,11 +12,23 @@ use super::super::status::PerTransportStatus;
 
 #[derive(Debug)]
 pub(crate) struct ProbeOutcome {
+    /// Inner data-path (site-reachability) health: TLS/HTTP/DNS round-trip
+    /// through the tunnel to a real edge succeeded. Drives per-transport
+    /// health and wire-failover.
     pub(crate) tcp_ok: bool,
+    /// Outer-carrier health: the WS/TLS-upgrade (or QUIC) handshake to *our*
+    /// uplink server came up. Drives the `H3 → H2 → H1` mode-downgrade cascade
+    /// — and only it, so a dead exit leg (`tcp_ok == false`) with a live
+    /// carrier (`tcp_carrier_ok == true`) never trips a downgrade that would
+    /// only rewrite the healthy outer carrier. Mirrors `tcp_ok` when no
+    /// dedicated carrier (WS) sub-probe runs.
+    pub(crate) tcp_carrier_ok: bool,
     /// false when the uplink has no `udp_ws_url` — means "UDP not applicable",
     /// not "UDP probe failed".  Health and standby tracking are skipped in
     /// this case so that Grafana shows empty (unknown) rather than red (0).
     pub(crate) udp_ok: bool,
+    /// UDP counterpart of [`Self::tcp_carrier_ok`].
+    pub(crate) udp_carrier_ok: bool,
     pub(crate) udp_applicable: bool,
     pub(crate) tcp_latency: Option<Duration>,
     pub(crate) udp_latency: Option<Duration>,
@@ -515,10 +527,10 @@ impl UplinkManager {
         // a recovery re-probe is needed, so the recovery push reflects
         // the post-walk-up state — otherwise we'd schedule a recovery
         // probe against a cap that walk-up already cleared.
-        if result.tcp_ok {
+        if result.tcp_carrier_ok {
             self.walk_up_mode_downgrade(index, TransportKind::Tcp);
         }
-        if result.udp_applicable && result.udp_ok {
+        if result.udp_applicable && result.udp_carrier_ok {
             self.walk_up_mode_downgrade(index, TransportKind::Udp);
         }
         // Recompute carrier-recovery need from the post-walk-up state.
@@ -527,7 +539,7 @@ impl UplinkManager {
         // tests the configured carrier directly to drop the cap early.
         let (needs_h3_tcp_recovery, needs_h3_udp_recovery) = {
             let s = self.inner.read_status(index);
-            let tcp = result.tcp_ok
+            let tcp = result.tcp_carrier_ok
                 && needs_carrier_recovery(
                     &s.tcp,
                     effective_tcp_mode,
@@ -536,7 +548,7 @@ impl UplinkManager {
                     now,
                 );
             let udp = result.udp_applicable
-                && result.udp_ok
+                && result.udp_carrier_ok
                 && needs_carrier_recovery(
                     &s.udp,
                     effective_udp_mode,
@@ -567,24 +579,34 @@ impl UplinkManager {
                 manager.drain_standby_pool(index, TransportKind::Udp).await;
             });
         }
-        // Route transport-level probe failures through the unified
+        // Route *carrier*-level probe failures through the unified
         // mode-downgrade helper. Covers both families (WS+H3 → H2 and
         // VLESS+XHTTP H3 → H2 → H1); a no-op for transports the
         // helper doesn't know how to step down (Shadowsocks, WS+H1).
+        //
+        // Keyed on `*_carrier_ok`, NOT `*_ok`: the cascade rewrites the outer
+        // carrier between us and the uplink server, so only a failure of that
+        // carrier handshake may drive it. A dead/slow *exit* leg fails
+        // `*_ok` (site-reachability) while `*_carrier_ok` stays true — capping
+        // H3→H2 there would strand traffic on a slower carrier (TCP-over-TCP)
+        // without touching the actual problem, which lives past the uplink
+        // server. Site-reachability failures instead drive health and
+        // wire-failover above.
+        //
         // The helper's `min_failures` descent gate keeps a single
         // flaky probe at the capped carrier from immediately stepping
         // the cap further down — a streak is required before each
         // descent. Recovery probes (above) plus the reactive walk-up
         // path together restore the cap as soon as the capped carrier
         // proves stable again.
-        if !result.tcp_ok && !tcp_skip_escalation {
+        if !result.tcp_carrier_ok && !tcp_skip_escalation {
             self.extend_mode_downgrade(
                 index,
                 TransportKind::Tcp,
                 ModeDowngradeTrigger::ProbeTransportFailure(effective_tcp_mode),
             );
         }
-        if result.udp_applicable && !result.udp_ok && !udp_skip_escalation {
+        if result.udp_applicable && !result.udp_carrier_ok && !udp_skip_escalation {
             self.extend_mode_downgrade(
                 index,
                 TransportKind::Udp,
