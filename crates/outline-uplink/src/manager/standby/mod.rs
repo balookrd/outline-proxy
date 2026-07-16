@@ -2,6 +2,9 @@ mod ctx;
 mod keepalive;
 mod refill;
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +42,27 @@ fn capped_or_configured(
 use crate::types::{TransportKind, UplinkCandidate, UplinkManager};
 
 const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
+
+/// What a fresh TCP WebSocket dial presents to the server, and which carrier
+/// it asks for. `Default` is the fresh-dial shape: no resume ID, no replay
+/// capabilities, cap honoured.
+#[derive(Default)]
+struct FreshTcpDial {
+    /// The Session ID to present as `X-Outline-Resume`. `None` on every fresh
+    /// dial (the server mints one); `Some` only on a redial of the session
+    /// that was issued this exact ID.
+    resume_request: Option<SessionId>,
+    ack_prefix_requested: bool,
+    symmetric_replay_requested: bool,
+    client_acked_offset: u64,
+    /// Ask for the *configured* carrier, ignoring any active mode-downgrade
+    /// cap. Set only by the paths that rescue a **live** session onto a fresh
+    /// carrier — TUN carrier migration and the SOCKS mid-session retry — since
+    /// the carrier such a dial lands on is the one that session keeps for the
+    /// rest of its life. See
+    /// [`UplinkManager::connect_tcp_ws_migrate_with_ack_prefix`].
+    bypass_mode_downgrade: bool,
+}
 
 /// Composes the cache key used by the cross-transport resumption
 /// helpers in [`outline_transport::global_resume_cache`]. The form
@@ -140,7 +164,7 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<TransportStream> {
-        self.connect_tcp_ws_fresh_internal(candidate, source, None, false, false, 0)
+        self.connect_tcp_ws_fresh_internal(candidate, source, FreshTcpDial::default())
             .await
     }
 
@@ -160,8 +184,12 @@ impl UplinkManager {
         source: &'static str,
         resume_request: Option<SessionId>,
     ) -> Result<TransportStream> {
-        self.connect_tcp_ws_fresh_internal(candidate, source, resume_request, false, false, 0)
-            .await
+        self.connect_tcp_ws_fresh_internal(
+            candidate,
+            source,
+            FreshTcpDial { resume_request, ..Default::default() },
+        )
+        .await
     }
 
     /// Redial variant for the mid-session retry / soft-switch path.
@@ -183,8 +211,16 @@ impl UplinkManager {
         source: &'static str,
         resume_request: Option<SessionId>,
     ) -> Result<TransportStream> {
-        self.connect_tcp_ws_fresh_internal(candidate, source, resume_request, true, false, 0)
-            .await
+        self.connect_tcp_ws_fresh_internal(
+            candidate,
+            source,
+            FreshTcpDial {
+                resume_request,
+                ack_prefix_requested: true,
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     /// Variant used by the v2 Symmetric Downlink Replay retry path:
@@ -205,25 +241,107 @@ impl UplinkManager {
         self.connect_tcp_ws_fresh_internal(
             candidate,
             source,
-            resume_request,
-            true,
-            true,
-            client_acked_offset,
+            FreshTcpDial {
+                resume_request,
+                ack_prefix_requested: true,
+                symmetric_replay_requested: true,
+                client_acked_offset,
+                ..Default::default()
+            },
         )
         .await
+    }
+
+    /// Migration variant of [`Self::connect_tcp_ws_redial_with_ack_prefix`]:
+    /// same resume presentation, but asks for the uplink's **configured**
+    /// carrier and ignores any active mode-downgrade cap.
+    ///
+    /// A carrier migration is triggered *by* a carrier death, and that same
+    /// death is reported as a runtime failure — which caps the
+    /// carrier one rank down (`ws_h3` → `ws_h2`) for `mode_downgrade_secs`.
+    /// Honouring the cap here hands every rescued flow a TCP-over-TCP carrier
+    /// that it then keeps for the rest of its life (nothing migrates a live
+    /// flow back up), so a long download rescued from a dead H3 carrier
+    /// crawls where it used to reset and reconnect at full speed. This is the
+    /// same reason the migration dial bypasses the candidate filter — see
+    /// `redial_tcp_uplink_for_migration` in `outline-tun`.
+    ///
+    /// The reporter need not be the rescued flow itself. A shared H3 carrier
+    /// dies for every flow riding it at once, so the cap is just as likely to
+    /// arrive from a sibling flow, the standby refill loop or the probe loop —
+    /// which is why the SOCKS mid-session retry
+    /// (`redial_for_mid_session_retry` in `outline-ws-rust`) dials through here
+    /// too, even though it reports its own runtime failure only after its relay
+    /// loop has given up.
+    ///
+    /// This is not a bet on the configured carrier being alive:
+    /// `connect_transport` still falls back `h3 → h2 → h1` inline when the
+    /// dial really fails, so a genuinely broken carrier lands the flow exactly
+    /// where the cap would have put it — and the resulting stream still
+    /// reports `downgraded_from`, so the window is extended as before.
+    pub async fn connect_tcp_ws_migrate_with_ack_prefix(
+        &self,
+        candidate: &UplinkCandidate,
+        source: &'static str,
+        resume_request: Option<SessionId>,
+    ) -> Result<TransportStream> {
+        self.connect_tcp_ws_fresh_internal(
+            candidate,
+            source,
+            FreshTcpDial {
+                resume_request,
+                ack_prefix_requested: true,
+                bypass_mode_downgrade: true,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Migration counterpart of
+    /// [`Self::connect_tcp_ws_redial_with_symmetric_replay`] — see
+    /// [`Self::connect_tcp_ws_migrate_with_ack_prefix`] for why the migration
+    /// dial ignores the mode-downgrade cap.
+    pub async fn connect_tcp_ws_migrate_with_symmetric_replay(
+        &self,
+        candidate: &UplinkCandidate,
+        source: &'static str,
+        resume_request: Option<SessionId>,
+        client_acked_offset: u64,
+    ) -> Result<TransportStream> {
+        self.connect_tcp_ws_fresh_internal(
+            candidate,
+            source,
+            FreshTcpDial {
+                resume_request,
+                ack_prefix_requested: true,
+                symmetric_replay_requested: true,
+                client_acked_offset,
+                bypass_mode_downgrade: true,
+            },
+        )
+        .await
+    }
+
+    /// The carrier a fresh dial asks for: the effective (capped) mode, or the
+    /// configured one when the caller bypasses the cap.
+    async fn tcp_dial_mode_for(
+        &self,
+        candidate: &UplinkCandidate,
+        bypass_mode_downgrade: bool,
+    ) -> crate::config::TransportMode {
+        if bypass_mode_downgrade {
+            candidate.uplink.tcp_dial_mode()
+        } else {
+            self.effective_tcp_mode(candidate.index).await
+        }
     }
 
     async fn connect_tcp_ws_fresh_internal(
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
-        // The Session ID to present as `X-Outline-Resume`. `None` on every
-        // fresh dial (the server mints a new one); `Some` only on a redial
-        // of the session that was issued this exact ID.
-        resume_request: Option<SessionId>,
-        ack_prefix_requested: bool,
-        symmetric_replay_requested: bool,
-        client_acked_offset: u64,
+        dial: FreshTcpDial,
     ) -> Result<TransportStream> {
         let cache = self.inner.dns_cache.as_ref();
         if !matches!(candidate.uplink.transport, UplinkTransport::Ss | UplinkTransport::Vless) {
@@ -235,11 +353,12 @@ impl UplinkManager {
             &candidate.uplink.name,
             "miss",
         );
-        let mode = self.effective_tcp_mode(candidate.index).await;
+        let mode = self.tcp_dial_mode_for(candidate, dial.bypass_mode_downgrade).await;
         debug!(
             uplink = %candidate.uplink.name,
             mode = %mode,
-            ack_prefix_requested,
+            ack_prefix_requested = dial.ack_prefix_requested,
+            bypass_mode_downgrade = dial.bypass_mode_downgrade,
             "no warm-standby TCP websocket available, dialing on-demand"
         );
         let url = candidate
@@ -265,10 +384,10 @@ impl UplinkManager {
                     })
                     .with_combined_ss_kind(candidate.uplink.combined_ss_kind(SsPathKind::Tcp))
                     .with_resume(DialResumeOptions {
-                        resume_request,
-                        ack_prefix_requested,
-                        symmetric_replay_requested,
-                        client_acked_offset,
+                        resume_request: dial.resume_request,
+                        ack_prefix_requested: dial.ack_prefix_requested,
+                        symmetric_replay_requested: dial.symmetric_replay_requested,
+                        client_acked_offset: dial.client_acked_offset,
                     }),
             ),
         )
