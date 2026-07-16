@@ -340,11 +340,28 @@ fn record_delivery(
     // mid-recovery, while the ACK that closes the hole frees everything at once.
     if let Some(sample) = rate_sample {
         let ack_interval = now.saturating_duration_since(sample.prior_mstamp);
+        // When the send interval wins that max(), the flight left the stack
+        // slower than the path returned it: the quotient below is the rate *we*
+        // paced at, not the rate the path can carry. Treat it like an
+        // app-limited sample — it may raise BtlBw, never lower it — because
+        // feeding it back closes a loop the flow cannot leave: pacing is derived
+        // from BtlBw, so BtlBw = pacing = BtlBw pins the flow at whatever rate it
+        // happens to be pacing at. One such sample is harmless (the windowed max
+        // holds the honest peak), but a paced bulk transfer produces nothing else
+        // until the peak ages out of the window, and the estimate then collapses
+        // for good: the field gateway sat at BtlBw 0.3 MB/s on a link measured at
+        // 300 Mbit, min-RTT correct, no loss, 2.1 MB queued behind a 130 KB
+        // client window, emitting sub-MSS segments.
+        //
+        // A genuinely slower path does not hide here: it stretches the *ACK*
+        // interval, which wins the max() instead, so those samples stay honest
+        // and BtlBw still tracks a bottleneck downwards.
+        let pacing_limited = sample.send_interval > ack_interval;
         let interval = ack_interval.max(sample.send_interval).as_secs_f64();
         if interval > 0.0 {
             let delivered = bbr.delivered.saturating_sub(sample.prior_delivered);
             let rate = (delivered as f64 / interval) as u64;
-            if !sample.app_limited || rate > bbr.btlbw_bps {
+            if (!sample.app_limited && !pacing_limited) || rate > bbr.btlbw_bps {
                 update_bw_filter(bbr, rate);
             }
         }

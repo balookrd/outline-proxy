@@ -319,3 +319,57 @@ fn loss_cap_shrinks_the_bdp_and_inflight() {
     // 8.5 MB/s × 10 ms ≈ 85 KB.
     assert!((bdp_capped as i64 - 85_000).abs() < 5_000, "bdp={bdp_capped}");
 }
+
+/// The self-measurement loop that pinned bulk downloads to single-digit Mbit on
+/// the live gateway. Once the pacer is slow, the flight takes longer to go out
+/// than it takes to be ACKed, so `send_interval` — not the path — governs the
+/// interval, and the sample reads back the pacing rate we chose. Feeding that
+/// into BtlBw closes the loop: pacing = BtlBw = pacing, and the estimate can
+/// never climb back to the real link. Field numbers: btlbw 0.3 MB/s on a link
+/// measured at 300 Mbit, min_rtt 1.9 ms (correct), loss_cap 0, pipe 0-2 KB with
+/// 2.1 MB queued and a 130 KB client window.
+///
+/// A sample the send interval floored is our own supply, not the path's
+/// capacity — the same reasoning the app-limited gate already encodes — so it
+/// may raise BtlBw but never lower it.
+#[test]
+fn a_pacing_limited_sample_cannot_lower_btlbw() {
+    let t0 = Instant::now();
+    let mut bbr = BbrState::new(t0, 0);
+
+    // A real, path-limited sample: 120 KB delivered over a 10 ms ACK interval
+    // that outran the 1 ms we spent sending it → 12 MB/s.
+    let mut honest = sample(0, t0, false);
+    honest.send_interval = Duration::from_millis(1);
+    let t1 = t0 + Duration::from_millis(10);
+    record_delivery(&mut bbr, 120_000, Some(honest), Some(Duration::from_millis(10)), t1);
+    let path_bw = bbr.btlbw_bps;
+    assert!((path_bw as i64 - 12_000_000).abs() < 1_000_000, "btlbw={path_bw}");
+
+    // Now the pacer is slow: 4800 bytes take 16 ms to leave, while the ACK for
+    // them lands 1.9 ms after the previous one. `send_interval` wins the
+    // `max()`, so each rate reads 4800/0.016 = 300 KB/s — our pacing rate, not
+    // the 12 MB/s path. `pending` stays huge throughout, so `app_limited` is
+    // false and the existing gate lets every one of them through.
+    //
+    // One such sample is harmless (the windowed max still holds the honest
+    // peak). A bulk download produces nothing else, round after round, until the
+    // peak ages out past `BBR_BW_WINDOW_ROUNDS` — and from then on BtlBw *is*
+    // the pacing rate, pacing is derived from BtlBw, and the loop is closed.
+    let mut now = t1;
+    for _ in 0..(BBR_BW_WINDOW_ROUNDS + 2) {
+        let round_mark = bbr.next_round_delivered;
+        now += Duration::from_micros(1900);
+        let mut paced = sample(round_mark, now - Duration::from_micros(1900), false);
+        paced.send_interval = Duration::from_millis(16);
+        record_delivery(&mut bbr, 4_800, Some(paced), Some(Duration::from_micros(1900)), now);
+    }
+
+    assert_eq!(
+        bbr.btlbw_bps, path_bw,
+        "pacing-limited samples dragged BtlBw from {path_bw} down to {} B/s: the \
+         estimate now reads back the pacer's own rate, so pacing = BtlBw = pacing \
+         and the flow can never climb back to the real link",
+        bbr.btlbw_bps
+    );
+}
