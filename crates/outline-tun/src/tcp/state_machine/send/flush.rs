@@ -83,10 +83,23 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<ServerDataPacket>> 
             break;
         }
         let payload_len: usize = payload.iter().map(Bytes::len).sum();
-        // App-limited when nothing remains queued after this write: the
-        // delivery-rate sample reflects our supply, not the path, so BBR may
-        // only let it raise BtlBw, never lower it.
-        let app_limited = state.pending_server_data.is_empty();
+        // App-limited, as `tcp_rate_check_app_limited` defines it: the queue ran
+        // dry *and* there was still window to send into — our supply, not the
+        // window, is what ended this flight, so the delivery-rate sample
+        // measures us rather than the path and may only raise BtlBw.
+        //
+        // The window half is not optional. `pending.is_empty()` alone marks most
+        // segments of a bandwidth-limited bulk transfer too: the reader hands
+        // over one chunk, the flush ships it, and the queue is empty again — so
+        // the flag was set on flights that were in fact congestion-limited and
+        // whose samples must be allowed to lower BtlBw. Copying canonical BBR's
+        // app-limited rules onto that broken flag is what sank 3d0d495 (STARTUP
+        // never ended, the stack offered the last hop 2.9x its measured
+        // bandwidth, and the loss cap collapsed onto its floor). When the window
+        // is what stopped the flight, the flight is congestion-limited: not
+        // app-limited, whatever the queue looks like afterwards.
+        let app_limited =
+            state.pending_server_data.is_empty() && (available_window as usize) > payload_len;
 
         let sequence_number = state.server_seq;
         let acknowledgement_number = state.rcv_nxt;
