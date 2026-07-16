@@ -72,3 +72,7 @@ pub(super) use types::{
     TcpFlowStatus, reclaim_flow_queue_capacity,
 };
 pub(crate) use types::{UpstreamCarrier, UpstreamWriter};
+
+/// Test-only hook: drive the BBR estimator + mode machine over one ACK.
+#[cfg(test)]
+pub(in crate::tcp) use bbr::on_ack as bbr_on_ack_for_tests;
