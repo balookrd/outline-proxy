@@ -178,9 +178,14 @@ async fn redial_tcp_uplink_for_migration_inner(
     symmetric_replay: bool,
 ) -> Result<(TcpWriter, TcpReader, Option<SessionId>)> {
     let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+    // The migrate-* dials ask for the configured carrier rather than the
+    // capped one: the carrier death we are recovering from has just capped
+    // this uplink's mode (h3 -> h2), and a flow handed the capped carrier
+    // keeps it for the rest of its life. See
+    // `connect_tcp_ws_migrate_with_ack_prefix`.
     let ws = if symmetric_replay {
         uplinks
-            .connect_tcp_ws_redial_with_symmetric_replay(
+            .connect_tcp_ws_migrate_with_symmetric_replay(
                 candidate,
                 "tun_tcp_migrate",
                 Some(resume_request),
@@ -189,7 +194,7 @@ async fn redial_tcp_uplink_for_migration_inner(
             .await?
     } else {
         uplinks
-            .connect_tcp_ws_redial_with_ack_prefix(
+            .connect_tcp_ws_migrate_with_ack_prefix(
                 candidate,
                 "tun_tcp_migrate",
                 Some(resume_request),
