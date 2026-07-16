@@ -1205,6 +1205,67 @@ async fn incremental_pipe_accounting_matches_scan_through_ack_sack_retransmit() 
     assert!(!state.unacked_reordered);
 }
 
+/// `app_limited` must mean "our supply ended the flight", not "the queue is
+/// empty right now". A bulk transfer whose flush was stopped by the send window
+/// is congestion-limited: its delivery-rate sample measures the path and must
+/// stay eligible to lower BtlBw. Marking it app-limited is what let BtlBw drift
+/// upward unchecked — the stack then offers the last hop more than it can drain,
+/// and the loss cap collapses onto its floor (the 3d0d495 regression).
+#[tokio::test]
+async fn a_flight_the_window_cut_short_is_not_app_limited() {
+    let mut state = tcp_flow_state_for_tests().await;
+    let mss = super::MAX_SERVER_SEGMENT_PAYLOAD;
+    state.congestion_window = mss * 100;
+    state.slow_start_threshold = mss * 100;
+    state.server_seq = 1000;
+    // Exactly 2 MSS of window, and exactly 2 MSS queued: the window and the
+    // queue run out on the very same write. The queue being empty afterwards is
+    // incidental — the window is what bounded the flight.
+    let window = (mss * 2) as u32;
+    state.client_window = window;
+    state.client_window_end = 1000u32.wrapping_add(window);
+    state.pending_server_data = VecDeque::from([vec![7u8; mss * 2].into()]);
+    state.pending_server_bytes_total = mss * 2;
+
+    super::state_machine::flush_server_output(&mut state).unwrap();
+
+    assert!(state.pending_server_data.is_empty(), "the queue did drain");
+    assert!(
+        state
+            .unacked_server_segments
+            .iter()
+            .all(|segment| !segment.app_limited),
+        "a flight the window cut short is congestion-limited, not app-limited",
+    );
+}
+
+/// The other side of the same rule: nothing left to send while window remains is
+/// genuinely app-limited, and that sample must not be allowed to lower BtlBw.
+#[tokio::test]
+async fn a_flight_that_ran_out_of_data_with_window_to_spare_is_app_limited() {
+    let mut state = tcp_flow_state_for_tests().await;
+    let mss = super::MAX_SERVER_SEGMENT_PAYLOAD;
+    state.congestion_window = mss * 100;
+    state.slow_start_threshold = mss * 100;
+    state.server_seq = 1000;
+    // Plenty of window, one MSS queued: our supply is what ends the flight.
+    let window = (mss * 10) as u32;
+    state.client_window = window;
+    state.client_window_end = 1000u32.wrapping_add(window);
+    state.pending_server_data = VecDeque::from([vec![7u8; mss].into()]);
+    state.pending_server_bytes_total = mss;
+
+    super::state_machine::flush_server_output(&mut state).unwrap();
+
+    assert!(
+        state
+            .unacked_server_segments
+            .iter()
+            .all(|segment| segment.app_limited),
+        "queue dry with window to spare is app-limited",
+    );
+}
+
 #[tokio::test]
 async fn flush_fills_exactly_the_send_window_and_tracks_pipe() {
     // The flush loop decrements `available_window` per write instead of
