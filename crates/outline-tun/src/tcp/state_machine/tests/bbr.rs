@@ -257,51 +257,325 @@ fn zero_ceiling_leaves_bandwidth_uncapped() {
     assert_eq!(pacing_rate_from(&bbr), 10_000_000, "no ceiling → raw rate");
 }
 
-#[test]
-fn loss_backs_off_pacing_cap_and_relaxes_on_clean_rounds() {
-    let mut bbr = BbrState::new(Instant::now(), 0);
-    bbr.btlbw_bps = 10_000_000;
+/// A flow cruising in PROBE_BW — the state a bulk download spends its life in,
+/// and the only one where the loss cap may move (STARTUP and the gain-up phase
+/// are probes, and a probe must not cap itself).
+fn cruising(t0: Instant) -> BbrState {
+    let mut bbr = BbrState::new(t0, 0);
+    bbr.mode = BbrMode::ProbeBw;
     bbr.pacing_gain = 1.0;
-    assert_eq!(pacing_rate_from(&bbr), 10_000_000, "no loss → full BtlBw");
-
-    // One loss episode backs the effective rate off ~15%.
-    note_loss(&mut bbr);
-    assert_eq!(bbr.loss_cap_bps, 8_500_000);
-    assert_eq!(pacing_rate_from(&bbr), 8_500_000, "pacing follows the loss cap");
-
-    // A second episode compounds the back-off.
-    note_loss(&mut bbr);
-    assert_eq!(bbr.loss_cap_bps, 7_225_000);
-
-    // Loss-free rounds relax the cap back up; it catches BtlBw and clears,
-    // restoring full speed once the last hop stops dropping.
-    for _ in 0..200 {
-        relax_loss_cap(&mut bbr, false);
-        if bbr.loss_cap_bps == 0 {
-            break;
-        }
-    }
-    assert_eq!(bbr.loss_cap_bps, 0, "clean rounds restore full speed");
-    assert_eq!(pacing_rate_from(&bbr), 10_000_000);
+    bbr.cwnd_gain = BBR_CWND_GAIN;
+    bbr.min_rtt = Duration::from_millis(2);
+    bbr
 }
 
-#[test]
-fn loss_cap_is_floored_and_holds_on_a_lossy_round() {
-    let mut bbr = BbrState::new(Instant::now(), 0);
-    bbr.btlbw_bps = 200_000; // ~1.6 Mbit, close to the floor
-    bbr.pacing_gain = 1.0;
-    for _ in 0..20 {
-        note_loss(&mut bbr);
+/// Drive one round: `lost` bytes retransmitted, then `delivered` bytes ACKed
+/// `ack_interval` after the previous ACK — so the round's delivery rate reads
+/// `delivered / ack_interval`.
+fn drive_round(
+    bbr: &mut BbrState,
+    now: &mut Instant,
+    delivered: u64,
+    lost: usize,
+    ack_interval: Duration,
+) {
+    if lost > 0 {
+        note_loss(bbr);
+        note_bytes_lost(bbr, lost);
     }
-    assert_eq!(
-        bbr.loss_cap_bps, BBR_LOSS_CAP_FLOOR_BPS,
-        "back-off cannot collapse below the floor"
+    let prior_delivered = bbr.delivered;
+    let prior_mstamp = *now;
+    *now += ack_interval;
+    record_delivery(
+        bbr,
+        delivered,
+        Some(sample(prior_delivered, prior_mstamp, false)),
+        Some(Duration::from_millis(2)),
+        *now,
     );
+}
 
-    // A round that saw loss must not grow the cap (the flag gates the relax).
-    let before = bbr.loss_cap_bps;
-    relax_loss_cap(&mut bbr, true);
-    assert_eq!(bbr.loss_cap_bps, before, "lossy round must not relax the cap");
+/// The field regression this rewrite exists for. A mac on Wi-Fi pulling a file
+/// through the gateway: the radio drops a segment now and then, which is a
+/// property of the medium, not a queue — every drop is recovered and the link
+/// keeps handing back its full ~9 MB/s throughout.
+///
+/// The predecessor rule counted *episodes*: each of those isolated drops raised
+/// 3 dup-ACKs → one fast-recovery entry → one `note_loss` → cap ×= 0.85, from a
+/// basis of the cap itself. Five of them across the download compounded to
+/// 0.85^5 = 0.44 and pinned a 33 MB/s path at 3.49 MB/s — measured on the box at
+/// `bbr_loss_cap_bytes_per_second = 3494119` with `loss_episodes_total = 5`.
+///
+/// Loss this far under `BBR_LOSS_THRESH` must never reach the cap at all.
+#[test]
+fn sporadic_loss_on_a_healthy_link_does_not_cap() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    let mut now = t0;
+
+    let round_len = Duration::from_millis(5);
+    let per_round = 45_000u64; // 45 KB / 5 ms = 9 MB/s, the link's real rate.
+
+    // 200 rounds ≈ 9 MB, one segment dropped every 40th — the field's five
+    // episodes, at the same order of loss rate (~0.07%).
+    for i in 0..200 {
+        let lost = if i % 40 == 0 { 1_200 } else { 0 };
+        drive_round(&mut bbr, &mut now, per_round, lost, round_len);
+    }
+
+    assert_eq!(bbr.loss_episodes, 5, "the episodes still happened and are still counted");
+    assert_eq!(
+        bbr.loss_cap_bps, 0,
+        "sporadic radio loss capped a healthy link at {} B/s: the medium drops \
+         packets, which is not a congestion signal, and the flow delivered its \
+         full {per_round} B every round throughout",
+        bbr.loss_cap_bps,
+    );
+    assert!(
+        bbr.btlbw_bps > 8_000_000,
+        "BtlBw should still see the ~9 MB/s link, got {}",
+        bbr.btlbw_bps
+    );
+}
+
+/// The clamp, isolated: even at a loss rate well over the threshold, a link that
+/// keeps delivering its full rate cannot be capped below that rate.
+///
+/// This is canonical BBRv2's `max(bw_latest, bw_lo × (1 - beta))` — "we do not
+/// cut our short-term estimates lower than the current rate and volume of
+/// delivered data from this round trip". It is the difference between "the path
+/// is lossy" and "the path is congested", and the old rule had no equivalent:
+/// its cap descended on episode count alone, all the way to a 1 Mbit floor, no
+/// matter what the link was demonstrably carrying.
+#[test]
+fn the_bw_latest_floor_stops_the_cap_descending_below_what_the_link_delivers() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    let mut now = t0;
+
+    let round_len = Duration::from_millis(5);
+    let per_round = 45_000u64; // Still a full 9 MB/s...
+    let lost = 4_500usize; // ...while 10% of the bytes need resending.
+
+    for _ in 0..100 {
+        drive_round(&mut bbr, &mut now, per_round, lost, round_len);
+    }
+
+    assert!(
+        bbr.loss_cap_bps == 0 || bbr.loss_cap_bps >= 8_500_000,
+        "cap resolved to {} B/s, below the ~9 MB/s the link kept delivering",
+        bbr.loss_cap_bps,
+    );
+    assert!(
+        pacing_rate_from(&bbr) >= 8_500_000,
+        "pacing fell to {} B/s on a link still carrying 9 MB/s",
+        pacing_rate_from(&bbr),
+    );
+}
+
+/// The floor must be measured over the same bytes as the loss rate it floors.
+///
+/// Caught on the live gateway. `bw_latest` was restarted every *round* (as the
+/// canon does — there a round is also the loss-measurement interval), while our
+/// window spans several rounds because it needs `BBR_LOSS_MIN_SAMPLE_BYTES`
+/// before its ratio can be trusted. One short round's best sample does not
+/// represent them: the box logged `bw_latest=463531` against `btlbw=3508047` on
+/// a flow pulling 3.5 MB/s, so `× 0.85` won the `max()` and the clamp — the
+/// entire point of this rewrite — never bound. Every unit test still passed,
+/// because they all drove uniform rounds where the two intervals agree.
+#[test]
+fn the_floor_accumulates_across_the_rounds_the_window_spans() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    let mut now = t0;
+
+    // A round carrying the link's full 9 MB/s...
+    drive_round(&mut bbr, &mut now, 45_000, 0, Duration::from_millis(5));
+    let after_fast = bbr.bw_latest_bps;
+    assert!(after_fast > 8_000_000, "bw_latest={after_fast} after a full-rate round");
+
+    // ...then a nearly idle one. The window is still far short of
+    // `BBR_LOSS_MIN_SAMPLE_BYTES`, so it has not closed — and the floor must
+    // still remember what the link just carried.
+    drive_round(&mut bbr, &mut now, 500, 0, Duration::from_millis(5));
+    assert_eq!(
+        bbr.bw_latest_bps, after_fast,
+        "a round boundary erased the floor mid-window: it now reads {} B/s on a \
+         link that delivered {after_fast} B/s inside the very window the loss \
+         rate is being read over",
+        bbr.bw_latest_bps,
+    );
+}
+
+/// The clamp, at the level of the rule itself: a cap already pulled low must be
+/// lifted back to what the link delivered over the window, not backed off again.
+#[test]
+fn the_floor_lifts_a_cap_that_sits_below_what_the_link_delivered() {
+    let mut bbr = cruising(Instant::now());
+    bbr.btlbw_bps = 9_000_000;
+    // Where the old episode-counting rule would have driven it.
+    bbr.loss_cap_bps = 1_000_000;
+    // 7.7% loss — over the threshold — but the link still carried 9 MB/s.
+    bbr.lost_in_window = 10_000;
+    bbr.delivered_in_window = 120_000;
+    bbr.bw_latest_bps = 9_000_000;
+
+    adapt_loss_cap(&mut bbr);
+
+    assert_eq!(
+        bbr.loss_cap_bps, 9_000_000,
+        "the floor must lift the cap to what the link delivered, not back it off \
+         to {}",
+        bbr.loss_cap_bps
+    );
+    assert_eq!(bbr.bw_latest_bps, 0, "the floor restarts with the window it belongs to");
+    assert_eq!(bbr.lost_in_window, 0, "the closed window restarts");
+}
+
+/// The protection `6b74c03` bought, which must survive this rewrite: a Wi-Fi TV
+/// whose last hop is genuinely overrun. Here the drops come *with* collapsing
+/// deliveries — the link stops draining what it is offered — so `bw_latest`
+/// falls, the floor falls with it, and the cap follows the path down to what it
+/// actually carries.
+#[test]
+fn a_last_hop_that_stops_draining_is_still_capped() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    let mut now = t0;
+    let round_len = Duration::from_millis(5);
+
+    // Seed an honest 9 MB/s estimate from a clean stretch.
+    for _ in 0..20 {
+        drive_round(&mut bbr, &mut now, 45_000, 0, round_len);
+    }
+    let healthy = bbr.btlbw_bps;
+    assert!(healthy > 8_000_000, "seeded btlbw={healthy}");
+
+    // The last hop is now overrun: ~10% of bytes need resending and only 2 MB/s
+    // comes back, against the 9 MB/s the windowed-max still claims.
+    for _ in 0..100 {
+        drive_round(&mut bbr, &mut now, 10_000, 1_000, round_len);
+    }
+
+    assert!(bbr.loss_cap_bps > 0, "an overrun last hop must still engage the cap");
+    assert!(
+        bbr.loss_cap_bps < healthy,
+        "cap {} did not pull below the stale {healthy} B/s estimate",
+        bbr.loss_cap_bps,
+    );
+    // The pacer must now offer roughly what the hop drains, not what the
+    // windowed-max remembers.
+    assert!(
+        pacing_rate_from(&bbr) < 4_000_000,
+        "pacer still emitting {} B/s into a hop draining 2 MB/s",
+        pacing_rate_from(&bbr),
+    );
+}
+
+/// Loss under the threshold is noise on a radio link and must not move the
+/// model, even when the deliveries alongside it are poor.
+#[test]
+fn loss_below_the_threshold_never_reaches_the_cap() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    let mut now = t0;
+    let round_len = Duration::from_millis(5);
+
+    // 1% loss — half the threshold.
+    for _ in 0..100 {
+        drive_round(&mut bbr, &mut now, 45_000, 450, round_len);
+    }
+    assert_eq!(bbr.loss_cap_bps, 0, "1% loss is under BBR_LOSS_THRESH and must be ignored");
+}
+
+/// Canonical `bbr2_is_probing_bandwidth`. A gain-up phase deliberately offers
+/// the path more than the estimate; the loss that provokes is the probe finding
+/// the limit, which is its job. Feeding it back as evidence of congestion would
+/// make the flow cap itself for probing.
+#[test]
+fn a_bandwidth_probe_does_not_cap_itself() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    bbr.pacing_gain = BBR_PROBE_BW_GAINS[0]; // 1.25 — probing up.
+    let mut now = t0;
+    let round_len = Duration::from_millis(5);
+
+    for _ in 0..100 {
+        drive_round(&mut bbr, &mut now, 10_000, 1_000, round_len);
+    }
+    assert_eq!(bbr.loss_cap_bps, 0, "a probe must not back off against its own probing");
+
+    // The same loss outside a probe does engage the cap.
+    bbr.pacing_gain = 1.0;
+    for _ in 0..100 {
+        drive_round(&mut bbr, &mut now, 10_000, 1_000, round_len);
+    }
+    assert!(bbr.loss_cap_bps > 0, "outside a probe the same loss must cap");
+}
+
+/// Canonical `bbr2_reset_lower_bounds`. The cap bounds the pacing rate, so a
+/// probe running under one paces at the cap and can never demonstrate anything
+/// above it; nothing else raises the cap, so without this release it is a
+/// one-way ratchet.
+#[test]
+fn a_bandwidth_probe_releases_the_cap() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    bbr.btlbw_bps = 10_000_000;
+    bbr.loss_cap_bps = 2_000_000;
+
+    enter_probe_bw(&mut bbr, t0);
+    assert_eq!(bbr.loss_cap_bps, 0, "entering PROBE_BW must release the cap");
+}
+
+/// Releasing the cap for a probe must NOT discard the loss measurement.
+///
+/// Our PROBE_BW cycle is BBRv1's — 8 phases of min_rtt, so a gain-up phase comes
+/// around every ~16 ms on a sub-ms hop, where canonical BBRv2 reaches
+/// PROBE_REFILL in seconds. Clearing the window at that cadence would stop it
+/// ever reaching `BBR_LOSS_MIN_SAMPLE_BYTES` on a slow link (120 KB is 60 ms at
+/// 2 MB/s), so the cap could never engage on precisely the overrun last hop it
+/// exists for — silently undoing `6b74c03` while every other test still passed.
+#[test]
+fn releasing_the_cap_for_a_probe_keeps_the_loss_measurement() {
+    let mut bbr = cruising(Instant::now());
+    bbr.loss_cap_bps = 2_000_000;
+    bbr.lost_in_window = 5_000;
+    bbr.delivered_in_window = 40_000;
+
+    release_loss_cap(&mut bbr);
+    assert_eq!(bbr.loss_cap_bps, 0, "the probe needs the cap off to climb");
+    assert_eq!(bbr.lost_in_window, 5_000, "a probe must not erase what the path did");
+    assert_eq!(bbr.delivered_in_window, 40_000);
+}
+
+/// The slow-link case the release/reset split exists for, end to end: an overrun
+/// 2 MB/s hop, driven through repeated gain-up phases, must still get capped.
+#[test]
+fn a_slow_overrun_link_still_caps_across_repeated_probes() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    let mut now = t0;
+    let round_len = Duration::from_millis(5);
+
+    for _ in 0..20 {
+        drive_round(&mut bbr, &mut now, 45_000, 0, round_len);
+    }
+    // 10% loss on a hop now draining only 2 MB/s, with a gain-up phase every 8th
+    // round — the cadence our BBRv1 cycle actually runs at.
+    for i in 0..200 {
+        if i % 8 == 0 {
+            bbr.pacing_gain = BBR_PROBE_BW_GAINS[0];
+            release_loss_cap(&mut bbr);
+        } else {
+            bbr.pacing_gain = 1.0;
+        }
+        drive_round(&mut bbr, &mut now, 10_000, 1_000, round_len);
+    }
+    assert!(
+        bbr.loss_cap_bps > 0,
+        "the measurement never survived to engage the cap across probe phases"
+    );
 }
 
 #[test]
@@ -310,7 +584,7 @@ fn loss_cap_shrinks_the_bdp_and_inflight() {
     bbr.btlbw_bps = 10_000_000; // 10 MB/s
     bbr.min_rtt = Duration::from_millis(10);
     let bdp_full = bdp_bytes(&bbr).expect("estimate present");
-    note_loss(&mut bbr); // cap → 8.5 MB/s
+    bbr.loss_cap_bps = 8_500_000;
     let bdp_capped = bdp_bytes(&bbr).expect("estimate present");
     assert!(
         bdp_capped < bdp_full,
@@ -318,6 +592,29 @@ fn loss_cap_shrinks_the_bdp_and_inflight() {
     );
     // 8.5 MB/s × 10 ms ≈ 85 KB.
     assert!((bdp_capped as i64 - 85_000).abs() < 5_000, "bdp={bdp_capped}");
+}
+
+/// The floor is a backstop under the `bw_latest` clamp, not the mechanism: it
+/// only binds when the link itself has collapsed to near nothing.
+#[test]
+fn the_cap_cannot_collapse_below_the_absolute_floor() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    let mut now = t0;
+    let round_len = Duration::from_millis(5);
+
+    // Seed an estimate, then drop the link to a trickle with heavy loss.
+    for _ in 0..20 {
+        drive_round(&mut bbr, &mut now, 45_000, 0, round_len);
+    }
+    for _ in 0..200 {
+        drive_round(&mut bbr, &mut now, 200, 200, round_len);
+    }
+    assert!(
+        bbr.loss_cap_bps >= BBR_LOSS_CAP_FLOOR_BPS,
+        "cap {} fell through the floor",
+        bbr.loss_cap_bps
+    );
 }
 
 /// The self-measurement loop that pinned bulk downloads to single-digit Mbit on
