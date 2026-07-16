@@ -1082,8 +1082,10 @@ Recorded in two layers:
    governs the TTL for all three.
 
 2. **Per-uplink `mode_downgrade_until`** + family-aware
-   `mode_downgrade_capped_to`. Set when `note_advanced_mode_dial_failure`
-   or `note_silent_transport_fallback` fires. `effective_tcp_mode` /
+   `mode_downgrade_capped_to`. Set by a runtime failure
+   (`report_runtime_failure_for_wire`), a probe failure, or a dial that
+   silently fell back (`note_silent_transport_fallback`), each attributed
+   to the wire it happened on. `effective_tcp_mode` /
    `effective_udp_mode` return the cap (not the configured mode) while
    the window is open, so probes, standby refills and direct dials all
    stop hammering the broken advanced mode. Family-aware: `WsH3`

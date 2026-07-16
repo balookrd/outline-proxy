@@ -1084,9 +1084,10 @@ SNI не попадают под тот же фильтр, нужны други
    всех трёх.
 
 2. **Per-uplink `mode_downgrade_until`** + family-aware
-   `mode_downgrade_capped_to`. Выставляется по
-   `note_advanced_mode_dial_failure` или
-   `note_silent_transport_fallback`. Пока окно открыто,
+   `mode_downgrade_capped_to`. Выставляется runtime-отказом
+   (`report_runtime_failure_for_wire`), отказом пробы или дайлом, который
+   тихо зафолбечился (`note_silent_transport_fallback`) — каждый
+   атрибутируется тому wire, на котором произошёл. Пока окно открыто,
    `effective_tcp_mode` / `effective_udp_mode` возвращают cap
    (а не configured режим) — пробы, refill standby и прямые дозвоны
    перестают долбиться в сломанный продвинутый режим. Family-aware:
