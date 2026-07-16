@@ -296,12 +296,23 @@ impl UplinkManager {
         }
     }
 
-    /// Public entry-point for dial-time fallback: a synchronous QUIC (or H3)
-    /// dial just failed, so mark the downgrade window the same way a runtime
-    /// failure would.  The next call to `effective_*_mode` will return the
-    /// one-step-down carrier (`WsH2` for `WsH3` / `Quic`,
-    /// `XhttpH2` for `XhttpH3`, `XhttpH1` for `XhttpH2`) for the rest of
-    /// the window.
+    /// Test seam: drive a [`ModeDowngradeTrigger::RuntimeFailure`] into the
+    /// primary slot, the way a synchronous advanced-carrier dial failure once
+    /// did.
+    ///
+    /// **Not a production entry-point.** It was one — a QUIC/H3 dial that
+    /// failed synchronously called it to open the window — but the dial paths
+    /// now report through `report_runtime_failure_for_wire`, which attributes
+    /// the failure to the wire it happened on rather than unconditionally to
+    /// primary. Nothing in the data plane has called this since; it survives
+    /// only because it is the one entry point that hands the descent machinery
+    /// a *runtime* trigger, which is what several tests need to exercise
+    /// (post-recovery grace absorbs runtime failures, and a mid-session retry
+    /// must ignore the cap a carrier death installed). Reaching for it from
+    /// production code would reintroduce the mis-parking bug: use
+    /// [`Self::report_runtime_failure_for_wire`] instead.
+    #[cfg(any(test, feature = "test-helpers"))]
+    #[doc(hidden)]
     pub fn note_advanced_mode_dial_failure(
         &self,
         index: usize,
