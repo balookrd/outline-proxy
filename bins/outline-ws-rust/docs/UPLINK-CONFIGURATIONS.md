@@ -1532,6 +1532,16 @@ Semantics:
   the operator's `min_failures × carrier_ranks` budget on each
   wire before rotating to the next one — matching the legacy
   `h3 → h2 → http1` descent contract on the active leg.
+  The cascade is **per-wire**: the cap for wire 0 lives in the
+  primary's descent slot (read by `effective_tcp_mode`), the cap for
+  a fallback wire in `fallback_mode_downgrades[wire - 1]` (read by
+  `effective_tcp_mode_for_wire`). A failure on one wire never caps
+  another — including a runtime failure on an active fallback, which
+  would otherwise clamp the carrier of every wire-0 dial. One
+  asymmetry to know: the walk-up and configured-carrier recovery
+  probe only exist for the primary slot, so a cap installed on a
+  fallback wire lifts solely when its `mode_downgrade_secs` window
+  expires.
 - **Recovery probe holds the cap**: with `shuffle_wires = true`, the
   configured-carrier recovery probe in
   [`UplinkManager::note_recovery_probe_success`] does **not** clear

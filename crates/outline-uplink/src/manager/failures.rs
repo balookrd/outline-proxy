@@ -520,12 +520,24 @@ impl UplinkManager {
         // observed Yandex/SFTP breakage). Cooldown/penalty are already
         // suppressed above for the same reason; the consecutive-failure counter
         // still ticks, so a backend that 1013s on everything still escalates.
+        //
+        // Attribution matters here: the wire gate above only guarantees the
+        // failure is on the *active* wire, which may well be a fallback. The
+        // descent must land in that wire's own slot — capping the primary's
+        // carrier from a broken fallback would drag every wire-0 dial down
+        // with it (`effective_tcp_mode` is what those dials read), and leaving
+        // the fallback's slot empty would pin `wire_is_at_carrier_floor` below
+        // the floor so shuffle_wires rotation could never leave the wire.
+        // Callers with no wire attribution, and single-wire uplinks, keep the
+        // legacy primary-slot path bit-for-bit.
         if !is_try_again {
-            self.extend_mode_downgrade(
-                index,
-                transport,
-                ModeDowngradeTrigger::RuntimeFailure(error),
-            );
+            let trigger = ModeDowngradeTrigger::RuntimeFailure(error);
+            match attempted_wire {
+                Some(wire) if uplink_total_wires > 1 => {
+                    self.extend_mode_downgrade_for_wire(index, transport, wire, trigger)
+                },
+                _ => self.extend_mode_downgrade(index, transport, trigger),
+            }
         }
 
         self.clear_standby(index, transport).await;

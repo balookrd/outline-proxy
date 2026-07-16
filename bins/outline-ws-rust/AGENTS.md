@@ -271,7 +271,15 @@ cargo release-musl-aarch64
   а не безусловно primary. Расширяя retry / failover / pinned-relay код,
   пропускайте новые точки через `report_runtime_failure_for_wire` и
   `record_wire_outcome`, single-wire uplink'и сохраняют legacy bit-for-bit
-  поведение.
+  поведение. Carrier-спуск, вызванный failure'ом на конкретном wire, обязан
+  идти через `extend_mode_downgrade_for_wire` (wire 0 → primary `descent`,
+  wire ≥ 1 → `fallback_mode_downgrades[wire - 1]`), а НЕ через
+  `extend_mode_downgrade` напрямую: слот primary читается каждым wire-0
+  дайлом (`effective_tcp_mode`), поэтому кэп от сломанного fallback'а тянет
+  primary вниз, а пустой per-wire слот держит `wire_is_at_carrier_floor`
+  ниже пола и намертво стопорит shuffle_wires-ротацию с этого wire. У
+  per-wire слота нет walk-up / recovery-пробы (они primary-only) — кэп там
+  снимается только по TTL `mode_downgrade_secs`.
 - Strict-mode active-uplink switch: в `active_passive` манёвр manual control /
   probe-driven failover, который сдвигает активный uplink с in-flight сессии,
   обязан рвать TCP-сессию SOCKS5 с RST (`SO_LINGER {l_onoff=1, l_linger=0}`) и

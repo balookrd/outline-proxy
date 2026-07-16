@@ -1539,6 +1539,16 @@ shuffle_wires   = true
   `min_failures × carrier_ranks` бюджет на каждом wire перед
   переходом на следующий, что соответствует обещанному в общей
   доке каскаду `h3 → h2 → http1` на активном плече.
+  Каскад **per-wire**: кэп wire 0 живёт в primary-слоте descent
+  (его читает `effective_tcp_mode`), кэп fallback-wire — в
+  `fallback_mode_downgrades[wire - 1]` (его читает
+  `effective_tcp_mode_for_wire`). Отказ на одном wire никогда не
+  капает другой — в том числе runtime-отказ на активном fallback,
+  который иначе зажимал бы носитель всем дайлам wire 0. Одна
+  асимметрия, о которой стоит знать: walk-up и recovery-проба по
+  сконфигурированному носителю есть только у primary-слота, поэтому
+  кэп на fallback-wire снимается исключительно по истечении окна
+  `mode_downgrade_secs`.
 - **Recovery probe удерживает cap**: при `shuffle_wires = true`
   configured-carrier recovery probe в
   [`UplinkManager::note_recovery_probe_success`] **не сбрасывает**
