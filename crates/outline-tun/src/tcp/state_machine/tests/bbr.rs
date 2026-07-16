@@ -373,3 +373,73 @@ fn a_pacing_limited_sample_cannot_lower_btlbw() {
         bbr.btlbw_bps
     );
 }
+
+/// The in-flight cap bounds a flight that is returned over the path's *actual*
+/// RTT, but is computed from `min_rtt`. Canonical BBR gets away with that because
+/// it assumes srtt ~ min_rtt once the queue drains. A jittery last mile breaks the
+/// assumption: the field gateway measured min_rtt 1.876 ms against srtt 5.021 ms
+/// (a mac over Wi-Fi; ping min/avg/max 2.3/4.3/9.9 ms, mdev 2.5), a ratio of 2.7
+/// against `cwnd_gain = 2.0`.
+///
+/// Without the quantization budget a cap-bound flight then delivers
+/// `2 x btlbw x min_rtt / srtt` = 0.75x the estimate it was computed from, and
+/// since the cap comes *from* BtlBw the two ratchet each other down to the
+/// in-flight floor — which is where the live flow sat (inflight_cap=4800,
+/// pipe=4800, cwnd_rem=0, 2.1 MB queued, client window 167 KB, loss cap
+/// inactive). The budget does not scale with BtlBw, so the steady state solves
+/// `btlbw = budget / (srtt - gain x min_rtt)` rather than collapsing: the flow
+/// climbs back to the link instead of ratcheting away from it.
+#[test]
+fn the_quantization_budget_keeps_a_jittery_last_mile_from_ratcheting_btlbw_down() {
+    let t0 = Instant::now();
+    let mut bbr = BbrState::new(t0, 0);
+    let mss = 1200usize;
+    // Measured on the field gateway.
+    let min_rtt = Duration::from_micros(1_876);
+    let srtt = Duration::from_micros(5_021);
+    // What the link really carries — this download managed ~9 MB/s before the
+    // BBR controller existed.
+    let link_bps = 9_000_000f64;
+    let deliverable_per_round = (link_bps * srtt.as_secs_f64()) as u64;
+
+    // Seed an honest estimate of that link, then enter PROBE_BW: the state the
+    // field flow reported (mode=ProbeBw, pacing_gain=1.0, cwnd_gain=2.0). The
+    // ratchet only closes here — STARTUP's 2.885 gain clears the 2.7 ratio.
+    let mut now = t0 + srtt;
+    record_delivery(
+        &mut bbr,
+        deliverable_per_round,
+        Some(sample(0, t0, false)),
+        Some(min_rtt),
+        now,
+    );
+    enter_probe_bw(&mut bbr, now);
+    let seeded = bbr.btlbw_bps;
+    assert!(seeded > 8_000_000, "seeded BtlBw should reflect the real link, got {seeded}");
+    assert_eq!(bbr.cwnd_gain, BBR_CWND_GAIN);
+
+    // Long enough for several windowed-max horizons: without the budget each one
+    // drops the estimate another 0.75x, which is what took it to the floor.
+    for _ in 0..200 {
+        let cap = inflight_cap_from(&bbr, mss) as u64;
+        let delivered = cap.min(deliverable_per_round);
+        let prior_delivered = bbr.delivered;
+        let prior_mstamp = now;
+        let pacing = pacing_rate_from(&bbr).max(1);
+        let send_interval = Duration::from_secs_f64(delivered as f64 / pacing as f64);
+        now += srtt;
+        let mut rate_sample = sample(prior_delivered, prior_mstamp, false);
+        rate_sample.send_interval = send_interval;
+        record_delivery(&mut bbr, delivered, Some(rate_sample), Some(min_rtt), now);
+    }
+
+    assert!(
+        bbr.btlbw_bps > 7_000_000,
+        "BtlBw must still see the {link_bps} B/s link, got {} B/s (ratcheted down)",
+        bbr.btlbw_bps,
+    );
+    assert!(
+        inflight_cap_from(&bbr, mss) > mss * BBR_MIN_PIPE_CWND_SEGMENTS,
+        "the cap must stay off its floor",
+    );
+}
