@@ -30,11 +30,11 @@
 use std::time::{Duration, Instant};
 
 use super::super::{
-    BBR_BW_WINDOW_ROUNDS, BBR_CWND_GAIN, BBR_DRAIN_GAIN, BBR_LOSS_CAP_BACKOFF,
-    BBR_LOSS_CAP_FLOOR_BPS, BBR_LOSS_MIN_SAMPLE_BYTES, BBR_LOSS_THRESH, BBR_MIN_PIPE_CWND_SEGMENTS,
-    BBR_MIN_RTT_WINDOW, BBR_PACING_MAX_BURST_SEGMENTS, BBR_PROBE_BW_GAINS,
-    BBR_PROBE_RTT_CWND_SEGMENTS, BBR_PROBE_RTT_DURATION, BBR_STARTUP_FULL_BW_COUNT,
-    BBR_STARTUP_GAIN, BBR_STARTUP_GROWTH_TARGET,
+    BBR_BW_WINDOW_ROUNDS, BBR_CWND_GAIN, BBR_DRAIN_GAIN, BBR_EXTRA_ACKED_MAX_WINDOW,
+    BBR_EXTRA_ACKED_WIN_ROUNDS, BBR_LOSS_CAP_BACKOFF, BBR_LOSS_CAP_FLOOR_BPS,
+    BBR_LOSS_MIN_SAMPLE_BYTES, BBR_LOSS_THRESH, BBR_MIN_PIPE_CWND_SEGMENTS, BBR_MIN_RTT_WINDOW,
+    BBR_PACING_MAX_BURST_SEGMENTS, BBR_PROBE_BW_GAINS, BBR_PROBE_RTT_CWND_SEGMENTS,
+    BBR_PROBE_RTT_DURATION, BBR_STARTUP_FULL_BW_COUNT, BBR_STARTUP_GAIN, BBR_STARTUP_GROWTH_TARGET,
 };
 use super::congestion::{bytes_in_pipe, server_max_segment_payload};
 use super::types::{BbrMode, BbrState, BwSample, RateSample, TcpFlowState};
@@ -148,24 +148,133 @@ fn quantization_budget(bbr: &BbrState, mss: usize, cwnd: usize) -> usize {
     cwnd + 3 * tso_segs_goal(bbr, mss) * mss
 }
 
-/// In-flight the pipe would hold at `gain x BDP`, budget included — canonical
-/// BBR's `bbr_inflight(sk, bw, gain)`. `usize::MAX` until an estimate exists.
-fn inflight_for_gain(bbr: &BbrState, mss: usize, gain: f64) -> usize {
+/// `gain x BDP` plus `head_room`, budget included; `usize::MAX` until an
+/// estimate exists. The head-room is folded in *before* the quantization budget,
+/// as canonical BBR does in `bbr_set_cwnd`.
+fn inflight_for_gain_with_head_room(
+    bbr: &BbrState,
+    mss: usize,
+    gain: f64,
+    head_room: usize,
+) -> usize {
     let floor = mss * BBR_MIN_PIPE_CWND_SEGMENTS;
     match bdp_bytes(bbr) {
-        Some(bdp) => quantization_budget(bbr, mss, (bdp as f64 * gain) as usize).max(floor),
+        Some(bdp) => {
+            let target = ((bdp as f64 * gain) as usize).saturating_add(head_room);
+            quantization_budget(bbr, mss, target).max(floor)
+        },
         None => usize::MAX,
     }
 }
 
-/// In-flight cap (bytes), given the flow's MSS. `usize::MAX` until an estimate
-/// exists, so the Reno initial window governs the first flight; floored at a
-/// few MSS so a sub-ms RTT still admits enough packets to keep ACKs clocking.
+/// In-flight the pipe would hold at `gain x BDP`, budget included — canonical
+/// BBR's `bbr_inflight(sk, bw, gain)`. `usize::MAX` until an estimate exists.
+///
+/// Deliberately *without* the ACK-aggregation head-room, which canonical BBR
+/// adds in `bbr_set_cwnd` alone: this value is what a PROBE_BW gain phase is
+/// retired against (`bbr_is_next_cycle_phase`, `2891fb92`). A probe ends when the
+/// pipe holds the `gain x BDP` whose delivery it exists to provoke; requiring it
+/// to also hold the head-room would leave the probe running — and the queue
+/// inflating — for as long as the path keeps bursting.
+fn inflight_for_gain(bbr: &BbrState, mss: usize, gain: f64) -> usize {
+    inflight_for_gain_with_head_room(bbr, mss, gain, 0)
+}
+
+/// Windowed max of the aggregation estimate — canonical `bbr_extra_acked()`.
+fn extra_acked(bbr: &BbrState) -> u64 {
+    bbr.extra_acked[0].max(bbr.extra_acked[1])
+}
+
+/// Head-room the in-flight cap gets for ACK aggregation — canonical BBR's
+/// `bbr_ack_aggregation_cwnd()`.
+///
+/// Canonical BBR applies `bbr_extra_acked_gain` (`BBR_UNIT`, i.e. 1.0) here; a
+/// multiplication by one is left out rather than reproduced as a constant.
+fn ack_aggregation_cwnd(bbr: &BbrState) -> usize {
+    // Canonical BBR gates this on `bbr_full_bw_reached()`. STARTUP is the only
+    // mode we can be in before the pipe has filled — nothing re-enters it — and
+    // it does not need the head-room anyway: its 2.885 cwnd gain already clears
+    // the srtt/min_rtt ratios the field shows, which is why the collapse this
+    // measures only ever closed in PROBE_BW, at `BBR_CWND_GAIN`.
+    if bbr.mode == BbrMode::Startup {
+        return 0;
+    }
+    let ceiling = (effective_btlbw(bbr) as f64 * BBR_EXTRA_ACKED_MAX_WINDOW.as_secs_f64()) as u64;
+    extra_acked(bbr).min(ceiling) as usize
+}
+
+/// In-flight cap (bytes), given the flow's MSS — canonical BBR's `bbr_set_cwnd`
+/// target: `gain x BDP` + aggregation head-room + quantization budget.
+/// `usize::MAX` until an estimate exists, so the Reno initial window governs the
+/// first flight; floored at a few MSS so a sub-ms RTT still admits enough
+/// packets to keep ACKs clocking.
 fn inflight_cap_from(bbr: &BbrState, mss: usize) -> usize {
     if bbr.mode == BbrMode::ProbeRtt {
         return mss * BBR_MIN_PIPE_CWND_SEGMENTS;
     }
-    inflight_for_gain(bbr, mss, bbr.cwnd_gain)
+    inflight_for_gain_with_head_room(bbr, mss, bbr.cwnd_gain, ack_aggregation_cwnd(bbr))
+}
+
+/// Fold one ACK into the ACK-aggregation estimate — canonical BBR's
+/// `bbr_update_ack_aggregation()`.
+///
+/// `extra_acked` is how much more arrived over an epoch than `BtlBw × epoch`
+/// predicted. An epoch only ever spans a stretch running *ahead* of the estimate:
+/// the moment deliveries fall back to what BtlBw predicts, the aggregate has been
+/// paid out and a fresh epoch starts at that ACK. So a silence between aggregates
+/// does not register as aggregation by itself — what registers is the burst that
+/// ends it, and its size is exactly the in-flight the pipe needs to stay busy
+/// across the next silence.
+///
+/// `cwnd_clamp` is canonical BBR's `min(extra_acked, tcp_snd_cwnd(tp))`: the
+/// excess cannot exceed what was allowed in flight to begin with. Passing the cap
+/// in force *before* this ACK (rather than the Reno window, which this stack
+/// inflates to the client's rwnd within milliseconds) keeps that bound meaningful
+/// and makes the head-room climb one cap-doubling per epoch instead of jumping
+/// straight to `BBR_EXTRA_ACKED_MAX_WINDOW` of bandwidth.
+///
+/// Canonical BBR also resets the epoch once `ack_epoch_acked` reaches
+/// `bbr_ack_epoch_acked_reset_thresh` (`1 << 20`). That is the overflow bound of
+/// its `ack_epoch_acked:20` bit-field (clamped at `0xFFFFF`), not a property of
+/// the algorithm; our counter is a `u64`, so the reset has nothing to protect and
+/// is left out.
+fn update_ack_aggregation(
+    bbr: &mut BbrState,
+    bytes_delivered: u64,
+    round_start: bool,
+    cwnd_clamp: usize,
+    now: Instant,
+) {
+    if bytes_delivered == 0 {
+        return;
+    }
+
+    // Retire the current slot every `BBR_EXTRA_ACKED_WIN_ROUNDS` rounds, so the
+    // max over the two spans 5-10 round trips rather than the whole flow.
+    if round_start {
+        bbr.extra_acked_win_rounds = bbr.extra_acked_win_rounds.saturating_add(1);
+        if bbr.extra_acked_win_rounds >= BBR_EXTRA_ACKED_WIN_ROUNDS {
+            bbr.extra_acked_win_rounds = 0;
+            bbr.extra_acked_win_idx ^= 1;
+            bbr.extra_acked[bbr.extra_acked_win_idx] = 0;
+        }
+    }
+
+    let epoch = now.saturating_duration_since(bbr.ack_epoch_stamp).as_secs_f64();
+    let mut expected = (effective_btlbw(bbr) as f64 * epoch) as u64;
+    if bbr.ack_epoch_acked <= expected {
+        bbr.ack_epoch_acked = 0;
+        bbr.ack_epoch_stamp = now;
+        expected = 0;
+    }
+
+    bbr.ack_epoch_acked = bbr.ack_epoch_acked.saturating_add(bytes_delivered);
+    let excess = bbr
+        .ack_epoch_acked
+        .saturating_sub(expected)
+        .min(u64::try_from(cwnd_clamp).unwrap_or(u64::MAX));
+    let slot = &mut bbr.extra_acked[bbr.extra_acked_win_idx];
+    *slot = (*slot).max(excess);
 }
 
 /// Pacing rate in bytes/sec, or 0 while inactive (no BtlBw sample yet). The
@@ -432,19 +541,23 @@ fn check_startup_full_pipe(bbr: &mut BbrState) {
 /// Fold one ACK's worth of delivery into the estimates (delivered counter, rate
 /// sample → BtlBw, round step, min-RTT). Pure on `BbrState`; the mode machine
 /// (which needs in-flight bytes) runs in [`on_ack`].
+///
+/// Returns whether this ACK started a new round — canonical BBR's
+/// `bbr->round_start`, which [`update_ack_aggregation`] ages its window on.
 fn record_delivery(
     bbr: &mut BbrState,
     bytes_delivered: u64,
     rate_sample: Option<RateSample>,
     rtt_sample: Option<Duration>,
     now: Instant,
-) {
+) -> bool {
     bbr.delivered = bbr.delivered.saturating_add(bytes_delivered);
     bbr.delivered_at = now;
     bbr.delivered_in_window = bbr.delivered_in_window.saturating_add(bytes_delivered);
 
     // Round bookkeeping: a round elapses when this ACK covers a segment sent
     // at/after the start of the current round.
+    let round_start = rate_sample.is_some_and(|s| s.prior_delivered >= bbr.next_round_delivered);
     if let Some(sample) = rate_sample
         && sample.prior_delivered >= bbr.next_round_delivered
     {
@@ -533,6 +646,8 @@ fn record_delivery(
             bbr.min_rtt_stamp = now;
         }
     }
+
+    round_start
 }
 
 /// Advance the mode/gain machine after the estimates have been updated.
@@ -639,7 +754,15 @@ pub(in crate::tcp) fn on_ack(
     rtt_sample: Option<Duration>,
     now: Instant,
 ) {
-    record_delivery(&mut state.bbr, bytes_delivered, rate_sample, rtt_sample, now);
+    let round_start =
+        record_delivery(&mut state.bbr, bytes_delivered, rate_sample, rtt_sample, now);
+    // Canonical `bbr_update_model` order: aggregation is folded in after the
+    // bandwidth this ACK just updated (its epoch is measured against BtlBw) and
+    // before the cycle phase. The clamp is the cap as it stood *before* this
+    // ACK, so it is read off the previous `extra_acked` rather than the one
+    // being computed.
+    let cwnd_clamp = inflight_cap(state);
+    update_ack_aggregation(&mut state.bbr, bytes_delivered, round_start, cwnd_clamp, now);
     update_mode(state, now);
 }
 
