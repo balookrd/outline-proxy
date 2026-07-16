@@ -230,6 +230,33 @@ async fn weighted_rotate_avoids_flaky_wire_but_not_entirely() {
     assert!(tcp_hits[0] > 0, "but the floor keeps the flaky wire reachable: {tcp_hits:?}");
 }
 
+#[tokio::test]
+async fn reroll_clears_the_per_wire_carrier_caps_of_a_proven_uplink() {
+    // The shuffle_timer reroll wipes primary's descent when the uplink is
+    // still proving delivery — the new wire's carrier stack starts fresh at
+    // the configured rank. The per-wire slots must go with it: a cap earned
+    // by the wire we are rotating away from must not decide the dial mode of
+    // whichever wire the next reroll lands on, and (unlike primary) nothing
+    // but the TTL would otherwise clear it.
+    let mut cfg = three_wire_uplink();
+    cfg.fallbacks[0].tcp_mode = TransportMode::WsH3;
+    cfg.carrier_downgrade = true; // this fixture opts out by default
+    let mgr = UplinkManager::new_for_test("g", vec![cfg], probe(), lb(false)).unwrap();
+
+    mgr.note_silent_transport_fallback_for_wire(0, TransportKind::Tcp, 1, TransportMode::WsH3);
+    assert_eq!(mgr.effective_tcp_mode_for_wire(0, 1).await, TransportMode::WsH2);
+
+    // Stamp proven delivery so the reroll takes its "healthy uplink" arm.
+    mgr.mark_wire_data_proven(0, TransportKind::Tcp);
+    mgr.rotate_active_wire(0).expect("multi-wire uplink rerolls");
+
+    assert_eq!(
+        mgr.effective_tcp_mode_for_wire(0, 1).await,
+        TransportMode::WsH3,
+        "the reroll must clear the fallback wire's cap along with primary's",
+    );
+}
+
 /// `shared_resume` scopes the resume-cache key to the group name for **both**
 /// transports, so every uplink in a mesh-cluster group presents one
 /// `X-Outline-Resume` id and a session survives an edge switch. Off (the default)

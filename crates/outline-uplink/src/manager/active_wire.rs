@@ -568,8 +568,16 @@ impl UplinkManager {
                     st.chunk0_consecutive_failures = 0;
                     // Wipe any in-flight mode-downgrade cap left over from the
                     // previous wire — a healthy uplink's new wire starts its
-                    // carrier stack fresh at the configured rank.
+                    // carrier stack fresh at the configured rank. Both slot
+                    // kinds are cleared: primary's descent and every fallback
+                    // wire's own slot. Leaving the latter behind would let a
+                    // cap earned by a wire we are rotating *away* from decide
+                    // the dial mode of the wire we are rotating *onto* the
+                    // next time the reroll lands there — and, because walk-up
+                    // and the recovery probe are primary-only, that stale cap
+                    // could otherwise outlive the condition that installed it.
                     st.descent.reset_window_for_wire_change();
+                    st.fallback_mode_downgrades.clear();
                 }
                 // Pin the freshly-rolled wire for the standard mode-downgrade
                 // duration window, except when we happen to roll back to

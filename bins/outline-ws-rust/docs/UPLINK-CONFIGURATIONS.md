@@ -1537,11 +1537,16 @@ Semantics:
   a fallback wire in `fallback_mode_downgrades[wire - 1]` (read by
   `effective_tcp_mode_for_wire`). A failure on one wire never caps
   another — including a runtime failure on an active fallback, which
-  would otherwise clamp the carrier of every wire-0 dial. One
-  asymmetry to know: the walk-up and configured-carrier recovery
-  probe only exist for the primary slot, so a cap installed on a
-  fallback wire lifts solely when its `mode_downgrade_secs` window
-  expires.
+  would otherwise clamp the carrier of every wire-0 dial. Each wire's
+  cap is driven by that wire's own signals: real traffic on it, a
+  dial that fell back on it, and — for the active fallback — the
+  fallback-wire probe, which dials the wire's *effective* carrier and
+  so walks the cascade down (and back up) just as the primary probe
+  does for wire 0. One asymmetry to know: only primary has a
+  configured-carrier recovery probe, so a fallback wire's cap is
+  reclaimed one rank at a time by the walk-up, and the final hop back
+  onto its configured carrier waits out the `mode_downgrade_secs`
+  window.
 - **Recovery probe holds the cap**: with `shuffle_wires = true`, the
   configured-carrier recovery probe in
   [`UplinkManager::note_recovery_probe_success`] does **not** clear
