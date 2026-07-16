@@ -36,9 +36,14 @@
 //! by wire index; entering through [`UplinkManager::extend_mode_downgrade`]
 //! directly would charge the primary for a fallback's broken carrier and
 //! leave the fallback's own slot empty (which strands the shuffle_wires
-//! rotation gate below its floor). Because walk-up and the
-//! configured-carrier recovery probe only know about the primary slot, a
-//! cap on a fallback wire lifts only when its TTL expires.
+//! rotation gate below its floor). Each wire's slot is fed by its own probe
+//! streaks — sharing primary's would reintroduce the same cross-wire
+//! contamination through the descent gate.
+//!
+//! One asymmetry remains: primary has a configured-carrier recovery probe,
+//! a fallback wire does not. A fallback's cap is therefore walked back up a
+//! rank at a time by [`UplinkManager::walk_up_mode_downgrade_for_wire`],
+//! and the final hop onto the configured rank is left to the window's TTL.
 
 use tokio::time::Instant;
 use tracing::{debug, warn};
@@ -79,23 +84,6 @@ pub(crate) enum ModeDowngradeTrigger<'a> {
     /// `mode_downgrade_until` window stays in sync with the actually-dialable
     /// transport even when the operation itself reports success.
     SilentTransportFallback(TransportMode),
-}
-
-/// Outcome of a per-fallback-wire descent write, reported by
-/// [`UplinkManager::extend_mode_downgrade_for_wire`] so the log can run
-/// after the status lock is released. The per-wire slot is deliberately
-/// thinner than the primary's [`super::carrier_descent_state::CarrierDescentState`]
-/// (no grace budget, no recovery streak), so this is all it can report.
-struct WireDescentApplied {
-    /// No window was in force before this call (or the previous one had
-    /// already expired).
-    newly_started: bool,
-    /// The cap value changed — first install, or a step further down.
-    cap_changed: bool,
-    /// The cap now in effect for this wire.
-    updated_cap: TransportMode,
-    /// The carrier this trigger was resolved against (for the log).
-    failed_mode: TransportMode,
 }
 
 impl UplinkManager {
@@ -371,18 +359,20 @@ impl UplinkManager {
     /// unconditionally into the primary's.
     ///
     /// `wire_index == 0` delegates to [`Self::extend_mode_downgrade`]
-    /// verbatim — the primary slot keeps its full machinery (probe-streak
-    /// descent gate, post-recovery grace, walk-up, recovery streak).
-    /// `wire_index >= 1` writes `fallback_mode_downgrades[wire_index - 1]`
-    /// under the simpler rule the slot supports: a monotonically-downward
-    /// cap plus a TTL. Callers on the fallback side must therefore expect a
-    /// per-wire cap to lift **only by TTL expiry** — the walk-up and
-    /// recovery-probe paths only know about the primary slot.
+    /// verbatim; `wire_index >= 1` drives the same
+    /// [`CarrierDescentState`](super::carrier_descent_state::CarrierDescentState)
+    /// bookkeeping against `fallback_mode_downgrades[wire_index - 1]`,
+    /// fed by that wire's own probe streak rather than primary's.
     ///
     /// Reuses the same family/rank sanity checks as the primary path: the
     /// cap must live in the same family as *this wire's* configured mode
     /// and rank strictly below it, so a cross-family or above-configured
     /// trigger is dropped rather than mis-parking the wire.
+    ///
+    /// Unlike primary, there is no configured-carrier recovery probe for a
+    /// fallback wire; the cap is lifted by
+    /// [`Self::walk_up_mode_downgrade_for_wire`] one rank at a time, and the
+    /// final hop onto the configured rank is left to the window's TTL.
     pub(crate) fn extend_mode_downgrade_for_wire(
         &self,
         index: usize,
@@ -425,55 +415,64 @@ impl UplinkManager {
         };
         let now = Instant::now();
         let duration = self.inner.load_balancing.mode_downgrade_duration;
+        let probe_trigger = matches!(
+            trigger,
+            ModeDowngradeTrigger::ProbeTransportFailure(_)
+                | ModeDowngradeTrigger::ProbeConnectFailure(_, _)
+        );
+        let is_recovery_fail = matches!(trigger, ModeDowngradeTrigger::RecoveryReprobeFail);
+        let probe_min_failures = self.inner.probe.min_failures.max(1) as u32;
 
         let applied = self.inner.with_status_mut(index, |status| {
             let per = match transport {
                 TransportKind::Tcp => &mut status.tcp,
                 TransportKind::Udp => &mut status.udp,
             };
-            // Lazy-extend the per-wire vec; entries default to (None, None).
+            // Lazy-extend the per-wire vec; entries default to empty slots.
             while per.fallback_mode_downgrades.len() <= slot_idx {
                 per.fallback_mode_downgrades
                     .push(super::status::ModeDowngradeSlot::default());
             }
             let slot = &mut per.fallback_mode_downgrades[slot_idx];
-            let window_active = slot.until.is_some_and(|t| t > now);
-            let active_cap = if window_active { slot.capped_to } else { None };
             // A trigger that names no carrier (runtime failure) failed on
             // whatever this wire currently dials: the cap while a window is
             // in force, else the configured mode. Resolving it here is what
             // lets consecutive runtime failures walk the wire down
             // `h3 → h2 → h1` instead of re-deriving `h2` from configured
             // forever and pinning `wire_is_at_carrier_floor` below the floor.
-            let failed_mode = carried_mode.unwrap_or(active_cap.unwrap_or(configured_mode));
+            let failed_mode =
+                carried_mode.unwrap_or(slot.descent.active_cap(now).unwrap_or(configured_mode));
             let new_cap = one_step_down(failed_mode)?;
             if family(new_cap) != family(configured_mode) || rank(new_cap) >= rank(configured_mode)
             {
                 return None;
             }
-            // Monotonically-downward cap update mirroring primary's rule:
-            // an in-window re-trigger must not raise the ceiling.
-            let updated_cap = match active_cap {
-                Some(prev) if family(prev) == family(new_cap) && rank(prev) < rank(new_cap) => prev,
-                _ => new_cap,
-            };
-            slot.until = Some(now + duration);
-            slot.capped_to = Some(updated_cap);
-            Some(WireDescentApplied {
-                newly_started: !window_active,
-                cap_changed: active_cap != Some(updated_cap),
-                updated_cap,
+            let decision = slot.descent.apply_descent_trigger(DescentTrigger {
+                now,
+                duration,
+                new_cap,
                 failed_mode,
-            })
+                probe_trigger,
+                is_recovery_fail,
+                probe_min_failures,
+                // This wire's own probe streak — never primary's.
+                probe_consecutive_failures: slot.probe_failures,
+            });
+            match decision {
+                DescentDecision::AbsorbedByGrace => None,
+                DescentDecision::Applied(applied) => {
+                    if applied.cap_changed {
+                        // The cap moved: a walk-up must observe a fresh streak
+                        // of successes against the *new* rank before lifting it.
+                        slot.probe_successes = 0;
+                    }
+                    Some((applied, failed_mode))
+                },
+            }
         });
-        let Some(applied) = applied else { return };
-        let WireDescentApplied {
-            newly_started,
-            cap_changed,
-            updated_cap,
-            failed_mode,
-        } = applied;
-        if !newly_started && !cap_changed {
+        let Some((applied, failed_mode)) = applied else { return };
+        let updated_cap = applied.updated_cap;
+        if !applied.newly_started && !applied.cap_changed {
             // Pure deadline extension inside an active window at the same
             // rank — nothing new to tell the operator.
             return;
@@ -508,6 +507,85 @@ impl UplinkManager {
                 capped_to = %updated_cap,
                 duration_secs = duration.as_secs(),
                 "fallback wire carrier capped"
+            ),
+        }
+    }
+
+    /// Per-wire counterpart of [`Self::walk_up_mode_downgrade`]: lift this
+    /// fallback wire's cap one rank after its own probe has confirmed the
+    /// capped carrier healthy `min_failures` times in a row.
+    ///
+    /// This is the only path that lifts a fallback wire's cap early. Primary
+    /// has two (this walk-up plus a configured-carrier recovery probe); a
+    /// fallback wire has no recovery probe, so the last hop — from
+    /// one-rank-below-configured back onto configured — is left to the
+    /// window's TTL, exactly as [`CarrierDescentState::walk_up`] leaves it
+    /// for primary. Without this, a wire whose cap keeps getting extended by
+    /// intermittent failures at the *upper* rank would ride its deepest
+    /// fallback for the full window even while the capped carrier is fine.
+    ///
+    /// [`CarrierDescentState::walk_up`]: super::carrier_descent_state::CarrierDescentState::walk_up
+    pub(crate) fn walk_up_mode_downgrade_for_wire(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        wire_index: u8,
+    ) {
+        if wire_index == 0 {
+            self.walk_up_mode_downgrade(index, transport);
+            return;
+        }
+        let slot_idx = (wire_index - 1) as usize;
+        let uplink = &self.inner.uplinks[index];
+        let Some(fallback) = uplink.fallbacks.get(slot_idx) else {
+            return;
+        };
+        let configured_mode = match transport {
+            TransportKind::Tcp => fallback.tcp_dial_mode(),
+            TransportKind::Udp => fallback.udp_dial_mode(),
+        };
+        let min_successes = self.inner.probe.min_failures.max(1) as u32;
+        let now = Instant::now();
+        let duration = self.inner.load_balancing.mode_downgrade_duration;
+        let outcome = self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                TransportKind::Tcp => &mut status.tcp,
+                TransportKind::Udp => &mut status.udp,
+            };
+            let slot = per.fallback_mode_downgrades.get_mut(slot_idx)?;
+            let outcome = slot.descent.walk_up(
+                now,
+                duration,
+                configured_mode,
+                min_successes,
+                slot.probe_successes,
+            );
+            if !matches!(outcome, WalkUpOutcome::NoOp) {
+                slot.probe_successes = 0;
+            }
+            Some(outcome)
+        });
+        let kind_label = match transport {
+            TransportKind::Tcp => "TCP",
+            TransportKind::Udp => "UDP",
+        };
+        match outcome {
+            None | Some(WalkUpOutcome::NoOp) => {},
+            Some(WalkUpOutcome::Cleared { from }) => debug!(
+                uplink = %uplink.name,
+                wire_index,
+                kind = ?transport,
+                from = %from,
+                configured = %configured_mode,
+                "{kind_label} fallback wire mode-downgrade cap cleared by walk-up — capped carrier confirmed healthy"
+            ),
+            Some(WalkUpOutcome::SteppedUp { from, to }) => debug!(
+                uplink = %uplink.name,
+                wire_index,
+                kind = ?transport,
+                from = %from,
+                to = %to,
+                "{kind_label} fallback wire mode-downgrade cap walked up after consecutive successes on capped carrier"
             ),
         }
     }
@@ -775,14 +853,10 @@ fn wire_capped_or_configured(
     slot_idx: usize,
     configured: TransportMode,
 ) -> TransportMode {
-    let now = Instant::now();
     let Some(slot) = status.fallback_mode_downgrades.get(slot_idx) else {
         return configured;
     };
-    match (slot.until, slot.capped_to) {
-        (Some(until), Some(cap)) if until > now => cap,
-        _ => configured,
-    }
+    slot.descent.active_cap(Instant::now()).unwrap_or(configured)
 }
 
 /// Synchronous "is the wire at the floor of its carrier-downgrade
