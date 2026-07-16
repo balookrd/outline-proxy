@@ -114,7 +114,39 @@ const BBR_STARTUP_GAIN: f64 = 2.885;
 const BBR_DRAIN_GAIN: f64 = 0.346;
 /// Steady-state head-room over the BDP for the in-flight cap. 2×BDP keeps the
 /// pipe full across delayed/stretch ACKs without overrunning the buffer.
+///
+/// It is *not* the answer to a path whose RTT exceeds its min-RTT by more than
+/// this factor — see `BBR_EXTRA_ACKED_WIN_ROUNDS`. Raising it would trade one
+/// hard-coded ratio for another and hand every path a queue sized for the worst
+/// one; canonical BBR measures the shortfall instead.
 const BBR_CWND_GAIN: f64 = 2.0;
+/// Rounds a slot of the ACK-aggregation estimate stays open — canonical BBR's
+/// `bbr_extra_acked_win_rtts`. Two slots are kept and the max taken over both,
+/// so the estimate spans 5-10 round trips: long enough to remember an aggregate
+/// that only arrives every few rounds, short enough to forget a path that has
+/// stopped bursting.
+///
+/// This is the head-room the in-flight cap needs on top of `gain × BDP`, and it
+/// exists because the cap is computed from `min_rtt` while the flight it bounds
+/// comes back over the path's *actual* RTT. Where `srtt / min_rtt` exceeds
+/// `BBR_CWND_GAIN` a cap-bound flight delivers less than the estimate it was
+/// derived from, and the two ratchet each other down: the field gateway measured
+/// `srtt / min_rtt = 2.73` against a gain of 2.0 and pinned a mac on Wi-Fi at
+/// 3 MB/s of a link carrying 33.
+///
+/// The excess RTT *is* the aggregation — a packet waits for the radio's TXOP,
+/// then a whole aggregate lands at once — so the bytes the path holds back are
+/// exactly what `extra_acked` measures, and adding them back sizes the pipe for
+/// the silence between aggregates. Measured, not assumed: a path that does not
+/// burst yields 0 and gets the canonical `gain × BDP` cap, which is what keeps
+/// this from handing a small last-hop buffer a queue it cannot hold (`194fa962`).
+const BBR_EXTRA_ACKED_WIN_ROUNDS: u32 = 5;
+/// Ceiling on the aggregation head-room, expressed as a duration of bandwidth —
+/// canonical BBR's `bbr_extra_acked_max_us`. Bounds what an under-estimated
+/// BtlBw can talk the cap into while the two are still converging: until the
+/// estimate catches up, deliveries outrun it every epoch and the raw excess has
+/// no upper bound of its own.
+const BBR_EXTRA_ACKED_MAX_WINDOW: Duration = Duration::from_millis(100);
 /// PROBE_BW pacing-gain cycle (one entry per min-RTT phase): probe up, drain
 /// the probe, then cruise. Lets the estimate track a bottleneck that changes.
 const BBR_PROBE_BW_GAINS: [f64; 8] = [1.25, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];

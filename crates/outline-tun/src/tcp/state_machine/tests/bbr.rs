@@ -740,3 +740,250 @@ fn the_quantization_budget_keeps_a_jittery_last_mile_from_ratcheting_btlbw_down(
         "the cap must stay off its floor",
     );
 }
+
+// --- ACK aggregation -------------------------------------------------------
+
+/// The estimator half of [`on_ack`], in the canonical order, without needing a
+/// whole `TcpFlowState`: the clamp is the cap as it stood *before* this ACK.
+fn ack(
+    bbr: &mut BbrState,
+    mss: usize,
+    delivered: u64,
+    rate_sample: RateSample,
+    rtt: Duration,
+    now: Instant,
+) {
+    let round_start = record_delivery(bbr, delivered, Some(rate_sample), Some(rtt), now);
+    let cwnd_clamp = inflight_cap_from(bbr, mss);
+    update_ack_aggregation(bbr, delivered, round_start, cwnd_clamp, now);
+}
+
+/// Measured on the field gateway (a mac over Wi-Fi): min_rtt 1.876 ms against
+/// srtt/min_rtt = 2.73.
+const FIELD_MIN_RTT: Duration = Duration::from_micros(1_876);
+
+/// The aggregation period those two imply. A packet waits a uniform 0..P for the
+/// radio's TXOP, so the mean RTT runs P/2 above the minimum:
+/// `srtt = min_rtt + P/2` → `P = 2 × (2.73 − 1) × min_rtt` ≈ 6.49 ms.
+const FIELD_AGGREGATION_PERIOD: Duration = Duration::from_micros(6_492);
+
+/// What the link carries — this download managed ~9 MB/s before the BBR
+/// controller existed.
+const FIELD_LINK_BPS: u64 = 9_000_000;
+
+fn link_per_period() -> u64 {
+    (FIELD_LINK_BPS as f64 * FIELD_AGGREGATION_PERIOD.as_secs_f64()) as u64
+}
+
+/// A flow on the field's aggregating path, seeded where the field flow sits: in
+/// PROBE_BW, cruising, with an estimate well under what the link carries — which
+/// is where STARTUP's exit and any transient leave it.
+fn field_flow(t0: Instant) -> (BbrState, Instant) {
+    let mut bbr = BbrState::new(t0, 0);
+    let now = t0 + FIELD_AGGREGATION_PERIOD;
+    record_delivery(&mut bbr, 17_000, Some(sample(0, t0, false)), Some(FIELD_MIN_RTT), now);
+    enter_probe_bw(&mut bbr, now);
+    (bbr, now)
+}
+
+/// Deliver one aggregate: the radio hands back everything the pipe holds, capped
+/// by what the pacer got onto the wire and by what the link carries in a period.
+/// Returns the bytes delivered.
+///
+/// The whole aggregate lands as one ACK here. On the wire it is a handful of ACKs
+/// back-to-back, which reaches the same estimate — the first restarts the epoch,
+/// the rest accumulate into it — with more moving parts and no more signal.
+fn deliver_aggregate(
+    bbr: &mut BbrState,
+    mss: usize,
+    now: &mut Instant,
+    link_per_period: u64,
+) -> u64 {
+    let period = FIELD_AGGREGATION_PERIOD;
+    let cap = inflight_cap_from(bbr, mss) as u64;
+    let paced = (pacing_rate_from(bbr) as f64 * period.as_secs_f64()) as u64;
+    let delivered = cap.min(paced).min(link_per_period).max(1);
+
+    let prior_delivered = bbr.delivered;
+    let prior_mstamp = *now;
+    let pacing = pacing_rate_from(bbr).max(1);
+    let mut rate_sample = sample(prior_delivered, prior_mstamp, false);
+    rate_sample.send_interval = Duration::from_secs_f64(delivered as f64 / pacing as f64);
+    *now += period;
+    ack(bbr, mss, delivered, rate_sample, FIELD_MIN_RTT, *now);
+    delivered
+}
+
+/// The field regression. A path that aggregates returns its flight over an RTT
+/// well above its minimum, but `inflight_cap` is `cwnd_gain × BtlBw × min_rtt` —
+/// derived from a min-RTT the flight never actually runs at. Where the ratio
+/// exceeds `BBR_CWND_GAIN` the cap is below what one aggregation period carries,
+/// and the flow cannot climb out on its own:
+///
+/// * cruising at `1.0 × BtlBw` delivers exactly `BtlBw`, which re-seeds the same
+///   estimate — a fixed point;
+/// * the `1.25` gain phase, the one mechanism that exists to raise BtlBw, paces
+///   above the estimate but is bounded by the same cap, so the extra bytes never
+///   reach the wire and the probe demonstrates nothing.
+///
+/// So BtlBw sits wherever it happens to be. The field gateway measured exactly
+/// that: BtlBw 3.63 MB/s and `inflight_cap / srtt` 4.89 MB/s on a link the same
+/// box pulls 32.99 MB/s through, with the PROBE_BW cycle turning throughout and
+/// the loss cap inactive.
+///
+/// `37f47f91`'s quantization budget is what keeps this from ratcheting to zero,
+/// but it is a floor, not a cure: the budget is sized off the pacing rate, and at
+/// these rates `bbr_tso_segs_goal` sits on its 2-segment floor, so the budget
+/// stops growing and the fixed point is stable. Raising `BBR_CWND_GAIN` is not
+/// the answer either (`37f47f91`); measuring the aggregation is.
+#[test]
+fn ack_aggregation_lets_a_flow_climb_back_to_a_link_its_cap_cannot_see() {
+    let mss = 1200usize;
+    let (mut bbr, mut now) = field_flow(Instant::now());
+    let seeded = bbr.btlbw_bps;
+    assert!(seeded < 3_000_000, "seed must start below the link, got {seeded}");
+    assert_eq!(bbr.cwnd_gain, BBR_CWND_GAIN);
+
+    // Turn the PROBE_BW cycle for a couple of seconds of link time.
+    for i in 0..300 {
+        bbr.pacing_gain = BBR_PROBE_BW_GAINS[i % BBR_PROBE_BW_GAINS.len()];
+        deliver_aggregate(&mut bbr, mss, &mut now, link_per_period());
+    }
+
+    assert!(
+        bbr.btlbw_bps > 7_000_000,
+        "BtlBw stalled at {} B/s on a {FIELD_LINK_BPS} B/s link: the in-flight cap \
+         is derived from min_rtt but bounds a flight the path returns an \
+         aggregation period later, so the gain phase cannot put its extra bytes on \
+         the wire and the estimate has no way up",
+        bbr.btlbw_bps,
+    );
+}
+
+/// The mechanism, isolated: the head-room must be the size of the aggregate the
+/// path hands back, so the pipe stays busy across the silence before the next one.
+#[test]
+fn the_head_room_matches_the_aggregate_the_path_hands_back() {
+    let mss = 1200usize;
+    let (mut bbr, mut now) = field_flow(Instant::now());
+
+    let mut last = 0;
+    for _ in 0..60 {
+        last = deliver_aggregate(&mut bbr, mss, &mut now, link_per_period());
+    }
+
+    let head_room = ack_aggregation_cwnd(&bbr) as u64;
+    assert!(
+        head_room >= last / 2,
+        "head-room {head_room} is far under the {last} B aggregate it must cover",
+    );
+    assert!(
+        inflight_cap_from(&bbr, mss) > inflight_for_gain(&bbr, mss, bbr.cwnd_gain),
+        "the cap must carry the head-room the aggregation earned",
+    );
+}
+
+/// The other side, and the guardrail `194fa962` bought: a path that does *not*
+/// aggregate must not be handed a queue. Its ACKs arrive steadily at the rate
+/// BtlBw predicts, so no epoch ever runs ahead of the estimate and the excess is
+/// only ever the one ACK that opened the epoch — a rounding error against the BDP,
+/// not head-room. The cap stays the canonical `gain × BDP` + budget, which is
+/// what keeps a 100 Mbit port buffer from being overrun.
+#[test]
+fn a_path_that_does_not_aggregate_earns_no_head_room() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    let mss = 1200usize;
+    bbr.min_rtt = FIELD_MIN_RTT;
+    let mut now = t0;
+
+    // 9 MB/s delivered in an even drip: an ACK every 200 us carrying 1800 B.
+    let ack_gap = Duration::from_micros(200);
+    let per_ack = 1_800u64;
+    for _ in 0..200 {
+        let prior_delivered = bbr.delivered;
+        let prior_mstamp = now;
+        now += ack_gap;
+        ack(
+            &mut bbr,
+            mss,
+            per_ack,
+            sample(prior_delivered, prior_mstamp, false),
+            FIELD_MIN_RTT,
+            now,
+        );
+    }
+
+    let head_room = ack_aggregation_cwnd(&bbr) as u64;
+    assert!(
+        head_room <= 2 * per_ack,
+        "an evenly-paced path earned {head_room} B of head-room: nothing here \
+         bursts, so there is no silence to provision for and the cap must stay at \
+         gain x BDP",
+    );
+}
+
+/// Canonical BBR gates the head-room on `bbr_full_bw_reached()`. STARTUP does not
+/// need it — its 2.885 cwnd gain already clears the ratios the field shows — and
+/// letting it apply there would widen the very ramp `194fa962` exists to bound.
+#[test]
+fn startup_takes_no_aggregation_head_room() {
+    let t0 = Instant::now();
+    let mut bbr = BbrState::new(t0, 0);
+    bbr.btlbw_bps = 9_000_000;
+    bbr.min_rtt = FIELD_MIN_RTT;
+    bbr.extra_acked = [60_000, 60_000];
+
+    assert_eq!(bbr.mode, BbrMode::Startup);
+    assert_eq!(ack_aggregation_cwnd(&bbr), 0, "STARTUP must not take the head-room");
+
+    bbr.mode = BbrMode::ProbeBw;
+    assert!(ack_aggregation_cwnd(&bbr) > 0, "steady state must take it");
+}
+
+/// `2891fb92` retires a gain phase once the pipe holds `gain × BDP` — the level
+/// whose delivery the probe exists to provoke. Canonical BBR adds the head-room
+/// in `bbr_set_cwnd` only, never in `bbr_inflight`, and the distinction matters
+/// here: folding it into the probe's target would leave the probe running — and
+/// the queue inflating — for as long as the path keeps bursting.
+#[test]
+fn the_probe_target_does_not_move_with_the_head_room() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    bbr.btlbw_bps = 9_000_000;
+    bbr.min_rtt = FIELD_MIN_RTT;
+    let mss = 1200usize;
+
+    let probe_target_before = inflight_for_gain(&bbr, mss, 1.25);
+    let cap_before = inflight_cap_from(&bbr, mss);
+    bbr.extra_acked = [60_000, 60_000];
+    assert_eq!(
+        inflight_for_gain(&bbr, mss, 1.25),
+        probe_target_before,
+        "the probe's in-flight target must not follow the aggregation head-room",
+    );
+    assert!(
+        inflight_cap_from(&bbr, mss) > cap_before,
+        "...while the cap itself must: {} did not move off {cap_before}",
+        inflight_cap_from(&bbr, mss),
+    );
+}
+
+/// The head-room is bounded by `BBR_EXTRA_ACKED_MAX_WINDOW` of bandwidth. While
+/// BtlBw is still under-estimated every epoch outruns it, so the raw excess has
+/// no ceiling of its own — this is what stops the cap running away before the two
+/// converge.
+#[test]
+fn the_head_room_is_bounded_by_a_window_of_bandwidth() {
+    let t0 = Instant::now();
+    let mut bbr = cruising(t0);
+    bbr.btlbw_bps = 1_000_000; // 1 MB/s → 100 ms of it is 100 KB.
+    bbr.min_rtt = FIELD_MIN_RTT;
+    bbr.extra_acked = [10_000_000, 10_000_000];
+
+    assert_eq!(
+        ack_aggregation_cwnd(&bbr),
+        100_000,
+        "the head-room must be clamped to a window of bandwidth",
+    );
+}

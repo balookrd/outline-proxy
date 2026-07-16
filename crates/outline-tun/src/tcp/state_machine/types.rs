@@ -304,6 +304,27 @@ pub(in crate::tcp) struct BbrState {
     /// parked at the floor because loss keeps arriving" apart from "the cap is
     /// stuck low although loss stopped".
     pub(in crate::tcp) loss_episodes: u64,
+    /// Windowed max (bytes) of how much more was ACKed over a stretch than
+    /// BtlBw predicted for it — canonical BBR's `extra_acked[2]`. Two slots, the
+    /// current one retired every `BBR_EXTRA_ACKED_WIN_ROUNDS` rounds, so the max
+    /// over both spans 5-10 round trips.
+    ///
+    /// This is the burstiness the path itself introduces (Wi-Fi aggregation,
+    /// stretch ACKs), and `bbr::ack_aggregation_cwnd` adds it to the in-flight
+    /// cap so the pipe stays busy across the silence between aggregates instead
+    /// of being throttled by a bound derived from `min_rtt`.
+    pub(in crate::tcp) extra_acked: [u64; 2],
+    /// Which slot of `extra_acked` is currently accumulating.
+    pub(in crate::tcp) extra_acked_win_idx: usize,
+    /// Rounds since the current `extra_acked` slot was opened.
+    pub(in crate::tcp) extra_acked_win_rounds: u32,
+    /// Start of the current ACK-aggregation sampling epoch — canonical BBR's
+    /// `ack_epoch_mstamp`. An epoch spans a stretch that ran *ahead* of BtlBw;
+    /// it restarts the moment deliveries fall back to what BtlBw predicts, which
+    /// is why an inter-ACK silence does not itself read as aggregation.
+    pub(in crate::tcp) ack_epoch_stamp: Instant,
+    /// Bytes ACKed since `ack_epoch_stamp` — canonical BBR's `ack_epoch_acked`.
+    pub(in crate::tcp) ack_epoch_acked: u64,
 }
 
 impl BbrState {
@@ -339,6 +360,11 @@ impl BbrState {
             bw_latest_bps: 0,
             lost_in_window: 0,
             delivered_in_window: 0,
+            extra_acked: [0; 2],
+            extra_acked_win_idx: 0,
+            extra_acked_win_rounds: 0,
+            ack_epoch_stamp: now,
+            ack_epoch_acked: 0,
         }
     }
 }
