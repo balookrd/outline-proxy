@@ -148,21 +148,24 @@ fn quantization_budget(bbr: &BbrState, mss: usize, cwnd: usize) -> usize {
     cwnd + 3 * tso_segs_goal(bbr, mss) * mss
 }
 
+/// In-flight the pipe would hold at `gain x BDP`, budget included — canonical
+/// BBR's `bbr_inflight(sk, bw, gain)`. `usize::MAX` until an estimate exists.
+fn inflight_for_gain(bbr: &BbrState, mss: usize, gain: f64) -> usize {
+    let floor = mss * BBR_MIN_PIPE_CWND_SEGMENTS;
+    match bdp_bytes(bbr) {
+        Some(bdp) => quantization_budget(bbr, mss, (bdp as f64 * gain) as usize).max(floor),
+        None => usize::MAX,
+    }
+}
+
 /// In-flight cap (bytes), given the flow's MSS. `usize::MAX` until an estimate
 /// exists, so the Reno initial window governs the first flight; floored at a
 /// few MSS so a sub-ms RTT still admits enough packets to keep ACKs clocking.
 fn inflight_cap_from(bbr: &BbrState, mss: usize) -> usize {
-    let floor = mss * BBR_MIN_PIPE_CWND_SEGMENTS;
     if bbr.mode == BbrMode::ProbeRtt {
-        return floor;
+        return mss * BBR_MIN_PIPE_CWND_SEGMENTS;
     }
-    match bdp_bytes(bbr) {
-        Some(bdp) => {
-            let cwnd = (bdp as f64 * bbr.cwnd_gain) as usize;
-            quantization_budget(bbr, mss, cwnd).max(floor)
-        },
-        None => usize::MAX,
-    }
+    inflight_for_gain(bbr, mss, bbr.cwnd_gain)
 }
 
 /// Pacing rate in bytes/sec, or 0 while inactive (no BtlBw sample yet). The
@@ -439,9 +442,45 @@ fn update_mode(state: &mut TcpFlowState, now: Instant) {
             }
         },
         BbrMode::ProbeBw => {
-            // One pacing-gain phase per min-RTT.
+            // Canonical `bbr_is_next_cycle_phase`. A gain phase is not a fixed
+            // slice of wall clock, because what a phase is *for* differs:
+            //
+            // - gain > 1 probes for bandwidth by lifting in-flight to
+            //   `gain x BDP`. That takes at least one RTT of ACKs to
+            //   materialise, and canonical BBR says so outright: "this may take
+            //   more than min_rtt if min_rtt is small (e.g. on a LAN)". Retiring
+            //   the probe on the min-RTT timer alone ends it before the ACKs it
+            //   provoked come back — the sample then lands in the *next* phase
+            //   and is divided by that phase's interval, so the extra bandwidth
+            //   the probe just demonstrated never reaches BtlBw. On a path whose
+            //   ACKs return slower than its own minimum the 1.25 gain then
+            //   raises the estimate exactly never, and BtlBw sits whereever it
+            //   happens to be — which is what pinned a Wi-Fi client on the field
+            //   gateway at 3.57 MB/s of a 33 MB/s link (min_rtt 1.98 ms against
+            //   srtt 4.8 ms, pipe 90% empty, cycle spinning through all eight
+            //   phases with the estimate frozen). Loss cuts the probe short: a
+            //   path with small buffers may not hold `gain x BDP` at all.
+            // - gain < 1 drains the queue the probe built, so it ends as soon as
+            //   in-flight is back at a BDP — persisting would starve the pipe.
+            // - gain == 1 is cruise: wall clock is exactly right.
+            //
+            // A path where srtt ~ min_rtt (the gateway's own loopback-ish
+            // clients, a wired LAN) is unaffected either way: there the pipe
+            // reaches `gain x BDP` within the timer anyway.
             let phase_len = state.bbr.min_rtt.max(Duration::from_millis(1));
-            if now.saturating_duration_since(state.bbr.cycle_stamp) >= phase_len {
+            let is_full_length = now.saturating_duration_since(state.bbr.cycle_stamp) >= phase_len;
+            let gain = state.bbr.pacing_gain;
+            let mss = server_max_segment_payload(state);
+            let pipe = bytes_in_pipe(state);
+            let advance = if gain > 1.0 {
+                is_full_length
+                    && (state.bbr.loss_in_round || pipe >= inflight_for_gain(&state.bbr, mss, gain))
+            } else if gain < 1.0 {
+                is_full_length || bdp_bytes(&state.bbr).is_some_and(|bdp| pipe <= bdp)
+            } else {
+                is_full_length
+            };
+            if advance {
                 state.bbr.probe_bw_phase =
                     (state.bbr.probe_bw_phase + 1) % BBR_PROBE_BW_GAINS.len();
                 state.bbr.pacing_gain = BBR_PROBE_BW_GAINS[state.bbr.probe_bw_phase];

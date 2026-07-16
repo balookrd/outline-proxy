@@ -2953,3 +2953,95 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         next_scheduled_deadline: None,
     }
 }
+
+/// Put `bytes` of real unacked segments in the pipe, keeping the running
+/// accounting in step with the scan (the debug cross-check asserts on it).
+fn fill_pipe_for_tests(state: &mut super::TcpFlowState, bytes: usize) {
+    let mss = super::MAX_SERVER_SEGMENT_PAYLOAD;
+    let now = Instant::now();
+    let mut left = bytes;
+    while left > 0 {
+        let len = left.min(mss);
+        state.unacked_server_segments.push_back(super::ServerSegment {
+            sequence_number: state.server_seq,
+            acknowledgement_number: 500,
+            flags: TCP_FLAG_ACK,
+            payload: vec![7u8; len].into(),
+            last_sent: now,
+            first_sent: now,
+            retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            delivered_at_snapshot: now,
+            first_tx_snapshot: now,
+            app_limited: false,
+        });
+        state.server_seq = state.server_seq.wrapping_add(len as u32);
+        left -= len;
+    }
+    // Let the production rebuild derive pipe_bytes / segments / earliest-unsacked,
+    // so the debug cross-check against a full scan stays satisfied.
+    super::rebuild_unacked_accounting(state);
+}
+
+/// Canonical BBR retires the probe-up phase on `is_full_length && inflight >=
+/// gain x BDP`, not on the timer alone — "this may take more than min_rtt if
+/// min_rtt is small". Our cycle used wall clock only, so on a path whose ACKs
+/// return slower than its own minimum the 1.25 phase expired before the ACKs it
+/// provoked came back: the sample landed in the next phase, was divided by that
+/// phase's interval, and the probe's extra bandwidth never reached BtlBw. A
+/// Wi-Fi client on the field gateway sat at 3.57 MB/s of a 33 MB/s link with the
+/// cycle spinning through all eight phases and the estimate frozen.
+#[tokio::test]
+async fn probe_up_holds_until_the_pipe_reaches_the_gain_it_probes_for() {
+    let mut state = tcp_flow_state_for_tests().await;
+    let now = Instant::now();
+    state.bbr.mode = super::state_machine::BbrMode::ProbeBw;
+    state.bbr.probe_bw_phase = 0;
+    state.bbr.pacing_gain = 1.25;
+    state.bbr.btlbw_bps = 9_000_000;
+    state.bbr.min_rtt = Duration::from_micros(1_983);
+    state.bbr.min_rtt_stamp = now;
+    // Already past the min-RTT slice: the timer alone would retire the phase.
+    state.bbr.cycle_stamp = now - Duration::from_millis(50);
+    state.bbr.loss_in_round = false;
+    // The pipe is nearly empty: the probe has achieved nothing yet, because the
+    // ACKs it provoked are still out on a path that answers slower than its own
+    // minimum.
+    fill_pipe_for_tests(&mut state, 1_200);
+
+    super::state_machine::bbr_on_ack_for_tests(&mut state, 0, None, None, now);
+
+    assert_eq!(
+        state.bbr.pacing_gain, 1.25,
+        "probe-up must persist until the pipe holds gain x BDP; retiring it on the \
+         timer alone is what froze BtlBw on the jittery path",
+    );
+    assert_eq!(state.bbr.probe_bw_phase, 0);
+}
+
+/// The other side: once the pipe really holds `gain x BDP` the probe has done its
+/// job, and the cycle must move on rather than keep inflating the queue.
+#[tokio::test]
+async fn probe_up_advances_once_the_pipe_has_filled() {
+    let mut state = tcp_flow_state_for_tests().await;
+    let now = Instant::now();
+    state.bbr.mode = super::state_machine::BbrMode::ProbeBw;
+    state.bbr.probe_bw_phase = 0;
+    state.bbr.pacing_gain = 1.25;
+    state.bbr.btlbw_bps = 9_000_000;
+    state.bbr.min_rtt = Duration::from_micros(1_983);
+    state.bbr.min_rtt_stamp = now;
+    state.bbr.cycle_stamp = now - Duration::from_millis(50);
+    state.bbr.loss_in_round = false;
+    // Well past 1.25 x BDP (BDP is ~17.8 KB at these estimates).
+    fill_pipe_for_tests(&mut state, 200_000);
+
+    super::state_machine::bbr_on_ack_for_tests(&mut state, 0, None, None, now);
+
+    assert_ne!(
+        state.bbr.pacing_gain, 1.25,
+        "a probe that reached gain x BDP must hand over to the next phase",
+    );
+}
