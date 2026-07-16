@@ -115,6 +115,39 @@ fn bdp_bytes(bbr: &BbrState) -> Option<usize> {
     Some((effective_btlbw(bbr) as f64 * bbr.min_rtt.as_secs_f64()) as usize)
 }
 
+/// How much data the pacer puts on the wire in roughly one millisecond, in
+/// segments — canonical BBR's `bbr_tso_segs_goal`, which derives it from the
+/// pacing rate rather than from a fixed count. Floored at 2 segments (the
+/// canonical `bbr_min_tso_segs`) and capped like the original.
+fn tso_segs_goal(bbr: &BbrState, mss: usize) -> usize {
+    let per_ms = (pacing_rate_from(bbr) / 1024) as usize;
+    (per_ms / mss.max(1)).clamp(2, 127)
+}
+
+/// Canonical BBR's `bbr_quantization_budget`: head-room added on top of
+/// `gain x BDP` so the pipe stays busy across ACK aggregation.
+///
+/// Without it the cap is exactly `gain x BDP`, which silently assumes the flight
+/// comes back over `min_rtt`. It does not: it comes back over the path's actual
+/// RTT. When `srtt / min_rtt` exceeds `cwnd_gain`, a cap-bound flight delivers
+/// `cap / srtt < btlbw` — and since the cap is computed *from* BtlBw, the pair
+/// ratchets each other down every round until the cap lands on its floor. The
+/// field gateway hit exactly that: min_rtt 1.876 ms against srtt 5.021 ms (a
+/// jittery Wi-Fi last mile, ping mdev 2.5 ms), ratio 2.7 against a gain of 2.0,
+/// BtlBw collapsed to 1.17 MB/s on a link carrying 9 MB/s, cap parked on
+/// `4 x MSS` with 2.1 MB queued behind a 167 KB client window.
+///
+/// The budget breaks the ratchet because it does not scale with BtlBw: the
+/// steady state solves `btlbw = budget / (srtt - gain x min_rtt)` instead of
+/// collapsing to zero, so the estimate climbs back to what the link carries.
+/// Sizing it off the pacing rate (not a fixed segment count) keeps it
+/// proportional to what this flow actually sends, so it is head-room on a slow
+/// flow and negligible on a fast one — it does not hand the last hop a burst,
+/// which is what the controller exists to prevent.
+fn quantization_budget(bbr: &BbrState, mss: usize, cwnd: usize) -> usize {
+    cwnd + 3 * tso_segs_goal(bbr, mss) * mss
+}
+
 /// In-flight cap (bytes), given the flow's MSS. `usize::MAX` until an estimate
 /// exists, so the Reno initial window governs the first flight; floored at a
 /// few MSS so a sub-ms RTT still admits enough packets to keep ACKs clocking.
@@ -124,7 +157,10 @@ fn inflight_cap_from(bbr: &BbrState, mss: usize) -> usize {
         return floor;
     }
     match bdp_bytes(bbr) {
-        Some(bdp) => ((bdp as f64 * bbr.cwnd_gain) as usize).max(floor),
+        Some(bdp) => {
+            let cwnd = (bdp as f64 * bbr.cwnd_gain) as usize;
+            quantization_budget(bbr, mss, cwnd).max(floor)
+        },
         None => usize::MAX,
     }
 }
