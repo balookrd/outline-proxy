@@ -429,6 +429,11 @@ pub(super) async fn connect_tcp_uplink_fresh(
 ///   QUIC, mid-session retry only operates on the WS dial path.
 /// * Advertises `X-Outline-Resume-Ack-Prefix: 1` so the server emits
 ///   the v1 control frame and the reader can park `up_acked`.
+/// * Asks for the wire's **configured** carrier, not its mode-downgrade
+///   cap — the carrier this dial lands on is the one the rescued session
+///   rides for the rest of its life, and the cap is usually a reading of
+///   the very carrier death being recovered from. See
+///   [`UplinkManager::connect_tcp_ws_migrate_with_ack_prefix`].
 ///
 /// `wire_index` selects which wire of `candidate` to redial: `0` is the
 /// primary, `1..=N` map to `fallbacks[wire_index - 1]`. The caller
@@ -502,9 +507,22 @@ async fn redial_for_mid_session_retry_inner(
         }
         let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
         record_tcp_resume_lookup(uplinks, resume_request);
+        // The migrate-* dials ask for the uplink's *configured* carrier rather
+        // than the capped one — see `connect_tcp_ws_migrate_with_ack_prefix`.
+        // A retry is triggered by a carrier death, and that death caps the
+        // uplink one rank down (`ws_h3` → `ws_h2`) for `mode_downgrade_secs`:
+        // not from this session (it reports its runtime failure only once the
+        // relay loop is done, so a retry that succeeds never reports one), but
+        // from every other party watching the same carrier — the standby refill
+        // loop, a TUN flow on the same manager, a sibling session whose own
+        // retry failed, the probe loop. A shared H3 carrier dies for all of
+        // them at once, so by the time this redial runs the cap is usually
+        // already installed, and honouring it would pin the rescued session to
+        // TCP-over-TCP for the rest of its life (nothing migrates a live
+        // session back up).
         let ws = if symmetric_replay_enabled {
             uplinks
-                .connect_tcp_ws_redial_with_symmetric_replay(
+                .connect_tcp_ws_migrate_with_symmetric_replay(
                     candidate,
                     "socks_tcp_retry",
                     resume_request,
@@ -513,7 +531,11 @@ async fn redial_for_mid_session_retry_inner(
                 .await?
         } else {
             uplinks
-                .connect_tcp_ws_redial_with_ack_prefix(candidate, "socks_tcp_retry", resume_request)
+                .connect_tcp_ws_migrate_with_ack_prefix(
+                    candidate,
+                    "socks_tcp_retry",
+                    resume_request,
+                )
                 .await?
         };
         let setup = WireSetup::from_uplink(&candidate.uplink);
@@ -571,6 +593,13 @@ async fn redial_for_mid_session_retry_inner(
             client_acked_offset,
             source: "socks_tcp_retry",
             resume_request,
+            // Same reasoning as the primary-wire branch above: a session
+            // rescued onto this wire keeps whatever carrier it lands on, so
+            // the retry asks for the wire's configured one. The per-wire cap
+            // this bypasses lives in `fallback_mode_downgrades[wire_index - 1]`
+            // and is written by any *other* dial of this wire that observed a
+            // fallback (`note_silent_transport_fallback_for_wire`).
+            bypass_mode_downgrade: true,
         },
     )
     .await
@@ -608,6 +637,12 @@ fn record_tcp_resume_lookup(uplinks: &UplinkManager, resume_request: Option<Sess
 ///
 /// `resume_request` is the redialing session's own Session ID; it stays `None`
 /// on every fresh-dial path (a new session must not resume anything).
+///
+/// `bypass_mode_downgrade` asks for the wire's configured carrier instead of
+/// its per-wire mode-downgrade cap. Only the mid-session retry sets it: the
+/// carrier it dials is the one the rescued session keeps for life, whereas a
+/// fresh dial is free to honour the cap and skip a handshake that is likely
+/// doomed — the next connection gets its own chance a moment later.
 #[derive(Clone, Copy)]
 pub(super) struct FallbackDialOptions {
     pub(super) ack_prefix_requested: bool,
@@ -615,6 +650,7 @@ pub(super) struct FallbackDialOptions {
     pub(super) client_acked_offset: u64,
     pub(super) source: &'static str,
     pub(super) resume_request: Option<SessionId>,
+    pub(super) bypass_mode_downgrade: bool,
 }
 
 impl Default for FallbackDialOptions {
@@ -625,6 +661,7 @@ impl Default for FallbackDialOptions {
             client_acked_offset: 0,
             source: "socks_tcp_fb",
             resume_request: None,
+            bypass_mode_downgrade: false,
         }
     }
 }
@@ -632,7 +669,9 @@ impl Default for FallbackDialOptions {
 /// Dial one fallback transport on the parent uplink. Returns a fully-set-up
 /// `ConnectedTcpUplink` indistinguishable from the primary path.
 ///
-/// Bypasses the standby pool and the mode-downgrade window. Resume is
+/// Bypasses the standby pool, and bypasses the primary's mode-downgrade
+/// window — this wire honours its own per-wire cap instead, unless the caller
+/// sets `bypass_mode_downgrade`. Resume is
 /// caller-driven: a fresh fallback dial presents no Session ID
 /// (`FallbackDialOptions::default()`), a mid-session-retry fallback dial
 /// presents the redialing session's own ID. Per-wire RTT samples **are** fed
@@ -678,7 +717,16 @@ pub(super) async fn connect_tcp_fallback_fresh(
     // The cap is family-aware (`WsH3` → `WsH2`, `XhttpH3` → `XhttpH2`,
     // `XhttpH2` → `XhttpH1`) and lives in
     // `PerTransportStatus::fallback_mode_downgrades[wire_index - 1]`.
-    let mode = uplinks.effective_tcp_mode_for_wire(parent.index, wire_index).await;
+    // The mid-session retry opts out (`bypass_mode_downgrade`) because the
+    // carrier it picks is the one the rescued session rides for life; the
+    // dial still falls back `h3 → h2 → h1` inline if the configured carrier
+    // really is broken, and the resulting `downgraded_from` still extends the
+    // window below.
+    let mode = if options.bypass_mode_downgrade {
+        fallback.tcp_dial_mode()
+    } else {
+        uplinks.effective_tcp_mode_for_wire(parent.index, wire_index).await
+    };
     let resume_request = options.resume_request;
     record_tcp_resume_lookup(uplinks, resume_request);
     let ws = connect_transport(
@@ -891,3 +939,10 @@ async fn send_initial_ss_target(
     );
     Ok(())
 }
+
+// Gated on `h3`: the test proves which carrier the retry dial asks for by
+// watching for the QUIC Initial that only an `ws_h3` dial emits, which the
+// dialer cannot produce without QUIC compiled in.
+#[cfg(all(test, feature = "h3"))]
+#[path = "tests/failover.rs"]
+mod tests;
