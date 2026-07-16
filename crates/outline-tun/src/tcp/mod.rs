@@ -140,17 +140,37 @@ const BBR_STARTUP_FULL_BW_COUNT: u32 = 3;
 /// the instantaneous burst (≈19 KB) stays well under a typical 100 Mbit-port
 /// buffer — a bigger burst was overrunning it and stalling delivery.
 const BBR_PACING_MAX_BURST_SEGMENTS: usize = 16;
-/// Multiplicative back-off applied to the loss-driven bandwidth cap on each loss
-/// episode (0.85 ≈ −15%). Repeated loss compounds it, driving the pacer down
-/// until the last hop stops dropping.
+/// Multiplicative back-off applied to the loss-driven bandwidth cap on a round
+/// whose measured loss rate exceeded `BBR_LOSS_THRESH` (0.85 ≈ −15%). Never
+/// applied without the `bw_latest` floor in `adapt_loss_cap` — the back-off
+/// proposes, the floor disposes.
 const BBR_LOSS_CAP_BACKOFF: f64 = 0.85;
-/// Fraction of the current BtlBw the loss cap is raised by on each loss-free
-/// round (additive-increase), until it reaches BtlBw and clears. Small enough
-/// that recovery probes up gently rather than re-overrunning the last hop.
-const BBR_LOSS_CAP_RECOVER_FRACTION: f64 = 0.03125; // 1/32
-/// Floor for the loss-driven cap (bytes/sec) so a burst of loss episodes cannot
+/// Loss rate (lost / (lost + delivered), measured over a round) above which the
+/// last hop is treated as congested and the cap backs off. Canonical BBRv2's
+/// `bbr_loss_thresh` — 5/256 ≈ 1.953% in the kernel's fixed point, 2% here.
+///
+/// Below this the loss is the medium's, not a queue's: a radio link drops
+/// sporadically at rates orders of magnitude under this, and reacting to it
+/// throttles a healthy flow. This is the gate the old per-episode back-off
+/// lacked — it counted *events*, so one dropped segment (3 dup-ACKs → recovery
+/// entry) cost 15% of the cap regardless of whether 30 or 30_000 segments had
+/// gone out around it.
+const BBR_LOSS_THRESH: f64 = 0.02;
+/// Minimum bytes (lost + delivered) a loss-rate measurement window must hold
+/// before its ratio is trusted; short of it the counters carry into the next
+/// round instead of being evaluated.
+///
+/// A round on a sub-ms hop can be a couple of dozen segments, where a single
+/// drop reads as 3-6% and would clear `BBR_LOSS_THRESH` on noise alone. At
+/// ~100 segments one drop is ~1% (below the threshold) and two are ~2% (at it),
+/// which is the resolution the threshold implies. Canonical BBRv2 needs no such
+/// floor because it divides by `tx_in_flight` — the in-flight snapshot taken
+/// when the ACKed packet was *sent* — which we do not track per segment.
+const BBR_LOSS_MIN_SAMPLE_BYTES: u64 = 100 * MAX_SERVER_SEGMENT_PAYLOAD as u64;
+/// Floor for the loss-driven cap (bytes/sec) so a pathological path cannot
 /// collapse the pacer to a standstill; ≈1 Mbit/s, below which the last hop is
-/// unusable for media anyway.
+/// unusable for media anyway. Secondary to the `bw_latest` floor, which is what
+/// normally stops the cap descending below what the link demonstrably carries.
 const BBR_LOSS_CAP_FLOOR_BPS: u64 = 125_000;
 const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Fail-fast window for direct connects. A destination that failed to connect
