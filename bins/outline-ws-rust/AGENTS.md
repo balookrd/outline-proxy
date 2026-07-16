@@ -277,9 +277,18 @@ cargo release-musl-aarch64
   `extend_mode_downgrade` напрямую: слот primary читается каждым wire-0
   дайлом (`effective_tcp_mode`), поэтому кэп от сломанного fallback'а тянет
   primary вниз, а пустой per-wire слот держит `wire_is_at_carrier_floor`
-  ниже пола и намертво стопорит shuffle_wires-ротацию с этого wire. У
-  per-wire слота нет walk-up / recovery-пробы (они primary-only) — кэп там
-  снимается только по TTL `mode_downgrade_secs`.
+  ниже пола и намертво стопорит shuffle_wires-ротацию с этого wire. Слот
+  каждого wire питается СВОИМИ probe-стриками (`ModeDowngradeSlot::probe_*`):
+  `PerTransportStatus::consecutive_*` принадлежат primary-пробе, и переиспользовать
+  их — та же кросс-wire зараза, только через descent-гейт. Fallback-wire проба
+  (`run_fallback_wire_probe`) обязана дайлить **effective** режим своего wire и
+  гнать исход через `note_fallback_wire_carrier_outcome`: спуск строго по
+  `*_carrier_ok` (site-reachability `*_ok` носитель НЕ роняет — это
+  7196a62d), иначе каскад не дойдёт до пола и ротация не отпустится. У
+  fallback-wire нет recovery-пробы по сконфигурированному носителю (она
+  primary-only), поэтому кэп поднимается пошагово через
+  `walk_up_mode_downgrade_for_wire`, а последний шаг на configured — за TTL
+  `mode_downgrade_secs`.
 - Strict-mode active-uplink switch: в `active_passive` манёвр manual control /
   probe-driven failover, который сдвигает активный uplink с in-flight сессии,
   обязан рвать TCP-сессию SOCKS5 с RST (`SO_LINGER {l_onoff=1, l_linger=0}`) и

@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use crate::config::TransportMode;
 use crate::selection::{StatusView, TransportStatusView};
 use crate::types::TransportKind;
 
@@ -433,15 +432,29 @@ impl PerTransportStatus {
     }
 }
 
-/// One mode-downgrade window slot. Mirrors the
-/// `(mode_downgrade_until, mode_downgrade_capped_to)` pair on
-/// [`PerTransportStatus`] but for a non-primary wire. `until == None`
-/// means no active window (defaults dial to the wire's configured mode);
-/// `capped_to == None` is the same.
-#[derive(Clone, Copy, Debug, Default)]
+/// One non-primary wire's carrier-descent slot: the same
+/// [`CarrierDescentState`] the primary wire uses, plus this wire's own
+/// probe streaks.
+///
+/// The streaks cannot be shared with [`PerTransportStatus::consecutive_failures`]
+/// / [`PerTransportStatus::consecutive_successes`]: those count the *primary*
+/// probe's outcomes (the default probe path always targets primary — see
+/// [`crate::manager::probe::wire`]), so feeding them to this wire's descent
+/// gate would let primary's failures push a fallback's carrier down, which is
+/// the whole class of bug the per-wire slots exist to prevent. The
+/// fallback-wire probe keeps its own counters here.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct ModeDowngradeSlot {
-    pub(crate) until: Option<Instant>,
-    pub(crate) capped_to: Option<TransportMode>,
+    /// Window, cap, grace budget and recovery streak for this wire —
+    /// identical bookkeeping to the primary's slot.
+    pub(crate) descent: CarrierDescentState,
+    /// Consecutive fallback-wire probe failures on this wire. Feeds the
+    /// at-cap descent gate so a single flaky probe at the capped rank
+    /// cannot step the cap deeper.
+    pub(crate) probe_failures: u32,
+    /// Consecutive fallback-wire probe successes on this wire. Feeds the
+    /// walk-up that claws intermediate ranks back.
+    pub(crate) probe_successes: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
