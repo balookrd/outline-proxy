@@ -817,6 +817,161 @@ async fn flush_super_segment_from_multiple_chunks_is_byte_exact() {
     assert_eq!(state.server_seq, 1000 + total as u32);
 }
 
+/// Canonical `tcp_rate_skb_delivered` records the send time of the most recently
+/// ACKed packet in `first_tx_mstamp`; the next segments snapshot it and measure
+/// their send-phase interval from it, so that interval spans one flight.
+///
+/// `tcp_rate_skb_sent` also seeds the anchor, but only when the pipe is empty —
+/// and that used to be the only site here. A bulk transfer never empties its
+/// pipe, so every segment snapshotted the instant the flow's first byte went out
+/// and its send interval became the flow's *age*. The rate interval is
+/// `max(ack_interval, send_interval)`, so a stale anchor divides each sample by
+/// that age: seconds instead of milliseconds, reading kilobytes/s on a path
+/// carrying tens of MB/s.
+#[tokio::test]
+async fn ack_advances_first_tx_mstamp_so_the_send_interval_spans_one_flight() {
+    const MSS: usize = 4;
+    const STEP: Duration = Duration::from_millis(2);
+
+    fn send_segment(state: &mut super::TcpFlowState, sequence_number: u32, at: Instant) {
+        state.unacked_server_segments.push_back(super::ServerSegment {
+            sequence_number,
+            acknowledgement_number: 500,
+            flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+            payload: vec![0u8; MSS].into(),
+            last_sent: at,
+            first_sent: at,
+            retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            delivered_at_snapshot: at,
+            // What `push_unacked_segments` snapshots: the flight anchor as it
+            // stands when this segment goes out.
+            first_tx_snapshot: state.first_tx_mstamp,
+            app_limited: false,
+        });
+        super::rebuild_unacked_accounting(state);
+    }
+
+    let mut state = tcp_flow_state_for_tests().await;
+    let t0 = Instant::now();
+    state.first_tx_mstamp = t0;
+    state.last_client_ack = 1000;
+    state.server_seq = 1000;
+    state.client_window = 65535;
+    state.client_window_end = 1000u32.wrapping_add(65535);
+
+    // Prime the pipe with two segments, so ACKing one never drains it and the
+    // `tcp_rate_skb_sent` reseed never fires — exactly the bulk-transfer case.
+    let mut next_seq = 1000u32;
+    let mut sent_at = t0;
+    send_segment(&mut state, next_seq, sent_at);
+    next_seq += MSS as u32;
+    sent_at += STEP;
+    send_segment(&mut state, next_seq, sent_at);
+    next_seq += MSS as u32;
+
+    let mut send_interval = Duration::ZERO;
+    for _ in 0..100 {
+        let oldest = state.unacked_server_segments.front().expect("pipe is never empty");
+        let ack = oldest.sequence_number.wrapping_add(MSS as u32);
+        let effect = super::process_server_ack(&mut state, ack, &[]);
+        send_interval = effect
+            .rate_sample
+            .expect("a cleanly ACKed segment yields a rate sample")
+            .send_interval;
+        // Send one more before the next ACK, so the pipe stays occupied.
+        sent_at += STEP;
+        send_segment(&mut state, next_seq, sent_at);
+        next_seq += MSS as u32;
+    }
+
+    // The flow is ~200 ms old by now, while one flight spans two `STEP`s. The
+    // send interval must measure the flight, not the flow.
+    let flow_age = sent_at.saturating_duration_since(t0);
+    assert!(flow_age >= Duration::from_millis(190), "flow_age={flow_age:?}");
+    assert!(
+        send_interval <= STEP * 3,
+        "send interval must span one flight, not the flow's age: \
+         send_interval={send_interval:?}, flow_age={flow_age:?}"
+    );
+}
+
+/// The anchor tracks the newest ACKed segment, never walks backwards, and is not
+/// dragged back by an older segment ACKed later (a retransmitted hole closing
+/// after the segments above it).
+#[tokio::test]
+async fn first_tx_mstamp_tracks_the_newest_acked_segment_and_never_recedes() {
+    let mut state = tcp_flow_state_for_tests().await;
+    let t0 = Instant::now();
+    state.first_tx_mstamp = t0;
+    state.last_client_ack = 1000;
+    state.server_seq = 1008;
+    state.client_window = 65535;
+    state.client_window_end = 1000u32.wrapping_add(65535);
+    state.unacked_server_segments = VecDeque::from([
+        super::ServerSegment {
+            sequence_number: 1000,
+            acknowledgement_number: 500,
+            flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+            payload: b"AAAA".to_vec().into(),
+            last_sent: t0 + Duration::from_millis(5),
+            first_sent: t0 + Duration::from_millis(5),
+            retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            delivered_at_snapshot: t0,
+            first_tx_snapshot: t0,
+            app_limited: false,
+        },
+        super::ServerSegment {
+            sequence_number: 1004,
+            acknowledgement_number: 500,
+            flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+            payload: b"BBBB".to_vec().into(),
+            last_sent: t0 + Duration::from_millis(9),
+            first_sent: t0 + Duration::from_millis(9),
+            retransmits: 0,
+            rto_retransmits: 0,
+            fast_retransmit_epoch: 0,
+            delivered_snapshot: 0,
+            delivered_at_snapshot: t0,
+            first_tx_snapshot: t0,
+            app_limited: false,
+        },
+    ]);
+    super::rebuild_unacked_accounting(&mut state);
+
+    super::process_server_ack(&mut state, 1008, &[]);
+    assert_eq!(
+        state.first_tx_mstamp,
+        t0 + Duration::from_millis(9),
+        "anchor must reach the newest ACKed segment's send instant"
+    );
+
+    // An older send instant arriving later must not drag the anchor back.
+    state.unacked_server_segments.push_back(super::ServerSegment {
+        sequence_number: 1008,
+        acknowledgement_number: 500,
+        flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+        payload: b"CCCC".to_vec().into(),
+        last_sent: t0 + Duration::from_millis(7),
+        first_sent: t0 + Duration::from_millis(7),
+        retransmits: 0,
+        rto_retransmits: 0,
+        fast_retransmit_epoch: 0,
+        delivered_snapshot: 0,
+        delivered_at_snapshot: t0,
+        first_tx_snapshot: t0,
+        app_limited: false,
+    });
+    super::rebuild_unacked_accounting(&mut state);
+    super::process_server_ack(&mut state, 1012, &[]);
+    assert_eq!(state.first_tx_mstamp, t0 + Duration::from_millis(9), "anchor must not recede");
+}
+
 #[tokio::test]
 async fn process_server_ack_marks_sacked_segments_without_cumulative_ack() {
     let mut state = tcp_flow_state_for_tests().await;

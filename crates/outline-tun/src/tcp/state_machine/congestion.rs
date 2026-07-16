@@ -328,6 +328,25 @@ pub(in crate::tcp) fn process_server_ack(
                 state.pipe_segments -= 1;
             }
             bytes_acked = bytes_acked.saturating_add(segment_len);
+            // Canonical `tcp_rate_skb_delivered`: "record send time of the most
+            // recently ACKed packet". `first_tx_mstamp` is the anchor the *next*
+            // segments snapshot into `first_tx_snapshot`, and their send interval
+            // is measured from it — so it must track the flight the path is
+            // currently returning.
+            //
+            // `tcp_rate_skb_sent` seeds it when the pipe is empty, and that was
+            // the only site here. A bulk transfer never empties the pipe, so the
+            // anchor stayed at the instant the flow's first byte went out and the
+            // send interval became the flow's *age*: it grew without bound (3.3 s
+            // and climbing on the field gateway, against an ACK interval of 8 ms).
+            // Since the rate interval is `max(ack_interval, send_interval)`, every
+            // sample was divided by seconds instead of milliseconds, reading ~10
+            // KB/s on a path carrying tens of MB/s. Those samples are then
+            // `pacing_limited`, so they may only raise BtlBw and never do — 66 of
+            // 69 samples were dropped, leaving BtlBw pinned far below the link and
+            // the pacer throttling the flow to it (pipe 93% empty, cwnd and the
+            // BBR cap both idle).
+            state.first_tx_mstamp = state.first_tx_mstamp.max(segment.last_sent);
             if segment.retransmits == 0 {
                 rtt_sample = Some(segment.first_sent.elapsed());
                 // BBR delivery-rate sample from the oldest cleanly-acked
