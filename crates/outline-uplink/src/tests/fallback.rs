@@ -2339,6 +2339,28 @@ async fn fallback_wire_downgrade_caps_only_its_own_wire() {
 }
 
 #[tokio::test]
+async fn fallback_wire_downgrade_honours_carrier_downgrade_opt_out() {
+    // `carrier_downgrade = false` collapses the vertical cascade on every
+    // wire of the uplink, not just primary: with the cap suppressed, dials
+    // keep asking for the configured carrier and `wire_is_at_carrier_floor`
+    // reports "at floor" so rotation goes straight wire → wire.
+    let mut cfg = vless_xhttp_primary();
+    let mut ws_fb = ws_fallback(false);
+    ws_fb.tcp_mode = TransportMode::WsH3;
+    cfg.fallbacks = vec![ws_fb];
+    cfg.carrier_downgrade = false;
+    let manager = manager_with_uplink(cfg, 1);
+
+    manager.note_silent_transport_fallback_for_wire(0, TransportKind::Tcp, 1, TransportMode::WsH3);
+
+    assert_eq!(
+        manager.effective_tcp_mode_for_wire(0, 1).await,
+        TransportMode::WsH3,
+        "carrier_downgrade = false must leave the fallback wire's cap uninstalled",
+    );
+}
+
+#[tokio::test]
 async fn primary_wire_downgrade_does_not_leak_into_fallback() {
     let mut cfg = vless_xhttp_primary();
     cfg.fallbacks = vec![ws_fallback(false)];
@@ -2727,6 +2749,153 @@ async fn report_runtime_failure_for_wire_follows_active_wire_after_advance() {
         "failure on the now-active fallback wire must engage cooldown",
     );
     assert_eq!(status_after_active.tcp.consecutive_runtime_failures, 1);
+}
+
+// ── Runtime-failure carrier attribution across wires ────────────────────────
+//
+// A runtime failure on an *active fallback* wire passes the non-active-wire
+// suppression gate above and reaches the carrier-descent machinery. The
+// descent it drives must land in that wire's own slot: capping the primary's
+// carrier from a broken fallback would drag every wire-0 dial down with it
+// (`effective_tcp_mode` is what wire-0 dials read), and leaving the fallback's
+// own slot empty would strand `wire_is_at_carrier_floor` — the shuffle_wires
+// rotation gate — below the floor forever.
+
+#[tokio::test(start_paused = true)]
+async fn runtime_failure_on_active_fallback_wire_does_not_cap_primary() {
+    let mut cfg = vless_xhttp_primary(); // primary: vless xhttp_h3
+    // Fallback rides the WS family, so a cap landing in the wrong slot is
+    // unambiguous: primary can only ever be capped to XhttpH2, wire 1 to WsH2.
+    let mut ws_fb = ws_fallback(false);
+    ws_fb.tcp_mode = TransportMode::WsH3;
+    cfg.fallbacks = vec![ws_fb];
+    let manager = manager_with_uplink(cfg, 1);
+
+    // New sessions land on the fallback wire, so the failure below is
+    // attributed to wire 1 *and* passes the active-wire gate.
+    manager.test_set_active_wire(0, TransportKind::Tcp, 1);
+    manager
+        .report_runtime_failure_for_wire(
+            0,
+            TransportKind::Tcp,
+            1,
+            &anyhow::anyhow!("ws upstream reset"),
+        )
+        .await;
+
+    assert_eq!(
+        manager.effective_tcp_mode(0).await,
+        TransportMode::XhttpH3,
+        "a runtime failure on the active fallback wire must not cap the primary's carrier",
+    );
+    let status = manager.read_status_for_test(0);
+    assert!(
+        status.tcp.descent.capped_to().is_none(),
+        "primary's descent slot must stay untouched by a fallback-wire failure",
+    );
+    assert!(status.tcp.descent.until().is_none(), "primary's descent window must stay unset");
+
+    assert_eq!(
+        manager.effective_tcp_mode_for_wire(0, 1).await,
+        TransportMode::WsH2,
+        "the failure belongs to wire 1's own carrier stack: ws_h3 -> ws_h2",
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn runtime_failures_rotate_off_a_fallback_wire_once_it_hits_its_carrier_floor() {
+    let mut cfg = vless_xhttp_primary();
+    let mut ws_fb = ws_fallback(false);
+    ws_fb.tcp_mode = TransportMode::WsH3;
+    cfg.fallbacks = vec![ws_fb, ws_alt_floor_fallback(false)];
+    cfg.shuffle_wires = true; // arms the vertical-cascade rotation gate
+    let manager = manager_with_uplink(cfg, 1); // min_failures = 1
+
+    manager.test_set_active_wire(0, TransportKind::Tcp, 1);
+
+    // First failure: wire 1 still has ws_h2 beneath it, so the cascade holds
+    // the rotation and only walks the carrier down one rank.
+    manager
+        .report_runtime_failure_for_wire(0, TransportKind::Tcp, 1, &anyhow::anyhow!("reset"))
+        .await;
+    assert_eq!(
+        manager.effective_tcp_mode_for_wire(0, 1).await,
+        TransportMode::WsH2,
+        "first runtime failure caps wire 1 to ws_h2",
+    );
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        1,
+        "rotation must wait while wire 1 still has carrier ranks left",
+    );
+
+    // Second failure: the cap reaches the ws_h1 floor, so the gate releases
+    // and rotation finally advances off the broken wire.
+    manager
+        .report_runtime_failure_for_wire(0, TransportKind::Tcp, 1, &anyhow::anyhow!("reset"))
+        .await;
+    assert_eq!(
+        manager.effective_tcp_mode_for_wire(0, 1).await,
+        TransportMode::WsH1,
+        "second runtime failure walks wire 1 down to its ws_h1 floor",
+    );
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        2,
+        "once wire 1 is at its carrier floor, runtime failures alone must rotate off it",
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn runtime_failure_on_fallback_wire_honours_carrier_downgrade_opt_out() {
+    let mut cfg = vless_xhttp_primary();
+    let mut ws_fb = ws_fallback(false);
+    ws_fb.tcp_mode = TransportMode::WsH3;
+    cfg.fallbacks = vec![ws_fb, ws_alt_floor_fallback(false)];
+    cfg.shuffle_wires = true;
+    cfg.carrier_downgrade = false; // operator collapsed the vertical cascade
+    let manager = manager_with_uplink(cfg, 1);
+
+    manager.test_set_active_wire(0, TransportKind::Tcp, 1);
+    manager
+        .report_runtime_failure_for_wire(0, TransportKind::Tcp, 1, &anyhow::anyhow!("reset"))
+        .await;
+
+    assert_eq!(
+        manager.effective_tcp_mode_for_wire(0, 1).await,
+        TransportMode::WsH3,
+        "carrier_downgrade = false must leave the fallback wire's cap uninstalled",
+    );
+    assert_eq!(
+        manager.active_wire(0, TransportKind::Tcp),
+        2,
+        "with the cascade opted out, the wire counts as at-floor and rotation fires at once",
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn runtime_failure_on_fallback_wire_suppressed_for_try_again_close() {
+    let mut cfg = vless_xhttp_primary();
+    let mut ws_fb = ws_fallback(false);
+    ws_fb.tcp_mode = TransportMode::WsH3;
+    cfg.fallbacks = vec![ws_fb];
+    let manager = manager_with_uplink(cfg, 1);
+
+    manager.test_set_active_wire(0, TransportKind::Tcp, 1);
+    manager
+        .report_runtime_failure_for_wire(
+            0,
+            TransportKind::Tcp,
+            1,
+            &anyhow::Error::new(outline_transport::TryAgain),
+        )
+        .await;
+
+    assert_eq!(
+        manager.effective_tcp_mode_for_wire(0, 1).await,
+        TransportMode::WsH3,
+        "a 1013 try-again is a per-target upstream fault and must not cap the wire's carrier",
+    );
 }
 
 // ── shuffle_wires round-counter ─────────────────────────────────────────────
