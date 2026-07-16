@@ -256,17 +256,48 @@ pub(in crate::tcp) struct BbrState {
     /// not overrun a small last-hop buffer. `0` disables the cap.
     pub(in crate::tcp) max_rate_bps: u64,
     /// Loss-driven soft ceiling on the effective bandwidth (bytes/sec), `0` when
-    /// inactive. Plain BBR keys BtlBw off the windowed-max delivery rate and
-    /// ignores loss, so on a sub-ms hop it locks onto the *peak burst* rate and
-    /// keeps pacing at line rate straight into a lossy last mile. This cap backs
-    /// off multiplicatively on each loss episode and relaxes back toward BtlBw on
-    /// loss-free rounds (AIMD), so the pacer converges on the rate the last hop
-    /// actually drains without dropping — recovering full speed once loss stops.
+    /// inactive — canonical BBRv2's `bw_lo` (`BBR.bw_shortterm` in the ccwg
+    /// draft). Bounds the pacing rate and the BDP alike, so a last hop that
+    /// cannot drain what BtlBw claims still gets paced at what it does drain.
+    ///
+    /// Maintained once per round by `bbr::adapt_loss_cap`, never per loss
+    /// episode: the back-off is gated on a *measured* loss rate over the round
+    /// and floored at `bw_latest_bps`, so it can only ever pull the flow down to
+    /// what the link actually delivered — never below it.
     pub(in crate::tcp) loss_cap_bps: u64,
-    /// Whether a loss episode was recorded in the current BBR round; gates the
-    /// per-round relaxation of `loss_cap_bps` so the cap only grows on a clean
-    /// round.
+    /// Whether a loss episode was recorded in the current BBR round. Cuts a
+    /// PROBE_BW gain phase short (a path with small buffers may not hold
+    /// `gain × BDP` at all); the cap itself keys off `lost_in_window`, not this.
     pub(in crate::tcp) loss_in_round: bool,
+    /// Highest delivery-rate sample (bytes/sec) seen in the current loss-rate
+    /// measurement window — canonical BBRv2's `bw_latest`, but on the window's
+    /// clock rather than the round's, so it answers "what did this link carry
+    /// over the same bytes the loss rate was read from", not "ever".
+    ///
+    /// The window is what makes it a floor. Measured per *round* — as the canon
+    /// does, where a round is also the loss-measurement interval — it read
+    /// 463 KB/s on a link the same flow was pulling 3.5 MB/s through, because our
+    /// window spans several rounds and a single short round's best sample is not
+    /// representative of them. `× 0.85` then won the `max()` and the clamp below
+    /// never bound.
+    ///
+    /// This is the floor under every loss back-off, and the reason a lossy but
+    /// uncongested path is no longer throttled: on a link delivering 9 MB/s,
+    /// `max(bw_latest, cap × 0.85)` cannot resolve below 9 MB/s, so sporadic
+    /// radio loss cannot bite. On a path whose last hop is genuinely overrun the
+    /// deliveries themselves fall, `bw_latest` falls with them, and the cap
+    /// follows it down. Canonical BBRv2 (`bbr2_adapt_lower_bounds`): "we do not
+    /// cut our short-term estimates lower than the current rate and volume of
+    /// delivered data from this round trip".
+    pub(in crate::tcp) bw_latest_bps: u64,
+    /// Bytes retransmitted — the stack's proxy for bytes lost — in the current
+    /// loss-rate measurement window. Numerator of the `BBR_LOSS_THRESH` ratio.
+    pub(in crate::tcp) lost_in_window: u64,
+    /// Bytes delivered in the current loss-rate measurement window. The window
+    /// spans whole rounds and only closes once it holds
+    /// `BBR_LOSS_MIN_SAMPLE_BYTES`, so the ratio is never taken off a handful of
+    /// segments.
+    pub(in crate::tcp) delivered_in_window: u64,
     /// Monotonic count of loss episodes seen by this flow (each `note_loss`
     /// call: fast-recovery entry or RTO). Never decreases, so the metrics sync
     /// can export it as a Prometheus counter by delta — telling "the loss cap is
@@ -305,6 +336,9 @@ impl BbrState {
             loss_cap_bps: 0,
             loss_in_round: false,
             loss_episodes: 0,
+            bw_latest_bps: 0,
+            lost_in_window: 0,
+            delivered_in_window: 0,
         }
     }
 }

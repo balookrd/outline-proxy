@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use super::super::{
     BBR_BW_WINDOW_ROUNDS, BBR_CWND_GAIN, BBR_DRAIN_GAIN, BBR_LOSS_CAP_BACKOFF,
-    BBR_LOSS_CAP_FLOOR_BPS, BBR_LOSS_CAP_RECOVER_FRACTION, BBR_MIN_PIPE_CWND_SEGMENTS,
+    BBR_LOSS_CAP_FLOOR_BPS, BBR_LOSS_MIN_SAMPLE_BYTES, BBR_LOSS_THRESH, BBR_MIN_PIPE_CWND_SEGMENTS,
     BBR_MIN_RTT_WINDOW, BBR_PACING_MAX_BURST_SEGMENTS, BBR_PROBE_BW_GAINS,
     BBR_PROBE_RTT_CWND_SEGMENTS, BBR_PROBE_RTT_DURATION, BBR_STARTUP_FULL_BW_COUNT,
     BBR_STARTUP_GAIN, BBR_STARTUP_GROWTH_TARGET,
@@ -90,10 +90,10 @@ fn update_bw_filter(bbr: &mut BbrState, bytes_per_sec: u64) {
 // --- derived quantities (pure on BbrState) ---------------------------------
 
 /// BtlBw clamped to the configured downlink ceiling (`max_rate_bps`, 0 =
-/// uncapped) and to the loss-driven soft cap (`loss_cap_bps`, 0 = inactive). On
-/// a sub-ms hop BBR over-estimates BtlBw from line-rate burst samples; both
-/// caps pull the effective rate down to what the last hop actually drains, so
-/// this governs the BDP and the pacing rate alike.
+/// uncapped) and to the loss-driven soft cap (`loss_cap_bps`, 0 = inactive) —
+/// canonical BBRv2's `bbr_bw() = min(max_bw, bw_lo)`. Governs the BDP and the
+/// pacing rate alike, so a last hop that cannot drain what the windowed-max
+/// claims still gets offered only what it does drain.
 fn effective_btlbw(bbr: &BbrState) -> u64 {
     let mut rate = bbr.btlbw_bps;
     if bbr.max_rate_bps > 0 {
@@ -186,17 +186,125 @@ fn pacing_rate_from(bbr: &BbrState) -> u64 {
     rate
 }
 
-/// Additive-increase the loss cap toward BtlBw on a clean (loss-free) round,
-/// clearing it once it catches up so the flow returns to full BBR speed. A
-/// no-op while the cap is inactive or the round saw loss.
-fn relax_loss_cap(bbr: &mut BbrState, had_loss: bool) {
-    if bbr.loss_cap_bps == 0 || had_loss {
+/// Whether the flow is deliberately sending above its estimate right now —
+/// canonical BBRv2's `bbr2_is_probing_bandwidth`. STARTUP ramps at 2.885 and the
+/// PROBE_BW gain-up phase lifts in-flight to `1.25 × BDP`; loss provoked *by* a
+/// probe is the probe locating the limit, which is what it is for, so it must
+/// not be fed back as evidence that the path is congested.
+fn is_probing_bandwidth(bbr: &BbrState) -> bool {
+    bbr.mode == BbrMode::Startup || (bbr.mode == BbrMode::ProbeBw && bbr.pacing_gain > 1.0)
+}
+
+/// Release the cap, leaving the in-progress loss measurement intact.
+///
+/// The cap bounds the pacing rate, so a probe running under one paces at the cap
+/// and cannot demonstrate anything above it — BtlBw would never learn the path
+/// recovered, and the cap would be a one-way ratchet. Releasing it is canonical
+/// BBRv2's `bbr2_reset_lower_bounds` on PROBE_REFILL.
+///
+/// The measurement window deliberately survives: our PROBE_BW cycle is BBRv1's
+/// (8 phases × min_rtt ≈ 16 ms on this hop), where canonical PROBE_REFILL comes
+/// around in *seconds*. Clearing the window on that cadence would keep it from
+/// ever reaching `BBR_LOSS_MIN_SAMPLE_BYTES` on a slow link — 120 KB takes 60 ms
+/// at 2 MB/s — so the cap could never engage on exactly the overrun last hop it
+/// exists to protect (`6b74c03`). Loss is a property of the path, not of our
+/// phase, so its measurement spans phases.
+fn release_loss_cap(bbr: &mut BbrState) {
+    bbr.loss_cap_bps = 0;
+}
+
+/// Release the cap *and* discard the in-progress measurement — for a transition
+/// into steady state, where what was measured during STARTUP's 2.885 ramp or a
+/// drain says nothing about the path at cruise.
+fn reset_loss_cap(bbr: &mut BbrState) {
+    release_loss_cap(bbr);
+    bbr.lost_in_window = 0;
+    bbr.delivered_in_window = 0;
+    bbr.bw_latest_bps = 0;
+}
+
+/// Adapt the loss cap once per round — canonical BBRv2's
+/// `bbr2_adapt_lower_bounds`, which maintains `bw_lo` as
+/// `max(bw_latest, bw_lo × (1 - beta))`.
+///
+/// The predecessor of this function backed the cap off `×0.85` inside
+/// `note_loss`, i.e. once per *loss episode*, from a basis of the cap itself and
+/// with no reference to any measured quantity. That cannot distinguish the two
+/// paths this stack actually serves, because it never asks how much was lost:
+///
+/// - A radio last mile drops sporadically. One dropped segment raises 3 dup-ACKs
+///   → one recovery entry → one `note_loss` → −15%, whether it happened among 30
+///   segments or 30_000. The field gateway logged 5 episodes across a ~100 MB
+///   download — a loss rate near 0.007% — and the cap sat at 0.85^5 = 0.44 of the
+///   link, pinning a 33 MB/s path at 3.49 MB/s.
+/// - A Wi-Fi TV client whose last hop is genuinely overrun drops ~10%, and the
+///   cap collapsing is the controller working (`6b74c03`).
+///
+/// Three orders of magnitude apart, identical input: `+1`. So the rate — not the
+/// event count — is the signal, and `bw_latest` is the floor:
+///
+/// - **Gate** on a loss rate over `BBR_LOSS_THRESH` measured across a window of
+///   at least `BBR_LOSS_MIN_SAMPLE_BYTES`, so sporadic loss never reaches the
+///   model at all.
+/// - **Floor** the result at `bw_latest_bps`, the rate this link delivered in the
+///   round just ended. A link handing back 9 MB/s cannot be capped below 9 MB/s
+///   no matter what the arithmetic proposes; a link whose deliveries have fallen
+///   drags its own floor down, and the cap follows. This is the clamp that makes
+///   "lossy" and "congested" separable, and it is what the old rule lacked —
+///   which is why its cap could park at 1 Mbit on a healthy 300 Mbit path.
+/// - **Skip** while probing (see [`is_probing_bandwidth`]).
+///
+/// There is deliberately no additive relax step (the old `btlbw/32` per clean
+/// round, an order of magnitude weaker than the `×0.85` it had to undo — the
+/// asymmetry the field report opened with). Canonical BBR has no such step
+/// either: the cap is released wholesale by [`reset_loss_cap`] when the next
+/// probe starts, and re-derived from measurement if loss is still there.
+fn adapt_loss_cap(bbr: &mut BbrState) {
+    // No bandwidth estimate yet → nothing to cap against; the small initial Reno
+    // window bounds the burst until the first sample lands.
+    if bbr.btlbw_bps == 0 {
         return;
     }
-    let step = ((bbr.btlbw_bps as f64) * BBR_LOSS_CAP_RECOVER_FRACTION) as u64;
-    let raised = bbr.loss_cap_bps.saturating_add(step.max(1));
-    // Caught up to BtlBw → drop the cap entirely (uncapped again).
-    bbr.loss_cap_bps = if raised >= bbr.btlbw_bps { 0 } else { raised };
+    // A probe is deliberately overshooting: hold the cap still until it ends.
+    // The window keeps accumulating across the probe rather than being discarded
+    // — see `release_loss_cap` for why it must span phases — and the `bw_latest`
+    // floor keeps the drops a probe provokes from being read as a slow path,
+    // since a probe's own deliveries are what set that floor.
+    if is_probing_bandwidth(bbr) {
+        return;
+    }
+    let window = bbr.lost_in_window.saturating_add(bbr.delivered_in_window);
+    // Too few bytes to read a rate off: carry the counters into the next round
+    // rather than acting on noise.
+    if window < BBR_LOSS_MIN_SAMPLE_BYTES {
+        return;
+    }
+    let loss_rate = bbr.lost_in_window as f64 / window as f64;
+    let bw_latest = bbr.bw_latest_bps;
+    // The window closed: restart all three together. Loss, deliveries and the
+    // floor they are judged against must span the same bytes — a floor measured
+    // over a shorter stretch than the loss rate is not a floor under it. (Taking
+    // `bw_latest` over one round while the window spans several read 463 KB/s on
+    // a link the same flow was pulling 3.5 MB/s through, which let `× 0.85` win
+    // the `max()` and the clamp never bound.)
+    bbr.lost_in_window = 0;
+    bbr.delivered_in_window = 0;
+    bbr.bw_latest_bps = 0;
+    if loss_rate <= BBR_LOSS_THRESH {
+        return;
+    }
+    // No delivery-rate sample in the window → no floor to stand on. Backing off
+    // against an unknown link is how the old rule reached its floor; decline.
+    if bw_latest == 0 {
+        return;
+    }
+    let basis = if bbr.loss_cap_bps > 0 {
+        bbr.loss_cap_bps
+    } else {
+        effective_btlbw(bbr)
+    };
+    let backed_off = ((basis as f64) * BBR_LOSS_CAP_BACKOFF) as u64;
+    bbr.loss_cap_bps = backed_off.max(bw_latest).max(BBR_LOSS_CAP_FLOOR_BPS);
 }
 
 fn pacing_burst_cap_bytes(mss: usize) -> u64 {
@@ -241,29 +349,29 @@ pub(in crate::tcp) fn pacing_rate(state: &TcpFlowState) -> u64 {
     pacing_rate_from(&state.bbr)
 }
 
-/// Record a loss episode (fast-recovery entry or RTO): back the loss-driven
-/// bandwidth cap off one multiplicative step, down to a floor. Plain BBR would
-/// keep pacing at the burst-inflated BtlBw straight into a lossy last hop; this
-/// pulls the effective rate (pacing + in-flight) below it so the drops stop.
-/// The cap relaxes back toward BtlBw on subsequent loss-free rounds. No-op for
-/// the cap before BBR has a bandwidth estimate (the small initial Reno window
-/// bounds the burst until then) — the episode is still counted.
+/// Record a loss *episode* (fast-recovery entry or RTO).
+///
+/// This no longer touches the loss cap. An episode says loss happened, not how
+/// much — and "how much" is the whole question on a radio last mile, where a
+/// single sporadic drop raises an episode indistinguishable from the one a
+/// genuinely overrun buffer raises. The cap is driven by the measured loss rate
+/// in [`adapt_loss_cap`] instead; what an episode still does is mark the round,
+/// which cuts a PROBE_BW gain phase short (a small-buffered path may not hold
+/// `gain × BDP` at all), and feed the exported counter.
 pub(in crate::tcp) fn note_loss(bbr: &mut BbrState) {
-    // Counted ahead of the no-estimate bail-out: the counter answers "is the
-    // last hop still dropping?", which holds whether or not BBR yet has an
-    // estimate for the cap to bite on.
     bbr.loss_episodes = bbr.loss_episodes.saturating_add(1);
-    if bbr.btlbw_bps == 0 {
-        return;
-    }
-    let basis = if bbr.loss_cap_bps > 0 {
-        bbr.loss_cap_bps
-    } else {
-        effective_btlbw(bbr)
-    };
-    let backed_off = ((basis as f64) * BBR_LOSS_CAP_BACKOFF) as u64;
-    bbr.loss_cap_bps = backed_off.max(BBR_LOSS_CAP_FLOOR_BPS);
     bbr.loss_in_round = true;
+}
+
+/// Add `bytes` to the current loss-measurement window — the numerator of the
+/// loss rate [`adapt_loss_cap`] gates on.
+///
+/// Called from the two retransmission paths, so "lost" here means "we put these
+/// bytes back on the wire", the same proxy Linux's `tp->lost` uses. It
+/// over-counts a spurious retransmit; at the ~2% threshold that noise is far
+/// below the signal.
+pub(in crate::tcp) fn note_bytes_lost(bbr: &mut BbrState, bytes: usize) {
+    bbr.lost_in_window = bbr.lost_in_window.saturating_add(bytes as u64);
 }
 
 /// Refill the pacing token bucket for elapsed time at the current rate. Driven
@@ -297,6 +405,10 @@ fn enter_probe_bw(bbr: &mut BbrState, now: Instant) {
     bbr.probe_bw_phase = 2;
     bbr.pacing_gain = BBR_PROBE_BW_GAINS[bbr.probe_bw_phase];
     bbr.cycle_stamp = now;
+    // Canonical `bbr2_reset_lower_bounds` runs on PROBE_RTT exit, which reaches
+    // steady state through here — and a cap chosen before a drain/probe-RTT says
+    // nothing about the path afterwards.
+    reset_loss_cap(bbr);
 }
 
 fn enter_probe_rtt(bbr: &mut BbrState) {
@@ -329,6 +441,7 @@ fn record_delivery(
 ) {
     bbr.delivered = bbr.delivered.saturating_add(bytes_delivered);
     bbr.delivered_at = now;
+    bbr.delivered_in_window = bbr.delivered_in_window.saturating_add(bytes_delivered);
 
     // Round bookkeeping: a round elapses when this ACK covers a segment sent
     // at/after the start of the current round.
@@ -352,12 +465,12 @@ fn record_delivery(
         if bbr.mode == BbrMode::Startup {
             check_startup_full_pipe(bbr);
         }
-        // AIMD relax of the loss cap: grow it back toward BtlBw only on a round
-        // that saw no loss; a round with loss just clears the flag (the
-        // multiplicative back-off already happened in `note_loss`).
-        let had_loss = bbr.loss_in_round;
+        // Adapt the loss cap against the loss rate and the delivery rate of the
+        // measurement window, which `adapt_loss_cap` restarts once it closes one
+        // (`bw_latest` included — it is that window's floor, so it lives on the
+        // window's clock, not the round's).
+        adapt_loss_cap(bbr);
         bbr.loss_in_round = false;
-        relax_loss_cap(bbr, had_loss);
     }
 
     // Delivery-rate sample → BtlBw windowed-max. An app-limited sample (buffer
@@ -400,6 +513,11 @@ fn record_delivery(
         if interval > 0.0 {
             let delivered = bbr.delivered.saturating_sub(sample.prior_delivered);
             let rate = (delivered as f64 / interval) as u64;
+            // `bw_latest` takes every sample, ungated — canonical BBR does the
+            // same. It answers "what came back over this round", which is what
+            // the loss cap needs a floor from; the max() over the round keeps one
+            // low app-limited sample from lowering that floor.
+            bbr.bw_latest_bps = bbr.bw_latest_bps.max(rate);
             if (!sample.app_limited && !pacing_limited) || rate > bbr.btlbw_bps {
                 update_bw_filter(bbr, rate);
             }
@@ -485,6 +603,13 @@ fn update_mode(state: &mut TcpFlowState, now: Instant) {
                     (state.bbr.probe_bw_phase + 1) % BBR_PROBE_BW_GAINS.len();
                 state.bbr.pacing_gain = BBR_PROBE_BW_GAINS[state.bbr.probe_bw_phase];
                 state.bbr.cycle_stamp = now;
+                // Entering the gain-up phase: release the cap, as canonical BBRv2
+                // does on PROBE_REFILL. A probe that paces at the level a previous
+                // episode chose cannot discover that the path recovered, and since
+                // nothing else raises the cap, it would never lift again.
+                if state.bbr.pacing_gain > 1.0 {
+                    release_loss_cap(&mut state.bbr);
+                }
             }
         },
         BbrMode::ProbeRtt => {

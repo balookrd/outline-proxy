@@ -84,6 +84,9 @@ pub(in crate::tcp) fn retransmit_oldest_unacked_packet(
             segment.payload.clone(),
         )
     };
+    // These bytes go back on the wire because the last hop dropped them: they
+    // are the numerator of the loss rate BBR's cap keys off.
+    super::super::bbr::note_bytes_lost(&mut state.bbr, payload.len());
     // Rewriting `last_sent` can reorder send instants; refresh the earliest /
     // reordered accounting (pipe membership is unchanged — still un-SACKed).
     rebuild_unacked_accounting(state);
@@ -133,6 +136,8 @@ pub(in crate::tcp) fn retransmit_due_segment(
             segment.payload.clone(),
         )
     };
+    // As on the fast-retransmit path: a resend is a byte the last hop dropped.
+    super::super::bbr::note_bytes_lost(&mut state.bbr, payload.len());
     // Rewriting `last_sent` can reorder send instants; refresh the earliest /
     // reordered accounting (pipe membership is unchanged — still un-SACKed).
     rebuild_unacked_accounting(state);

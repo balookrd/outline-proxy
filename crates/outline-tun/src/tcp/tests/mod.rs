@@ -661,12 +661,15 @@ async fn bbr_metrics_export_loss_cap_gauges_and_episode_counter() {
     state.bbr.min_rtt = Duration::from_millis(20);
     state.bbr.pacing_gain = 1.0;
 
-    // Two RTO loss episodes: the cap backs off multiplicatively (10 MB/s → 8.5 →
-    // 7.225) and the pacing rate follows it below the raw BtlBw.
+    // Two RTO loss episodes drive the exported counter. The cap is then set
+    // directly: it is a per-round quantity adapted against a *measured loss
+    // rate* and floored at what the link delivered (see the `bbr` unit tests),
+    // not something an episode moves on its own — an episode says loss happened,
+    // not how much. What this test pins down is what reaches Prometheus.
     super::state_machine::note_congestion_event(&mut state, true);
     super::state_machine::note_congestion_event(&mut state, true);
     assert_eq!(state.bbr.loss_episodes, 2);
-    assert_eq!(state.bbr.loss_cap_bps, 7_225_000);
+    state.bbr.loss_cap_bps = 7_225_000;
 
     super::state_machine::sync_flow_metrics(&mut state);
     let rendered = outline_metrics::render_prometheus(&[]).expect("render metrics");
