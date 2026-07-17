@@ -167,11 +167,49 @@ const BBR_PROBE_RTT_CWND_SEGMENTS: usize = 4;
 /// `BBR_STARTUP_FULL_BW_COUNT` consecutive rounds.
 const BBR_STARTUP_GROWTH_TARGET: f64 = 1.25;
 const BBR_STARTUP_FULL_BW_COUNT: u32 = 3;
-/// Token-bucket burst ceiling for the pacer, as a multiple of MSS: large
-/// enough that ACK-clocked refills are never the bottleneck, small enough that
-/// the instantaneous burst (≈19 KB) stays well under a typical 100 Mbit-port
-/// buffer — a bigger burst was overrunning it and stalling delivery.
+/// Floor on the pacer's token-bucket burst ceiling, as a multiple of MSS.
+///
+/// It binds below ~4.8 MB/s, and it is what keeps the rate-proportional budget
+/// from strangling a slow path on our clock. Canonical BBR floors the same
+/// quantity at 2 segments (`bbr_min_tso_segs`), which is safe only because its
+/// hrtimer fires again microseconds later; at our 0.5–4 ms flush gap a 2-segment
+/// bucket ceilings delivery at `2 × MSS / gap` ≈ 1.6–3 MB/s, which would throttle
+/// exactly the slow last hop this controller exists to protect.
 const BBR_PACING_MAX_BURST_SEGMENTS: usize = 16;
+/// How much of the pacer's own clock jitter the burst ceiling must cover.
+///
+/// The bucket only sustains `pacing_rate` if a flush arrives at least every
+/// `cap / rate`; refill accrued past `cap` is discarded, and the discarded time
+/// never comes back. So the ceiling is a *duration*, not a packet count: it has
+/// to span the gap between consecutive flushes, or the pacer systematically
+/// under-delivers.
+///
+/// A fixed `16 × MSS` was a duration that shrank as the path got faster — 19 KB
+/// is 6 ms at 3 MB/s but only 0.64 ms at 30 MB/s. Measured on the deployment,
+/// flushes actually arrive every 0.5–4.4 ms (ACK aggregation on the radio hop,
+/// plus the maintenance timer's ~1 ms granularity backing the pacing wakeup), so
+/// at 30 MB/s the cap threw away 50–88% of the refill and held a 22–36 MB/s
+/// pacing rate down to 9–16 MB/s of actual delivery.
+///
+/// Canonical BBR sizes the same quantity off the rate, not the MSS
+/// (`tcp_small_queue_check` / `tcp_tso_autosize` → `sk_pacing_rate >>
+/// sk_pacing_shift` ≈ 1 ms of data — the same form as [`tso_segs_goal`]), and
+/// can afford 1 ms because an hrtimer re-enters the transmit path within
+/// microseconds of the earliest departure time. Our clock is coarser, so we
+/// budget for its measured jitter instead of the kernel's.
+///
+/// Copying the kernel's 1 ms verbatim was measured, not assumed: sizing the cap
+/// straight off `tso_segs_goal` delivered 12.2 MB/s against this constant's
+/// 24.3 MB/s (7 interleaved runs each; the worst 4 ms run beat the best 1 ms
+/// run). 1 ms of credit simply expires before a flush that lands 2–4 ms later
+/// can spend it, so the kernel's constant only works on the kernel's clock.
+const BBR_PACING_BURST_CLOCK_JITTER: Duration = Duration::from_millis(4);
+/// Absolute ceiling on the pacer's burst, however fast the path is measured to
+/// be. This is a sanity bound, not the working limit: what actually holds the
+/// burst down is the send window (`min(reno_cwnd, bbr_inflight_cap)`), which the
+/// flush checks independently, and the rate-proportional budget above — a slow
+/// client's burst stays small because its own measured rate is small.
+const BBR_PACING_MAX_BURST_BYTES: u64 = 262_144;
 /// Multiplicative back-off applied to the loss-driven bandwidth cap on a round
 /// whose measured loss rate exceeded `BBR_LOSS_THRESH` (0.85 ≈ −15%). Never
 /// applied without the `bw_latest` floor in `adapt_loss_cap` — the back-off
