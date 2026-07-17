@@ -250,23 +250,40 @@ pub(in crate::tcp) fn next_retransmission_deadline(state: &TcpFlowState) -> Opti
 }
 
 fn enter_fast_recovery(state: &mut TcpFlowState) {
-    let inflight = bytes_in_pipe(state).max(server_max_segment_payload(state));
-    // Gentle AIMD decrease (`× BBR_CWND_LOSS_BETA`) instead of Reno's `/ 2`: on a
-    // radio last mile a sporadic drop must not halve the window and cost ~213 RTT
-    // to climb back. See `BBR_CWND_LOSS_BETA`.
-    state.slow_start_threshold =
-        ((inflight as f64 * BBR_CWND_LOSS_BETA) as usize).max(TCP_MIN_SSTHRESH);
-    state.congestion_window = state.slow_start_threshold.saturating_add(
-        server_max_segment_payload(state) * usize::from(TCP_FAST_RETRANSMIT_DUP_ACKS),
-    );
+    // One multiplicative decrease per congestion event. A burst that drops a run
+    // of segments repairs one hole per RTT; each repair momentarily satisfies the
+    // old `fast_recovery_end` and exits recovery (see the cumulative-ACK branch),
+    // so the next hole in the *same* burst re-enters here. Reducing on every such
+    // re-entry compounds `× BBR_CWND_LOSS_BETA` once per RTT into a ~×0.2 collapse
+    // (measured: 10 cuts in 67 ms, cwnd 375→73 KB, well past Reno's own `/ 2`).
+    // Suppress the reduction while the flight in progress at the first cut is still
+    // draining — `last_client_ack` has not passed the recovery point — so the whole
+    // burst counts once. The retransmit machinery below still runs every time.
+    let suppress_reduction = state
+        .cwnd_reduction_recovery_point
+        .is_some_and(|point| seq_lt(state.last_client_ack, point));
+    if !suppress_reduction {
+        let inflight = bytes_in_pipe(state).max(server_max_segment_payload(state));
+        // Gentle AIMD decrease (`× BBR_CWND_LOSS_BETA`) instead of Reno's `/ 2`: on
+        // a radio last mile a sporadic drop must not halve the window and cost
+        // ~213 RTT to climb back. See `BBR_CWND_LOSS_BETA`.
+        state.slow_start_threshold =
+            ((inflight as f64 * BBR_CWND_LOSS_BETA) as usize).max(TCP_MIN_SSTHRESH);
+        state.congestion_window = state.slow_start_threshold.saturating_add(
+            server_max_segment_payload(state) * usize::from(TCP_FAST_RETRANSMIT_DUP_ACKS),
+        );
+        // Anchor the recovery point at the current flight edge (snd_nxt): further
+        // re-entries are suppressed until the cumulative ACK passes it.
+        state.cwnd_reduction_recovery_point = Some(state.server_seq);
+        // Loss signal for the BBR pacer: back the loss-driven rate cap off so the
+        // pacer stops driving the burst that overran the last hop.
+        super::bbr::note_loss(&mut state.bbr);
+    }
     state.fast_recovery_end = Some(state.server_seq);
     state.duplicate_ack_count = TCP_FAST_RETRANSMIT_DUP_ACKS;
     // New recovery episode: bump the epoch so holes carrying a stale
     // `fast_retransmit_epoch` are eligible for one fresh fast-retransmit.
     state.recovery_epoch = state.recovery_epoch.saturating_add(1);
-    // Loss signal for the BBR pacer: back the loss-driven rate cap off so the
-    // pacer stops driving the burst that overran the last hop.
-    super::bbr::note_loss(&mut state.bbr);
 }
 
 fn exit_fast_recovery(state: &mut TcpFlowState) {
@@ -579,6 +596,10 @@ pub(in crate::tcp) fn note_congestion_event(state: &mut TcpFlowState, timeout: b
     state.fast_recovery_end = None;
     state.duplicate_ack_count = 0;
     state.congestion_window = state.slow_start_threshold;
+    // Anchor the reduction recovery point here too, so a fast-recovery entry on
+    // the flight this RTO is already retransmitting does not cut the window a
+    // second time before it has drained. See `cwnd_reduction_recovery_point`.
+    state.cwnd_reduction_recovery_point = Some(state.server_seq);
     if timeout {
         // Cap the backoff (not at the 60 s dead-path ceiling): a lost
         // retransmit on a lossy last mile must be re-sent promptly so media
