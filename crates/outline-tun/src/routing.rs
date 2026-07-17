@@ -10,7 +10,7 @@ use socks5_proto::TargetAddr;
 use tracing::warn;
 
 use outline_routing::{RouteTarget, RoutingTable};
-use outline_uplink::{UplinkManager, UplinkRegistry};
+use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
 
 /// Per-flow dispatch context for the TUN path.
 ///
@@ -40,6 +40,35 @@ pub enum TunRoute {
     Direct { fwmark: Option<u32> },
     /// Drop the flow silently (matches `via = "drop"`).
     Drop { reason: &'static str },
+}
+
+/// Which liveness signal gates a group's `bypass_when_down` / route-fallback
+/// decision.
+///
+/// A flow can only ride an uplink that speaks its transport, so each flow
+/// scopes the health walk to its own: a group whose UDP side has no healthy
+/// uplink cannot carry a UDP flow even while its TCP side is fine. ICMP echo
+/// has no transport of its own and asks for [`HealthScope::EitherTransport`],
+/// which treats the group as down only when *neither* transport is healthy.
+#[derive(Clone, Copy)]
+enum HealthScope {
+    /// Liveness of one transport — the scope every real flow uses.
+    One(TransportKind),
+    /// Liveness of the group as a whole: down only when both transports are.
+    EitherTransport,
+}
+
+impl HealthScope {
+    /// True when the group has no healthy uplink within this scope.
+    async fn group_is_down(self, manager: &UplinkManager) -> bool {
+        match self {
+            Self::One(transport) => !manager.has_any_healthy(transport).await,
+            Self::EitherTransport => {
+                !manager.has_any_healthy(TransportKind::Tcp).await
+                    && !manager.has_any_healthy(TransportKind::Udp).await
+            },
+        }
+    }
 }
 
 impl TunRouting {
@@ -78,9 +107,28 @@ impl TunRouting {
     }
 
     /// Resolve a TUN flow's destination to a group manager.
-    pub async fn resolve(&self, target: &TargetAddr) -> TunRoute {
+    ///
+    /// `transport` scopes the group-health walk behind `bypass_when_down` and
+    /// route fallbacks: the group counts as down when it has no healthy uplink
+    /// able to carry `transport`, regardless of the other transport's state.
+    /// Mirrors the SOCKS5 dispatch path (`apply_fallback_strategy`), so the
+    /// same config decides both ingresses the same way.
+    pub async fn resolve(&self, target: &TargetAddr, transport: TransportKind) -> TunRoute {
+        self.resolve_scoped(target, HealthScope::One(transport)).await
+    }
+
+    /// Resolve for traffic that has no transport of its own (ICMP echo): the
+    /// group counts as down only when *neither* transport has a healthy
+    /// uplink. An echo request is not carried by a group uplink, so scoping it
+    /// to one transport would report a group as down while the other half is
+    /// still carrying flows.
+    pub async fn resolve_any_transport(&self, target: &TargetAddr) -> TunRoute {
+        self.resolve_scoped(target, HealthScope::EitherTransport).await
+    }
+
+    async fn resolve_scoped(&self, target: &TargetAddr, scope: HealthScope) -> TunRoute {
         let Some(table) = self.routing.as_ref() else {
-            if group_bypasses_when_down(&self.default_group).await {
+            if group_bypasses_when_down(&self.default_group, scope).await {
                 return TunRoute::Direct { fwmark: self.direct_fwmark };
             }
             return TunRoute::Group {
@@ -89,7 +137,7 @@ impl TunRouting {
             };
         };
         let decision = table.resolve(target).await;
-        self.materialize_target(decision.primary, decision.fallback).await
+        self.materialize_target(decision.primary, decision.fallback, scope).await
     }
 
     /// UDP-specific resolution that honours the IPsec bypass fast-path.
@@ -105,13 +153,14 @@ impl TunRouting {
         if self.ipsec_bypass && is_ipsec_port(target_port(target)) {
             return TunRoute::Direct { fwmark: self.direct_fwmark };
         }
-        self.resolve(target).await
+        self.resolve(target, TransportKind::Udp).await
     }
 
     async fn materialize_target(
         &self,
         primary: RouteTarget,
         fallback: Option<RouteTarget>,
+        scope: HealthScope,
     ) -> TunRoute {
         match primary {
             RouteTarget::Direct => TunRoute::Direct { fwmark: self.direct_fwmark },
@@ -124,23 +173,21 @@ impl TunRouting {
                     // using the escape hatch the user wrote.
                     warn!(group = %name, "TUN route references unknown group");
                     if let Some(fb) = fallback {
-                        return Box::pin(self.materialize_target(fb, None)).await;
+                        return Box::pin(self.materialize_target(fb, None, scope)).await;
                     }
                     return TunRoute::Drop { reason: "unknown_group" };
                 };
                 // Fallback / bypass applies only when the primary group has
-                // no healthy uplinks at resolve time; Direct/Drop primaries
-                // are terminal decisions. An explicit route fallback wins
-                // over the group's own `bypass_when_down`; the recursion
-                // then re-evaluates the bypass on the fallback group.
+                // no healthy uplinks *for this scope* at resolve time;
+                // Direct/Drop primaries are terminal decisions. An explicit
+                // route fallback wins over the group's own `bypass_when_down`;
+                // the recursion then re-evaluates the bypass on the fallback
+                // group under the same scope.
                 let bypass = manager.load_balancing().bypass_when_down;
-                if (fallback.is_some() || bypass)
-                    && !manager.has_any_healthy(outline_uplink::TransportKind::Udp).await
-                    && !manager.has_any_healthy(outline_uplink::TransportKind::Tcp).await
-                {
+                if (fallback.is_some() || bypass) && scope.group_is_down(&manager).await {
                     if let Some(fb) = fallback {
                         // Recurse once — fallback doesn't chain further.
-                        return Box::pin(self.materialize_target(fb, None)).await;
+                        return Box::pin(self.materialize_target(fb, None, scope)).await;
                     }
                     return TunRoute::Direct { fwmark: self.direct_fwmark };
                 }
@@ -150,17 +197,16 @@ impl TunRouting {
     }
 }
 
-/// `bypass_when_down` check for a group on the TUN path: true when the
-/// group opted in and currently has no healthy uplink on *either*
-/// transport — the same criterion as the route-fallback decision in
-/// [`TunRouting::materialize_target`] and the ICMP echo health-gate
-/// (`echo_reply_suppressed_for_down_group`); keep the three consistent.
-/// The flag read costs nothing, so the health walk only runs for
-/// opted-in groups.
-async fn group_bypasses_when_down(manager: &UplinkManager) -> bool {
-    manager.load_balancing().bypass_when_down
-        && !manager.has_any_healthy(outline_uplink::TransportKind::Udp).await
-        && !manager.has_any_healthy(outline_uplink::TransportKind::Tcp).await
+/// `bypass_when_down` check for a group on the TUN path: true when the group
+/// opted in and has no healthy uplink within `scope` — the same criterion as
+/// the route-fallback decision in [`TunRouting::materialize_target`]; keep the
+/// two consistent. The ICMP echo health-gate
+/// (`echo_reply_suppressed_for_down_group`) runs its own both-transports check
+/// on the group it resolves to, matching [`HealthScope::EitherTransport`].
+/// The flag read costs nothing, so the health walk only runs for opted-in
+/// groups.
+async fn group_bypasses_when_down(manager: &UplinkManager, scope: HealthScope) -> bool {
+    manager.load_balancing().bypass_when_down && scope.group_is_down(manager).await
 }
 
 pub(crate) fn target_port(target: &TargetAddr) -> u16 {
