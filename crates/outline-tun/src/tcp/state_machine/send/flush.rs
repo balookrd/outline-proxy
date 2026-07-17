@@ -33,6 +33,12 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<ServerDataPacket>> 
     // is only a fallback for app-limited/idle gaps. Refilling here, on the
     // ACK-clocked flush, is what keeps timer granularity from capping
     // throughput — the failure mode that sank the reverted fixed-rate pacer.
+    //
+    // It bounds the refill's *latency*, though, not its size: consecutive
+    // flushes still land 0.5–4 ms apart (ACK aggregation, and the ~1 ms timer
+    // behind the pacing wakeup), and whatever accrued past the bucket ceiling in
+    // that gap is gone. Sizing that ceiling off the rate is what keeps this
+    // ACK clock from becoming the ceiling itself.
     let now = Instant::now();
     refill_pacing_credit(state, now);
     let pacing = pacing_active(state);

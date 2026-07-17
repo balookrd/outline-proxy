@@ -15,9 +15,15 @@
 //!   * **min-RTT** — windowed-min round-trip time, refreshed by PROBE_RTT.
 //!
 //! From those: `pacing_rate = gain × BtlBw` (token bucket, refilled on each
-//! ACK-clocked flush — so timer granularity is never the ceiling, which is what
-//! sank the previous fixed-rate pacer) and `inflight_cap = cwnd_gain × BtlBw ×
-//! min_rtt`, which is what stops the stack from piling megabytes past a hole.
+//! ACK-clocked flush — so timer granularity alone is never the ceiling, which is
+//! what sank the previous fixed-rate pacer) and `inflight_cap = cwnd_gain ×
+//! BtlBw × min_rtt`, which is what stops the stack from piling megabytes past a
+//! hole.
+//!
+//! Refilling on the flush bounds how *late* credit arrives, not how *much*
+//! survives: refill accrued past the bucket's ceiling is discarded, so the
+//! ceiling must span the gap between flushes or the pacer under-delivers no
+//! matter how the rate is estimated. See [`pacing_burst_cap_bytes`].
 //!
 //! This is layered *on top of* the existing SACK/Reno logic: loss detection and
 //! retransmission are unchanged; BBR only lowers the effective send window
@@ -33,8 +39,9 @@ use super::super::{
     BBR_BW_WINDOW_ROUNDS, BBR_CWND_GAIN, BBR_DRAIN_GAIN, BBR_EXTRA_ACKED_MAX_WINDOW,
     BBR_EXTRA_ACKED_WIN_ROUNDS, BBR_LOSS_CAP_BACKOFF, BBR_LOSS_CAP_FLOOR_BPS,
     BBR_LOSS_MIN_SAMPLE_BYTES, BBR_LOSS_THRESH, BBR_MIN_PIPE_CWND_SEGMENTS, BBR_MIN_RTT_WINDOW,
-    BBR_PACING_MAX_BURST_SEGMENTS, BBR_PROBE_BW_GAINS, BBR_PROBE_RTT_CWND_SEGMENTS,
-    BBR_PROBE_RTT_DURATION, BBR_STARTUP_FULL_BW_COUNT, BBR_STARTUP_GAIN, BBR_STARTUP_GROWTH_TARGET,
+    BBR_PACING_BURST_CLOCK_JITTER, BBR_PACING_MAX_BURST_BYTES, BBR_PACING_MAX_BURST_SEGMENTS,
+    BBR_PROBE_BW_GAINS, BBR_PROBE_RTT_CWND_SEGMENTS, BBR_PROBE_RTT_DURATION,
+    BBR_STARTUP_FULL_BW_COUNT, BBR_STARTUP_GAIN, BBR_STARTUP_GROWTH_TARGET,
 };
 use super::congestion::{bytes_in_pipe, server_max_segment_payload};
 use super::types::{BbrMode, BbrState, BwSample, RateSample, TcpFlowState};
@@ -416,8 +423,20 @@ fn adapt_loss_cap(bbr: &mut BbrState) {
     bbr.loss_cap_bps = backed_off.max(bw_latest).max(BBR_LOSS_CAP_FLOOR_BPS);
 }
 
-fn pacing_burst_cap_bytes(mss: usize) -> u64 {
-    (mss * BBR_PACING_MAX_BURST_SEGMENTS) as u64
+/// Burst ceiling for the pacer's token bucket: the refill the flush is allowed
+/// to find waiting for it.
+///
+/// Sized as [`BBR_PACING_BURST_CLOCK_JITTER`] of data at the current pacing
+/// rate, so a flush that arrives one clock-jitter late still finds every byte it
+/// was owed. Floored at `16 × MSS` so a slow path keeps enough segments to avoid
+/// stop-and-go, and bounded by [`BBR_PACING_MAX_BURST_BYTES`].
+fn pacing_burst_cap_bytes(mss: usize, rate: u64) -> u64 {
+    let floor = (mss * BBR_PACING_MAX_BURST_SEGMENTS) as u64;
+    // `max(floor)` keeps the range non-empty for a jumbo MSS, where the floor
+    // alone would exceed the ceiling and `clamp` would panic.
+    let ceiling = BBR_PACING_MAX_BURST_BYTES.max(floor);
+    let jitter_budget = (rate as f64 * BBR_PACING_BURST_CLOCK_JITTER.as_secs_f64()) as u64;
+    jitter_budget.clamp(floor, ceiling)
 }
 
 /// Add credit for elapsed time at `rate`, capped at `cap`.
@@ -488,7 +507,7 @@ pub(in crate::tcp) fn note_bytes_lost(bbr: &mut BbrState, bytes: usize) {
 /// than a coarse timer.
 pub(in crate::tcp) fn refill_pacing_credit(state: &mut TcpFlowState, now: Instant) {
     let rate = pacing_rate_from(&state.bbr);
-    let cap = pacing_burst_cap_bytes(server_max_segment_payload(state));
+    let cap = pacing_burst_cap_bytes(server_max_segment_payload(state), rate);
     refill_credit_at(&mut state.bbr, rate, cap, now);
 }
 
