@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::super::{
-    MAX_SERVER_SEGMENT_PAYLOAD, TCP_FAST_RETRANSMIT_DUP_ACKS, TCP_FLAG_FIN, TCP_FLAG_SYN,
-    TCP_MAX_RTO, TCP_MAX_RTO_BACKOFF, TCP_MIN_RTO, TCP_MIN_SSTHRESH,
+    BBR_CWND_LOSS_BETA, MAX_SERVER_SEGMENT_PAYLOAD, TCP_FAST_RETRANSMIT_DUP_ACKS, TCP_FLAG_FIN,
+    TCP_FLAG_SYN, TCP_MAX_RTO, TCP_MAX_RTO_BACKOFF, TCP_MIN_RTO, TCP_MIN_SSTHRESH,
 };
 use super::seq::{seq_ge, seq_gt, seq_lt};
 use super::types::{AckEffect, RateSample, SequenceRange, ServerSegment, TcpFlowState};
@@ -251,7 +251,11 @@ pub(in crate::tcp) fn next_retransmission_deadline(state: &TcpFlowState) -> Opti
 
 fn enter_fast_recovery(state: &mut TcpFlowState) {
     let inflight = bytes_in_pipe(state).max(server_max_segment_payload(state));
-    state.slow_start_threshold = (inflight / 2).max(TCP_MIN_SSTHRESH);
+    // Gentle AIMD decrease (`× BBR_CWND_LOSS_BETA`) instead of Reno's `/ 2`: on a
+    // radio last mile a sporadic drop must not halve the window and cost ~213 RTT
+    // to climb back. See `BBR_CWND_LOSS_BETA`.
+    state.slow_start_threshold =
+        ((inflight as f64 * BBR_CWND_LOSS_BETA) as usize).max(TCP_MIN_SSTHRESH);
     state.congestion_window = state.slow_start_threshold.saturating_add(
         server_max_segment_payload(state) * usize::from(TCP_FAST_RETRANSMIT_DUP_ACKS),
     );
@@ -563,14 +567,18 @@ pub(in crate::tcp) fn note_ack_progress(
 
 pub(in crate::tcp) fn note_congestion_event(state: &mut TcpFlowState, timeout: bool) {
     let inflight = bytes_in_pipe(state);
-    state.slow_start_threshold = (inflight / 2).max(TCP_MIN_SSTHRESH);
+    // Gentle decrease, as in `enter_fast_recovery`: back the window off by
+    // `BBR_CWND_LOSS_BETA`, and — crucially for an RTO — do NOT collapse it to a
+    // single segment. The old collapse-to-1-MSS is what let a burst RTO strand
+    // the flow at a tiny window from which it could not ACK-clock its way back,
+    // and the timeouts then compounded into a storm (measured). Backing off to
+    // `0.85 × inflight` keeps enough window in flight to keep ACKs coming while
+    // the BBR pacer and loss cap shed the rate.
+    state.slow_start_threshold =
+        ((inflight as f64 * BBR_CWND_LOSS_BETA) as usize).max(TCP_MIN_SSTHRESH);
     state.fast_recovery_end = None;
     state.duplicate_ack_count = 0;
-    state.congestion_window = if timeout {
-        MAX_SERVER_SEGMENT_PAYLOAD
-    } else {
-        state.slow_start_threshold
-    };
+    state.congestion_window = state.slow_start_threshold;
     if timeout {
         // Cap the backoff (not at the 60 s dead-path ceiling): a lost
         // retransmit on a lossy last mile must be re-sent promptly so media
