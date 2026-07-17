@@ -1789,6 +1789,7 @@ fn eviction_test_flow_state(
         last_client_ack: 1000,
         duplicate_ack_count: 0,
         fast_recovery_end: None,
+        cwnd_reduction_recovery_point: None,
         recovery_epoch: 0,
         receive_window_capacity: 262_144,
         smoothed_rtt: None,
