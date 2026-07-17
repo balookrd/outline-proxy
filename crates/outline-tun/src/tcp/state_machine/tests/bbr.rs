@@ -176,7 +176,7 @@ fn token_bucket_refills_at_rate_and_caps_the_burst() {
     bbr.pacing_gain = 1.0;
     let rate = pacing_rate_from(&bbr);
     assert_eq!(rate, 1_000_000);
-    let cap = pacing_burst_cap_bytes(1200);
+    let cap = pacing_burst_cap_bytes(1200, rate);
 
     // 10 ms of refill at 1 MB/s → +10_000 bytes (below the cap).
     refill_credit_at(&mut bbr, rate, cap, t0 + Duration::from_millis(10));
@@ -185,6 +185,28 @@ fn token_bucket_refills_at_rate_and_caps_the_burst() {
     // A long idle gap is clamped to the burst ceiling, not unbounded.
     refill_credit_at(&mut bbr, rate, cap, t0 + Duration::from_secs(10));
     assert_eq!(bbr.pacing_credit, cap);
+}
+
+#[test]
+fn the_burst_ceiling_spans_the_clock_jitter_at_every_rate() {
+    // The ceiling is a duration, not a packet count: whatever the rate, a flush
+    // arriving one clock-jitter late must still find every byte it was owed.
+    // A fixed `16 × MSS` failed this — it was 6 ms of data on a slow path but
+    // 0.64 ms at 30 MB/s, so the faster the path the harder it throttled.
+    for rate in [4_000_000u64, 12_000_000, 30_000_000] {
+        let cap = pacing_burst_cap_bytes(1200, rate);
+        let owed = (rate as f64 * BBR_PACING_BURST_CLOCK_JITTER.as_secs_f64()) as u64;
+        assert!(
+            cap >= owed.min(BBR_PACING_MAX_BURST_BYTES),
+            "at {rate} B/s the cap ({cap}) drops refill the flush was owed ({owed})",
+        );
+    }
+
+    // A slow path keeps the `16 × MSS` floor: 4 ms at 1 MB/s is only 4 KB, and
+    // shrinking the burst below a few segments would stop-and-go the flow.
+    assert_eq!(pacing_burst_cap_bytes(1200, 1_000_000), 19_200);
+    // A fast path is bounded by the absolute burst ceiling.
+    assert_eq!(pacing_burst_cap_bytes(1200, 100_000_000), BBR_PACING_MAX_BURST_BYTES);
 }
 
 #[test]
