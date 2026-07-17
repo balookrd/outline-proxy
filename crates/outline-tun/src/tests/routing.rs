@@ -5,8 +5,8 @@ use std::time::Duration;
 use outline_routing::{RouteTarget, RoutingTable, RoutingTableConfig};
 use outline_transport::TransportMode;
 use outline_uplink::{
-    LoadBalancingConfig, ProbeConfig, UplinkConfig, UplinkGroupConfig, UplinkManager,
-    UplinkRegistry, UplinkTransport, WsProbeConfig,
+    LoadBalancingConfig, ProbeConfig, TransportKind, UplinkConfig, UplinkGroupConfig,
+    UplinkManager, UplinkRegistry, UplinkTransport, WsProbeConfig,
 };
 use shadowsocks_crypto::CipherKind;
 use socks5_proto::TargetAddr;
@@ -142,7 +142,7 @@ async fn no_table_bypass_group_down_resolves_direct() {
     let registry = UplinkRegistry::from_single_manager(manager);
     let routing = TunRouting::new(registry, None, Some(FWMARK), false);
 
-    match routing.resolve(&target()).await {
+    match routing.resolve(&target(), TransportKind::Tcp).await {
         TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
         other => panic!("expected Direct, got {}", route_kind(&other)),
     }
@@ -155,7 +155,7 @@ async fn no_table_bypass_group_healthy_stays_group() {
     let registry = UplinkRegistry::from_single_manager(manager);
     let routing = TunRouting::new(registry, None, Some(FWMARK), false);
 
-    match routing.resolve(&target()).await {
+    match routing.resolve(&target(), TransportKind::Tcp).await {
         TunRoute::Group { name, .. } => assert_eq!(&*name, "main"),
         other => panic!("expected Group, got {}", route_kind(&other)),
     }
@@ -167,7 +167,7 @@ async fn no_table_down_group_without_bypass_stays_group() {
     let registry = UplinkRegistry::from_single_manager(manager);
     let routing = TunRouting::new(registry, None, Some(FWMARK), false);
 
-    match routing.resolve(&target()).await {
+    match routing.resolve(&target(), TransportKind::Tcp).await {
         TunRoute::Group { name, .. } => assert_eq!(&*name, "main"),
         other => panic!("expected Group, got {}", route_kind(&other)),
     }
@@ -179,29 +179,71 @@ async fn table_bypass_group_down_resolves_direct() {
     let table = table(RouteTarget::Group("main".into()), None).await;
     let routing = TunRouting::new(registry, Some(table), Some(FWMARK), false);
 
-    match routing.resolve(&target()).await {
+    match routing.resolve(&target(), TransportKind::Tcp).await {
         TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
         other => panic!("expected Direct, got {}", route_kind(&other)),
     }
 }
 
-/// The bypass criterion requires *both* transports down — a group whose TCP
-/// side still has a healthy uplink keeps carrying traffic (same rule as the
-/// route-fallback decision and the ICMP echo health-gate).
-#[tokio::test]
-async fn table_partially_healthy_group_is_not_bypassed() {
+/// Routing over a single `main` group (opted into the bypass) whose TCP side
+/// is healthy and whose UDP side has no probe verdict yet — the state
+/// `has_any_healthy` reports as "no healthy uplink".
+async fn tcp_healthy_routing() -> TunRouting {
     let registry = UplinkRegistry::new_for_test(vec![group_config("main", true)]).unwrap();
-    registry
-        .group_by_name("main")
-        .unwrap()
-        .test_set_tcp_health(0, true, 50)
-        .await;
+    registry.group_by_name("main").unwrap().test_set_tcp_health(0, true, 50).await;
+    let table = table(RouteTarget::Group("main".into()), None).await;
+    TunRouting::new(registry, Some(table), Some(FWMARK), false)
+}
+
+/// The bypass criterion is scoped to the flow's own transport: a group whose
+/// TCP side is healthy keeps carrying TCP flows.
+#[tokio::test]
+async fn table_tcp_healthy_group_carries_tcp_flow() {
+    let routing = tcp_healthy_routing().await;
+
+    match routing.resolve(&target(), TransportKind::Tcp).await {
+        TunRoute::Group { name, .. } => assert_eq!(&*name, "main"),
+        other => panic!("expected Group, got {}", route_kind(&other)),
+    }
+}
+
+/// ...and the same group bypasses UDP flows, which its dead UDP side cannot
+/// carry. A healthy TCP side must not pin UDP traffic to the tunnel — this is
+/// the SOCKS5 dispatch rule (`apply_fallback_strategy` scopes the health walk
+/// to the requested transport), now applied on the TUN path too.
+#[tokio::test]
+async fn table_tcp_healthy_group_bypasses_udp_flow() {
+    let routing = tcp_healthy_routing().await;
+
+    match routing.resolve(&target(), TransportKind::Udp).await {
+        TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        other => panic!("expected Direct, got {}", route_kind(&other)),
+    }
+}
+
+/// ICMP echo has no transport of its own, so it keeps the both-transports
+/// criterion: a group with a healthy TCP side is not down, and the echo path
+/// must not see it bypassed just because UDP is dead.
+#[tokio::test]
+async fn any_transport_scope_holds_partially_healthy_group() {
+    let routing = tcp_healthy_routing().await;
+
+    match routing.resolve_any_transport(&target()).await {
+        TunRoute::Group { name, .. } => assert_eq!(&*name, "main"),
+        other => panic!("expected Group, got {}", route_kind(&other)),
+    }
+}
+
+/// A fully-down group is bypassed under the any-transport scope as well.
+#[tokio::test]
+async fn any_transport_scope_bypasses_fully_down_group() {
+    let registry = UplinkRegistry::new_for_test(vec![group_config("main", true)]).unwrap();
     let table = table(RouteTarget::Group("main".into()), None).await;
     let routing = TunRouting::new(registry, Some(table), Some(FWMARK), false);
 
-    match routing.resolve(&target()).await {
-        TunRoute::Group { name, .. } => assert_eq!(&*name, "main"),
-        other => panic!("expected Group, got {}", route_kind(&other)),
+    match routing.resolve_any_transport(&target()).await {
+        TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        other => panic!("expected Direct, got {}", route_kind(&other)),
     }
 }
 
@@ -221,7 +263,7 @@ async fn explicit_route_fallback_wins_over_bypass() {
         table(RouteTarget::Group("main".into()), Some(RouteTarget::Group("backup".into()))).await;
     let routing = TunRouting::new(registry, Some(table), Some(FWMARK), false);
 
-    match routing.resolve(&target()).await {
+    match routing.resolve(&target(), TransportKind::Tcp).await {
         TunRoute::Group { name, .. } => assert_eq!(&*name, "backup"),
         other => panic!("expected Group(backup), got {}", route_kind(&other)),
     }
@@ -241,7 +283,7 @@ async fn fallback_group_with_bypass_down_resolves_direct() {
         table(RouteTarget::Group("main".into()), Some(RouteTarget::Group("backup".into()))).await;
     let routing = TunRouting::new(registry, Some(table), Some(FWMARK), false);
 
-    match routing.resolve(&target()).await {
+    match routing.resolve(&target(), TransportKind::Tcp).await {
         TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
         other => panic!("expected Direct, got {}", route_kind(&other)),
     }
