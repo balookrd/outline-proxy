@@ -468,17 +468,19 @@ async fn dispatch_udp_gso_superpacket(udp_engine: &TunUdpEngine, packet: &[u8], 
 ///
 /// Returns `true` when the echo request's destination routes to a group
 /// that opted into `tun_suppress_icmp_reply_when_down` and that group
-/// currently has no healthy uplink on either transport — the same
-/// `has_any_healthy` signal the route-fallback decision uses. Direct/drop
-/// routes and unparseable destinations never suppress; the reply builder
-/// remains the sole validator for malformed packets.
+/// currently has no healthy uplink on either transport. An echo request has
+/// no transport of its own, so it resolves with
+/// `resolve_any_transport` and gates on both — unlike a TCP/UDP flow, which
+/// scopes the same check to the transport it needs. Direct/drop routes and
+/// unparseable destinations never suppress; the reply builder remains the
+/// sole validator for malformed packets.
 async fn echo_reply_suppressed_for_down_group(routing: &TunRouting, packet: &[u8]) -> bool {
     let Some(destination) = icmp_echo_destination(packet) else {
         return false;
     };
     // Port 0: policy routing matches on CIDR prefixes only.
     let target = ip_to_target(destination, 0);
-    let TunRoute::Group { name, manager } = routing.resolve(&target).await else {
+    let TunRoute::Group { name, manager } = routing.resolve_any_transport(&target).await else {
         return false;
     };
     if !manager.load_balancing().tun_suppress_icmp_reply_when_down {

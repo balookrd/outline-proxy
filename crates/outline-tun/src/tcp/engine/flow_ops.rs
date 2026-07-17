@@ -8,6 +8,7 @@ use tokio::sync::{Mutex, Notify, watch};
 use tracing::debug;
 
 use outline_metrics as metrics;
+use outline_uplink::TransportKind;
 
 use super::super::maintenance::commit_flow_changes;
 use super::super::state_machine::{
@@ -39,7 +40,7 @@ impl TunTcpEngine {
         }
 
         let target = ip_to_target(key.remote_ip, key.remote_port);
-        let route = self.inner.dispatch.resolve(&target).await;
+        let route = self.inner.dispatch.resolve(&target, TransportKind::Tcp).await;
         let (manager, route) = match &route {
             TunRoute::Group { manager, .. } => (manager.clone(), route.clone()),
             TunRoute::Direct { .. } => {
