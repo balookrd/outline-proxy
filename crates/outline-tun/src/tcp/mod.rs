@@ -95,6 +95,24 @@ const TCP_MAX_RTO: Duration = Duration::from_secs(60);
 const TCP_MAX_RTO_BACKOFF: Duration = Duration::from_secs(2);
 const TCP_INITIAL_CWND_SEGMENTS: usize = 10;
 const TCP_MIN_SSTHRESH: usize = MAX_SERVER_SEGMENT_PAYLOAD * 2;
+/// Multiplicative-decrease factor the congestion window backs off by on a loss,
+/// replacing Reno's `1/2`. Reno halved the window on the bare *fact* of a loss;
+/// on this stack that meant a sub-ms hop's window (which inflates to the client's
+/// rwnd within milliseconds) was cut to `inflight/2` and then climbed back one
+/// segment per RTT — ~213 RTT (1.3 s) to undo a single drop, while a radio last
+/// mile dropped something every 40-80 ms. Measured on the field gateway: the
+/// halving bound 85% of flushes and a 0.06% loss rate cost 30% of throughput.
+///
+/// `0.85` (canonical BBRv2's loss `beta`, the same factor the loss cap uses) is
+/// the gentler AIMD decrease that keeps the window near what the path was
+/// carrying: a sporadic drop costs 15%, not 50%, so the window recovers in a
+/// couple of round trips instead of over a second. Removing the decrease outright
+/// was measured and rejected (it left the last mile with nothing bounding the
+/// burst — 25× the retransmits); a full canonical BtlBw-driven window was also
+/// measured and rejected (it self-inflated with an over-estimated BtlBw and
+/// stormed the RTO). This keeps the estimate-independent Reno window — the only
+/// one the field showed does not inflate — and only softens how hard it is cut.
+const BBR_CWND_LOSS_BETA: f64 = 0.85;
 
 // --- BBR-style downlink pacing / in-flight control -------------------------
 //

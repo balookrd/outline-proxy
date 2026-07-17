@@ -1912,9 +1912,64 @@ async fn timeout_congestion_event_reduces_cwnd_and_backs_off_rto() {
     super::rebuild_unacked_accounting(&mut state);
 
     super::note_congestion_event(&mut state, true);
-    assert_eq!(state.congestion_window, super::MAX_SERVER_SEGMENT_PAYLOAD);
+    // Hybrid: an RTO backs the window off gently (× BBR_CWND_LOSS_BETA, floored at
+    // TCP_MIN_SSTHRESH) and does NOT collapse it to a single segment — the
+    // collapse is what let a burst RTO strand the flow and storm the timeouts.
     assert!(state.slow_start_threshold >= super::TCP_MIN_SSTHRESH);
+    assert_eq!(
+        state.congestion_window, state.slow_start_threshold,
+        "RTO must not collapse cwnd below the backed-off ssthresh",
+    );
+    assert!(
+        state.congestion_window > super::MAX_SERVER_SEGMENT_PAYLOAD,
+        "RTO must not collapse cwnd to a single segment: {}",
+        state.congestion_window,
+    );
     assert_eq!(state.retransmission_timeout, Duration::from_millis(1600));
+}
+
+/// The gentle multiplicative decrease itself: over a large in-flight the window
+/// backs off by `BBR_CWND_LOSS_BETA` (0.85), not Reno's half — the whole point
+/// of the hybrid, so a sporadic drop costs 15% of the window, not 50%.
+#[tokio::test]
+async fn loss_backs_the_window_off_gently_not_by_half() {
+    let mut state = tcp_flow_state_for_tests().await;
+    // A large in-flight so the backoff, not the TCP_MIN_SSTHRESH floor, governs.
+    // Build it as a real segment so the pipe accounting matches the scoreboard.
+    let big = super::MAX_SERVER_SEGMENT_PAYLOAD * 200;
+    state.unacked_server_segments = VecDeque::from([super::ServerSegment {
+        sequence_number: 1000,
+        acknowledgement_number: 500,
+        flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+        payload: vec![0u8; big].into(),
+        last_sent: Instant::now() - Duration::from_secs(2),
+        first_sent: Instant::now() - Duration::from_secs(2),
+        retransmits: 0,
+        rto_retransmits: 0,
+        fast_retransmit_epoch: 0,
+        delivered_snapshot: 0,
+        delivered_at_snapshot: Instant::now(),
+        first_tx_snapshot: Instant::now(),
+        app_limited: false,
+    }]);
+    super::rebuild_unacked_accounting(&mut state);
+    state.congestion_window = big;
+
+    super::note_congestion_event(&mut state, true);
+    let half = big / 2;
+    assert!(
+        state.slow_start_threshold > half,
+        "0.85 backoff must leave far more than Reno's half: ssthresh={} half={half}",
+        state.slow_start_threshold,
+    );
+    // ~0.85 of the in-flight, within rounding.
+    let expected = (big as f64 * 0.85) as usize;
+    let diff = state.slow_start_threshold.abs_diff(expected);
+    assert!(
+        diff < super::MAX_SERVER_SEGMENT_PAYLOAD,
+        "ssthresh {} not ~0.85×{big}",
+        state.slow_start_threshold
+    );
 }
 
 #[tokio::test]
