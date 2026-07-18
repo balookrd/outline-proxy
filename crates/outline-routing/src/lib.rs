@@ -6,10 +6,12 @@
 
 pub mod cidr;
 pub mod config;
+pub mod domain;
 pub mod table;
 
 pub use cidr::{CidrSet, read_prefixes_from_file};
 pub use config::{RouteRule, RouteTarget, RoutingTableConfig};
+pub use domain::{DomainSet, read_domains_from_file};
 pub use table::{
     CompiledRule, RouteDecision, RouteWatchersGuard, RoutingTable, spawn_route_watchers,
 };

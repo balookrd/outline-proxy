@@ -906,6 +906,94 @@ async fn load_config_rejects_route_without_prefixes_or_file() {
 }
 
 #[tokio::test]
+async fn load_config_parses_domain_route_fields() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    let domain_list = tmp.path().join("ru-domains.lst");
+    std::fs::write(&domain_list, "# comment\nexample.ru\n").unwrap();
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[route]]
+        domains = ["bypass.example"]
+        domain_file = "ru-domains.lst"
+        via = "direct"
+
+        [[route]]
+        domains = ["*"]
+        via = "main"
+
+        [[route]]
+        default = true
+        via = "direct"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = super::load_config(&path, &args).await.unwrap();
+    let routing = config.routing.expect("routing table parsed");
+    assert_eq!(routing.rules.len(), 2);
+    assert_eq!(routing.rules[0].inline_domains, vec!["bypass.example".to_string()]);
+    // domain_file resolves relative to the config directory.
+    assert_eq!(routing.rules[0].domain_files, vec![domain_list]);
+    assert_eq!(routing.rules[1].inline_domains, vec!["*".to_string()]);
+    assert!(routing.rules[1].domain_files.is_empty());
+}
+
+#[tokio::test]
+async fn load_config_rejects_invert_with_domains() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[route]]
+        prefixes = ["10.0.0.0/8"]
+        domains = ["example.com"]
+        invert = true
+        via = "main"
+
+        [[route]]
+        default = true
+        via = "direct"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("invert") && msg.contains("domains"), "got: {msg}");
+}
+
+#[tokio::test]
 async fn load_config_rejects_empty_route_section() {
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().join("config.toml");

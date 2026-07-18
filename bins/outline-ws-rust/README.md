@@ -645,7 +645,7 @@ Declarative routing by destination CIDR, evaluated first-match-wins with an expl
 - **`direct`** — forwarded outside any uplink (equivalent to the old `[bypass]` behaviour);
 - **`drop`** — SOCKS5 `REP=0x02 (connection not allowed)` for TCP, silent drop for UDP.
 
-Matching is done on resolved IP addresses; domain-name targets never match a rule and fall through to the default.
+IP targets are matched against each rule's CIDR prefixes. Domain-name targets (e.g. a SOCKS5 client that hands over a hostname for remote resolution) can never match a CIDR prefix — they are matched against each rule's `domains` suffixes instead, and fall through to the default when no rule lists them. The proxy deliberately does not resolve a domain locally just to route it: that would leak DNS outside the tunnel and break the remote-resolve contract.
 
 ### Route config
 
@@ -678,6 +678,17 @@ via = "backup"
 prefixes = ["198.51.100.0/24"]
 via = "drop"
 
+# Domain targets (SOCKS5h hostnames): local zones stay direct…
+[[route]]
+domains = ["home.arpa", "corp.example"]
+domain_file = "/etc/outline-ws-rust/bypass-domains.lst"
+via = "direct"
+
+# …every other domain goes through the tunnel instead of the default.
+[[route]]
+domains = ["*"]
+via = "main"
+
 # Explicit default — matches everything not caught above.
 [[route]]
 default = true
@@ -688,10 +699,12 @@ fallback_direct = true    # or: fallback_drop = true / fallback_via = "backup"
 Rule fields:
 
 - `prefixes` / `file` / `files`: inline list and/or one or more paths to files (one CIDR per line, `#` comments and blank lines ignored). All sources are merged into the rule's CIDR set. `file` is a convenience shorthand for a single-entry `files`; both may be combined.
-- `file_poll_secs`: how often (in seconds) to `stat` each file and reload its CIDRs on mtime change. Default `60`. Applies to every path in `files`.
+- `domains` / `domain_file` / `domain_files`: domain suffixes this rule matches **domain targets** against (same file format, one suffix per line). `example.com` matches the domain itself and any subdomain (`a.b.example.com`), on label boundaries only; matching is case-insensitive and a trailing dot is ignored; `.example.com` and `*.example.com` are accepted spellings of the same suffix. The special pattern `"*"` matches every domain — use it as a catch-all rule so domain targets get an explicit route instead of the default. A rule may combine CIDR and domain sources: IPs match the CIDR side, domains the domain side.
+- `file_poll_secs`: how often (in seconds) to `stat` each file and reload its contents on mtime change. Default `60`. Applies to every path in `files` and `domain_files`.
 - `via`: target for matching traffic. Required (except on `default = true` rules, where it picks the fallthrough target).
 - `fallback_via` / `fallback_direct` / `fallback_drop`: mutually exclusive; consulted when the primary `via` is a group that has zero healthy uplinks at dispatch time.
-- `default = true`: exactly one rule must carry this; it matches everything not caught by the previous rules. The `default` rule must not set `prefixes`, `file`, or `files`.
+- `invert = true`: the rule matches addresses NOT in its prefix set. Applies to the CIDR side only and cannot be combined with `domains` (rejected at load — "not in this domain list" across the two address kinds is ambiguous; use a separate domain rule).
+- `default = true`: exactly one rule must carry this; it matches everything not caught by the previous rules. The `default` rule must not set prefix or domain sources.
 
 ### Prefix matching
 
@@ -699,7 +712,7 @@ Internally each rule's inline + file prefixes are merged into a [`CidrSet`](src/
 
 ### Hot-reload
 
-Every rule with at least one `file` / `files` entry gets a background tokio task that polls `mtime` of every listed path every `file_poll_secs` seconds. When any of them changes, the rule's CIDR set is rebuilt from its inline prefixes plus all reloaded files and swapped atomically (`Arc<RwLock<CidrSet>>`) — other rules and the table shape are unaffected. Parse or read errors on reload leave the previous CIDR set in place and log a warning.
+Every rule with at least one `file` / `files` / `domain_files` entry gets a background tokio task that polls `mtime` of every listed path every `file_poll_secs` seconds. When any of them changes, the rule's CIDR and domain sets are rebuilt from the inline entries plus all reloaded files and swapped atomically (`Arc<RwLock<..>>`) — other rules and the table shape are unaffected. Parse or read errors on reload leave the previous sets in place and log a warning.
 
 ### Direct session idle timeout
 
