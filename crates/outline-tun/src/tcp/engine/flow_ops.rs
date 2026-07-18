@@ -18,9 +18,8 @@ use super::super::state_machine::{
 };
 use super::super::wire::{ParsedTcpPacket, build_reset_response};
 use super::super::{
-    MAX_SERVER_SEGMENT_PAYLOAD, TCP_FLAG_ACK, TCP_FLAG_RST, TCP_FLAG_SYN,
-    TCP_INITIAL_CWND_SEGMENTS, TCP_INITIAL_RTO, TCP_SERVER_RECV_WINDOW_CAPACITY,
-    TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL, TcpFlowKey,
+    TCP_FLAG_ACK, TCP_FLAG_RST, TCP_FLAG_SYN, TCP_INITIAL_RTO, TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL,
+    TcpFlowKey,
 };
 use super::eviction::eviction_index_needs_refresh;
 use super::{TunTcpEngine, close_upstream_writer, ip_family_from_version, ip_to_target};
@@ -117,14 +116,11 @@ impl TunTcpEngine {
             last_client_ack: packet.sequence_number.wrapping_add(1),
             duplicate_ack_count: 0,
             fast_recovery_end: None,
-            cwnd_reduction_recovery_point: None,
             recovery_epoch: 0,
             receive_window_capacity: self.inner.tcp.max_buffered_client_bytes,
             smoothed_rtt: None,
             rttvar: TCP_INITIAL_RTO / 2,
             retransmission_timeout: TCP_INITIAL_RTO,
-            congestion_window: MAX_SERVER_SEGMENT_PAYLOAD * TCP_INITIAL_CWND_SEGMENTS,
-            slow_start_threshold: TCP_SERVER_RECV_WINDOW_CAPACITY,
             bbr: BbrState::new(now, self.inner.tcp.downlink_max_rate_bps),
             pending_server_data: VecDeque::new(),
             pending_server_bytes_total: 0,

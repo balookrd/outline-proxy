@@ -249,8 +249,6 @@ pub fn add_tun_tcp_backlog_pressure_flows(_group: &str, _uplink: &str, _delta: i
 pub fn add_tun_tcp_backlog_pressure_seconds(_group: &str, _uplink: &str, _delta: f64) {}
 pub fn add_tun_tcp_ack_progress_stall_flows(_group: &str, _uplink: &str, _delta: i64) {}
 pub fn add_tun_tcp_ack_progress_stall_seconds(_group: &str, _uplink: &str, _delta: f64) {}
-pub fn add_tun_tcp_congestion_window_bytes(_group: &str, _uplink: &str, _delta: i64) {}
-pub fn add_tun_tcp_slow_start_threshold_bytes(_group: &str, _uplink: &str, _delta: i64) {}
 pub fn add_tun_tcp_retransmission_timeout_seconds(_group: &str, _uplink: &str, _delta: f64) {}
 pub fn add_tun_tcp_smoothed_rtt_seconds(_group: &str, _uplink: &str, _delta: f64) {}
 
@@ -288,8 +286,6 @@ pub struct TunTcpFlowGauges {
     pub zero_window_flows: TunFlowGaugeI64,
     pub backlog_pressure_flows: TunFlowGaugeI64,
     pub ack_progress_stall_flows: TunFlowGaugeI64,
-    pub congestion_window_bytes: TunFlowGaugeI64,
-    pub slow_start_threshold_bytes: TunFlowGaugeI64,
     pub backlog_pressure_seconds: TunFlowGaugeF64,
     pub ack_progress_stall_seconds: TunFlowGaugeF64,
     pub retransmission_timeout_seconds: TunFlowGaugeF64,

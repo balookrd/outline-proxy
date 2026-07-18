@@ -163,20 +163,6 @@ pub fn add_tun_tcp_ack_progress_stall_seconds(group: &str, uplink: &str, delta: 
         .add(delta);
 }
 
-pub fn add_tun_tcp_congestion_window_bytes(group: &str, uplink: &str, delta: i64) {
-    METRICS
-        .tun_tcp_congestion_window_bytes
-        .with_label_values(&[group, uplink])
-        .add(delta);
-}
-
-pub fn add_tun_tcp_slow_start_threshold_bytes(group: &str, uplink: &str, delta: i64) {
-    METRICS
-        .tun_tcp_slow_start_threshold_bytes
-        .with_label_values(&[group, uplink])
-        .add(delta);
-}
-
 pub fn add_tun_tcp_retransmission_timeout_seconds(group: &str, uplink: &str, delta: f64) {
     METRICS
         .tun_tcp_retransmission_timeout_seconds
@@ -251,8 +237,6 @@ pub struct TunTcpFlowGauges {
     pub zero_window_flows: TunFlowGaugeI64,
     pub backlog_pressure_flows: TunFlowGaugeI64,
     pub ack_progress_stall_flows: TunFlowGaugeI64,
-    pub congestion_window_bytes: TunFlowGaugeI64,
-    pub slow_start_threshold_bytes: TunFlowGaugeI64,
     pub backlog_pressure_seconds: TunFlowGaugeF64,
     pub ack_progress_stall_seconds: TunFlowGaugeF64,
     pub retransmission_timeout_seconds: TunFlowGaugeF64,
@@ -293,12 +277,6 @@ pub fn tun_tcp_flow_gauges(group: &str, uplink: &str) -> TunTcpFlowGauges {
         ),
         ack_progress_stall_flows: TunFlowGaugeI64(
             METRICS.tun_tcp_ack_progress_stall_flows.with_label_values(&labels),
-        ),
-        congestion_window_bytes: TunFlowGaugeI64(
-            METRICS.tun_tcp_congestion_window_bytes.with_label_values(&labels),
-        ),
-        slow_start_threshold_bytes: TunFlowGaugeI64(
-            METRICS.tun_tcp_slow_start_threshold_bytes.with_label_values(&labels),
         ),
         backlog_pressure_seconds: TunFlowGaugeF64(
             METRICS.tun_tcp_backlog_pressure_seconds.with_label_values(&labels),
