@@ -51,6 +51,13 @@ pub(super) struct TunTcpEngineInner {
     pub(super) connect_failures: Mutex<ConnectFailureCache>,
     pub(super) next_flow_id: CounterU64,
     pub(super) max_flows: usize,
+    /// Engine-wide running total of pending downlink bytes across all flows.
+    /// Each flow holds an `Arc` clone and keeps it current through its
+    /// `charge/discharge_pending_server` helpers (settled by `Drop`); the
+    /// downlink-backpressure gate compares it against
+    /// `tcp.pending_server_budget_bytes` to park readers when the host-wide
+    /// sum — not any single flow — is what's running away.
+    pub(super) pending_server_bytes_global: Arc<std::sync::atomic::AtomicUsize>,
     pub(super) idle_timeout: Duration,
     /// TUN fd negotiated TSO offload — new flows inherit this into
     /// `TcpFlowState::gso_enabled` to enable super-segment downlink writes.
@@ -86,6 +93,7 @@ impl TunTcpEngine {
                 )),
                 next_flow_id: CounterU64::new(1),
                 max_flows,
+                pending_server_bytes_global: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 idle_timeout,
                 gso_enabled,
                 tcp: Arc::new(tcp),

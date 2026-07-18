@@ -6,6 +6,7 @@ use tokio::sync::{Mutex, watch};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
+use outline_metrics as metrics;
 use outline_uplink::TransportKind;
 
 use super::super::super::super::TcpFlowKey;
@@ -32,10 +33,26 @@ pub(super) enum BacklogGate {
     Stop,
 }
 
+/// One lock-scoped assessment of the gate: why (if at all) the reader must
+/// park this iteration.
+enum GateVerdict {
+    /// Neither the per-flow limit nor the global budget is exceeded.
+    Room,
+    /// This flow's own buffer is over `max_pending_server_bytes` — the
+    /// existing per-flow backpressure, with its stall-abort escalation.
+    FlowOver(ServerBacklogPressure),
+    /// The flow is fine but the engine-wide pending-downlink sum is over
+    /// `pending_server_budget_bytes`. Park without any abort escalation:
+    /// the overload is collective, not this flow's fault, and the budget
+    /// drains as clients ACK. Carries the labels for the one-shot metric.
+    BudgetOver { group: Arc<str>, uplink: Arc<str>, global_bytes: usize },
+}
+
 impl TunTcpEngine {
-    /// Park while the per-flow downlink buffer sits over the soft limit, so the
-    /// reader stops draining its upstream and lets flow control push back on the
-    /// origin instead of buffering for it.
+    /// Park while the per-flow downlink buffer sits over the soft limit — or
+    /// while the engine-wide pending-downlink sum sits over the global budget —
+    /// so the reader stops draining its upstream and lets flow control push
+    /// back on the origin instead of buffering for it.
     ///
     /// The push-back differs per path but the intent is identical: on a tunnelled
     /// flow, not reading lets WS/QUIC stream credit throttle the server; on a
@@ -43,22 +60,29 @@ impl TunTcpEngine {
     /// we advertise to the origin. Either way a slow client can no longer grow
     /// `pending_server_data` without bound. A *genuinely* stalled client (window
     /// shut, no ACK progress) is still reaped here rather than buffered forever.
+    ///
+    /// The global-budget park (`pending_server_budget_bytes`) has no abort
+    /// escalation: it stops *every* reader at once when the host-wide sum runs
+    /// away (a burst of concurrent bulk downloads on a low-RAM host), and
+    /// releases them as client ACKs drain the queues. A flow whose own client
+    /// is dead still falls to its usual keepalive / idle / no-progress reaping,
+    /// which returns its share of the budget via `TcpFlowState::drop`.
     pub(super) async fn await_downlink_backlog_room(
         &self,
         key: &TcpFlowKey,
         flow: &Arc<Mutex<TcpFlowState>>,
         close_rx: &mut watch::Receiver<bool>,
     ) -> BacklogGate {
+        let budget = self.inner.tcp.pending_server_budget_bytes;
+        let mut budget_park_reported = false;
         loop {
-            let (over_limit, pressure, drain) = {
+            let (verdict, drain) = {
                 let mut state = flow.lock().await;
                 if matches!(state.status, TcpFlowStatus::Closed) {
                     return BacklogGate::Stop;
                 }
                 let drain = state.signals.server_drain.clone();
-                if pending_server_bytes(&state) <= self.inner.tcp.max_pending_server_bytes {
-                    (false, None, drain)
-                } else {
+                if pending_server_bytes(&state) > self.inner.tcp.max_pending_server_bytes {
                     let stalled = server_window_stalled(&state);
                     let pressure = assess_server_backlog_pressure(
                         &mut state,
@@ -67,17 +91,44 @@ impl TunTcpEngine {
                         stalled,
                     );
                     commit_flow_changes(&mut state, &self.inner.tcp);
-                    (true, Some(pressure), drain)
+                    (GateVerdict::FlowOver(pressure), drain)
+                } else {
+                    let global_bytes = self
+                        .inner
+                        .pending_server_bytes_global
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    if budget > 0 && global_bytes > budget {
+                        let verdict = GateVerdict::BudgetOver {
+                            group: state.routing.group_name.clone(),
+                            uplink: state.routing.uplink_name.clone(),
+                            global_bytes,
+                        };
+                        (verdict, drain)
+                    } else {
+                        (GateVerdict::Room, drain)
+                    }
                 }
             };
-            if !over_limit {
-                return BacklogGate::Proceed;
-            }
-            if let Some(pressure) = pressure
-                && pressure.should_abort
-            {
-                self.abort_tun_tcp_backlog(key, flow, &pressure).await;
-                return BacklogGate::Stop;
+            match verdict {
+                GateVerdict::Room => return BacklogGate::Proceed,
+                GateVerdict::FlowOver(pressure) => {
+                    if pressure.should_abort {
+                        self.abort_tun_tcp_backlog(key, flow, &pressure).await;
+                        return BacklogGate::Stop;
+                    }
+                },
+                GateVerdict::BudgetOver { group, uplink, global_bytes } => {
+                    // Report once per park episode, not per 200 ms recheck.
+                    if !budget_park_reported {
+                        budget_park_reported = true;
+                        metrics::record_tun_tcp_event(&group, &uplink, "budget_parked");
+                        debug!(
+                            global_pending_bytes = global_bytes,
+                            budget_bytes = budget,
+                            "TUN TCP reader parked: engine-wide pending downlink budget exceeded"
+                        );
+                    }
+                },
             }
             tokio::select! {
                 _ = close_rx.changed() => {

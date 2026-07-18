@@ -82,7 +82,7 @@ impl TunTcpEngine {
                             }
                             state.timestamps.last_seen = Instant::now();
                             engine.record_flow_activity(&mut state);
-                            state.pending_server_bytes_total += chunk.len();
+                            state.charge_pending_server(chunk.len());
                             // v2 `X-Outline-Resume-Down-Acked` accounting: the
                             // flow has *accepted* these bytes the moment they land
                             // in its downlink buffer — from here our own TCP state

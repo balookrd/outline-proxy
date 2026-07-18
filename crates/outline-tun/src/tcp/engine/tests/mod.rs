@@ -25,6 +25,7 @@ use tokio_tungstenite::{MaybeTlsStream, accept_async};
 use url::Url;
 
 mod direct_backpressure;
+mod global_budget;
 mod migrate;
 mod resume;
 
@@ -1797,6 +1798,7 @@ fn eviction_test_flow_state(
         bbr: super::super::state_machine::BbrState::new(last_seen, 0),
         pending_server_data: VecDeque::new(),
         pending_server_bytes_total: 0,
+        pending_budget_global: None,
         backlog_limit_exceeded_since: None,
         last_ack_progress_at: last_seen,
         pending_client_data: VecDeque::new(),

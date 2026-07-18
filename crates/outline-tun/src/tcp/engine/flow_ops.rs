@@ -124,6 +124,7 @@ impl TunTcpEngine {
             bbr: BbrState::new(now, self.inner.tcp.downlink_max_rate_bps),
             pending_server_data: VecDeque::new(),
             pending_server_bytes_total: 0,
+            pending_budget_global: Some(Arc::clone(&self.inner.pending_server_bytes_global)),
             backlog_limit_exceeded_since: None,
             last_ack_progress_at: now,
             pending_client_data: VecDeque::new(),
