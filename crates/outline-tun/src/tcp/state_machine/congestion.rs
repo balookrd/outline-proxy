@@ -346,7 +346,14 @@ pub(in crate::tcp) fn process_server_ack(
             // BBR cap both idle).
             state.first_tx_mstamp = state.first_tx_mstamp.max(segment.last_sent);
             if segment.retransmits == 0 {
-                rtt_sample = Some(segment.first_sent.elapsed());
+                // Time-in-pipe of a cleanly-acked segment: `first_sent` → now
+                // (this cumulative ACK). Same value the RTT sample uses; reused
+                // for the env-gated "ACK age" histogram on the flow under test.
+                let age = segment.first_sent.elapsed();
+                rtt_sample = Some(age);
+                if crate::tcp::diag::armed(state.key.remote_ip, state.key.remote_port) {
+                    crate::tcp::diag::record_ack_age(age);
+                }
                 // BBR delivery-rate sample from the oldest cleanly-acked
                 // segment of this ACK (longest interval = least noisy).
                 if rate_sample.is_none() {
@@ -498,7 +505,18 @@ pub(in crate::tcp) fn congestion_window_remaining(state: &TcpFlowState) -> usize
     // no Reno growth, no Reno congestion window — dropped the moment an estimate
     // exists.
     let cap = if super::bbr::pacing_active(state) {
-        bbr_cap
+        // Env-gated diagnostic lever (Step 3): inflate the cap for the flow
+        // under test to answer "are the send pauses created by this gate?".
+        // Diag-only — never ships enabled; the IW10 seed path stays exact.
+        match crate::tcp::diag::cwnd_mult() {
+            Some(mult)
+                if bbr_cap != usize::MAX
+                    && crate::tcp::diag::armed(state.key.remote_ip, state.key.remote_port) =>
+            {
+                (bbr_cap as f64 * mult) as usize
+            },
+            _ => bbr_cap,
+        }
     } else {
         bbr_cap.min(server_max_segment_payload(state) * TCP_INITIAL_CWND_SEGMENTS)
     };

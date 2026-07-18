@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use dashmap::DashMap;
@@ -106,14 +106,20 @@ impl TunTcpEngine {
     /// test packet builders emit), mirroring the no-vnet read path.
     #[cfg(test)]
     pub(crate) async fn handle_packet_unverified(&self, packet: &[u8]) -> Result<()> {
-        self.handle_packet(packet, L4Checksum::Unverified).await
+        self.handle_packet(packet, L4Checksum::Unverified, Instant::now())
+            .await
     }
 
     /// Feed one inbound TCP packet from the TUN read loop. `checksum` states
     /// where the segment's TCP checksum came from — see [`L4Checksum`]. Crate
     /// -internal: the read loop is the only caller, and it is the only place
     /// that knows the provenance.
-    pub(crate) async fn handle_packet(&self, packet: &[u8], checksum: L4Checksum) -> Result<()> {
+    pub(crate) async fn handle_packet(
+        &self,
+        packet: &[u8],
+        checksum: L4Checksum,
+        read_at: Instant,
+    ) -> Result<()> {
         let parsed = parse_tcp_packet(packet, checksum)?;
         let key = TcpFlowKey {
             version: parsed.version,
@@ -125,7 +131,7 @@ impl TunTcpEngine {
         let ip_family = ip_family_from_version(parsed.version);
         let flow = self.lookup_flow(&key).await;
         match flow {
-            Some(flow) => self.handle_existing_flow(flow, parsed).await,
+            Some(flow) => self.handle_existing_flow(flow, parsed, read_at).await,
             None if (parsed.flags & TCP_FLAG_RST) != 0 => {
                 metrics::record_tun_packet("down", ip_family, "tcp_rst_observed");
                 Ok(())
