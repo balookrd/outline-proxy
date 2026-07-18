@@ -44,8 +44,6 @@ pub(in crate::tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
     } else {
         0
     };
-    let congestion_window = state.congestion_window;
-    let slow_start_threshold = state.slow_start_threshold;
     let retransmission_timeout_us = state.retransmission_timeout.as_micros() as u64;
     let smoothed_rtt_us = state
         .smoothed_rtt
@@ -124,16 +122,6 @@ pub(in crate::tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
         &gauges.ack_progress_stall_seconds,
         ack_progress_stall_us,
         &mut reported.ack_progress_stall_us,
-    );
-    apply_usize_gauge_delta(
-        &gauges.congestion_window_bytes,
-        congestion_window,
-        &mut reported.congestion_window,
-    );
-    apply_usize_gauge_delta(
-        &gauges.slow_start_threshold_bytes,
-        slow_start_threshold,
-        &mut reported.slow_start_threshold,
     );
     apply_usize_gauge_delta(
         &gauges.bbr_inflight_hi_bytes,
@@ -249,18 +237,6 @@ pub(in crate::tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
             .ack_progress_stall_seconds
             .add(-(reported.ack_progress_stall_us as f64) / 1_000_000.0);
         reported.ack_progress_stall_us = 0;
-    }
-    if reported.congestion_window != 0 {
-        gauges
-            .congestion_window_bytes
-            .add(-(reported.congestion_window as i64));
-        reported.congestion_window = 0;
-    }
-    if reported.slow_start_threshold != 0 {
-        gauges
-            .slow_start_threshold_bytes
-            .add(-(reported.slow_start_threshold as i64));
-        reported.slow_start_threshold = 0;
     }
     if reported.bbr_inflight_hi_bytes != 0 {
         gauges

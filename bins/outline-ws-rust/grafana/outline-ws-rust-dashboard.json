@@ -5595,7 +5595,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "The Reno congestion window and the bytes actually unacknowledged, per flow. The effective send window is `min(reno_cwnd, bbr_inflight_cap)` — so when loss crushes cwnd, **Reno, not BBR, is what binds throughput**: roughly `cwnd / RTT`.\n\nThat is exactly how the ~5-10 Mbit ceiling arose: cwnd sat at 11.7 KB against a 21 ms RTT ≈ 4.4 Mbit per flow. Pair this with the RTT panel to compute the ceiling a flow can reach.",
+      "description": "Bytes in flight per flow against the BBRv2 in-flight ceilings that bound it. The effective send window is `min(bbr_bdp_cap, inflight_hi, inflight_lo)` — a single BBRv2 model, no Reno window. `inflight_hi` is the long-term ceiling (where the path starts to overflow); `inflight_lo` is the short-term ceiling, backed off on a measured loss and released each probe. Both read 0 while unset (no loss over the 2% threshold yet). Pair with the RTT panel to see the queue being built.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5676,13 +5676,6 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "label_replace(sum by (instance, group, uplink) (outline_ws_tun_tcp_congestion_window_bytes{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) / (sum by (instance, group, uplink) (outline_ws_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{uplink}} cwnd",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
           "expr": "label_replace(sum by (instance, group, uplink) (outline_ws_tun_tcp_inflight_bytes{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) / (sum by (instance, group, uplink) (outline_ws_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} in-flight",
           "range": true,
@@ -5703,7 +5696,7 @@
           "refId": "D"
         }
       ],
-      "title": "Congestion window, in-flight & BBRv2 ceilings (avg per flow)",
+      "title": "In-flight & BBRv2 ceilings (avg per flow)",
       "type": "timeseries"
     },
     {

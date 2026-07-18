@@ -28,8 +28,6 @@ pub(super) struct TunFields {
     pub(super) tun_tcp_backlog_pressure_seconds: GaugeVec,
     pub(super) tun_tcp_ack_progress_stall_flows: IntGaugeVec,
     pub(super) tun_tcp_ack_progress_stall_seconds: GaugeVec,
-    pub(super) tun_tcp_congestion_window_bytes: IntGaugeVec,
-    pub(super) tun_tcp_slow_start_threshold_bytes: IntGaugeVec,
     pub(super) tun_tcp_retransmission_timeout_seconds: GaugeVec,
     pub(super) tun_tcp_smoothed_rtt_seconds: GaugeVec,
     pub(super) tun_tcp_bbr_btlbw_bytes_per_second: IntGaugeVec,
@@ -222,20 +220,6 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         "Current accumulated ACK-progress stall duration for active TUN TCP flows with pending server data.",
         ["group", "uplink"]
     );
-    let tun_tcp_congestion_window_bytes = register_labeled!(
-        registry,
-        IntGaugeVec,
-        "outline_ws_tun_tcp_congestion_window_bytes",
-        "Aggregated congestion window for active TUN TCP flows.",
-        ["group", "uplink"]
-    );
-    let tun_tcp_slow_start_threshold_bytes = register_labeled!(
-        registry,
-        IntGaugeVec,
-        "outline_ws_tun_tcp_slow_start_threshold_bytes",
-        "Aggregated slow-start threshold for active TUN TCP flows.",
-        ["group", "uplink"]
-    );
     let tun_tcp_retransmission_timeout_seconds = register_labeled!(
         registry,
         GaugeVec,
@@ -334,8 +318,6 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         tun_tcp_backlog_pressure_seconds,
         tun_tcp_ack_progress_stall_flows,
         tun_tcp_ack_progress_stall_seconds,
-        tun_tcp_congestion_window_bytes,
-        tun_tcp_slow_start_threshold_bytes,
         tun_tcp_retransmission_timeout_seconds,
         tun_tcp_smoothed_rtt_seconds,
         tun_tcp_bbr_btlbw_bytes_per_second,

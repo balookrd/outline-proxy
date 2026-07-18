@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::super::{
-    BBR_CWND_LOSS_BETA, MAX_SERVER_SEGMENT_PAYLOAD, TCP_FAST_RETRANSMIT_DUP_ACKS, TCP_FLAG_FIN,
-    TCP_FLAG_SYN, TCP_MAX_RTO, TCP_MAX_RTO_BACKOFF, TCP_MIN_RTO, TCP_MIN_SSTHRESH,
+    MAX_SERVER_SEGMENT_PAYLOAD, TCP_FAST_RETRANSMIT_DUP_ACKS, TCP_FLAG_FIN, TCP_FLAG_SYN,
+    TCP_INITIAL_CWND_SEGMENTS, TCP_MAX_RTO, TCP_MAX_RTO_BACKOFF, TCP_MIN_RTO,
 };
 use super::seq::{seq_ge, seq_gt, seq_lt};
 use super::types::{AckEffect, RateSample, SequenceRange, ServerSegment, TcpFlowState};
@@ -250,35 +250,13 @@ pub(in crate::tcp) fn next_retransmission_deadline(state: &TcpFlowState) -> Opti
 }
 
 fn enter_fast_recovery(state: &mut TcpFlowState) {
-    // One multiplicative decrease per congestion event. A burst that drops a run
-    // of segments repairs one hole per RTT; each repair momentarily satisfies the
-    // old `fast_recovery_end` and exits recovery (see the cumulative-ACK branch),
-    // so the next hole in the *same* burst re-enters here. Reducing on every such
-    // re-entry compounds `× BBR_CWND_LOSS_BETA` once per RTT into a ~×0.2 collapse
-    // (measured: 10 cuts in 67 ms, cwnd 375→73 KB, well past Reno's own `/ 2`).
-    // Suppress the reduction while the flight in progress at the first cut is still
-    // draining — `last_client_ack` has not passed the recovery point — so the whole
-    // burst counts once. The retransmit machinery below still runs every time.
-    let suppress_reduction = state
-        .cwnd_reduction_recovery_point
-        .is_some_and(|point| seq_lt(state.last_client_ack, point));
-    if !suppress_reduction {
-        let inflight = bytes_in_pipe(state).max(server_max_segment_payload(state));
-        // Gentle AIMD decrease (`× BBR_CWND_LOSS_BETA`) instead of Reno's `/ 2`: on
-        // a radio last mile a sporadic drop must not halve the window and cost
-        // ~213 RTT to climb back. See `BBR_CWND_LOSS_BETA`.
-        state.slow_start_threshold =
-            ((inflight as f64 * BBR_CWND_LOSS_BETA) as usize).max(TCP_MIN_SSTHRESH);
-        state.congestion_window = state.slow_start_threshold.saturating_add(
-            server_max_segment_payload(state) * usize::from(TCP_FAST_RETRANSMIT_DUP_ACKS),
-        );
-        // Anchor the recovery point at the current flight edge (snd_nxt): further
-        // re-entries are suppressed until the cumulative ACK passes it.
-        state.cwnd_reduction_recovery_point = Some(state.server_seq);
-        // Loss signal for the BBR pacer: back the loss-driven rate cap off so the
-        // pacer stops driving the burst that overran the last hop.
-        super::bbr::note_loss(&mut state.bbr);
-    }
+    // The Reno window is gone: loss no longer cuts a congestion window here. The
+    // BBRv2 in-flight ceilings (`inflight_lo`, driven by the *measured* loss rate
+    // in `bbr::adapt_loss_cap`) are the whole loss reaction now, so this only
+    // signals the BBR controller and drives the retransmit machinery. `note_loss`
+    // marks the round (feeding `inflight_hi` regeneration and the PROBE_BW gain
+    // cut) and bumps the exported episode counter.
+    super::bbr::note_loss(&mut state.bbr);
     state.fast_recovery_end = Some(state.server_seq);
     state.duplicate_ack_count = TCP_FAST_RETRANSMIT_DUP_ACKS;
     // New recovery episode: bump the epoch so holes carrying a stale
@@ -289,7 +267,6 @@ fn enter_fast_recovery(state: &mut TcpFlowState) {
 fn exit_fast_recovery(state: &mut TcpFlowState) {
     state.fast_recovery_end = None;
     state.duplicate_ack_count = 0;
-    state.congestion_window = state.slow_start_threshold.max(server_max_segment_payload(state));
 }
 
 pub(in crate::tcp) fn server_max_segment_payload(state: &TcpFlowState) -> usize {
@@ -396,9 +373,6 @@ pub(in crate::tcp) fn process_server_ack(
             {
                 exit_fast_recovery(state);
             } else {
-                state.congestion_window = state
-                    .slow_start_threshold
-                    .saturating_add(server_max_segment_payload(state));
                 retransmit_now = fast_retransmit_index(state).is_some();
             }
         }
@@ -413,9 +387,8 @@ pub(in crate::tcp) fn process_server_ack(
     } else if acknowledgement_number == state.last_client_ack {
         state.duplicate_ack_count = state.duplicate_ack_count.saturating_add(1);
         if state.fast_recovery_end.is_some() {
-            state.congestion_window = state
-                .congestion_window
-                .saturating_add(server_max_segment_payload(state));
+            // No Reno inflation of the window on dup-ACKs — the BBR in-flight cap
+            // governs how much may be in flight during recovery.
             AckEffect {
                 bytes_acked: 0,
                 rtt_sample: None,
@@ -519,14 +492,15 @@ pub(in crate::tcp) fn congestion_window_remaining(state: &TcpFlowState) -> usize
     let bbr_cap = super::bbr::inflight_cap(state)
         .min(state.bbr.inflight_hi)
         .min(state.bbr.inflight_lo);
-    // Before the first BtlBw sample the BDP cap is `usize::MAX`; fall back to the
-    // initial window (IW10) to seed the first flight, exactly as canonical BBR
-    // leans on TCP's initial cwnd through STARTUP's first RTT. Once an estimate
-    // exists the Reno window is out of the loop entirely.
+    // Before the first BtlBw sample the BDP cap is `usize::MAX`; seed the first
+    // flight with a fixed initial window (IW10), exactly as canonical BBR leans
+    // on TCP's initial cwnd through STARTUP's first RTT. This is a static seed —
+    // no Reno growth, no Reno congestion window — dropped the moment an estimate
+    // exists.
     let cap = if super::bbr::pacing_active(state) {
         bbr_cap
     } else {
-        bbr_cap.min(state.congestion_window)
+        bbr_cap.min(server_max_segment_payload(state) * TCP_INITIAL_CWND_SEGMENTS)
     };
     cap.saturating_sub(pipe)
 }
@@ -582,35 +556,18 @@ pub(in crate::tcp) fn note_ack_progress(
         return;
     }
 
+    // Reno window growth removed: the BBR in-flight cap and pacing govern the
+    // send rate. `last_ack_progress_at` is still tracked for the stall metric.
     state.last_ack_progress_at = now;
-
-    if state.congestion_window < state.slow_start_threshold {
-        state.congestion_window = state.congestion_window.saturating_add(bytes_acked);
-    } else {
-        let additive =
-            ((MAX_SERVER_SEGMENT_PAYLOAD * bytes_acked) / state.congestion_window).max(1);
-        state.congestion_window = state.congestion_window.saturating_add(additive);
-    }
 }
 
 pub(in crate::tcp) fn note_congestion_event(state: &mut TcpFlowState, timeout: bool) {
-    let inflight = bytes_in_pipe(state);
-    // Gentle decrease, as in `enter_fast_recovery`: back the window off by
-    // `BBR_CWND_LOSS_BETA`, and — crucially for an RTO — do NOT collapse it to a
-    // single segment. The old collapse-to-1-MSS is what let a burst RTO strand
-    // the flow at a tiny window from which it could not ACK-clock its way back,
-    // and the timeouts then compounded into a storm (measured). Backing off to
-    // `0.85 × inflight` keeps enough window in flight to keep ACKs coming while
-    // the BBR pacer and loss cap shed the rate.
-    state.slow_start_threshold =
-        ((inflight as f64 * BBR_CWND_LOSS_BETA) as usize).max(TCP_MIN_SSTHRESH);
+    // No Reno window collapse: the BBR in-flight cap and `inflight_lo` govern how
+    // much may be in flight, and the loss rate drives the rate cap. This only
+    // clears the recovery flags and, on a timeout, backs the RTO off and signals
+    // the BBR controller.
     state.fast_recovery_end = None;
     state.duplicate_ack_count = 0;
-    state.congestion_window = state.slow_start_threshold;
-    // Anchor the reduction recovery point here too, so a fast-recovery entry on
-    // the flight this RTO is already retransmitting does not cut the window a
-    // second time before it has drained. See `cwnd_reduction_recovery_point`.
-    state.cwnd_reduction_recovery_point = Some(state.server_seq);
     if timeout {
         // Cap the backoff (not at the 60 s dead-path ceiling): a lost
         // retransmit on a lossy last mile must be re-sent promptly so media
