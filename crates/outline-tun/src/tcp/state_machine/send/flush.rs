@@ -293,6 +293,28 @@ pub(in crate::tcp) fn flush_server_output(state: &mut TcpFlowState) -> Result<Se
         return Ok(ServerFlush::default());
     }
     let data_packets = flush_server_data(state)?;
+    // Env-gated egress-stall diag (Step 2): hand the flush outcome plus the
+    // four bounds it can block on to the taxonomy, as plain numbers.
+    if crate::tcp::diag::armed(state.key.remote_ip, state.key.remote_port) {
+        let emitted = data_packets
+            .iter()
+            .map(|p| p.payload.iter().map(Bytes::len).sum::<usize>())
+            .sum();
+        crate::tcp::diag::record_flush_outcome(crate::tcp::diag::FlushSnapshot {
+            emitted,
+            pending: state.pending_server_bytes_total,
+            cwnd_remaining: congestion_window_remaining(state),
+            send_window: send_window_remaining(state),
+            pacing: pacing_active(state),
+            pacing_credit: state.bbr.pacing_credit,
+            pipe: state.pipe_bytes,
+            btlbw_bps: state.bbr.btlbw_bps,
+            min_rtt_us: state.bbr.min_rtt.as_micros().min(u64::MAX as u128) as u64,
+            inflight_hi: state.bbr.inflight_hi,
+            inflight_lo: state.bbr.inflight_lo,
+            mode: state.bbr.mode,
+        });
+    }
     let window_stalled = server_window_stalled(state);
     let fin_packet = maybe_emit_server_fin(state)?;
     let probe_packet = maybe_emit_zero_window_probe(state)?;
