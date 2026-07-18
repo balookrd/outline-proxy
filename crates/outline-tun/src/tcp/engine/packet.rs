@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::Mutex;
@@ -26,6 +27,7 @@ impl TunTcpEngine {
         &self,
         flow: Arc<Mutex<TcpFlowState>>,
         packet: ParsedTcpPacket,
+        read_at: Instant,
     ) -> Result<()> {
         let (uplink_index, manager, flow_key) = {
             let state = flow.lock().await;
@@ -38,6 +40,14 @@ impl TunTcpEngine {
 
         let ip_family = ip_family_from_version(packet.version);
         let mut state = flow.lock().await;
+
+        // Env-gated ingress-latency diag (Step 1). `read_to_lock` isolates the
+        // time spent reaching the per-flow lock (contention / read-loop HoL)
+        // from the processing that follows.
+        let diag_armed = crate::tcp::diag::armed(state.key.remote_ip, state.key.remote_port);
+        if diag_armed {
+            crate::tcp::diag::record_read_to_lock(read_at.elapsed());
+        }
 
         if state.status == TcpFlowStatus::SynReceived && is_duplicate_syn(&packet, state.rcv_nxt) {
             metrics::record_tun_tcp_event(
@@ -204,6 +214,11 @@ impl TunTcpEngine {
             InboundSegmentDisposition::Deliver(trimmed) => trimmed,
         };
 
+        // Full client-side ingress pipeline for this packet: TUN read → apply.
+        // This is the "wire → apply" the plan expects in the tens of ms.
+        if diag_armed {
+            crate::tcp::diag::record_read_to_apply(read_at.elapsed());
+        }
         let mut outcome = apply_inbound_and_flush(&mut state, &trimmed)?;
 
         let key = state.key.clone();

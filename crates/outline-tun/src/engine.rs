@@ -6,6 +6,7 @@
 //! (or synthesises a local ICMP reply).
 
 use std::sync::{Arc, Weak};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use tokio::io::Interest;
@@ -178,6 +179,10 @@ async fn tun_read_loop(
         if read == 0 {
             bail!("TUN device returned EOF");
         }
+        // Wire-arrival timestamp for the env-gated ingress-latency diag: the
+        // instant this packet became available to userspace. Threaded down to
+        // the TCP apply site so `read → apply` can be measured for one flow.
+        let read_at = Instant::now();
         // Strip the virtio_net_hdr prefix when IFF_VNET_HDR is enabled and
         // dispatch by gso_type. With RX offload (`TUNSETOFFLOAD`) the kernel may
         // hand us TCP GRO super-packets (TCPV4/6) or UDP GRO super-packets
@@ -337,7 +342,8 @@ async fn tun_read_loop(
             },
             PacketDisposition::Tcp => {
                 metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_observed");
-                if let Err(error) = tcp_engine.handle_packet(packet, packet_checksum).await {
+                if let Err(error) = tcp_engine.handle_packet(packet, packet_checksum, read_at).await
+                {
                     metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_error");
                     warn!(
                         error = %format!("{error:#}"),
