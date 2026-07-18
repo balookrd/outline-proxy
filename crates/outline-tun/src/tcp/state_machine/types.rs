@@ -419,17 +419,6 @@ pub(in crate::tcp) struct TcpFlowState {
     pub(in crate::tcp) last_client_ack: u32,
     pub(in crate::tcp) duplicate_ack_count: u8,
     pub(in crate::tcp) fast_recovery_end: Option<u32>,
-    /// Recovery point (`server_seq`/snd_nxt at the instant of the last cwnd
-    /// reduction) that gates *re*-reduction. A burst that drops a run of
-    /// segments is one congestion event; without this, recovery exits the moment
-    /// the first hole is repaired and immediately re-enters for the next hole in
-    /// the same burst, compounding `× BBR_CWND_LOSS_BETA` once per RTT into a
-    /// ~×0.2 collapse (measured: 10 cuts in 67 ms, cwnd 375→73 KB). Reduction is
-    /// suppressed while `last_client_ack` has not yet passed this point — i.e.
-    /// while the flight in progress at the first cut is still draining — so a
-    /// single burst reduces the window exactly once. Cleared naturally by the
-    /// `seq_lt` comparison once the cumulative ACK passes it.
-    pub(in crate::tcp) cwnd_reduction_recovery_point: Option<u32>,
     /// Monotonic counter bumped on each entry into fast recovery. A segment's
     /// `fast_retransmit_epoch` is matched against this to tell "already
     /// fast-retransmitted in the current episode" apart from "first sent
@@ -439,8 +428,6 @@ pub(in crate::tcp) struct TcpFlowState {
     pub(in crate::tcp) smoothed_rtt: Option<Duration>,
     pub(in crate::tcp) rttvar: Duration,
     pub(in crate::tcp) retransmission_timeout: Duration,
-    pub(in crate::tcp) congestion_window: usize,
-    pub(in crate::tcp) slow_start_threshold: usize,
     /// BBR-style downlink rate/in-flight controller. Paces the server→client
     /// send at the measured bottleneck bandwidth and caps in-flight at the BDP,
     /// so the stack never bursts more onto the last hop than it can drain.
@@ -577,8 +564,6 @@ pub(in crate::tcp) struct ReportedFlowMetrics {
     pub(in crate::tcp) ack_progress_stall: bool,
     pub(in crate::tcp) ack_progress_stall_us: u64,
     pub(in crate::tcp) active: bool,
-    pub(in crate::tcp) congestion_window: usize,
-    pub(in crate::tcp) slow_start_threshold: usize,
     pub(in crate::tcp) retransmission_timeout_us: u64,
     pub(in crate::tcp) smoothed_rtt_us: u64,
     pub(in crate::tcp) bbr_btlbw_bps: u64,

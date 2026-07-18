@@ -711,8 +711,6 @@ async fn flush_server_data_emits_gso_super_segment_tracked_per_mss() {
     state.rcv_nxt = 500;
     state.client_window = 100_000;
     state.client_window_end = state.server_seq.wrapping_add(100_000);
-    state.congestion_window = 100_000;
-    state.slow_start_threshold = 100_000;
 
     let mss = super::MAX_SERVER_SEGMENT_PAYLOAD;
     let payload_len = mss * 4 + 200; // 5000 bytes: spans 5 MSS segments (4×MSS + 200)
@@ -767,8 +765,6 @@ async fn flush_super_segment_from_multiple_chunks_is_byte_exact() {
     state.rcv_nxt = 500;
     state.client_window = 100_000;
     state.client_window_end = state.server_seq.wrapping_add(100_000);
-    state.congestion_window = 100_000;
-    state.slow_start_threshold = 100_000;
 
     let mss = super::MAX_SERVER_SEGMENT_PAYLOAD; // 1200
     // Chunk boundaries (every 1000 B) deliberately misalign with MSS boundaries
@@ -1025,8 +1021,6 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
     let mut state = tcp_flow_state_for_tests().await;
     state.last_client_ack = 1000;
     state.server_seq = 1016;
-    state.slow_start_threshold = 2400;
-    state.congestion_window = 4000;
     state.fast_recovery_end = Some(1016);
     state.recovery_epoch = 1;
     state.sack_scoreboard = vec![SequenceRange { start: 1008, end: 1012 }];
@@ -1099,10 +1093,6 @@ async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmi
     assert_eq!(effect.bytes_acked, 4);
     assert!(!effect.grow_congestion_window);
     assert!(effect.retransmit_now);
-    assert_eq!(
-        state.congestion_window,
-        state.slow_start_threshold + super::MAX_SERVER_SEGMENT_PAYLOAD
-    );
     assert_eq!(state.fast_recovery_end, Some(1016));
 }
 
@@ -1111,8 +1101,6 @@ async fn process_server_ack_exits_fast_recovery_once_recovery_point_is_acked() {
     let mut state = tcp_flow_state_for_tests().await;
     state.last_client_ack = 1000;
     state.server_seq = 1016;
-    state.slow_start_threshold = 2400;
-    state.congestion_window = 4000;
     state.fast_recovery_end = Some(1016);
     state.unacked_server_segments = VecDeque::from([
         super::ServerSegment {
@@ -1154,7 +1142,6 @@ async fn process_server_ack_exits_fast_recovery_once_recovery_point_is_acked() {
     assert!(!effect.grow_congestion_window);
     assert!(!effect.retransmit_now);
     assert!(state.fast_recovery_end.is_none());
-    assert_eq!(state.congestion_window, state.slow_start_threshold);
 }
 
 // --- SACK fast-retransmit budget (regression: Kinopoisk direct-video RST) ---
@@ -1189,8 +1176,6 @@ async fn fast_retransmit_resends_a_hole_at_most_once_per_episode() {
     let mut state = tcp_flow_state_for_tests().await;
     state.last_client_ack = 1000;
     state.server_seq = 1020;
-    state.slow_start_threshold = 4000;
-    state.congestion_window = 8000;
     // One hole at 1000; everything above it gets SACKed incrementally.
     state.unacked_server_segments = VecDeque::from([
         unacked_segment(1000, b"AAAA"),
@@ -1373,8 +1358,6 @@ async fn incremental_pipe_accounting_matches_scan_through_ack_sack_retransmit() 
 async fn a_flight_the_window_cut_short_is_not_app_limited() {
     let mut state = tcp_flow_state_for_tests().await;
     let mss = super::MAX_SERVER_SEGMENT_PAYLOAD;
-    state.congestion_window = mss * 100;
-    state.slow_start_threshold = mss * 100;
     state.server_seq = 1000;
     // Exactly 2 MSS of window, and exactly 2 MSS queued: the window and the
     // queue run out on the very same write. The queue being empty afterwards is
@@ -1403,8 +1386,6 @@ async fn a_flight_the_window_cut_short_is_not_app_limited() {
 async fn a_flight_that_ran_out_of_data_with_window_to_spare_is_app_limited() {
     let mut state = tcp_flow_state_for_tests().await;
     let mss = super::MAX_SERVER_SEGMENT_PAYLOAD;
-    state.congestion_window = mss * 100;
-    state.slow_start_threshold = mss * 100;
     state.server_seq = 1000;
     // Plenty of window, one MSS queued: our supply is what ends the flight.
     let window = (mss * 10) as u32;
@@ -1432,8 +1413,6 @@ async fn flush_fills_exactly_the_send_window_and_tracks_pipe() {
     let mut state = tcp_flow_state_for_tests().await;
     let mss = super::MAX_SERVER_SEGMENT_PAYLOAD;
     // cwnd is generous so the peer receive window is the binding limit.
-    state.congestion_window = mss * 100;
-    state.slow_start_threshold = mss * 100;
     state.server_seq = 1000;
     // Advertise exactly 5 MSS + 100 bytes of send window.
     let window = (mss * 5 + 100) as u32;
@@ -1499,8 +1478,6 @@ async fn incremental_pipe_accounting_survives_randomized_ack_sack_retransmit() {
         let mut state = tcp_flow_state_for_tests().await;
         // Generous windows so the flush path can actually push new segments;
         // congestion growth/back-off during the run still varies burst sizes.
-        state.congestion_window = mss * 64;
-        state.slow_start_threshold = mss * 64;
 
         for step in 0..600u32 {
             match rng.random_range(0..100u32) {
@@ -1877,22 +1854,19 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
 }
 
 #[tokio::test]
-async fn ack_progress_updates_rtt_and_grows_congestion_window() {
+async fn ack_progress_updates_rtt_estimate() {
     let mut state = tcp_flow_state_for_tests().await;
-    state.congestion_window = super::MAX_SERVER_SEGMENT_PAYLOAD;
-    state.slow_start_threshold = super::TCP_SERVER_RECV_WINDOW_CAPACITY;
 
+    // The Reno window growth is gone (BBRv2 in-flight ceilings govern); an ACK
+    // still folds an RTT sample into the estimator and the RTO derived from it.
     super::note_ack_progress(&mut state, 600, Some(Duration::from_millis(120)), true, None);
     assert_eq!(state.smoothed_rtt, Some(Duration::from_millis(120)));
     assert!(state.retransmission_timeout >= Duration::from_millis(200));
-    assert_eq!(state.congestion_window, super::MAX_SERVER_SEGMENT_PAYLOAD + 600);
 }
 
 #[tokio::test]
-async fn timeout_congestion_event_reduces_cwnd_and_backs_off_rto() {
+async fn timeout_congestion_event_backs_off_the_rto() {
     let mut state = tcp_flow_state_for_tests().await;
-    state.congestion_window = super::MAX_SERVER_SEGMENT_PAYLOAD * 8;
-    state.slow_start_threshold = super::MAX_SERVER_SEGMENT_PAYLOAD * 8;
     state.retransmission_timeout = Duration::from_millis(800);
     state.unacked_server_segments = VecDeque::from([super::ServerSegment {
         sequence_number: 1000,
@@ -1912,64 +1886,10 @@ async fn timeout_congestion_event_reduces_cwnd_and_backs_off_rto() {
     super::rebuild_unacked_accounting(&mut state);
 
     super::note_congestion_event(&mut state, true);
-    // Hybrid: an RTO backs the window off gently (× BBR_CWND_LOSS_BETA, floored at
-    // TCP_MIN_SSTHRESH) and does NOT collapse it to a single segment — the
-    // collapse is what let a burst RTO strand the flow and storm the timeouts.
-    assert!(state.slow_start_threshold >= super::TCP_MIN_SSTHRESH);
-    assert_eq!(
-        state.congestion_window, state.slow_start_threshold,
-        "RTO must not collapse cwnd below the backed-off ssthresh",
-    );
-    assert!(
-        state.congestion_window > super::MAX_SERVER_SEGMENT_PAYLOAD,
-        "RTO must not collapse cwnd to a single segment: {}",
-        state.congestion_window,
-    );
+    // An RTO doubles the retransmission timeout (capped at TCP_MAX_RTO_BACKOFF).
+    // The window is no longer touched here — the BBRv2 in-flight ceilings and the
+    // measured loss rate govern how much may be in flight.
     assert_eq!(state.retransmission_timeout, Duration::from_millis(1600));
-}
-
-/// The gentle multiplicative decrease itself: over a large in-flight the window
-/// backs off by `BBR_CWND_LOSS_BETA` (0.85), not Reno's half — the whole point
-/// of the hybrid, so a sporadic drop costs 15% of the window, not 50%.
-#[tokio::test]
-async fn loss_backs_the_window_off_gently_not_by_half() {
-    let mut state = tcp_flow_state_for_tests().await;
-    // A large in-flight so the backoff, not the TCP_MIN_SSTHRESH floor, governs.
-    // Build it as a real segment so the pipe accounting matches the scoreboard.
-    let big = super::MAX_SERVER_SEGMENT_PAYLOAD * 200;
-    state.unacked_server_segments = VecDeque::from([super::ServerSegment {
-        sequence_number: 1000,
-        acknowledgement_number: 500,
-        flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-        payload: vec![0u8; big].into(),
-        last_sent: Instant::now() - Duration::from_secs(2),
-        first_sent: Instant::now() - Duration::from_secs(2),
-        retransmits: 0,
-        rto_retransmits: 0,
-        fast_retransmit_epoch: 0,
-        delivered_snapshot: 0,
-        delivered_at_snapshot: Instant::now(),
-        first_tx_snapshot: Instant::now(),
-        app_limited: false,
-    }]);
-    super::rebuild_unacked_accounting(&mut state);
-    state.congestion_window = big;
-
-    super::note_congestion_event(&mut state, true);
-    let half = big / 2;
-    assert!(
-        state.slow_start_threshold > half,
-        "0.85 backoff must leave far more than Reno's half: ssthresh={} half={half}",
-        state.slow_start_threshold,
-    );
-    // ~0.85 of the in-flight, within rounding.
-    let expected = (big as f64 * 0.85) as usize;
-    let diff = state.slow_start_threshold.abs_diff(expected);
-    assert!(
-        diff < super::MAX_SERVER_SEGMENT_PAYLOAD,
-        "ssthresh {} not ~0.85×{big}",
-        state.slow_start_threshold
-    );
 }
 
 #[tokio::test]
@@ -3127,14 +3047,11 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         last_client_ack: 1000,
         duplicate_ack_count: 0,
         fast_recovery_end: None,
-        cwnd_reduction_recovery_point: None,
         recovery_epoch: 0,
         receive_window_capacity: 262_144,
         smoothed_rtt: None,
         rttvar: super::TCP_INITIAL_RTO / 2,
         retransmission_timeout: super::TCP_INITIAL_RTO,
-        congestion_window: super::MAX_SERVER_SEGMENT_PAYLOAD * super::TCP_INITIAL_CWND_SEGMENTS,
-        slow_start_threshold: super::TCP_SERVER_RECV_WINDOW_CAPACITY,
         bbr: super::BbrState::new(Instant::now(), 0),
         pending_server_data: VecDeque::new(),
         pending_server_bytes_total: 0,

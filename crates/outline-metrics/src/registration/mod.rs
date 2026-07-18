@@ -142,10 +142,6 @@ impl Metrics {
             #[cfg(feature = "tun")]
             tun_tcp_ack_progress_stall_seconds: tun.tun_tcp_ack_progress_stall_seconds,
             #[cfg(feature = "tun")]
-            tun_tcp_congestion_window_bytes: tun.tun_tcp_congestion_window_bytes,
-            #[cfg(feature = "tun")]
-            tun_tcp_slow_start_threshold_bytes: tun.tun_tcp_slow_start_threshold_bytes,
-            #[cfg(feature = "tun")]
             tun_tcp_retransmission_timeout_seconds: tun.tun_tcp_retransmission_timeout_seconds,
             #[cfg(feature = "tun")]
             tun_tcp_smoothed_rtt_seconds: tun.tun_tcp_smoothed_rtt_seconds,
