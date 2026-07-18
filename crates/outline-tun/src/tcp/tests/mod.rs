@@ -2648,12 +2648,35 @@ async fn reclaim_leaves_a_still_loaded_queue_alone() {
     assert_eq!(state.pending_server_bytes_total, 4096);
 }
 
+#[tokio::test]
+async fn pending_budget_charge_discharge_and_drop_settle_the_global_counter() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut state = tcp_flow_state_for_tests().await;
+    let global = std::sync::Arc::new(AtomicUsize::new(0));
+    state.pending_budget_global = Some(std::sync::Arc::clone(&global));
+
+    state.charge_pending_server(1500);
+    state.charge_pending_server(500);
+    assert_eq!(state.pending_server_bytes_total, 2000);
+    assert_eq!(global.load(Ordering::SeqCst), 2000, "charges must mirror into the shared counter");
+
+    state.discharge_pending_server(700);
+    assert_eq!(state.pending_server_bytes_total, 1300);
+    assert_eq!(global.load(Ordering::SeqCst), 1300);
+
+    // Whatever is still charged when the flow dies must come back with it.
+    drop(state);
+    assert_eq!(global.load(Ordering::SeqCst), 0, "drop must return the flow's remaining charge");
+}
+
 pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
     TunTcpConfig {
         connect_timeout: Duration::from_secs(5),
         handshake_timeout: Duration::from_secs(5),
         half_close_timeout: Duration::from_secs(15),
         max_pending_server_bytes: 1_048_576,
+        pending_server_budget_bytes: 0,
         backlog_abort_grace: Duration::from_secs(3),
         backlog_hard_limit_multiplier: 2,
         backlog_no_progress_abort: Duration::from_secs(8),
@@ -3055,6 +3078,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         bbr: super::BbrState::new(Instant::now(), 0),
         pending_server_data: VecDeque::new(),
         pending_server_bytes_total: 0,
+        pending_budget_global: None,
         backlog_limit_exceeded_since: None,
         last_ack_progress_at: Instant::now(),
         pending_client_data: VecDeque::new(),

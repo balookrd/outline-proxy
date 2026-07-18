@@ -307,6 +307,13 @@ pub(super) struct TunTcpSection {
     pub(super) handshake_timeout_secs: Option<u64>,
     pub(super) half_close_timeout_secs: Option<u64>,
     pub(super) max_pending_server_bytes: Option<usize>,
+    /// Engine-wide ceiling on the *sum* of all flows' pending downlink bytes.
+    /// `max_pending_server_bytes` bounds one flow; a burst of concurrent bulk
+    /// downloads legally holds N× that, which can run a low-RAM host out of
+    /// memory. Over the budget every upstream reader parks (no aborts) until
+    /// client ACKs drain the queues. Default `0` — disabled. Size it to what
+    /// the host can spare, e.g. `67108864` (64 MiB) on a 1 GiB box.
+    pub(super) pending_server_budget_bytes: Option<usize>,
     pub(super) backlog_abort_grace_secs: Option<u64>,
     pub(super) backlog_hard_limit_multiplier: Option<usize>,
     pub(super) backlog_no_progress_abort_secs: Option<u64>,

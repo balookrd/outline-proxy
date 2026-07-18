@@ -186,7 +186,7 @@ fn take_pending_server_payload(state: &mut TcpFlowState, target: usize) -> Vec<B
             state.pending_server_data.pop_front();
         }
         collected += take;
-        state.pending_server_bytes_total -= take;
+        state.discharge_pending_server(take);
         chunks.push(piece);
     }
     chunks
