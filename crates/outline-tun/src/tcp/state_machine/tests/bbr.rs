@@ -16,6 +16,23 @@ fn sample(prior_delivered: u64, prior_mstamp: Instant, app_limited: bool) -> Rat
     }
 }
 
+/// 5-arg shim over [`record_delivery`]. Most estimator tests exercise
+/// bandwidth / pacing / aggregation, where the loss-driven in-flight ceilings
+/// (`inflight_hi` / `inflight_lo`) never move and are never read (those live in
+/// `congestion::congestion_window_remaining`, not here). This passes a
+/// representative flight and the canonical `4 × MSS` floor so the loss-ceiling
+/// arithmetic runs, while the dedicated ceiling tests call `record_delivery` /
+/// `adapt_loss_cap` directly with explicit in-flight values.
+fn deliver(
+    bbr: &mut BbrState,
+    bytes_delivered: u64,
+    rate_sample: Option<RateSample>,
+    rtt_sample: Option<Duration>,
+    now: Instant,
+) -> bool {
+    record_delivery(bbr, bytes_delivered, rate_sample, rtt_sample, now, 64_000, 4_800)
+}
+
 #[test]
 fn no_estimate_means_pacing_inactive_and_uncapped() {
     let bbr = BbrState::new(Instant::now(), 0);
@@ -31,7 +48,7 @@ fn delivery_sample_sets_btlbw_min_rtt_and_activates_pacing() {
     let mut bbr = BbrState::new(t0, 0);
     // 12_000 bytes delivered over a 10 ms interval → 1.2 MB/s.
     let now = t0 + Duration::from_millis(10);
-    record_delivery(
+    deliver(
         &mut bbr,
         12_000,
         Some(sample(0, t0, false)),
@@ -50,7 +67,7 @@ fn bdp_and_inflight_cap_track_the_estimates() {
     let t0 = Instant::now();
     let mut bbr = BbrState::new(t0, 0);
     // 1.2 MB/s with a 10 ms min-RTT → BDP ≈ 12_000 bytes.
-    record_delivery(
+    deliver(
         &mut bbr,
         12_000,
         Some(sample(0, t0, false)),
@@ -70,7 +87,7 @@ fn app_limited_sample_only_raises_never_lowers_btlbw() {
     let t0 = Instant::now();
     let mut bbr = BbrState::new(t0, 0);
     let t1 = t0 + Duration::from_millis(10);
-    record_delivery(
+    deliver(
         &mut bbr,
         100_000,
         Some(sample(0, t0, false)),
@@ -83,7 +100,7 @@ fn app_limited_sample_only_raises_never_lowers_btlbw() {
     // A low, app-limited sample (the buffer drained) must not pull BtlBw down.
     let t2 = t1 + Duration::from_millis(100);
     let round_mark = bbr.next_round_delivered;
-    record_delivery(&mut bbr, 1_000, Some(sample(round_mark, t1, true)), None, t2);
+    deliver(&mut bbr, 1_000, Some(sample(round_mark, t1, true)), None, t2);
     assert_eq!(bbr.btlbw_bps, high, "app-limited low sample lowered BtlBw");
 }
 
@@ -101,7 +118,7 @@ fn delivery_rate_is_measured_from_the_last_ack_not_the_send_instant() {
     let mut bbr = BbrState::new(t0, 0);
 
     let now = t0 + Duration::from_millis(21);
-    record_delivery(
+    deliver(
         &mut bbr,
         92_000,
         Some(sample(0, t0, false)),
@@ -136,7 +153,7 @@ fn a_short_ack_interval_cannot_outrun_the_time_we_spent_sending() {
     let mut sample = sample(0, last_ack, false);
     sample.send_interval = Duration::from_millis(20);
 
-    record_delivery(&mut bbr, 60_000, Some(sample), Some(Duration::from_millis(21)), now);
+    deliver(&mut bbr, 60_000, Some(sample), Some(Duration::from_millis(21)), now);
 
     assert!(
         bbr.btlbw_bps < 6_000_000,
@@ -151,7 +168,7 @@ fn windowed_max_holds_btlbw_across_a_dip() {
     let mut bbr = BbrState::new(t0, 0);
     // Round 1: a high (bandwidth-limited) sample.
     let mut now = t0 + Duration::from_millis(10);
-    record_delivery(
+    deliver(
         &mut bbr,
         120_000,
         Some(sample(0, t0, false)),
@@ -164,7 +181,7 @@ fn windowed_max_holds_btlbw_across_a_dip() {
     let sent = now;
     let round_mark = bbr.next_round_delivered;
     now += Duration::from_millis(10);
-    record_delivery(&mut bbr, 60_000, Some(sample(round_mark, sent, false)), None, now);
+    deliver(&mut bbr, 60_000, Some(sample(round_mark, sent, false)), None, now);
     assert_eq!(bbr.btlbw_bps, high, "windowed-max dropped on a within-window dip");
 }
 
@@ -240,7 +257,7 @@ fn startup_plateau_counts_stalled_rounds_and_resets_on_growth() {
 fn probe_rtt_floors_the_inflight_cap() {
     let t0 = Instant::now();
     let mut bbr = BbrState::new(t0, 0);
-    record_delivery(
+    deliver(
         &mut bbr,
         120_000,
         Some(sample(0, t0, false)),
@@ -308,7 +325,7 @@ fn drive_round(
     let prior_delivered = bbr.delivered;
     let prior_mstamp = *now;
     *now += ack_interval;
-    record_delivery(
+    deliver(
         bbr,
         delivered,
         Some(sample(prior_delivered, prior_mstamp, false)),
@@ -442,7 +459,7 @@ fn the_floor_lifts_a_cap_that_sits_below_what_the_link_delivered() {
     bbr.delivered_in_window = 120_000;
     bbr.bw_latest_bps = 9_000_000;
 
-    adapt_loss_cap(&mut bbr);
+    adapt_loss_cap(&mut bbr, 120_000, 4_800);
 
     assert_eq!(
         bbr.loss_cap_bps, 9_000_000,
@@ -452,6 +469,92 @@ fn the_floor_lifts_a_cap_that_sits_below_what_the_link_delivered() {
     );
     assert_eq!(bbr.bw_latest_bps, 0, "the floor restarts with the window it belongs to");
     assert_eq!(bbr.lost_in_window, 0, "the closed window restarts");
+}
+
+// --- BBRv2 in-flight ceilings (inflight_hi / inflight_lo) -------------------
+
+/// The reaction that replaces the Reno window cut: loss over the threshold pins
+/// the long-term ceiling at the flight that overflowed and backs the short-term
+/// ceiling off from it, gated on the *measured* rate — not on the mere event.
+#[test]
+fn loss_over_threshold_pins_inflight_hi_and_backs_off_inflight_lo() {
+    let mut bbr = cruising(Instant::now());
+    bbr.btlbw_bps = 9_000_000;
+    bbr.lost_in_window = 10_000;
+    bbr.delivered_in_window = 120_000; // 7.7% loss, over BBR_LOSS_THRESH
+    bbr.bw_latest_bps = 9_000_000;
+    assert_eq!(bbr.inflight_hi, usize::MAX, "ceilings start unset");
+    assert_eq!(bbr.inflight_lo, usize::MAX);
+
+    let inflight = 300_000;
+    adapt_loss_cap(&mut bbr, inflight, 4_800);
+
+    assert_eq!(bbr.inflight_hi, inflight, "hi pins at the flight that provoked the loss");
+    let expect_lo = (inflight as f64 * BBR_LOSS_CAP_BACKOFF) as usize;
+    assert_eq!(bbr.inflight_lo, expect_lo, "lo backs off × BACKOFF from that flight");
+}
+
+/// A sporadic radio drop (below the threshold) must leave the ceilings unset —
+/// this is exactly what the old Reno `/2` (later `× 0.85`) could not do, since
+/// it cut on the event without ever asking how much was lost.
+#[test]
+fn sub_threshold_loss_leaves_the_inflight_ceilings_unset() {
+    let mut bbr = cruising(Instant::now());
+    bbr.btlbw_bps = 9_000_000;
+    bbr.lost_in_window = 1_000;
+    bbr.delivered_in_window = 129_000; // 0.77% loss, under the threshold
+    bbr.bw_latest_bps = 9_000_000;
+
+    adapt_loss_cap(&mut bbr, 300_000, 4_800);
+
+    assert_eq!(bbr.inflight_hi, usize::MAX, "sub-threshold loss must not pin hi");
+    assert_eq!(bbr.inflight_lo, usize::MAX, "sub-threshold loss must not move lo");
+}
+
+/// A run of losses off a tiny flight must not starve the ACK-clock: both
+/// ceilings are floored at the canonical `4 × MSS` minimum pipe.
+#[test]
+fn the_inflight_ceilings_are_floored_at_the_min_pipe() {
+    let mut bbr = cruising(Instant::now());
+    bbr.btlbw_bps = 9_000_000;
+    let min_pipe = 4_800;
+    for _ in 0..20 {
+        bbr.lost_in_window = 10_000;
+        bbr.delivered_in_window = 120_000;
+        bbr.bw_latest_bps = 9_000_000;
+        adapt_loss_cap(&mut bbr, min_pipe, min_pipe);
+    }
+    assert!(bbr.inflight_lo >= min_pipe, "lo starved below the ACK-clock floor: {}", bbr.inflight_lo);
+    assert!(bbr.inflight_hi >= min_pipe, "hi starved below the floor: {}", bbr.inflight_hi);
+}
+
+/// A gain-up probe releases the short-term ceiling (so the flight can climb back
+/// toward `inflight_hi` at once instead of crawling), while the long-term
+/// ceiling — the memory of where the path overflows — survives it.
+#[test]
+fn a_gain_up_probe_releases_inflight_lo_but_keeps_hi() {
+    let mut bbr = cruising(Instant::now());
+    bbr.inflight_hi = 200_000;
+    bbr.inflight_lo = 150_000;
+
+    release_loss_cap(&mut bbr);
+
+    assert_eq!(bbr.inflight_lo, usize::MAX, "the probe releases the short-term ceiling");
+    assert_eq!(bbr.inflight_hi, 200_000, "the long-term ceiling survives the probe");
+}
+
+/// Transitioning into steady state drops *both* ceilings: what a STARTUP ramp or
+/// a drain measured says nothing about the path at cruise.
+#[test]
+fn entering_steady_state_resets_both_inflight_ceilings() {
+    let mut bbr = cruising(Instant::now());
+    bbr.inflight_hi = 200_000;
+    bbr.inflight_lo = 150_000;
+
+    reset_loss_cap(&mut bbr);
+
+    assert_eq!(bbr.inflight_hi, usize::MAX);
+    assert_eq!(bbr.inflight_lo, usize::MAX);
 }
 
 /// The protection `6b74c03` bought, which must survive this rewrite: a Wi-Fi TV
@@ -661,7 +764,7 @@ fn a_pacing_limited_sample_cannot_lower_btlbw() {
     let mut honest = sample(0, t0, false);
     honest.send_interval = Duration::from_millis(1);
     let t1 = t0 + Duration::from_millis(10);
-    record_delivery(&mut bbr, 120_000, Some(honest), Some(Duration::from_millis(10)), t1);
+    deliver(&mut bbr, 120_000, Some(honest), Some(Duration::from_millis(10)), t1);
     let path_bw = bbr.btlbw_bps;
     assert!((path_bw as i64 - 12_000_000).abs() < 1_000_000, "btlbw={path_bw}");
 
@@ -681,7 +784,7 @@ fn a_pacing_limited_sample_cannot_lower_btlbw() {
         now += Duration::from_micros(1900);
         let mut paced = sample(round_mark, now - Duration::from_micros(1900), false);
         paced.send_interval = Duration::from_millis(16);
-        record_delivery(&mut bbr, 4_800, Some(paced), Some(Duration::from_micros(1900)), now);
+        deliver(&mut bbr, 4_800, Some(paced), Some(Duration::from_micros(1900)), now);
     }
 
     assert_eq!(
@@ -725,7 +828,7 @@ fn the_quantization_budget_keeps_a_jittery_last_mile_from_ratcheting_btlbw_down(
     // field flow reported (mode=ProbeBw, pacing_gain=1.0, cwnd_gain=2.0). The
     // ratchet only closes here — STARTUP's 2.885 gain clears the 2.7 ratio.
     let mut now = t0 + srtt;
-    record_delivery(
+    deliver(
         &mut bbr,
         deliverable_per_round,
         Some(sample(0, t0, false)),
@@ -749,7 +852,7 @@ fn the_quantization_budget_keeps_a_jittery_last_mile_from_ratcheting_btlbw_down(
         now += srtt;
         let mut rate_sample = sample(prior_delivered, prior_mstamp, false);
         rate_sample.send_interval = send_interval;
-        record_delivery(&mut bbr, delivered, Some(rate_sample), Some(min_rtt), now);
+        deliver(&mut bbr, delivered, Some(rate_sample), Some(min_rtt), now);
     }
 
     assert!(
@@ -775,7 +878,7 @@ fn ack(
     rtt: Duration,
     now: Instant,
 ) {
-    let round_start = record_delivery(bbr, delivered, Some(rate_sample), Some(rtt), now);
+    let round_start = deliver(bbr, delivered, Some(rate_sample), Some(rtt), now);
     let cwnd_clamp = inflight_cap_from(bbr, mss);
     update_ack_aggregation(bbr, delivered, round_start, cwnd_clamp, now);
 }
@@ -803,7 +906,7 @@ fn link_per_period() -> u64 {
 fn field_flow(t0: Instant) -> (BbrState, Instant) {
     let mut bbr = BbrState::new(t0, 0);
     let now = t0 + FIELD_AGGREGATION_PERIOD;
-    record_delivery(&mut bbr, 17_000, Some(sample(0, t0, false)), Some(FIELD_MIN_RTT), now);
+    deliver(&mut bbr, 17_000, Some(sample(0, t0, false)), Some(FIELD_MIN_RTT), now);
     enter_probe_bw(&mut bbr, now);
     (bbr, now)
 }

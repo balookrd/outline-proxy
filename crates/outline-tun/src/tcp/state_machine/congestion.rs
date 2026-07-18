@@ -509,15 +509,26 @@ pub(in crate::tcp) fn fast_retransmit_index(state: &TcpFlowState) -> Option<usiz
 }
 
 pub(in crate::tcp) fn congestion_window_remaining(state: &TcpFlowState) -> usize {
-    // Effective send window is the smaller of the Reno congestion window and the
-    // BBR in-flight cap (BDP), minus what is already in flight. On the sub-ms
-    // hop to the client the Reno window inflates almost unbounded, so the BBR
-    // BDP cap is what actually binds — and what stops the stack from piling a
-    // whole segment past a hole on a slow last hop.
+    // Single in-flight limiter (BBRv2 model), minus what is already in flight:
+    // the BBR BDP cap clamped by the long/short in-flight ceilings
+    // (`inflight_hi` / `inflight_lo`). The Reno congestion window no longer
+    // bounds the flight — a loss reacts through `inflight_lo` (a *measured* loss
+    // rate, released and re-derived each probe) instead of a per-loss window cut,
+    // so the two regulators that used to fight in this `min()` are now one.
     let pipe = bytes_in_pipe(state);
-    let reno_remaining = state.congestion_window.saturating_sub(pipe);
-    let bbr_remaining = super::bbr::inflight_cap(state).saturating_sub(pipe);
-    reno_remaining.min(bbr_remaining)
+    let bbr_cap = super::bbr::inflight_cap(state)
+        .min(state.bbr.inflight_hi)
+        .min(state.bbr.inflight_lo);
+    // Before the first BtlBw sample the BDP cap is `usize::MAX`; fall back to the
+    // initial window (IW10) to seed the first flight, exactly as canonical BBR
+    // leans on TCP's initial cwnd through STARTUP's first RTT. Once an estimate
+    // exists the Reno window is out of the loop entirely.
+    let cap = if super::bbr::pacing_active(state) {
+        bbr_cap
+    } else {
+        bbr_cap.min(state.congestion_window)
+    };
+    cap.saturating_sub(pipe)
 }
 
 pub(in crate::tcp) fn current_retransmission_timeout(state: &TcpFlowState) -> Duration {
