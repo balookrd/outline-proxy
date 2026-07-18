@@ -297,6 +297,8 @@ pub struct TunTcpFlowGauges {
     pub bbr_btlbw_bytes_per_second: TunFlowGaugeI64,
     pub bbr_pacing_rate_bytes_per_second: TunFlowGaugeI64,
     pub bbr_loss_cap_bytes_per_second: TunFlowGaugeI64,
+    pub bbr_inflight_hi_bytes: TunFlowGaugeI64,
+    pub bbr_inflight_lo_bytes: TunFlowGaugeI64,
     pub bbr_loss_capped_flows: TunFlowGaugeI64,
     pub bbr_min_rtt_seconds: TunFlowGaugeF64,
     pub bbr_loss_episodes_total: TunFlowCounterU64,

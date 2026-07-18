@@ -327,6 +327,12 @@ fn is_probing_bandwidth(bbr: &BbrState) -> bool {
 /// phase, so its measurement spans phases.
 fn release_loss_cap(bbr: &mut BbrState) {
     bbr.loss_cap_bps = 0;
+    // Canonical `bbr2_reset_lower_bounds` also clears the short-term in-flight
+    // ceiling: a gain-up probe must be free to lift the flight back toward
+    // `inflight_hi`. Without this the loss cut would be a one-way ratchet, the
+    // same failure the Reno additive-increase had — it crawled back a segment
+    // per RTT instead of snapping to the last known-good ceiling.
+    bbr.inflight_lo = usize::MAX;
 }
 
 /// Release the cap *and* discard the in-progress measurement — for a transition
@@ -337,6 +343,10 @@ fn reset_loss_cap(bbr: &mut BbrState) {
     bbr.lost_in_window = 0;
     bbr.delivered_in_window = 0;
     bbr.bw_latest_bps = 0;
+    // Transitioning into steady state: the long-term ceiling found during
+    // STARTUP's 2.885 ramp (or a drain) says nothing about the path at cruise,
+    // so drop it too — PROBE_BW will re-derive it from measurement.
+    bbr.inflight_hi = usize::MAX;
 }
 
 /// Adapt the loss cap once per round — canonical BBRv2's
@@ -375,7 +385,7 @@ fn reset_loss_cap(bbr: &mut BbrState) {
 /// asymmetry the field report opened with). Canonical BBR has no such step
 /// either: the cap is released wholesale by [`reset_loss_cap`] when the next
 /// probe starts, and re-derived from measurement if loss is still there.
-fn adapt_loss_cap(bbr: &mut BbrState) {
+fn adapt_loss_cap(bbr: &mut BbrState, inflight: usize, min_pipe: usize) {
     // No bandwidth estimate yet → nothing to cap against; the small initial Reno
     // window bounds the burst until the first sample lands.
     if bbr.btlbw_bps == 0 {
@@ -409,6 +419,21 @@ fn adapt_loss_cap(bbr: &mut BbrState) {
     if loss_rate <= BBR_LOSS_THRESH {
         return;
     }
+    // Loss over the threshold is the congestion signal — pin the in-flight
+    // ceilings. This is what replaces the Reno window cut, but gated on a
+    // *measured* loss rate (sporadic radio drops below the threshold never reach
+    // it) and released to `usize::MAX` on the next gain-up probe (so it snaps
+    // back toward `inflight_hi` instead of crawling up a segment per RTT):
+    //   * `inflight_hi` ratchets down to the flight that provoked the loss — the
+    //     long-term memory of where this path starts to overflow.
+    //   * `inflight_lo` backs off `× BBR_LOSS_CAP_BACKOFF` from that, the
+    //     short-term reaction that actually bounds the next flight.
+    // Both are floored at `min_pipe` so a run of losses cannot starve the
+    // ACK-clock. Applied independently of the `bw_latest` floor below, which
+    // only the *rate* cap needs.
+    bbr.inflight_hi = bbr.inflight_hi.min(inflight).max(min_pipe);
+    let lo_basis = if bbr.inflight_lo == usize::MAX { inflight } else { bbr.inflight_lo };
+    bbr.inflight_lo = ((lo_basis as f64 * BBR_LOSS_CAP_BACKOFF) as usize).max(min_pipe);
     // No delivery-rate sample in the window → no floor to stand on. Backing off
     // against an unknown link is how the old rule reached its floor; decline.
     if bw_latest == 0 {
@@ -569,6 +594,8 @@ fn record_delivery(
     rate_sample: Option<RateSample>,
     rtt_sample: Option<Duration>,
     now: Instant,
+    inflight: usize,
+    min_pipe: usize,
 ) -> bool {
     bbr.delivered = bbr.delivered.saturating_add(bytes_delivered);
     bbr.delivered_at = now;
@@ -601,7 +628,7 @@ fn record_delivery(
         // measurement window, which `adapt_loss_cap` restarts once it closes one
         // (`bw_latest` included — it is that window's floor, so it lives on the
         // window's clock, not the round's).
-        adapt_loss_cap(bbr);
+        adapt_loss_cap(bbr, inflight, min_pipe);
         bbr.loss_in_round = false;
     }
 
@@ -742,6 +769,15 @@ fn update_mode(state: &mut TcpFlowState, now: Instant) {
                 // episode chose cannot discover that the path recovered, and since
                 // nothing else raises the cap, it would never lift again.
                 if state.bbr.pacing_gain > 1.0 {
+                    // A clean round (no loss) means the path recovered: lift the
+                    // long-term in-flight ceiling so the probe can climb back
+                    // toward the BDP cap. A round that saw loss keeps `inflight_hi`
+                    // pinned where the last overflow put it. `release_loss_cap`
+                    // clears the short-term ceiling regardless — it re-derives from
+                    // whatever loss this probe now provokes.
+                    if !state.bbr.loss_in_round {
+                        state.bbr.inflight_hi = usize::MAX;
+                    }
                     release_loss_cap(&mut state.bbr);
                 }
             }
@@ -773,8 +809,17 @@ pub(in crate::tcp) fn on_ack(
     rtt_sample: Option<Duration>,
     now: Instant,
 ) {
-    let round_start =
-        record_delivery(&mut state.bbr, bytes_delivered, rate_sample, rtt_sample, now);
+    let inflight = bytes_in_pipe(state);
+    let min_pipe = server_max_segment_payload(state) * BBR_MIN_PIPE_CWND_SEGMENTS;
+    let round_start = record_delivery(
+        &mut state.bbr,
+        bytes_delivered,
+        rate_sample,
+        rtt_sample,
+        now,
+        inflight,
+        min_pipe,
+    );
     // Canonical `bbr_update_model` order: aggregation is folded in after the
     // bandwidth this ACK just updated (its epoch is measured against BtlBw) and
     // before the cycle phase. The clamp is the cap as it stood *before* this

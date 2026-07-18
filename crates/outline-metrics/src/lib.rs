@@ -195,6 +195,10 @@ struct Metrics {
     #[cfg(feature = "tun")]
     tun_tcp_bbr_loss_cap_bytes_per_second: IntGaugeVec,
     #[cfg(feature = "tun")]
+    tun_tcp_bbr_inflight_hi_bytes: IntGaugeVec,
+    #[cfg(feature = "tun")]
+    tun_tcp_bbr_inflight_lo_bytes: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_bbr_loss_capped_flows: IntGaugeVec,
     #[cfg(feature = "tun")]
     tun_tcp_bbr_min_rtt_seconds: GaugeVec,

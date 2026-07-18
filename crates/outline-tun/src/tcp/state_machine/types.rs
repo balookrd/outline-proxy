@@ -325,6 +325,20 @@ pub(in crate::tcp) struct BbrState {
     pub(in crate::tcp) ack_epoch_stamp: Instant,
     /// Bytes ACKed since `ack_epoch_stamp` — canonical BBR's `ack_epoch_acked`.
     pub(in crate::tcp) ack_epoch_acked: u64,
+    /// Long-term in-flight ceiling (bytes) — canonical BBRv2's `inflight_hi`.
+    /// The largest in-flight a probe carried *without* provoking loss over
+    /// `BBR_LOSS_THRESH`; pinned down to the in-flight at which loss appeared,
+    /// lifted back up by a clean PROBE_BW gain-up phase. `usize::MAX` until the
+    /// first congestion signal, so before that the BDP cap alone bounds the
+    /// flight. Replaces the Reno congestion window as the upper in-flight bound.
+    pub(in crate::tcp) inflight_hi: usize,
+    /// Short-term in-flight ceiling (bytes) — canonical BBRv2's `inflight_lo`.
+    /// Backed off `× BBR_CWND_LOSS_BETA` from the flight when loss crosses the
+    /// threshold and reset to `usize::MAX` when a gain-up phase begins (canonical
+    /// `bbr2_reset_lower_bounds`), so it snaps back to `inflight_hi` fast instead
+    /// of crawling up on a Reno additive increase. This is the reaction that
+    /// replaces the Reno `/2` (later `× 0.85`) window cut on every loss.
+    pub(in crate::tcp) inflight_lo: usize,
 }
 
 impl BbrState {
@@ -365,6 +379,8 @@ impl BbrState {
             extra_acked_win_rounds: 0,
             ack_epoch_stamp: now,
             ack_epoch_acked: 0,
+            inflight_hi: usize::MAX,
+            inflight_lo: usize::MAX,
         }
     }
 }
@@ -568,6 +584,8 @@ pub(in crate::tcp) struct ReportedFlowMetrics {
     pub(in crate::tcp) bbr_btlbw_bps: u64,
     pub(in crate::tcp) bbr_pacing_rate_bps: u64,
     pub(in crate::tcp) bbr_loss_cap_bps: u64,
+    pub(in crate::tcp) bbr_inflight_hi_bytes: usize,
+    pub(in crate::tcp) bbr_inflight_lo_bytes: usize,
     pub(in crate::tcp) bbr_loss_capped: bool,
     pub(in crate::tcp) bbr_min_rtt_us: u64,
     /// Last `BbrState::loss_episodes` value already added to the counter. Unlike

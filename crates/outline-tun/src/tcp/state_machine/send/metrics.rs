@@ -57,6 +57,13 @@ pub(in crate::tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
     let bbr_pacing_rate_bps = pacing_rate(state);
     let bbr_loss_cap_bps = state.bbr.loss_cap_bps;
     let bbr_loss_capped = bbr_loss_cap_bps > 0;
+    // `inflight_hi` / `inflight_lo` use `usize::MAX` as the "unset" sentinel;
+    // map it to 0 so a flow contributes nothing while its ceiling is inactive
+    // (a raw `usize::MAX` would export as -1 through the i64 gauge delta).
+    let bbr_inflight_hi_bytes =
+        if state.bbr.inflight_hi == usize::MAX { 0 } else { state.bbr.inflight_hi };
+    let bbr_inflight_lo_bytes =
+        if state.bbr.inflight_lo == usize::MAX { 0 } else { state.bbr.inflight_lo };
     let bbr_min_rtt_us = state.bbr.min_rtt.as_micros() as u64;
     let bbr_loss_episodes = state.bbr.loss_episodes;
 
@@ -121,6 +128,16 @@ pub(in crate::tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
         &gauges.slow_start_threshold_bytes,
         slow_start_threshold,
         &mut reported.slow_start_threshold,
+    );
+    apply_usize_gauge_delta(
+        &gauges.bbr_inflight_hi_bytes,
+        bbr_inflight_hi_bytes,
+        &mut reported.bbr_inflight_hi_bytes,
+    );
+    apply_usize_gauge_delta(
+        &gauges.bbr_inflight_lo_bytes,
+        bbr_inflight_lo_bytes,
+        &mut reported.bbr_inflight_lo_bytes,
     );
     apply_u64_seconds_gauge_delta(
         &gauges.retransmission_timeout_seconds,
@@ -238,6 +255,14 @@ pub(in crate::tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
             .slow_start_threshold_bytes
             .add(-(reported.slow_start_threshold as i64));
         reported.slow_start_threshold = 0;
+    }
+    if reported.bbr_inflight_hi_bytes != 0 {
+        gauges.bbr_inflight_hi_bytes.add(-(reported.bbr_inflight_hi_bytes as i64));
+        reported.bbr_inflight_hi_bytes = 0;
+    }
+    if reported.bbr_inflight_lo_bytes != 0 {
+        gauges.bbr_inflight_lo_bytes.add(-(reported.bbr_inflight_lo_bytes as i64));
+        reported.bbr_inflight_lo_bytes = 0;
     }
     if reported.retransmission_timeout_us != 0 {
         gauges
