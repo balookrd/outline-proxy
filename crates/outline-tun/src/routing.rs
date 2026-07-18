@@ -137,7 +137,8 @@ impl TunRouting {
             };
         };
         let decision = table.resolve(target).await;
-        self.materialize_target(decision.primary, decision.fallback, scope).await
+        self.materialize_target(decision.primary, decision.fallback, scope)
+            .await
     }
 
     /// UDP-specific resolution that honours the IPsec bypass fast-path.
