@@ -260,6 +260,8 @@ pub struct TunTcpFlowGauges {
     pub bbr_btlbw_bytes_per_second: TunFlowGaugeI64,
     pub bbr_pacing_rate_bytes_per_second: TunFlowGaugeI64,
     pub bbr_loss_cap_bytes_per_second: TunFlowGaugeI64,
+    pub bbr_inflight_hi_bytes: TunFlowGaugeI64,
+    pub bbr_inflight_lo_bytes: TunFlowGaugeI64,
     pub bbr_loss_capped_flows: TunFlowGaugeI64,
     pub bbr_min_rtt_seconds: TunFlowGaugeF64,
     /// Monotonic: unlike the gauges, a closing flow must *not* unwind it.
@@ -324,6 +326,12 @@ pub fn tun_tcp_flow_gauges(group: &str, uplink: &str) -> TunTcpFlowGauges {
             METRICS
                 .tun_tcp_bbr_loss_cap_bytes_per_second
                 .with_label_values(&labels),
+        ),
+        bbr_inflight_hi_bytes: TunFlowGaugeI64(
+            METRICS.tun_tcp_bbr_inflight_hi_bytes.with_label_values(&labels),
+        ),
+        bbr_inflight_lo_bytes: TunFlowGaugeI64(
+            METRICS.tun_tcp_bbr_inflight_lo_bytes.with_label_values(&labels),
         ),
         bbr_loss_capped_flows: TunFlowGaugeI64(
             METRICS.tun_tcp_bbr_loss_capped_flows.with_label_values(&labels),

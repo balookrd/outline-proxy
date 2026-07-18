@@ -156,6 +156,10 @@ impl Metrics {
             #[cfg(feature = "tun")]
             tun_tcp_bbr_loss_cap_bytes_per_second: tun.tun_tcp_bbr_loss_cap_bytes_per_second,
             #[cfg(feature = "tun")]
+            tun_tcp_bbr_inflight_hi_bytes: tun.tun_tcp_bbr_inflight_hi_bytes,
+            #[cfg(feature = "tun")]
+            tun_tcp_bbr_inflight_lo_bytes: tun.tun_tcp_bbr_inflight_lo_bytes,
+            #[cfg(feature = "tun")]
             tun_tcp_bbr_loss_capped_flows: tun.tun_tcp_bbr_loss_capped_flows,
             #[cfg(feature = "tun")]
             tun_tcp_bbr_min_rtt_seconds: tun.tun_tcp_bbr_min_rtt_seconds,

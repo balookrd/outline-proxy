@@ -35,6 +35,8 @@ pub(super) struct TunFields {
     pub(super) tun_tcp_bbr_btlbw_bytes_per_second: IntGaugeVec,
     pub(super) tun_tcp_bbr_pacing_rate_bytes_per_second: IntGaugeVec,
     pub(super) tun_tcp_bbr_loss_cap_bytes_per_second: IntGaugeVec,
+    pub(super) tun_tcp_bbr_inflight_hi_bytes: IntGaugeVec,
+    pub(super) tun_tcp_bbr_inflight_lo_bytes: IntGaugeVec,
     pub(super) tun_tcp_bbr_loss_capped_flows: IntGaugeVec,
     pub(super) tun_tcp_bbr_min_rtt_seconds: GaugeVec,
     pub(super) tun_tcp_bbr_loss_episodes_total: IntCounterVec,
@@ -269,6 +271,20 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         "Aggregated loss-driven BBR bandwidth cap for active TUN TCP flows; a flow contributes 0 while its cap is inactive.",
         ["group", "uplink"]
     );
+    let tun_tcp_bbr_inflight_hi_bytes = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_tun_tcp_bbr_inflight_hi_bytes",
+        "Aggregated BBRv2 long-term in-flight ceiling (inflight_hi) for active TUN TCP flows; a flow contributes 0 while the ceiling is unset.",
+        ["group", "uplink"]
+    );
+    let tun_tcp_bbr_inflight_lo_bytes = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_tun_tcp_bbr_inflight_lo_bytes",
+        "Aggregated BBRv2 short-term in-flight ceiling (inflight_lo) for active TUN TCP flows; a flow contributes 0 while the ceiling is unset.",
+        ["group", "uplink"]
+    );
     let tun_tcp_bbr_loss_capped_flows = register_labeled!(
         registry,
         IntGaugeVec,
@@ -325,6 +341,8 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         tun_tcp_bbr_btlbw_bytes_per_second,
         tun_tcp_bbr_pacing_rate_bytes_per_second,
         tun_tcp_bbr_loss_cap_bytes_per_second,
+        tun_tcp_bbr_inflight_hi_bytes,
+        tun_tcp_bbr_inflight_lo_bytes,
         tun_tcp_bbr_loss_capped_flows,
         tun_tcp_bbr_min_rtt_seconds,
         tun_tcp_bbr_loss_episodes_total,

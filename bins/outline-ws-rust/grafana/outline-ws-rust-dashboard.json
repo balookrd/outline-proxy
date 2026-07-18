@@ -5687,9 +5687,23 @@
           "legendFormat": "{{instance_short}} {{uplink}} in-flight",
           "range": true,
           "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "label_replace(sum by (instance, group, uplink) (outline_ws_tun_tcp_bbr_inflight_hi_bytes{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) / (sum by (instance, group, uplink) (outline_ws_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} inflight_hi",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "editorMode": "code",
+          "expr": "label_replace(sum by (instance, group, uplink) (outline_ws_tun_tcp_bbr_inflight_lo_bytes{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) / (sum by (instance, group, uplink) (outline_ws_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}) > 0), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} inflight_lo",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "Congestion window & in-flight (avg per flow)",
+      "title": "Congestion window, in-flight & BBRv2 ceilings (avg per flow)",
       "type": "timeseries"
     },
     {
