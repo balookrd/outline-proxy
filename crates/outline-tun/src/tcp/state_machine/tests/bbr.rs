@@ -524,7 +524,11 @@ fn the_inflight_ceilings_are_floored_at_the_min_pipe() {
         bbr.bw_latest_bps = 9_000_000;
         adapt_loss_cap(&mut bbr, min_pipe, min_pipe);
     }
-    assert!(bbr.inflight_lo >= min_pipe, "lo starved below the ACK-clock floor: {}", bbr.inflight_lo);
+    assert!(
+        bbr.inflight_lo >= min_pipe,
+        "lo starved below the ACK-clock floor: {}",
+        bbr.inflight_lo
+    );
     assert!(bbr.inflight_hi >= min_pipe, "hi starved below the floor: {}", bbr.inflight_hi);
 }
 
@@ -828,13 +832,7 @@ fn the_quantization_budget_keeps_a_jittery_last_mile_from_ratcheting_btlbw_down(
     // field flow reported (mode=ProbeBw, pacing_gain=1.0, cwnd_gain=2.0). The
     // ratchet only closes here — STARTUP's 2.885 gain clears the 2.7 ratio.
     let mut now = t0 + srtt;
-    deliver(
-        &mut bbr,
-        deliverable_per_round,
-        Some(sample(0, t0, false)),
-        Some(min_rtt),
-        now,
-    );
+    deliver(&mut bbr, deliverable_per_round, Some(sample(0, t0, false)), Some(min_rtt), now);
     enter_probe_bw(&mut bbr, now);
     let seeded = bbr.btlbw_bps;
     assert!(seeded > 8_000_000, "seeded BtlBw should reflect the real link, got {seeded}");

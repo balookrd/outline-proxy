@@ -190,7 +190,11 @@ async fn table_bypass_group_down_resolves_direct() {
 /// `has_any_healthy` reports as "no healthy uplink".
 async fn tcp_healthy_routing() -> TunRouting {
     let registry = UplinkRegistry::new_for_test(vec![group_config("main", true)]).unwrap();
-    registry.group_by_name("main").unwrap().test_set_tcp_health(0, true, 50).await;
+    registry
+        .group_by_name("main")
+        .unwrap()
+        .test_set_tcp_health(0, true, 50)
+        .await;
     let table = table(RouteTarget::Group("main".into()), None).await;
     TunRouting::new(registry, Some(table), Some(FWMARK), false)
 }

@@ -432,7 +432,11 @@ fn adapt_loss_cap(bbr: &mut BbrState, inflight: usize, min_pipe: usize) {
     // ACK-clock. Applied independently of the `bw_latest` floor below, which
     // only the *rate* cap needs.
     bbr.inflight_hi = bbr.inflight_hi.min(inflight).max(min_pipe);
-    let lo_basis = if bbr.inflight_lo == usize::MAX { inflight } else { bbr.inflight_lo };
+    let lo_basis = if bbr.inflight_lo == usize::MAX {
+        inflight
+    } else {
+        bbr.inflight_lo
+    };
     bbr.inflight_lo = ((lo_basis as f64 * BBR_LOSS_CAP_BACKOFF) as usize).max(min_pipe);
     // No delivery-rate sample in the window → no floor to stand on. Backing off
     // against an unknown link is how the old rule reached its floor; decline.

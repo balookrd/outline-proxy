@@ -60,10 +60,16 @@ pub(in crate::tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
     // `inflight_hi` / `inflight_lo` use `usize::MAX` as the "unset" sentinel;
     // map it to 0 so a flow contributes nothing while its ceiling is inactive
     // (a raw `usize::MAX` would export as -1 through the i64 gauge delta).
-    let bbr_inflight_hi_bytes =
-        if state.bbr.inflight_hi == usize::MAX { 0 } else { state.bbr.inflight_hi };
-    let bbr_inflight_lo_bytes =
-        if state.bbr.inflight_lo == usize::MAX { 0 } else { state.bbr.inflight_lo };
+    let bbr_inflight_hi_bytes = if state.bbr.inflight_hi == usize::MAX {
+        0
+    } else {
+        state.bbr.inflight_hi
+    };
+    let bbr_inflight_lo_bytes = if state.bbr.inflight_lo == usize::MAX {
+        0
+    } else {
+        state.bbr.inflight_lo
+    };
     let bbr_min_rtt_us = state.bbr.min_rtt.as_micros() as u64;
     let bbr_loss_episodes = state.bbr.loss_episodes;
 
@@ -257,11 +263,15 @@ pub(in crate::tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
         reported.slow_start_threshold = 0;
     }
     if reported.bbr_inflight_hi_bytes != 0 {
-        gauges.bbr_inflight_hi_bytes.add(-(reported.bbr_inflight_hi_bytes as i64));
+        gauges
+            .bbr_inflight_hi_bytes
+            .add(-(reported.bbr_inflight_hi_bytes as i64));
         reported.bbr_inflight_hi_bytes = 0;
     }
     if reported.bbr_inflight_lo_bytes != 0 {
-        gauges.bbr_inflight_lo_bytes.add(-(reported.bbr_inflight_lo_bytes as i64));
+        gauges
+            .bbr_inflight_lo_bytes
+            .add(-(reported.bbr_inflight_lo_bytes as i64));
         reported.bbr_inflight_lo_bytes = 0;
     }
     if reported.retransmission_timeout_us != 0 {
