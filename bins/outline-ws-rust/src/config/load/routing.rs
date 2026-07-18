@@ -58,11 +58,15 @@ pub(super) fn load_routing_config(
         let has_prefixes = section.prefixes.as_ref().is_some_and(|v| !v.is_empty());
         let has_files =
             section.file.is_some() || section.files.as_ref().is_some_and(|v| !v.is_empty());
+        let has_domains = section.domains.as_ref().is_some_and(|v| !v.is_empty());
+        let has_domain_files = section.domain_file.is_some()
+            || section.domain_files.as_ref().is_some_and(|v| !v.is_empty());
 
         if is_default {
-            if has_prefixes || has_files {
+            if has_prefixes || has_files || has_domains || has_domain_files {
                 bail!(
-                    "[[route]] entry {} has `default = true` and must not set prefixes/file/files",
+                    "[[route]] entry {} has `default = true` and must not set \
+                     prefixes/file/files/domains/domain_file/domain_files",
                     index + 1
                 );
             }
@@ -72,9 +76,18 @@ pub(super) fn load_routing_config(
             default_target = Some(target);
             default_fallback = fallback;
         } else {
-            if !has_prefixes && !has_files {
+            if !has_prefixes && !has_files && !has_domains && !has_domain_files {
                 bail!(
-                    "[[route]] entry {} must set `prefixes` and/or `file`/`files` (or `default = true`)",
+                    "[[route]] entry {} must set `prefixes`/`file`/`files` and/or \
+                     `domains`/`domain_file`/`domain_files` (or `default = true`)",
+                    index + 1
+                );
+            }
+            if section.invert.unwrap_or(false) && (has_domains || has_domain_files) {
+                bail!(
+                    "[[route]] entry {} combines `invert = true` with domains; \
+                     `invert` only applies to CIDR prefixes — put the domains in \
+                     a separate rule",
                     index + 1
                 );
             }
@@ -93,9 +106,24 @@ pub(super) fn load_routing_config(
                     })?);
                 }
             }
+            let mut resolved_domain_files: Vec<PathBuf> = Vec::new();
+            if let Some(p) = section.domain_file.as_deref() {
+                resolved_domain_files.push(resolve_config_path(p, config_dir).with_context(
+                    || format!("invalid domain_file in [[route]] entry {}", index + 1),
+                )?);
+            }
+            if let Some(list) = section.domain_files.as_deref() {
+                for p in list {
+                    resolved_domain_files.push(resolve_config_path(p, config_dir).with_context(
+                        || format!("invalid domain_files entry in [[route]] entry {}", index + 1),
+                    )?);
+                }
+            }
             rules.push(RouteRule {
                 inline_prefixes: section.prefixes.clone().unwrap_or_default(),
                 files: resolved_files,
+                inline_domains: section.domains.clone().unwrap_or_default(),
+                domain_files: resolved_domain_files,
                 file_poll: Duration::from_secs(section.file_poll_secs.unwrap_or(60)),
                 target,
                 fallback,

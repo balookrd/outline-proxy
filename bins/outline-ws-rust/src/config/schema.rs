@@ -629,6 +629,13 @@ pub(super) struct RouteSection {
     pub(super) prefixes: Option<Vec<String>>,
     pub(super) file: Option<PathBuf>,
     pub(super) files: Option<Vec<PathBuf>>,
+    /// Domain suffixes matched against domain targets (e.g. SOCKS5h
+    /// hostnames), which CIDR prefixes can never see. `"example.com"`
+    /// matches the domain and all its subdomains; `"*"` matches every
+    /// domain. Sources are merged like the prefix sources.
+    pub(super) domains: Option<Vec<String>>,
+    pub(super) domain_file: Option<PathBuf>,
+    pub(super) domain_files: Option<Vec<PathBuf>>,
     pub(super) file_poll_secs: Option<u64>,
     pub(super) default: Option<bool>,
     pub(super) via: Option<String>,
@@ -637,6 +644,7 @@ pub(super) struct RouteSection {
     pub(super) fallback_drop: Option<bool>,
     /// If true, the rule matches addresses NOT in the prefix list.
     /// Useful for "tunnel only listed prefixes, everything else goes direct".
+    /// Applies to CIDR prefixes only; combining with `domains` is rejected.
     pub(super) invert: Option<bool>,
 }
 
