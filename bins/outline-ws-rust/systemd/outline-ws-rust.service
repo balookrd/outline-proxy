@@ -31,6 +31,18 @@ LimitSTACK=8M
 TasksMax=infinity
 NoNewPrivileges=true
 
+# Memory guardrails. On low-RAM hosts (e.g. 1 GiB SBCs) a sudden burst of flows
+# can exhaust RAM faster than the kernel reclaims it, livelocking the whole host
+# (no OOM-killer entry — just a hang until a manual power-cycle). Bounding the
+# service makes the kernel OOM-kill and restart *it* (Restart=on-failure above),
+# leaving the host alive. Percentages scale across hosts of different RAM sizes:
+# MemoryMax (hard OOM-kill) leaves the OS ~15% headroom; MemoryHigh throttles and
+# reclaims anonymous pages to swap (zram recommended) before the hard kill. For a
+# fixed limit on a specific host, override with a drop-in (…/service.d/*.conf).
+MemoryAccounting=yes
+MemoryHigh=70%
+MemoryMax=85%
+
 User=outline-ws
 Group=outline-ws
 StateDirectory=outline-ws-rust/_default
