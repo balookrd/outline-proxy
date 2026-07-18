@@ -271,6 +271,7 @@ fn config_deserializes_tun() {
         handshake_timeout_secs = 12
         half_close_timeout_secs = 45
         max_pending_server_bytes = 524288
+        pending_server_budget_bytes = 33554432
         backlog_abort_grace_secs = 4
         backlog_hard_limit_multiplier = 3
         backlog_no_progress_abort_secs = 9
@@ -290,6 +291,7 @@ fn config_deserializes_tun() {
     assert_eq!(tcp.handshake_timeout_secs, Some(12));
     assert_eq!(tcp.half_close_timeout_secs, Some(45));
     assert_eq!(tcp.max_pending_server_bytes, Some(524288));
+    assert_eq!(tcp.pending_server_budget_bytes, Some(33554432));
     assert_eq!(tcp.backlog_abort_grace_secs, Some(4));
     assert_eq!(tcp.backlog_hard_limit_multiplier, Some(3));
     assert_eq!(tcp.backlog_no_progress_abort_secs, Some(9));
@@ -345,6 +347,7 @@ async fn load_config_enables_tun_when_configured() {
         handshake_timeout_secs = 9
         half_close_timeout_secs = 30
         max_pending_server_bytes = 262144
+        pending_server_budget_bytes = 16777216
         backlog_abort_grace_secs = 5
         backlog_hard_limit_multiplier = 4
         backlog_no_progress_abort_secs = 11
@@ -365,6 +368,7 @@ async fn load_config_enables_tun_when_configured() {
     assert_eq!(config.tun.as_ref().unwrap().tcp.handshake_timeout, Duration::from_secs(9));
     assert_eq!(config.tun.as_ref().unwrap().tcp.half_close_timeout, Duration::from_secs(30));
     assert_eq!(config.tun.as_ref().unwrap().tcp.max_pending_server_bytes, 262_144);
+    assert_eq!(config.tun.as_ref().unwrap().tcp.pending_server_budget_bytes, 16_777_216);
     assert_eq!(config.tun.as_ref().unwrap().tcp.backlog_abort_grace, Duration::from_secs(5));
     assert_eq!(config.tun.as_ref().unwrap().tcp.backlog_hard_limit_multiplier, 4);
     assert_eq!(

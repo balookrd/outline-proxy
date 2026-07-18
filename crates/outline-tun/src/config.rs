@@ -101,6 +101,14 @@ pub struct TunTcpConfig {
     pub handshake_timeout: Duration,
     pub half_close_timeout: Duration,
     pub max_pending_server_bytes: usize,
+    /// Engine-wide ceiling on the *sum* of every flow's pending downlink
+    /// bytes. `max_pending_server_bytes` bounds one flow, but N concurrent
+    /// bulk downloads legally hold `N ×` that — enough to run a low-RAM host
+    /// out of memory during a flow burst. While the sum is over this budget,
+    /// all upstream readers park (same downlink-backpressure gate as the
+    /// per-flow limit) until client ACKs drain the queues; nothing is
+    /// aborted. `0` disables the global budget.
+    pub pending_server_budget_bytes: usize,
     pub backlog_abort_grace: Duration,
     pub backlog_hard_limit_multiplier: usize,
     pub backlog_no_progress_abort: Duration,

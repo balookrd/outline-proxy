@@ -84,6 +84,15 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         max_pending_server_bytes: tcp_section
             .and_then(|section| section.max_pending_server_bytes)
             .unwrap_or(2_097_152),
+        // Engine-wide cap on Σ pending downlink bytes across all flows. The
+        // per-flow soft limit above bounds one download; a burst of concurrent
+        // ones legally holds N× it — the 2026-07-18 incident: ~141 flows in 2 s
+        // on a 1 GiB host outran kernel reclaim and livelocked the box. Over
+        // the budget, every reader parks (same backpressure gate, no aborts)
+        // until client ACKs drain the queues. 0 (default) disables.
+        pending_server_budget_bytes: tcp_section
+            .and_then(|section| section.pending_server_budget_bytes)
+            .unwrap_or(0),
         backlog_abort_grace: Duration::from_secs(
             tcp_section
                 .and_then(|section| section.backlog_abort_grace_secs)

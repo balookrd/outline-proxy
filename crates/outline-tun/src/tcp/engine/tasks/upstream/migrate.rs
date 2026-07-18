@@ -462,7 +462,7 @@ impl TunTcpEngine {
             if matches!(state.status, TcpFlowStatus::Closed) {
                 bail!("carrier migration: flow closed before the downstream replay was delivered");
             }
-            state.pending_server_bytes_total += len;
+            state.charge_pending_server(len);
             // These bytes are ours to deliver from now on — count them exactly
             // like the reader counts a chunk it accepted, or the next migration
             // would ask the server to replay them a second time.

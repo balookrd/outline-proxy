@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -437,7 +438,18 @@ pub(in crate::tcp) struct TcpFlowState {
     /// split-to sites so `pending_server_bytes` is O(1) instead of summing the
     /// whole deque on every downlink chunk and metric commit. A `debug_assert`
     /// in `pending_server_bytes` cross-checks it against the live sum in tests.
+    ///
+    /// The engine paths mutate it through [`Self::charge_pending_server`] /
+    /// [`Self::discharge_pending_server`] so the engine-wide budget counter
+    /// stays in lockstep; tests that build queue contents by hand may keep
+    /// assigning it directly (they run with `pending_budget_global: None`).
     pub(in crate::tcp) pending_server_bytes_total: usize,
+    /// Engine-wide running total of pending downlink bytes across *all* flows,
+    /// shared via `Arc` with `TunTcpEngineInner`. Fed by the charge/discharge
+    /// helpers above and drained by `Drop` (so an aborted/evicted flow always
+    /// returns its contribution no matter which path tears it down). `None` in
+    /// unit tests that build a `TcpFlowState` without an engine.
+    pub(in crate::tcp) pending_budget_global: Option<Arc<AtomicUsize>>,
     pub(in crate::tcp) backlog_limit_exceeded_since: Option<Instant>,
     pub(in crate::tcp) last_ack_progress_at: Instant,
     pub(in crate::tcp) pending_client_data: VecDeque<Bytes>,
@@ -509,6 +521,43 @@ pub(in crate::tcp) struct TcpFlowState {
     /// matches this value; any other popped entry is a stale leftover from
     /// a previous `sync_flow_metrics_and_schedule` call and is dropped.
     pub(in crate::tcp) next_scheduled_deadline: Option<Instant>,
+}
+
+impl TcpFlowState {
+    /// Account `n` freshly buffered downlink bytes: bumps the per-flow running
+    /// total and mirrors the delta into the engine-wide budget counter. Every
+    /// engine-path push into `pending_server_data` must go through here (the
+    /// reader, the direct reader, and the migration downlink replay).
+    pub(in crate::tcp) fn charge_pending_server(&mut self, n: usize) {
+        self.pending_server_bytes_total += n;
+        if let Some(global) = &self.pending_budget_global {
+            global.fetch_add(n, Ordering::Relaxed);
+        }
+    }
+
+    /// Reverse of [`Self::charge_pending_server`], for bytes leaving the
+    /// pending queue (taken by the flush path into the retransmit scoreboard).
+    pub(in crate::tcp) fn discharge_pending_server(&mut self, n: usize) {
+        debug_assert!(
+            self.pending_server_bytes_total >= n,
+            "discharging more pending downlink bytes than were charged"
+        );
+        self.pending_server_bytes_total -= n;
+        if let Some(global) = &self.pending_budget_global {
+            global.fetch_sub(n, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Drop for TcpFlowState {
+    fn drop(&mut self) {
+        // Return this flow's share of the engine-wide pending-downlink budget.
+        // Centralised here so every teardown path (close, RST abort, eviction,
+        // engine drop) settles the account without having to remember to.
+        if let Some(global) = &self.pending_budget_global {
+            global.fetch_sub(self.pending_server_bytes_total, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Give back the capacity the per-flow queues grew to during a transfer.
