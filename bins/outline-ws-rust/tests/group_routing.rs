@@ -137,6 +137,8 @@ fn route_rule(prefixes: &[&str], target: RouteTarget, fallback: Option<RouteTarg
     RouteRule {
         inline_prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
         files: Vec::new(),
+        inline_domains: Vec::new(),
+        domain_files: Vec::new(),
         file_poll: Duration::from_secs(60),
         target,
         fallback,
@@ -508,6 +510,8 @@ fn inverted_rule(
     RouteRule {
         inline_prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
         files: Vec::new(),
+        inline_domains: Vec::new(),
+        domain_files: Vec::new(),
         file_poll: Duration::from_secs(60),
         target,
         fallback,

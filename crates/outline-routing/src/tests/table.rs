@@ -15,6 +15,8 @@ fn rule(prefixes: &[&str], target: RouteTarget, fallback: Option<RouteTarget>) -
     RouteRule {
         inline_prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
         files: Vec::new(),
+        inline_domains: Vec::new(),
+        domain_files: Vec::new(),
         file_poll: Duration::from_secs(60),
         target,
         fallback,
@@ -30,6 +32,8 @@ fn inverted_rule(
     RouteRule {
         inline_prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
         files: Vec::new(),
+        inline_domains: Vec::new(),
+        domain_files: Vec::new(),
         file_poll: Duration::from_secs(60),
         target,
         fallback,
@@ -99,6 +103,93 @@ async fn resolve_v6_and_domain_fallthrough() {
     // Domains never match a CIDR rule.
     let dom = TargetAddr::Domain("example.com".into(), 80);
     assert_eq!(table.resolve(&dom).await.primary, RouteTarget::Group("main".into()));
+}
+
+fn domain_rule(domains: &[&str], target: RouteTarget) -> RouteRule {
+    RouteRule {
+        inline_prefixes: Vec::new(),
+        files: Vec::new(),
+        inline_domains: domains.iter().map(|s| s.to_string()).collect(),
+        domain_files: Vec::new(),
+        file_poll: Duration::from_secs(60),
+        target,
+        fallback: None,
+        invert: false,
+    }
+}
+
+fn domain(host: &str) -> TargetAddr {
+    TargetAddr::Domain(host.into(), 443)
+}
+
+#[tokio::test]
+async fn domain_rule_matches_suffix_and_skips_ips() {
+    let cfg = RoutingTableConfig {
+        rules: vec![
+            domain_rule(&["bypass.example"], RouteTarget::Direct),
+            domain_rule(&["*"], RouteTarget::Group("main".into())),
+        ],
+        default_target: RouteTarget::Direct,
+        default_fallback: None,
+    };
+    let table = RoutingTable::compile(&cfg).await.unwrap();
+
+    // First-match-wins across domain rules.
+    assert_eq!(table.resolve(&domain("bypass.example")).await.primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&domain("sub.bypass.example")).await.primary, RouteTarget::Direct);
+    // The catch-all sweeps every other domain into the tunnel.
+    assert_eq!(
+        table.resolve(&domain("anything.else")).await.primary,
+        RouteTarget::Group("main".into())
+    );
+    // IP targets never match a domain rule; they fall to the default here.
+    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).await.primary, RouteTarget::Direct);
+}
+
+#[tokio::test]
+async fn mixed_rule_matches_both_kinds_and_domains_skip_cidr_rules() {
+    // One rule carrying both prefixes and domains routes either kind; a
+    // pure-CIDR rule earlier in the chain must not swallow domains.
+    let mixed = RouteRule {
+        inline_prefixes: vec!["10.0.0.0/8".into()],
+        files: Vec::new(),
+        inline_domains: vec!["example.com".into()],
+        domain_files: Vec::new(),
+        file_poll: Duration::from_secs(60),
+        target: RouteTarget::Group("tunnel".into()),
+        fallback: None,
+        invert: false,
+    };
+    let cfg = RoutingTableConfig {
+        rules: vec![rule(&["0.0.0.0/0"], RouteTarget::Drop, None), mixed],
+        default_target: RouteTarget::Direct,
+        default_fallback: None,
+    };
+    let table = RoutingTable::compile(&cfg).await.unwrap();
+
+    // Domain skips the catch-all CIDR drop rule, matches the mixed rule.
+    assert_eq!(
+        table.resolve(&domain("a.example.com")).await.primary,
+        RouteTarget::Group("tunnel".into())
+    );
+    // Unlisted domain falls to the default.
+    assert_eq!(table.resolve(&domain("other.org")).await.primary, RouteTarget::Direct);
+    // IPs hit the CIDR chain as before.
+    assert_eq!(table.resolve(&v4(10, 1, 1, 1)).await.primary, RouteTarget::Drop);
+}
+
+#[tokio::test]
+async fn invert_with_domains_is_rejected_at_compile() {
+    let mut bad = domain_rule(&["example.com"], RouteTarget::Direct);
+    bad.inline_prefixes = vec!["10.0.0.0/8".into()];
+    bad.invert = true;
+    let cfg = RoutingTableConfig {
+        rules: vec![bad],
+        default_target: RouteTarget::Direct,
+        default_fallback: None,
+    };
+    let err = RoutingTable::compile(&cfg).await.unwrap_err().to_string();
+    assert!(err.contains("invert"), "unexpected error: {err}");
 }
 
 #[tokio::test]
@@ -180,6 +271,8 @@ async fn watcher_reloads_cidr_file_and_bumps_version() {
         rules: vec![RouteRule {
             inline_prefixes: vec![],
             files: vec![tmp.clone()],
+            inline_domains: Vec::new(),
+            domain_files: Vec::new(),
             file_poll: Duration::from_millis(30),
             target: RouteTarget::Direct,
             fallback: None,
