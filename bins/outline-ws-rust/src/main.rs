@@ -7,9 +7,12 @@ use outline_ws_rust::config::Args;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// Period between forced mimalloc reclamation passes.
+/// Period between forced mimalloc reclamation passes. 10 s keeps the window
+/// where post-burst RSS sits above `MemoryHigh` short (that window is where a
+/// low-RAM host livelocks); the heap walk itself is milliseconds, negligible
+/// at this cadence.
 #[cfg(feature = "mimalloc")]
-const MIMALLOC_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const MIMALLOC_PURGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Spawn a low-frequency background thread that forces mimalloc to return
 /// decommittable memory to the OS.
