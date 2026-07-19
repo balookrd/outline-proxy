@@ -186,7 +186,7 @@ pub struct Profile {
 /// re-detecting this binary). To refresh: update each `user_agent`
 /// and `sec_ch_ua` field in the table below, bump the constant to
 /// the current `date +%s`, then re-run the suite.
-pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_778_284_800; // 2026-05-09 00:00 UTC
+pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_784_419_200; // 2026-07-19 00:00 UTC
 
 /// Maximum tolerated age of [`PROFILES`] before the staleness test
 /// fails. Six months is short enough to keep up with browser-major
@@ -203,41 +203,42 @@ pub const REFRESH_PERIOD_SECS: u64 = 180 * 24 * 60 * 60;
 /// expects to see across many independent peers.
 pub const PROFILES: &[Profile] = &[
     Profile {
-        name: "chrome-142-windows",
+        name: "chrome-151-windows",
         tls: TlsFingerprint::Chromium,
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
-            "\"Chromium\";v=\"142\", \"Google Chrome\";v=\"142\", \"Not?A_Brand\";v=\"99\"",
+            "\"Chromium\";v=\"151\", \"Google Chrome\";v=\"151\", \"Not?A_Brand\";v=\"99\"",
         ),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"Windows\""),
     },
     Profile {
-        name: "chrome-142-macos",
+        name: "chrome-151-macos",
         tls: TlsFingerprint::Chromium,
         // Chrome on macOS still pins `10_15_7` (Catalina) in the UA
         // string — Google froze that in 2021 to stop User-Agent
         // leaking the real macOS version. Recent Chrome stable still
-        // ships the same string in 2026, so we mirror it. The actual
-        // OS version travels via `Sec-CH-UA-Platform-Version` when
-        // negotiated; we don't advertise that header in this pool.
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+        // ships the same string in 2026 (macOS Tahoe 26 does not change
+        // it), so we mirror it. The actual OS version travels via
+        // `Sec-CH-UA-Platform-Version` when negotiated; we don't
+        // advertise that header in this pool.
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
-            "\"Chromium\";v=\"142\", \"Google Chrome\";v=\"142\", \"Not?A_Brand\";v=\"99\"",
+            "\"Chromium\";v=\"151\", \"Google Chrome\";v=\"151\", \"Not?A_Brand\";v=\"99\"",
         ),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"macOS\""),
     },
     Profile {
-        name: "firefox-150-windows",
+        name: "firefox-152-windows",
         tls: TlsFingerprint::Firefox,
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         accept_language: "en-US,en;q=0.5",
         accept_encoding: "gzip, deflate, br, zstd",
@@ -246,15 +247,17 @@ pub const PROFILES: &[Profile] = &[
         sec_ch_ua_platform: None,
     },
     Profile {
-        name: "firefox-150-macos",
+        name: "firefox-152-macos",
         tls: TlsFingerprint::Firefox,
-        // Firefox uses the actual macOS major in its UA (unlike
-        // Chrome's frozen `10_15_7`). macOS 16 (Tahoe) is current
-        // stable as of 2026-05; Firefox follows via
-        // `Intel Mac OS X 16.4`. Apple-silicon machines still
-        // surface as `Intel Mac OS X` here — Firefox has no separate
-        // ARM string in the UA.
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 16.4; rv:150.0) Gecko/20100101 Firefox/150.0",
+        // Firefox caps the reported macOS version at `10.15` in its UA
+        // (Bugzilla 1679929, shipped in Firefox 87) — exactly like
+        // Chrome/Safari freeze `10_15_7`, just spelled with dots and
+        // no patch component. So a real Firefox on macOS Tahoe 26 still
+        // sends `Intel Mac OS X 10.15`, NOT the true `26.x`; emitting
+        // the actual major would itself be the fingerprint. Apple-
+        // silicon machines still surface as `Intel Mac OS X` here —
+        // Firefox has no separate ARM string in the UA.
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:152.0) Gecko/20100101 Firefox/152.0",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         accept_language: "en-US,en;q=0.5",
         accept_encoding: "gzip, deflate, br, zstd",
@@ -263,16 +266,18 @@ pub const PROFILES: &[Profile] = &[
         sec_ch_ua_platform: None,
     },
     Profile {
-        // Safari major releases ride the macOS yearly cadence:
-        // Safari 17 (Sonoma, 2023), Safari 18 (Sequoia, 2024),
-        // Safari 19 (Tahoe, 2025). Patch 19.4 is the May-2026
-        // stable; the UA still pins `10_15_7` like Chrome does.
-        name: "safari-19-macos",
+        // Apple switched to year-based version numbers at WWDC 2025:
+        // the release after Safari 18 (Sequoia, 2024) is Safari 26,
+        // not Safari 19 — matching macOS Tahoe 26 / iOS 26. Safari 26.0
+        // shipped May 2026 with macOS Tahoe 26. The UA still pins
+        // `10_15_7` for the OS like Chrome does; only the `Version/`
+        // token tracks the release.
+        name: "safari-26-macos",
         tls: TlsFingerprint::Safari,
-        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/19.4 Safari/605.1.15",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         accept_language: "en-US,en;q=0.9",
-        // Safari still does NOT advertise `zstd` as of 19.x — Apple
+        // Safari still does NOT advertise `zstd` as of 26.x — Apple
         // has not shipped the algorithm in WebKit. Keep the list
         // short so the profile reads as Safari rather than
         // Chrome-with-different-UA.
@@ -282,14 +287,19 @@ pub const PROFILES: &[Profile] = &[
         sec_ch_ua_platform: None,
     },
     Profile {
-        name: "edge-142-windows",
+        // Edge stable trails Chrome stable by one major for a short
+        // window each cycle: Chrome is on 151 while Edge 150 (Chromium
+        // 150) is the current stable — a realistic pairing a passive
+        // observer sees in the wild, not a mismatch. Both the `Chrome/`
+        // compatibility token and the `Edg/` token carry 150.
+        name: "edge-150-windows",
         tls: TlsFingerprint::Chromium,
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0",
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0",
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         accept_language: "en-US,en;q=0.9",
         accept_encoding: "gzip, deflate, br, zstd",
         sec_ch_ua: Some(
-            "\"Chromium\";v=\"142\", \"Microsoft Edge\";v=\"142\", \"Not?A_Brand\";v=\"99\"",
+            "\"Chromium\";v=\"150\", \"Microsoft Edge\";v=\"150\", \"Not?A_Brand\";v=\"99\"",
         ),
         sec_ch_ua_mobile: Some("?0"),
         sec_ch_ua_platform: Some("\"Windows\""),
