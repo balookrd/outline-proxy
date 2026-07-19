@@ -265,14 +265,14 @@ pub(super) struct TunSection {
     /// the exit re-resolving (geo-wrong CDN edge). Default empty.
     pub(super) sniff_override_exclude: Option<Vec<String>>,
     /// Open the TUN device with `IFF_VNET_HDR` and write downlink data as TSO
-    /// super-segments the kernel splits per MSS (Linux). Default `false`. Cuts
+    /// super-segments the kernel splits per MSS (Linux). Default `true`. Cuts
     /// the per-packet routing / nftables / conntrack / WireGuard cost on the
     /// write-heavy downlink. See `docs/TUN-GSO.md`.
     pub(super) gso: Option<bool>,
     /// Enable RX GRO (`TUNSETOFFLOAD`, `TUN_F_CSUM|TSO4|TSO6`) so the kernel
     /// coalesces inbound TCP into >MSS super-packets on read (Linux). Requires
-    /// `gso`. Default `false`. The uplink mirror of the downlink `gso` win; UDP
-    /// stays per-datagram (no `USO`). See `docs/TUN-GSO.md`.
+    /// `gso`. Defaults to the value of `gso`. The uplink mirror of the downlink
+    /// `gso` win; UDP stays per-datagram (no `USO`). See `docs/TUN-GSO.md`.
     pub(super) gro: Option<bool>,
     /// Enable UDP USO (`TUNSETOFFLOAD`, `TUN_F_CSUM|USO4|USO6`) so the writer
     /// coalesces equal-sized downlink UDP datagrams of one flow into a

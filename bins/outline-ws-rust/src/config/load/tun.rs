@@ -222,8 +222,13 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         .and_then(|section| section.pmtud_emit_below_quic_initial)
         .unwrap_or(false);
     let sniff_quic = tun.and_then(|section| section.sniff_quic).unwrap_or(true);
-    let gso = tun.and_then(|section| section.gso).unwrap_or(false);
-    let gro = tun.and_then(|section| section.gro).unwrap_or(false);
+    // Offload defaults on: the kernel degrades gracefully where it cannot
+    // honour it (plain-TUN fallback without IFF_VNET_HDR, logged TUNSETOFFLOAD
+    // rejection), and non-Linux targets ignore it entirely. `gro` follows `gso`
+    // (like `uso` below) so a lone `gso = false` disables the whole offload
+    // stack instead of tripping the requires-gso validation.
+    let gso = tun.and_then(|section| section.gso).unwrap_or(true);
+    let gro = tun.and_then(|section| section.gro).unwrap_or(gso);
     if gro && !gso {
         bail!("tun.gro requires tun.gso (GRO needs the vnet header)");
     }
