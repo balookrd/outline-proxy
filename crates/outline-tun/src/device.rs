@@ -171,7 +171,7 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
     // coalescing), and the kernel may hand us UDP GRO on read (the read loop
     // re-segments it). `TUN_F_CSUM` is mandatory for any TSO/USO flag and also
     // enables RX checksum offload, which the read loop recomputes. If the kernel
-    // rejects USO (< 5.18) we retry without it so TCP offload survives.
+    // rejects USO (< 6.2) we retry without it so TCP offload survives.
     let mut gso = TunGso { vnet_hdr, tcp_gro: false, udp_gso: false };
     {
         const TUNSETOFFLOAD: libc::c_ulong = 0x400454d0;

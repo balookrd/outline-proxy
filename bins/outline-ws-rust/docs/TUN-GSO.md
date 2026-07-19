@@ -81,7 +81,7 @@ rather than once per MSS:
   (`resegment_udp_gso`), so UDP receive behaviour is unchanged.
 - `TUN_F_CSUM` (mandatory for USO) turns on RX checksum offload; the read loop
   recomputes any un-finalised checksum.
-- If the kernel rejects USO (< 5.18), the client logs and keeps TCP offload;
+- If the kernel rejects USO (< 6.2), the client logs and keeps TCP offload;
   UDP GSO is disabled.
 
 ## Enabling
@@ -99,7 +99,7 @@ uso = true   # downlink UDP USO (default: follows gso)
 Linux only; ignored on other targets. `gso` needs a kernel with `IFF_VNET_HDR`
 (since 2.6.27) — without it the attach falls back to the plain per-packet path
 with a log line. `gro`/`uso` additionally need `TUNSETOFFLOAD` support; `uso`
-needs `GSO_UDP_L4` (kernel ≥ 5.18) — a rejected offload is logged and the rest
+needs `TUN_F_USO` (kernel ≥ 6.2) — a rejected offload is logged and the rest
 is kept. `gro` and `uso` can be toggled independently of each other and of
 `gso`.
 

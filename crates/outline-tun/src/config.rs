@@ -103,7 +103,7 @@ pub struct TunConfig {
     /// video. `TUN_F_USO` also lets the kernel hand us UDP GRO super-packets on
     /// read, which the read loop re-segments (`resegment_udp_gso`). Defaults to
     /// the value of `gso`; independent of `gro`. Ignored on non-Linux targets or kernels
-    /// without USO (< 5.18) — the client logs and keeps TCP offload.
+    /// without USO (< 6.2) — the client logs and keeps TCP offload.
     pub uso: bool,
 }
 
