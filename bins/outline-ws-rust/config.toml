@@ -141,11 +141,14 @@ listen = "[::1]:9090"
 # FIRST; only if no domain rule matches does the literal IP fall through to the
 # CIDR rules (the same domain-first, IP-fallback order the SOCKS5 path gets from
 # a socks5h hostname). So a `[[route]] domains = [...] via = "direct"` rule can
-# send matching QUIC (e.g. a RU site) direct while everything else tunnels — by
-# domain, without the destination ever appearing as a domain to the CIDR rules.
-# Requires sniff_quic (the SNI source); enabling it with sniff_quic = false is
-# rejected at startup. TCP/TLS SNI routing is not covered yet — UDP/QUIC only.
-# Default false (routing stays purely IP-based unless opted in).
+# send matching traffic (e.g. a RU site) direct while everything else tunnels —
+# by domain, without the destination ever appearing as a domain to the CIDR
+# rules. Applies to BOTH paths: TCP/TLS (SNI / HTTP Host, re-resolved in the
+# connect task before the dial, so it can still pick group / direct / drop) and
+# UDP/QUIC (QUIC Initial SNI). Needs at least one sniffer as the SNI source —
+# `sniff_quic` for UDP, `[tun.tcp] sniffing` for TCP; enabling route_by_sni with
+# both off is rejected at startup. Default false (routing stays purely IP-based
+# unless opted in).
 # route_by_sni = false
 #
 # Domains excluded from sniff destination-override (TCP + QUIC), Xray-style

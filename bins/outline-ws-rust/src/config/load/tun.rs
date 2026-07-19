@@ -64,6 +64,12 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         .unwrap_or_else(|| Vec::new().into());
 
     let tcp_section = tun.and_then(|section| section.tcp.as_ref());
+    // `route_by_sni` is a top-level `[tun]` flag but is consumed by both the UDP
+    // engine (via `TunConfig`) and the TCP engine (via `TunTcpConfig`), so it is
+    // read once here and copied into both. `tcp_sniffing` is hoisted so the
+    // route_by_sni validation below can see whether the TCP SNI source is on.
+    let tcp_sniffing = tcp_section.and_then(|section| section.sniffing).unwrap_or(true);
+    let route_by_sni = tun.and_then(|section| section.route_by_sni).unwrap_or(false);
     let tcp = TunTcpConfig {
         connect_timeout: Duration::from_secs(
             tcp_section
@@ -144,7 +150,7 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         keepalive_max_probes: tcp_section
             .and_then(|section| section.keepalive_max_probes)
             .unwrap_or(6),
-        sniffing: tcp_section.and_then(|section| section.sniffing).unwrap_or(true),
+        sniffing: tcp_sniffing,
         sniff_timeout: Duration::from_millis(
             tcp_section
                 .and_then(|section| section.sniff_timeout_ms)
@@ -154,6 +160,7 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         sniff_direct_reresolve: tcp_section
             .and_then(|section| section.sniff_direct_reresolve)
             .unwrap_or(false),
+        route_by_sni,
         // Default on: it costs nothing where it cannot help (a server without
         // resumption never issues a Session ID, so those flows are not even
         // eligible) and it only ever engages on a confirmed resume hit.
@@ -222,12 +229,16 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         .and_then(|section| section.pmtud_emit_below_quic_initial)
         .unwrap_or(false);
     let sniff_quic = tun.and_then(|section| section.sniff_quic).unwrap_or(true);
-    // SNI-based UDP routing needs the QUIC sniffer as its SNI source; enabling
-    // it with sniffing off would be a silent no-op, so reject the combination
-    // (mirrors the gro/uso-require-gso validation below).
-    let route_by_sni = tun.and_then(|section| section.route_by_sni).unwrap_or(false);
-    if route_by_sni && !sniff_quic {
-        bail!("tun.route_by_sni requires tun.sniff_quic (the SNI source)");
+    // SNI routing needs a sniffer to recover the SNI: `sniff_quic` feeds the
+    // UDP/QUIC path, `[tun.tcp] sniffing` feeds the TCP/TLS path. With both off
+    // `route_by_sni` could never fire, so reject that silent no-op (mirrors the
+    // gro/uso-require-gso validation below). `route_by_sni` / `tcp_sniffing`
+    // were hoisted above the `[tun.tcp]` build.
+    if route_by_sni && !sniff_quic && !tcp_sniffing {
+        bail!(
+            "tun.route_by_sni needs at least one SNI source on: tun.sniff_quic (UDP/QUIC) \
+             or [tun.tcp] sniffing (TCP/TLS)"
+        );
     }
     // Offload defaults on: the kernel degrades gracefully where it cannot
     // honour it (plain-TUN fallback without IFF_VNET_HDR, logged TUNSETOFFLOAD

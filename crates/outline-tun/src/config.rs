@@ -189,6 +189,17 @@ pub struct TunTcpConfig {
     /// also be on. `sniff_override_exclude` still applies (excluded hosts keep
     /// the client's IP). Default `false` — direct keeps dialling the literal IP.
     pub sniff_direct_reresolve: bool,
+    /// Route a new flow by its sniffed TLS SNI / HTTP Host, not just by the
+    /// literal destination IP — the TCP counterpart of the top-level
+    /// [`TunConfig::route_by_sni`](crate::TunConfig::route_by_sni) (sourced from
+    /// the same `[tun] route_by_sni` flag, mirrored here so the TCP engine reads
+    /// it without a separate constructor argument). When `true` the sniffed host
+    /// is matched against the `[[route]]` domain rules *first*; only on a domain
+    /// miss does the literal IP fall through to the CIDR rules — re-resolved in
+    /// the connect task before the upstream dial, so it can still pick the
+    /// group, direct, or drop the flow. Requires `sniffing` (the SNI source).
+    /// Default `false`.
+    pub route_by_sni: bool,
     /// Carrier migration: when a tunnelled flow's shared carrier (one H3/H2/H1
     /// connection multiplexing many flows) dies, re-dial a fresh carrier, have
     /// the server re-attach the upstream it parked, replay the byte gap in both
