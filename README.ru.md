@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="outline-ss|ws-rust logo" width="320">
+</p>
+
 # outline-proxy
 
 `outline-proxy` — это Cargo workspace (монорепозиторий), в котором живут обе
