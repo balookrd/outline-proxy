@@ -65,6 +65,11 @@ pub(super) struct TunUdpEngineInner {
     /// QUIC connection sniffing for the UDP path. See
     /// [`TunConfig::sniff_quic`](crate::TunConfig).
     pub(super) sniff_quic: bool,
+    /// Route a new flow by its sniffed QUIC SNI (domain rules first, then the
+    /// literal IP) instead of by IP alone. See
+    /// [`TunConfig::route_by_sni`](crate::TunConfig). Implies `sniff_quic`
+    /// (enforced at config load).
+    pub(super) route_by_sni: bool,
     /// Domain suffixes excluded from QUIC sniff destination-override. See
     /// [`TunConfig::sniff_override_exclude`](crate::TunConfig).
     pub(super) sniff_override_exclude: std::sync::Arc<[Box<str>]>,
@@ -88,6 +93,7 @@ impl TunUdpEngine {
         idle_timeout: Duration,
         pmtud_emit_below_quic_initial: bool,
         sniff_quic: bool,
+        route_by_sni: bool,
         sniff_override_exclude: std::sync::Arc<[Box<str>]>,
         udp_gso: bool,
     ) -> Self {
@@ -104,6 +110,7 @@ impl TunUdpEngine {
                 close_tx,
                 pmtud_emit_below_quic_initial,
                 sniff_quic,
+                route_by_sni,
                 sniff_override_exclude,
                 udp_gso,
                 dial_admission: std::sync::OnceLock::new(),
@@ -170,8 +177,29 @@ impl TunUdpEngine {
             return Ok(());
         }
 
-        // New flow: resolve its route.
-        match self.inner.dispatch.resolve_udp(&remote_target).await {
+        // New flow. When SNI-routing is on we sniff the QUIC Initial up-front
+        // so the recovered domain can steer the route (domain rules first, IP
+        // fallback); that same sniff result also drives destination-override
+        // framing, so a flow is sniffed at most once. When off we keep the
+        // legacy order: route purely by IP, and sniff only inside the Group arm
+        // for framing — so a flow that resolves to Direct/Drop never pays the
+        // QUIC-decrypt cost.
+        let presniffed: Option<Option<TargetAddr>> = if self.inner.route_by_sni {
+            Some(self.sniff_quic_override(&packet.payload, key.remote_port))
+        } else {
+            None
+        };
+        let route = match presniffed.as_ref() {
+            Some(override_target) => {
+                let sni_host = override_target.as_ref().and_then(|t| match t {
+                    TargetAddr::Domain(host, _) => Some(host.as_str()),
+                    _ => None,
+                });
+                self.inner.dispatch.resolve_udp_sni(sni_host, &remote_target).await
+            },
+            None => self.inner.dispatch.resolve_udp(&remote_target).await,
+        };
+        match route {
             TunRoute::Direct { fwmark } => {
                 self.handle_direct_packet(key, &remote_target, &packet, fwmark).await
             },
@@ -180,12 +208,16 @@ impl TunUdpEngine {
                 Ok(())
             },
             TunRoute::Group { manager, .. } => {
-                // Connection sniffing: the first datagram of a new flow may be a
-                // QUIC Initial — recover its SNI and pin the flow to that domain
-                // so the exit resolves it. Then register the flow and hand off
-                // to its uplink task, which dials the carrier off this read-loop
+                // Connection sniffing for destination-override framing: pin the
+                // flow to the sniffed domain so the exit resolves it. Reuse the
+                // up-front sniff when SNI-routing already ran it; otherwise sniff
+                // now (legacy path). Then register the flow and hand off to its
+                // uplink task, which dials the carrier off this read-loop
                 // (buffering datagrams meanwhile) instead of dialling inline.
-                let override_target = self.sniff_quic_override(&packet.payload, key.remote_port);
+                let override_target = match presniffed {
+                    Some(sniffed) => sniffed,
+                    None => self.sniff_quic_override(&packet.payload, key.remote_port),
+                };
                 self.spawn_tunnel_flow(key, &manager, override_target, Bytes::from(packet.payload))
                     .await;
                 Ok(())

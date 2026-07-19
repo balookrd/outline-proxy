@@ -91,6 +91,7 @@ async fn build_engine(upstream_url: Url, sniff_quic: bool) -> TunUdpEngine {
         Duration::from_secs(60),
         false,
         sniff_quic,
+        false,
         Vec::new().into(),
         false,
     )
@@ -164,6 +165,7 @@ async fn tun_udp_quic_excluded_host_keeps_ip_target() {
         Duration::from_secs(60),
         false,
         true,
+        false,
         exclude,
         false,
     );

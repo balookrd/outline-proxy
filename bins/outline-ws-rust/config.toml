@@ -136,6 +136,18 @@ listen = "[::1]:9090"
 # Direct flows are never affected. Set to false to always frame UDP by IP.
 # sniff_quic = true
 #
+# Route UDP flows by the sniffed QUIC SNI, not just by the literal destination
+# IP. When true, a new flow's SNI is matched against the [[route]] domain rules
+# FIRST; only if no domain rule matches does the literal IP fall through to the
+# CIDR rules (the same domain-first, IP-fallback order the SOCKS5 path gets from
+# a socks5h hostname). So a `[[route]] domains = [...] via = "direct"` rule can
+# send matching QUIC (e.g. a RU site) direct while everything else tunnels — by
+# domain, without the destination ever appearing as a domain to the CIDR rules.
+# Requires sniff_quic (the SNI source); enabling it with sniff_quic = false is
+# rejected at startup. TCP/TLS SNI routing is not covered yet — UDP/QUIC only.
+# Default false (routing stays purely IP-based unless opted in).
+# route_by_sni = false
+#
 # Domains excluded from sniff destination-override (TCP + QUIC), Xray-style
 # `domainsExcluded`. A sniffed host matching any suffix keeps the literal IP the
 # client dialled instead of being rewritten to a domain. Suffix match:
