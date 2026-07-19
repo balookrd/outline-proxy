@@ -162,10 +162,71 @@ impl TunTcpEngine {
             metrics::record_tun_tcp_async_connect("started");
             let _active_guard = AsyncConnectActiveGuard;
 
-            // Use the flow's bound manager and route — set by handle_new_flow.
-            let (manager, route) = {
+            // Use the flow's bound manager and route — set by handle_new_flow
+            // from the literal IP. SNI routing (below) may re-resolve them.
+            let (mut manager, mut route) = {
                 let state = flow.lock().await;
                 (state.routing.manager.clone(), state.routing.route.clone())
+            };
+
+            // SNI-based routing (the TCP counterpart of the UDP two-pass). When
+            // `route_by_sni` is on, peek the client's first bytes up-front and
+            // re-resolve the route by the recovered TLS SNI / HTTP Host — domain
+            // rules first, literal-IP fallback — *before* committing to
+            // direct-vs-tunnel or dialling. The SYN-ACK went out on the IP route
+            // already (the handshake is terminated locally), but the upstream
+            // group is still open here, so the SNI can still steer it. The same
+            // sniff is threaded into the branch below via `presniffed`, so the
+            // flow is peeked only once; with the flag off nothing here runs and
+            // the legacy per-branch sniff + IP route are unchanged.
+            let presniffed: Option<TargetAddr> = if engine.inner.tcp.route_by_sni
+                && engine.inner.tcp.sniffing
+            {
+                let sniffed =
+                    match engine.sniff_and_override_target(&flow, target.clone(), &mut close_rx).await
+                    {
+                        Some(t) => t,
+                        None => {
+                            metrics::record_tun_tcp_async_connect("cancelled");
+                            debug!(flow_id, "TUN TCP flow closed during SNI-routing sniff");
+                            return;
+                        },
+                    };
+                let sni_host = match &sniffed {
+                    TargetAddr::Domain(host, _) => Some(host.as_str()),
+                    _ => None,
+                };
+                let new_route = engine
+                    .inner
+                    .dispatch
+                    .resolve_sni(sni_host, &target, outline_uplink::TransportKind::Tcp)
+                    .await;
+                match &new_route {
+                    crate::TunRoute::Drop { reason } => {
+                        debug!(flow_id, remote = %target, reason, "SNI route: dropping flow");
+                        engine.abort_flow_with_rst(&key, "sni_policy_drop").await;
+                        return;
+                    },
+                    crate::TunRoute::Group { manager: m, .. } => manager = m.clone(),
+                    // Direct uses a dummy manager (default group), matching
+                    // handle_new_flow — the direct branch skips the uplink pipeline.
+                    crate::TunRoute::Direct { .. } => {
+                        manager = engine.inner.dispatch.default_group().clone()
+                    },
+                }
+                route = new_route.clone();
+                // Publish the re-resolved route so metrics, the pump's group
+                // label, and any carrier-migration re-dial see the group the SNI
+                // selected — mirroring handle_new_flow's initial commit.
+                {
+                    let mut state = flow.lock().await;
+                    state.routing.manager = manager.clone();
+                    state.routing.route = new_route.clone();
+                    state.routing.group_name = Arc::from(manager.group_name());
+                }
+                Some(sniffed)
+            } else {
+                None
             };
 
             let is_direct = matches!(route, crate::TunRoute::Direct { .. });
@@ -194,8 +255,14 @@ impl TunTcpEngine {
                 // exclude-list logic and hands back a `Domain` target for a
                 // sniffed, non-excluded host; everything else stays the literal
                 // IP. Off by default, so direct keeps the zero-latency IP dial.
-                let target = if engine.inner.tcp.sniffing && engine.inner.tcp.sniff_direct_reresolve
-                {
+                let target = if let Some(t) = presniffed.as_ref() {
+                    // route_by_sni already sniffed this flow. A direct flow only
+                    // local-re-resolves the sniffed domain when
+                    // `sniff_direct_reresolve` is on; otherwise it keeps dialling
+                    // the literal IP (the sniffed domain still steered the route
+                    // to direct above — this only governs the dial address).
+                    if engine.inner.tcp.sniff_direct_reresolve { t.clone() } else { target }
+                } else if engine.inner.tcp.sniffing && engine.inner.tcp.sniff_direct_reresolve {
                     match engine.sniff_and_override_target(&flow, target, &mut close_rx).await {
                         Some(target) => target,
                         None => {
@@ -392,7 +459,11 @@ impl TunTcpEngine {
             // the client already sent its preface); the bounded wait only
             // affects server-speaks-first protocols, which fall back to
             // dialling by IP. Cancellation during the wait aborts the connect.
-            let target = if engine.inner.tcp.sniffing {
+            let target = if let Some(t) = presniffed.as_ref() {
+                // route_by_sni already sniffed this flow up-front; reuse the
+                // recovered domain as the exit-facing target (no second peek).
+                t.clone()
+            } else if engine.inner.tcp.sniffing {
                 match engine.sniff_and_override_target(&flow, target, &mut close_rx).await {
                     Some(target) => target,
                     None => {
