@@ -409,7 +409,10 @@ async fn resolve_domain_explicit_some_on_match_none_on_miss() {
     let table = mixed_table().await;
     assert_eq!(
         table.resolve_domain_explicit("api.bypass.example").await,
-        Some(RouteDecision { primary: RouteTarget::Direct, fallback: None })
+        Some(RouteDecision {
+            primary: RouteTarget::Direct,
+            fallback: None
+        })
     );
     // No domain rule matches — `None`, NOT the table default.
     assert_eq!(table.resolve_domain_explicit("other.example").await, None);

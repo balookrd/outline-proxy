@@ -165,7 +165,11 @@ impl TunRouting {
     /// The IPsec bypass still short-circuits on the literal port, and with no
     /// routing table the SNI is irrelevant (no domain rules exist), collapsing
     /// to the default-group path.
-    pub async fn resolve_udp_sni(&self, sni_host: Option<&str>, ip_target: &TargetAddr) -> TunRoute {
+    pub async fn resolve_udp_sni(
+        &self,
+        sni_host: Option<&str>,
+        ip_target: &TargetAddr,
+    ) -> TunRoute {
         if self.ipsec_bypass && is_ipsec_port(target_port(ip_target)) {
             return TunRoute::Direct { fwmark: self.direct_fwmark };
         }
