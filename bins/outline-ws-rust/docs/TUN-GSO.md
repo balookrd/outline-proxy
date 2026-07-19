@@ -86,17 +86,22 @@ rather than once per MSS:
 
 ## Enabling
 
+**All three are on by default** — `gso = true`, with `gro` and `uso` following
+`gso` unless set explicitly:
+
 ```toml
 [tun]
-gso = true   # downlink TSO
-gro = true   # uplink GRO (requires gso)
-uso = true   # downlink UDP USO (requires gso)
+gso = true   # downlink TSO (default)
+gro = true   # uplink GRO (default: follows gso)
+uso = true   # downlink UDP USO (default: follows gso)
 ```
 
 Linux only; ignored on other targets. `gso` needs a kernel with `IFF_VNET_HDR`
-(since 2.6.27). `gro`/`uso` additionally need `TUNSETOFFLOAD` support; `uso`
-needs `GSO_UDP_L4` (kernel ≥ 5.18). `gro` and `uso` can be toggled independently
-of each other and of `gso`.
+(since 2.6.27) — without it the attach falls back to the plain per-packet path
+with a log line. `gro`/`uso` additionally need `TUNSETOFFLOAD` support; `uso`
+needs `GSO_UDP_L4` (kernel ≥ 5.18) — a rejected offload is logged and the rest
+is kept. `gro` and `uso` can be toggled independently of each other and of
+`gso`.
 
 > **Persistent interface caveat.** `TUNSETOFFLOAD` sets feature flags on the
 > device that survive a process restart on a *persistent* TUN interface. The
@@ -145,7 +150,10 @@ Reading offload back with `ethtool -k <tun>`:
 
 ## Rollback
 
-`gso = false` / `gro = false` / `uso = false` (the defaults) restore the exact
-previous per-packet path; no rebuild is needed, only a restart. `gro` and `uso`
-each drop only their own offload while leaving the downlink TSO in place, so all
-three roll back independently.
+`gso = false` restores the exact previous per-packet path (`gro` and `uso`
+follow it down unless set explicitly); no rebuild is needed, only a restart.
+`gro = false` / `uso = false` each drop only their own offload while leaving
+the downlink TSO in place, so all three roll back independently. Do **not**
+disable `uso` alone while keeping `gso`: with `IFF_VNET_HDR` the kernel frames
+local UDP-GSO (QUIC/HTTP3 egress) as `GSO_UDP_L4` super-packets that are only
+delivered intact when `TUN_F_USO` is on — `gso` without `uso` breaks UDP.

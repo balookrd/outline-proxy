@@ -147,23 +147,24 @@ listen = "[::1]:9090"
 # sniff_override_exclude = ["strava.com"]
 #
 # Open the TUN device with IFF_VNET_HDR and write downlink data as TSO
-# super-segments (Linux only). Default false. The kernel splits one large
+# super-segments (Linux only). Default true. The kernel splits one large
 # super-segment (up to ~60 KB) into MSS packets, so the per-packet routing /
 # nftables / conntrack / WireGuard cost is paid once per super-segment instead
 # of once per MSS — cutting CPU on the write-heavy downlink path. Retransmit
-# stays per-MSS. Data-plane core: verify a large download's sha256 after
-# enabling. Ignored on non-Linux targets. See `docs/TUN-GSO.md`.
-# gso = false
+# stays per-MSS. Set gso = false to restore the per-packet path (gro and uso
+# follow it down unless set explicitly). Ignored on non-Linux targets; a kernel
+# without IFF_VNET_HDR falls back to the plain per-packet path with a log line.
+# See `docs/TUN-GSO.md`.
+# gso = true
 #
 # RX GRO (TUNSETOFFLOAD, TUN_F_CSUM|TSO4|TSO6): let the kernel coalesce inbound
 # TCP into larger-than-MSS super-packets (up to 64 KB) on read, so the
 # per-packet read / parse / TCP-stack cost is paid once per super-packet — the
 # uplink mirror of the gso downlink win. Requires gso = true. UDP stays
-# per-datagram (no USO). Default false; gro = false leaves the write-side TSO
-# untouched, so it rolls back independently. Data-plane core: verify a large
-# upload's sha256 after enabling. Ignored on non-Linux targets. See
-# `docs/TUN-GSO.md`.
-# gro = false
+# per-datagram (no USO). Defaults to the value of `gso` (GRO follows GSO);
+# gro = false leaves the write-side TSO untouched, so it rolls back
+# independently. Ignored on non-Linux targets. See `docs/TUN-GSO.md`.
+# gro = true   # (implied by gso; set = false to force off)
 #
 # UDP USO (TUNSETOFFLOAD, TUN_F_CSUM|USO4|USO6): coalesce equal-sized downlink
 # UDP datagrams of one flow into a GSO_UDP_L4 super-segment the kernel splits
