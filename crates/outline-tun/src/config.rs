@@ -77,7 +77,7 @@ pub struct TunConfig {
     /// (lowercased, leading dots stripped) at config load.
     pub sniff_override_exclude: Arc<[Box<str>]>,
     /// Open the TUN device with `IFF_VNET_HDR` so every `read(2)` / `write(2)`
-    /// carries a 10-byte `virtio_net_hdr` prefix (Linux only). Default `false`.
+    /// carries a 10-byte `virtio_net_hdr` prefix (Linux only). Default `true`.
     ///
     /// Phase 0 of TUN GSO: the header is present but always `GSO_NONE` (no
     /// checksum/segmentation offload), so on-wire behaviour is unchanged — this
@@ -92,16 +92,17 @@ pub struct TunConfig {
     /// downlink `gso` TSO win. `TUN_F_USO*` is deliberately NOT requested, so
     /// UDP stays per-datagram (the kernel re-segments it before we read); a UDP
     /// super-packet that does arrive is still handled (re-segmented) by the read
-    /// loop. Default `false`; the write-side TSO (`gso`) is unaffected when off,
-    /// so GRO rolls back on its own. Ignored on non-Linux targets.
+    /// loop. Defaults to the value of `gso`; the write-side TSO (`gso`) is
+    /// unaffected when off, so GRO rolls back on its own. Ignored on non-Linux
+    /// targets.
     pub gro: bool,
     /// Enable UDP USO on write (`TUNSETOFFLOAD` adds `TUN_F_USO4 | TUN_F_USO6`,
     /// Linux only). Requires `gso`. Coalesces equal-sized downlink UDP datagrams
     /// of one flow into a `GSO_UDP_L4` super-segment the kernel splits per
     /// datagram — the UDP mirror of the downlink TCP TSO win, aimed at bulk QUIC
     /// video. `TUN_F_USO` also lets the kernel hand us UDP GRO super-packets on
-    /// read, which the read loop re-segments (`resegment_udp_gso`). Default
-    /// `false`; independent of `gro`. Ignored on non-Linux targets or kernels
+    /// read, which the read loop re-segments (`resegment_udp_gso`). Defaults to
+    /// the value of `gso`; independent of `gro`. Ignored on non-Linux targets or kernels
     /// without USO (< 5.18) — the client logs and keeps TCP offload.
     pub uso: bool,
 }
