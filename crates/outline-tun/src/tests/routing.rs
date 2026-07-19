@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use outline_routing::{RouteTarget, RoutingTable, RoutingTableConfig};
+use outline_routing::{RouteRule, RouteTarget, RoutingTable, RoutingTableConfig};
 use outline_transport::TransportMode;
 use outline_uplink::{
     LoadBalancingConfig, ProbeConfig, TransportKind, UplinkConfig, UplinkGroupConfig,
@@ -298,5 +298,118 @@ fn route_kind(route: &TunRoute) -> &'static str {
         TunRoute::Group { .. } => "Group",
         TunRoute::Direct { .. } => "Direct",
         TunRoute::Drop { .. } => "Drop",
+    }
+}
+
+// ── SNI-based UDP routing (`resolve_udp_sni`, two-pass domain-then-IP) ────────
+
+fn domain_rule(domains: &[&str], target: RouteTarget) -> RouteRule {
+    RouteRule {
+        inline_prefixes: Vec::new(),
+        files: Vec::new(),
+        inline_domains: domains.iter().map(|s| s.to_string()).collect(),
+        domain_files: Vec::new(),
+        file_poll: Duration::from_secs(60),
+        target,
+        fallback: None,
+        invert: false,
+    }
+}
+
+/// Table exercising both passes: two domain rules (Direct / Group), a CIDR
+/// rule (Drop for 10/8), and a Group default.
+async fn sni_table() -> Arc<RoutingTable> {
+    let cidr_drop = RouteRule {
+        inline_prefixes: vec!["10.0.0.0/8".into()],
+        files: Vec::new(),
+        inline_domains: Vec::new(),
+        domain_files: Vec::new(),
+        file_poll: Duration::from_secs(60),
+        target: RouteTarget::Drop,
+        fallback: None,
+        invert: false,
+    };
+    Arc::new(
+        RoutingTable::compile(&RoutingTableConfig {
+            rules: vec![
+                domain_rule(&["bypass.example"], RouteTarget::Direct),
+                domain_rule(&["tunnel.example"], RouteTarget::Group("main".into())),
+                cidr_drop,
+            ],
+            default_target: RouteTarget::Group("main".into()),
+            default_fallback: None,
+        })
+        .await
+        .unwrap(),
+    )
+}
+
+fn ip_in_10() -> TargetAddr {
+    TargetAddr::IpV4(Ipv4Addr::new(10, 1, 2, 3), 443)
+}
+
+async fn sni_routing(ipsec_bypass: bool) -> TunRouting {
+    let registry = UplinkRegistry::new_for_test(vec![group_config("main", false)]).unwrap();
+    TunRouting::new(registry, Some(sni_table().await), Some(FWMARK), ipsec_bypass)
+}
+
+#[tokio::test]
+async fn sni_domain_rule_steers_route_over_ip() {
+    let routing = sni_routing(false).await;
+    // SNI `bypass.example` → Direct, even though the literal IP (10/8) alone
+    // would Drop. The domain pass wins.
+    match routing.resolve_udp_sni(Some("api.bypass.example"), &ip_in_10()).await {
+        TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        other => panic!("expected Direct, got {}", route_kind(&other)),
+    }
+}
+
+#[tokio::test]
+async fn sni_domain_rule_selects_group() {
+    let routing = sni_routing(false).await;
+    match routing.resolve_udp_sni(Some("tunnel.example"), &target()).await {
+        TunRoute::Group { name, .. } => assert_eq!(&*name, "main"),
+        other => panic!("expected Group, got {}", route_kind(&other)),
+    }
+}
+
+#[tokio::test]
+async fn sni_miss_falls_through_to_ip_rule() {
+    let routing = sni_routing(false).await;
+    // SNI matches no domain rule; the IP (10/8) does → Drop.
+    match routing.resolve_udp_sni(Some("nomatch.example"), &ip_in_10()).await {
+        TunRoute::Drop { .. } => {},
+        other => panic!("expected Drop, got {}", route_kind(&other)),
+    }
+}
+
+#[tokio::test]
+async fn sni_miss_and_ip_miss_uses_default_group() {
+    let routing = sni_routing(false).await;
+    // Neither the SNI nor the IP (8.8.8.8) match a rule → table default.
+    match routing.resolve_udp_sni(Some("nomatch.example"), &target()).await {
+        TunRoute::Group { name, .. } => assert_eq!(&*name, "main"),
+        other => panic!("expected Group, got {}", route_kind(&other)),
+    }
+}
+
+#[tokio::test]
+async fn no_sni_routes_by_ip_only() {
+    let routing = sni_routing(false).await;
+    // No SNI key → IP-only pass, identical to `resolve_udp`: 10/8 → Drop.
+    match routing.resolve_udp_sni(None, &ip_in_10()).await {
+        TunRoute::Drop { .. } => {},
+        other => panic!("expected Drop, got {}", route_kind(&other)),
+    }
+}
+
+#[tokio::test]
+async fn ipsec_bypass_short_circuits_before_sni() {
+    let routing = sni_routing(true).await;
+    // A UDP/4500 (IKE NAT-T) datagram is Direct regardless of the SNI rule.
+    let ike = TargetAddr::IpV4(Ipv4Addr::new(1, 1, 1, 1), 4500);
+    match routing.resolve_udp_sni(Some("tunnel.example"), &ike).await {
+        TunRoute::Direct { fwmark } => assert_eq!(fwmark, Some(FWMARK)),
+        other => panic!("expected Direct, got {}", route_kind(&other)),
     }
 }

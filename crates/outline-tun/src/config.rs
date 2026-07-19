@@ -67,6 +67,17 @@ pub struct TunConfig {
     /// node resolves it. Direct flows are never affected. Mirrors the TCP-path
     /// `[tun.tcp] sniffing` for QUIC.
     pub sniff_quic: bool,
+    /// Route UDP flows by their sniffed QUIC SNI, not just by the literal
+    /// destination IP (`[tun] route_by_sni`, default `false`). When `true` the
+    /// SNI recovered from a new flow's QUIC Initial is matched against the
+    /// `[[route]]` domain rules **first**; only if no domain rule matches does
+    /// the literal IP fall through to the CIDR rules — the same two-pass order
+    /// the SOCKS5 path gets for free from a hostname target. Requires
+    /// `sniff_quic` (the SNI source) — config load rejects the pair
+    /// `route_by_sni = true, sniff_quic = false`. The sniffed domain still
+    /// drives destination-override framing regardless. Off by default: routing
+    /// stays purely IP-based unless opted in.
+    pub route_by_sni: bool,
     /// Domain suffixes excluded from sniff destination-override (Xray
     /// `domainsExcluded`). A sniffed host matching any suffix keeps the literal
     /// IP the client dialled instead of being rewritten to a domain — for sites

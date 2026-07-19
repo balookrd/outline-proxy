@@ -222,6 +222,13 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         .and_then(|section| section.pmtud_emit_below_quic_initial)
         .unwrap_or(false);
     let sniff_quic = tun.and_then(|section| section.sniff_quic).unwrap_or(true);
+    // SNI-based UDP routing needs the QUIC sniffer as its SNI source; enabling
+    // it with sniffing off would be a silent no-op, so reject the combination
+    // (mirrors the gro/uso-require-gso validation below).
+    let route_by_sni = tun.and_then(|section| section.route_by_sni).unwrap_or(false);
+    if route_by_sni && !sniff_quic {
+        bail!("tun.route_by_sni requires tun.sniff_quic (the SNI source)");
+    }
     // Offload defaults on: the kernel degrades gracefully where it cannot
     // honour it (plain-TUN fallback without IFF_VNET_HDR, logged TUNSETOFFLOAD
     // rejection), and non-Linux targets ignore it entirely. `gro` follows `gso`
@@ -285,6 +292,7 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         ipsec_bypass,
         pmtud_emit_below_quic_initial,
         sniff_quic,
+        route_by_sni,
         sniff_override_exclude,
         gso,
         gro,

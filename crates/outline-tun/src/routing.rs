@@ -151,10 +151,37 @@ impl TunRouting {
     /// only 4500 were bypassed, the initial IKE_SA_INIT on 500 would still
     /// be dropped via ESP elsewhere.
     pub async fn resolve_udp(&self, target: &TargetAddr) -> TunRoute {
-        if self.ipsec_bypass && is_ipsec_port(target_port(target)) {
+        self.resolve_udp_sni(None, target).await
+    }
+
+    /// UDP resolution that lets a sniffed SNI steer the route (two-pass:
+    /// domain first, then IP), used when `[tun] route_by_sni` is on.
+    ///
+    /// `sni_host` is the domain recovered from the flow's QUIC Initial (or
+    /// `None` — no SNI, not QUIC, or SNI-routing disabled); `ip_target` is the
+    /// packet's literal destination. An explicit domain rule wins; otherwise
+    /// the literal IP is matched — so a flow whose SNI hits no domain rule
+    /// falls back to exactly the IP decision [`Self::resolve_udp`] would make.
+    /// The IPsec bypass still short-circuits on the literal port, and with no
+    /// routing table the SNI is irrelevant (no domain rules exist), collapsing
+    /// to the default-group path.
+    pub async fn resolve_udp_sni(&self, sni_host: Option<&str>, ip_target: &TargetAddr) -> TunRoute {
+        if self.ipsec_bypass && is_ipsec_port(target_port(ip_target)) {
             return TunRoute::Direct { fwmark: self.direct_fwmark };
         }
-        self.resolve(target, TransportKind::Udp).await
+        let scope = HealthScope::One(TransportKind::Udp);
+        let Some(table) = self.routing.as_ref() else {
+            if group_bypasses_when_down(&self.default_group, scope).await {
+                return TunRoute::Direct { fwmark: self.direct_fwmark };
+            }
+            return TunRoute::Group {
+                name: self.registry.default_group_name().into(),
+                manager: self.default_group.clone(),
+            };
+        };
+        let decision = table.resolve_domain_or_ip(sni_host, Some(ip_target)).await;
+        self.materialize_target(decision.primary, decision.fallback, scope)
+            .await
     }
 
     async fn materialize_target(
