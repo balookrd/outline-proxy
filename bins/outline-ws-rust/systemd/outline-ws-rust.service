@@ -9,9 +9,18 @@ Type=simple
 Environment=RUST_LOG=info
 Environment=NO_COLOR=1
 # mimalloc arena reservation granularity (KiB). The binary also runs a periodic
-# mi_collect to hand freed memory back to the OS after traffic bursts; set
-# MIMALLOC_PURGE_DELAY / MIMALLOC_PURGE_DECOMMITS here to tune reclamation.
+# mi_collect to hand freed memory back to the OS after traffic bursts.
 Environment=MIMALLOC_ARENA_RESERVE=262144
+# Decommit freed pages immediately instead of after the default 10 ms delay:
+# post-burst RSS returns to the OS as fast as the allocator frees it, which is
+# what keeps a low-RAM host under MemoryHigh after a flow spike. Costs a few
+# extra madvise() calls under alloc/free churn — negligible next to the win.
+Environment=MIMALLOC_PURGE_DELAY=0
+# 512 KiB of stack per tokio worker/blocking thread instead of the 2 MiB
+# default — async tasks live on the heap, so worker stacks stay shallow. Saves
+# a few committed MiB on low-core devices; raise it back if a native resolver
+# or deep FFI ever overflows (the binary would crash on start, not corrupt).
+Environment=THREAD_STACK_SIZE_KB=512
 # Persist active-uplink selection to the writable state directory.
 # The default path (same dir as config, .state.toml extension) would land in
 # /etc/ which is read-only under ProtectSystem=strict + DynamicUser.
