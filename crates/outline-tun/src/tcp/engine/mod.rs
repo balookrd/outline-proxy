@@ -58,6 +58,14 @@ pub(super) struct TunTcpEngineInner {
     /// `tcp.pending_server_budget_bytes` to park readers when the host-wide
     /// sum — not any single flow — is what's running away.
     pub(super) pending_server_bytes_global: Arc<std::sync::atomic::AtomicUsize>,
+    /// Admission gate for upstream dials (`[tun] max_concurrent_upstream_dials`),
+    /// shared with the UDP engine so the cap covers the *process-wide* dial
+    /// fan-out. A flow burst used to launch one carrier handshake per SYN at
+    /// once (141 concurrent TLS/WS/QUIC dials in the 2026-07-18 livelock);
+    /// with the gate, excess connect tasks queue for a permit — held for the
+    /// dial only, never for the flow's lifetime — and the burst handshakes in
+    /// small waves instead. Unset (`OnceLock` empty) = no limit.
+    pub(super) dial_admission: std::sync::OnceLock<Arc<tokio::sync::Semaphore>>,
     pub(super) idle_timeout: Duration,
     /// TUN fd negotiated TSO offload — new flows inherit this into
     /// `TcpFlowState::gso_enabled` to enable super-segment downlink writes.
@@ -94,6 +102,7 @@ impl TunTcpEngine {
                 next_flow_id: CounterU64::new(1),
                 max_flows,
                 pending_server_bytes_global: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                dial_admission: std::sync::OnceLock::new(),
                 idle_timeout,
                 gso_enabled,
                 tcp: Arc::new(tcp),
@@ -108,6 +117,14 @@ impl TunTcpEngine {
 
     pub fn dns_cache(&self) -> &outline_transport::DnsCache {
         &self.inner.dns_cache
+    }
+
+    /// Install the process-wide upstream-dial admission semaphore. Called once
+    /// at engine wiring (before any traffic) with the semaphore shared with
+    /// the UDP engine; a second call is ignored. Never called when the limit
+    /// is disabled, leaving the gate open.
+    pub(crate) fn set_dial_admission(&self, semaphore: Arc<tokio::sync::Semaphore>) {
+        let _ = self.inner.dial_admission.set(semaphore);
     }
 
     /// Test shim: feed a packet whose checksum came from the sender (what the

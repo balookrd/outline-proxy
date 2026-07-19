@@ -45,7 +45,11 @@ enum GateVerdict {
     /// `pending_server_budget_bytes`. Park without any abort escalation:
     /// the overload is collective, not this flow's fault, and the budget
     /// drains as clients ACK. Carries the labels for the one-shot metric.
-    BudgetOver { group: Arc<str>, uplink: Arc<str>, global_bytes: usize },
+    BudgetOver {
+        group: Arc<str>,
+        uplink: Arc<str>,
+        global_bytes: usize,
+    },
 }
 
 impl TunTcpEngine {

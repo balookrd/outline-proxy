@@ -535,6 +535,22 @@ impl TcpFlowState {
         }
     }
 
+    /// Uplink receive-window auto-tuning: widen the window by what the pump
+    /// just drained into the upstream, up to the full `max` buffer cap.
+    ///
+    /// A flow starts at `TunTcpConfig::initial_receive_window` and only earns
+    /// more as bytes demonstrably leave for the upstream — so a flow whose
+    /// upstream is still dialling, or whose carrier is congested (the pump
+    /// parked in `send`, no drains happening), stays at its current window
+    /// instead of letting the client fill 2 MiB per flow. TCP forbids
+    /// *shrinking* an advertised window, and this only ever grows it.
+    pub(in crate::tcp) fn grow_receive_window(&mut self, drained: usize, max: usize) {
+        if self.receive_window_capacity < max {
+            self.receive_window_capacity =
+                self.receive_window_capacity.saturating_add(drained).min(max);
+        }
+    }
+
     /// Reverse of [`Self::charge_pending_server`], for bytes leaving the
     /// pending queue (taken by the flush path into the retransmit scoreboard).
     pub(in crate::tcp) fn discharge_pending_server(&mut self, n: usize) {

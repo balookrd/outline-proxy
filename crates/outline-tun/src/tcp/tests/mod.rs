@@ -2649,6 +2649,59 @@ async fn reclaim_leaves_a_still_loaded_queue_alone() {
 }
 
 #[tokio::test]
+async fn receive_window_grows_with_drained_bytes_and_saturates_at_the_cap() {
+    let mut state = tcp_flow_state_for_tests().await;
+    state.receive_window_capacity = 16_384;
+
+    state.grow_receive_window(4_096, 32_768);
+    assert_eq!(state.receive_window_capacity, 20_480, "growth must track drained bytes");
+
+    state.grow_receive_window(1 << 20, 32_768);
+    assert_eq!(state.receive_window_capacity, 32_768, "growth must clamp at the cap");
+
+    state.grow_receive_window(4_096, 32_768);
+    assert_eq!(
+        state.receive_window_capacity, 32_768,
+        "a full window must not grow past the cap"
+    );
+
+    // A cap lowered below the current capacity (not reachable via config, but
+    // the invariant matters: TCP forbids shrinking an advertised window).
+    state.grow_receive_window(4_096, 16_384);
+    assert_eq!(state.receive_window_capacity, 32_768, "the window must never shrink");
+}
+
+#[test]
+fn initial_receive_window_clamps_to_the_buffer_cap() {
+    let config = TunTcpConfig {
+        initial_receive_window_bytes: 65_536,
+        max_buffered_client_bytes: 2_097_152,
+        ..test_tun_tcp_config()
+    };
+    assert_eq!(config.initial_receive_window(), 65_536);
+
+    let disabled = TunTcpConfig {
+        initial_receive_window_bytes: 0,
+        ..config.clone()
+    };
+    assert_eq!(
+        disabled.initial_receive_window(),
+        2_097_152,
+        "0 must disable auto-tuning: flows start at the full window"
+    );
+
+    let oversized = TunTcpConfig {
+        initial_receive_window_bytes: 8 << 20,
+        ..config
+    };
+    assert_eq!(
+        oversized.initial_receive_window(),
+        2_097_152,
+        "an initial window above the cap must clamp to it"
+    );
+}
+
+#[tokio::test]
 async fn pending_budget_charge_discharge_and_drop_settle_the_global_counter() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2659,7 +2712,11 @@ async fn pending_budget_charge_discharge_and_drop_settle_the_global_counter() {
     state.charge_pending_server(1500);
     state.charge_pending_server(500);
     assert_eq!(state.pending_server_bytes_total, 2000);
-    assert_eq!(global.load(Ordering::SeqCst), 2000, "charges must mirror into the shared counter");
+    assert_eq!(
+        global.load(Ordering::SeqCst),
+        2000,
+        "charges must mirror into the shared counter"
+    );
 
     state.discharge_pending_server(700);
     assert_eq!(state.pending_server_bytes_total, 1300);
@@ -2677,6 +2734,10 @@ pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
         half_close_timeout: Duration::from_secs(15),
         max_pending_server_bytes: 1_048_576,
         pending_server_budget_bytes: 0,
+        // Legacy full-window start: the state-machine tests below drive uplink
+        // scenarios without a pump to grow the window, so auto-tuning is
+        // exercised by its own dedicated tests instead.
+        initial_receive_window_bytes: 0,
         backlog_abort_grace: Duration::from_secs(3),
         backlog_hard_limit_multiplier: 2,
         backlog_no_progress_abort: Duration::from_secs(8),

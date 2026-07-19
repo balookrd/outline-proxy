@@ -24,10 +24,12 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{MaybeTlsStream, accept_async};
 use url::Url;
 
+mod dial_admission;
 mod direct_backpressure;
 mod global_budget;
 mod migrate;
 mod resume;
+mod window_autotune;
 
 use super::super::state_machine::TcpFlowStatus;
 use super::super::tests::{
