@@ -1147,8 +1147,8 @@ WS / XHTTP dials can mix in browser-style identification headers
 (`User-Agent`, `Accept-*`, Sec-CH-UA family, Sec-Fetch-*) so a passive
 DPI rule keying on "WS upgrade missing User-Agent" stops separating
 this client from real browser traffic. The pool ships six profiles:
-Chrome 142 (Windows + macOS), Firefox 150 (Windows + macOS),
-Safari 19 (macOS), Edge 142 (Windows).
+Chrome 151 (Windows + macOS), Firefox 152 (Windows + macOS),
+Safari 26 (macOS), Edge 150 (Windows).
 
 Two stable strategies are offered. **`process_stable` (the
 recommended default)** picks one identity at process start and uses
@@ -1258,7 +1258,7 @@ zero buckets stay greyed-out so the active distribution reads at a
 glance.
 
 The bundled HTML control-plane dashboard renders a per-uplink chip
-showing the **active profile** (e.g. `Chrome 142 macOS`) next to the
+showing the **active profile** (e.g. `Chrome 151 macOS`) next to the
 protocol pill on every row where the effective strategy resolves to
 something other than `none`. The chip is colour-coded by family:
 blue for the stable profiles (Chrome / Firefox / Safari / Edge under
@@ -1267,7 +1267,7 @@ at-a-glance the operator can tell whether the identity is pinned or
 rolling. Uplinks on `none` get no chip — the common opt-out
 deployment stays visually unchanged. The tooltip carries both the
 raw profile id and the strategy
-(`fingerprint_profile_name = chrome-142-macos · strategy = process_stable`)
+(`fingerprint_profile_name = chrome-151-macos · strategy = process_stable`)
 so the rendered label can be correlated immediately with the
 Prometheus `strategy` label and the snapshot JSON without translating
 between forms.
