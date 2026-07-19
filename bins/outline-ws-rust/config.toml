@@ -177,8 +177,8 @@ listen = "[::1]:9090"
 # delivered intact when TUN_F_USO is requested. Enabling gso/gro WITHOUT USO
 # leaves that path malformed and breaks all UDP, so leave this unset to let it
 # track gso. Set `uso = false` explicitly only as a diagnostic escape hatch. The
-# kernel may reject USO on kernels < 5.18, in which case TCP offload is kept and
-# UDP GSO is disabled (UDP-GSO traffic may again misbehave — prefer a >= 5.18
+# kernel may reject USO on kernels < 6.2, in which case TCP offload is kept and
+# UDP GSO is disabled (UDP-GSO traffic may again misbehave — prefer a >= 6.2
 # kernel when using gso). Data-plane core: verify a large UDP transfer + UDP
 # health (DNS/QUIC) after enabling. Ignored on non-Linux targets. See
 # `docs/TUN-GSO.md`.
