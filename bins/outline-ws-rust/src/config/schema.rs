@@ -232,6 +232,12 @@ pub(super) struct TunSection {
     pub(super) mtu: Option<usize>,
     pub(super) max_flows: Option<usize>,
     pub(super) idle_timeout_secs: Option<u64>,
+    /// Process-wide cap on concurrent upstream dials, shared by the TCP and
+    /// UDP TUN engines. A flow burst dials one carrier handshake per flow;
+    /// over the cap, connect tasks queue for a permit (held for the dial
+    /// only) and the burst handshakes in waves instead of all at once.
+    /// Default `32`; `0` disables the gate.
+    pub(super) max_concurrent_upstream_dials: Option<usize>,
     pub(super) tcp: Option<TunTcpSection>,
     pub(super) defrag_max_fragment_sets: Option<usize>,
     pub(super) defrag_max_fragments_per_set: Option<usize>,
@@ -317,6 +323,13 @@ pub(super) struct TunTcpSection {
     pub(super) backlog_abort_grace_secs: Option<u64>,
     pub(super) backlog_hard_limit_multiplier: Option<usize>,
     pub(super) backlog_no_progress_abort_secs: Option<u64>,
+    /// Initial per-flow uplink receive window (bytes). A new flow advertises
+    /// this much in the SYN-ACK and earns the rest of
+    /// `max_buffered_client_bytes` as its bytes actually drain upstream, so a
+    /// burst of dialling flows holds `N × this` instead of `N × 2 MiB`.
+    /// Default `65536`; `0` starts every flow at the full window (pre-tuning
+    /// behaviour).
+    pub(super) initial_receive_window_bytes: Option<usize>,
     pub(super) max_buffered_client_segments: Option<usize>,
     pub(super) max_buffered_client_bytes: Option<usize>,
     pub(super) max_retransmits: Option<u32>,

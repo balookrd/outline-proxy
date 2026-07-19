@@ -221,6 +221,51 @@ impl TunUdpEngine {
             // here keeps the channel empty so the read-loop's `try_send` never
             // hits a full queue during the handshake window.
             let mut pending_datagrams: Vec<Bytes> = Vec::new();
+            // Admission gate (`[tun] max_concurrent_upstream_dials`, shared
+            // with the TCP engine): a UDP flow burst dials one carrier per
+            // flow, so excess dials queue here for a permit — while still
+            // buffering the client's datagrams (the QUIC-handshake preface)
+            // exactly like the dial phase below, so nothing is lost to a full
+            // outbound channel during the wait.
+            let dial_admission = match engine.inner.dial_admission.get() {
+                None => None,
+                Some(semaphore) => match Arc::clone(semaphore).try_acquire_owned() {
+                    Ok(permit) => Some(permit),
+                    Err(_) => {
+                        debug!(
+                            flow_id,
+                            "TUN UDP dial queued: concurrent upstream-dial cap reached"
+                        );
+                        let acquire = Arc::clone(semaphore).acquire_owned();
+                        tokio::pin!(acquire);
+                        loop {
+                            tokio::select! {
+                                biased;
+                                permit = &mut acquire => {
+                                    break Some(permit.expect(
+                                        "dial admission semaphore is never closed",
+                                    ));
+                                },
+                                maybe = outbound_rx.recv() => match maybe {
+                                    Some(raw) => {
+                                        if pending_datagrams.len() < UDP_PENDING_DIAL_BUFFER_CAP {
+                                            pending_datagrams.push(raw);
+                                        } else {
+                                            metrics::record_tun_udp_forward_error(
+                                                "pending_dial_buffer_full",
+                                            );
+                                        }
+                                    },
+                                    // The flow record (and its sender) was
+                                    // removed while queued — abandon without
+                                    // ever taking a permit.
+                                    None => return,
+                                },
+                            }
+                        }
+                    },
+                },
+            };
             let connected = {
                 let connect_fut =
                     select_candidate_and_connect(&manager, &remote_target, Some(&client_id));
@@ -244,6 +289,8 @@ impl TunUdpEngine {
                     }
                 }
             };
+            // The permit covers the dial only — never the flow's lifetime.
+            drop(dial_admission);
             let (candidate, transport) = match connected {
                 Ok(connected) => connected,
                 Err(error) => {

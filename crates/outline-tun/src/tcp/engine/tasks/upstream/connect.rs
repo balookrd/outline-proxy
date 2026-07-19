@@ -67,6 +67,20 @@ impl ConnectFailureCache {
     }
 }
 
+/// Outcome of the upstream-dial admission gate
+/// (`[tun] max_concurrent_upstream_dials`).
+enum DialAdmission {
+    /// No limit configured — dial immediately.
+    Unlimited,
+    /// A permit was granted; hold it for the duration of the dial. The permit
+    /// is never read, only held — dropping the variant releases it.
+    Admitted {
+        _permit: tokio::sync::OwnedSemaphorePermit,
+    },
+    /// The flow closed while queued; abandon the connect.
+    FlowClosed,
+}
+
 /// Ordered direct-dial candidate list: locally re-resolved addresses first,
 /// then the client's literal IP as a fallback (deduplicated). The literal is
 /// what direct-by-IP would have dialled, so it rescues a flow whose SNI
@@ -85,6 +99,47 @@ fn build_direct_dial_candidates(
 }
 
 impl TunTcpEngine {
+    /// Take a place in the process-wide upstream-dial admission gate.
+    ///
+    /// Returns immediately when no limit is configured or a permit is free;
+    /// otherwise parks until one frees up (FIFO), watching `close_rx` so a
+    /// flow torn down while queued abandons the connect instead of dialling
+    /// for a corpse. The permit covers the *dial only* — callers drop it as
+    /// soon as the connect resolves, success or failure. The connect timeout
+    /// is armed after admission, so a queue wait cannot eat into it.
+    async fn acquire_dial_admission(&self, close_rx: &mut watch::Receiver<bool>) -> DialAdmission {
+        let Some(semaphore) = self.inner.dial_admission.get() else {
+            return DialAdmission::Unlimited;
+        };
+        if let Ok(permit) = Arc::clone(semaphore).try_acquire_owned() {
+            return DialAdmission::Admitted { _permit: permit };
+        }
+        metrics::record_tun_tcp_async_connect("dial_queued");
+        let acquire = Arc::clone(semaphore).acquire_owned();
+        tokio::pin!(acquire);
+        loop {
+            tokio::select! {
+                _ = close_rx.changed() => {
+                    if *close_rx.borrow() {
+                        return DialAdmission::FlowClosed;
+                    }
+                }
+                permit = &mut acquire => {
+                    let permit = permit.expect("dial admission semaphore is never closed");
+                    // A teardown and a freed permit can become ready in the
+                    // same instant, and `select!` may pick this branch first —
+                    // re-check the close signal so a flow torn down while
+                    // queued is never dialled (the permit drops right here,
+                    // back to the pool).
+                    if *close_rx.borrow() {
+                        return DialAdmission::FlowClosed;
+                    }
+                    return DialAdmission::Admitted { _permit: permit };
+                }
+            }
+        }
+    }
+
     pub(in crate::tcp::engine) fn spawn_upstream_connect(
         &self,
         key: TcpFlowKey,
@@ -200,6 +255,17 @@ impl TunTcpEngine {
                 } else {
                     engine.inner.tcp.connect_timeout
                 };
+                let dial_admission = match engine.acquire_dial_admission(&mut close_rx).await {
+                    DialAdmission::FlowClosed => {
+                        metrics::record_tun_tcp_async_connect("cancelled");
+                        debug!(
+                            flow_id,
+                            "direct TUN TCP flow closed while queued for dial admission"
+                        );
+                        return;
+                    },
+                    admitted => admitted,
+                };
                 let mut stream = None;
                 let mut last_outcome = "failed";
                 for addr in &candidates {
@@ -261,6 +327,7 @@ impl TunTcpEngine {
                         return;
                     },
                 };
+                drop(dial_admission);
                 let (read_half, write_half) = stream.into_split();
                 let upstream_carrier =
                     Arc::new(Mutex::new(UpstreamCarrier::new(UpstreamWriter::Direct(write_half))));
@@ -341,6 +408,14 @@ impl TunTcpEngine {
             // Per-client affinity key: the LAN client's source IP. Consulted
             // only under routing_scope = "per_client"; ignored otherwise.
             let client_id = key.client_ip.to_string();
+            let dial_admission = match engine.acquire_dial_admission(&mut close_rx).await {
+                DialAdmission::FlowClosed => {
+                    metrics::record_tun_tcp_async_connect("cancelled");
+                    debug!(flow_id, remote = %target, "TUN TCP flow closed while queued for dial admission");
+                    return;
+                },
+                admitted => admitted,
+            };
             let connected = tokio::select! {
                 _ = close_rx.changed() => {
                     if *close_rx.borrow() {
@@ -377,6 +452,7 @@ impl TunTcpEngine {
                     return;
                 },
             };
+            drop(dial_admission);
 
             let upstream_carrier =
                 Arc::new(Mutex::new(UpstreamCarrier::new(match upstream_writer {

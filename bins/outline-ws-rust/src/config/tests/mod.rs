@@ -272,6 +272,7 @@ fn config_deserializes_tun() {
         half_close_timeout_secs = 45
         max_pending_server_bytes = 524288
         pending_server_budget_bytes = 33554432
+        initial_receive_window_bytes = 32768
         backlog_abort_grace_secs = 4
         backlog_hard_limit_multiplier = 3
         backlog_no_progress_abort_secs = 9
@@ -292,6 +293,7 @@ fn config_deserializes_tun() {
     assert_eq!(tcp.half_close_timeout_secs, Some(45));
     assert_eq!(tcp.max_pending_server_bytes, Some(524288));
     assert_eq!(tcp.pending_server_budget_bytes, Some(33554432));
+    assert_eq!(tcp.initial_receive_window_bytes, Some(32768));
     assert_eq!(tcp.backlog_abort_grace_secs, Some(4));
     assert_eq!(tcp.backlog_hard_limit_multiplier, Some(3));
     assert_eq!(tcp.backlog_no_progress_abort_secs, Some(9));
@@ -341,6 +343,7 @@ async fn load_config_enables_tun_when_configured() {
         mtu = 1500
         max_flows = 512
         idle_timeout_secs = 60
+        max_concurrent_upstream_dials = 24
 
         [tun.tcp]
         connect_timeout_secs = 7
@@ -348,6 +351,7 @@ async fn load_config_enables_tun_when_configured() {
         half_close_timeout_secs = 30
         max_pending_server_bytes = 262144
         pending_server_budget_bytes = 16777216
+        initial_receive_window_bytes = 131072
         backlog_abort_grace_secs = 5
         backlog_hard_limit_multiplier = 4
         backlog_no_progress_abort_secs = 11
@@ -367,8 +371,10 @@ async fn load_config_enables_tun_when_configured() {
     assert_eq!(config.tun.as_ref().unwrap().tcp.connect_timeout, Duration::from_secs(7));
     assert_eq!(config.tun.as_ref().unwrap().tcp.handshake_timeout, Duration::from_secs(9));
     assert_eq!(config.tun.as_ref().unwrap().tcp.half_close_timeout, Duration::from_secs(30));
+    assert_eq!(config.tun.as_ref().unwrap().max_concurrent_upstream_dials, 24);
     assert_eq!(config.tun.as_ref().unwrap().tcp.max_pending_server_bytes, 262_144);
     assert_eq!(config.tun.as_ref().unwrap().tcp.pending_server_budget_bytes, 16_777_216);
+    assert_eq!(config.tun.as_ref().unwrap().tcp.initial_receive_window_bytes, 131_072);
     assert_eq!(config.tun.as_ref().unwrap().tcp.backlog_abort_grace, Duration::from_secs(5));
     assert_eq!(config.tun.as_ref().unwrap().tcp.backlog_hard_limit_multiplier, 4);
     assert_eq!(
@@ -813,6 +819,7 @@ async fn load_config_allows_tun_without_socks5_listener() {
         mtu = 1500
         max_flows = 512
         idle_timeout_secs = 60
+        max_concurrent_upstream_dials = 24
 
         [tun.tcp]
         connect_timeout_secs = 7

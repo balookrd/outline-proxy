@@ -23,6 +23,13 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
     let max_flows = tun.and_then(|section| section.max_flows).unwrap_or(4096);
     let idle_timeout =
         Duration::from_secs(tun.and_then(|section| section.idle_timeout_secs).unwrap_or(300));
+    // Shared TCP+UDP admission gate on concurrent upstream dials: a flow burst
+    // dials one carrier handshake per flow, and 141-at-once is what livelocked
+    // a 1 GiB host on 2026-07-18. 32 keeps a burst handshaking in fast waves
+    // without bounding steady-state flow concurrency. 0 = no gate.
+    let max_concurrent_upstream_dials = tun
+        .and_then(|section| section.max_concurrent_upstream_dials)
+        .unwrap_or(32);
 
     if path.is_none() && name.is_none() {
         return Ok(None);
@@ -112,6 +119,15 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         max_buffered_client_bytes: tcp_section
             .and_then(|section| section.max_buffered_client_bytes)
             .unwrap_or(2_097_152),
+        // Uplink receive-window auto-tuning: a new flow advertises this much
+        // from the SYN-ACK and grows toward `max_buffered_client_bytes` as its
+        // bytes actually drain upstream. Bounds what a burst of still-dialling
+        // flows can buffer (N × 64 KiB instead of N × 2 MiB — the 2026-07-18
+        // livelock scale). 0 = start at the full window (pre-tuning
+        // behaviour).
+        initial_receive_window_bytes: tcp_section
+            .and_then(|section| section.initial_receive_window_bytes)
+            .unwrap_or(65_536),
         max_retransmits: tcp_section.and_then(|section| section.max_retransmits).unwrap_or(12),
         downlink_max_rate_bps: tcp_section
             .and_then(|section| section.downlink_max_mbit)
@@ -174,6 +190,9 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
     }
     if tcp.max_buffered_client_bytes > 4_194_304 {
         bail!("tun.tcp.max_buffered_client_bytes must be at most 4194304");
+    }
+    if tcp.initial_receive_window_bytes != 0 && tcp.initial_receive_window_bytes < 16_384 {
+        bail!("tun.tcp.initial_receive_window_bytes must be 0 (disabled) or at least 16384");
     }
     if tcp.max_retransmits == 0 {
         bail!("tun.tcp.max_retransmits must be greater than zero");
@@ -252,6 +271,7 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
         mtu,
         max_flows,
         idle_timeout,
+        max_concurrent_upstream_dials,
         tcp,
         defrag_max_fragment_sets,
         defrag_max_fragments_per_set,
