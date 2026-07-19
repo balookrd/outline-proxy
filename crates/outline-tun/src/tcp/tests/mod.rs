@@ -2752,6 +2752,7 @@ pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
         sniff_timeout: Duration::from_millis(300),
         sniff_override_exclude: Vec::new().into(),
         sniff_direct_reresolve: false,
+        route_by_sni: false,
         carrier_migration: true,
     }
 }

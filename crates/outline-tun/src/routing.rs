@@ -169,7 +169,23 @@ impl TunRouting {
         if self.ipsec_bypass && is_ipsec_port(target_port(ip_target)) {
             return TunRoute::Direct { fwmark: self.direct_fwmark };
         }
-        let scope = HealthScope::One(TransportKind::Udp);
+        self.resolve_sni(sni_host, ip_target, TransportKind::Udp).await
+    }
+
+    /// Two-pass SNI-then-IP resolution for `transport`, scoping the group-health
+    /// walk to it. `sni_host` is the domain sniffed from the flow's first bytes
+    /// (TLS ClientHello / QUIC Initial), `ip_target` the literal destination.
+    /// An explicit domain rule wins; otherwise the literal IP is matched — so a
+    /// flow whose SNI hits no domain rule lands on exactly the IP decision the
+    /// plain [`Self::resolve`] would make. Shared by both ingresses; the UDP
+    /// wrapper [`Self::resolve_udp_sni`] layers the IPsec bypass on top.
+    pub async fn resolve_sni(
+        &self,
+        sni_host: Option<&str>,
+        ip_target: &TargetAddr,
+        transport: TransportKind,
+    ) -> TunRoute {
+        let scope = HealthScope::One(transport);
         let Some(table) = self.routing.as_ref() else {
             if group_bypasses_when_down(&self.default_group, scope).await {
                 return TunRoute::Direct { fwmark: self.direct_fwmark };

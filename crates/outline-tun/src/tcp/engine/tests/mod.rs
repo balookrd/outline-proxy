@@ -440,6 +440,87 @@ async fn tun_tcp_sniffing_disabled_dials_by_ip() {
 }
 
 #[tokio::test]
+async fn tun_tcp_route_by_sni_reroutes_by_sniffed_domain() {
+    // With route_by_sni on, the sniffed TLS SNI re-resolves the route before the
+    // dial: a ClientHello for a domain a [[route]] rule sends to `drop` tears the
+    // flow down with a RST — even though its literal IP (8.8.8.8) would otherwise
+    // tunnel via the default group. Proves the SNI, not just the IP, drives
+    // uplink/direct/drop selection on the TCP path.
+    let upstream = TestTcpUpstream::start().await;
+    let manager = build_test_manager(upstream.url()).await;
+    let (writer, mut capture) = TunCapture::new().await;
+    let table = std::sync::Arc::new(
+        outline_routing::RoutingTable::compile(&outline_routing::RoutingTableConfig {
+            rules: vec![outline_routing::RouteRule {
+                inline_prefixes: Vec::new(),
+                files: Vec::new(),
+                inline_domains: vec!["example.com".to_string()],
+                domain_files: Vec::new(),
+                file_poll: Duration::from_secs(60),
+                target: outline_routing::RouteTarget::Drop,
+                fallback: None,
+                invert: false,
+            }],
+            default_target: outline_routing::RouteTarget::Group("test".into()),
+            default_fallback: None,
+        })
+        .await
+        .unwrap(),
+    );
+    let registry = outline_uplink::UplinkRegistry::from_single_manager(manager);
+    let dispatch = crate::TunRouting::new(registry, Some(table), None, false);
+    let config = crate::config::TunTcpConfig { route_by_sni: true, ..test_tun_tcp_config() };
+    let engine = super::TunTcpEngine::new(
+        writer,
+        dispatch,
+        128,
+        Duration::from_secs(60),
+        false,
+        config,
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
+    );
+
+    let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+    let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+    let (client_port, remote_port) = (40077, 443);
+    let server_next_seq =
+        open_flow(&engine, &mut capture, client_ip, remote_ip, client_port, remote_port, 700).await;
+
+    // Deliver the ClientHello whose SNI matches the `drop` rule.
+    let hello = tls_client_hello_with_sni("example.com");
+    engine
+        .handle_packet_unverified(&build_client_packet(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            701,
+            server_next_seq,
+            4096,
+            TCP_FLAG_ACK,
+            &hello,
+        ))
+        .await
+        .unwrap();
+
+    // The flow is reset. Drain any interim data-ACK for the ClientHello, then
+    // assert a RST arrives — and that nothing was ever dialled upstream.
+    let mut saw_rst = false;
+    for _ in 0..5 {
+        let parsed = parse_tcp_packet_unverified(&capture.next_packet().await).unwrap();
+        if parsed.flags & TCP_FLAG_RST != 0 {
+            saw_rst = true;
+            break;
+        }
+    }
+    assert!(saw_rst, "expected a RST after the SNI routed the flow to drop");
+    assert!(
+        upstream.try_target().await.is_none(),
+        "flow must not have tunneled: the SNI routed it to drop"
+    );
+}
+
+#[tokio::test]
 async fn tun_tcp_pump_delivers_sequential_client_chunks_in_order() {
     // After decoupling the read-loop from upstream sends, client payload is
     // buffered into `pending_client_data` and drained by the per-flow pump.
@@ -2038,6 +2119,12 @@ impl TestTcpUpstream {
         .await
         .unwrap()
         .unwrap()
+    }
+
+    /// Non-blocking: the dialled target if the upstream was already reached,
+    /// `None` otherwise. Lets a test assert a flow never tunneled.
+    async fn try_target(&self) -> Option<Vec<u8>> {
+        self.target_rx.lock().await.try_recv().ok()
     }
 
     async fn recv_chunk(&self) -> Vec<u8> {
