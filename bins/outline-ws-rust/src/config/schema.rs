@@ -258,6 +258,10 @@ pub(super) struct TunSection {
     /// Initial's ClientHello and send the domain (not the IP) upstream so the
     /// exit node resolves it. Default `true`. Mirrors `[tun.tcp] sniffing`.
     pub(super) sniff_quic: Option<bool>,
+    /// Route UDP flows by the sniffed QUIC SNI (domain rules first, IP
+    /// fallback), not just by the literal destination IP. Requires
+    /// `sniff_quic`. Default `false`.
+    pub(super) route_by_sni: Option<bool>,
     /// Domain suffixes excluded from sniff destination-override (TCP + QUIC):
     /// a sniffed host matching any suffix keeps the literal IP instead of being
     /// rewritten to a domain. Suffix match (`strava.com` covers

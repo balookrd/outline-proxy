@@ -141,37 +141,108 @@ impl RoutingTable {
         // the decision we are about to compute instead of silently shadowing
         // it with the post-bump version.
         let version = self.version.load(Ordering::Acquire);
-        let domain = match target {
-            TargetAddr::Domain(host, _) => Some(host.as_str()),
-            _ => None,
-        };
+        // A domain target only ever matches the domain-suffix side; an IP
+        // target only the CIDR side. Either way a miss falls through to the
+        // table default — the single-key behaviour callers relied on before
+        // two-pass resolution existed.
+        let decision = match target {
+            TargetAddr::Domain(host, _) => self.match_domain_rules(host).await,
+            _ => self.match_ip_rules(target).await,
+        }
+        .unwrap_or_else(|| self.default_decision());
+        (decision, version)
+    }
+
+    /// Resolve a flow that may carry both a **domain key** (a sniffed TLS/QUIC
+    /// SNI, or a SOCKS5h hostname) and an **IP key** (the TUN packet
+    /// destination, or a SOCKS5 literal address). Two-pass, domain first:
+    ///
+    /// 1. If `domain` matches an explicit domain rule, that decision wins.
+    /// 2. Otherwise, **only if** an IP key is present, the IP is matched
+    ///    against the CIDR rules.
+    /// 3. Otherwise the table default.
+    ///
+    /// The IP pass runs solely when `ip` is `Some`: a domain-only flow
+    /// (SOCKS5h with no literal address) never falls through to IP matching,
+    /// because there is no IP to match. `ip`, when present, must be an IP
+    /// target — a `Domain` there would never match a CIDR rule and, under an
+    /// inverted rule, would match spuriously; the ingress builds it from the
+    /// flow's literal address, so it always is one.
+    ///
+    /// The version is snapshotted once, before any read, and covers both
+    /// passes — a per-flow cache tags its entry with it and re-resolves when
+    /// [`version`](Self::version) moves (see [`Self::resolve_versioned`]).
+    pub async fn resolve_domain_or_ip_versioned(
+        &self,
+        domain: Option<&str>,
+        ip: Option<&TargetAddr>,
+    ) -> (RouteDecision, u64) {
+        let version = self.version.load(Ordering::Acquire);
+        if let Some(host) = domain
+            && let Some(decision) = self.match_domain_rules(host).await
+        {
+            return (decision, version);
+        }
+        if let Some(ip) = ip
+            && let Some(decision) = self.match_ip_rules(ip).await
+        {
+            return (decision, version);
+        }
+        (self.default_decision(), version)
+    }
+
+    /// Non-versioned [`Self::resolve_domain_or_ip_versioned`].
+    pub async fn resolve_domain_or_ip(
+        &self,
+        domain: Option<&str>,
+        ip: Option<&TargetAddr>,
+    ) -> RouteDecision {
+        self.resolve_domain_or_ip_versioned(domain, ip).await.0
+    }
+
+    /// Match `host` against the domain-suffix rules only. `Some` on an
+    /// explicit rule match; `None` when no domain rule matched — the caller
+    /// decides the fallback (re-run by IP, or use the default). Unlike
+    /// [`Self::resolve`] this never substitutes the table default itself,
+    /// which is what lets two-pass resolution tell "matched a domain rule"
+    /// apart from "fell through to default".
+    pub async fn resolve_domain_explicit(&self, host: &str) -> Option<RouteDecision> {
+        self.match_domain_rules(host).await
+    }
+
+    /// First-match-wins over the domain-suffix side of every rule.
+    async fn match_domain_rules(&self, host: &str) -> Option<RouteDecision> {
         for rule in &self.rules {
-            let matched = match domain {
-                // A domain target only ever matches the rule's domain
-                // suffixes — never the CIDR side, inverted or not.
-                Some(host) => rule.domains.read().await.contains_domain(host),
-                None => {
-                    let in_set = rule.cidrs.read().await.contains(target);
-                    if rule.invert { !in_set } else { in_set }
-                },
-            };
-            if matched {
-                return (
-                    RouteDecision {
-                        primary: rule.target.clone(),
-                        fallback: rule.fallback.clone(),
-                    },
-                    version,
-                );
+            if rule.domains.read().await.contains_domain(host) {
+                return Some(RouteDecision {
+                    primary: rule.target.clone(),
+                    fallback: rule.fallback.clone(),
+                });
             }
         }
-        (
-            RouteDecision {
-                primary: self.default_target.clone(),
-                fallback: self.default_fallback.clone(),
-            },
-            version,
-        )
+        None
+    }
+
+    /// First-match-wins over the CIDR side of every rule, honouring `invert`.
+    async fn match_ip_rules(&self, ip: &TargetAddr) -> Option<RouteDecision> {
+        for rule in &self.rules {
+            let in_set = rule.cidrs.read().await.contains(ip);
+            let matched = if rule.invert { !in_set } else { in_set };
+            if matched {
+                return Some(RouteDecision {
+                    primary: rule.target.clone(),
+                    fallback: rule.fallback.clone(),
+                });
+            }
+        }
+        None
+    }
+
+    fn default_decision(&self) -> RouteDecision {
+        RouteDecision {
+            primary: self.default_target.clone(),
+            fallback: self.default_fallback.clone(),
+        }
     }
 }
 

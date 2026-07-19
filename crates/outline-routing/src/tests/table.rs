@@ -386,3 +386,92 @@ async fn compile_rejects_inverted_rule_with_empty_cidr_set() {
         "unexpected error: {err}"
     );
 }
+
+// ── Two-pass (domain-then-IP) resolution ─────────────────────────────────────
+
+/// Mixed table used by the two-pass tests: a domain rule, a CIDR rule with a
+/// deliberately *different* target, and a `Group` default so each pass is
+/// distinguishable by its outcome.
+async fn mixed_table() -> RoutingTable {
+    let cfg = RoutingTableConfig {
+        rules: vec![
+            domain_rule(&["bypass.example"], RouteTarget::Direct),
+            rule(&["10.0.0.0/8"], RouteTarget::Drop, None),
+        ],
+        default_target: RouteTarget::Group("main".into()),
+        default_fallback: None,
+    };
+    RoutingTable::compile(&cfg).await.unwrap()
+}
+
+#[tokio::test]
+async fn resolve_domain_explicit_some_on_match_none_on_miss() {
+    let table = mixed_table().await;
+    assert_eq!(
+        table.resolve_domain_explicit("api.bypass.example").await,
+        Some(RouteDecision { primary: RouteTarget::Direct, fallback: None })
+    );
+    // No domain rule matches — `None`, NOT the table default.
+    assert_eq!(table.resolve_domain_explicit("other.example").await, None);
+}
+
+#[tokio::test]
+async fn two_pass_domain_rule_wins_over_ip() {
+    let table = mixed_table().await;
+    // Domain matches Direct; the IP would match Drop. Domain wins.
+    let d = table
+        .resolve_domain_or_ip(Some("bypass.example"), Some(&v4(10, 1, 2, 3)))
+        .await;
+    assert_eq!(d.primary, RouteTarget::Direct);
+}
+
+#[tokio::test]
+async fn two_pass_domain_miss_falls_through_to_ip() {
+    let table = mixed_table().await;
+    // Domain matches nothing; IP is in 10/8 → Drop.
+    let d = table
+        .resolve_domain_or_ip(Some("other.example"), Some(&v4(10, 1, 2, 3)))
+        .await;
+    assert_eq!(d.primary, RouteTarget::Drop);
+}
+
+#[tokio::test]
+async fn two_pass_domain_only_no_ip_stays_default_not_ip() {
+    let table = mixed_table().await;
+    // SOCKS5h shape: a domain key that matches no domain rule, and NO IP key.
+    // Must land on the table default — never attempt IP matching.
+    let d = table.resolve_domain_or_ip(Some("other.example"), None).await;
+    assert_eq!(d.primary, RouteTarget::Group("main".into()));
+}
+
+#[tokio::test]
+async fn two_pass_domain_only_explicit_match_needs_no_ip() {
+    let table = mixed_table().await;
+    let d = table.resolve_domain_or_ip(Some("bypass.example"), None).await;
+    assert_eq!(d.primary, RouteTarget::Direct);
+}
+
+#[tokio::test]
+async fn two_pass_no_domain_uses_ip() {
+    let table = mixed_table().await;
+    let hit = table.resolve_domain_or_ip(None, Some(&v4(10, 9, 9, 9))).await;
+    assert_eq!(hit.primary, RouteTarget::Drop);
+    let miss = table.resolve_domain_or_ip(None, Some(&v4(8, 8, 8, 8))).await;
+    assert_eq!(miss.primary, RouteTarget::Group("main".into()));
+}
+
+#[tokio::test]
+async fn two_pass_no_keys_returns_default() {
+    let table = mixed_table().await;
+    let d = table.resolve_domain_or_ip(None, None).await;
+    assert_eq!(d.primary, RouteTarget::Group("main".into()));
+}
+
+#[tokio::test]
+async fn two_pass_version_snapshot_is_stable_across_both_passes() {
+    let table = mixed_table().await;
+    let (_d, v) = table
+        .resolve_domain_or_ip_versioned(Some("other.example"), Some(&v4(10, 0, 0, 1)))
+        .await;
+    assert_eq!(v, table.version());
+}
