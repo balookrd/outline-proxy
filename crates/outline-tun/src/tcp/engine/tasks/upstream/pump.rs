@@ -154,6 +154,15 @@ impl TunTcpEngine {
                             // replay re-emits it — exactly the offset semantics
                             // the SOCKS5 pinned relay relies on.
                             record_uplink_batch(&mut state, &batch, &group_name, &uplink_name);
+                            // Window auto-tuning: taking a batch is the drain —
+                            // these bytes leave `buffered_client_bytes` right
+                            // here, and no further batch is taken until the
+                            // send below completes, so a congested carrier
+                            // stops the window from growing on its own.
+                            state.grow_receive_window(
+                                batch_bytes,
+                                engine.inner.tcp.max_buffered_client_bytes,
+                            );
                             // The epoch this batch is accounted against: which
                             // carrier's replay ring now holds these bytes.
                             Popped::Batch(batch, state.resume.carrier_epoch())

@@ -403,6 +403,12 @@ listen = "[::1]:9090"
 # least-recently-seen flow in it is evicted. Default 4096.
 # max_flows = 4096
 # idle_timeout_secs = 300
+# Process-wide cap on concurrent upstream dials, shared by the TCP and UDP
+# engines. A flow burst dials one carrier handshake (TLS/WS/QUIC) per flow;
+# over the cap, connect tasks queue for a permit (held for the dial only, never
+# the flow's lifetime) and the burst handshakes in fast waves instead of all at
+# once. Steady-state flow concurrency is unaffected. 0 disables the gate.
+# max_concurrent_upstream_dials = 32
 # Built-in IKE / IPsec NAT-T bypass — see "TUN Mode" section below.
 # ipsec_bypass = false
 # Allow ICMP PTBs that advertise a path MTU below QUIC's Initial-datagram
@@ -429,6 +435,11 @@ listen = "[::1]:9090"
 # backlog_no_progress_abort_secs = 8
 # max_buffered_client_segments = 4096
 # max_buffered_client_bytes = 2097152
+# Uplink receive-window auto-tuning: a new flow advertises this much in the
+# SYN-ACK and earns the rest of max_buffered_client_bytes as its bytes actually
+# drain upstream — so a burst of still-dialling flows buffers N x 64 KiB
+# instead of N x 2 MiB. 0 starts every flow at the full window (old behaviour).
+# initial_receive_window_bytes = 65536
 # max_retransmits = 12
 # Connection sniffing (Xray-style destOverride; default on). Peeks the first
 # client bytes, recovers the host from the TLS SNI / HTTP Host, and sends the

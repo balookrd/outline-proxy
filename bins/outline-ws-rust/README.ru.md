@@ -401,6 +401,12 @@ listen = "[::1]:9090"
 # из неё вытесняется least-recently-seen flow. По умолчанию 4096.
 # max_flows = 4096
 # idle_timeout_secs = 300
+# Общепроцессный лимит одновременных upstream-dial'ов, общий для TCP- и
+# UDP-движков. Всплеск flow дайлит по одному carrier-handshake (TLS/WS/QUIC)
+# на flow; сверх лимита connect-таски ждут пермит (он держится только на время
+# dial'а, не жизни flow), и всплеск проходит handshake'и быстрыми волнами, а не
+# все разом. На steady-state число одновременных flow не влияет. 0 — выключить.
+# max_concurrent_upstream_dials = 32
 # Встроенный bypass IKE / IPsec NAT-T — см. раздел «TUN-режим» ниже.
 # ipsec_bypass = false
 # Разрешить ICMP PTB с path MTU ниже QUIC Initial-datagram минимума
@@ -428,6 +434,12 @@ listen = "[::1]:9090"
 # backlog_no_progress_abort_secs = 8
 # max_buffered_client_segments = 4096
 # max_buffered_client_bytes = 2097152
+# Авто-тюнинг uplink-окна приёма: новый flow рекламирует в SYN-ACK столько,
+# а остаток до max_buffered_client_bytes «зарабатывает» по мере того, как его
+# байты реально уходят в upstream — всплеск ещё дозванивающихся flow буферизует
+# N x 64 KiB вместо N x 2 MiB. 0 — стартовать сразу с полного окна (старое
+# поведение).
+# initial_receive_window_bytes = 65536
 # max_retransmits = 12
 # Sniffing соединений (как destOverride в Xray; по умолчанию включено).
 # Подсматривает первые байты клиента, достаёт хост из TLS SNI / HTTP Host и

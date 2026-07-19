@@ -117,7 +117,7 @@ impl TunTcpEngine {
             duplicate_ack_count: 0,
             fast_recovery_end: None,
             recovery_epoch: 0,
-            receive_window_capacity: self.inner.tcp.max_buffered_client_bytes,
+            receive_window_capacity: self.inner.tcp.initial_receive_window(),
             smoothed_rtt: None,
             rttvar: TCP_INITIAL_RTO / 2,
             retransmission_timeout: TCP_INITIAL_RTO,

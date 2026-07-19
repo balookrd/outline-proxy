@@ -9,6 +9,17 @@ pub struct TunConfig {
     pub mtu: usize,
     pub max_flows: usize,
     pub idle_timeout: Duration,
+    /// Process-wide cap on concurrent upstream dials, shared by the TCP and
+    /// UDP engines. Every new tunnelled flow dials its upstream on its own
+    /// task, so a flow burst used to launch one carrier handshake
+    /// (TLS/WS/QUIC) per flow *simultaneously* — the super-linear term in the
+    /// 2026-07-18 1 GiB-host livelock (~141 concurrent dials). With the cap,
+    /// excess connect tasks queue for a permit (held only for the dial, never
+    /// the flow's lifetime) and a burst handshakes in small waves; aggregate
+    /// throughput is unchanged, only burst concurrency is smoothed. The
+    /// client-side cost is microseconds per wave on loopback-scale dials.
+    /// `0` disables the gate.
+    pub max_concurrent_upstream_dials: usize,
     pub tcp: TunTcpConfig,
     /// Max concurrent IP fragment reassembly sets.
     pub defrag_max_fragment_sets: usize,
@@ -114,6 +125,17 @@ pub struct TunTcpConfig {
     pub backlog_no_progress_abort: Duration,
     pub max_buffered_client_segments: usize,
     pub max_buffered_client_bytes: usize,
+    /// Initial per-flow uplink receive window. A new flow advertises this much
+    /// from the SYN-ACK and the pump grows the window toward
+    /// `max_buffered_client_bytes` as bytes actually drain into the upstream —
+    /// so a flow whose upstream is still dialling (or whose carrier is
+    /// congested) can only buffer this much, not the full window. A burst of
+    /// new flows therefore holds `N × this` instead of `N × 2 MiB`, which is
+    /// what ran a 1 GiB host out of memory during the 2026-07-18 flow-burst
+    /// livelock. The client terminates ~0 RTT away, so the ramp-up costs
+    /// microseconds, not round trips. `0` disables auto-tuning: flows start at
+    /// the full `max_buffered_client_bytes` as they always did.
+    pub initial_receive_window_bytes: usize,
     pub max_retransmits: u32,
     /// Hard ceiling on the per-flow downlink send rate, in bytes/sec. Caps the
     /// BBR pacing rate (STARTUP overshoot included) so the stack never offers
@@ -170,4 +192,17 @@ pub struct TunTcpConfig {
     /// the unchanged teardown: a spliced byte stream is far worse than an honest
     /// disconnect. Set `false` to keep the pre-migration behaviour.
     pub carrier_migration: bool,
+}
+
+impl TunTcpConfig {
+    /// The uplink receive window a brand-new flow starts with: the configured
+    /// initial window clamped to the full buffer cap, or the full cap when
+    /// auto-tuning is disabled (`initial_receive_window_bytes == 0`).
+    pub fn initial_receive_window(&self) -> usize {
+        if self.initial_receive_window_bytes == 0 {
+            self.max_buffered_client_bytes
+        } else {
+            self.initial_receive_window_bytes.min(self.max_buffered_client_bytes)
+        }
+    }
 }

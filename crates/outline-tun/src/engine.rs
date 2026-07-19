@@ -104,6 +104,14 @@ pub async fn spawn_tun_loop(
         config.tcp.clone(),
         dns_cache,
     );
+    // One admission semaphore across both engines: the cap bounds the
+    // process-wide dial fan-out, not a per-protocol slice of it.
+    if config.max_concurrent_upstream_dials > 0 {
+        let dial_admission =
+            Arc::new(tokio::sync::Semaphore::new(config.max_concurrent_upstream_dials));
+        udp_engine.set_dial_admission(Arc::clone(&dial_admission));
+        tcp_engine.set_dial_admission(dial_admission);
+    }
     metrics::set_tun_config(max_flows, idle_timeout);
     tokio::spawn(async move {
         if let Err(error) = tun_read_loop(

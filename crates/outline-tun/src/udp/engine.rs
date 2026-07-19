@@ -72,6 +72,11 @@ pub(super) struct TunUdpEngineInner {
     /// datagrams of one flow into a `GSO_UDP_L4` super-segment on write. See
     /// [`TunConfig::uso`](crate::TunConfig).
     pub(super) udp_gso: bool,
+    /// Admission gate for upstream dials (`[tun] max_concurrent_upstream_dials`),
+    /// shared with the TCP engine — see `TunTcpEngineInner::dial_admission`.
+    /// The uplink task keeps buffering the client's datagrams (handshake
+    /// preface) while it queues for a permit. Unset = no limit.
+    pub(super) dial_admission: std::sync::OnceLock<Arc<tokio::sync::Semaphore>>,
 }
 
 impl TunUdpEngine {
@@ -101,11 +106,19 @@ impl TunUdpEngine {
                 sniff_quic,
                 sniff_override_exclude,
                 udp_gso,
+                dial_admission: std::sync::OnceLock::new(),
             }),
         };
         engine.spawn_cleanup_loop();
         engine.spawn_cleanup_pool(close_rx);
         engine
+    }
+
+    /// Install the process-wide upstream-dial admission semaphore (shared with
+    /// the TCP engine). Called once at engine wiring, before any traffic;
+    /// never called when the limit is disabled.
+    pub(crate) fn set_dial_admission(&self, semaphore: Arc<tokio::sync::Semaphore>) {
+        let _ = self.inner.dial_admission.set(semaphore);
     }
 
     pub(crate) async fn handle_packet(&self, packet: ParsedUdpPacket) -> Result<()> {
