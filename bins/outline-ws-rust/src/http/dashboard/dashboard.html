@@ -219,6 +219,12 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .cert-chip { display: inline-flex; align-items: center; margin-left: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; border: 1px solid; }
 .cert-chip.warn { background: var(--amber-soft); color: #b45309; border-color: rgba(180, 83, 9, .45); }
 .cert-chip.bad { background: rgba(220, 38, 38, .12); color: #b91c1c; border-color: rgba(185, 28, 28, .45); }
+/* DNS-resolution-failure chip. Shown in the Status cell when an uplink's
+ * `last_error` is a name-resolution failure (getaddrinfo/EAI_NONAME or an
+ * empty answer) — the operator-facing signal for a missing/typo'd DNS record
+ * or a broken local resolver, distinct from a routable-but-refused connect.
+ * Red like cert-expired; replaces the generic error chip when it fires. */
+.dns-chip { display: inline-flex; align-items: center; margin-left: 4px; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; background: rgba(220, 38, 38, .12); color: #b91c1c; border: 1px solid rgba(185, 28, 28, .45); }
 .proto-pill .proto-dg { margin-left: 5px; font-size: 10px; opacity: .85; color: #b8631a; }
 .proto-pill .proto-submode { margin-left: 4px; padding: 0 4px; font-size: 9.5px; opacity: .8; border-radius: 4px; background: rgba(0,0,0,.1); letter-spacing: .04em; }
 .proto-pill .proto-submode.proto-downgraded { border-style: solid; box-shadow: none; color: #b8631a; background: rgba(214, 130, 30, .15); opacity: 1; }
@@ -1041,6 +1047,45 @@ function certChip(u) {
   }
   return `<span class="cert-chip warn" data-tip="TLS certificate expires in ${days}d (${escapeHtml(when)})" data-tip-wrap>⚠ cert ${days}d</span>`;
 }
+// Recognise a name-resolution failure in an uplink's `last_error`. The dial
+// stack surfaces these as a plain string (no typed variant), so we match the
+// stable markers: the `resolve_host_with_preference` context ("failed to
+// resolve … host"), the OS getaddrinfo texts (glibc "Name does not resolve" /
+// "failed to lookup address information", BSD "nodename nor servname" /
+// "Name or service not known"), and the empty-answer `DnsResolveNoAddresses`
+// ("DNS resolution returned no addresses"). Case-insensitive so wording drift
+// in casing does not silently drop the chip.
+const DNS_FAIL_MARKERS = [
+  "failed to resolve",
+  "name does not resolve",
+  "failed to lookup address information",
+  "nodename nor servname",
+  "name or service not known",
+  "dns resolution returned no addresses",
+];
+function isDnsResolveError(err) {
+  if (!err) return false;
+  const s = String(err).toLowerCase();
+  return DNS_FAIL_MARKERS.some((m) => s.includes(m));
+}
+// Pull the `host[:port]` out of the first URL in the error, for the tooltip —
+// so the operator sees exactly which name failed without opening the config.
+function hostFromError(err) {
+  const m = /(?:https?|wss?):\/\/([^/\s"']+)/i.exec(String(err || ""));
+  return m ? m[1] : null;
+}
+// Render a DNS-failure chip for the Status cell. Empty unless `last_error` is a
+// resolution failure; when it fires it stands in for the generic error chip
+// (see the Status cell), so the row shows one unambiguous `⚠ DNS` instead of a
+// bare `⚠` the operator has to hover to understand.
+function dnsChip(u) {
+  if (!isDnsResolveError(u.last_error)) return '';
+  const host = hostFromError(u.last_error);
+  const tip = host
+    ? `Cannot resolve "${host}" — check this uplink's DNS record / local resolver`
+    : `Upstream host does not resolve — check this uplink's DNS record / local resolver`;
+  return `<span class="dns-chip" data-tip="${escapeHtml(tip)}" data-tip-wrap>⚠ DNS</span>`;
+}
 function weightCell(u) {
   const w = typeof u.weight === 'number' ? u.weight : '—';
   // Show smoothed per-transport probe RTT (operator-facing). The
@@ -1208,7 +1253,13 @@ function renderInstanceBody(panel, instance, groups) {
         // fallback) is legible instead of looking like a healthy "Ready".
         // `last_error` is cleared on the next successful probe
         // (`process_probe_ok`), so a persistent chip means an ongoing failure.
-        const errChip = uplink.last_error
+        // A resolution failure gets the dedicated `⚠ DNS` chip instead of the
+        // generic `⚠`, so the (common, operator-fixable) missing-DNS-record
+        // case is legible at a glance rather than buried in the hover text.
+        const dnsFailChip = dnsChip(uplink);
+        const errChip = dnsFailChip
+          ? dnsFailChip
+          : uplink.last_error
           ? `<span class="proto-fail-chip" data-tip="${escapeHtml(errSummary(uplink.last_error))}" data-tip-wrap>⚠</span>`
           : '';
         const row = document.createElement("div");
