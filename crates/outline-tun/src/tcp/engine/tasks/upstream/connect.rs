@@ -179,11 +179,11 @@ impl TunTcpEngine {
             // sniff is threaded into the branch below via `presniffed`, so the
             // flow is peeked only once; with the flag off nothing here runs and
             // the legacy per-branch sniff + IP route are unchanged.
-            let presniffed: Option<TargetAddr> = if engine.inner.tcp.route_by_sni
-                && engine.inner.tcp.sniffing
-            {
-                let sniffed =
-                    match engine.sniff_and_override_target(&flow, target.clone(), &mut close_rx).await
+            let presniffed: Option<TargetAddr> =
+                if engine.inner.tcp.route_by_sni && engine.inner.tcp.sniffing {
+                    let sniffed = match engine
+                        .sniff_and_override_target(&flow, target.clone(), &mut close_rx)
+                        .await
                     {
                         Some(t) => t,
                         None => {
@@ -192,42 +192,42 @@ impl TunTcpEngine {
                             return;
                         },
                     };
-                let sni_host = match &sniffed {
-                    TargetAddr::Domain(host, _) => Some(host.as_str()),
-                    _ => None,
+                    let sni_host = match &sniffed {
+                        TargetAddr::Domain(host, _) => Some(host.as_str()),
+                        _ => None,
+                    };
+                    let new_route = engine
+                        .inner
+                        .dispatch
+                        .resolve_sni(sni_host, &target, outline_uplink::TransportKind::Tcp)
+                        .await;
+                    match &new_route {
+                        crate::TunRoute::Drop { reason } => {
+                            debug!(flow_id, remote = %target, reason, "SNI route: dropping flow");
+                            engine.abort_flow_with_rst(&key, "sni_policy_drop").await;
+                            return;
+                        },
+                        crate::TunRoute::Group { manager: m, .. } => manager = m.clone(),
+                        // Direct uses a dummy manager (default group), matching
+                        // handle_new_flow — the direct branch skips the uplink pipeline.
+                        crate::TunRoute::Direct { .. } => {
+                            manager = engine.inner.dispatch.default_group().clone()
+                        },
+                    }
+                    route = new_route.clone();
+                    // Publish the re-resolved route so metrics, the pump's group
+                    // label, and any carrier-migration re-dial see the group the SNI
+                    // selected — mirroring handle_new_flow's initial commit.
+                    {
+                        let mut state = flow.lock().await;
+                        state.routing.manager = manager.clone();
+                        state.routing.route = new_route.clone();
+                        state.routing.group_name = Arc::from(manager.group_name());
+                    }
+                    Some(sniffed)
+                } else {
+                    None
                 };
-                let new_route = engine
-                    .inner
-                    .dispatch
-                    .resolve_sni(sni_host, &target, outline_uplink::TransportKind::Tcp)
-                    .await;
-                match &new_route {
-                    crate::TunRoute::Drop { reason } => {
-                        debug!(flow_id, remote = %target, reason, "SNI route: dropping flow");
-                        engine.abort_flow_with_rst(&key, "sni_policy_drop").await;
-                        return;
-                    },
-                    crate::TunRoute::Group { manager: m, .. } => manager = m.clone(),
-                    // Direct uses a dummy manager (default group), matching
-                    // handle_new_flow — the direct branch skips the uplink pipeline.
-                    crate::TunRoute::Direct { .. } => {
-                        manager = engine.inner.dispatch.default_group().clone()
-                    },
-                }
-                route = new_route.clone();
-                // Publish the re-resolved route so metrics, the pump's group
-                // label, and any carrier-migration re-dial see the group the SNI
-                // selected — mirroring handle_new_flow's initial commit.
-                {
-                    let mut state = flow.lock().await;
-                    state.routing.manager = manager.clone();
-                    state.routing.route = new_route.clone();
-                    state.routing.group_name = Arc::from(manager.group_name());
-                }
-                Some(sniffed)
-            } else {
-                None
-            };
 
             let is_direct = matches!(route, crate::TunRoute::Direct { .. });
 
@@ -261,7 +261,11 @@ impl TunTcpEngine {
                     // `sniff_direct_reresolve` is on; otherwise it keeps dialling
                     // the literal IP (the sniffed domain still steered the route
                     // to direct above — this only governs the dial address).
-                    if engine.inner.tcp.sniff_direct_reresolve { t.clone() } else { target }
+                    if engine.inner.tcp.sniff_direct_reresolve {
+                        t.clone()
+                    } else {
+                        target
+                    }
                 } else if engine.inner.tcp.sniffing && engine.inner.tcp.sniff_direct_reresolve {
                     match engine.sniff_and_override_target(&flow, target, &mut close_rx).await {
                         Some(target) => target,

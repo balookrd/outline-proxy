@@ -469,7 +469,10 @@ async fn tun_tcp_route_by_sni_reroutes_by_sniffed_domain() {
     );
     let registry = outline_uplink::UplinkRegistry::from_single_manager(manager);
     let dispatch = crate::TunRouting::new(registry, Some(table), None, false);
-    let config = crate::config::TunTcpConfig { route_by_sni: true, ..test_tun_tcp_config() };
+    let config = crate::config::TunTcpConfig {
+        route_by_sni: true,
+        ..test_tun_tcp_config()
+    };
     let engine = super::TunTcpEngine::new(
         writer,
         dispatch,
