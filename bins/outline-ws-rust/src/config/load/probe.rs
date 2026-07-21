@@ -108,6 +108,13 @@ pub(super) fn load_probe_config(probe: Option<&ProbeSection>) -> Result<ProbeCon
         liveness_interval: Duration::from_secs(
             probe.and_then(|p| p.liveness_interval_secs).unwrap_or(300),
         ),
+        endpoint_check: probe.and_then(|p| p.endpoint_check).unwrap_or(false),
+        endpoint_check_timeout: Duration::from_millis(
+            probe
+                .and_then(|p| p.endpoint_check_timeout_ms)
+                .unwrap_or(2000)
+                .max(100),
+        ),
         ws: WsProbeConfig {
             enabled: probe
                 .and_then(|p| p.ws.as_ref())

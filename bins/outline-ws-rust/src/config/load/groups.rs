@@ -164,6 +164,8 @@ pub(super) fn merge_probe_section(
             tls: o.tls.clone().or_else(|| t.tls.clone()),
             skip_when_active: o.skip_when_active.or(t.skip_when_active),
             liveness_interval_secs: o.liveness_interval_secs.or(t.liveness_interval_secs),
+            endpoint_check: o.endpoint_check.or(t.endpoint_check),
+            endpoint_check_timeout_ms: o.endpoint_check_timeout_ms.or(t.endpoint_check_timeout_ms),
         }),
     }
 }

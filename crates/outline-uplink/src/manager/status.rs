@@ -197,6 +197,17 @@ pub(crate) struct UplinkStatus {
     /// last known value in place rather than clearing it.
     pub(crate) cert_not_after_unix_ms: Option<u64>,
     pub(crate) last_checked: Option<Instant>,
+    /// Consecutive probe cycles in which *every* endpoint of this uplink
+    /// failed the bare-TCP reachability check (`[probe] endpoint_check`).
+    /// Zeroed the moment any endpoint answers again.
+    ///
+    /// Uplink-level rather than per-transport on purpose: the check dials a
+    /// socket, not a carrier, so its verdict is about the host both planes
+    /// share. Once the streak reaches `probe.min_failures` the manager
+    /// condemns the uplink outright instead of letting the per-wire descent
+    /// rediscover the same fact one timeout at a time — see
+    /// [`crate::manager::probe::endpoint`].
+    pub(crate) endpoint_unreachable_streak: u32,
     /// Wall-clock timestamp of the most recent probe cycle that actually
     /// ran on this uplink (i.e. NOT a cycle that exited via the
     /// activity-based skip). Used by the liveness-probe override in

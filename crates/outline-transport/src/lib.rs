@@ -186,7 +186,11 @@ pub(crate) use ws_stream::SharedConnectionHealth;
 /// failures via `find_typed::<TransportOperation>`. Kept as a thin wrapper
 /// because `outline-net` is intentionally protocol-agnostic and does not
 /// depend on the `TransportOperation` enum.
-pub(crate) async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
+///
+/// Public so the uplink probe's endpoint-reachability check can dial a bare
+/// socket the same way a real carrier dial would (same fwmark handling, same
+/// error attribution) without reaching around this crate into `outline-net`.
+pub async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
     outline_net::connect_tcp_socket(addr, fwmark)
         .await
         .with_context(|| TransportOperation::Connect { target: format!("TCP socket to {addr}") })

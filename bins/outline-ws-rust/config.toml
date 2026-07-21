@@ -303,6 +303,24 @@ max_dials = 2
 # while traffic flows). Default 300 seconds (5 minutes).
 # liveness_interval_secs = 300
 
+# Endpoint-reachability short-circuit. Before the carrier / application
+# probes run, try a bare TCP connect against every endpoint of the uplink
+# (primary + fallbacks, deduplicated by host:port plus egress options), all
+# of them concurrently. After `min_failures` cycles in which none of them
+# answers, the uplink is marked down at once instead of walking the carrier
+# cascade (h3 → h2 → h1) on each wire and rotating the whole chain — a walk
+# that, against a switched-off host, spends the full `timeout_secs` per step
+# and takes minutes to reach a conclusion every wire shares. The failing
+# endpoints are named in `last_error` (dashboard chip) and the check reports
+# as `probe="endpoint"` in the probe metrics.
+#
+# Off by default because a closed TCP port reads as "server gone": correct
+# for a host that is down, wrong for an endpoint that serves QUIC/H3 on UDP
+# with the matching TCP port shut. Enable it when every uplink endpoint
+# answers TCP — the usual case, since TLS/WS/XHTTP all need it.
+# endpoint_check = false
+# endpoint_check_timeout_ms = 2000
+
 [outline.probe.ws]
 enabled = true
 

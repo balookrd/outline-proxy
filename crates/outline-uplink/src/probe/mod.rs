@@ -5,6 +5,7 @@
 //! TCP setup lives in `transport`.
 
 pub(crate) mod dns;
+pub(crate) mod endpoint;
 pub(crate) mod http;
 mod metrics;
 mod tcp_tunnel;

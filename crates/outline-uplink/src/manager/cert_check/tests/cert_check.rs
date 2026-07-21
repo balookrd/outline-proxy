@@ -2,8 +2,9 @@
 
 use url::Url;
 
-use super::{CertEndpoint, uplink_tls_endpoints};
+use super::uplink_tls_endpoints;
 use crate::config::{CipherKind, FallbackTransport, TransportMode, UplinkConfig, UplinkTransport};
+use crate::probe::endpoint::Endpoint;
 
 fn ws_uplink(name: &str, tcp_url: &str, udp_url: &str) -> UplinkConfig {
     UplinkConfig {
@@ -73,8 +74,8 @@ fn vless_ws_fallback(host: &str) -> FallbackTransport {
     }
 }
 
-fn endpoint(host: &str, port: u16) -> CertEndpoint {
-    CertEndpoint {
+fn endpoint(host: &str, port: u16) -> Endpoint {
+    Endpoint {
         host: host.to_string(),
         port,
         fwmark: None,
