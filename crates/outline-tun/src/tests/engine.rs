@@ -54,6 +54,8 @@ fn icmp_gate_manager(suppress_when_down: bool, bypass_when_down: bool) -> Uplink
             attempts: 1,
             skip_when_active: true,
             liveness_interval: Duration::from_secs(300),
+            endpoint_check: false,
+            endpoint_check_timeout: Duration::from_millis(2000),
             ws: WsProbeConfig { enabled: false },
             http: None,
             dns: None,

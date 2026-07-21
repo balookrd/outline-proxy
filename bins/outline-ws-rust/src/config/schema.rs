@@ -698,6 +698,19 @@ pub(super) struct ProbeSection {
     /// many seconds without one. `0` disables the override; defaults to
     /// 300 (5 minutes).
     pub(super) liveness_interval_secs: Option<u64>,
+    /// Bare-TCP reachability pre-check on every endpoint of an uplink,
+    /// ahead of the carrier/application probes. After `min_failures`
+    /// cycles in which no endpoint accepts a connect, the uplink is marked
+    /// down immediately — no carrier descent, no wire-by-wire walk, which
+    /// is what turns "host switched off" from a multi-minute discovery
+    /// into a couple of cycles. Default false: a closed TCP port is read
+    /// as "server gone", which misjudges an endpoint that serves QUIC/H3
+    /// on UDP with the matching TCP port shut.
+    pub(super) endpoint_check: Option<bool>,
+    /// Per-endpoint deadline for `endpoint_check`, in milliseconds. Keep it
+    /// well under `timeout_secs`: a dead host costs the full deadline every
+    /// cycle (a blackholed SYN never draws an RST). Defaults to 2000.
+    pub(super) endpoint_check_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

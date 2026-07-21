@@ -11,7 +11,12 @@
 //!   probe the currently-targeted fallback so `last_any_wire_success` and
 //!   `effective_health` reflect "uplink is delivering on a fallback" without
 //!   needing client traffic to land on this uplink first.
+//! * [`endpoint`] — the endpoint-reachability short-circuit: when a bare TCP
+//!   connect to every endpoint of the uplink fails, condemn it at once
+//!   instead of rediscovering a dead host one carrier rank and one wire at a
+//!   time.
 
+pub(crate) mod endpoint;
 mod h3_recovery;
 mod keepalive;
 pub(crate) mod outcome;

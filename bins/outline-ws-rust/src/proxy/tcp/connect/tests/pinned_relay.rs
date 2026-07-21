@@ -24,6 +24,8 @@ fn probe_disabled() -> ProbeConfig {
         attempts: 1,
         skip_when_active: true,
         liveness_interval: std::time::Duration::from_secs(300),
+        endpoint_check: false,
+        endpoint_check_timeout: Duration::from_millis(2000),
         ws: WsProbeConfig { enabled: false },
         http: None,
         dns: None,

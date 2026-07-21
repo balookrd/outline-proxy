@@ -15,8 +15,6 @@
 //! probe semaphore or feeds the probe / runtime health signals.
 
 #[cfg(feature = "cert-check")]
-use std::collections::HashSet;
-#[cfg(feature = "cert-check")]
 use std::time::Duration;
 
 #[cfg(feature = "cert-check")]
@@ -24,8 +22,6 @@ use tokio::time::sleep;
 #[cfg(feature = "cert-check")]
 use tracing::{debug, warn};
 
-#[cfg(feature = "cert-check")]
-use crate::config::UplinkConfig;
 use crate::types::UplinkManager;
 
 /// How often the loop re-reads every uplink's endpoint certificates.
@@ -34,50 +30,13 @@ use crate::types::UplinkManager;
 #[cfg(feature = "cert-check")]
 const CERT_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// A distinct TLS endpoint an uplink dials, with the egress knobs needed to
-/// reach it the same way real traffic would.
-#[cfg(feature = "cert-check")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CertEndpoint {
-    pub(crate) host: String,
-    pub(crate) port: u16,
-    pub(crate) fwmark: Option<u32>,
-    pub(crate) ipv6_first: bool,
-}
-
 /// Collect the unique `wss`/`https` endpoints an uplink dials across every
-/// wire (primary + fallbacks), deduped by `(host, port)`. Plain `ws`/`http`
-/// and Shadowsocks wires carry no TLS certificate and contribute nothing — so
-/// a pure-Shadowsocks uplink yields an empty list and is skipped by the loop.
+/// wire (primary + fallbacks). Thin alias over the shared wire-endpoint
+/// walker in [`crate::probe::endpoint`] so this loop and the probe's
+/// reachability check can never drift on what "an endpoint of this uplink"
+/// means.
 #[cfg(feature = "cert-check")]
-pub(crate) fn uplink_tls_endpoints(uplink: &UplinkConfig) -> Vec<CertEndpoint> {
-    let mut seen: HashSet<(String, u16)> = HashSet::new();
-    let mut endpoints = Vec::new();
-    let total_wires = 1 + uplink.fallbacks.len();
-    for wire_index in 0..total_wires {
-        let Some(view) = uplink.wire_view(wire_index) else {
-            continue;
-        };
-        for url in [view.tcp_dial_url(), view.udp_dial_url()].into_iter().flatten() {
-            if !matches!(url.scheme(), "wss" | "https") {
-                continue;
-            }
-            let Some(host) = url.host_str() else {
-                continue;
-            };
-            let port = url.port_or_known_default().unwrap_or(443);
-            if seen.insert((host.to_string(), port)) {
-                endpoints.push(CertEndpoint {
-                    host: host.to_string(),
-                    port,
-                    fwmark: view.fwmark,
-                    ipv6_first: view.ipv6_first,
-                });
-            }
-        }
-    }
-    endpoints
-}
+pub(crate) use crate::probe::endpoint::wire_tls_endpoints as uplink_tls_endpoints;
 
 impl UplinkManager {
     /// Spawn the background cert-check loop: one pass immediately, then every
