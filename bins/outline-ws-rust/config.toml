@@ -270,7 +270,11 @@ listen = "[::1]:9090"
 # SO_MARK applied to sockets used by `via = "direct"` routes (both TCP connect
 # and UDP bind). Prevents direct traffic from being routed back into the TUN
 # device on hosts where all traffic is captured. Linux only; omit on other
-# platforms. Requires CAP_NET_ADMIN.
+# platforms. Requires CAP_NET_ADMIN — AND, under systemd, PrivateUsers=no:
+# setsockopt(SO_MARK) is checked against the network stack's owning (init) user
+# namespace, so with PrivateUsers=true the capability applies only inside the
+# private userns and every direct dial fails EPERM. Also add a matching
+# `ip rule fwmark <N> lookup <table>` where that traffic should egress.
 # direct_fwmark = 100
 
 # ── Probe template ──────────────────────────────────────────────────────────
@@ -483,7 +487,8 @@ weight = 1.0
 # WebSocket / no HTTP/3) — see the QUIC examples below; raw QUIC has no
 # fallback (dial failure surfaces as an uplink failure).
 tcp_mode = "h3"
-# Linux only, requires CAP_NET_ADMIN if set
+# Linux only, requires CAP_NET_ADMIN if set (and PrivateUsers=no under systemd —
+# SO_MARK fails EPERM in a private user namespace)
 # fwmark = 100
 # Prefer IPv6 addresses first for this uplink
 # ipv6_first = true

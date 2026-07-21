@@ -949,6 +949,11 @@ Requirements:
 
 - Linux only
 - `CAP_NET_ADMIN`
+- under systemd, `PrivateUsers=no`: `setsockopt(SO_MARK)` is authorized against
+  the network stack's owning (init) user namespace, so with `PrivateUsers=true`
+  the capability applies only inside the private userns and every marked dial
+  fails `EPERM` — `CAP_NET_ADMIN` alone is not enough. This applies to both
+  per-uplink `fwmark` and top-level `direct_fwmark`.
 
 ## Metrics and Dashboards
 
@@ -1282,7 +1287,7 @@ The unit includes:
 - elevated `LimitNOFILE`
 - `LimitSTACK=8M` to avoid oversized anonymous thread-stack reservations
 - a fixed `outline-ws` system user / group (provisioned by `install-client.sh`) so state files keep a stable owner across restarts and `StateDirectory=outline-ws-rust/_default` lands on a writable, unit-managed path
-- `CAP_NET_ADMIN` for `fwmark`; remove if `fwmark` is not used
+- `CAP_NET_ADMIN` for `fwmark`; remove if `fwmark` is not used. Using `fwmark` / `direct_fwmark` also requires `PrivateUsers=no` (a drop-in override) — `SO_MARK` fails `EPERM` inside the default private user namespace even with the capability held
 - `PrivateDevices=false` — required for TUN mode; harmless if TUN is not used
 - conservative systemd hardening flags
 
@@ -1314,7 +1319,7 @@ Use `debug` only during troubleshooting — connection lifecycle and transport-l
   unauthenticated peers from pinning sockets). These ceilings are compiled
   in and not config-tunable.
 - HTTP/3 requires public UDP reachability on the selected port.
-- `fwmark` works only on Linux and requires `CAP_NET_ADMIN` or root.
+- `fwmark` works only on Linux and requires `CAP_NET_ADMIN` or root; under a user-namespaced systemd sandbox it additionally requires `PrivateUsers=no` (`SO_MARK` is checked against the init user namespace).
 - TUN mode requires `/dev/net/tun` access on the host (`PrivateDevices=false`).
 
 ## Testing

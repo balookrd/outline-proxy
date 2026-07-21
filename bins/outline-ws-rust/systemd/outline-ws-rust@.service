@@ -20,6 +20,16 @@ RestartSec=3s
 
 # If OUTLINE_FWMARK is configured, keep CAP_NET_ADMIN. Otherwise these two
 # lines can be removed.
+#
+# fwmark (OUTLINE_FWMARK / direct_fwmark) ALSO requires `PrivateUsers=no`:
+# setsockopt(SO_MARK) is authorized against the user namespace that OWNS the
+# network stack (the init ns), and under PrivateUsers=true the service holds
+# CAP_NET_ADMIN only inside its private userns — so every SO_MARK fails EPERM
+# and every direct dial dies instantly while non-fwmark dials keep working
+# (observed 2026-07-19: all TUN direct traffic down on a host that enabled
+# direct_fwmark, uplink dials unaffected). Override via a drop-in:
+#   [Service]
+#   PrivateUsers=no
 AmbientCapabilities=CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_ADMIN
 
@@ -52,6 +62,9 @@ UMask=0077
 PrivateTmp=true
 # TUN support needs access to /dev/net/tun on the host.
 PrivateDevices=false
+# Set PrivateUsers=no via a drop-in when fwmark / direct_fwmark is used —
+# SO_MARK fails EPERM under a private user namespace (see the CAP_NET_ADMIN
+# note above).
 PrivateUsers=true
 ProtectSystem=strict
 ProtectHome=true
