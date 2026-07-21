@@ -54,6 +54,8 @@ fn make_probe() -> ProbeConfig {
         attempts: 1,
         skip_when_active: true,
         liveness_interval: Duration::from_secs(300),
+        endpoint_check: false,
+        endpoint_check_timeout: Duration::from_millis(2000),
         ws: WsProbeConfig { enabled: false },
         http: None,
         dns: None,

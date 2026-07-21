@@ -24,6 +24,8 @@ fn probe(interval: Option<u64>, timeout: Option<u64>) -> ProbeSection {
         tls: None,
         skip_when_active: None,
         liveness_interval_secs: None,
+        endpoint_check: None,
+        endpoint_check_timeout_ms: None,
     }
 }
 

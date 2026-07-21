@@ -238,6 +238,8 @@ fn probe_cfg_for_wire_probe() -> ProbeConfig {
         attempts: 1,
         skip_when_active: true,
         liveness_interval: Duration::from_secs(300),
+        endpoint_check: false,
+        endpoint_check_timeout: Duration::from_millis(2000),
         ws: WsProbeConfig { enabled: true },
         http: None,
         dns: None,

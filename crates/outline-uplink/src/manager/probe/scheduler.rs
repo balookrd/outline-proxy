@@ -8,6 +8,7 @@ use tracing::{debug, warn};
 
 use crate::config::{ProbeConfig, TransportMode};
 
+use super::super::super::probe::endpoint::unreachable_uplink_endpoints;
 use super::super::super::probe::probe_uplink;
 use super::super::super::selection::cooldown_active;
 use super::super::super::types::{TransportKind, Uplink, UplinkManager};
@@ -15,6 +16,18 @@ use super::super::status::UplinkStatus;
 use super::outcome::ProbeOutcome;
 use super::warm_tcp::WarmTcpProbeSlot;
 use super::warm_udp::WarmUdpProbeSlot;
+
+/// What one uplink's probe task produced this cycle.
+///
+/// The endpoint-reachability check runs ahead of the expensive stages and can
+/// end the cycle on its own, so the task's result is no longer just a probe
+/// outcome — it is either "the host answered nothing, here is the endpoint
+/// list" or a regular probe result.
+pub(super) enum ProbeCycle {
+    /// Every endpoint failed a bare TCP connect; the heavy probe never ran.
+    EndpointUnreachable(String),
+    Probed(Result<ProbeOutcome>),
+}
 
 pub(super) fn should_skip_probe_cycle_for_recent_activity(
     status: &UplinkStatus,
@@ -263,6 +276,30 @@ impl UplinkManager {
                     .acquire_owned()
                     .await
                     .expect("probe execution semaphore closed");
+                // Endpoint-reachability short-circuit, ahead of every
+                // expensive stage: one bare TCP connect per distinct
+                // `host:port` of the uplink, all of them concurrent, bounded
+                // by `endpoint_check_timeout`. A host that is simply gone is
+                // answered here in ~one short deadline instead of being
+                // rediscovered rank by rank and wire by wire, each step
+                // paying the full `probe.timeout`.
+                if probe.endpoint_check
+                    && let Some(endpoints) = unreachable_uplink_endpoints(
+                        &dns_cache,
+                        &group_name,
+                        &uplink,
+                        probe.endpoint_check_timeout,
+                    )
+                    .await
+                {
+                    return (
+                        index,
+                        uplink,
+                        ProbeCycle::EndpointUnreachable(endpoints),
+                        effective_tcp_mode,
+                        effective_udp_mode,
+                    );
+                }
                 // Retry the probe up to `attempts` times within one cycle.
                 // As soon as an attempt reports a *fully* healthy outcome we
                 // accept it and stop; a partial failure (a plane's
@@ -301,7 +338,13 @@ impl UplinkManager {
                         sleep(Duration::from_millis(500)).await;
                     }
                 }
-                (index, uplink, outcome, effective_tcp_mode, effective_udp_mode)
+                (
+                    index,
+                    uplink,
+                    ProbeCycle::Probed(outcome),
+                    effective_tcp_mode,
+                    effective_udp_mode,
+                )
             });
         }
 
@@ -309,11 +352,36 @@ impl UplinkManager {
         let mut h3_udp_recovery_needed: Vec<(usize, Uplink)> = Vec::new();
 
         while let Some(joined) = tasks.join_next().await {
-            let (index, uplink, outcome, effective_tcp_mode, effective_udp_mode) = match joined {
+            let (index, uplink, cycle, effective_tcp_mode, effective_udp_mode) = match joined {
                 Ok(value) => value,
                 Err(error) => {
                     warn!(error = %error, "probe task failed");
                     continue;
+                },
+            };
+            let outcome = match cycle {
+                ProbeCycle::EndpointUnreachable(endpoints) => {
+                    // The host answered nothing at all. Condemning the uplink
+                    // (once the streak reaches `min_failures`) is the whole
+                    // point; the fallback-wire walk and the carrier-recovery
+                    // re-probes below are skipped because every wire shares
+                    // the endpoints we just found dead. The standby pools are
+                    // still cleared — they hold sockets to that host.
+                    self.note_endpoint_unreachable(index, &uplink, &endpoints);
+                    self.clear_standby(index, TransportKind::Tcp).await;
+                    if uplink.supports_udp() {
+                        self.clear_standby(index, TransportKind::Udp).await;
+                    }
+                    continue;
+                },
+                ProbeCycle::Probed(outcome) => {
+                    // At least one endpoint answered (or the check is off):
+                    // the uplink is not host-dead, so let the regular probe
+                    // verdict own health from here.
+                    if self.inner.probe.endpoint_check {
+                        self.note_endpoint_reachable(index);
+                    }
+                    outcome
                 },
             };
             let mut refill_tcp = false;
