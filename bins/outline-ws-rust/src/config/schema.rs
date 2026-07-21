@@ -71,7 +71,11 @@ pub(crate) struct ConfigFile {
     /// Default `true`; set `false` to let privacy-extension rotation pick the
     /// source. Linux only.
     pub(super) prefer_public_ipv6_src: Option<bool>,
-    /// SO_MARK for direct-route sockets. Linux only.
+    /// SO_MARK for direct-route sockets. Linux only. Needs `CAP_NET_ADMIN`
+    /// **and**, under systemd, `PrivateUsers=no`: `setsockopt(SO_MARK)` is
+    /// authorized against the network stack's owning (init) user namespace, so
+    /// with `PrivateUsers=true` the capability applies only inside the private
+    /// userns and every direct dial fails `EPERM`.
     pub(super) direct_fwmark: Option<u32>,
     /// Interface whose current global /64 seeds random source addresses for
     /// direct-route IPv6 dials (rotates the source across the prefix; follows
