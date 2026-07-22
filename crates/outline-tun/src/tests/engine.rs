@@ -268,6 +268,28 @@ async fn stale_health_verdict_suppresses_even_though_an_uplink_is_flagged_health
     );
 }
 
+/// A daemon that has just started has not had time to stamp anything, and
+/// `selection_health` can already read healthy through the fallback-bootstrap
+/// path — so without a startup grace the freshness rule would silence a
+/// perfectly fine node for its first window. cloud3 withheld two echo replies
+/// exactly this way right after a restart on 2026-07-22.
+#[tokio::test(start_paused = true)]
+async fn a_freshly_started_daemon_answers_before_its_first_probe_completes() {
+    let manager = icmp_gate_manager_with_probes(true, false, true);
+    let routing = TunRouting::from_single_manager(manager.clone());
+    let packet = ipv4_echo_request_to([8, 8, 8, 8]);
+
+    // Healthy but never probed: no `last_checked`, no `last_active`.
+    manager.test_set_tcp_health(0, true, 50).await;
+
+    assert!(
+        echo_reply_suppressed_for_down_group(&routing, &packet)
+            .await
+            .is_none(),
+        "a stamp cannot be stale before there was time to take one",
+    );
+}
+
 /// Real traffic counts as evidence too — an uplink busy enough to skip probe
 /// cycles must not be mistaken for a stalled daemon.
 #[tokio::test(start_paused = true)]

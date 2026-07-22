@@ -338,6 +338,16 @@ impl UplinkManager {
         window: Duration,
     ) -> bool {
         let now = Instant::now();
+        // Startup grace: a stamp cannot be stale before there has been time
+        // to take one. `selection_health` can already report healthy through
+        // the fallback-bootstrap path while the first probe cycle is still in
+        // flight, so without this a freshly restarted daemon is indistinguish-
+        // able from a wedged one and goes silent for its first window —
+        // observed on cloud3, which withheld two echo replies right after a
+        // restart.
+        if now.saturating_duration_since(self.inner.created_at) < window {
+            return true;
+        }
         let scope = self.inner.load_balancing.routing_scope;
         let fresh = |stamp: Option<Instant>| {
             stamp.is_some_and(|t| now.saturating_duration_since(t) <= window)
