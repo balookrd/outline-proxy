@@ -633,6 +633,13 @@ pub(super) struct UplinkGroupSection {
     /// is down — lets external watchdogs detect a dead tunnel by pinging
     /// through it. Default: `false` (always reply).
     pub(super) tun_suppress_icmp_reply_when_down: Option<bool>,
+    /// How fresh the group's health verdict must be for that echo reply to
+    /// still count as a liveness signal, in seconds. `healthy` is sticky, so
+    /// a daemon whose probe loop died would otherwise answer `ping` forever
+    /// off a verdict nobody revisited. Unset derives the window from the
+    /// probe schedule (`max(3 x interval, liveness_interval + 60s, 60s)`);
+    /// `0` drops the freshness requirement. Ignored without probes.
+    pub(super) tun_icmp_liveness_window_secs: Option<u64>,
     /// Dispatch traffic routed to this group `direct` (bypassing the
     /// tunnel) while the group has no healthy uplink. Group-level analogue
     /// of a `fallback_direct = true` route fallback; explicit `[[route]]`
@@ -851,6 +858,9 @@ pub(super) struct LoadBalancingSection {
     /// every uplink in the (implicit) group is down. See the
     /// same-named field on `UplinkGroupSection`. Default: `false`.
     pub(super) tun_suppress_icmp_reply_when_down: Option<bool>,
+    /// Freshness window for the health verdict behind that echo reply, in
+    /// seconds. See the same-named field on `UplinkGroupSection`.
+    pub(super) tun_icmp_liveness_window_secs: Option<u64>,
     /// Dispatch traffic `direct` (bypassing the tunnel) while the
     /// (implicit) group has no healthy uplink. See the same-named
     /// field on `UplinkGroupSection`. Default: `false`.

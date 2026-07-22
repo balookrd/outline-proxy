@@ -879,6 +879,7 @@ Capabilities:
 - local IPv4 ICMP echo reply (`ping`) handling
 - local IPv6 ICMPv6 echo reply handling, with source fragmentation to the IPv6 minimum MTU when needed
 - optional group-health gating of those echo replies (`tun_suppress_icmp_reply_when_down` on the uplink group): pings routed to a group stop being answered while the group has no healthy uplink, so an external watchdog can detect a dead tunnel
+- that gate also demands the health verdict be *fresh* (`tun_icmp_liveness_window_secs`). The reply is generated locally — the ping never leaves the host — so answering it only proves this loop ran, and `healthy` is sticky: a daemon whose probe loop has died keeps its last verdict forever and would go on answering while carrying no traffic. With the window, some healthy uplink must also have seen real traffic or completed a probe cycle inside it; otherwise the reply is withheld and counted as `icmp_reply_suppressed_stale`. Unset derives the window from the probe schedule (`max(3 × interval, liveness_interval + 60s, 60s)`); `0` restores the health-flag-only behaviour, and the freshness half is skipped entirely for a group with no probes configured
 - IPv6 UDP and ICMPv6 handling across supported extension-header paths
 - per-flow uplink transport
 - flow idle cleanup

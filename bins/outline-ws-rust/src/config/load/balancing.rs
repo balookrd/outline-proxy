@@ -174,6 +174,11 @@ pub(super) fn load_balancing_config(
         tun_suppress_icmp_reply_when_down: lb
             .and_then(|l| l.tun_suppress_icmp_reply_when_down)
             .unwrap_or(false),
+        // Unset derives the window from the probe schedule; an explicit `0`
+        // keeps the legacy "health flag alone decides" behaviour.
+        tun_icmp_liveness_window: lb
+            .and_then(|l| l.tun_icmp_liveness_window_secs)
+            .map(Duration::from_secs),
         // Default: `false` — a group with no healthy uplinks keeps traffic
         // parked on the group (legacy behaviour). Opting in turns a fully
         // down group into a live `direct` bypass until any uplink recovers.
