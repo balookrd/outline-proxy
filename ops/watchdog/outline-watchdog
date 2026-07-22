@@ -1,0 +1,56 @@
+#!/bin/bash
+# Restart an outline unit whose runtime has wedged.
+#
+# systemd watches the process, not whether it still serves anyone. A
+# memory-cgroup high-throttle livelock (worker stuck in D on
+# mem_cgroup_handle_over_high, oom_kill=0) leaves the unit `active` with its
+# ports in LISTEN and a piling Recv-Q while the async runtime is frozen —
+# observed on cloud3 on 2026-07-22, unnoticed for 3.5 hours. The only
+# liveness signal that matches what a user experiences is whether the unit
+# still answers its own metrics endpoint, so that is what this checks.
+#
+# Usage: outline-watchdog <unit> [url] [threshold]
+set -u
+
+unit="${1:?usage: outline-watchdog <unit> [url] [threshold]}"
+default_url=""
+case "$unit" in
+    outline-ws-rust*) default_url="http://127.0.0.1:9091/metrics" ;;
+    outline-ss-rust*) default_url="http://127.0.0.1:9090/metrics" ;;
+esac
+url="${2:-$default_url}"
+threshold="${3:-3}"
+
+if [ -z "$url" ]; then
+    echo "outline-watchdog: no metrics URL known for $unit" >&2
+    exit 2
+fi
+
+# A unit that is not running is systemd's business, not ours — restarting it
+# here would fight an operator's `systemctl stop` during maintenance.
+systemctl is-active --quiet "$unit" || exit 0
+
+state_dir="/run/outline-watchdog"
+state="$state_dir/${unit}.misses"
+mkdir -p "$state_dir"
+
+if curl -fsS -m 5 -o /dev/null "$url"; then
+    echo 0 >"$state"
+    exit 0
+fi
+
+misses=$(( $(cat "$state" 2>/dev/null || echo 0) + 1 ))
+echo "$misses" >"$state"
+
+if [ "$misses" -lt "$threshold" ]; then
+    logger -t outline-watchdog -p daemon.warning \
+        "$unit did not answer $url ($misses/$threshold)"
+    exit 0
+fi
+
+logger -t outline-watchdog -p daemon.err \
+    "$unit unresponsive $misses checks in a row — restarting"
+# Clear the counter before restarting: if the restart itself hangs, the next
+# tick starts a fresh count instead of restarting again straight away.
+echo 0 >"$state"
+systemctl restart "$unit"

@@ -1,0 +1,11 @@
+[Unit]
+Description=Liveness watchdog for %i
+# Not Requires=: the watchdog must still run (and no-op) while %i is stopped.
+After=%i.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/outline-watchdog %i
+# The check itself is a curl and a counter file; anything slower than this
+# means the host is in trouble, and the next tick will pick it up.
+TimeoutStartSec=30
