@@ -148,6 +148,7 @@ async fn build_manager(
             tcp_symmetric_replay_enabled: true,
             tcp_symmetric_replay_max_bytes: 1_048_576,
             tun_suppress_icmp_reply_when_down: false,
+            tun_icmp_liveness_window: None,
             bypass_when_down: false,
         },
         std::sync::Arc::new(outline_transport::DnsCache::default()),

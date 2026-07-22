@@ -52,6 +52,30 @@ impl UplinkManager {
         self.inner.read_status(index).tcp.healthy
     }
 
+    /// Test helper: stamp the "a probe cycle completed just now" marker that
+    /// [`Self::has_recent_liveness_evidence`] reads. `test_set_*_health`
+    /// deliberately does not touch it, so a test can build the state a
+    /// half-stuck daemon is in — health flagged healthy, nothing refreshing it.
+    #[doc(hidden)]
+    pub async fn test_mark_checked_now(&self, index: usize) {
+        self.inner.with_status_mut(index, |status| {
+            status.last_checked = Some(tokio::time::Instant::now());
+        });
+    }
+
+    /// Test helper: stamp "real traffic just moved on this transport", the
+    /// other evidence [`Self::has_recent_liveness_evidence`] accepts.
+    #[doc(hidden)]
+    pub async fn test_mark_active_now(&self, index: usize, transport: crate::TransportKind) {
+        self.inner.with_status_mut(index, |status| {
+            let now = tokio::time::Instant::now();
+            match transport {
+                crate::TransportKind::Tcp => status.tcp.last_active = Some(now),
+                crate::TransportKind::Udp => status.udp.last_active = Some(now),
+            }
+        });
+    }
+
     /// Test helper: whether uplink `index` is administratively disabled
     /// (operator on/off), i.e. the value the snapshot exposes as
     /// `admin_disabled`.

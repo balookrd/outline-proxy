@@ -397,6 +397,7 @@ name = "example.com"
 # vless_udp_session_idle_secs = 60
 # vless_udp_janitor_interval_secs = 15
 # tun_suppress_icmp_reply_when_down = false  # stop answering TUN pings while every uplink is down
+# tun_icmp_liveness_window_secs = 0        # ...and while nothing refreshed that verdict (unset = derive from probe schedule)
 # bypass_when_down = false          # route traffic direct while every uplink is down
 
 # ── Uplink groups ───────────────────────────────────────────────────────────
@@ -452,6 +453,15 @@ runtime_failure_window_secs = 60
 # suppressed right after startup until the first probe confirms an uplink.
 # Default `false` — always reply, legacy behaviour.
 # tun_suppress_icmp_reply_when_down = false
+# Freshness requirement layered on top of that gate. The echo reply is
+# generated locally, so answering it proves only that the TUN read loop
+# ran — and `healthy` is sticky, so a daemon whose probe loop died keeps
+# advertising its last verdict and would answer pings forever while moving
+# no traffic. With this set, a healthy uplink must ALSO have seen real
+# traffic or completed a probe cycle inside the window. Unset derives it
+# from the probe schedule (max(3 x interval, liveness_interval + 60s, 60s));
+# 0 disables the requirement. Ignored for a group with no probes.
+# tun_icmp_liveness_window_secs = 360
 # Bypass the tunnel while this group has no healthy uplink: traffic whose route
 # resolves to this group goes `direct` (host's own networking stack, with
 # `direct_fwmark` applied) instead of failing on a dead group. Re-evaluated
