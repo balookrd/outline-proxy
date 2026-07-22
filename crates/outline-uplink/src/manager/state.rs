@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex as SyncMutex;
 use tokio::sync::{Notify, RwLock, Semaphore, watch};
+use tokio::time::Instant;
 
 use crate::config::{LoadBalancingConfig, ProbeConfig};
 use crate::routing_key::RoutingKey;
@@ -54,6 +55,13 @@ pub(crate) struct UplinkManagerInner {
     /// Name of the group this manager represents. Surfaced as the `group`
     /// Prometheus label on every uplink-scoped metric emitted from within.
     pub(crate) group_name: String,
+    /// When this manager was built. Read only by the liveness-evidence check:
+    /// a status stamp cannot be "stale" before there has been time to take
+    /// one, so the freshness rule stays off until the process has been up for
+    /// a full window. Without it a fresh start looks exactly like a wedged
+    /// daemon — `healthy` can already read true through the fallback-bootstrap
+    /// path while no probe has completed yet.
+    pub(crate) created_at: Instant,
     pub(crate) uplinks: Vec<Uplink>,
     pub(crate) probe: ProbeConfig,
     pub(crate) load_balancing: LoadBalancingConfig,

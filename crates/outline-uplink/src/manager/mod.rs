@@ -238,6 +238,7 @@ impl UplinkManager {
         Ok(Self {
             inner: Arc::new(UplinkManagerInner {
                 group_name,
+                created_at: tokio::time::Instant::now(),
                 uplinks,
                 probe,
                 load_balancing,
