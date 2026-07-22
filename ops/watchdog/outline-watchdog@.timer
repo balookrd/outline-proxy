@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll the liveness of %i every minute
+
+[Timer]
+# Give the unit time to come up after a boot before judging it.
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
+Unit=outline-watchdog@%i.service
+
+[Install]
+WantedBy=timers.target
