@@ -313,6 +313,58 @@ impl UplinkManager {
             })
     }
 
+    /// Like [`Self::has_any_healthy`], but additionally demands *fresh
+    /// evidence that this process is still doing the work* — a healthy uplink
+    /// whose status was updated within `window`.
+    ///
+    /// `healthy` is sticky: it is written by the probe loop and by the
+    /// dispatch path, and nothing ages it out. A daemon whose probe loop has
+    /// died (or whose runtime is wedged in a way that still services the TUN
+    /// read loop) therefore keeps reporting the last verdict it ever reached,
+    /// forever. Callers that answer an external liveness question — the local
+    /// ICMP echo reply is the one that matters, since a router's ping-check
+    /// steers real traffic on it — need the stronger claim: *someone updated
+    /// this recently*.
+    ///
+    /// Evidence is either real traffic (`last_active`) or a completed probe
+    /// cycle (`last_checked`, stamped when a cycle finishes, so a cycle that
+    /// starts and hangs never counts). Uplinks with no probes configured have
+    /// no probe stamp to offer, which is why the caller must skip this gate
+    /// entirely when probing is off — see
+    /// [`crate::config::ProbeConfig::enabled`].
+    pub async fn has_recent_liveness_evidence(
+        &self,
+        transport: TransportKind,
+        window: Duration,
+    ) -> bool {
+        let now = Instant::now();
+        let scope = self.inner.load_balancing.routing_scope;
+        let fresh = |stamp: Option<Instant>| {
+            stamp.is_some_and(|t| now.saturating_duration_since(t) <= window)
+        };
+        self.inner
+            .uplinks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.inner.admin_enabled(*index))
+            .filter(|(_, u)| supports_transport_for_scope(u, transport, scope))
+            .any(|(index, _)| {
+                self.inner.with_status(index, |status| {
+                    if !selection_health(
+                        status,
+                        &self.inner.uplinks[index],
+                        transport,
+                        now,
+                        scope,
+                        &self.inner.load_balancing,
+                    ) {
+                        return false;
+                    }
+                    fresh(status.of(transport).last_active) || fresh(status.last_checked)
+                })
+            })
+    }
+
     pub async fn active_uplink_index_for_transport(
         &self,
         transport: TransportKind,

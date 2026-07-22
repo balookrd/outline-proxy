@@ -362,11 +362,11 @@ async fn tun_read_loop(
                 }
             },
             PacketDisposition::IcmpEchoRequest => {
-                if echo_reply_suppressed_for_down_group(&routing, packet).await {
+                if let Some(reason) = echo_reply_suppressed_for_down_group(&routing, packet).await {
                     metrics::record_tun_packet(
                         "up",
                         ip_family_name(version_nibble),
-                        "icmp_reply_suppressed",
+                        reason.metric_outcome(),
                     );
                     continue;
                 }
@@ -479,39 +479,98 @@ async fn dispatch_udp_gso_superpacket(udp_engine: &TunUdpEngine, packet: &[u8], 
     }
 }
 
-/// Group-health gate for the local ICMP echo reply.
+/// Why a local ICMP echo reply was withheld. Separate variants because the
+/// two say different things to whoever is pinging: one means "the uplinks are
+/// down", the other "this daemon can no longer vouch for anything".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EchoSuppression {
+    /// No uplink in the group is healthy.
+    NoHealthyUplink,
+    /// Some uplink is still *flagged* healthy, but nothing has refreshed that
+    /// verdict inside the liveness window — no traffic, no completed probe
+    /// cycle. The flag is sticky, so this is what a half-stuck daemon looks
+    /// like from the outside.
+    StaleEvidence,
+}
+
+impl EchoSuppression {
+    pub(crate) fn metric_outcome(self) -> &'static str {
+        match self {
+            Self::NoHealthyUplink => "icmp_reply_suppressed",
+            Self::StaleEvidence => "icmp_reply_suppressed_stale",
+        }
+    }
+}
+
+/// Liveness gate for the local ICMP echo reply.
 ///
-/// Returns `true` when the echo request's destination routes to a group
-/// that opted into `tun_suppress_icmp_reply_when_down` and that group
-/// currently has no healthy uplink on either transport. An echo request has
-/// no transport of its own, so it resolves with
-/// `resolve_any_transport` and gates on both — unlike a TCP/UDP flow, which
-/// scopes the same check to the transport it needs. Direct/drop routes and
-/// unparseable destinations never suppress; the reply builder remains the
-/// sole validator for malformed packets.
-async fn echo_reply_suppressed_for_down_group(routing: &TunRouting, packet: &[u8]) -> bool {
-    let Some(destination) = icmp_echo_destination(packet) else {
-        return false;
-    };
+/// Returns `Some(reason)` when the echo request's destination routes to a
+/// group that opted into `tun_suppress_icmp_reply_when_down` and that group
+/// cannot currently vouch for the tunnel. An echo request has no transport of
+/// its own, so it resolves with `resolve_any_transport` and gates on both —
+/// unlike a TCP/UDP flow, which scopes the same check to the transport it
+/// needs. Direct/drop routes and unparseable destinations never suppress; the
+/// reply builder remains the sole validator for malformed packets.
+///
+/// Two conditions withhold the reply. The uplinks being down is the obvious
+/// one. The second matters because this reply is generated locally — the ping
+/// never leaves the host — so answering it proves only that *this loop* ran.
+/// A daemon whose probe loop has died keeps its last `healthy` verdict
+/// forever (nothing ages it out) and would go on answering `ping` while
+/// carrying no traffic at all, which is precisely the false green a router's
+/// ping-check must not get. So a stale verdict is treated as no verdict:
+/// something must have refreshed it — real traffic or a completed probe cycle
+/// — inside the liveness window.
+///
+/// The freshness half is skipped when the group has no probes configured
+/// (there would be no stamp to age) or when the operator sets the window to
+/// zero.
+async fn echo_reply_suppressed_for_down_group(
+    routing: &TunRouting,
+    packet: &[u8],
+) -> Option<EchoSuppression> {
+    let destination = icmp_echo_destination(packet)?;
     // Port 0: policy routing matches on CIDR prefixes only.
     let target = ip_to_target(destination, 0);
     let TunRoute::Group { name, manager } = routing.resolve_any_transport(&target).await else {
-        return false;
+        return None;
     };
     if !manager.load_balancing().tun_suppress_icmp_reply_when_down {
-        return false;
+        return None;
     }
-    if manager.has_any_healthy(outline_uplink::TransportKind::Tcp).await
-        || manager.has_any_healthy(outline_uplink::TransportKind::Udp).await
+    if !(manager.has_any_healthy(outline_uplink::TransportKind::Tcp).await
+        || manager.has_any_healthy(outline_uplink::TransportKind::Udp).await)
     {
-        return false;
+        debug!(
+            group = %name,
+            destination = %destination,
+            "suppressing local ICMP echo reply: no healthy uplink in group"
+        );
+        return Some(EchoSuppression::NoHealthyUplink);
+    }
+    let window = manager
+        .load_balancing()
+        .tun_icmp_liveness_window
+        .unwrap_or_else(|| manager.probe_config().liveness_evidence_window());
+    if window.is_zero() || !manager.probe_config().enabled() {
+        return None;
+    }
+    if manager
+        .has_recent_liveness_evidence(outline_uplink::TransportKind::Tcp, window)
+        .await
+        || manager
+            .has_recent_liveness_evidence(outline_uplink::TransportKind::Udp, window)
+            .await
+    {
+        return None;
     }
     debug!(
         group = %name,
         destination = %destination,
-        "suppressing local ICMP echo reply: no healthy uplink in group"
+        window_secs = window.as_secs(),
+        "suppressing local ICMP echo reply: health verdict is stale, this daemon is not working"
     );
-    true
+    Some(EchoSuppression::StaleEvidence)
 }
 
 fn spawn_tun_defragmenter_cleanup(defragmenter: Weak<Mutex<TunDefragmenter>>) {

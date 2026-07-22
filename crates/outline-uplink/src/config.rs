@@ -542,6 +542,26 @@ impl ProbeConfig {
             || self.tcp.is_some()
             || self.tls.is_some()
     }
+
+    /// How stale the newest status stamp on an uplink may get before its
+    /// `healthy` verdict should be treated as unproven rather than current.
+    ///
+    /// `healthy` is sticky — nothing ages it out — so a daemon whose probe
+    /// loop has stopped keeps advertising its last verdict indefinitely. Any
+    /// caller answering an external liveness question needs a bound on how
+    /// old that verdict may be; this derives one from the probe schedule
+    /// instead of asking the operator to keep a second number in sync.
+    ///
+    /// Sized off `liveness_interval`, not `interval`: the activity-based skip
+    /// legitimately holds probe cycles back on a busy uplink until the
+    /// liveness override forces one, so anything tighter would call a
+    /// perfectly healthy uplink stale. The extra minute covers a cycle that
+    /// is slow rather than absent.
+    pub fn liveness_evidence_window(&self) -> Duration {
+        let by_interval = self.interval.saturating_mul(3);
+        let by_liveness = self.liveness_interval.saturating_add(Duration::from_secs(60));
+        by_interval.max(by_liveness).max(Duration::from_secs(60))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -885,6 +905,24 @@ pub struct LoadBalancingConfig {
     /// Default: `false` — echo replies are unconditional, preserving the
     /// legacy behaviour.
     pub tun_suppress_icmp_reply_when_down: bool,
+    /// How fresh the group's health verdict must be for the local ICMP echo
+    /// reply (above) to still count as a liveness signal.
+    ///
+    /// Without this the reply only asks "is some uplink flagged healthy",
+    /// and that flag is sticky: a daemon whose probe loop died — or whose
+    /// runtime is wedged in a way that still services the TUN read loop —
+    /// answers `ping` forever off a verdict nobody has revisited, so a
+    /// router's ping-check keeps steering traffic into a process that is no
+    /// longer working. With a window set, the reply additionally requires
+    /// that some healthy uplink saw real traffic or completed a probe cycle
+    /// within it.
+    ///
+    /// `None` derives the window from the probe schedule
+    /// ([`ProbeConfig::liveness_evidence_window`]); `Some(ZERO)` disables the
+    /// freshness requirement and restores the health-flag-only behaviour.
+    /// Ignored entirely when the group has no probes configured — there
+    /// would be no stamp to age.
+    pub tun_icmp_liveness_window: Option<Duration>,
     /// Bypass the tunnel while this group has no healthy uplink: traffic
     /// whose route resolves to this group is dispatched `direct` (out the
     /// host's own networking stack, with `direct_fwmark` applied where
