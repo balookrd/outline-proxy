@@ -3,6 +3,7 @@
 //! The browser talks only to this listener. Per-instance bearer tokens stay in
 //! the process config and are injected server-side when proxying to `/control`.
 
+mod auth;
 mod handlers;
 mod proxy;
 mod tls;
@@ -11,7 +12,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use axum::{
-    Router,
+    Router, middleware,
     response::Redirect,
     routing::{get, patch, post},
 };
@@ -29,6 +30,9 @@ pub(super) struct DashboardState {
     pub(super) refresh_interval_secs: u64,
     pub(super) instances: Arc<[DashboardInstanceConfig]>,
     pub(super) tls_connector: TlsConnector,
+    /// Optional shared secret guarding the whole listener. `None` keeps the
+    /// historical unauthenticated behaviour for loopback deployments.
+    pub(super) token: Option<Arc<str>>,
 }
 
 pub(in crate::server) fn spawn_dashboard_server(config: DashboardConfig, shutdown: ShutdownSignal) {
@@ -46,16 +50,26 @@ async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()
     info!(
         listen = %config.listen,
         instances = config.instances.len(),
+        authenticated = config.token.is_some(),
         "dashboard server started"
     );
+    auth::warn_if_unauthenticated_exposure(config.listen, config.token.is_some());
 
     let state = DashboardState {
         request_timeout_secs: config.request_timeout_secs,
         refresh_interval_secs: config.refresh_interval_secs,
         instances: Arc::from(config.instances),
         tls_connector: tls::connector(),
+        token: config.token.map(Arc::from),
     };
 
+    axum::serve(listener, build_router(state))
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
+        .await
+        .context("dashboard server exited unexpectedly")
+}
+
+fn build_router(state: DashboardState) -> Router {
     let router = Router::new()
         .route("/", get(|| async { Redirect::temporary("/dashboard") }))
         .route("/dashboard", get(handlers::dashboard_page))
@@ -69,11 +83,12 @@ async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()
         .route("/dashboard/api/users/{id}/access-urls", get(handlers::get_user_access_urls))
         .route("/dashboard/api/users/{id}/block", post(handlers::block_user))
         .route("/dashboard/api/users/{id}/unblock", post(handlers::unblock_user))
-        .fallback(handlers::not_found)
-        .with_state(state);
+        .fallback(handlers::not_found);
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await
-        .context("dashboard server exited unexpectedly")
+    let router = if state.token.is_some() {
+        router.layer(middleware::from_fn_with_state(state.clone(), auth::require_dashboard_auth))
+    } else {
+        router
+    };
+    router.with_state(state)
 }

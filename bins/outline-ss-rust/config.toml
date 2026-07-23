@@ -58,11 +58,15 @@ path = "/metrics"
 # token_file = "/etc/outline-ss-rust/control.token"
 
 # Optional browser UI on a separate listener. It proxies to the configured
-# control instances, keeping bearer tokens server-side.
+# control instances, keeping bearer tokens server-side. Reaching it is
+# equivalent to holding every one of those tokens, so keep it on loopback.
+# Off loopback, set token / token_file below (Bearer, or HTTP Basic with the
+# token as the password) and/or front it with an authenticating proxy.
 # [dashboard]
 # listen = "127.0.0.1:7002"
 # request_timeout_secs = 15
 # refresh_interval_secs = 10
+# token_file = "/etc/outline-ss-rust/dashboard.token"
 #
 # [[dashboard.instances]]
 # name = "local"
