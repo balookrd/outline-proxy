@@ -51,13 +51,27 @@ struct Entry {
     alias: Arc<str>,
 }
 
+/// Every network sharing one prefix length, sorted ascending by masked network
+/// address. Within a group all networks are the same size and disjoint, so an
+/// address can match at most one of them — which is what makes the binary
+/// search in [`IpAliasTable::resolve`] exact rather than a range probe.
+#[derive(Debug, Clone)]
+struct PrefixGroup {
+    prefix: u8,
+    nets: Vec<(u128, Arc<str>)>,
+}
+
 /// Longest-prefix source-IP → alias lookup table. Separate v4/v6 buckets, each
-/// sorted by descending prefix so [`Self::resolve`] returns the most specific
-/// match first.
+/// a list of prefix-length groups ordered longest-first, so [`Self::resolve`]
+/// returns the most specific match.
+///
+/// Lookup cost is `O(G · log n)`, where `G` is the number of *distinct* prefix
+/// lengths in the config (bounded by 33 for IPv4 / 129 for IPv6, and in
+/// practice a handful) — not `O(n)` over every configured subnet.
 #[derive(Debug, Clone, Default)]
 pub struct IpAliasTable {
-    v4: Vec<Entry>,
-    v6: Vec<Entry>,
+    v4: Vec<PrefixGroup>,
+    v6: Vec<PrefixGroup>,
 }
 
 impl IpAliasTable {
@@ -104,9 +118,10 @@ impl IpAliasTable {
                 });
             }
         }
-        v4.sort_by_key(|e| std::cmp::Reverse(e.prefix));
-        v6.sort_by_key(|e| std::cmp::Reverse(e.prefix));
-        Ok(Self { v4, v6 })
+        Ok(Self {
+            v4: group_by_prefix(v4),
+            v6: group_by_prefix(v6),
+        })
     }
 
     /// The alias whose subnet most specifically contains `ip`, or `None`.
@@ -121,15 +136,40 @@ impl IpAliasTable {
             IpAddr::V4(v4) => (u32::from(v4) as u128, 32u8, &self.v4),
             IpAddr::V6(v6) => (u128::from(v6), 128u8, &self.v6),
         };
-        bucket
-            .iter()
-            .find(|e| mask_bits(bits, e.prefix, width) == e.net)
-            .map(|e| Arc::clone(&e.alias))
+        // Groups run longest-prefix-first, so the first hit is the most
+        // specific match and we can stop there.
+        for group in bucket {
+            let net = mask_bits(bits, group.prefix, width);
+            if let Ok(i) = group.nets.binary_search_by(|(candidate, _)| candidate.cmp(&net)) {
+                return Some(Arc::clone(&group.nets[i].1));
+            }
+        }
+        None
     }
 
     pub fn is_empty(&self) -> bool {
         self.v4.is_empty() && self.v6.is_empty()
     }
+}
+
+/// Bucket entries by prefix length: groups ordered longest-prefix-first (so
+/// `resolve` walks from most to least specific), networks sorted within each
+/// group (so `resolve` can binary-search them).
+fn group_by_prefix(mut entries: Vec<Entry>) -> Vec<PrefixGroup> {
+    entries.sort_unstable_by(|a, b| b.prefix.cmp(&a.prefix).then(a.net.cmp(&b.net)));
+    let mut groups: Vec<PrefixGroup> = Vec::new();
+    for entry in entries {
+        match groups.last_mut() {
+            Some(group) if group.prefix == entry.prefix => {
+                group.nets.push((entry.net, entry.alias))
+            },
+            _ => groups.push(PrefixGroup {
+                prefix: entry.prefix,
+                nets: vec![(entry.net, entry.alias)],
+            }),
+        }
+    }
+    groups
 }
 
 /// Mask `bits` to its top `prefix` bits within a `width`-bit address space
