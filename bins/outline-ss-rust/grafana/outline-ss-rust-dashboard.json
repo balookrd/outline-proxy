@@ -5067,7 +5067,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "Rate of edge attempts to open a cluster mesh relay to a home shard, by outcome. `ok` = the relay stream was established (a client presenting a foreign-shard resume id was relayed to its home); `fail` = the home was unreachable or at its relay cap, so the edge degraded to a fresh local session. A sustained `fail` rate means a peer is down or the mesh (UDP) port is blocked between nodes.",
+      "description": "Rate of edge attempts to open a cluster mesh relay to a home shard, by outcome. `ok` = the relay stream was established (a client presenting a foreign-shard resume id was relayed to its home); `fail` = the home was unreachable or at its relay cap, so the edge degraded to a fresh local session. A sustained `fail` rate means a peer is down or the mesh (UDP) port is blocked between nodes. The home side counts refusals separately: `outline_ss_mesh_relay_rejected_total{reason=\"capacity\"}` rises when this node is already serving its cap of concurrent relayed sessions and resets further relay streams, pushing those edges back to fresh local sessions.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -5152,6 +5152,13 @@
           "legendFormat": "{{short_instance}} {{outcome}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "sum by (short_instance, reason) (label_replace(rate(outline_ss_mesh_relay_rejected_total{instance=~\"$instance\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"))",
+          "legendFormat": "{{short_instance}} rejected {{reason}}",
+          "range": true,
+          "refId": "B"
         }
       ],
       "title": "Mesh Relay Opens (edge→home)",

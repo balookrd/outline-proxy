@@ -143,8 +143,23 @@ Control-сообщения mesh-стрима:
 ```
 OPEN  { session_id, carrier_kind, client_meta (resume-заголовки / addons), peer_addr_hint }
 DATA  { dir: up | down, bytes }          // application-байты, оба направления
-CLOSE { reason: fin | abort | budget }   // graceful FIN / RST / превышен health-budget
+CLOSE { reason: fin | abort | budget | capacity }
+       // graceful FIN / RST / превышен health-budget / на home исчерпан лимит релеймых сессий
 ```
+
+Accept-цикл на home различает два масштаба отказа: ошибка *соединения* (пир его
+закрыл, сработал таймаут) завершает цикл для этого пира, а ошибка *стрима* —
+стрим зарезечен до доставки OPEN либо OPEN не парсится этой сборкой при rolling
+upgrade — убирает только сам стрим. Соединение продолжает нести уже принятые на
+нём релеи и приёмник control-датаграм, которым владеет цикл.
+
+Обслуживание релея ограничено: home держит по одному permit на каждую живую
+релеймую сессию (4096 на все пиры — входной двойник исходящего лимита relay-
+стримов на edge). Стрим, пришедший при исчерпанных permit'ах, отвергается с
+`CloseReason::capacity` и считается в
+`outline_ss_mesh_relay_rejected_total{reason="capacity"}`; edge быстро получает
+отказ и обслуживает клиента локально. Пир на старой сборке отобразит код в
+`abort` — это корректный fallback.
 
 Для VLESS mux весь мультиплекс паркуется атомарно, поэтому релей несёт весь
 мультиплекс по одному mesh-стриму и никогда не дробит sub-connections по

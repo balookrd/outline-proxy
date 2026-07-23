@@ -151,8 +151,24 @@ Mesh stream control messages:
 ```
 OPEN  { session_id, carrier_kind, client_meta (resume headers / addons), peer_addr_hint }
 DATA  { dir: up | down, bytes }          // application bytes, both directions
-CLOSE { reason: fin | abort | budget }   // graceful FIN / RST / health-budget hit
+CLOSE { reason: fin | abort | budget | capacity }
+       // graceful FIN / RST / health-budget hit / home at its relayed-session cap
 ```
+
+The home's accept loop treats the two failure scopes apart: a *connection*
+error (the peer closed it, it timed out) ends the loop for that peer, while a
+*stream* error — one reset before its OPEN arrived, or an OPEN this build cannot
+parse during a rolling upgrade — drops only that stream. The connection keeps
+carrying the relays already accepted on it, plus the control-datagram receiver
+the loop owns.
+
+Serving a relay is bounded: the home holds one permit per in-flight relayed
+session (4096 across all peers, the inbound twin of the edge's outbound relay-
+stream cap). A stream arriving with no permit free is refused with
+`CloseReason::capacity` and counted in
+`outline_ss_mesh_relay_rejected_total{reason="capacity"}`; the edge fails fast
+and serves that client locally instead. A peer on an older build maps the code
+to `abort`, which is the right fallback.
 
 For VLESS mux, the whole multiplex parks atomically, so the relay carries the
 entire multiplex over one mesh stream and never splits sub-connections across
