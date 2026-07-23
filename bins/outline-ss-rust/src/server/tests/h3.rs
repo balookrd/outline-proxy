@@ -971,3 +971,138 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
     let _ = server_task.await;
     Ok(())
 }
+
+/// Control-plane mutations must reach the XHTTP-over-HTTP/3 dispatcher.
+/// Blocking, deleting or re-keying a user makes the manager publish a fresh
+/// `RouteRegistry`; from that moment the base path the user owned must stop
+/// resolving on h3, exactly as it already does on the CONNECT paths (which
+/// read `routes.load()` per request) and on the axum h1/h2 XHTTP handlers.
+/// The h3 listener used to clone the xhttp route tables once at startup, so a
+/// revoked user kept being served — and a leaked password kept working — until
+/// the process was restarted.
+#[tokio::test]
+async fn xhttp_h3_route_lookup_follows_control_plane_updates() -> Result<()> {
+    use super::super::setup::{SsXhttpUserRoute, build_xhttp_ss_route_map, user_keys};
+
+    const XHTTP_BASE: &str = "/xhs";
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let config = sample_config(addr);
+    let user_routes = build_user_routes(&config)?;
+    let user = user_routes
+        .first()
+        .context("sample config must define a user")?
+        .user
+        .clone();
+    let metrics = Metrics::new(&config);
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+
+    // The registry a rebuild produces once the only user of `XHTTP_BASE` is
+    // gone: `build_xhttp_ss_route_map` groups by user, so the base path
+    // disappears from the map entirely.
+    let empty_registry = || RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: Arc::new(BTreeMap::new()),
+        xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(BTreeMap::new()),
+    };
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        xhttp_ss: Arc::new(build_xhttp_ss_route_map(&[SsXhttpUserRoute {
+            user,
+            xhttp_path: Arc::from(XHTTP_BASE),
+        }])),
+        ..empty_registry()
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        dns_cache,
+        false,
+        None,
+        UdpServices {
+            nat_table,
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+        crate::server::transport::XhttpRegistryLimits::unbounded(),
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(user_keys(user_routes.as_ref())))),
+        http_root_auth: false,
+        http_root_realm: "Authorization required".into(),
+    });
+
+    let serve_routes = Arc::clone(&routes);
+    let server_task = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            H3ServeCtx {
+                routes: serve_routes,
+                services,
+                auth,
+                alpn: Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+                http_fallback: None,
+                cluster: None,
+            },
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    // Packet-up downlink GET on `<base>/<session-id>`, the shape every XHTTP
+    // client opens first.
+    let xhttp_get = |session: &str| {
+        Request::builder()
+            .method(Method::GET)
+            .uri(format!("https://localhost:{}{XHTTP_BASE}/{session}", addr.port()))
+            .version(Version::HTTP_3)
+            .body(())
+    };
+
+    let mut stream = send_request.send_request(xhttp_get("aaaabbbbcccc")?).await?;
+    let response = stream.recv_response().await?;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a live xhttp-ss route must serve the packet-up downlink"
+    );
+
+    // Control-plane mutation: the user is blocked / deleted, so the rebuilt
+    // registry no longer carries the base path.
+    routes.store(Arc::new(empty_registry()));
+
+    let mut stream = send_request.send_request(xhttp_get("ddddeeeeffff")?).await?;
+    let response = stream.recv_response().await?;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "xhttp/h3 must resolve routes from the live snapshot, not a startup copy"
+    );
+
+    driver.abort();
+    server_task.abort();
+    let _ = driver.await;
+    let _ = server_task.await;
+    Ok(())
+}
