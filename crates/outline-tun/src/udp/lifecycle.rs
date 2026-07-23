@@ -67,13 +67,14 @@ impl TunUdpEngine {
                     },
                     CloseWork::Direct { flow, reason } => {
                         tokio::spawn(async move {
-                            // The reader task is wrapped in `AbortOnDrop`,
-                            // so simply releasing the last reference
-                            // tears it down — `flow._reader` aborts via
-                            // its `Drop` impl when this `Arc` is dropped
-                            // and no other task can reach it (we hold
+                            // The flow's reader and sender tasks are both
+                            // wrapped in `AbortOnDrop`, so simply releasing
+                            // the last reference tears them down — they abort
+                            // via their `Drop` impls when this `Arc` is
+                            // dropped and no other task can reach it (we hold
                             // the only outstanding `Arc` after the map
-                            // removed its entry).
+                            // removed its entry), releasing the socket they
+                            // share.
                             let (created_at, _alive_until_end) = {
                                 let guard = flow.lock().await;
                                 (guard.created_at, ())

@@ -134,7 +134,8 @@ pub(super) fn build(registry: &Registry) -> TunFields {
         registry,
         IntCounterVec,
         "outline_ws_tun_udp_sniff_total",
-        "QUIC connection-sniffing outcomes for TUN UDP flows (host overridden).",
+        "QUIC connection-sniffing outcomes for TUN UDP flows (host overridden, excluded, recalled, \
+         ClientHello incomplete).",
         ["outcome"]
     );
     let tun_tcp_async_connects_total = register_labeled!(

@@ -263,6 +263,41 @@ async fn routing_rule_reload_drops_the_remembered_sni_route() {
     upstream.expect_silence(Duration::from_millis(750)).await;
 }
 
+/// A dropped flow leaves no state behind, so the client keeps sending and the
+/// engine keeps re-deciding. Under `route_by_sni` that re-decision is not
+/// cheap: every datagram pays a full QUIC Initial decrypt (HKDF + AES-GCM)
+/// plus a routing resolve, for a verdict that cannot change until the rules
+/// do. The short-lived negative entry makes the repeat datagrams free.
+#[tokio::test]
+async fn repeated_datagrams_of_a_dropped_flow_skip_the_quic_decrypt() {
+    let upstream = TestUdpUpstream::start().await;
+    let (engine, _table) = build_engine(upstream.url.clone(), true).await;
+
+    // No domain rule matches this SNI, and the literal IP hits the table's
+    // `Drop` default — the flow is dropped on its first datagram.
+    let initial = quic_initial("blocked.example.com");
+    send_client_datagram(&engine, 40400, &initial).await;
+    assert_eq!(
+        engine.inner.drop_route_cache.lock().len(),
+        1,
+        "a dropped flow must leave a negative entry behind",
+    );
+
+    // The client retransmits its Initial (QUIC PTO): the verdict is served
+    // from the negative entry instead of decrypting the packet again.
+    send_client_datagram(&engine, 40400, &initial).await;
+    assert_eq!(
+        engine.inner.drop_route_cache.lock().hits(),
+        1,
+        "the repeat datagram must be answered from the cached drop verdict",
+    );
+
+    // Still dropped, of course: nothing reaches the tunnel and no flow is
+    // registered for it.
+    upstream.expect_silence(Duration::from_millis(500)).await;
+    assert!(!engine.inner.flows.read().await.contains_key(&flow_key(40400)));
+}
+
 #[tokio::test]
 async fn sni_routing_disabled_keeps_ip_resolution_and_allocates_no_memory() {
     let upstream = TestUdpUpstream::start().await;

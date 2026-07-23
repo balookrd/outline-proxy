@@ -6,7 +6,7 @@ use outline_uplink::{
 };
 use shadowsocks_crypto::CipherKind;
 
-use super::{echo_reply_suppressed_for_down_group, packet_l4_checksum};
+use super::{echo_reply_suppressed_for_down_group, guard_packet_dispatch, packet_l4_checksum};
 use crate::routing::TunRouting;
 use crate::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN, L4Checksum};
 
@@ -327,6 +327,36 @@ async fn freshness_gate_is_skipped_when_the_group_has_no_probes() {
         echo_reply_suppressed_for_down_group(&routing, &packet)
             .await
             .is_none()
+    );
+}
+
+/// The whole data plane — every TCP and UDP flow — is dispatched from the one
+/// `tun_read_loop` task, so a panic while handling a single inbound packet must
+/// not be allowed to take the loop (and with it the tunnel) down. The firewall
+/// contains it to that packet and keeps dispatching afterwards.
+///
+/// The caught panic prints through the default hook; the hook is deliberately
+/// left alone so a *real* panic in a concurrently running test still reports
+/// itself.
+#[tokio::test]
+async fn a_panicking_packet_dispatch_does_not_take_the_read_loop_down() {
+    async fn poisoned_packet() -> anyhow::Result<()> {
+        panic!("simulated panic while handling an inbound packet");
+    }
+    async fn healthy_packet() -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    let contained = guard_packet_dispatch(poisoned_packet(), "ipv4", "udp_dispatch_panic").await;
+    assert!(
+        contained.is_none(),
+        "a panicking dispatch must be swallowed, not unwound into the loop"
+    );
+
+    let next = guard_packet_dispatch(healthy_packet(), "ipv4", "udp_dispatch_panic").await;
+    assert!(
+        matches!(next, Some(Ok(()))),
+        "the loop must keep dispatching packets after a contained panic",
     );
 }
 
