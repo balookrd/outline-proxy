@@ -13,6 +13,7 @@ use anyhow::Context;
 use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
+use super::eviction::{FlowEvictionIndex, evict_oldest_flow, record_flow_activity};
 use super::lifecycle::CloseWork;
 use super::sni_cache::{SNI_ROUTE_CACHE_CAP, SNI_ROUTE_CACHE_TTL, SniRouteCache};
 use super::types::{
@@ -47,6 +48,12 @@ pub(super) struct TunUdpEngineInner {
     pub(super) flows: FlowTable,
     /// Direct-routed flows: per-flow UDP socket + reader task.
     pub(super) direct_flows: DirectFlowTable,
+    /// LRU order over `flows`, maintained incrementally so overflow eviction
+    /// picks its victim in O(log n) without scanning the table or taking any
+    /// other flow's lock — see [`super::eviction`].
+    pub(super) eviction_index: Arc<FlowEvictionIndex<UdpFlowKey>>,
+    /// The same, for `direct_flows`.
+    pub(super) direct_eviction_index: Arc<FlowEvictionIndex<UdpFlowKey>>,
     pub(super) next_flow_id: CounterU64,
     pub(super) max_flows: usize,
     pub(super) idle_timeout: Duration,
@@ -110,6 +117,8 @@ impl TunUdpEngine {
                 dispatch,
                 flows: Arc::new(RwLock::new(HashMap::new())),
                 direct_flows: Arc::new(RwLock::new(HashMap::new())),
+                eviction_index: Arc::new(FlowEvictionIndex::new()),
+                direct_eviction_index: Arc::new(FlowEvictionIndex::new()),
                 next_flow_id: CounterU64::new(1),
                 max_flows,
                 idle_timeout,
@@ -160,6 +169,7 @@ impl TunUdpEngine {
         if let Some(flow_handle) = direct_flow {
             let mut flow = flow_handle.lock().await;
             flow.last_seen = Instant::now();
+            record_flow_activity(&self.inner.direct_eviction_index, &key, &mut *flow);
             let target_addr = SocketAddr::new(key.remote_ip, key.remote_port);
             // `send_to().await` runs under the per-flow Mutex only — other
             // direct flows remain unblocked while the kernel completes the
@@ -183,6 +193,7 @@ impl TunUdpEngine {
             let outbound_tx = {
                 let mut flow = handle.lock().await;
                 flow.last_seen = Instant::now();
+                record_flow_activity(&self.inner.eviction_index, &key, &mut *flow);
                 flow.outbound_tx.clone()
             };
             super::lifecycle::queue_client_datagram(&outbound_tx, Bytes::from(packet.payload));
@@ -475,6 +486,7 @@ impl TunUdpEngine {
         let writer = self.inner.writer.clone();
         let reader_key = key.clone();
         let direct_flows = Arc::clone(&self.inner.direct_flows);
+        let direct_eviction_index = Arc::clone(&self.inner.direct_eviction_index);
         // Direct flows carry constant `(direct, direct)` labels; resolve the
         // downlink datagram+byte counters once for the reader's lifetime.
         let down_counters = metrics::direct_udp_counters("down");
@@ -518,7 +530,13 @@ impl TunUdpEngine {
                 );
                 // Update last_seen on the flow. Read-lock to clone the Arc,
                 // then per-flow Mutex — does not block other flows' I/O.
-                bump_last_seen_if_current(&direct_flows, &reader_key, flow_id).await;
+                bump_last_seen_if_current(
+                    &direct_flows,
+                    &direct_eviction_index,
+                    &reader_key,
+                    flow_id,
+                )
+                .await;
             }
         }));
 
@@ -528,31 +546,37 @@ impl TunUdpEngine {
             _reader: reader,
             created_at: now,
             last_seen: now,
+            eviction_indexed_at: now,
         }));
-        // Bound the direct flow table the same way `create_flow` bounds the
-        // tunnelled `flows` table: on overflow, evict the least-recently-seen
+        // Bound the direct flow table the same way `spawn_tunnel_flow` bounds
+        // the tunnelled `flows` table: on overflow, evict the least-recently-seen
         // flow so a UDP storm to direct-routed destinations cannot grow the
-        // table (and its per-flow sockets and reader tasks) without limit.
+        // table (and its per-flow sockets and reader tasks) without limit. The
+        // victim comes from the LRU index, so the write-lock is held for an
+        // O(log n) pop instead of a full scan that locks every live flow.
         let mut evicted_flow = None;
         {
             let mut guard = self.inner.direct_flows.write().await;
             if guard.len() >= self.inner.max_flows
-                && let Some(evicted_key) = super::lifecycle::oldest_flow_key(&guard).await
-                && let Some(evicted) = guard.remove(&evicted_key)
+                && let Some((_, evicted)) =
+                    evict_oldest_flow(&mut guard, &self.inner.direct_eviction_index)
             {
-                {
-                    let snapshot = evicted.lock().await;
-                    warn!(
-                        evicted_flow_id = snapshot.id,
-                        max_flows = self.inner.max_flows,
-                        "evicted oldest direct TUN UDP flow due to flow table limit"
-                    );
-                }
                 evicted_flow = Some(evicted);
             }
-            guard.insert(key, state);
+            guard.insert(key.clone(), state);
+            self.inner.direct_eviction_index.upsert(key, flow_id, now);
         }
         if let Some(flow) = evicted_flow {
+            // Logged after the write-lock is released: the victim's own lock may
+            // be held by its reader task mid-write.
+            {
+                let snapshot = flow.lock().await;
+                warn!(
+                    evicted_flow_id = snapshot.id,
+                    max_flows = self.inner.max_flows,
+                    "evicted oldest direct TUN UDP flow due to flow table limit"
+                );
+            }
             self.enqueue_close_direct(flow, "evicted");
         }
 
