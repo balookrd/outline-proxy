@@ -125,6 +125,7 @@ pub fn direct_udp_counters(_direction: &str) -> &'static UdpFlowCounters {
 }
 
 pub fn record_dropped_oversized_udp_packet(_direction: &'static str, _cause: &'static str) {}
+pub fn record_dropped_malformed_udp_packet(_cause: &'static str) {}
 pub fn record_uplink_selected(_transport: &'static str, _group: &str, _uplink: &str) {}
 pub fn record_runtime_failure(_transport: &'static str, _group: &str, _uplink: &str) {}
 pub fn record_runtime_failure_cause(

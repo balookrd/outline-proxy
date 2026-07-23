@@ -31,6 +31,7 @@ impl Metrics {
             bytes_total: c.bytes_total,
             udp_datagrams_total: c.udp_datagrams_total,
             udp_oversized_dropped_total: c.udp_oversized_dropped_total,
+            udp_malformed_dropped_total: c.udp_malformed_dropped_total,
             uplink_selected_total: u.uplink_selected_total,
             uplink_runtime_failures_total: u.uplink_runtime_failures_total,
             uplink_runtime_failures_suppressed_total: u.uplink_runtime_failures_suppressed_total,

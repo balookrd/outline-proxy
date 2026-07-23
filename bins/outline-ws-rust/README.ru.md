@@ -1157,6 +1157,7 @@ Snapshot дескрипторов включает общее количеств
 
 При ошибке UDP-forwarding в TUN метрика `outline_ws_tun_udp_forward_errors_total{reason}` разбивает их по: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
 Дроп oversized SOCKS5 UDP-пакетов до отправки в uplink и oversized UDP-ответов до отправки клиенту экспортируется как `outline_ws_udp_oversized_dropped_total{direction="incoming|outgoing", cause}` (label `cause` различает `quic_dgram`, `vless_quic_dgram`, `vless_udp`, `ss_socket`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`).
+Клиентские датаграммы, которые SOCKS5 UDP-ingress не смог декодировать, дропаются поштучно — ассоциация и остальные её flow продолжают работать — и считаются как `outline_ws_udp_malformed_dropped_total{cause}` (`parse` — битый заголовок SOCKS5 UDP-запроса или неподдерживаемый тип адреса, `reassembly` — последовательность фрагментов, отвергнутая как out-of-order, со сменой таргета или сверх лимита реассемблинга).
 На TUN UDP-пути oversize-дропы дополнительно синтезируют ICMP «Fragmentation Needed» (IPv4) или «Packet Too Big» (IPv6) в адрес отправителя, чтобы сработала его собственная PMTUD state machine — throttled до одного PTB в секунду на flow и полностью подавлены ниже QUIC v1 Initial-datagram floor (1200 v4 / 1280 v6), чтобы compliant QUIC-клиентов не выбивало с UDP в TCP fallback. Полный контракт описан в [docs/TUN-PMTUD.ru.md](docs/TUN-PMTUD.ru.md).
 
 Дашборды Grafana:

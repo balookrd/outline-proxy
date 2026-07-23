@@ -7,6 +7,7 @@ pub fn init() {
     METRICS.bytes_total.reset();
     METRICS.udp_datagrams_total.reset();
     METRICS.udp_oversized_dropped_total.reset();
+    METRICS.udp_malformed_dropped_total.reset();
     #[cfg(feature = "tun")]
     {
         METRICS.tun_ip_fragments_total.reset();
@@ -78,6 +79,9 @@ pub fn init() {
                 .udp_oversized_dropped_total
                 .with_label_values(&[direction, cause]);
         }
+    }
+    for cause in ["parse", "reassembly"] {
+        let _ = METRICS.udp_malformed_dropped_total.with_label_values(&[cause]);
     }
     for protocol in ["tcp", "udp"] {
         for direction in ["up", "down"] {

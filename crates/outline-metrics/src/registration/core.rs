@@ -11,6 +11,7 @@ pub(super) struct CoreFields {
     pub(super) bytes_total: IntCounterVec,
     pub(super) udp_datagrams_total: IntCounterVec,
     pub(super) udp_oversized_dropped_total: IntCounterVec,
+    pub(super) udp_malformed_dropped_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> CoreFields {
@@ -71,6 +72,15 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
          socks_direct / socks_in_tcp).",
         ["direction", "cause"]
     );
+    let udp_malformed_dropped_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_udp_malformed_dropped_total",
+        "Client UDP datagrams dropped on the SOCKS5 datagram ingress because \
+         they could not be decoded, by cause (parse / reassembly). Each drop \
+         costs only the offending datagram; the association keeps serving.",
+        ["cause"]
+    );
 
     build_info.with_label_values(&[env!("CARGO_PKG_VERSION")]).set(1);
     start_time_seconds.set(
@@ -89,5 +99,6 @@ pub(super) fn build(registry: &Registry) -> CoreFields {
         bytes_total,
         udp_datagrams_total,
         udp_oversized_dropped_total,
+        udp_malformed_dropped_total,
     }
 }
