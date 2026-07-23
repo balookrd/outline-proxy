@@ -100,7 +100,14 @@ Prometheus metrics и локально пропатченные копии `h3` 
   документация, где применимо.
 - H3 path registry сейчас фактически startup-time registry. Control-plane может
   управлять пользователями только на уже известных путях. Не обещай полноценный
-  hot-add новых H3/WS/XHTTP paths без изменения этой модели.
+  hot-add новых H3/WS/XHTTP paths без изменения этой модели. Но замораживать в
+  per-connection ctx (`H3ConnectionCtx`) допустимо только НАБОРЫ путей
+  (`tcp_paths` / `udp_paths` / `vless_paths` / `xhttp_paths`): сами route-записи
+  за этими путями обязаны читаться из живого снапшота — `ctx.routes.load()` на
+  каждый запрос (см. CONNECT-ветки и `resolve_xhttp_h3_route` в
+  `src/server/h3/http.rs`). Копия route-таблицы, снятая на старте листенера,
+  переживает `routes.store()` контрол-плоскости, и block/delete/смена пароля
+  не применяются до рестарта.
 - TLS cert/key файлы, наоборот, перезагружаются в рантайме при изменении на
   диске: TCP swap'ает `Arc<ArcSwap<TlsAcceptor>>`, H3 вызывает
   `quinn::Endpoint::set_server_config`; слежение — поллинг в

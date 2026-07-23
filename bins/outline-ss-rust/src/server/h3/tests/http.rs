@@ -1,16 +1,94 @@
-//! Unit tests for the path parser used by the HTTP/3 XHTTP
-//! dispatcher. Each case pins one wire shape — the matcher must
-//! recognise both the legacy `<base>/<id>` URL (header-based seq)
-//! and the xray / sing-box default `<base>/<id>/<seq>` URL, and
-//! reject every other shape so the request falls through to 404 /
-//! fallback.
+//! Unit tests for the path parser and the route lookup used by the
+//! HTTP/3 XHTTP dispatcher. Each parser case pins one wire shape — the
+//! matcher must recognise both the legacy `<base>/<id>` URL
+//! (header-based seq) and the xray / sing-box default
+//! `<base>/<id>/<seq>` URL, and reject every other shape so the request
+//! falls through to 404 / fallback. The lookup cases pin that a matched
+//! base resolves against the live route snapshot.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use super::match_xhttp_path;
+use arc_swap::ArcSwap;
+
+use super::{RoutesSnapshot, XhttpRoute, match_xhttp_path, resolve_xhttp_h3_route};
+use crate::config::CipherKind;
+use crate::crypto::UserKey;
+use crate::server::setup::{SsXhttpUserRoute, build_xhttp_ss_route_map};
+use crate::server::state::RouteRegistry;
 
 fn paths(entries: &[&str]) -> BTreeSet<String> {
     entries.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// A registry carrying exactly one XHTTP-SS base path, served by `users`
+/// — the shape `rebuild_snapshots` publishes after a control-plane
+/// mutation.
+fn ss_registry(base: &str, users: &[(&str, &str)]) -> RouteRegistry {
+    let routes: Vec<SsXhttpUserRoute> = users
+        .iter()
+        .map(|(id, password)| SsXhttpUserRoute {
+            user: UserKey::new(*id, password, None, CipherKind::Chacha20IetfPoly1305, None)
+                .expect("test user key"),
+            xhttp_path: Arc::from(base),
+        })
+        .collect();
+    RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: Arc::new(BTreeMap::new()),
+        xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(build_xhttp_ss_route_map(&routes)),
+        xhttp_ss_udp: Arc::new(BTreeMap::new()),
+    }
+}
+
+fn ss_user_ids(route: Option<XhttpRoute>) -> Vec<String> {
+    match route {
+        Some(XhttpRoute::Ss(route)) => {
+            route.users.iter().map(|user| user.id().to_owned()).collect()
+        },
+        _ => panic!("expected an xhttp-ss route"),
+    }
+}
+
+#[test]
+fn route_users_come_from_the_live_snapshot() {
+    // Blocking a user or changing a password republishes the record
+    // behind an unchanged base path. The lookup must return the new
+    // record — reading a startup copy would keep a revoked credential
+    // authenticating until the process restarts.
+    let routes: RoutesSnapshot =
+        Arc::new(ArcSwap::from_pointee(ss_registry("/xhs", &[("bob", "secret-b")])));
+    assert_eq!(
+        ss_user_ids(resolve_xhttp_h3_route(&routes, "/xhs", Some("session-one"))),
+        ["bob"]
+    );
+
+    routes.store(Arc::new(ss_registry("/xhs", &[("alice", "secret-a")])));
+
+    assert_eq!(
+        ss_user_ids(resolve_xhttp_h3_route(&routes, "/xhs", Some("session-two"))),
+        ["alice"],
+        "a republished route record must replace the previous user set"
+    );
+}
+
+#[test]
+fn route_disappears_once_the_snapshot_drops_the_base() {
+    // Deleting the last user of a base path removes it from the rebuilt
+    // map; the lookup must then miss so the request falls through to
+    // 404 / fallback.
+    let routes: RoutesSnapshot =
+        Arc::new(ArcSwap::from_pointee(ss_registry("/xhs", &[("bob", "secret-b")])));
+    assert!(resolve_xhttp_h3_route(&routes, "/xhs", Some("session-one")).is_some());
+
+    routes.store(Arc::new(ss_registry("/xhs", &[])));
+
+    assert!(
+        resolve_xhttp_h3_route(&routes, "/xhs", Some("session-two")).is_none(),
+        "a base path with no users left must not resolve"
+    );
 }
 
 #[test]

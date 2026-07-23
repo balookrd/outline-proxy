@@ -15,7 +15,7 @@ use super::super::{
         parse_root_http_auth_password, password_matches_any_user,
     },
     cluster::{RouteDecision, mesh::CarrierKind},
-    state::{empty_transport_route, empty_vless_transport_route},
+    state::{RoutesSnapshot, empty_transport_route, empty_vless_transport_route},
     transport::{
         ResumeContext, ResumeResponseEcho, UdpRouteCtx, VlessWsRouteCtx, WsTcpRouteCtx, XhttpH3Ctx,
         XhttpRoute, edge_route, finish_ws_session, generate_anonymous_xhttp_session_id,
@@ -107,26 +107,8 @@ async fn handle_h3_request(
         // clients or eat xhttp upgrade requests.
         if let Some((base, session_id, path_seq)) =
             match_xhttp_path(&path, ctx.xhttp_paths.as_ref())
-            && let Some(route) = if ctx.xhttp_ss.contains_key(base.as_ref())
-                && ctx.xhttp_ss_udp.contains_key(base.as_ref())
-            {
-                // Combined SS path (base in both tables): decode the hidden
-                // tcp/udp bit from the session id, mirroring the axum
-                // `resolve_route`. A missing / non-encoding id defaults to tcp.
-                match session_id.as_deref().map(decode_kind).unwrap_or(SsPathKind::Tcp) {
-                    SsPathKind::Tcp => ctx.xhttp_ss.get(base.as_ref()).cloned().map(XhttpRoute::Ss),
-                    SsPathKind::Udp => {
-                        ctx.xhttp_ss_udp.get(base.as_ref()).cloned().map(XhttpRoute::SsUdp)
-                    },
-                }
-            } else {
-                ctx.xhttp_vless
-                    .get(base.as_ref())
-                    .cloned()
-                    .map(XhttpRoute::Vless)
-                    .or_else(|| ctx.xhttp_ss.get(base.as_ref()).cloned().map(XhttpRoute::Ss))
-                    .or_else(|| ctx.xhttp_ss_udp.get(base.as_ref()).cloned().map(XhttpRoute::SsUdp))
-            }
+            && let Some(route) =
+                resolve_xhttp_h3_route(&ctx.routes, base.as_ref(), session_id.as_deref())
         {
             // `match_xhttp_path` returns `session_id = None` for the
             // bare-`<base>` shape (xray's sessionless stream-one
@@ -482,6 +464,46 @@ fn combined_ws_h3_base(
     }
     (tcp_paths.contains(base) && udp_paths.contains(base))
         .then(|| (base.to_owned(), decode_kind(token)))
+}
+
+/// Resolves the XHTTP route serving `base` from the *live* route snapshot, the
+/// same way the CONNECT branches below and the axum-side `resolve_route` do. A
+/// control-plane mutation (block / delete / password change) republishes the
+/// whole `RouteRegistry`, so reading it per request is what makes the mutation
+/// take effect without a restart. The set of known base paths stays frozen per
+/// listener (`ctx.xhttp_paths`) — h3 path registration is startup-time — but the
+/// route record behind a path must never be.
+///
+/// The h3 side carries no per-path `XhttpAppProtocol`, so which table owns the
+/// base decides the protocol; a base present in both SS tables is a combined
+/// path and the hidden tcp/udp bit is decoded from the session id.
+fn resolve_xhttp_h3_route(
+    routes: &RoutesSnapshot,
+    base: &str,
+    session_id: Option<&str>,
+) -> Option<XhttpRoute> {
+    let routes_snap = routes.load();
+    let route = if routes_snap.xhttp_ss.contains_key(base)
+        && routes_snap.xhttp_ss_udp.contains_key(base)
+    {
+        // Combined SS path (base in both tables): decode the hidden tcp/udp bit
+        // from the session id, mirroring the axum `resolve_route`. A missing /
+        // non-encoding id defaults to tcp.
+        match session_id.map(decode_kind).unwrap_or(SsPathKind::Tcp) {
+            SsPathKind::Tcp => routes_snap.xhttp_ss.get(base).cloned().map(XhttpRoute::Ss),
+            SsPathKind::Udp => routes_snap.xhttp_ss_udp.get(base).cloned().map(XhttpRoute::SsUdp),
+        }
+    } else {
+        routes_snap
+            .xhttp_vless
+            .get(base)
+            .cloned()
+            .map(XhttpRoute::Vless)
+            .or_else(|| routes_snap.xhttp_ss.get(base).cloned().map(XhttpRoute::Ss))
+            .or_else(|| routes_snap.xhttp_ss_udp.get(base).cloned().map(XhttpRoute::SsUdp))
+    };
+    drop(routes_snap);
+    route
 }
 
 fn match_xhttp_path(
