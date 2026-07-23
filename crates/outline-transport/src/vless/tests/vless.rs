@@ -20,7 +20,7 @@ fn parse_uuid_roundtrip() {
 fn request_header_ipv4_tcp() {
     let uuid = parse_uuid("550e8400-e29b-41d4-a716-446655440000").unwrap();
     let target = TargetAddr::IpV4(std::net::Ipv4Addr::new(1, 2, 3, 4), 443);
-    let hdr = build_request_header(&uuid, VLESS_CMD_TCP, &target, &[]);
+    let hdr = build_request_header(&uuid, VLESS_CMD_TCP, &target, &[]).unwrap();
     assert_eq!(hdr[0], 0x00);
     assert_eq!(&hdr[1..17], &uuid);
     assert_eq!(hdr[17], 0x00);
@@ -34,7 +34,7 @@ fn request_header_ipv4_tcp() {
 fn request_header_domain_udp() {
     let uuid = parse_uuid("550e8400-e29b-41d4-a716-446655440000").unwrap();
     let target = TargetAddr::Domain("example.com".into(), 80);
-    let hdr = build_request_header(&uuid, VLESS_CMD_UDP, &target, &[]);
+    let hdr = build_request_header(&uuid, VLESS_CMD_UDP, &target, &[]).unwrap();
     assert_eq!(hdr[18], VLESS_CMD_UDP);
     assert_eq!(&hdr[19..21], &80u16.to_be_bytes());
     assert_eq!(hdr[21], VLESS_ATYP_DOMAIN);

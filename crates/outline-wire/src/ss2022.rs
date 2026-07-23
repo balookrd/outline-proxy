@@ -174,6 +174,10 @@ pub fn parse_response_header(
     validate_timestamp(timestamp, now_unix_secs)?;
 
     let salt_end = 9 + cipher.salt_len();
+    // Plain `!=` on purpose: the request salt travels in the clear at the head
+    // of the TCP stream, and this check only runs on plaintext an AEAD open has
+    // already authenticated. Nothing secret is compared, so a constant-time
+    // equality would buy no leak resistance. Same for the session-id checks below.
     if &plaintext[9..salt_end] != request_salt {
         return Err(Ss2022HeaderError::RequestSaltMismatch);
     }

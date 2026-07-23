@@ -389,7 +389,7 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
         Some(crate::protocol::vless_mux::Network::Tcp),
         Some(&target),
         Some(b"ping"),
-    );
+    )?;
     request.extend_from_slice(&new_frame);
     socket.send(WsMessage::Binary(request.into())).await?;
 

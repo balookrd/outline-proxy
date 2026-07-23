@@ -157,7 +157,8 @@ pub(super) fn spawn_vless_loopback(
 
     let sink = ChanSink { tx: c2s_tx };
     let source = ChanSource { rx: Mutex::new(s2c_rx) };
-    let writer = VlessTcpWriter::with_sink(Box::new(sink), &uuid, &target, Arc::clone(&lifetime));
+    let writer = VlessTcpWriter::with_sink(Box::new(sink), &uuid, &target, Arc::clone(&lifetime))
+        .expect("test target fits the vless header");
     let reader = VlessTcpReader::with_source(Box::new(source), lifetime);
 
     let server = tokio::spawn(async move {

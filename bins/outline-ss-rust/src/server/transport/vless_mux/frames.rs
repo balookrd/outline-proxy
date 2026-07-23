@@ -196,7 +196,7 @@ where
 {
     let mut frame = BytesMut::with_capacity(8);
     let option = if error { OPTION_ERROR } else { 0 };
-    encode_frame(&mut frame, session_id, SessionStatus::End, option, None, None, None);
+    encode_frame(&mut frame, session_id, SessionStatus::End, option, None, None, None)?;
     tx.send(make_binary(frame.freeze()))
         .await
         .map_err(|_| anyhow!("failed to queue mux End frame"))?;

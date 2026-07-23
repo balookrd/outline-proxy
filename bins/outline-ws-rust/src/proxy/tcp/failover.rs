@@ -888,7 +888,7 @@ async fn do_tcp_ss_setup(
             lifetime,
             diag,
             keepalive_interval,
-        );
+        )?;
         debug!(
             uplink = %setup.name,
             target = %target,

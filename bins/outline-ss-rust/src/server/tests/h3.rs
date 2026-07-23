@@ -941,7 +941,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
         Some(crate::protocol::vless_mux::Network::Tcp),
         Some(&target),
         Some(b"ping"),
-    );
+    )?;
     payload.extend_from_slice(&new_frame);
     socket.send(H3Message::Binary(payload.into())).await?;
 

@@ -134,7 +134,7 @@ fn returns_none_for_truncated_request() {
 fn build_parse_roundtrip_tcp() {
     let uuid = parse_uuid(UUID).unwrap();
     let target = TargetAddr::Domain("example.com".to_owned(), 443);
-    let header = build_request_header(&uuid, COMMAND_TCP, &target, &[]);
+    let header = build_request_header(&uuid, COMMAND_TCP, &target, &[]).unwrap();
 
     let parsed = parse_request(&header).unwrap().unwrap();
     assert_eq!(parsed.user_id, uuid);
@@ -150,12 +150,66 @@ fn build_parse_roundtrip_with_resume_addons() {
     let target = TargetAddr::IpV6(Ipv6Addr::LOCALHOST, 8443);
     let resume_id = [0x5A; 16];
     let addons = encode_request_addons(true, Some(&resume_id));
-    let header = build_request_header(&uuid, COMMAND_TCP, &target, &addons);
+    let header = build_request_header(&uuid, COMMAND_TCP, &target, &addons).unwrap();
 
     let parsed = parse_request(&header).unwrap().unwrap();
     assert_eq!(parsed.target, target);
     assert!(parsed.addons.resume_capable);
     assert_eq!(parsed.addons.resume_id, Some(resume_id));
+}
+
+// Length-prefix guards on the encode side: both the Addons block and the
+// domain ride behind a `u8` length, so anything past 255 used to be
+// silently truncated into a header the peer parses as garbage.
+
+#[test]
+fn build_request_header_rejects_oversized_addons() {
+    let uuid = parse_uuid(UUID).unwrap();
+    let target = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, 443);
+    let addons = vec![0_u8; 256];
+
+    assert_eq!(
+        build_request_header(&uuid, COMMAND_TCP, &target, &addons),
+        Err(VlessError::AddonsTooLong(256))
+    );
+}
+
+#[test]
+fn build_request_header_rejects_oversized_domain() {
+    let uuid = parse_uuid(UUID).unwrap();
+    let target = TargetAddr::Domain("a".repeat(256), 443);
+
+    assert_eq!(
+        build_request_header(&uuid, COMMAND_TCP, &target, &[]),
+        Err(VlessError::DomainTooLong(256))
+    );
+}
+
+#[test]
+fn build_parse_roundtrip_max_length_domain() {
+    let uuid = parse_uuid(UUID).unwrap();
+    let target = TargetAddr::Domain("a".repeat(255), 8080);
+    let header = build_request_header(&uuid, COMMAND_TCP, &target, &[]).unwrap();
+
+    let parsed = parse_request(&header).unwrap().unwrap();
+    assert_eq!(parsed.target, target);
+    assert_eq!(parsed.consumed, header.len());
+}
+
+#[test]
+fn build_parse_roundtrip_max_length_addons() {
+    let uuid = parse_uuid(UUID).unwrap();
+    let target = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, 443);
+    // One unknown TLV filling the block exactly: tag | len | 253 bytes.
+    let mut addons = vec![0xFE_u8, 253];
+    addons.extend(std::iter::repeat_n(0x00, 253));
+    assert_eq!(addons.len(), 255);
+
+    let header = build_request_header(&uuid, COMMAND_TCP, &target, &addons).unwrap();
+    let parsed = parse_request(&header).unwrap().unwrap();
+    assert_eq!(parsed.target, target);
+    assert_eq!(parsed.addons, VlessRequestAddons::default());
+    assert_eq!(parsed.consumed, header.len());
 }
 
 #[test]

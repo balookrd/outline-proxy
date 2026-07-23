@@ -392,8 +392,14 @@ async fn cross_repo_xhttp_h2_ack_prefix_reports_up_acked_offset() -> Result<()> 
     let target_b = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
     let diag_b = outline_transport::WsReadDiag::default();
     let uuid_b = parse_uuid(TEST_UUID)?;
-    let (mut writer_b, mut reader_b) =
-        vless_tcp_pair_from_ws(stream_b, &uuid_b, &target_b, Arc::clone(&lifetime_b), diag_b, None);
+    let (mut writer_b, mut reader_b) = vless_tcp_pair_from_ws(
+        stream_b,
+        &uuid_b,
+        &target_b,
+        Arc::clone(&lifetime_b),
+        diag_b,
+        None,
+    )?;
     reader_b = reader_b.with_expect_ack_prefix(true);
 
     writer_b.send_chunk(b"helo").await?;
@@ -524,8 +530,14 @@ async fn cross_repo_xhttp_h2_symmetric_replay_returns_downlink_suffix() -> Resul
     let target_b = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_addr.port());
     let diag_b = outline_transport::WsReadDiag::default();
     let uuid_b = parse_uuid(TEST_UUID)?;
-    let (mut writer_b, mut reader_b) =
-        vless_tcp_pair_from_ws(stream_b, &uuid_b, &target_b, Arc::clone(&lifetime_b), diag_b, None);
+    let (mut writer_b, mut reader_b) = vless_tcp_pair_from_ws(
+        stream_b,
+        &uuid_b,
+        &target_b,
+        Arc::clone(&lifetime_b),
+        diag_b,
+        None,
+    )?;
     reader_b = reader_b
         .with_expect_ack_prefix(true)
         .with_expect_downlink_replay(true);

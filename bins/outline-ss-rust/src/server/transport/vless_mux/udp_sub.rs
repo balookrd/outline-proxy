@@ -165,7 +165,10 @@ where
                 // Build the frame on demand so an idle sub-conn holds no
                 // encode buffer either.
                 let mut frame_buf = BytesMut::with_capacity(read + 32);
-                encode_frame(
+                // A datagram larger than one mux frame can hold has no valid
+                // encoding: drop it (UDP is loss-tolerant) rather than emit a
+                // frame the peer rejects, which would kill the whole carrier.
+                if let Err(error) = encode_frame(
                     &mut frame_buf,
                     session_id,
                     SessionStatus::Keep,
@@ -173,7 +176,10 @@ where
                     Some(Network::Udp),
                     Some(&src),
                     Some(&buf[..read]),
-                );
+                ) {
+                    debug!(session_id, error = %error, "mux udp downlink frame encode failed");
+                    continue;
+                }
                 let frame = frame_buf.split().freeze();
                 metrics.record_websocket_binary_frame(
                     Transport::Tcp,
@@ -189,7 +195,8 @@ where
         }
     }
     let mut frame_buf = BytesMut::with_capacity(6);
-    encode_frame(&mut frame_buf, session_id, SessionStatus::End, 0, None, None, None);
+    encode_frame(&mut frame_buf, session_id, SessionStatus::End, 0, None, None, None)
+        .expect("End frame carries neither target nor data");
     let _ = tx.send(make_binary(frame_buf.split().freeze())).await;
     MuxReaderHarvest::Closed
 }
