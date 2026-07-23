@@ -314,6 +314,7 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     add_udp_datagram("down", "main", "senko");
     add_udp_datagram("down", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL);
     record_dropped_oversized_udp_packet("up", "socks_client");
+    record_dropped_malformed_udp_packet("parse");
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(rendered.contains(
@@ -358,6 +359,8 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     assert!(rendered.contains(
         "outline_ws_udp_oversized_dropped_total{cause=\"socks_client\",direction=\"up\"} 1"
     ));
+    assert!(rendered.contains("outline_ws_udp_malformed_dropped_total{cause=\"parse\"} 1"));
+    assert!(rendered.contains("outline_ws_udp_malformed_dropped_total{cause=\"reassembly\"} 0"));
 }
 
 #[test]

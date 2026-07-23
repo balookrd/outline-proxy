@@ -7,3 +7,6 @@ mod transport;
 
 pub(super) use in_tcp::serve_udp_in_tcp;
 pub(super) use socks5::serve_udp_associate;
+
+#[cfg(test)]
+mod tests;
