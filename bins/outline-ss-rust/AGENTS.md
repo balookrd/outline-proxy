@@ -127,6 +127,11 @@ Prometheus metrics и локально пропатченные копии `h3` 
   не-loopback bind без токена пишет WARN на старте
   (`server/dashboard/auth.rs`). Добавляя маршруты или расширяя проксирование,
   держи их под тем же гейтом и не ослабляй это предупреждение.
+- Прокси дашборда (`server/dashboard/proxy.rs`) читает тело ответа control API
+  только через `Limited` (`MAX_CONTROL_RESPONSE_BYTES`) — не возвращай
+  безлимитный `collect()`. Пул keep-alive соединений (`control_pool.rs`) отдаёт
+  парковку только replay-safe запросам (`GET`): мутацию нельзя переотправлять
+  на соединении, которое upstream мог закрыть под нами.
 - Будь осторожен с tuning defaults и resource caps. Не повышай дефолтные окна,
   channel capacities, connection/stream limits, NAT/session limits или timeout
   behavior без оценки memory envelope и DoS-поверхности.

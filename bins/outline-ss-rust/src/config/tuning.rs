@@ -59,6 +59,17 @@ pub struct TuningProfile {
     /// by fanning out to many destinations. When full, datagrams to *new*
     /// targets are dropped while existing entries keep flowing. `0` disables it.
     pub udp_nat_max_entries: usize,
+    /// Per-user ceiling on live UDP NAT entries, applied on top of
+    /// `udp_nat_max_entries`. Without it a single authenticated user fanning
+    /// out to many destinations can fill the whole table and leave the other
+    /// tenants unable to open new targets until idle eviction catches up.
+    /// Datagrams to *new* targets of a user already at its share are dropped
+    /// (counted in `outline_ss_udp_nat_capacity_dropped_total`); its live
+    /// entries keep flowing. `0` — the default on every profile — disables it,
+    /// preserving the historical global-only behaviour; set it on
+    /// multi-tenant deployments, comfortably above the number of concurrent
+    /// destinations a legitimate client uses.
+    pub udp_nat_max_entries_per_user: usize,
     /// Process-wide ceiling on in-flight UDP relay tasks across all WebSocket
     /// sessions. `0` disables the global cap.
     pub udp_max_concurrent_relay_tasks: usize,
@@ -124,6 +135,7 @@ impl TuningProfile {
         client_active_ttl_secs: 180,
         udp_nat_idle_timeout_secs: 120,
         udp_nat_max_entries: 4_096,
+        udp_nat_max_entries_per_user: 0,
         udp_max_concurrent_relay_tasks: 1_024,
         udp_replay_max_sessions: 16_384,
         xhttp_max_sessions: 16_384,
@@ -150,6 +162,7 @@ impl TuningProfile {
         client_active_ttl_secs: 300,
         udp_nat_idle_timeout_secs: 240,
         udp_nat_max_entries: 16_384,
+        udp_nat_max_entries_per_user: 0,
         udp_max_concurrent_relay_tasks: 2_048,
         udp_replay_max_sessions: 65_536,
         xhttp_max_sessions: 65_536,
@@ -176,6 +189,7 @@ impl TuningProfile {
         client_active_ttl_secs: 300,
         udp_nat_idle_timeout_secs: 300,
         udp_nat_max_entries: 65_536,
+        udp_nat_max_entries_per_user: 0,
         udp_max_concurrent_relay_tasks: 4_096,
         udp_replay_max_sessions: 262_144,
         xhttp_max_sessions: 262_144,
@@ -268,6 +282,7 @@ impl TuningProfile {
         // `udp_max_concurrent_relay_tasks == 0` is a valid opt-out.
         // `udp_replay_max_sessions == 0` is a valid opt-out.
         // `udp_nat_max_entries == 0` is a valid opt-out.
+        // `udp_nat_max_entries_per_user == 0` is a valid opt-out (global cap only).
         // `xhttp_max_sessions == 0` is a valid opt-out.
         // `xhttp_max_concurrent_relay_tasks == 0` is a valid opt-out.
         // `dns_cache_max_entries == 0` is a valid opt-out (unbounded cache,
@@ -319,6 +334,9 @@ impl TuningProfile {
         }
         if let Some(v) = o.udp_nat_max_entries {
             self.udp_nat_max_entries = v;
+        }
+        if let Some(v) = o.udp_nat_max_entries_per_user {
+            self.udp_nat_max_entries_per_user = v;
         }
         if let Some(v) = o.udp_max_concurrent_relay_tasks {
             self.udp_max_concurrent_relay_tasks = v;
@@ -379,6 +397,8 @@ pub struct TuningOverrides {
     pub udp_nat_idle_timeout_secs: Option<u64>,
     #[serde(default)]
     pub udp_nat_max_entries: Option<usize>,
+    #[serde(default)]
+    pub udp_nat_max_entries_per_user: Option<usize>,
     #[serde(default)]
     pub udp_max_concurrent_relay_tasks: Option<usize>,
     #[serde(default)]

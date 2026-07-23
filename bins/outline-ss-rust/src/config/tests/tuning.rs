@@ -17,6 +17,26 @@ fn overrides_apply_on_top_of_preset() {
 }
 
 #[test]
+fn per_user_nat_cap_defaults_to_disabled_and_takes_overrides() {
+    for preset in [TuningPreset::Small, TuningPreset::Medium, TuningPreset::Large] {
+        assert_eq!(
+            preset.preset().udp_nat_max_entries_per_user,
+            0,
+            "the per-user NAT cap must stay opt-in so existing deployments keep the global cap only",
+        );
+    }
+
+    let mut tuning = TuningPreset::Medium.preset();
+    tuning.apply_overrides(&TuningOverrides {
+        udp_nat_max_entries_per_user: Some(512),
+        ..TuningOverrides::default()
+    });
+    assert_eq!(tuning.udp_nat_max_entries_per_user, 512);
+    assert_eq!(tuning.udp_nat_max_entries, TuningProfile::MEDIUM.udp_nat_max_entries);
+    tuning.validate().unwrap();
+}
+
+#[test]
 fn rejects_stream_window_above_connection_window() {
     let mut tuning = TuningProfile::LARGE;
     tuning.h3_stream_window_bytes = tuning.h3_connection_window_bytes + 1;

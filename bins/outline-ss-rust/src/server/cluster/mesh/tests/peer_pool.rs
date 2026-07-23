@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use outline_wire::cluster::ShardId;
 use tokio::io::AsyncWriteExt;
@@ -72,6 +73,51 @@ async fn open_relay_unknown_shard_errors() {
     let edge = MeshEndpoint::bind(loopback(), &identity(b"psk")).unwrap();
     let pool = MeshPeerPool::new(edge, HashMap::new(), 8);
     assert!(pool.open_relay(ShardId::new(1).unwrap(), &header()).await.is_err());
+}
+
+#[tokio::test]
+async fn a_stalled_dial_does_not_block_relays_to_other_shards() {
+    let psk = b"mesh-pool-stall-psk";
+    let live = ShardId::new(1).unwrap();
+    let stalled = ShardId::new(2).unwrap();
+
+    let home = MeshEndpoint::bind(loopback(), &identity(psk)).unwrap();
+    let home_addr = home.local_addr().unwrap();
+    let edge = MeshEndpoint::bind(loopback(), &identity(psk)).unwrap();
+
+    // A plain UDP socket that never answers QUIC: the dial to it hangs in the
+    // handshake until the mesh idle timeout (30s), which is what a dead peer
+    // looks like from the edge. Kept bound for the whole test so the datagrams
+    // are absorbed rather than answered with ICMP unreachable.
+    let _blackhole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let stalled_addr = _blackhole.local_addr().unwrap();
+
+    let mut peers = HashMap::new();
+    peers.insert(live, home_addr);
+    peers.insert(stalled, stalled_addr);
+    let pool = Arc::new(MeshPeerPool::new(edge, peers, 8));
+
+    let server = tokio::spawn(async move {
+        let conn = home.accept().await.unwrap().unwrap();
+        let _ = accept_relay(&conn).await;
+        // Hold the connection open until the test drops the task.
+        std::future::pending::<()>().await;
+    });
+
+    let hung = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move { pool.open_relay(stalled, &header()).await.map(|_| ()) }
+    });
+    // Let the stalled dial get as far as the handshake.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let relay = tokio::time::timeout(Duration::from_secs(5), pool.open_relay(live, &header()))
+        .await
+        .expect("a hung dial to one shard must not stall relays to another shard");
+    assert!(relay.is_ok(), "relay to the reachable shard failed: {:?}", relay.err());
+
+    hung.abort();
+    server.abort();
 }
 
 #[tokio::test]
