@@ -3054,7 +3054,7 @@ fn build_client_ipv6_packet_with_extension_headers(
     packet[offset..].copy_from_slice(tcp_segment);
     packet
 }
-async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
+pub(in crate::tcp) async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
