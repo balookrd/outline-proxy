@@ -8,7 +8,6 @@
 //!
 //! The concrete [`RoutingTable`] impl lives here (main crate owns the trait,
 //! so the orphan rule permits it).
-use async_trait::async_trait;
 use outline_routing::{RouteDecision, RoutingTable};
 use socks5_proto::TargetAddr;
 
@@ -17,7 +16,10 @@ use socks5_proto::TargetAddr;
 /// Kept intentionally small so alternative implementations (tests, a future
 /// richer policy engine) do not have to reproduce the whole
 /// `RoutingTable` API.
-#[async_trait]
+///
+/// Resolution is synchronous: the rule sets sit behind `ArcSwap`, so a lookup
+/// neither locks nor yields, and callers on the packet path pay no await
+/// point for it.
 pub trait Router: Send + Sync + std::fmt::Debug {
     /// Current table version — bumped by reload watchers. Per-association
     /// caches tag entries with the version captured at resolve time and
@@ -27,26 +29,25 @@ pub trait Router: Send + Sync + std::fmt::Debug {
     /// Resolve a target and return the version snapshot captured *before*
     /// CIDR reads (see [`RoutingTable::resolve_versioned`] for the ordering
     /// rationale).
-    async fn resolve_versioned(&self, target: &TargetAddr) -> (RouteDecision, u64);
+    fn resolve_versioned(&self, target: &TargetAddr) -> (RouteDecision, u64);
 
     /// Resolve without a version snapshot. Default impl delegates to
     /// [`Router::resolve_versioned`].
-    async fn resolve(&self, target: &TargetAddr) -> RouteDecision {
-        self.resolve_versioned(target).await.0
+    fn resolve(&self, target: &TargetAddr) -> RouteDecision {
+        self.resolve_versioned(target).0
     }
 }
 
-#[async_trait]
 impl Router for RoutingTable {
     fn version(&self) -> u64 {
         RoutingTable::version(self)
     }
 
-    async fn resolve_versioned(&self, target: &TargetAddr) -> (RouteDecision, u64) {
-        RoutingTable::resolve_versioned(self, target).await
+    fn resolve_versioned(&self, target: &TargetAddr) -> (RouteDecision, u64) {
+        RoutingTable::resolve_versioned(self, target)
     }
 
-    async fn resolve(&self, target: &TargetAddr) -> RouteDecision {
-        RoutingTable::resolve(self, target).await
+    fn resolve(&self, target: &TargetAddr) -> RouteDecision {
+        RoutingTable::resolve(self, target)
     }
 }

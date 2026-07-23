@@ -251,16 +251,16 @@ async fn routing_table_dispatches_to_correct_group() {
     let table = RoutingTable::compile(&cfg).await.unwrap();
 
     // 10.x.x.x → Direct
-    let d = table.resolve(&v4(10, 1, 2, 3)).await;
+    let d = table.resolve(&v4(10, 1, 2, 3));
     assert_eq!(d.primary, RouteTarget::Direct);
 
     // 1.x.x.x → main, fallback = backup
-    let d = table.resolve(&v4(1, 1, 1, 1)).await;
+    let d = table.resolve(&v4(1, 1, 1, 1));
     assert_eq!(d.primary, RouteTarget::Group("main".into()));
     assert_eq!(d.fallback, Some(RouteTarget::Group("backup".into())));
 
     // Unmatched → backup (default)
-    let d = table.resolve(&v4(8, 8, 8, 8)).await;
+    let d = table.resolve(&v4(8, 8, 8, 8));
     assert_eq!(d.primary, RouteTarget::Group("backup".into()));
     assert_eq!(d.fallback, None);
 }
@@ -274,8 +274,8 @@ async fn routing_table_drop_target_works() {
     };
     let table = RoutingTable::compile(&cfg).await.unwrap();
 
-    assert_eq!(table.resolve(&v4(192, 168, 1, 1)).await.primary, RouteTarget::Drop);
-    assert_eq!(table.resolve(&v4(8, 8, 8, 8)).await.primary, RouteTarget::Group("main".into()));
+    assert_eq!(table.resolve(&v4(192, 168, 1, 1)).primary, RouteTarget::Drop);
+    assert_eq!(table.resolve(&v4(8, 8, 8, 8)).primary, RouteTarget::Group("main".into()));
 }
 
 // ── 3. Fallback between groups ───────────────────────────────────────────────
@@ -299,7 +299,7 @@ async fn fallback_activates_when_primary_group_all_unhealthy() {
     };
     let table = Arc::new(RoutingTable::compile(&cfg).await.unwrap());
 
-    let decision = table.resolve(&v4(8, 8, 8, 8)).await;
+    let decision = table.resolve(&v4(8, 8, 8, 8));
     assert_eq!(decision.primary, RouteTarget::Group("main".into()));
     assert_eq!(decision.fallback, Some(RouteTarget::Group("backup".into())));
 
@@ -336,7 +336,7 @@ async fn no_fallback_when_primary_is_healthy() {
     };
     let table = Arc::new(RoutingTable::compile(&cfg).await.unwrap());
 
-    let decision = table.resolve(&v4(8, 8, 8, 8)).await;
+    let decision = table.resolve(&v4(8, 8, 8, 8));
     assert!(main.has_any_healthy(TransportKind::Tcp).await);
 
     let effective = if let RouteTarget::Group(name) = &decision.primary {
@@ -367,7 +367,7 @@ async fn fallback_direct_when_primary_group_down() {
     };
     let table = Arc::new(RoutingTable::compile(&cfg).await.unwrap());
 
-    let decision = table.resolve(&v4(8, 8, 8, 8)).await;
+    let decision = table.resolve(&v4(8, 8, 8, 8));
     assert!(!main.has_any_healthy(TransportKind::Tcp).await);
 
     let effective = if let RouteTarget::Group(name) = &decision.primary {
@@ -398,7 +398,7 @@ async fn fallback_drop_when_primary_group_down() {
     };
     let table = Arc::new(RoutingTable::compile(&cfg).await.unwrap());
 
-    let decision = table.resolve(&v4(8, 8, 8, 8)).await;
+    let decision = table.resolve(&v4(8, 8, 8, 8));
     assert!(!main.has_any_healthy(TransportKind::Tcp).await);
 
     let effective = if let RouteTarget::Group(name) = &decision.primary {
@@ -540,10 +540,10 @@ async fn inverted_rule_routes_everything_not_in_set_through_primary() {
     let table = RoutingTable::compile(&cfg).await.unwrap();
 
     // Public IP: not in private ranges → inverted rule matches → tunnel.
-    assert_eq!(table.resolve(&v4(8, 8, 8, 8)).await.primary, RouteTarget::Group("main".into()));
+    assert_eq!(table.resolve(&v4(8, 8, 8, 8)).primary, RouteTarget::Group("main".into()));
     // Private IP: in the set → inverted rule does NOT match → default (Direct).
-    assert_eq!(table.resolve(&v4(10, 1, 2, 3)).await.primary, RouteTarget::Direct);
-    assert_eq!(table.resolve(&v4(192, 168, 1, 1)).await.primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&v4(10, 1, 2, 3)).primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&v4(192, 168, 1, 1)).primary, RouteTarget::Direct);
 }
 
 // ── 8. UDP route cache invalidation ──────────────────────────────────────────
@@ -567,7 +567,7 @@ async fn route_cache_invalidates_after_version_bump() {
     let target = v4(1, 2, 3, 4);
 
     // First resolve: cache miss → resolve & insert with pre-read version.
-    let (decision, version) = table.resolve_versioned(&target).await;
+    let (decision, version) = table.resolve_versioned(&target);
     assert_eq!(decision.primary, RouteTarget::Direct);
     assert_eq!(version, 0);
     cache.insert(target.clone(), (decision.primary.clone(), version));
@@ -586,7 +586,7 @@ async fn route_cache_invalidates_after_version_bump() {
     assert!(!hit, "cache must invalidate after version bump");
 
     // Re-resolve and re-cache under the new version.
-    let (new_decision, new_version) = table.resolve_versioned(&target).await;
+    let (new_decision, new_version) = table.resolve_versioned(&target);
     assert_eq!(new_version, 1);
     cache.insert(target.clone(), (new_decision.primary, new_version));
     let hit_again = cache.get(&target).map(|(_, v)| *v == current).unwrap_or(false);
