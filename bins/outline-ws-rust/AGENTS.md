@@ -51,7 +51,10 @@ feature gates частью публичного поведения.
   `first_chunk`, `pinned_relay`, `chunk0_failover`, `replay`, `retry`,
   `attribution`, `ring_buffer`.
 - `src/http/`: metrics endpoint, control plane, встроенный dashboard и HTTP
-  serving helpers.
+  serving helpers. Общий accept-loop — `serve.rs`, bounded-чтение тела запроса
+  для обеих плоскостей — `body.rs`.
+- `src/accept.rs`: общий для SOCKS5-ingress и HTTP-листенеров хелпер ожидания
+  свободного слота соединения, наблюдающий shutdown.
 - `crates/outline-transport/`: WebSocket, HTTP/2, HTTP/3, VLESS,
   XHTTP, direct Shadowsocks transport logic, resume caches и HTTP-family dial
   planning в `dial_plan.rs`.
@@ -181,7 +184,13 @@ cargo release-musl-aarch64
   неизвестных полей опасно для production config.
 - Держите control/dashboard request bodies ограниченными по размеру. Не
   используйте `collect().await.to_bytes()` на входящих HTTP body без лимита;
-  выносите чтение JSON/body в общий limited helper.
+  читайте тело через общий helper `crate::http::body::read_limited_body`
+  (`src/http/body.rs`, `MAX_REQUEST_BODY_BYTES` = 1 MiB, 413 на превышение).
+  Новые эндпоинты обеих плоскостей заводите сразу через него.
+- Ожидание пермита в accept-loop'ах идёт через
+  `crate::accept::acquire_permit_or_shutdown` (`src/accept.rs`): голый
+  `acquire_owned().await` под насыщением делает цикл глухим к SIGTERM, пока
+  не завершится какое-нибудь долгоживущее соединение.
 - Для записи persisted state и live config используйте durable atomic write:
   sibling temp file, restrictive permissions для файлов с secrets, `sync_all`
   перед `rename` и, где уместно, синхронизацию parent directory.

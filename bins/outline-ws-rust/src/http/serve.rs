@@ -15,6 +15,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, watch};
 use tracing::{debug, info, warn};
 
+use crate::accept::acquire_permit_or_shutdown;
+
 pub(crate) struct ServeConfig {
     pub server_name: &'static str,
     pub max_concurrent: usize,
@@ -55,7 +57,14 @@ where
             },
         };
 
-        let permit = conn_sem.clone().acquire_owned().await.expect("semaphore closed");
+        let Some(permit) = acquire_permit_or_shutdown(&conn_sem, &mut shutdown).await else {
+            // Shutdown arrived while every slot was busy. The connection we
+            // just accepted is dropped unserved — on SIGTERM the in-flight
+            // requests are being cancelled anyway, and waiting here would keep
+            // the listener parked behind the slowest of them.
+            debug!(server, %peer, "shutdown while waiting for a connection slot; dropping the connection");
+            break;
+        };
         let handle = handle.clone();
         let mut task_shutdown = shutdown.clone();
         tokio::spawn(async move {

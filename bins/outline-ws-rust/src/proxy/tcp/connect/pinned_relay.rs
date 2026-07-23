@@ -150,6 +150,16 @@ pub(super) async fn run_relay(
     let ring: Option<Arc<Mutex<ClientUpstreamRingBuffer>>> =
         retry_eligible.then(|| Arc::new(Mutex::new(ClientUpstreamRingBuffer::new(buffer_cap))));
 
+    // The client halves are wrapped only so the post-loop tail can reclaim them
+    // (`Arc::try_unwrap` + `into_inner` in `force_client_rst`) after the data
+    // tasks are gone; the mutexes are ownership plumbing, not contention
+    // control. Exactly ONE task ever locks the read half — the current
+    // iteration's uplink task — and exactly one ever locks the write half — the
+    // downlink task. A second reader would deadlock behind the uplink task,
+    // which holds the read guard across an unbounded await (see the read loop
+    // below); a second writer would only interleave client bytes. Keep the
+    // single-holder-per-half rule, or move readiness parking out of the guard
+    // first.
     let client_read = Arc::new(Mutex::new(client_read));
     let client_write = Arc::new(Mutex::new(client_write));
     // Cumulative bytes the downlink task has successfully forwarded to
@@ -236,6 +246,14 @@ pub(super) async fn run_relay(
                 RelayReadBuf::adaptive(STREAM_INITIAL_READ_CAPACITY, SHADOWSOCKS_MAX_PAYLOAD);
             loop {
                 let read = {
+                    // INVARIANT: this task is the only holder of the read
+                    // guard, which is why keeping it across the readiness wait
+                    // is safe — `await_readable_or_keepalive` parks for as long
+                    // as the client stays quiet (unbounded), and on the
+                    // keepalive arm it also awaits an upstream write. Under a
+                    // second reader that hold would become a latency mine, so
+                    // adding one means parking readiness outside the lock and
+                    // taking the guard only for `try_read_buf`.
                     let cr_guard = cr_for_uplink.lock().await;
                     match read_buf
                         .park(await_readable_or_keepalive(
