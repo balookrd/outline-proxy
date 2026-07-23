@@ -558,9 +558,16 @@ impl TcpFlowState {
             self.pending_server_bytes_total >= n,
             "discharging more pending downlink bytes than were charged"
         );
-        self.pending_server_bytes_total -= n;
+        // Clamped for the same reason the pipe counters are (see
+        // `congestion::process_server_ack`): the `debug_assert` above catches a
+        // drift in tests, while a release build would wrap this `usize` to ~2^64
+        // and report an absurd backlog for the flow. The engine-wide budget only
+        // gives back what was actually discharged, so the two stay in step — a
+        // wrapped global total would gate every new flow on the engine.
+        let applied = n.min(self.pending_server_bytes_total);
+        self.pending_server_bytes_total -= applied;
         if let Some(global) = &self.pending_budget_global {
-            global.fetch_sub(n, Ordering::Relaxed);
+            global.fetch_sub(applied, Ordering::Relaxed);
         }
     }
 }
@@ -601,6 +608,10 @@ pub(in crate::tcp) fn reclaim_flow_queue_capacity(state: &mut TcpFlowState) {
     maybe_shrink_vecdeque(&mut state.pending_client_segments);
     maybe_shrink_vec(&mut state.sack_scoreboard);
 }
+
+#[cfg(test)]
+#[path = "tests/types.rs"]
+mod tests;
 
 /// Cached gauge handles bound to the uplink they were resolved for. The
 /// `sync_flow_metrics` hot path skips the 14 per-packet `with_label_values`

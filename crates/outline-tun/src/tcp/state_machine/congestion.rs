@@ -322,8 +322,19 @@ pub(in crate::tcp) fn process_server_ack(
             let segment = state.unacked_server_segments.pop_front().expect("front exists");
             let segment_len = server_segment_len(&segment);
             if !was_sacked {
-                state.pipe_bytes -= segment_len;
-                state.pipe_segments -= 1;
+                // Clamped, not bare `-=`: the accounting is exact today (the
+                // `debug_assert` on every read cross-checks it against the scan),
+                // but a future site that under-charges the pipe would underflow
+                // these `usize` counters in release, where there are no overflow
+                // checks. A wrapped `pipe_bytes` reads as ~2^64 bytes in flight,
+                // so `congestion_window_remaining` — `cap.saturating_sub(pipe)` —
+                // returns 0 from then on and the flush stops sending: a downlink
+                // that stalls silently, with no panic and no metric, and that a
+                // loss-free bulk transfer never recovers from (nothing rebuilds
+                // the scoreboard). Clamping keeps such a drift a recoverable
+                // miscount that the next SACK/ACK rebuild corrects.
+                state.pipe_bytes = state.pipe_bytes.saturating_sub(segment_len);
+                state.pipe_segments = state.pipe_segments.saturating_sub(1);
             }
             bytes_acked = bytes_acked.saturating_add(segment_len);
             // Canonical `tcp_rate_skb_delivered`: "record send time of the most
@@ -598,3 +609,7 @@ pub(in crate::tcp) fn note_congestion_event(state: &mut TcpFlowState, timeout: b
         super::bbr::note_loss(&mut state.bbr);
     }
 }
+
+#[cfg(test)]
+#[path = "tests/congestion.rs"]
+mod tests;
