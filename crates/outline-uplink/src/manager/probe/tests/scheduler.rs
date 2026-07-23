@@ -218,3 +218,60 @@ fn liveness_zero_disables_override() {
         Duration::ZERO,
     ));
 }
+
+// ── endpoint-check agreement ────────────────────────────────────────────────
+//
+// The pre-check is an accelerator, not a judge. It may only speed up a verdict
+// the regular probe independently reached; on its own it cannot condemn.
+// cloud4 proved why on 2026-07-22: 463 bare-connect failures against `senko`
+// while the TLS probe through the very same uplink logged 4879 successes and
+// zero errors — new TCP to that `host:port` was being refused while traffic
+// kept flowing over an already-established QUIC carrier.
+
+use anyhow::anyhow;
+
+use super::super::outcome::ProbeOutcome;
+use super::probe_confirms_failure;
+
+fn outcome(tcp_ok: bool, udp_applicable: bool, udp_ok: bool) -> ProbeOutcome {
+    ProbeOutcome {
+        tcp_ok,
+        tcp_carrier_ok: tcp_ok,
+        udp_ok,
+        udp_carrier_ok: udp_ok,
+        udp_applicable,
+        tcp_latency: None,
+        udp_latency: None,
+        tcp_downgraded_from: None,
+        udp_downgraded_from: None,
+    }
+}
+
+#[test]
+fn a_probe_that_got_through_on_tcp_refuses_to_confirm_a_failure() {
+    // The senko shape: bare connect refused, tunnel demonstrably working.
+    assert!(!probe_confirms_failure(&Ok(outcome(true, true, false))));
+}
+
+#[test]
+fn a_probe_that_got_through_on_udp_alone_also_refuses() {
+    assert!(!probe_confirms_failure(&Ok(outcome(false, true, true))));
+}
+
+#[test]
+fn both_planes_failing_confirms_the_failure() {
+    assert!(probe_confirms_failure(&Ok(outcome(false, true, false))));
+}
+
+#[test]
+fn a_tcp_only_uplink_is_judged_on_tcp_alone() {
+    // `udp_applicable = false` means "no UDP configured", not "UDP failed",
+    // so it must not hold back a verdict TCP already reached.
+    assert!(probe_confirms_failure(&Ok(outcome(false, false, false))));
+    assert!(!probe_confirms_failure(&Ok(outcome(true, false, false))));
+}
+
+#[test]
+fn a_probe_that_could_not_run_at_all_confirms_the_failure() {
+    assert!(probe_confirms_failure(&Err(anyhow!("probe timed out"))));
+}
