@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
@@ -46,6 +47,33 @@ class OutlineVpnService : VpnService() {
         // `[socks5] listen` address in the TOML). Used by tun2proxy later.
         const val SOCKS_ADDRESS = "127.0.0.1"
         const val SOCKS_PORT = 1080
+
+        /**
+         * Whether the tunnel is up, as reported by the Rust core (same process,
+         * so this is the live state, not a cached flag). Used by
+         * [ControlActivity] to decide what `outline://toggle` means. Defaults to
+         * "down" if the native library cannot be loaded.
+         */
+        fun isActive(): Boolean = runCatching { isRunning() }.getOrDefault(false)
+
+        /** Ask the service to bring the tunnel up with [configToml]. */
+        fun requestConnect(context: Context, configToml: String) {
+            context.startService(
+                Intent(context, OutlineVpnService::class.java).apply {
+                    action = ACTION_CONNECT
+                    putExtra(EXTRA_CONFIG_TOML, configToml)
+                },
+            )
+        }
+
+        /** Ask the service to tear the tunnel down. */
+        fun requestDisconnect(context: Context) {
+            context.startService(
+                Intent(context, OutlineVpnService::class.java).apply {
+                    action = ACTION_DISCONNECT
+                },
+            )
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
