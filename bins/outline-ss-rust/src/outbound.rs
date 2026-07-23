@@ -574,6 +574,11 @@ fn enumerate_ipv6_on_interface(iface: &str) -> std::io::Result<Vec<Ipv6Addr>> {
     impl Drop for IfAddrsGuard {
         fn drop(&mut self) {
             if !self.0.is_null() {
+                // SAFETY: `self.0` is the just-null-checked list head that
+                // `getifaddrs` allocated for this guard and that nothing else
+                // frees. The guard owns the list, `Drop` runs exactly once, and
+                // every borrow into it (`ifa`, `name`, `sa6`) is confined to the
+                // loop below, so nothing can observe the freed memory.
                 unsafe { libc::freeifaddrs(self.0) };
             }
         }
@@ -653,6 +658,11 @@ where
     T: std::os::fd::AsRawFd,
 {
     let value: libc::c_int = 1;
+    // SAFETY: `socket` borrows the fd for the whole call, so it cannot be closed
+    // underneath the syscall. The option pointer refers to a live stack `c_int`
+    // and `optlen` is that value's exact size, which is the `int` that
+    // `IPV6_FREEBIND` expects; the kernel only reads `optlen` bytes through it
+    // and never writes back. The `-1` error return is checked below.
     let rc = unsafe {
         libc::setsockopt(
             socket.as_raw_fd(),

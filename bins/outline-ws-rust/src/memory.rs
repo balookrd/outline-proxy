@@ -318,6 +318,11 @@ fn sample_process_thread_count() -> Option<u64> {
 fn page_size_bytes() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
+        // SAFETY: `sysconf` takes the name by value and dereferences nothing, so
+        // it has no preconditions beyond the name being a defined `_SC_*`
+        // constant — `_SC_PAGESIZE` is mandated by POSIX and defined on every
+        // Linux target. A non-positive result is treated as "unknown" below
+        // rather than as a page size.
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
         if page_size > 0 {
             return Some(page_size as u64);

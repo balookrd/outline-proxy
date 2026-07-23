@@ -60,9 +60,11 @@ jobs:
       # `--no-deps` keeps clippy off the vendored members (they are linted as
       # dependencies otherwise). The style/complexity backlog was cleared, so
       # the gate denies everything clippy emits at its default lint levels.
-      # The two deliberate allows (too_many_arguments, type_complexity) live
-      # in `[workspace.lints.clippy]` in the root Cargo.toml until the
-      # god-object refactors land.
+      # `[workspace.lints.clippy]` in the root Cargo.toml adjusts two of them:
+      # `type_complexity` is allowed until the god-object refactors land, and
+      # `undocumented_unsafe_blocks` is raised to warn — which `-D warnings`
+      # turns into a hard failure, so an `unsafe` without a `// SAFETY:`
+      # comment cannot merge.
       - name: clippy (deny all default-level warnings)
         run: >
           cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps --

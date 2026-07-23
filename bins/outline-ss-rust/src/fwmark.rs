@@ -32,6 +32,11 @@ where
     T: std::os::fd::AsRawFd,
 {
     let value: libc::c_uint = fwmark;
+    // SAFETY: `socket` borrows the fd for the whole call, so it cannot be closed
+    // underneath the syscall. The option pointer refers to a live stack `c_uint`
+    // and `optlen` is that value's exact size, which matches the `int`-sized
+    // option `SO_MARK` expects; the kernel only reads `optlen` bytes through it
+    // and never writes back. The `-1` error return is checked below.
     let rc = unsafe {
         libc::setsockopt(
             socket.as_raw_fd(),
