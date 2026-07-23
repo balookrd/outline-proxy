@@ -373,6 +373,30 @@ impl crate::shared_cache::CachedEntry for SharedH3Connection {
 static H3_CLIENT_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::new();
 static H3_CLIENT_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::new();
 
+/// Endpoint for one H3 dial, shared by the WS-over-H3 carrier and the
+/// XHTTP-over-H3 one.
+///
+/// For fwmark connections the socket must be bound with the mark set before
+/// connect, so each dial needs its own UDP socket and endpoint. Every other
+/// dial reuses the shared per-address-family endpoint, so N connections share
+/// a single UDP socket instead of opening N.
+pub(crate) fn client_endpoint(
+    bind_addr: std::net::SocketAddr,
+    fwmark: Option<u32>,
+) -> Result<quinn::Endpoint> {
+    if fwmark.is_some() {
+        let socket = bind_udp_socket(bind_addr, fwmark)?;
+        return quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )
+        .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"));
+    }
+    get_or_init_shared_h3_endpoint(bind_addr)
+}
+
 fn get_or_init_shared_h3_endpoint(bind_addr: std::net::SocketAddr) -> Result<quinn::Endpoint> {
     // Cross-repo integration tests run each `#[tokio::test]` in its
     // own runtime; the shared endpoint's driver task is spawned on
@@ -543,22 +567,9 @@ async fn connect_h3_connection(
     let bind_addr = bind_addr_for(server_addr);
     let client_config = crate::quic::h3_quic_client_config();
 
-    // For fwmark connections the socket must be bound with the mark set before
-    // connect, so each stream needs its own UDP socket and endpoint.  For all
-    // other connections we reuse one shared endpoint per address family so that
-    // N warm-standby streams share a single UDP socket rather than opening N.
-    let endpoint = if fwmark.is_some() {
-        let socket = bind_udp_socket(bind_addr, fwmark)?;
-        quinn::Endpoint::new(
-            quinn::EndpointConfig::default(),
-            None,
-            socket,
-            Arc::new(quinn::TokioRuntime),
-        )
-        .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"))?
-    } else {
-        get_or_init_shared_h3_endpoint(bind_addr)?
-    };
+    // Own endpoint for fwmark dials, shared per-address-family endpoint
+    // otherwise — see [`client_endpoint`].
+    let endpoint = client_endpoint(bind_addr, fwmark)?;
 
     let connecting = endpoint
         .connect_with(client_config, server_addr, server_name)
