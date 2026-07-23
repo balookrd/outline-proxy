@@ -2,10 +2,15 @@
 #[path = "tests/snapshot.rs"]
 mod tests;
 
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
+use std::time::Duration;
+
 use tokio::time::Instant;
 
 use super::super::config::{LoadBalancingMode, RoutingScope, UplinkTransport};
 use super::super::penalty::current_penalty;
+use super::super::routing_key::RoutingKey;
 use super::super::selection::{
     any_wire_recent_success, effective_health, effective_latency, selection_score,
 };
@@ -13,6 +18,45 @@ use super::super::time::duration_to_millis_option;
 use super::super::types::{
     StickyRouteSnapshot, TransportKind, UplinkManager, UplinkManagerSnapshot, UplinkSnapshot,
 };
+
+/// How many sticky-route entries a snapshot serialises. The map itself is
+/// bounded by `MAX_STICKY_ROUTES` (100k per group) and a snapshot is rebuilt on
+/// every Prometheus scrape and dashboard poll, so serialising all of it burned
+/// a `String` per entry per scrape on a surface nobody reads past the first
+/// screen. The entries are a sample for eyeballing; the accounting surface is
+/// `sticky_routes_total` / `sticky_routes_by_uplink`, which stay exact.
+pub(crate) const STICKY_ROUTES_SNAPSHOT_LIMIT: usize = 1000;
+
+/// Borrowed sticky-route entry ranked by remaining TTL. Lets the sampler keep
+/// the longest-lived pins in a bounded min-heap — one pass over the map, and
+/// only the survivors get stringified. Ordering is on `remaining` alone: ties
+/// are interchangeable for sampling, so `Eq` here means "ranks the same", not
+/// "same entry".
+struct RankedStickyRoute<'a> {
+    remaining: Duration,
+    key: &'a RoutingKey,
+    uplink_index: usize,
+}
+
+impl Ord for RankedStickyRoute<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.remaining.cmp(&other.remaining)
+    }
+}
+
+impl PartialOrd for RankedStickyRoute<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Eq for RankedStickyRoute<'_> {}
+
+impl PartialEq for RankedStickyRoute<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.remaining == other.remaining
+    }
+}
 
 fn load_balancing_mode_name(mode: LoadBalancingMode) -> &'static str {
     match mode {
@@ -497,21 +541,50 @@ impl UplinkManager {
             })
             .flatten();
 
-        let sticky_routes = {
+        // One pass over the sticky map: exact counts for the metrics surface,
+        // plus a bounded longest-TTL-first sample for the dashboard. Only the
+        // sampled entries allocate.
+        let (sticky_routes, sticky_routes_total, sticky_routes_by_uplink) = {
             let sticky = self.inner.sticky_routes.read().await;
-            sticky
-                .iter()
-                .filter_map(|(key, route)| {
-                    route.expires_at.checked_duration_since(now).map(|remaining| {
-                        StickyRouteSnapshot {
-                            key: key.to_string(),
-                            uplink_index: route.uplink_index,
-                            uplink_name: self.inner.uplinks[route.uplink_index].name.clone(),
-                            expires_in_ms: remaining.as_millis(),
-                        }
-                    })
+            let mut total = 0usize;
+            let mut by_uplink = vec![0usize; self.inner.uplinks.len()];
+            let mut sample: BinaryHeap<Reverse<RankedStickyRoute<'_>>> =
+                BinaryHeap::with_capacity(STICKY_ROUTES_SNAPSHOT_LIMIT.min(sticky.len()));
+            for (key, route) in sticky.iter() {
+                let Some(remaining) = route.expires_at.checked_duration_since(now) else {
+                    continue;
+                };
+                total += 1;
+                if let Some(count) = by_uplink.get_mut(route.uplink_index) {
+                    *count += 1;
+                }
+                let ranked = RankedStickyRoute {
+                    remaining,
+                    key,
+                    uplink_index: route.uplink_index,
+                };
+                if sample.len() < STICKY_ROUTES_SNAPSHOT_LIMIT {
+                    sample.push(Reverse(ranked));
+                } else if let Some(Reverse(shortest)) = sample.peek()
+                    && ranked.remaining > shortest.remaining
+                {
+                    sample.pop();
+                    sample.push(Reverse(ranked));
+                }
+            }
+            // `into_sorted_vec` on a `Reverse` min-heap yields descending
+            // remaining TTL — freshest pins first.
+            let entries = sample
+                .into_sorted_vec()
+                .into_iter()
+                .map(|Reverse(ranked)| StickyRouteSnapshot {
+                    key: ranked.key.to_string(),
+                    uplink_index: ranked.uplink_index,
+                    uplink_name: self.inner.uplinks[ranked.uplink_index].name.clone(),
+                    expires_in_ms: ranked.remaining.as_millis(),
                 })
-                .collect()
+                .collect();
+            (entries, total, by_uplink)
         };
 
         // Live bypass state: mirrors the dispatch-layer decision
@@ -546,6 +619,8 @@ impl UplinkManager {
             udp_active_reason,
             uplinks,
             sticky_routes,
+            sticky_routes_total,
+            sticky_routes_by_uplink,
         }
     }
 }

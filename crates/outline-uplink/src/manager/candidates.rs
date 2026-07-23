@@ -859,8 +859,11 @@ impl UplinkManager {
         }
         if enabled {
             // Newly eligible: re-probe promptly so health is fresh before the
-            // selection path can route to it.
-            self.inner.probe_wakeup.notify_waiters();
+            // selection path can route to it. `notify_one` (not
+            // `notify_waiters`) because the probe loop is almost always inside
+            // `probe_all()` rather than parked on `notified()` — only a stored
+            // permit survives to wake the *next* park.
+            self.inner.probe_wakeup.notify_one();
         } else {
             // Drop any sticky routes pinned to the now disabled uplink so the
             // next dispatch re-selects from the enabled set.
@@ -875,7 +878,8 @@ impl UplinkManager {
                     .strict_transport_candidates(TransportKind::Udp, None, None, true)
                     .await;
             }
-            self.inner.probe_wakeup.notify_waiters();
+            // Stored permit for the same reason as the enable edge above.
+            self.inner.probe_wakeup.notify_one();
         }
         Ok(index)
     }
@@ -996,8 +1000,11 @@ impl UplinkManager {
 
         // Wake up the probe loop so a fresh health/latency reading is
         // collected immediately for the cleared statuses instead of waiting
-        // for the next scheduled probe interval.
-        self.inner.probe_wakeup.notify_waiters();
+        // for the next scheduled probe interval. `notify_one` stores a permit
+        // when nobody is parked yet — the probe loop is usually mid-`probe_all()`
+        // at this point, and a dropped wakeup would leave every status the
+        // manual switch just reset at `None` for a whole probe interval.
+        self.inner.probe_wakeup.notify_one();
 
         Ok((index, applied_soft))
     }
