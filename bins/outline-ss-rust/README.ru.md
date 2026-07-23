@@ -284,6 +284,7 @@ cargo release-musl-armv7
 | `dashboard.listen` | Адрес сокета dashboard listener, например `127.0.0.1:7002` |
 | `dashboard.request_timeout_secs` | Таймаут dashboard-to-control запросов. По умолчанию `15` |
 | `dashboard.refresh_interval_secs` | Интервал автообновления dashboard UI в секундах. По умолчанию `10` |
+| `dashboard.token` / `token_file` | Опциональный секрет для самого dashboard listener; принимается как `Authorization: Bearer <token>` либо как пароль HTTP Basic (имя пользователя любое). По умолчанию не задан — listener остаётся без аутентификации |
 | `dashboard.instances[].name` | Отображаемое имя управляемого инстанса |
 | `dashboard.instances[].control_url` | Базовый `http://` или `https://` URL control listener этого инстанса |
 | `dashboard.instances[].token` / `token_file` | Bearer-токен, который dashboard использует server-side при проксировании |
@@ -427,6 +428,16 @@ token_file = "/etc/outline-ss-rust/edge-02.control.token"
 ```
 
 Открывайте `http://127.0.0.1:7002/dashboard`.
+
+Доступ к dashboard равносилен владению всеми токенами инстансов, которые в нём настроены: он проксирует user CRUD ко всем ним, подставляя эти токены server-side, а сам listener по умолчанию без аутентификации. Держите его на loopback (как выше), а если он должен быть доступен извне — ставьте перед ним аутентифицирующий reverse-proxy и/или задавайте собственный секрет:
+
+```toml
+[dashboard]
+listen = "10.0.0.7:7002"
+token_file = "/etc/outline-ss-rust/dashboard.token"
+```
+
+Если задан `dashboard.token` (или `dashboard.token_file`), каждый запрос обязан содержать `Authorization: Bearer <token>`; браузер вместо этого отвечает на `Basic`-запрос с любым именем пользователя и токеном в качестве пароля. Listener не на loopback без такого секрета пишет предупреждение при старте.
 
 | Метод | Путь | Назначение |
 | --- | --- | --- |

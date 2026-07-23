@@ -240,6 +240,11 @@ pub(super) struct DashboardFileConfig {
     pub listen: Option<SocketAddr>,
     pub request_timeout_secs: Option<u64>,
     pub refresh_interval_secs: Option<u64>,
+    /// Optional secret required by the dashboard listener itself, accepted as
+    /// `Authorization: Bearer <token>` or as the HTTP Basic password. Absent
+    /// leaves the listener unauthenticated (loopback deployments).
+    pub token: Option<String>,
+    pub token_file: Option<PathBuf>,
     #[serde(default)]
     pub instances: Option<Vec<DashboardInstanceFileConfig>>,
 }
