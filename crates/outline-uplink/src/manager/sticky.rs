@@ -10,6 +10,10 @@ use super::super::selection::score_latency;
 use super::super::types::{TransportKind, UplinkManager};
 use super::candidates::CandidateState;
 
+#[cfg(test)]
+#[path = "tests/sticky.rs"]
+mod tests;
+
 #[derive(Clone, Debug)]
 pub(crate) struct StickyRoute {
     pub(crate) uplink_index: usize,
@@ -48,12 +52,12 @@ impl UplinkManager {
 
         let sticky = candidates.iter().find(|candidate| candidate.index == sticky_index)?;
         if !sticky.healthy {
-            self.store_sticky_route(routing_key, candidates[0].index).await;
+            self.refresh_sticky_route(routing_key, candidates[0].index).await;
             return Some(candidates[0].index);
         }
 
         if self.inner.load_balancing.mode == LoadBalancingMode::ActivePassive {
-            self.store_sticky_route(routing_key, sticky.index).await;
+            self.refresh_sticky_route(routing_key, sticky.index).await;
             return Some(sticky.index);
         }
 
@@ -92,12 +96,36 @@ impl UplinkManager {
         };
 
         if should_switch {
-            self.store_sticky_route(routing_key, fastest.index).await;
+            self.refresh_sticky_route(routing_key, fastest.index).await;
             Some(fastest.index)
         } else {
-            self.store_sticky_route(routing_key, sticky.index).await;
+            self.refresh_sticky_route(routing_key, sticky.index).await;
             Some(sticky.index)
         }
+    }
+
+    /// Write the sticky decision back only when it changes something: a
+    /// different uplink, a vanished entry, or a TTL already decayed past half.
+    ///
+    /// `preferred_sticky_index` runs on every dial and `sticky_routes` is a
+    /// single group-wide `RwLock`, so re-stamping an identical entry would
+    /// funnel the whole group's dispatch through the write lock for nothing.
+    /// Refreshing from half the TTL onward keeps a hot flow's pin well ahead of
+    /// the prune sweep while leaving the common case on the read path. Pinned
+    /// (strict active-uplink) entries carry a year-long expiry, so they always
+    /// take the early return.
+    async fn refresh_sticky_route(&self, routing_key: &RoutingKey, uplink_index: usize) {
+        let refresh_from = Instant::now() + self.inner.load_balancing.sticky_ttl / 2;
+        {
+            let sticky = self.inner.sticky_routes.read().await;
+            if let Some(route) = sticky.get(routing_key)
+                && route.uplink_index == uplink_index
+                && route.expires_at > refresh_from
+            {
+                return;
+            }
+        }
+        self.store_sticky_route(routing_key, uplink_index).await;
     }
 
     pub(crate) async fn store_sticky_route(&self, routing_key: &RoutingKey, uplink_index: usize) {

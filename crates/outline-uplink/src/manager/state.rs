@@ -105,13 +105,15 @@ pub(crate) struct UplinkManagerInner {
     /// through `UplinkManager::subscribe_active_uplinks()`.
     pub(crate) active_uplinks_tx: watch::Sender<ActiveUplinksSnapshot>,
     /// Per-uplink administrative enable flag (operator on/off via
-    /// `/control/uplink_enabled`). Length matches `uplinks`; all `true` at
-    /// construction. A `false` entry takes the uplink out of every automatic
-    /// path: the probe loop skips it, candidate selection / failover exclude
-    /// it, and warm-standby refill stops. Lock-free `AtomicBool` so the hot
-    /// selection path reads it without taking the per-uplink status lock.
-    /// Runtime-only: not persisted to the state store, so a restart starts
-    /// every uplink enabled.
+    /// `/control/uplink_enabled`). Length matches `uplinks`. A `false` entry
+    /// takes the uplink out of every automatic path: the probe loop skips it,
+    /// candidate selection / failover exclude it, and warm-standby refill
+    /// stops. Lock-free `AtomicBool` so the hot selection path reads it
+    /// without taking the per-uplink status lock.
+    ///
+    /// Persisted: every toggle is flushed to the state store's
+    /// `disabled_uplinks` set (by uplink name), and construction seeds the
+    /// flags from it — a disabled uplink stays parked across a restart.
     pub(crate) admin_enabled: Box<[AtomicBool]>,
 }
 

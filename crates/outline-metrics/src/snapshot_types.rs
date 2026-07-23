@@ -47,7 +47,18 @@ pub struct UplinkManagerSnapshot {
     pub udp_active_uplink: Option<String>,
     pub udp_active_reason: Option<String>,
     pub uplinks: Vec<UplinkSnapshot>,
+    /// Bounded sample of the group's live sticky routes, longest remaining TTL
+    /// first. The map behind it holds up to 100k entries and a snapshot is
+    /// rebuilt on every scrape / dashboard poll, so this list is deliberately
+    /// capped — read [`Self::sticky_routes_total`] and
+    /// [`Self::sticky_routes_by_uplink`] for counts, never `sticky_routes.len()`.
     pub sticky_routes: Vec<StickyRouteSnapshot>,
+    /// Exact number of live sticky routes in the group, including entries the
+    /// capped [`Self::sticky_routes`] sample left out.
+    pub sticky_routes_total: usize,
+    /// Exact live sticky-route count per uplink, indexed by
+    /// [`UplinkSnapshot::index`]. Counted over the whole map, not the sample.
+    pub sticky_routes_by_uplink: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]

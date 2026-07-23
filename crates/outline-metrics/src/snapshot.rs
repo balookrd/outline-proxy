@@ -62,9 +62,11 @@ impl Metrics {
 
     fn update_group_metrics(&self, snapshot: &UplinkManagerSnapshot) {
         let group = snapshot.group.as_str();
+        // Counts come from the exact totals, never from `sticky_routes` — that
+        // list is a capped sample.
         self.sticky_routes_total
             .with_label_values(&[group])
-            .set(i64::try_from(snapshot.sticky_routes.len()).unwrap_or(i64::MAX));
+            .set(i64::try_from(snapshot.sticky_routes_total).unwrap_or(i64::MAX));
         for mode in ["active_active", "active_passive"] {
             self.selection_mode_info.with_label_values(&[group, mode]).set(0);
         }
@@ -298,10 +300,15 @@ impl Metrics {
                 .set(1);
         }
 
-        for sticky in &snapshot.sticky_routes {
+        // Same for the per-uplink breakdown: `sticky_routes_by_uplink` is
+        // indexed by `UplinkSnapshot::index` and counted over the whole map.
+        for uplink in &snapshot.uplinks {
+            let Some(count) = snapshot.sticky_routes_by_uplink.get(uplink.index) else {
+                continue;
+            };
             self.sticky_routes_by_uplink
-                .with_label_values(&[group, &sticky.uplink_name])
-                .inc();
+                .with_label_values(&[group, &uplink.name])
+                .set(i64::try_from(*count).unwrap_or(i64::MAX));
         }
     }
 }

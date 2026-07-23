@@ -548,3 +548,43 @@ async fn candidate_order_ranks_by_active_wire_rtt() {
         "with up-a back on its 10 ms primary wire it must outrank up-b; got {order:?}",
     );
 }
+
+/// Operator-driven changes must leave a *stored* probe wakeup, not one that is
+/// only delivered to whoever happens to be parked on `notified()` right now.
+/// The probe loop spends nearly all of its time inside `probe_all()`, so a
+/// wakeup with no stored permit is dropped and the freshly cleared health
+/// stays `None` until the next scheduled interval.
+#[tokio::test]
+async fn manual_switch_stores_a_probe_wakeup_permit() {
+    let manager = manager();
+    manager.set_active_uplink_by_name("up-b", None, false).await.unwrap();
+
+    let woken =
+        tokio::time::timeout(Duration::from_millis(200), manager.inner.probe_wakeup.notified())
+            .await;
+    assert!(
+        woken.is_ok(),
+        "a manual switch must store a probe wakeup permit for a probe loop busy in probe_all()",
+    );
+}
+
+/// Same invariant for the operator on/off toggle: both edges (enable and
+/// disable) wake the probe loop, and both must survive nobody waiting.
+#[tokio::test]
+async fn enable_toggle_stores_a_probe_wakeup_permit_on_both_edges() {
+    let manager = manager();
+
+    manager.set_uplink_enabled_by_name("up-a", false).await.unwrap();
+    let woken =
+        tokio::time::timeout(Duration::from_millis(200), manager.inner.probe_wakeup.notified())
+            .await;
+    assert!(woken.is_ok(), "disabling an uplink must store a probe wakeup permit");
+
+    // The await above consumed the stored permit, so the re-enable edge is
+    // observed on its own.
+    manager.set_uplink_enabled_by_name("up-a", true).await.unwrap();
+    let woken =
+        tokio::time::timeout(Duration::from_millis(200), manager.inner.probe_wakeup.notified())
+            .await;
+    assert!(woken.is_ok(), "re-enabling an uplink must store a probe wakeup permit");
+}
