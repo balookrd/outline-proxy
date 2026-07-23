@@ -22,7 +22,22 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     };
     fs::write(&tmp, bytes)
         .with_context(|| format!("failed to write temp file {}", tmp.display()))?;
+    // The rename replaces the target *including its mode*, so the temp file's
+    // umask default (typically 0644) would silently widen a config an admin
+    // restricted to 0600 — and `config.toml` carries user passwords and the
+    // cluster PSK. Carry the target's mode over first. Unix-only: elsewhere
+    // `Permissions` is just a read-only flag, which is not what this guards.
+    #[cfg(unix)]
+    if let Ok(meta) = fs::metadata(path) {
+        fs::set_permissions(&tmp, meta.permissions()).with_context(|| {
+            format!("failed to carry permissions over to temp file {}", tmp.display())
+        })?;
+    }
     fs::rename(&tmp, path)
         .with_context(|| format!("failed to rename {} -> {}", tmp.display(), path.display()))?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/fs_util.rs"]
+mod tests;
