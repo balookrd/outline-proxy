@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -16,8 +15,9 @@ use outline_transport::{
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
 use socks5_proto::TargetAddr;
 
+use super::eviction::{evict_oldest_flow, record_flow_activity};
 use super::types::{
-    DirectUdpFlowState, FlowStamp, UDP_OUTBOUND_QUEUE_CAP, UDP_PENDING_DIAL_BUFFER_CAP,
+    DirectUdpFlowState, UDP_OUTBOUND_QUEUE_CAP, UDP_PENDING_DIAL_BUFFER_CAP,
     bump_last_seen_if_current, drain_idle_flows, flow_is_current,
 };
 use futures_util::FutureExt as _;
@@ -135,24 +135,16 @@ impl TunUdpEngine {
                 drop(guard);
                 let mut existing = existing.lock().await;
                 existing.last_seen = now;
+                record_flow_activity(&self.inner.eviction_index, &key, &mut *existing);
                 existing.outbound_tx.clone()
             } else {
                 if guard.len() >= self.inner.max_flows {
-                    match oldest_flow_key(&guard).await {
-                        Some(evicted_key) => {
-                            if let Some(evicted) = guard.remove(&evicted_key) {
-                                {
-                                    let snapshot = evicted.lock().await;
-                                    warn!(
-                                        evicted_flow_id = snapshot.id,
-                                        evicted_uplink = %snapshot.uplink_name,
-                                        max_flows = self.inner.max_flows,
-                                        "evicted oldest TUN UDP flow due to flow table limit"
-                                    );
-                                }
-                                evicted_flow = Some(evicted);
-                            }
-                        },
+                    // Victim selection is a single O(log n) index pop: no scan of
+                    // the table and no other flow's lock is taken, so the
+                    // write-lock this read-loop holds is released in constant
+                    // time instead of after one await per live flow.
+                    match evict_oldest_flow(&mut guard, &self.inner.eviction_index) {
+                        Some((_, evicted)) => evicted_flow = Some(evicted),
                         None => {
                             warn!("TUN UDP flow table limit reached and no flow could be evicted");
                             return;
@@ -174,16 +166,30 @@ impl TunUdpEngine {
                     group_name: Arc::from(manager.group_name()),
                     created_at: now,
                     last_seen: now,
+                    eviction_indexed_at: now,
                     last_ptb_sent: None,
                     outbound_tx: outbound_tx.clone(),
                     _uplink_task: Some(uplink_task),
                 };
                 guard.insert(key.clone(), Arc::new(Mutex::new(state)));
+                self.inner.eviction_index.upsert(key.clone(), flow_id, now);
                 outbound_tx
             }
         };
 
         if let Some(flow) = evicted_flow {
+            // Logged off the write-lock: the victim's own lock can be held by
+            // its carrier send for as long as the network takes, and the
+            // read-loop must not wait on that with the table locked.
+            {
+                let snapshot = flow.lock().await;
+                warn!(
+                    evicted_flow_id = snapshot.id,
+                    evicted_uplink = %snapshot.uplink_name,
+                    max_flows = self.inner.max_flows,
+                    "evicted oldest TUN UDP flow due to flow table limit"
+                );
+            }
             self.enqueue_close(flow, "evicted");
         }
 
@@ -441,7 +447,13 @@ impl TunUdpEngine {
                     },
                 }
                 // Keep an actively-sending flow from being idle-reaped.
-                bump_last_seen_if_current(&engine.inner.flows, &key, flow_id).await;
+                bump_last_seen_if_current(
+                    &engine.inner.flows,
+                    &engine.inner.eviction_index,
+                    &key,
+                    flow_id,
+                )
+                .await;
             }
         }))
     }
@@ -587,7 +599,13 @@ impl TunUdpEngine {
                             "accepted",
                         );
                     }
-                    bump_last_seen_if_current(&engine.inner.flows, &key, flow_id).await;
+                    bump_last_seen_if_current(
+                        &engine.inner.flows,
+                        &engine.inner.eviction_index,
+                        &key,
+                        flow_id,
+                    )
+                    .await;
                 }
                 #[allow(unreachable_code)]
                 Ok::<(), anyhow::Error>(())
@@ -644,7 +662,14 @@ impl TunUdpEngine {
             // flow between our read-lock drop and write-lock acquire.
             if let Some(handle) = guard.get(key).map(Arc::clone) {
                 let same = handle.lock().await.id == flow_id;
-                if same { guard.remove(key) } else { None }
+                if same {
+                    // Unindex before the map removal so no eviction can pick a
+                    // key that is no longer in the table.
+                    self.inner.eviction_index.remove(key, flow_id);
+                    guard.remove(key)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -659,10 +684,18 @@ impl TunUdpEngine {
         let now = Instant::now();
         let idle_timeout = self.inner.idle_timeout;
 
-        for flow in drain_idle_flows(&self.inner.flows, idle_timeout, now).await {
+        // Each reaped flow also leaves the eviction index — a stale entry is
+        // both a leaked key and a wasted eviction attempt later on. The removal
+        // is generation-checked, so a key already re-created by a fresh flow
+        // keeps the new generation's entry.
+        for (key, flow) in drain_idle_flows(&self.inner.flows, idle_timeout, now).await {
+            let flow_id = flow.lock().await.id;
+            self.inner.eviction_index.remove(&key, flow_id);
             self.enqueue_close(flow, "idle_timeout");
         }
-        for flow in drain_idle_flows(&self.inner.direct_flows, idle_timeout, now).await {
+        for (key, flow) in drain_idle_flows(&self.inner.direct_flows, idle_timeout, now).await {
+            let flow_id = flow.lock().await.id;
+            self.inner.direct_eviction_index.remove(&key, flow_id);
             self.enqueue_close_direct(flow, "idle_timeout");
         }
     }
@@ -748,25 +781,6 @@ async fn select_candidate_and_connect(
         "all UDP uplinks failed for TUN flow: {}",
         last_error.unwrap_or_else(|| "no UDP-capable uplinks available".to_string())
     )))
-}
-
-/// Pick the least-recently-seen flow key in a table. Generic over the flow
-/// state (via [`FlowStamp`]) so both the tunnelled (`flows`) and direct
-/// (`direct_flows`) tables share one eviction-selection routine.
-pub(super) async fn oldest_flow_key<K, F>(flows: &HashMap<K, Arc<Mutex<F>>>) -> Option<K>
-where
-    K: Clone,
-    F: FlowStamp,
-{
-    let mut oldest: Option<(K, Instant)> = None;
-    for (key, handle) in flows {
-        let last_seen = handle.lock().await.last_seen();
-        match &oldest {
-            Some((_, t)) if last_seen >= *t => continue,
-            _ => oldest = Some((key.clone(), last_seen)),
-        }
-    }
-    oldest.map(|(k, _)| k)
 }
 
 pub(crate) async fn close_udp_flow(flow: Arc<Mutex<UdpFlowState>>, reason: &'static str) {

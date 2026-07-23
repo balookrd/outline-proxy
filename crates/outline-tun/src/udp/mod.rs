@@ -8,6 +8,7 @@ use outline_uplink::{TransportKind, UplinkManager};
 use socks5_proto::TargetAddr;
 
 mod engine;
+mod eviction;
 mod lifecycle;
 mod sni_cache;
 mod types;
