@@ -5,10 +5,12 @@
 //! loop that classifies each packet and dispatches it to the right engine
 //! (or synthesises a local ICMP reply).
 
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
+use futures_util::FutureExt as _;
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::Mutex;
@@ -338,7 +340,13 @@ async fn tun_read_loop(
                         continue;
                     },
                 };
-                if let Err(error) = udp_engine.handle_packet(parsed).await {
+                if let Some(Err(error)) = guard_packet_dispatch(
+                    udp_engine.handle_packet(parsed),
+                    ip_family_name(version_nibble),
+                    "udp_dispatch_panic",
+                )
+                .await
+                {
                     metrics::record_tun_udp_forward_error(classify_tun_udp_forward_error(&error));
                     metrics::record_tun_packet("up", ip_family_name(version_nibble), "udp_error");
                     warn!(
@@ -351,7 +359,12 @@ async fn tun_read_loop(
             },
             PacketDisposition::Tcp => {
                 metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_observed");
-                if let Err(error) = tcp_engine.handle_packet(packet, packet_checksum, read_at).await
+                if let Some(Err(error)) = guard_packet_dispatch(
+                    tcp_engine.handle_packet(packet, packet_checksum, read_at),
+                    ip_family_name(version_nibble),
+                    "tcp_dispatch_panic",
+                )
+                .await
                 {
                     metrics::record_tun_packet("up", ip_family_name(version_nibble), "tcp_error");
                     warn!(
@@ -422,6 +435,53 @@ async fn tun_read_loop(
     }
 }
 
+/// Run one packet's engine dispatch behind a panic firewall, returning `None`
+/// when it panicked (the packet is dropped) and the dispatch's own result
+/// otherwise.
+///
+/// [`tun_read_loop`] is a *single* task: every TCP flow, every UDP flow and the
+/// local ICMP replies are dispatched from it, one packet at a time. A panic
+/// while handling one inbound packet — an `.expect()` on a header the wire
+/// never guarantees, an unchecked slice, an arithmetic overflow in a debug
+/// build — would therefore not cost that one flow: it would end the loop and
+/// with it the entire data plane, and silently, because nothing joins this
+/// task. Containing the dispatch reduces the blast radius to what it should
+/// have been all along — the poisoned packet is dropped and counted, and the
+/// loop reads the next one.
+///
+/// There is no known reachable panic on this path today; this guards against
+/// future regressions in code that parses untrusted bytes (the `slice_chunks`
+/// indexing in `tcp::state_machine::send::flush` is the kind of fragility
+/// meant here).
+///
+/// Deliberate caveat: the release profile sets `panic = "abort"` (workspace
+/// `Cargo.toml`), and an aborting panic never unwinds — there the process is
+/// gone before this can catch anything. The firewall is effective in
+/// debug/test builds and in any future unwinding build; it is a safety net for
+/// the loop, never a substitute for the bounds checks themselves.
+///
+/// Engine state survives a caught panic: the flow tables are tokio locks and
+/// the eviction index a `parking_lot` mutex, none of which poison, so the worst
+/// case is one flow's bookkeeping left mid-update — which the generation checks
+/// on every flow path already tolerate.
+async fn guard_packet_dispatch<F>(
+    dispatch: F,
+    family: &'static str,
+    outcome: &'static str,
+) -> Option<Result<()>>
+where
+    F: Future<Output = Result<()>>,
+{
+    match AssertUnwindSafe(dispatch).catch_unwind().await {
+        Ok(result) => Some(result),
+        Err(_) => {
+            metrics::record_tun_packet("up", family, outcome);
+            warn!(outcome, "TUN packet dispatch panicked: packet dropped, read loop kept alive");
+            None
+        },
+    }
+}
+
 /// L4-checksum provenance of the packet the engines finally parse.
 ///
 /// `read_checksum` is what the read itself established (see
@@ -468,7 +528,13 @@ async fn dispatch_udp_gso_superpacket(udp_engine: &TunUdpEngine, packet: &[u8], 
     debug!(count = datagrams.len(), gso_size, "re-segmented UDP GRO super-packet");
     for parsed in datagrams {
         metrics::record_tun_packet("up", ip_family_name(version_nibble), "accepted");
-        if let Err(error) = udp_engine.handle_packet(parsed).await {
+        if let Some(Err(error)) = guard_packet_dispatch(
+            udp_engine.handle_packet(parsed),
+            ip_family_name(version_nibble),
+            "udp_dispatch_panic",
+        )
+        .await
+        {
             metrics::record_tun_udp_forward_error(classify_tun_udp_forward_error(&error));
             metrics::record_tun_packet("up", ip_family_name(version_nibble), "udp_error");
             warn!(

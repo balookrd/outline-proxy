@@ -110,6 +110,28 @@ fn quic_initial(sni: &str) -> Vec<u8> {
     build_initial(QUIC_V1, &dcid, &client_hello(sni))
 }
 
+/// A QUIC Initial whose ClientHello is cut short — what the first datagram of
+/// an ML-KEM / post-quantum client looks like, its key share pushing the
+/// handshake past one datagram. The sniffer can decrypt the packet but not
+/// finish parsing the handshake: `SniffOutcome::Incomplete`.
+fn quic_initial_with_split_client_hello(sni: &str) -> Vec<u8> {
+    let dcid = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
+    let hello = client_hello(sni);
+    build_initial(QUIC_V1, &dcid, &hello[..30])
+}
+
+/// Current value of `outline_ws_tun_udp_sniff_total{outcome="…"}`, read back
+/// from the rendered exposition. The registry is process-global, so tests
+/// compare a *delta* rather than an absolute value.
+fn sniff_outcome_count(outcome: &str) -> u64 {
+    let rendered = outline_metrics::render_prometheus(&[]).expect("render metrics");
+    let needle = format!("outline_ws_tun_udp_sniff_total{{outcome=\"{outcome}\"}} ");
+    rendered
+        .lines()
+        .find_map(|line| line.strip_prefix(&needle)?.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 #[tokio::test]
 async fn tun_udp_sniffs_quic_initial_and_overrides_target_with_domain() {
     let upstream = TestUdpUpstream::start().await;
@@ -174,6 +196,27 @@ async fn tun_udp_quic_excluded_host_keeps_ip_target() {
     send_client_datagram(&engine, 40040, &quic_initial("example.com")).await;
     let (target, _) = upstream.expect_decoded().await;
     assert_eq!(target, TargetAddr::IpV4(REMOTE_IP, REMOTE_PORT));
+}
+
+#[tokio::test]
+async fn tun_udp_split_client_hello_is_counted_as_incomplete() {
+    let upstream = TestUdpUpstream::start().await;
+    let engine = build_engine(upstream.url.clone(), true).await;
+
+    let before = sniff_outcome_count("incomplete");
+    send_client_datagram(&engine, 40050, &quic_initial_with_split_client_hello("example.com"))
+        .await;
+
+    // No host to override with: the literal IP stands (unchanged behaviour)…
+    let (target, _) = upstream.expect_decoded().await;
+    assert_eq!(target, TargetAddr::IpV4(REMOTE_IP, REMOTE_PORT));
+    // …but the outcome is no longer invisible: a ClientHello spanning several
+    // datagrams routes non-deterministically for these clients, so it has to
+    // be countable in Grafana instead of silently folding into "not matched".
+    assert!(
+        sniff_outcome_count("incomplete") > before,
+        "a ClientHello split across datagrams must be counted under its own outcome label",
+    );
 }
 
 #[tokio::test]
