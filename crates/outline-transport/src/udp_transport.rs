@@ -11,6 +11,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, watch};
 use tracing::warn;
 use url::Url;
+use zeroize::Zeroizing;
 
 use crate::carrier_padding::{self, CarrierPadding};
 use crate::config::TransportMode;
@@ -59,7 +60,9 @@ enum UdpTransport {
 pub struct UdpWsTransport {
     transport: UdpTransport,
     cipher: CipherKind,
-    master_key: Vec<u8>,
+    /// Session master key, wiped on drop: it lives as long as the transport
+    /// and every datagram derives a subkey from it.
+    master_key: Zeroizing<Vec<u8>>,
     ss2022: Option<Mutex<Ss2022UdpState>>,
     /// Carrier padding for the datagram channel, read at construction. When
     /// enabled, each already-encrypted SS-AEAD packet is wrapped in one padding

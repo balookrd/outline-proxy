@@ -2,6 +2,7 @@ use ring::{
     aead::{self, Nonce},
     hkdf,
 };
+use zeroize::Zeroizing;
 
 use super::error::CryptoError;
 use crate::config::CipherKind;
@@ -17,13 +18,18 @@ pub(super) use outline_wire::SS_SUBKEY_INFO;
 
 pub(super) const MAX_SUBKEY_LEN: usize = 32;
 
+/// Derives the session subkey into a [`Zeroizing`] stack buffer so it is
+/// wiped when the caller's frame goes away. The active portion is
+/// `&subkey[..cipher.key_len()]`; the tail stays zero. Mirrors the client's
+/// `shadowsocks_crypto::derive_subkey`, which returns the same shape — only
+/// the HKDF backend differs (ring here, RustCrypto there).
 pub(super) fn derive_subkey(
     cipher: CipherKind,
     master_key: &[u8],
     salt: &[u8],
-    out: &mut [u8; MAX_SUBKEY_LEN],
-) -> Result<usize, CryptoError> {
+) -> Result<Zeroizing<[u8; MAX_SUBKEY_LEN]>, CryptoError> {
     let key_len = cipher.key_len();
+    let mut out = Zeroizing::new([0_u8; MAX_SUBKEY_LEN]);
     if cipher.is_ss2022() {
         outline_wire::ss2022::ss2022_session_subkey_into(master_key, salt, &mut out[..key_len]);
     } else {
@@ -35,7 +41,7 @@ pub(super) fn derive_subkey(
         okm.fill(&mut out[..key_len])
             .map_err(|_| CryptoError::KeyDerivation)?;
     }
-    Ok(key_len)
+    Ok(out)
 }
 
 pub(super) fn build_session_key(
@@ -43,8 +49,8 @@ pub(super) fn build_session_key(
     master_key: &[u8],
     salt: &[u8],
 ) -> Result<aead::LessSafeKey, CryptoError> {
-    let mut subkey = [0_u8; MAX_SUBKEY_LEN];
-    let key_len = derive_subkey(cipher, master_key, salt, &mut subkey)?;
+    let subkey = derive_subkey(cipher, master_key, salt)?;
+    let key_len = cipher.key_len();
     let algorithm = cipher_algorithm(cipher);
     let unbound =
         aead::UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
