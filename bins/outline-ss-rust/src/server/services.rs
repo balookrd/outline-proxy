@@ -20,7 +20,7 @@ use crate::{
 use super::{
     constants::UDP_DNS_CACHE_TTL_SECS,
     dns_cache::DnsCache,
-    nat::NatTable,
+    nat::{NatLimits, NatTable},
     replay::ReplayStore,
     resumption::{OrphanRegistry, ResumptionConfig},
     setup::{
@@ -145,7 +145,10 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     let outbound_ipv6 = outbound_ipv6.and_then(probe_or_disable);
     let nat_table = NatTable::with_outbound_ipv6(
         Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs),
-        config.tuning.udp_nat_max_entries,
+        NatLimits {
+            max_entries: config.tuning.udp_nat_max_entries,
+            max_entries_per_user: config.tuning.udp_nat_max_entries_per_user,
+        },
         outbound_ipv6.clone(),
     );
     // Replay TTL is intentionally tied to NAT idle timeout: both bound the window of

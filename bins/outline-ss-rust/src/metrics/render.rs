@@ -27,6 +27,12 @@ pub(super) fn render_prometheus(metrics: &Metrics) -> String {
                 gauge!("outline_ss_client_active", "user" => Arc::clone(user)).set(1.0);
                 gauge!("outline_ss_client_up", "user" => Arc::clone(user)).set(1.0);
             } else {
+                // Flip the state gauges to 0 *before* dropping the bookkeeping
+                // entry. The recorder only idle-evicts histograms, so a gauge
+                // left at 1.0 keeps the user "online" in Prometheus forever —
+                // and once the entry is gone no later scrape would touch it.
+                gauge!("outline_ss_client_active", "user" => Arc::clone(user)).set(0.0);
+                gauge!("outline_ss_client_up", "user" => Arc::clone(user)).set(0.0);
                 metrics.client_last_seen.remove(user);
                 metrics.user_counters_cache.remove(user);
             }
@@ -48,3 +54,7 @@ pub(super) fn unix_timestamp_seconds() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+#[path = "tests/render.rs"]
+mod tests;

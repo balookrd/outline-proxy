@@ -312,6 +312,9 @@ ws_path_udp = "/dave/udp"
 # client_active_ttl_secs = 300           # used by client_active / client_up metrics
 # udp_nat_idle_timeout_secs = 300        # NAT entry idle timeout (seconds)
 # udp_nat_max_entries = 65536            # max live UDP NAT entries; 0 disables
+# udp_nat_max_entries_per_user = 0       # per-user share of the NAT table; 0 disables
+                                         # (default). Set it on multi-tenant hosts so
+                                         # one user cannot claim the whole table.
 # udp_max_concurrent_relay_tasks = 4096  # process-wide cap; 0 disables
 # udp_replay_max_sessions = 262144       # SS-2022 anti-replay session cap; 0 disables
 # xhttp_max_sessions = 262144            # max live XHTTP sessions (pre-auth); 0 disables

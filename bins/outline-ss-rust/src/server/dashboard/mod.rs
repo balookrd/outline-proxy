@@ -4,11 +4,12 @@
 //! the process config and are injected server-side when proxying to `/control`.
 
 mod auth;
+mod control_pool;
 mod handlers;
 mod proxy;
 mod tls;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -23,6 +24,16 @@ use tracing::{info, warn};
 use crate::config::{DashboardConfig, DashboardInstanceConfig};
 
 use super::shutdown::ShutdownSignal;
+use control_pool::ControlPool;
+
+/// Idle control-API connections parked per instance. Two covers the browser's
+/// parallel fetches on a dashboard refresh without holding sockets open for a
+/// dashboard nobody is watching.
+const CONTROL_POOL_MAX_IDLE_PER_TARGET: usize = 2;
+/// How long a parked connection stays reusable. Kept short: upstreams and any
+/// middlebox in between drop idle keep-alive sockets silently, and a stale one
+/// costs a failed request before we redial.
+const CONTROL_POOL_IDLE_TTL_SECS: u64 = 30;
 
 #[derive(Clone)]
 pub(super) struct DashboardState {
@@ -33,6 +44,9 @@ pub(super) struct DashboardState {
     /// Optional shared secret guarding the whole listener. `None` keeps the
     /// historical unauthenticated behaviour for loopback deployments.
     pub(super) token: Option<Arc<str>>,
+    /// Keep-alive connections to the control APIs, reused across requests.
+    /// Dashboard-internal: nothing outside this module drives the proxy path.
+    pub(in crate::server::dashboard) control_pool: Arc<ControlPool>,
 }
 
 pub(in crate::server) fn spawn_dashboard_server(config: DashboardConfig, shutdown: ShutdownSignal) {
@@ -61,6 +75,10 @@ async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()
         instances: Arc::from(config.instances),
         tls_connector: tls::connector(),
         token: config.token.map(Arc::from),
+        control_pool: Arc::new(ControlPool::new(
+            CONTROL_POOL_MAX_IDLE_PER_TARGET,
+            Duration::from_secs(CONTROL_POOL_IDLE_TTL_SECS),
+        )),
     };
 
     axum::serve(listener, build_router(state))
