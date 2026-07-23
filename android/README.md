@@ -22,6 +22,10 @@ android/
     src/main/java/com/outline/proxy/
       OutlineVpnService.kt   # VpnService: establish() TUN, drive the core
       MainActivity.kt        # config editor + connect/disconnect
+      ExternalControl.kt     # outline:// URI grammar, access gate, settings
+      ControlActivity.kt     # invisible entry point for outline:// commands
+    src/test/java/com/outline/proxy/
+      ExternalControlTest.kt # JVM unit tests for the URI parser and the gate
 ```
 
 ## Architecture
@@ -85,8 +89,48 @@ Notes:
    and downloads the Gradle 8.10.2 distribution on first sync.
 3. Run on a device/emulator, add a server, Connect.
 
-CLI alternative (needs a JDK 17 + Android SDK on `PATH`, `local.properties`
-with `sdk.dir`): `./gradlew :app:assembleDebug`.
+CLI alternative (needs a JDK 17+ and an Android SDK, `local.properties` with
+`sdk.dir`): `./gradlew :app:assembleDebug`, `./gradlew :app:testDebugUnitTest`
+for the JVM unit tests. Without a system JDK, Android Studio's bundled one
+works: `export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`.
+
+## External control (`outline://`)
+
+Automation apps (Tasker, launcher shortcuts, `adb`) can drive the tunnel over a
+URI scheme:
+
+```
+outline://connect                     # bring up the profile selected in the UI
+outline://connect?profile=<name|id>   # bring up a specific saved profile
+outline://disconnect
+outline://toggle[?profile=<name|id>]  # down if up, otherwise connect
+```
+
+Scheme, command and query keys are case-insensitive; values are
+percent-decoded (`?profile=Home%20VPN`). A command never creates a server — the
+profile must already exist in the list, matched by id first, then by name. On
+success nothing is shown; the foreground-service notification is the status
+indicator. Refusals raise a Toast and a `OutlineControl` warning in logcat.
+
+```sh
+adb shell am start -a android.intent.action.VIEW -d 'outline://connect'
+adb shell am start -a android.intent.action.VIEW -d 'outline://toggle?profile=Home&token=s3cret'
+```
+
+Access is gated in **External control…** on the main screen: a switch (on by
+default) and an optional token. Once a token is set, commands without a
+matching `?token=` are ignored — the comparison is content-independent
+(`MessageDigest.isEqual`). Any installed app, and — because the intent filter
+carries `BROWSABLE` — any web page, can fire these URIs, so set a token if a
+silent `disconnect` would matter to you.
+
+Implementation: `ControlActivity` is a transparent activity that dispatches the
+command and finishes. It cannot be a receiver or an exported service — the
+system VPN consent dialog needs an activity to launch from, and Android 12+
+forbids starting a foreground service from the background. Callers must
+themselves be allowed to start activities: a background app without that
+privilege (Tasker without "Draw over other apps", say) will have the URI
+silently dropped by the platform.
 
 ## Roadmap
 
@@ -105,17 +149,22 @@ with `sdk.dir`): `./gradlew :app:assembleDebug`.
   `addDisallowedApplication`) with an app-picker UI — modes OFF / ALLOWLIST /
   DENYLIST, persisted in SharedPreferences, applied in `OutlineVpnService`.
   Kotlin authored, not yet built on a device.
+- **Increment 5 (done):** external control over the `outline://` scheme
+  (connect / disconnect / toggle, optional profile selector), gated by a switch
+  and an optional token; parser and gate covered by JVM unit tests.
 
 ## What is verified vs. not
 
 - **Verified by build:** the Rust core (`outline-android` cdylib) cross-compiles
   to a loadable `aarch64` Android `.so`, including the SOCKS5 + uplink stack,
   tun2proxy, and the QUIC/h3 carriers.
-- **Not verified:** the Gradle/Kotlin app has never been compiled or run here
-  (no Android SDK / Gradle). The UniFFI Kotlin bindings, Compose UI, VpnService
-  lifecycle, and end-to-end traffic flow all need a first real build on a
-  device. DNS handling in tun2proxy is at defaults and is the likeliest first
-  thing to tune.
+- **Verified by build (Kotlin):** `:app:assembleDebug` produces a debug APK and
+  `:app:testDebugUnitTest` passes — the latter covers the `outline://` parser,
+  the access gate, and profile resolution on the JVM.
+- **Not verified:** nothing has been run on a device or emulator. The UniFFI
+  Kotlin bindings, Compose UI, VpnService lifecycle, `outline://` dispatch
+  end-to-end, and traffic flow all need a first real run. DNS handling in
+  tun2proxy is at defaults and is the likeliest first thing to tune.
 
 ## Notes for porting
 
