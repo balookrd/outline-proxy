@@ -180,6 +180,11 @@ where
 /// Drain flows whose `last_seen` is older than `idle_timeout`, without
 /// holding the map write-lock across per-flow lock acquisitions.
 ///
+/// Removal re-checks handle identity under the write-lock, mirroring
+/// [`super::lifecycle`]'s `close_flow_if_current`: the candidate scan runs with
+/// the map unlocked, so a flow may be torn down and re-created under the same
+/// key while it is in progress.
+///
 /// Returns the removed `Arc<Mutex<F>>` handles so callers can route them
 /// through their own close-work pipeline (each flow type has a distinct
 /// teardown path).
@@ -196,15 +201,37 @@ where
         let guard = flows.read().await;
         guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
     };
-    let mut expired_keys = Vec::new();
+    let mut expired = Vec::new();
     for (key, handle) in handles {
-        let flow = handle.lock().await;
-        if now.saturating_duration_since(flow.last_seen()) >= idle_timeout {
-            expired_keys.push(key);
+        let idle = {
+            let flow = handle.lock().await;
+            now.saturating_duration_since(flow.last_seen()) >= idle_timeout
+        };
+        if idle {
+            expired.push((key, handle));
         }
     }
     let mut guard = flows.write().await;
-    let removed: Vec<_> = expired_keys.into_iter().filter_map(|k| guard.remove(&k)).collect();
+    let mut removed = Vec::with_capacity(expired.len());
+    for (key, snapshot) in expired {
+        // Re-check under the write-lock: scanning the candidates above runs
+        // with the map unlocked and takes a per-flow lock per candidate, so a
+        // real teardown (read error, global switch) may have removed this flow
+        // and the client re-created it under the same 5-tuple meanwhile.
+        // Removing by key alone would evict that brand-new flow as
+        // `idle_timeout` at age ~0, dropping its outbound queue and its
+        // buffered handshake preface. Comparing handle identity is lock-free
+        // and exact — a re-created flow is always a different `Arc`.
+        if guard.get(&key).is_some_and(|current| Arc::ptr_eq(current, &snapshot))
+            && let Some(flow) = guard.remove(&key)
+        {
+            removed.push(flow);
+        }
+    }
     maybe_shrink_hash_map(&mut guard);
     removed
 }
+
+#[cfg(test)]
+#[path = "tests/types.rs"]
+mod tests;
