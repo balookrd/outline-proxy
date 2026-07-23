@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use arc_swap::ArcSwap;
+use tokio::sync::watch;
 use tracing::info;
 
 use crate::config::UplinkGroupConfig;
@@ -45,6 +46,13 @@ struct RegistryState {
 #[derive(Clone)]
 pub struct UplinkRegistry {
     state: Arc<ArcSwap<RegistryState>>,
+    /// Shutdown signal for registry-scoped background loops — the ones that
+    /// belong to the process rather than to any single group (currently the
+    /// shared-connection sweeper). Deliberately kept OUTSIDE
+    /// [`RegistryState`] so that a hot-apply swap leaves it untouched: the
+    /// per-manager shutdown [`UplinkRegistry::apply_new_groups`] sends to the
+    /// displaced managers must not stop a process-wide loop.
+    shutdown_tx: Arc<watch::Sender<bool>>,
 }
 
 impl std::fmt::Debug for UplinkRegistry {
@@ -62,9 +70,7 @@ impl UplinkRegistry {
         dns_cache: Arc<outline_transport::DnsCache>,
     ) -> Result<Self> {
         let state = build_state(groups, None, dns_cache, None)?;
-        Ok(Self {
-            state: Arc::new(ArcSwap::from_pointee(state)),
-        })
+        Ok(Self::from_state(state))
     }
 
     /// Like [`Self::new`] but restores active-uplink selection from `state_store`
@@ -92,9 +98,17 @@ impl UplinkRegistry {
             restored.resize(groups.len(), (None, None, None, Vec::new()));
         }
         let state = build_state(groups, Some(restored), dns_cache, state_store)?;
-        Ok(Self {
+        Ok(Self::from_state(state))
+    }
+
+    /// Wrap a freshly-built group list, minting the registry-scoped shutdown
+    /// channel shared by every clone of this registry.
+    fn from_state(state: RegistryState) -> Self {
+        let (shutdown_tx, _) = watch::channel(false);
+        Self {
             state: Arc::new(ArcSwap::from_pointee(state)),
-        })
+            shutdown_tx: Arc::new(shutdown_tx),
+        }
     }
 
     /// The first-declared group. Callers that have not yet been taught to
@@ -197,8 +211,15 @@ impl UplinkRegistry {
     /// caches. Independent of warm-standby so that groups with
     /// `warm_standby_tcp = warm_standby_udp = 0` still get stale entries
     /// evicted (otherwise soft-closed/DNS-rotated connections hold FDs open).
-    pub fn spawn_shared_connection_gc_loop(&self) {
-        let mut shutdown = self.state.load().groups[0].manager.shutdown_rx();
+    ///
+    /// The loop rides the *registry-scoped* shutdown channel, not any group's:
+    /// [`Self::apply_new_groups`] shuts the displaced managers down, and a
+    /// sweeper subscribed to one of them would die on the first hot-apply and
+    /// never be respawned, leaking FDs for the rest of the process lifetime.
+    /// Only [`Self::shutdown`] stops it. The returned handle is informational —
+    /// dropping it does not cancel the task.
+    pub fn spawn_shared_connection_gc_loop(&self) -> tokio::task::JoinHandle<()> {
+        let mut shutdown = self.shutdown_tx.subscribe();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -208,13 +229,15 @@ impl UplinkRegistry {
                 }
                 outline_transport::gc_shared_connections().await;
             }
-        });
+        })
     }
 
     /// Cancel all background loops (probe, warm-standby, keepalive) for every
-    /// group. Call this before dropping a registry on full process shutdown
-    /// so old tasks do not outlive the registry they were spawned from.
+    /// group, plus the registry-scoped ones (shared-connection GC). Call this
+    /// before dropping a registry on full process shutdown so old tasks do not
+    /// outlive the registry they were spawned from.
     pub fn shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
         for group in self.state.load().groups.iter() {
             group.manager.shutdown();
         }
@@ -351,6 +374,10 @@ impl UplinkRegistry {
             group.manager.spawn_standby_keepalive_loop();
             group.manager.spawn_warm_probe_keepalive_loop();
             group.manager.spawn_sticky_prune_loop();
+            // Same set bootstrap spawns: without this the anti-DPI wire
+            // rotation stops at the first hot-apply, since the loops belong to
+            // the displaced managers and are shut down together with them.
+            group.manager.spawn_shuffle_timer_loops();
         }
         // Prime strict active-uplink selection on the new managers.
         for group in &new_state.groups {
@@ -431,9 +458,7 @@ impl UplinkRegistry {
             groups: vec![UplinkGroupHandle { name, manager }],
             by_name,
         };
-        Self {
-            state: Arc::new(ArcSwap::from_pointee(state)),
-        }
+        Self::from_state(state)
     }
 }
 
