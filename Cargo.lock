@@ -1740,6 +1740,7 @@ name = "outline-routing"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "socks5-proto",
  "tokio",
  "tracing",
@@ -1922,7 +1923,6 @@ version = "1.7.0"
 dependencies = [
  "anyhow",
  "arc-swap",
- "async-trait",
  "bytes",
  "clap",
  "futures-util",

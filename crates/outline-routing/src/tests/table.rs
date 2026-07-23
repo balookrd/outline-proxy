@@ -53,14 +53,14 @@ async fn resolve_first_match_wins() {
     };
     let table = RoutingTable::compile(&cfg).await.unwrap();
 
-    let d = table.resolve(&v4(10, 1, 2, 3)).await;
+    let d = table.resolve(&v4(10, 1, 2, 3));
     assert_eq!(d.primary, RouteTarget::Direct);
 
-    let d = table.resolve(&v4(1, 1, 1, 1)).await;
+    let d = table.resolve(&v4(1, 1, 1, 1));
     assert_eq!(d.primary, RouteTarget::Group("main".into()));
 
     // Unmatched → default
-    let d = table.resolve(&v4(8, 8, 8, 8)).await;
+    let d = table.resolve(&v4(8, 8, 8, 8));
     assert_eq!(d.primary, RouteTarget::Group("main".into()));
 }
 
@@ -77,11 +77,11 @@ async fn resolve_carries_fallback() {
     };
     let table = RoutingTable::compile(&cfg).await.unwrap();
 
-    let d = table.resolve(&v4(1, 2, 3, 4)).await;
+    let d = table.resolve(&v4(1, 2, 3, 4));
     assert_eq!(d.primary, RouteTarget::Group("main".into()));
     assert_eq!(d.fallback, Some(RouteTarget::Group("backup".into())));
 
-    let d = table.resolve(&v4(9, 9, 9, 9)).await;
+    let d = table.resolve(&v4(9, 9, 9, 9));
     assert_eq!(d.primary, RouteTarget::Direct);
     assert_eq!(d.fallback, Some(RouteTarget::Drop));
 }
@@ -95,14 +95,11 @@ async fn resolve_v6_and_domain_fallthrough() {
     };
     let table = RoutingTable::compile(&cfg).await.unwrap();
 
-    assert_eq!(table.resolve(&v6("fc00::1")).await.primary, RouteTarget::Direct);
-    assert_eq!(
-        table.resolve(&v6("2001:db8::1")).await.primary,
-        RouteTarget::Group("main".into())
-    );
+    assert_eq!(table.resolve(&v6("fc00::1")).primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&v6("2001:db8::1")).primary, RouteTarget::Group("main".into()));
     // Domains never match a CIDR rule.
     let dom = TargetAddr::Domain("example.com".into(), 80);
-    assert_eq!(table.resolve(&dom).await.primary, RouteTarget::Group("main".into()));
+    assert_eq!(table.resolve(&dom).primary, RouteTarget::Group("main".into()));
 }
 
 fn domain_rule(domains: &[&str], target: RouteTarget) -> RouteRule {
@@ -135,15 +132,15 @@ async fn domain_rule_matches_suffix_and_skips_ips() {
     let table = RoutingTable::compile(&cfg).await.unwrap();
 
     // First-match-wins across domain rules.
-    assert_eq!(table.resolve(&domain("bypass.example")).await.primary, RouteTarget::Direct);
-    assert_eq!(table.resolve(&domain("sub.bypass.example")).await.primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&domain("bypass.example")).primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&domain("sub.bypass.example")).primary, RouteTarget::Direct);
     // The catch-all sweeps every other domain into the tunnel.
     assert_eq!(
-        table.resolve(&domain("anything.else")).await.primary,
+        table.resolve(&domain("anything.else")).primary,
         RouteTarget::Group("main".into())
     );
     // IP targets never match a domain rule; they fall to the default here.
-    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).await.primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).primary, RouteTarget::Direct);
 }
 
 #[tokio::test]
@@ -169,13 +166,13 @@ async fn mixed_rule_matches_both_kinds_and_domains_skip_cidr_rules() {
 
     // Domain skips the catch-all CIDR drop rule, matches the mixed rule.
     assert_eq!(
-        table.resolve(&domain("a.example.com")).await.primary,
+        table.resolve(&domain("a.example.com")).primary,
         RouteTarget::Group("tunnel".into())
     );
     // Unlisted domain falls to the default.
-    assert_eq!(table.resolve(&domain("other.org")).await.primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&domain("other.org")).primary, RouteTarget::Direct);
     // IPs hit the CIDR chain as before.
-    assert_eq!(table.resolve(&v4(10, 1, 1, 1)).await.primary, RouteTarget::Drop);
+    assert_eq!(table.resolve(&v4(10, 1, 1, 1)).primary, RouteTarget::Drop);
 }
 
 #[tokio::test]
@@ -213,7 +210,7 @@ async fn resolve_empty_rules_uses_default() {
         default_fallback: None,
     };
     let table = RoutingTable::compile(&cfg).await.unwrap();
-    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).await.primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).primary, RouteTarget::Direct);
 }
 
 #[tokio::test]
@@ -227,10 +224,10 @@ async fn inverted_rule_matches_addresses_not_in_set() {
     let table = RoutingTable::compile(&cfg).await.unwrap();
 
     // 8.8.8.8 is NOT in 1.0.0.0/8 → inverted rule matches → Direct
-    assert_eq!(table.resolve(&v4(8, 8, 8, 8)).await.primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&v4(8, 8, 8, 8)).primary, RouteTarget::Direct);
 
     // 1.2.3.4 IS in 1.0.0.0/8 → inverted rule does NOT match → falls to default
-    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).await.primary, RouteTarget::Group("main".into()));
+    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).primary, RouteTarget::Group("main".into()));
 }
 
 #[tokio::test]
@@ -244,7 +241,7 @@ async fn inverted_rule_does_not_match_domains() {
 
     // Domain targets skip all CIDR rules (even inverted ones).
     let dom = TargetAddr::Domain("example.com".into(), 80);
-    assert_eq!(table.resolve(&dom).await.primary, RouteTarget::Group("main".into()));
+    assert_eq!(table.resolve(&dom).primary, RouteTarget::Group("main".into()));
 }
 
 /// Test that `spawn_route_watchers` reloads a file-backed CIDR set when
@@ -285,8 +282,8 @@ async fn watcher_reloads_cidr_file_and_bumps_version() {
     assert_eq!(table.version(), 0, "version must start at 0");
 
     // Initial routing: 1.x.x.x → Direct, anything else → main
-    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).await.primary, RouteTarget::Direct);
-    assert_eq!(table.resolve(&v4(2, 2, 2, 2)).await.primary, RouteTarget::Group("main".into()));
+    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&v4(2, 2, 2, 2)).primary, RouteTarget::Group("main".into()));
 
     let watchers = spawn_route_watchers(std::sync::Arc::clone(&table));
 
@@ -311,8 +308,8 @@ async fn watcher_reloads_cidr_file_and_bumps_version() {
     assert_eq!(table.version(), 1);
 
     // After reload: 2.x.x.x → Direct, 1.x.x.x falls through to default (main)
-    assert_eq!(table.resolve(&v4(2, 2, 2, 2)).await.primary, RouteTarget::Direct);
-    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).await.primary, RouteTarget::Group("main".into()));
+    assert_eq!(table.resolve(&v4(2, 2, 2, 2)).primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&v4(1, 2, 3, 4)).primary, RouteTarget::Group("main".into()));
 
     // Drop the guard explicitly to cancel the watcher task before the test
     // exits, exercising the shutdown path.
@@ -336,16 +333,13 @@ async fn inverted_and_normal_rules_coexist() {
     let table = RoutingTable::compile(&cfg).await.unwrap();
 
     // 10.1.1.1 → normal rule matches → Direct
-    assert_eq!(table.resolve(&v4(10, 1, 1, 1)).await.primary, RouteTarget::Direct);
+    assert_eq!(table.resolve(&v4(10, 1, 1, 1)).primary, RouteTarget::Direct);
 
     // 8.8.8.8 → not RFC1918 (skip rule 1), not in 5.0.0.0/8 → inverted matches → main
-    assert_eq!(table.resolve(&v4(8, 8, 8, 8)).await.primary, RouteTarget::Group("main".into()));
+    assert_eq!(table.resolve(&v4(8, 8, 8, 8)).primary, RouteTarget::Group("main".into()));
 
     // 5.1.2.3 → not RFC1918 (skip rule 1), IS in 5.0.0.0/8 → inverted doesn't match → default
-    assert_eq!(
-        table.resolve(&v4(5, 1, 2, 3)).await.primary,
-        RouteTarget::Group("backup".into())
-    );
+    assert_eq!(table.resolve(&v4(5, 1, 2, 3)).primary, RouteTarget::Group("backup".into()));
 }
 
 #[tokio::test]
@@ -358,7 +352,7 @@ async fn resolve_versioned_captures_pre_read_version() {
     let table = RoutingTable::compile(&cfg).await.unwrap();
     assert_eq!(table.version(), 0);
 
-    let (_d, v_before) = table.resolve_versioned(&v4(1, 2, 3, 4)).await;
+    let (_d, v_before) = table.resolve_versioned(&v4(1, 2, 3, 4));
     assert_eq!(v_before, 0, "version captured at resolve must be pre-bump");
 
     // Simulate a watcher reload.
@@ -369,7 +363,7 @@ async fn resolve_versioned_captures_pre_read_version() {
     // behaviour: any decision resolved before the bump re-resolves.
     assert_ne!(table.version(), v_before);
 
-    let (_d, v_after) = table.resolve_versioned(&v4(1, 2, 3, 4)).await;
+    let (_d, v_after) = table.resolve_versioned(&v4(1, 2, 3, 4));
     assert_eq!(v_after, 1);
 }
 
@@ -384,6 +378,187 @@ async fn compile_rejects_inverted_rule_with_empty_cidr_set() {
     assert!(
         err.contains("invert = true") && err.contains("no prefixes"),
         "unexpected error: {err}"
+    );
+}
+
+/// Resolves running concurrently with watcher reloads must never observe a
+/// half-applied rule set, and must never report a version newer than the one
+/// they resolved against (which is what makes a stale cache entry invalidate
+/// instead of pinning a pre-reload decision to a post-reload version).
+///
+/// Every revision of the file keeps `10.0.0.0/8` and only toggles a second
+/// prefix, so any reader that ever saw a partially applied set would see
+/// `10.1.1.1` stop matching.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn resolve_races_with_reload_without_observing_a_partial_set() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let tmp = std::env::temp_dir().join(format!(
+        "outline_route_reload_race_{}.txt",
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos()
+    ));
+    tokio::fs::write(&tmp, b"10.0.0.0/8\n").await.unwrap();
+
+    let cfg = RoutingTableConfig {
+        rules: vec![RouteRule {
+            inline_prefixes: vec![],
+            files: vec![tmp.clone()],
+            inline_domains: Vec::new(),
+            domain_files: Vec::new(),
+            file_poll: Duration::from_millis(10),
+            target: RouteTarget::Direct,
+            fallback: None,
+            invert: false,
+        }],
+        default_target: RouteTarget::Group("main".into()),
+        default_fallback: None,
+    };
+    let table = Arc::new(RoutingTable::compile(&cfg).await.unwrap());
+    let watchers = spawn_route_watchers(Arc::clone(&table));
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let readers: Vec<_> = (0..3)
+        .map(|_| {
+            let table = Arc::clone(&table);
+            let stop = Arc::clone(&stop);
+            tokio::spawn(async move {
+                while !stop.load(Ordering::Relaxed) {
+                    let (decision, version) = table.resolve_versioned(&v4(10, 1, 1, 1));
+                    assert_eq!(
+                        decision.primary,
+                        RouteTarget::Direct,
+                        "resolve observed a partially applied CIDR set"
+                    );
+                    assert!(
+                        version <= table.version(),
+                        "resolve reported a version newer than the table's"
+                    );
+                    tokio::task::yield_now().await;
+                }
+            })
+        })
+        .collect();
+
+    // Rewrite the file under the readers, ending on the two-prefix revision.
+    for i in 0..6 {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let body: &[u8] = if i % 2 == 0 {
+            b"10.0.0.0/8\n"
+        } else {
+            b"10.0.0.0/8\n20.0.0.0/8\n"
+        };
+        tokio::fs::write(&tmp, body).await.unwrap();
+    }
+
+    // The last revision must actually reach the readers, or the race above
+    // was never exercised.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if table.resolve(&v4(20, 1, 1, 1)).primary == RouteTarget::Direct {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            stop.store(true, Ordering::Relaxed);
+            let _ = tokio::fs::remove_file(&tmp).await;
+            panic!("watcher never applied the final reload");
+        }
+    }
+    assert!(table.version() >= 1, "a reload must bump the table version");
+
+    stop.store(true, Ordering::Relaxed);
+    for reader in readers {
+        reader.await.expect("reader task must not panic");
+    }
+
+    drop(watchers);
+    let _ = tokio::fs::remove_file(&tmp).await;
+}
+
+// ── Host normalization happens once per resolve ──────────────────────────────
+
+/// Counting allocator: every heap allocation made by the *current thread* is
+/// tallied, so a test can measure the allocation cost of one resolve without
+/// interference from tests running in parallel on other threads.
+mod counting_alloc {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    thread_local! {
+        static ALLOCS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub struct CountingAlloc;
+
+    // SAFETY: every method forwards to `System` unchanged; the counter is a
+    // `Cell<u64>` in const-initialized TLS, which neither allocates nor
+    // registers a destructor, so the bookkeeping cannot re-enter the
+    // allocator. `try_with` tolerates access after TLS teardown.
+    unsafe impl GlobalAlloc for CountingAlloc {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+            unsafe { System.alloc(layout) }
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+    }
+
+    /// Allocations made by this thread so far.
+    pub fn allocs() -> u64 {
+        ALLOCS.try_with(Cell::get).unwrap_or(0)
+    }
+}
+
+#[global_allocator]
+static COUNTING_ALLOC: counting_alloc::CountingAlloc = counting_alloc::CountingAlloc;
+
+/// Table of `count` non-matching domain rules plus an allocation-free
+/// (`Direct`) default, so a miss allocates nothing beyond normalization.
+async fn table_with_domain_rules(count: usize) -> RoutingTable {
+    let owned: Vec<String> = (0..count).map(|i| format!("rule{i}.example")).collect();
+    let rules = owned
+        .iter()
+        .map(|d| domain_rule(&[d.as_str()], RouteTarget::Drop))
+        .collect();
+    let cfg = RoutingTableConfig {
+        rules,
+        default_target: RouteTarget::Direct,
+        default_fallback: None,
+    };
+    RoutingTable::compile(&cfg).await.unwrap()
+}
+
+/// A resolve must normalize the host **once**, not once per rule: walking N
+/// rules is O(N) lookups but must stay O(1) allocations.
+///
+/// The host carries uppercase on purpose — that is the case normalization
+/// cannot serve from a borrow, so a per-rule normalization shows up as one
+/// allocation per rule and a single up-front one does not.
+#[tokio::test]
+async fn domain_resolve_normalizes_host_once_not_once_per_rule() {
+    let one = table_with_domain_rules(1).await;
+    let many = table_with_domain_rules(32).await;
+    let host = domain("NoMatch.Example");
+
+    // Warm up: first-touch lazies must not land inside the measured window.
+    assert_eq!(one.resolve(&host).primary, RouteTarget::Direct);
+    assert_eq!(many.resolve(&host).primary, RouteTarget::Direct);
+
+    let before = counting_alloc::allocs();
+    let _ = one.resolve(&host);
+    let with_1_rule = counting_alloc::allocs() - before;
+
+    let before = counting_alloc::allocs();
+    let _ = many.resolve(&host);
+    let with_32_rules = counting_alloc::allocs() - before;
+
+    assert_eq!(
+        with_32_rules, with_1_rule,
+        "resolve allocated {with_32_rules} times over 32 rules vs {with_1_rule} over 1 — \
+         the host is being re-normalized per rule"
     );
 }
 
@@ -408,23 +583,21 @@ async fn mixed_table() -> RoutingTable {
 async fn resolve_domain_explicit_some_on_match_none_on_miss() {
     let table = mixed_table().await;
     assert_eq!(
-        table.resolve_domain_explicit("api.bypass.example").await,
+        table.resolve_domain_explicit("api.bypass.example"),
         Some(RouteDecision {
             primary: RouteTarget::Direct,
             fallback: None
         })
     );
     // No domain rule matches — `None`, NOT the table default.
-    assert_eq!(table.resolve_domain_explicit("other.example").await, None);
+    assert_eq!(table.resolve_domain_explicit("other.example"), None);
 }
 
 #[tokio::test]
 async fn two_pass_domain_rule_wins_over_ip() {
     let table = mixed_table().await;
     // Domain matches Direct; the IP would match Drop. Domain wins.
-    let d = table
-        .resolve_domain_or_ip(Some("bypass.example"), Some(&v4(10, 1, 2, 3)))
-        .await;
+    let d = table.resolve_domain_or_ip(Some("bypass.example"), Some(&v4(10, 1, 2, 3)));
     assert_eq!(d.primary, RouteTarget::Direct);
 }
 
@@ -432,9 +605,7 @@ async fn two_pass_domain_rule_wins_over_ip() {
 async fn two_pass_domain_miss_falls_through_to_ip() {
     let table = mixed_table().await;
     // Domain matches nothing; IP is in 10/8 → Drop.
-    let d = table
-        .resolve_domain_or_ip(Some("other.example"), Some(&v4(10, 1, 2, 3)))
-        .await;
+    let d = table.resolve_domain_or_ip(Some("other.example"), Some(&v4(10, 1, 2, 3)));
     assert_eq!(d.primary, RouteTarget::Drop);
 }
 
@@ -443,38 +614,37 @@ async fn two_pass_domain_only_no_ip_stays_default_not_ip() {
     let table = mixed_table().await;
     // SOCKS5h shape: a domain key that matches no domain rule, and NO IP key.
     // Must land on the table default — never attempt IP matching.
-    let d = table.resolve_domain_or_ip(Some("other.example"), None).await;
+    let d = table.resolve_domain_or_ip(Some("other.example"), None);
     assert_eq!(d.primary, RouteTarget::Group("main".into()));
 }
 
 #[tokio::test]
 async fn two_pass_domain_only_explicit_match_needs_no_ip() {
     let table = mixed_table().await;
-    let d = table.resolve_domain_or_ip(Some("bypass.example"), None).await;
+    let d = table.resolve_domain_or_ip(Some("bypass.example"), None);
     assert_eq!(d.primary, RouteTarget::Direct);
 }
 
 #[tokio::test]
 async fn two_pass_no_domain_uses_ip() {
     let table = mixed_table().await;
-    let hit = table.resolve_domain_or_ip(None, Some(&v4(10, 9, 9, 9))).await;
+    let hit = table.resolve_domain_or_ip(None, Some(&v4(10, 9, 9, 9)));
     assert_eq!(hit.primary, RouteTarget::Drop);
-    let miss = table.resolve_domain_or_ip(None, Some(&v4(8, 8, 8, 8))).await;
+    let miss = table.resolve_domain_or_ip(None, Some(&v4(8, 8, 8, 8)));
     assert_eq!(miss.primary, RouteTarget::Group("main".into()));
 }
 
 #[tokio::test]
 async fn two_pass_no_keys_returns_default() {
     let table = mixed_table().await;
-    let d = table.resolve_domain_or_ip(None, None).await;
+    let d = table.resolve_domain_or_ip(None, None);
     assert_eq!(d.primary, RouteTarget::Group("main".into()));
 }
 
 #[tokio::test]
 async fn two_pass_version_snapshot_is_stable_across_both_passes() {
     let table = mixed_table().await;
-    let (_d, v) = table
-        .resolve_domain_or_ip_versioned(Some("other.example"), Some(&v4(10, 0, 0, 1)))
-        .await;
+    let (_d, v) =
+        table.resolve_domain_or_ip_versioned(Some("other.example"), Some(&v4(10, 0, 0, 1)));
     assert_eq!(v, table.version());
 }

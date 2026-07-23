@@ -2,8 +2,10 @@
 //! and an explicit default.
 //!
 //! Built from [`RoutingTableConfig`]. Each rule's CIDR set lives behind its
-//! own [`Arc<RwLock<CidrSet>>`] so per-file hot-reload (see [`spawn_route_watchers`])
-//! swaps a single rule without locking the whole table.
+//! own [`Arc<ArcSwap<CidrSet>>`] so per-file hot-reload (see
+//! [`spawn_route_watchers`]) swaps a single rule without locking the whole
+//! table — and, because readers only `load()`, without blocking or awaiting
+//! on the resolve path at all.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,22 +13,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use tokio::sync::{RwLock, watch};
+use arc_swap::ArcSwap;
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::config::{RouteRule, RouteTarget, RoutingTableConfig};
 use socks5_proto::TargetAddr;
 
 use super::cidr::{CidrSet, read_prefixes_from_file};
-use super::domain::{DomainSet, read_domains_from_file};
+use super::domain::{DomainSet, normalize_host, read_domains_from_file};
 
 /// Compiled rule: CIDR + domain sets (shared, hot-reloadable) + target /
 /// fallback.
 #[derive(Debug)]
 pub struct CompiledRule {
-    pub cidrs: Arc<RwLock<CidrSet>>,
+    pub cidrs: Arc<ArcSwap<CidrSet>>,
     /// Domain suffixes this rule matches domain targets against.
-    pub domains: Arc<RwLock<DomainSet>>,
+    pub domains: Arc<ArcSwap<DomainSet>>,
     /// Inline prefixes from config — merged with file contents on each
     /// reload so removing the file doesn't drop the inline entries.
     pub inline_prefixes: Arc<[String]>,
@@ -94,8 +97,8 @@ impl RoutingTable {
                 );
             }
             rules.push(CompiledRule {
-                cidrs: Arc::new(RwLock::new(cidrs)),
-                domains: Arc::new(RwLock::new(domains)),
+                cidrs: Arc::new(ArcSwap::from_pointee(cidrs)),
+                domains: Arc::new(ArcSwap::from_pointee(domains)),
                 inline_prefixes: rule.inline_prefixes.as_slice().into(),
                 files: rule.files.as_slice().into(),
                 inline_domains: rule.inline_domains.as_slice().into(),
@@ -126,8 +129,8 @@ impl RoutingTable {
     /// inverted rules — inverting an empty match on a domain would
     /// incorrectly match everything), so with no domain rules configured a
     /// domain target falls through to the default, as before.
-    pub async fn resolve(&self, target: &TargetAddr) -> RouteDecision {
-        self.resolve_versioned(target).await.0
+    pub fn resolve(&self, target: &TargetAddr) -> RouteDecision {
+        self.resolve_versioned(target).0
     }
 
     /// Resolve and return the version snapshot captured *before* the first
@@ -136,7 +139,7 @@ impl RoutingTable {
     /// bumps the version during resolution the caller will see a stale
     /// snapshot on the next lookup and re-resolve, rather than tagging a
     /// potentially-stale decision with the post-bump version.
-    pub async fn resolve_versioned(&self, target: &TargetAddr) -> (RouteDecision, u64) {
+    pub fn resolve_versioned(&self, target: &TargetAddr) -> (RouteDecision, u64) {
         // Snapshot BEFORE any CIDR read so a concurrent reload invalidates
         // the decision we are about to compute instead of silently shadowing
         // it with the post-bump version.
@@ -146,8 +149,8 @@ impl RoutingTable {
         // table default — the single-key behaviour callers relied on before
         // two-pass resolution existed.
         let decision = match target {
-            TargetAddr::Domain(host, _) => self.match_domain_rules(host).await,
-            _ => self.match_ip_rules(target).await,
+            TargetAddr::Domain(host, _) => self.match_domain_rules(host),
+            _ => self.match_ip_rules(target),
         }
         .unwrap_or_else(|| self.default_decision());
         (decision, version)
@@ -172,19 +175,19 @@ impl RoutingTable {
     /// The version is snapshotted once, before any read, and covers both
     /// passes — a per-flow cache tags its entry with it and re-resolves when
     /// [`version`](Self::version) moves (see [`Self::resolve_versioned`]).
-    pub async fn resolve_domain_or_ip_versioned(
+    pub fn resolve_domain_or_ip_versioned(
         &self,
         domain: Option<&str>,
         ip: Option<&TargetAddr>,
     ) -> (RouteDecision, u64) {
         let version = self.version.load(Ordering::Acquire);
         if let Some(host) = domain
-            && let Some(decision) = self.match_domain_rules(host).await
+            && let Some(decision) = self.match_domain_rules(host)
         {
             return (decision, version);
         }
         if let Some(ip) = ip
-            && let Some(decision) = self.match_ip_rules(ip).await
+            && let Some(decision) = self.match_ip_rules(ip)
         {
             return (decision, version);
         }
@@ -192,12 +195,12 @@ impl RoutingTable {
     }
 
     /// Non-versioned [`Self::resolve_domain_or_ip_versioned`].
-    pub async fn resolve_domain_or_ip(
+    pub fn resolve_domain_or_ip(
         &self,
         domain: Option<&str>,
         ip: Option<&TargetAddr>,
     ) -> RouteDecision {
-        self.resolve_domain_or_ip_versioned(domain, ip).await.0
+        self.resolve_domain_or_ip_versioned(domain, ip).0
     }
 
     /// Match `host` against the domain-suffix rules only. `Some` on an
@@ -206,14 +209,18 @@ impl RoutingTable {
     /// [`Self::resolve`] this never substitutes the table default itself,
     /// which is what lets two-pass resolution tell "matched a domain rule"
     /// apart from "fell through to default".
-    pub async fn resolve_domain_explicit(&self, host: &str) -> Option<RouteDecision> {
-        self.match_domain_rules(host).await
+    pub fn resolve_domain_explicit(&self, host: &str) -> Option<RouteDecision> {
+        self.match_domain_rules(host)
     }
 
     /// First-match-wins over the domain-suffix side of every rule.
-    async fn match_domain_rules(&self, host: &str) -> Option<RouteDecision> {
+    fn match_domain_rules(&self, host: &str) -> Option<RouteDecision> {
+        // Normalize once for the whole walk: `contains_domain` would redo it
+        // for every rule, which on the hot path is one owned String per rule
+        // for the same host.
+        let host = normalize_host(host);
         for rule in &self.rules {
-            if rule.domains.read().await.contains_domain(host) {
+            if rule.domains.load().contains_normalized_domain(&host) {
                 return Some(RouteDecision {
                     primary: rule.target.clone(),
                     fallback: rule.fallback.clone(),
@@ -224,9 +231,9 @@ impl RoutingTable {
     }
 
     /// First-match-wins over the CIDR side of every rule, honouring `invert`.
-    async fn match_ip_rules(&self, ip: &TargetAddr) -> Option<RouteDecision> {
+    fn match_ip_rules(&self, ip: &TargetAddr) -> Option<RouteDecision> {
         for rule in &self.rules {
-            let in_set = rule.cidrs.read().await.contains(ip);
+            let in_set = rule.cidrs.load().contains(ip);
             let matched = if rule.invert { !in_set } else { in_set };
             if matched {
                 return Some(RouteDecision {
@@ -293,7 +300,7 @@ impl Drop for RouteWatchersGuard {
 /// Returns a [`RouteWatchersGuard`] that cancels all spawned tasks on drop.
 /// The caller must keep the guard alive for as long as the watchers should
 /// run; dropping it before process exit (e.g. on a routing hot-reload) lets
-/// the old `Arc<RoutingTable>` and its `Arc<RwLock<CidrSet>>` references be
+/// the old `Arc<RoutingTable>` and its `Arc<ArcSwap<CidrSet>>` references be
 /// released.
 pub fn spawn_route_watchers(table: Arc<RoutingTable>) -> RouteWatchersGuard {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -364,8 +371,8 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) -> RouteWatchersGuard {
                         let count_v4 = new_cidrs.v4_range_count();
                         let count_v6 = new_cidrs.v6_range_count();
                         let count_domains = new_domains.suffix_count();
-                        *cidrs.write().await = new_cidrs;
-                        *domains.write().await = new_domains;
+                        cidrs.store(Arc::new(new_cidrs));
+                        domains.store(Arc::new(new_domains));
                         let new_version =
                             table_for_version.version.fetch_add(1, Ordering::AcqRel) + 1;
                         info!(

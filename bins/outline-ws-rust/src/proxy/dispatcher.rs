@@ -126,7 +126,7 @@ async fn resolve_dispatch(
             manager,
         };
     };
-    let decision = router.resolve(target).await;
+    let decision = router.resolve(target);
     apply_fallback_strategy(registry, decision.primary, decision.fallback, transport, |t| {
         materialize_target(config, registry, t)
     })

@@ -11,6 +11,7 @@
 //! catch-all rule so domain targets get an explicit route instead of the
 //! default.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -38,7 +39,7 @@ impl DomainSet {
                 match_all = true;
                 continue;
             }
-            let normalized = normalize(pattern);
+            let normalized = normalize_host(pattern).into_owned();
             if normalized.is_empty() {
                 bail!(
                     "invalid domain pattern {raw:?} (want a suffix like \"example.com\" or \"*\")"
@@ -51,17 +52,27 @@ impl DomainSet {
 
     /// True if `host` (a domain name; IPs never reach this) matches the
     /// catch-all or any stored suffix on a label boundary.
+    ///
+    /// Normalizes `host` first. A caller matching one host against many sets
+    /// should normalize once itself and use
+    /// [`contains_normalized_domain`](Self::contains_normalized_domain).
     pub fn contains_domain(&self, host: &str) -> bool {
+        self.contains_normalized_domain(&normalize_host(host))
+    }
+
+    /// [`Self::contains_domain`] for a host already put through
+    /// [`normalize_host`] — the routing hot path normalizes once per resolve
+    /// and then walks every rule's set with the same `&str`.
+    pub fn contains_normalized_domain(&self, host: &str) -> bool {
         if self.match_all {
             return true;
         }
         if self.suffixes.is_empty() {
             return false;
         }
-        let host = normalize(host);
         // Walk the suffixes of `host` label by label: for a.b.example.com try
         // a.b.example.com, b.example.com, example.com, com.
-        let mut suffix = host.as_str();
+        let mut suffix = host;
         loop {
             if self.suffixes.contains(suffix) {
                 return true;
@@ -89,11 +100,18 @@ impl DomainSet {
 
 /// Lowercase and strip the decorations a suffix or host may carry: leading
 /// `*.`/`.` on patterns, one trailing `.` on FQDNs.
-fn normalize(s: &str) -> String {
+///
+/// Borrows when there is nothing to change — the common case for a sniffed
+/// SNI or a SOCKS5h hostname, which then costs no allocation at all.
+pub fn normalize_host(s: &str) -> Cow<'_, str> {
     let s = s.strip_prefix("*.").unwrap_or(s);
     let s = s.strip_prefix('.').unwrap_or(s);
     let s = s.strip_suffix('.').unwrap_or(s);
-    s.to_ascii_lowercase()
+    if s.bytes().any(|b| b.is_ascii_uppercase()) {
+        Cow::Owned(s.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(s)
+    }
 }
 
 /// Read domain patterns from a file: one per line, `#` comments and blank

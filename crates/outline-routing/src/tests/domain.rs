@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::*;
 
 fn set(patterns: &[&str]) -> DomainSet {
@@ -50,6 +52,30 @@ fn empty_and_invalid_patterns() {
     let empty = DomainSet::parse(&[]).unwrap();
     assert!(empty.is_empty());
     assert!(!empty.contains_domain("example.com"));
+}
+
+#[test]
+fn contains_normalized_domain_expects_a_pre_normalized_host() {
+    let s = set(&["example.com"]);
+    // The pre-normalized entry point does no normalization of its own: a
+    // resolve walking N rules normalizes the host once and hands the same
+    // `&str` to every rule's set.
+    assert!(s.contains_normalized_domain("example.com"));
+    assert!(s.contains_normalized_domain("a.example.com"));
+    assert!(!s.contains_normalized_domain("A.Example.COM"));
+    assert!(!s.contains_normalized_domain("example.com."));
+    // The convenience wrapper still normalizes for one-off callers.
+    assert!(s.contains_domain("A.Example.COM"));
+    assert!(s.contains_domain("example.com."));
+}
+
+#[test]
+fn normalize_host_borrows_an_already_normalized_host() {
+    // Already normalized → no allocation at all.
+    assert!(matches!(normalize_host("a.example.com"), Cow::Borrowed(_)));
+    // Decorations and case are stripped, at the cost of one owned String.
+    assert_eq!(normalize_host("*.Example.COM."), "example.com");
+    assert_eq!(normalize_host(".Example.COM"), "example.com");
 }
 
 #[test]
