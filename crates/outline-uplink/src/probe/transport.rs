@@ -166,7 +166,7 @@ async fn connect_probe_tcp_inner(
             };
             let (writer, reader) = outline_transport::vless::vless_tcp_pair_from_ws(
                 ws_stream, uuid, target, lifetime, diag, None,
-            );
+            )?;
             Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader), downgraded_from))
         },
     }

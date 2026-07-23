@@ -107,6 +107,8 @@ pub enum MuxError {
     InvalidDomain,
     #[error("mux data length exceeds maximum: {0}")]
     DataTooLarge(usize),
+    #[error("mux domain too long: {0} bytes")]
+    DomainTooLong(usize),
 }
 
 /// Maximum payload a single frame is allowed to carry. Matches xray-core's
@@ -259,6 +261,12 @@ fn parse_target(input: &[u8]) -> Result<(TargetAddr, Network, usize), MuxError> 
 /// `target` is written into the meta when `status == New` (together with
 /// `network`) or when the caller wants to emit an XUDP per-packet address
 /// on a `Keep` frame (`network` is ignored in that case).
+///
+/// Both length prefixes are validated before anything is appended: `data`
+/// past [`MAX_FRAME_DATA_SIZE`] (what [`parse_frame`] accepts) and domains
+/// past 255 bytes are rejected rather than written behind a truncated
+/// length, which would desynchronise the peer's framing. On error `out` is
+/// left untouched, so a caller may drop the frame and keep the stream.
 pub fn encode_frame(
     out: &mut BytesMut,
     session_id: u16,
@@ -267,7 +275,14 @@ pub fn encode_frame(
     network: Option<Network>,
     target: Option<&TargetAddr>,
     data: Option<&[u8]>,
-) {
+) -> Result<(), MuxError> {
+    let data = if option & OPTION_DATA != 0 { data } else { None };
+    if let Some(d) = data
+        && d.len() > MAX_FRAME_DATA_SIZE
+    {
+        return Err(MuxError::DataTooLarge(d.len()));
+    }
+
     let mut meta = BytesMut::with_capacity(32);
     meta.put_u16(session_id);
     meta.put_u8(status.as_u8());
@@ -277,28 +292,29 @@ pub fn encode_frame(
         SessionStatus::New => {
             let net = network.expect("New frame requires network");
             let addr = target.expect("New frame requires target");
-            write_target(&mut meta, addr, net);
+            write_target(&mut meta, addr, net)?;
         },
         SessionStatus::Keep => {
             if let Some(addr) = target {
-                write_target(&mut meta, addr, network.unwrap_or(Network::Udp));
+                write_target(&mut meta, addr, network.unwrap_or(Network::Udp))?;
             }
         },
         SessionStatus::End | SessionStatus::KeepAlive => {},
     }
 
+    // `meta` is bounded by its own layout (4 + at most 2+1+1+255 address
+    // bytes + 8 global-id bytes), so its length always fits the u16 prefix.
     out.put_u16(meta.len() as u16);
     out.extend_from_slice(&meta);
 
-    if option & OPTION_DATA != 0
-        && let Some(d) = data
-    {
+    if let Some(d) = data {
         out.put_u16(d.len() as u16);
         out.extend_from_slice(d);
     }
+    Ok(())
 }
 
-fn write_target(out: &mut BytesMut, addr: &TargetAddr, net: Network) {
+fn write_target(out: &mut BytesMut, addr: &TargetAddr, net: Network) -> Result<(), MuxError> {
     match addr {
         TargetAddr::IpV4(a, port) => {
             out.put_u16(*port);
@@ -311,14 +327,18 @@ fn write_target(out: &mut BytesMut, addr: &TargetAddr, net: Network) {
             out.extend_from_slice(&a.octets());
         },
         TargetAddr::Domain(host, port) => {
+            let bytes = host.as_bytes();
+            let host_len: u8 = bytes
+                .len()
+                .try_into()
+                .map_err(|_| MuxError::DomainTooLong(bytes.len()))?;
             out.put_u16(*port);
             out.put_u8((net.as_u8() << 4) | ATYP_DOMAIN);
-            let bytes = host.as_bytes();
-            // Caller is responsible for ensuring domain length fits in u8.
-            out.put_u8(bytes.len().min(u8::MAX as usize) as u8);
-            out.extend_from_slice(&bytes[..bytes.len().min(u8::MAX as usize)]);
+            out.put_u8(host_len);
+            out.extend_from_slice(bytes);
         },
     }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -171,7 +171,11 @@ where
                 // Build the frame on demand so an idle sub-conn holds no
                 // encode buffer either.
                 let mut frame_buf = BytesMut::with_capacity(total + 16);
-                encode_frame(
+                // The relay buffer is sized at MAX_FRAME_DATA_SIZE, so this
+                // cannot overflow the frame; a future resize that breaks the
+                // invariant tears the sub-conn down instead of emitting a
+                // frame the peer would reject mid-stream.
+                if let Err(error) = encode_frame(
                     &mut frame_buf,
                     session_id,
                     SessionStatus::Keep,
@@ -179,7 +183,10 @@ where
                     None,
                     None,
                     Some(&buf[..total]),
-                );
+                ) {
+                    debug!(session_id, error = %error, "mux tcp downlink frame encode failed");
+                    break;
+                }
                 let frame = frame_buf.split().freeze();
                 metrics.record_websocket_binary_frame(
                     Transport::Tcp,
@@ -195,7 +202,8 @@ where
         }
     }
     let mut frame_buf = BytesMut::with_capacity(6);
-    encode_frame(&mut frame_buf, session_id, SessionStatus::End, 0, None, None, None);
+    encode_frame(&mut frame_buf, session_id, SessionStatus::End, 0, None, None, None)
+        .expect("End frame carries neither target nor data");
     let _ = tx.send(make_binary(frame_buf.split().freeze())).await;
     MuxReaderHarvest::Closed
 }
