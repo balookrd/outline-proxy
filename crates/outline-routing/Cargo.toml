@@ -8,6 +8,9 @@ workspace = true
 
 [dependencies]
 anyhow = "1.0"
+# Hot-reloadable rule sets: readers `load()` without locking or awaiting, so
+# resolving stays synchronous on the data-plane hot path.
+arc-swap = "1.7"
 socks5-proto = { path = "../socks5-proto" }
 # `rt` + `time` are required by the file-poll task (tokio::spawn +
 # tokio::time::sleep) used by `compile_routing_table`. `macros` is needed

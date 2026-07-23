@@ -63,7 +63,7 @@ pub(super) async fn resolve_udp_packet_route(
         // not the post-resolve version — otherwise a reload that races with
         // resolution would leave a stale decision tagged with the bumped
         // version and never invalidate. See `RoutingTable::resolve_versioned`.
-        let (decision, resolve_version) = router.resolve_versioned(target).await;
+        let (decision, resolve_version) = router.resolve_versioned(target);
         cache.put(target.clone(), (decision.clone(), resolve_version));
         decision
     };

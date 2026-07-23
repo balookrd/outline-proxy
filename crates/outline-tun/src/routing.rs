@@ -145,7 +145,7 @@ impl TunRouting {
                 manager: self.default_group.clone(),
             };
         };
-        let decision = table.resolve(target).await;
+        let decision = table.resolve(target);
         self.materialize_target(decision.primary, decision.fallback, scope)
             .await
     }
@@ -208,7 +208,7 @@ impl TunRouting {
                 manager: self.default_group.clone(),
             };
         };
-        let decision = table.resolve_domain_or_ip(sni_host, Some(ip_target)).await;
+        let decision = table.resolve_domain_or_ip(sni_host, Some(ip_target));
         self.materialize_target(decision.primary, decision.fallback, scope)
             .await
     }
