@@ -19,14 +19,33 @@ use super::warm_udp::WarmUdpProbeSlot;
 
 /// What one uplink's probe task produced this cycle.
 ///
-/// The endpoint-reachability check runs ahead of the expensive stages and can
-/// end the cycle on its own, so the task's result is no longer just a probe
-/// outcome — it is either "the host answered nothing, here is the endpoint
-/// list" or a regular probe result.
-pub(super) enum ProbeCycle {
-    /// Every endpoint failed a bare TCP connect; the heavy probe never ran.
-    EndpointUnreachable(String),
-    Probed(Result<ProbeOutcome>),
+/// The endpoint-reachability check runs ahead of the regular probe, but its
+/// answer is advisory: it decides how *fast* a failure escalates, never
+/// whether the uplink is failing. So a cycle always carries a real probe
+/// outcome, plus the endpoint verdict when the pre-check ran.
+pub(super) struct ProbeCycle {
+    /// `Some(labels)` when every endpoint refused a bare TCP connect.
+    ///
+    /// On its own this means very little: an uplink can be delivering traffic
+    /// over an already-established H3/QUIC carrier while new TCP connections
+    /// to the same `host:port` are being refused or blackholed. Field
+    /// evidence — cloud4 counted 463 such failures against `senko` while the
+    /// TLS probe through it logged 4879 successes and zero errors — so
+    /// condemning on this signal alone flapped a perfectly live uplink every
+    /// cycle.
+    unreachable_endpoints: Option<String>,
+    outcome: Result<ProbeOutcome>,
+}
+
+/// Whether the regular probe agrees the uplink is unusable: it errored out,
+/// or neither plane reached its target. A probe that got through on either
+/// plane is proof the uplink still works, whatever the bare-TCP pre-check
+/// thinks of it.
+fn probe_confirms_failure(outcome: &Result<ProbeOutcome>) -> bool {
+    match outcome {
+        Err(_) => true,
+        Ok(result) => !result.tcp_ok && (!result.udp_applicable || !result.udp_ok),
+    }
 }
 
 pub(super) fn should_skip_probe_cycle_for_recent_activity(
@@ -276,30 +295,29 @@ impl UplinkManager {
                     .acquire_owned()
                     .await
                     .expect("probe execution semaphore closed");
-                // Endpoint-reachability short-circuit, ahead of every
-                // expensive stage: one bare TCP connect per distinct
-                // `host:port` of the uplink, all of them concurrent, bounded
-                // by `endpoint_check_timeout`. A host that is simply gone is
-                // answered here in ~one short deadline instead of being
-                // rediscovered rank by rank and wire by wire, each step
+                // Endpoint-reachability pre-check: one bare TCP connect per
+                // distinct `host:port` of the uplink, all concurrent, bounded
+                // by `endpoint_check_timeout`. Its job is to let a host that
+                // is simply gone be escalated in one short deadline instead of
+                // being rediscovered rank by rank and wire by wire, each step
                 // paying the full `probe.timeout`.
-                if probe.endpoint_check
-                    && let Some(endpoints) = unreachable_uplink_endpoints(
+                //
+                // It does NOT end the cycle. The regular probe runs either
+                // way and keeps the last word on health — a bare connect
+                // cannot tell "the server is gone" from "new TCP to it is
+                // being refused while traffic rides a live QUIC carrier", and
+                // treating the two alike condemned a working uplink.
+                let unreachable_endpoints = if probe.endpoint_check {
+                    unreachable_uplink_endpoints(
                         &dns_cache,
                         &group_name,
                         &uplink,
                         probe.endpoint_check_timeout,
                     )
                     .await
-                {
-                    return (
-                        index,
-                        uplink,
-                        ProbeCycle::EndpointUnreachable(endpoints),
-                        effective_tcp_mode,
-                        effective_udp_mode,
-                    );
-                }
+                } else {
+                    None
+                };
                 // Retry the probe up to `attempts` times within one cycle.
                 // As soon as an attempt reports a *fully* healthy outcome we
                 // accept it and stop; a partial failure (a plane's
@@ -341,7 +359,7 @@ impl UplinkManager {
                 (
                     index,
                     uplink,
-                    ProbeCycle::Probed(outcome),
+                    ProbeCycle { unreachable_endpoints, outcome },
                     effective_tcp_mode,
                     effective_udp_mode,
                 )
@@ -359,31 +377,38 @@ impl UplinkManager {
                     continue;
                 },
             };
-            let outcome = match cycle {
-                ProbeCycle::EndpointUnreachable(endpoints) => {
-                    // The host answered nothing at all. Condemning the uplink
-                    // (once the streak reaches `min_failures`) is the whole
-                    // point; the fallback-wire walk and the carrier-recovery
-                    // re-probes below are skipped because every wire shares
-                    // the endpoints we just found dead. The standby pools are
-                    // still cleared — they hold sockets to that host.
-                    self.note_endpoint_unreachable(index, &uplink, &endpoints);
-                    self.clear_standby(index, TransportKind::Tcp).await;
-                    if uplink.supports_udp() {
-                        self.clear_standby(index, TransportKind::Udp).await;
-                    }
-                    continue;
-                },
-                ProbeCycle::Probed(outcome) => {
-                    // At least one endpoint answered (or the check is off):
-                    // the uplink is not host-dead, so let the regular probe
-                    // verdict own health from here.
-                    if self.inner.probe.endpoint_check {
-                        self.note_endpoint_reachable(index);
-                    }
-                    outcome
-                },
-            };
+            let ProbeCycle { unreachable_endpoints, outcome } = cycle;
+            // Endpoint verdict, applied only where the probe backs it up. The
+            // two must agree before an uplink is condemned on this shortcut:
+            // "no endpoint accepts a connect" alone is not evidence the uplink
+            // is dead, but together with a probe that also failed to get
+            // through, it says the failure is at the host — not at one carrier
+            // rank or one wire — so the whole descent-and-rotate walk can be
+            // skipped and health flipped now.
+            if self.inner.probe.endpoint_check {
+                match &unreachable_endpoints {
+                    Some(endpoints) if probe_confirms_failure(&outcome) => {
+                        if self.note_endpoint_unreachable(index, &uplink, endpoints) {
+                            // Condemned. The fallback-wire walk and the
+                            // carrier-recovery re-probes below are pointless —
+                            // every wire shares the endpoints just found dead.
+                            // Standby pools are still cleared: they hold
+                            // sockets to that host.
+                            self.clear_standby(index, TransportKind::Tcp).await;
+                            if uplink.supports_udp() {
+                                self.clear_standby(index, TransportKind::Udp).await;
+                            }
+                            continue;
+                        }
+                        // Streak not deep enough yet — fall through and let the
+                        // regular escalation handle this cycle as usual.
+                    },
+                    // Either some endpoint answered, or the probe got through
+                    // in spite of the pre-check. Both mean the shortcut has no
+                    // case to make, so its streak starts over.
+                    _ => self.note_endpoint_reachable(index),
+                }
+            }
             let mut refill_tcp = false;
             let mut refill_udp = false;
             // Whether to chase up with a fallback-wire probe pass. Decided

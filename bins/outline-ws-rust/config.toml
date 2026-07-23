@@ -303,21 +303,25 @@ max_dials = 2
 # while traffic flows). Default 300 seconds (5 minutes).
 # liveness_interval_secs = 300
 
-# Endpoint-reachability short-circuit. Before the carrier / application
-# probes run, try a bare TCP connect against every endpoint of the uplink
-# (primary + fallbacks, deduplicated by host:port plus egress options), all
-# of them concurrently. After `min_failures` cycles in which none of them
-# answers, the uplink is marked down at once instead of walking the carrier
-# cascade (h3 → h2 → h1) on each wire and rotating the whole chain — a walk
-# that, against a switched-off host, spends the full `timeout_secs` per step
-# and takes minutes to reach a conclusion every wire shares. The failing
-# endpoints are named in `last_error` (dashboard chip) and the check reports
-# as `probe="endpoint"` in the probe metrics.
+# Endpoint-reachability pre-check. Before the carrier / application probes
+# run, try a bare TCP connect against every endpoint of the uplink (primary
+# + fallbacks, deduplicated by host:port plus egress options), all of them
+# concurrently.
 #
-# Off by default because a closed TCP port reads as "server gone": correct
-# for a host that is down, wrong for an endpoint that serves QUIC/H3 on UDP
-# with the matching TCP port shut. Enable it when every uplink endpoint
-# answers TCP — the usual case, since TLS/WS/XHTTP all need it.
+# It ACCELERATES a verdict, it does not make one: the regular probe runs
+# either way and keeps the last word. Only when both agree — nothing accepts
+# a connect AND the probe got through on neither plane — is the failure read
+# as host-level, and the uplink marked down after `min_failures` such cycles
+# without walking the carrier cascade (h3 → h2 → h1) on each wire and
+# rotating the whole chain, a walk that against a switched-off host spends
+# the full `timeout_secs` per step and takes minutes to reach a conclusion
+# every wire shares. The failing endpoints are named in `last_error`
+# (dashboard chip); the check reports as `probe="endpoint"` in the metrics.
+#
+# A probe that got through overrules the pre-check: a bare connect cannot
+# tell "the server is gone" from "new TCP is refused while traffic rides an
+# already-established QUIC carrier" — cloud4 saw 463 of the latter against a
+# live uplink whose TLS probe logged 4879 successes in the same window.
 # endpoint_check = false
 # endpoint_check_timeout_ms = 2000
 
