@@ -46,6 +46,7 @@ use crate::{
     protocol::parse_target_addr,
 };
 
+use super::super::abort::AbortOnDrop;
 use super::super::connect::connect_tcp_target;
 use super::super::constants::{
     WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
@@ -108,7 +109,14 @@ type RelayTaskOutput = Result<UpstreamRelayOutcome<tokio::net::tcp::OwnedReadHal
 
 struct WsTcpRelayState {
     upstream_writer: Option<tokio::net::tcp::OwnedWriteHalf>,
-    upstream_to_client: Option<tokio::task::JoinHandle<RelayTaskOutput>>,
+    /// `AbortOnDrop` ensures the upstream→client task is cancelled on every
+    /// exit path of the owning `run_tcp_relay` future — including the `?`
+    /// returns that skip teardown entirely, as when a client vanishes
+    /// without a closing handshake. A bare `JoinHandle` would only detach,
+    /// leaving the task blocked on a read from a silent-but-open upstream
+    /// while it pins that socket and its `outbound_data_tx` clone (which in
+    /// turn pins the writer task) for as long as the upstream lives.
+    upstream_to_client: Option<AbortOnDrop<RelayTaskOutput>>,
     /// Notify used to ask the spawned relay task to stop and return its
     /// reader half. Set in tandem with `upstream_to_client`.
     relay_cancel: Option<Arc<Notify>>,
@@ -483,13 +491,28 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
             upstream.shutdown().await.ok();
         }
         if client_closed {
-            if let Some(task) = state.upstream_to_client.take() {
-                task.abort();
-            }
-        } else if let Some(task) = state.upstream_to_client.take() {
+            // Nothing left to harvest; taking the handle here (rather than
+            // leaving it to the state's drop at function exit) aborts the
+            // task before the `writer_task.await` below, which would
+            // otherwise wait on the data channel the task still holds open.
+            drop(state.upstream_to_client.take());
+        } else if let Some(task) = state.upstream_to_client.take()
+            && let Some(cancel) = state.relay_cancel.take()
+        {
+            // Ask the relay to stop before joining it: against a
+            // silent-but-open upstream (idle database, SSH, long-poll) the
+            // read never completes, so a bare join would hang this teardown —
+            // and with it the carrier and writer tasks. Should the cancel
+            // handle be missing (it is set in tandem with the task), the
+            // taken handle just drops here, which aborts.
+            cancel.notify_one();
             // Surface relay-task errors but ignore the resumption outcome
             // (we already decided not to park).
-            match task.await.context("tcp upstream relay task join failed")? {
+            match task
+                .into_inner()
+                .await
+                .context("tcp upstream relay task join failed")?
+            {
                 Ok(_) => {},
                 Err(error) => return Err(error),
             }
@@ -543,7 +566,10 @@ async fn try_park_on_drop(
     // committed park or not.
     let _reservation = server.orphan_registry.reserve_park(session_id);
     cancel.notify_one();
-    let reader = match task.await {
+    // `into_inner` suppresses the on-drop abort: this is the one path that
+    // wants the task to run to completion so its reader half can be
+    // harvested for parking. Mirrors the VLESS park (`try_park_vless_tcp`).
+    let reader = match task.into_inner().await {
         Ok(Ok(UpstreamRelayOutcome::Cancelled(reader))) => reader,
         Ok(Ok(UpstreamRelayOutcome::Closed)) => {
             // Upstream EOF'd before our cancel was observed; nothing
@@ -886,7 +912,7 @@ where
             let cancel = Arc::new(Notify::new());
             let cancel_for_task = Arc::clone(&cancel);
             let parked_reader = parked.upstream_reader;
-            state.upstream_to_client = Some(tokio::spawn(async move {
+            state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
                 super::super::relay::relay_upstream_to_client(
                     parked_reader,
                     ChannelSink {
@@ -907,7 +933,7 @@ where
                     monitor_for_relay,
                 )
                 .await
-            }));
+            })));
             state.relay_cancel = Some(cancel);
             state.user_counters = Some(parked.user_counters);
             state.authenticated_user = Some(parked_user);
@@ -1012,7 +1038,7 @@ where
         let ring_for_task = state.downlink_ring.clone();
         let monitor_for_sink = state.throttle_monitor.clone();
         let monitor_for_relay = state.throttle_monitor.clone();
-        state.upstream_to_client = Some(tokio::spawn(async move {
+        state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
             super::super::relay::relay_upstream_to_client(
                 upstream_reader,
                 ChannelSink {
@@ -1033,7 +1059,7 @@ where
                 monitor_for_relay,
             )
             .await
-        }));
+        })));
         state.relay_cancel = Some(cancel);
         server.metrics.record_tcp_authenticated_session(
             Arc::clone(&user_id),
@@ -1109,3 +1135,7 @@ pub(in crate::server) async fn handle_tcp_h3_connection(
 ) -> Result<()> {
     run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, peer_addr, None).await
 }
+
+#[cfg(test)]
+#[path = "tests/tcp.rs"]
+mod tests;
