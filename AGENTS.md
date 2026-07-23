@@ -90,6 +90,12 @@ cargo ws-release-musl-aarch64      # zigbuild client
 - User-facing документация ведётся в EN и RU параллельно (`*.md` / `*.ru.md`) —
   обновляй обе стороны в одном изменении.
 - Не логируй secrets/PSK/UUID/tokens; держи metrics labels low-cardinality.
+- Каждый `unsafe`-блок и `unsafe impl` в наших крейтах несёт рядом `// SAFETY:`
+  с КОНКРЕТНЫМ инвариантом (fd заимствован на всё время syscall, длина
+  проверена до записи, контракт libc/ОС, layout `repr(C)`), а не формальную
+  отписку. Гейт — `undocumented_unsafe_blocks = "warn"` в
+  `[workspace.lints.clippy]` плюс `-D warnings` в CI; vendored-крейты в
+  workspace-линты не включены и правилу не подчиняются.
 - `cargo fmt` использует общий `rustfmt.toml` (100 колонок). Не форматируй
   `vendor/*` без явной цели.
 
