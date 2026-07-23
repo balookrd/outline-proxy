@@ -217,6 +217,13 @@ pub fn record_dropped_oversized_udp_packet(direction: &'static str, cause: &'sta
         .inc();
 }
 
+/// Records one client datagram dropped because it could not be decoded.
+/// `cause` is the decode stage that rejected it: `"parse"` (SOCKS5 UDP
+/// request header) or `"reassembly"` (fragment sequence).
+pub fn record_dropped_malformed_udp_packet(cause: &'static str) {
+    METRICS.udp_malformed_dropped_total.with_label_values(&[cause]).inc();
+}
+
 pub fn record_uplink_selected(transport: &'static str, group: &str, uplink: &str) {
     METRICS
         .uplink_selected_total

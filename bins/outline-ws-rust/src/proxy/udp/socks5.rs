@@ -110,9 +110,31 @@ pub(in crate::proxy) async fn serve_udp_associate(
                     },
                 }
 
-                let packet = parse_udp_request(&recv_buf.filled()[..len])?;
-                let Some(datagram) = reassembler.push_fragment(packet)? else {
-                    continue;
+                // Decode failures are per-datagram, not per-association: this
+                // is a datagram socket, so a rejected packet costs nothing but
+                // itself and the next one resynchronises on its own. Bubbling
+                // the error up would end the uplink branch of the `select!`
+                // below and tear down every concurrent flow of this client over
+                // one malformed packet. (The UDP-in-TCP path is the opposite
+                // case — a byte stream cannot resynchronise after a framing
+                // error, so it stays fatal there.)
+                let packet = match parse_udp_request(&recv_buf.filled()[..len]) {
+                    Ok(packet) => packet,
+                    Err(error) => {
+                        debug!(%addr, %error, "dropping undecodable UDP packet from client");
+                        metrics::record_dropped_malformed_udp_packet("parse");
+                        continue;
+                    },
+                };
+                let datagram = match reassembler.push_fragment(packet) {
+                    Ok(Some(datagram)) => datagram,
+                    // Fragment buffered; the sequence completes on a later packet.
+                    Ok(None) => continue,
+                    Err(error) => {
+                        debug!(%addr, %error, "dropping UDP fragment rejected by reassembly");
+                        metrics::record_dropped_malformed_udp_packet("reassembly");
+                        continue;
+                    },
                 };
 
                 let group_name = match resolve_udp_packet_route(
@@ -277,3 +299,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
     session.finish(result.is_ok());
     result
 }
+
+#[cfg(test)]
+#[path = "tests/socks5.rs"]
+mod tests;
