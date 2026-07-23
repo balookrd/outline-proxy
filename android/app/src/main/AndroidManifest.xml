@@ -24,6 +24,30 @@
             </intent-filter>
         </activity>
 
+        <!-- External control over `outline://connect|disconnect|toggle`, for
+             automation apps and shortcuts. Invisible (translucent theme) and
+             kept out of the recents list; it finishes as soon as the command is
+             dispatched. Anyone can send the intent, so the commands are gated
+             in-app by the External control switch and optional token
+             (see ExternalControl.kt). No `noHistory` here: it would kill the
+             activity while the system VPN consent dialog is up and the result
+             would never come back. -->
+        <activity
+            android:name=".ControlActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <!-- BROWSABLE lets links, QR codes and launcher shortcuts fire
+                     the scheme; it also lets a web page try, hence the token. -->
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="outline" />
+            </intent-filter>
+        </activity>
+
         <!-- The VPN tunnel service. BIND_VPN_SERVICE is granted to the system
              only; the special-use foreground type keeps the tunnel alive. -->
         <service

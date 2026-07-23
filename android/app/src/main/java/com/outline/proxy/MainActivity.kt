@@ -63,12 +63,18 @@ class MainActivity : ComponentActivity() {
                 }
 
                 var showSplit by remember { mutableStateOf(false) }
+                var showExternal by remember { mutableStateOf(false) }
 
                 if (showSplit) {
                     SplitTunnelScreen(
                         store = SplitTunnelStore(this@MainActivity),
                         loadApps = { loadLaunchableApps(this@MainActivity) },
                         onBack = { showSplit = false },
+                    )
+                } else if (showExternal) {
+                    ExternalControlScreen(
+                        store = ExternalControlStore(this@MainActivity),
+                        onBack = { showExternal = false },
                     )
                 } else {
                     ServerListScreen(
@@ -93,6 +99,7 @@ class MainActivity : ComponentActivity() {
                         },
                         onDisconnect = ::disconnect,
                         onOpenSplitTunnel = { showSplit = true },
+                        onOpenExternalControl = { showExternal = true },
                     )
                 }
             }
@@ -115,20 +122,11 @@ class MainActivity : ComponentActivity() {
         }
 
     private fun startTunnel(configToml: String) {
-        startService(
-            Intent(this, OutlineVpnService::class.java).apply {
-                action = OutlineVpnService.ACTION_CONNECT
-                putExtra(OutlineVpnService.EXTRA_CONFIG_TOML, configToml)
-            },
-        )
+        OutlineVpnService.requestConnect(this, configToml)
     }
 
     private fun disconnect() {
-        startService(
-            Intent(this, OutlineVpnService::class.java).apply {
-                action = OutlineVpnService.ACTION_DISCONNECT
-            },
-        )
+        OutlineVpnService.requestDisconnect(this)
     }
 }
 
@@ -142,6 +140,7 @@ private fun ServerListScreen(
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
     onOpenSplitTunnel: () -> Unit,
+    onOpenExternalControl: () -> Unit,
 ) {
     var editing by remember { mutableStateOf<ServerProfile?>(null) }
 
@@ -191,6 +190,10 @@ private fun ServerListScreen(
                 onClick = onOpenSplitTunnel,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Split tunneling…") }
+            TextButton(
+                onClick = onOpenExternalControl,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("External control…") }
         }
     }
 
@@ -368,6 +371,69 @@ private fun SplitTunnelScreen(
                         }
                     }
             }
+        }
+    }
+}
+
+/**
+ * External control settings: the `outline://` scheme is exported to every app
+ * on the device, so this screen is where the user switches it off or locks it
+ * behind a shared secret. See [ControlActivity].
+ */
+@Composable
+private fun ExternalControlScreen(
+    store: ExternalControlStore,
+    onBack: () -> Unit,
+) {
+    val initial = remember { store.load() }
+    var enabled by remember { mutableStateOf(initial.enabled) }
+    var token by remember { mutableStateOf(initial.token) }
+
+    fun persist() = store.save(ExternalControlConfig(enabled, token))
+
+    Scaffold { padding ->
+        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack) { Text("‹ Back") }
+                Text("External control", style = MaterialTheme.typography.headlineSmall)
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Allow outline:// commands", modifier = Modifier.weight(1f))
+                Switch(checked = enabled, onCheckedChange = { enabled = it; persist() })
+            }
+
+            OutlinedTextField(
+                token,
+                { token = it; persist() },
+                enabled = enabled,
+                singleLine = true,
+                label = { Text("Token (optional)") },
+                supportingText = {
+                    Text("When set, commands without a matching ?token= are ignored.")
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            )
+
+            Text(
+                """
+                Supported commands:
+
+                outline://connect
+                outline://connect?profile=<name or id>
+                outline://disconnect
+                outline://toggle[?profile=<name or id>]
+
+                Any app on this device can send these, which is why the switch
+                and the token are here. Commands never create a server — the
+                profile must already exist in the list.
+                """.trimIndent(),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 16.dp),
+            )
         }
     }
 }

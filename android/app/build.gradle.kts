@@ -37,6 +37,11 @@ android {
     buildFeatures {
         compose = true
     }
+    testOptions {
+        // The unit tests cover pure Kotlin logic (URI parsing, access checks);
+        // stubbed android.jar calls return defaults instead of throwing.
+        unitTests.isReturnDefaultValues = true
+    }
     // The Rust .so files are dropped here by cargo-ndk; see README.
     // src/main/jniLibs/<abi>/liboutline_android.so
 }
@@ -57,4 +62,6 @@ dependencies {
     // builds fail to dlopen on Android 15 / 16 KB-page devices and emulators
     // ("program alignment (8192) cannot be smaller than system page size").
     implementation("net.java.dev.jna:jna:5.17.0@aar")
+
+    testImplementation("junit:junit:4.13.2")
 }

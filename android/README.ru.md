@@ -24,6 +24,10 @@ android/
     src/main/java/com/outline/proxy/
       OutlineVpnService.kt   # VpnService: establish() TUN, управляет ядром
       MainActivity.kt        # список серверов + connect/disconnect
+      ExternalControl.kt     # грамматика outline://, гейт доступа, настройки
+      ControlActivity.kt     # невидимая точка входа для команд outline://
+    src/test/java/com/outline/proxy/
+      ExternalControlTest.kt # JVM-тесты парсера URI и гейта доступа
 ```
 
 ## Архитектура
@@ -87,8 +91,47 @@ export ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk
    к SDK) и при первой синхронизации скачает дистрибутив Gradle 8.10.2.
 3. Запустите на устройстве/эмуляторе, добавьте сервер, нажмите Connect.
 
-Альтернатива через CLI (нужны JDK 17 + Android SDK в `PATH`, `local.properties`
-с `sdk.dir`): `./gradlew :app:assembleDebug`.
+Альтернатива через CLI (нужны JDK 17+ и Android SDK, `local.properties` с
+`sdk.dir`): `./gradlew :app:assembleDebug`, а `./gradlew :app:testDebugUnitTest` —
+JVM-юнит-тесты. Если системной JDK нет, подойдёт встроенная в Android Studio:
+`export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"`.
+
+## Внешнее управление (`outline://`)
+
+Приложения-автоматизации (Tasker, ярлыки лаунчера, `adb`) управляют туннелем
+через URI-схему:
+
+```
+outline://connect                     # поднять профиль, выбранный в UI
+outline://connect?profile=<имя|id>    # поднять конкретный сохранённый профиль
+outline://disconnect
+outline://toggle[?profile=<имя|id>]   # опустить, если поднят, иначе поднять
+```
+
+Схема, команда и ключи query нечувствительны к регистру; значения
+percent-декодируются (`?profile=Home%20VPN`). Команда никогда не создаёт сервер —
+профиль должен уже быть в списке; сопоставление сначала по id, затем по имени.
+При успехе ничего не показывается: индикатор состояния — уведомление
+foreground-сервиса. Отказы дают Toast и предупреждение `OutlineControl` в logcat.
+
+```sh
+adb shell am start -a android.intent.action.VIEW -d 'outline://connect'
+adb shell am start -a android.intent.action.VIEW -d 'outline://toggle?profile=Home&token=s3cret'
+```
+
+Доступ ограничивается в разделе **External control…** на главном экране:
+переключатель (по умолчанию включён) и опциональный токен. Если токен задан,
+команды без совпадающего `?token=` игнорируются, а сравнение не зависит от
+содержимого (`MessageDigest.isEqual`). Дёрнуть такой URI может любое
+установленное приложение — и, поскольку intent-фильтр несёт `BROWSABLE`, любая
+веб-страница; так что если тихий `disconnect` для вас критичен, задайте токен.
+
+Реализация: `ControlActivity` — прозрачная Activity, которая отправляет команду
+и завершается. Ни receiver, ни exported-сервис здесь не подходят: системному
+диалогу VPN-согласия нужна Activity, а Android 12+ запрещает старт
+foreground-сервиса из фона. Вызывающей стороне при этом нужно право запускать
+Activity: у фонового приложения без него (например, Tasker без «Поверх других
+приложений») платформа молча отбросит URI.
 
 ## Дорожная карта
 
@@ -108,17 +151,23 @@ export ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk
   `addDisallowedApplication`) с UI-выбором приложений — режимы OFF / ALLOWLIST /
   DENYLIST, хранятся в SharedPreferences, применяются в `OutlineVpnService`.
   Kotlin написан, на устройстве ещё не собирался.
+- **Инкремент 5 (готово):** внешнее управление по схеме `outline://`
+  (connect / disconnect / toggle, опциональный выбор профиля) под
+  переключателем и опциональным токеном; парсер и гейт покрыты JVM-тестами.
 
 ## Что проверено, а что нет
 
 - **Проверено сборкой:** Rust-ядро (cdylib `outline-android`) кросс-компилируется
   в загружаемую `aarch64` Android-`.so`, включая стек SOCKS5 + uplinks,
   tun2proxy и носители QUIC/h3.
-- **Не проверено:** Gradle/Kotlin-приложение здесь ни разу не собиралось и не
-  запускалось (нет Android SDK / Gradle). UniFFI-биндинги Kotlin, Compose-UI,
-  жизненный цикл VpnService и сквозное прохождение трафика — всё это требует
-  первой реальной сборки на устройстве. Обработка DNS в tun2proxy на дефолтах и
-  является наиболее вероятным первым кандидатом на тюнинг.
+- **Проверено сборкой (Kotlin):** `:app:assembleDebug` собирает debug-APK, а
+  `:app:testDebugUnitTest` проходит — тесты покрывают парсер `outline://`, гейт
+  доступа и резолвинг профиля на JVM.
+- **Не проверено:** на устройстве и эмуляторе ничего не запускалось.
+  UniFFI-биндинги Kotlin, Compose-UI, жизненный цикл VpnService, сквозная
+  отработка `outline://` и прохождение трафика — всё это требует первого
+  реального запуска. Обработка DNS в tun2proxy на дефолтах и является наиболее
+  вероятным первым кандидатом на тюнинг.
 
 ## Заметки по портированию
 
