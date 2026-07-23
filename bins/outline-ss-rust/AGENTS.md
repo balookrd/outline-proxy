@@ -120,6 +120,13 @@ Prometheus metrics и локально пропатченные копии `h3` 
 - Dashboard должен отображать и сохранять те же user-facing поля, что и control
   API. Избегай backend-only полей, которые пользователь может создать через API,
   но не увидеть или не изменить в UI.
+- Dashboard-листенер по полномочиям равен сумме control-токенов всех своих
+  инстансов (`proxy.rs` подставляет их server-side). Собственная аутентификация
+  у него опциональная (`dashboard.token` / `token_file`, Bearer или HTTP Basic)
+  и по умолчанию выключена ради loopback-workflow; вместо принудительного auth
+  не-loopback bind без токена пишет WARN на старте
+  (`server/dashboard/auth.rs`). Добавляя маршруты или расширяя проксирование,
+  держи их под тем же гейтом и не ослабляй это предупреждение.
 - Будь осторожен с tuning defaults и resource caps. Не повышай дефолтные окна,
   channel capacities, connection/stream limits, NAT/session limits или timeout
   behavior без оценки memory envelope и DoS-поверхности.

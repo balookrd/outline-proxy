@@ -282,6 +282,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `dashboard.listen` | Socket address for the dashboard listener, e.g. `127.0.0.1:7002` |
 | `dashboard.request_timeout_secs` | Timeout for dashboard-to-control requests. Default: `15` |
 | `dashboard.refresh_interval_secs` | Auto-refresh interval for the dashboard UI, in seconds. Default: `10` |
+| `dashboard.token` / `token_file` | Optional secret guarding the dashboard listener itself, accepted as `Authorization: Bearer <token>` or as the HTTP Basic password (any username). Unset by default, which leaves the listener unauthenticated |
 | `dashboard.instances[].name` | Display name for a managed instance |
 | `dashboard.instances[].control_url` | Base `http://` or `https://` URL of that instance's control listener |
 | `dashboard.instances[].token` / `token_file` | Bearer token used server-side when proxying to that control listener |
@@ -425,6 +426,16 @@ token_file = "/etc/outline-ss-rust/edge-02.control.token"
 ```
 
 Open `http://127.0.0.1:7002/dashboard`.
+
+Reaching the dashboard is equivalent to holding every instance token it was configured with: it proxies user CRUD to all of them with those tokens injected server-side, and by default the listener itself has no authentication. Keep it on loopback (as above), or, when it must be reachable from elsewhere, put it behind an authenticating reverse proxy and/or set a secret of its own:
+
+```toml
+[dashboard]
+listen = "10.0.0.7:7002"
+token_file = "/etc/outline-ss-rust/dashboard.token"
+```
+
+With `dashboard.token` (or `dashboard.token_file`) set, every request must carry `Authorization: Bearer <token>`; browsers can instead answer the `Basic` challenge with any username and the token as the password. A non-loopback listener without such a secret logs a warning on startup.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
