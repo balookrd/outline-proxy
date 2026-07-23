@@ -15,7 +15,7 @@ use super::{
         CERT_RELOAD_POLL_INTERVAL_SECS, H3_MAX_CONCURRENT_CONNECTIONS, H3_MAX_CONCURRENT_STREAMS,
         H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
     },
-    state::{AuthPolicy, RoutesSnapshot, Services, TransportRoute, VlessTransportRoute},
+    state::{AuthPolicy, RoutesSnapshot, Services},
     transport::{
         HttpFallbackContext, UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx, XhttpRegistry,
         is_normal_h3_shutdown,
@@ -205,19 +205,14 @@ struct H3ConnectionCtx {
     tcp_paths: Arc<BTreeSet<String>>,
     udp_paths: Arc<BTreeSet<String>>,
     vless_paths: Arc<BTreeSet<String>>,
-    /// XHTTP-VLESS base paths (without the `{id}` suffix). Lookup
-    /// against the request URI is a longest-prefix scan, so the
-    /// set must not contain entries that prefix one another at a
-    /// segment boundary — config validation enforces uniqueness.
+    /// XHTTP base paths (without the `{id}` suffix), for both the VLESS
+    /// and the SS tables. Lookup against the request URI is a
+    /// longest-prefix scan, so the set must not contain entries that
+    /// prefix one another at a segment boundary — config validation
+    /// enforces uniqueness. Path *registration* is startup-time, hence
+    /// the frozen set; the route record behind a matched path is read
+    /// from the live snapshot per request (see `resolve_xhttp_h3_route`).
     xhttp_paths: Arc<BTreeSet<String>>,
-    xhttp_vless: Arc<std::collections::BTreeMap<String, Arc<VlessTransportRoute>>>,
-    /// XHTTP-Shadowsocks base paths → SS transport routes. Looked up
-    /// alongside `xhttp_vless`; one base path serves exactly one
-    /// protocol (config validation enforces distinctness).
-    xhttp_ss: Arc<std::collections::BTreeMap<String, Arc<TransportRoute>>>,
-    /// XHTTP-Shadowsocks UDP base paths → SS transport routes. Separate
-    /// from `xhttp_ss` (the TCP path).
-    xhttp_ss_udp: Arc<std::collections::BTreeMap<String, Arc<TransportRoute>>>,
     /// Shared service bundle, needed to spawn the (VLESS or SS) relay
     /// through the common `spawn_relay` on the XHTTP path.
     services: Arc<Services>,
@@ -294,9 +289,6 @@ pub(in crate::server) async fn serve_h3_server(
             .cloned()
             .collect::<BTreeSet<_>>(),
     );
-    let xhttp_vless = Arc::clone(&initial.xhttp_vless);
-    let xhttp_ss = Arc::clone(&initial.xhttp_ss);
-    let xhttp_ss_udp = Arc::clone(&initial.xhttp_ss_udp);
     drop(initial);
     let xhttp_registry = Arc::clone(&services.xhttp_registry);
     let (endpoint, ws_config) = vendored::h3_ws_server_into_parts(server);
@@ -347,9 +339,6 @@ pub(in crate::server) async fn serve_h3_server(
             udp_paths: Arc::clone(&udp_paths),
             vless_paths: Arc::clone(&vless_paths),
             xhttp_paths: Arc::clone(&xhttp_paths),
-            xhttp_vless: Arc::clone(&xhttp_vless),
-            xhttp_ss: Arc::clone(&xhttp_ss),
-            xhttp_ss_udp: Arc::clone(&xhttp_ss_udp),
             services: Arc::clone(&services),
             xhttp_registry: Arc::clone(&xhttp_registry),
             ws_config: ws_config.clone(),
