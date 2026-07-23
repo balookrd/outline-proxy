@@ -19,6 +19,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::protocol::Message;
@@ -45,6 +46,23 @@ use super::{
 /// first POST/GET ack. Matches the bound used by the WS h2 dial
 /// in `h2/shared.rs` for parity with manager-level retry windows.
 const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Upper bound for a single packet-up POST (send request, read response
+/// headers, drain the small body) on an already-established h2 connection.
+///
+/// `FRESH_CONNECT_TIMEOUT` only covers the dial, so without this bound a
+/// server that accepts the request stream and then goes silent leaves
+/// `send_request` pending forever — this carrier sets no h2 keep-alive ping
+/// and the TCP socket carries no keepalive, so nothing else ever ends the
+/// wait — while the POST task holds a `SendRequest` clone, which is what keeps
+/// hyper's connection (hence the socket and its TLS session) alive. Matches
+/// the h3 sibling's budget so a stalled uplink surfaces on the same schedule
+/// whichever carrier the session negotiated.
+const POST_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+#[path = "tests/h2.rs"]
+mod tests;
 
 fn h2_tls_config() -> Arc<rustls::ClientConfig> {
     // Offer `[h2, http/1.1]` like a browser does — a lone `h2` ALPN is a
@@ -524,6 +542,13 @@ async fn driver_loop_h2(
     // POST loop: pop messages, send them with monotonically-
     // increasing seq. Pipelined — we spawn the actual hyper send
     // as a sub-task so successive POSTs can overlap on the wire.
+    //
+    // The sub-tasks stay owned by this driver: a detached `tokio::spawn` would
+    // survive the `AbortOnDrop` that tears the driver down with its
+    // `XhttpStream`, and each orphan holds a `SendRequest` clone — enough to
+    // keep hyper's connection, and the socket under it, alive until the POST's
+    // own deadline expires.
+    let mut posts: JoinSet<()> = JoinSet::new();
     let mut next_seq: u64 = 0;
     loop {
         let queued = match out_rx.recv().await {
@@ -557,18 +582,29 @@ async fn driver_loop_h2(
             let _ = in_tx.send_control(Err(io_ws_err("xhttp h2 stream not ready"))).await;
             break;
         }
-        tokio::spawn(async move {
+        posts.spawn(async move {
             // The permit rides the POST: these bytes are still resident until
             // hyper has written them, so the budget must keep covering them.
             let _permit = permit;
-            if let Err(error) = post_one(send, &uri_prefix, &base_headers, seq, bytes).await {
+            if let Err(error) = post_one_bounded(send, &uri_prefix, &base_headers, seq, bytes).await
+            {
                 warn!(?error, seq, "xhttp POST failed");
                 let _ = in_tx_for_err
                     .send_control(Err(io_ws_err("xhttp uplink POST failed")))
                     .await;
             }
         });
+        // Reap completed POSTs so the set tracks only what is in flight
+        // instead of growing with the session's frame count.
+        while posts.try_join_next().is_some() {}
     }
+    // Orderly shutdown (uplink queue closed, a Close frame, or a lost
+    // connection): let the POSTs already on the wire finish so the tail of the
+    // uplink is not truncated. Each is capped by `POST_TIMEOUT`, so this drain
+    // is bounded. An aborted driver never reaches this point — dropping the
+    // `JoinSet` aborts the in-flight POSTs instead, which is what bounds the
+    // leak.
+    while posts.join_next().await.is_some() {}
     debug!("xhttp driver exiting");
 }
 
@@ -596,6 +632,23 @@ pub(super) fn build_post_headers(
         );
     }
     Ok(headers)
+}
+
+/// One packet-up POST under [`POST_TIMEOUT`]. On expiry the inner future is
+/// dropped, which resets the h2 stream and drops this task's `SendRequest`
+/// clone — the last of those is what lets hyper close the connection instead
+/// of parking it on an unresponsive server forever.
+async fn post_one_bounded(
+    send: http2::SendRequest<RequestBody>,
+    uri_prefix: &str,
+    base_headers: &HeaderMap,
+    seq: u64,
+    payload: Bytes,
+) -> Result<()> {
+    match timeout(POST_TIMEOUT, post_one(send, uri_prefix, base_headers, seq, payload)).await {
+        Ok(result) => result,
+        Err(_) => bail!("xhttp POST seq={seq} timed out after {}s", POST_TIMEOUT.as_secs()),
+    }
 }
 
 async fn post_one(
