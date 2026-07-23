@@ -13,7 +13,7 @@
 mod shared;
 mod vendored;
 
-pub(crate) use shared::{connect_websocket_h3, gc_shared_h3_connections};
+pub(crate) use shared::{client_endpoint, connect_websocket_h3, gc_shared_h3_connections};
 
 use std::sync::Arc;
 

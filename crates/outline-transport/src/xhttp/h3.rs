@@ -1,9 +1,11 @@
 //! HTTP/3 carrier for the client-side XHTTP packet-up driver.
 //!
 //! Mirrors the h2 path in the parent module but rides QUIC instead
-//! of TCP+TLS+h2. We spin up a per-session quinn endpoint + h3
-//! handshake; there is no shared-connection pool here because XHTTP
-//! sessions are 1:1 with their VLESS upstream and have no cache key.
+//! of TCP+TLS+h2. Every session runs its own h3 handshake — there is
+//! no shared-connection pool here because XHTTP sessions are 1:1 with
+//! their VLESS upstream and have no cache key — but the UDP socket
+//! under it is the shared per-address-family endpoint the native
+//! `ws_h3` carrier uses, unless the dial needs an fwmark.
 //!
 //! This module is gated behind the `h3` feature: it pulls in `quinn`
 //! and the `h3` / `h3-quinn` crates that the rest of the H3 path
@@ -18,6 +20,7 @@ use bytes::{Buf, Bytes};
 use h3::client::SendRequest;
 use http::{HeaderMap, Method, Request, Version};
 use rustls::pki_types::ServerName;
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, warn};
@@ -39,6 +42,23 @@ use super::{
 /// Same dial budget the h2 path uses — keeps fallback windows
 /// uniform across carriers.
 const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Upper bound for a single packet-up POST (open stream, send body, read
+/// response) on an already-established QUIC connection.
+///
+/// `FRESH_CONNECT_TIMEOUT` only covers the handshake, so without this bound a
+/// server that accepts the request stream and then goes silent leaves
+/// `recv_response()` pending forever: QUIC keep-alive (8–12 s) keeps
+/// `max_idle_timeout` (28–35 s) from ever firing, and the POST task holds a
+/// `SendRequest` clone, which is what keeps the h3 connection — and the UDP
+/// socket under it — alive. The budget is far more than a healthy path needs
+/// for one uplink frame (compare the 7 s the WS-over-H3 carrier allows for
+/// opening a stream) while still bounding the stall.
+const POST_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+#[path = "tests/h3.rs"]
+mod tests;
 
 // The H3 QUIC client config is shared with the WS-over-H3 carrier in
 // `crate::quic` (`h3_quic_client_config`): keyed by dial fingerprint so the
@@ -237,20 +257,24 @@ pub(super) async fn connect_xhttp_h3(
         .with_context(|| format!("xhttp/h3 dial to {url} failed"))
 }
 
+/// QUIC endpoint backing one XHTTP-over-H3 session.
+///
+/// XHTTP sessions are 1:1 with their upstream, so binding a private endpoint
+/// per session would grow the client's UDP socket count with the session
+/// count. Only an fwmark dial actually needs its own socket (the mark must be
+/// set before connect); everything else rides the same shared per-address-family
+/// endpoint the native `ws_h3` carrier uses — see [`crate::h3::client_endpoint`].
+fn dial_endpoint(bind_addr: SocketAddr, fwmark: Option<u32>) -> Result<quinn::Endpoint> {
+    crate::h3::client_endpoint(bind_addr, fwmark)
+        .with_context(|| format!("failed to bind xhttp/h3 QUIC endpoint on {bind_addr}"))
+}
+
 async fn h3_handshake(
     server_addr: SocketAddr,
     host: &str,
     fwmark: Option<u32>,
 ) -> Result<SendRequest<h3_quinn::OpenStreams, Bytes>> {
-    let bind_addr = crate::bind_addr_for(server_addr);
-    let socket = crate::bind_udp_socket(bind_addr, fwmark)?;
-    let endpoint = quinn::Endpoint::new(
-        quinn::EndpointConfig::default(),
-        None,
-        socket,
-        Arc::new(quinn::TokioRuntime),
-    )
-    .with_context(|| format!("failed to bind xhttp/h3 QUIC endpoint on {bind_addr}"))?;
+    let endpoint = dial_endpoint(crate::bind_addr_for(server_addr), fwmark)?;
 
     let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
         ServerName::IpAddress(ip.into())
@@ -278,7 +302,7 @@ async fn h3_handshake(
     // the GET / POST loops treat as terminal and shut the session
     // down via `XhttpSession::close()` indirectly through `in_tx`.
     //
-    // The quinn endpoint moves into this task so it lives for the
+    // The quinn endpoint handle moves into this task so it lives for the
     // full duration of the h3 session: a local `let _guard = endpoint`
     // in the outer function would drop it on `Ok` return, and on
     // some carriers (notably stream-one, where the request body is
@@ -287,7 +311,9 @@ async fn h3_handshake(
     // flows. Packet-up tolerates the early drop because each POST
     // opens a fresh stream that completes synchronously, but
     // stream-one's bidi stream needs the endpoint alive across the
-    // whole exchange.
+    // whole exchange. Only fwmark dials own their endpoint outright;
+    // for the rest this is a handle on the shared per-address-family
+    // endpoint, where holding it is harmless.
     tokio::spawn(async move {
         let _endpoint_guard = endpoint;
         let close = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
@@ -369,14 +395,21 @@ async fn open_h3_get(
     Ok((issued, echo, sym_echo, stream))
 }
 
-async fn driver_loop_h3(
-    send_request: SendRequest<h3_quinn::OpenStreams, Bytes>,
+/// Generic over the QUIC types for the same reason [`post_one`] is: production
+/// instantiates it with `h3_quinn`, tests with an in-process stub.
+async fn driver_loop_h3<T, S>(
+    send_request: SendRequest<T, Bytes>,
     target: Arc<XhttpTarget>,
     in_tx: InboundSender,
     mut out_rx: OutboundReceiver,
-    body_stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+    body_stream: h3::client::RequestStream<S, Bytes>,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) {
+) where
+    T: h3::quic::OpenStreams<Bytes> + Clone + Send + 'static,
+    T::BidiStream: Send,
+    S: h3::quic::RecvStream + Send + 'static,
+    S::Buf: Send,
+{
     // GET drain sub-task. Headers were already received by
     // `open_h3_get`; this only pulls body chunks.
     let drain_in_tx = in_tx.clone();
@@ -400,6 +433,12 @@ async fn driver_loop_h3(
     let base_headers = Arc::new(build_post_headers(profile));
     let uri_prefix: Arc<str> = Arc::from(target.uri_seq_prefix());
 
+    // POSTs run concurrently but stay owned by this driver: a detached
+    // `tokio::spawn` would survive the `AbortOnDrop` that tears the driver down
+    // with its `XhttpStream`, and each orphan holds a `SendRequest` clone —
+    // enough to keep the QUIC connection, its driver task and the endpoint
+    // underneath alive until the POST's own deadline expires.
+    let mut posts: JoinSet<()> = JoinSet::new();
     let mut next_seq: u64 = 0;
     loop {
         let queued = match out_rx.recv().await {
@@ -425,18 +464,28 @@ async fn driver_loop_h3(
         let base_headers = Arc::clone(&base_headers);
         let uri_prefix = Arc::clone(&uri_prefix);
         let in_tx_for_err = in_tx.clone();
-        tokio::spawn(async move {
+        posts.spawn(async move {
             // Permit rides the POST — the bytes are resident until h3 has sent
             // them, so the queue budget must keep covering them.
             let _permit = permit;
-            if let Err(error) = post_one(send, &uri_prefix, &base_headers, seq, bytes).await {
+            if let Err(error) = post_one_bounded(send, &uri_prefix, &base_headers, seq, bytes).await
+            {
                 warn!(?error, seq, "xhttp/h3 POST failed");
                 let _ = in_tx_for_err
                     .send_control(Err(io_ws_err("xhttp/h3 uplink POST failed")))
                     .await;
             }
         });
+        // Reap completed POSTs so the set tracks only what is in flight
+        // instead of growing with the session's frame count.
+        while posts.try_join_next().is_some() {}
     }
+    // Orderly shutdown (uplink queue closed or a Close frame): let the POSTs
+    // already on the wire finish so the tail of the uplink is not truncated.
+    // Each is capped by `POST_TIMEOUT`, so this drain is bounded. An aborted
+    // driver never reaches this point — dropping the `JoinSet` aborts the
+    // in-flight POSTs instead, which is exactly what bounds the leak.
+    while posts.join_next().await.is_some() {}
     debug!("xhttp/h3 driver exiting");
 }
 
@@ -613,13 +662,39 @@ where
     Ok(())
 }
 
-async fn post_one(
-    mut send: SendRequest<h3_quinn::OpenStreams, Bytes>,
+/// One packet-up POST under [`POST_TIMEOUT`]. On expiry the inner future is
+/// dropped, which drops both the request stream and this task's `SendRequest`
+/// clone — the last of those is what lets h3 close the QUIC connection instead
+/// of parking it on an unresponsive server forever.
+async fn post_one_bounded<T>(
+    send: SendRequest<T, Bytes>,
     uri_prefix: &str,
     base_headers: &HeaderMap,
     seq: u64,
     payload: Bytes,
-) -> Result<()> {
+) -> Result<()>
+where
+    T: h3::quic::OpenStreams<Bytes>,
+{
+    match timeout(POST_TIMEOUT, post_one(send, uri_prefix, base_headers, seq, payload)).await {
+        Ok(result) => result,
+        Err(_) => bail!("xhttp/h3 POST seq={seq} timed out after {}s", POST_TIMEOUT.as_secs()),
+    }
+}
+
+/// Generic over the QUIC stream opener so the packet-up POST can be
+/// exercised against an in-process stub; production always instantiates
+/// it with `h3_quinn::OpenStreams`.
+async fn post_one<T>(
+    mut send: SendRequest<T, Bytes>,
+    uri_prefix: &str,
+    base_headers: &HeaderMap,
+    seq: u64,
+    payload: Bytes,
+) -> Result<()>
+where
+    T: h3::quic::OpenStreams<Bytes>,
+{
     // Path-based seq matches xray / sing-box's default placement and
     // mirrors the h2 sibling — keep the wire shape identical across
     // h2 and h3 so a backend cannot tell which version the client
