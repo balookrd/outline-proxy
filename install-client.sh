@@ -312,9 +312,14 @@ install_binary() {
   install -m 0755 "$extracted" "$INSTALL_PATH"
 }
 
-# Оставляет 3 последних backup-файла бинарника (по timestamp в имени),
-# остальные удаляет. Имя формата <bin_path>.bak.YYYYMMDDHHMMSS —
-# лексикографическая сортировка совпадает с хронологической.
+# Оставляет 3 последних backup-файла бинарника, остальные удаляет.
+#
+# Сортировка — по mtime, а не по имени. Лексикографический порядок совпадает
+# с хронологическим только для имён вида <bin_path>.bak.YYYYMMDDHHMMSS, а
+# ручная выкладка кладёт рядом осмысленные метки (.bak.pre-<фича>). В смеси
+# имён алфавит ставит свежий `.bak.pre-catA` ПЕРЕД старым `.bak.reno-remnant`,
+# то есть удаляется актуальный откат, а устаревший остаётся. mtime от схемы
+# именования не зависит.
 prune_old_backups() {
   local bin_path="$1"
   local keep=3
@@ -324,9 +329,9 @@ prune_old_backups() {
 
   local -a backups=()
   while IFS= read -r -d '' f; do
-    backups+=("$f")
-  done < <(find "$dir" -maxdepth 1 -type f -name "${base}.bak.*" -print0 2>/dev/null \
-    | sort -z)
+    backups+=("${f#*$'\t'}")
+  done < <(find "$dir" -maxdepth 1 -type f -name "${base}.bak.*" \
+    -printf '%T@\t%p\0' 2>/dev/null | sort -z -n)
 
   local total="${#backups[@]}"
   if (( total <= keep )); then
