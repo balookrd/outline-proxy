@@ -14,11 +14,13 @@ use crate::wire::IpVersion;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Minimal `FlowStamp` stand-in: the table helpers only ever look at the
-/// generation counter and the idle stamp, so neither flow type's carrier
-/// machinery has to be built to exercise them.
+/// generation counter, the idle stamp, and the stamp last published to the
+/// eviction index, so neither flow type's carrier machinery has to be built
+/// to exercise them.
 struct TestFlow {
     id: u64,
     last_seen: Instant,
+    eviction_indexed_at: Instant,
 }
 
 impl FlowStamp for TestFlow {
@@ -30,6 +32,12 @@ impl FlowStamp for TestFlow {
     }
     fn set_last_seen(&mut self, now: Instant) {
         self.last_seen = now;
+    }
+    fn eviction_indexed_at(&self) -> Instant {
+        self.eviction_indexed_at
+    }
+    fn set_eviction_indexed_at(&mut self, at: Instant) {
+        self.eviction_indexed_at = at;
     }
 }
 
@@ -65,7 +73,11 @@ async fn idle_sweep_keeps_a_flow_recreated_after_the_snapshot() {
     let flows: TestTable = Arc::new(RwLock::new(HashMap::new()));
 
     // A genuinely idle flow: the sweep is expected to pick it as a candidate.
-    let stale = Arc::new(Mutex::new(TestFlow { id: 1, last_seen: stale_stamp(now) }));
+    let stale = Arc::new(Mutex::new(TestFlow {
+        id: 1,
+        last_seen: stale_stamp(now),
+        eviction_indexed_at: stale_stamp(now),
+    }));
     flows.write().await.insert(key.clone(), Arc::clone(&stale));
 
     // Holding the per-flow lock parks the sweep inside its candidate loop —
@@ -90,7 +102,11 @@ async fn idle_sweep_keeps_a_flow_recreated_after_the_snapshot() {
 
     // Meanwhile the real teardown drops the dead flow and the client re-creates
     // it under the same 5-tuple: same key, a different flow entirely.
-    let fresh = Arc::new(Mutex::new(TestFlow { id: 2, last_seen: now }));
+    let fresh = Arc::new(Mutex::new(TestFlow {
+        id: 2,
+        last_seen: now,
+        eviction_indexed_at: now,
+    }));
     flows.write().await.insert(key.clone(), Arc::clone(&fresh));
 
     drop(parked);
@@ -102,7 +118,7 @@ async fn idle_sweep_keeps_a_flow_recreated_after_the_snapshot() {
         .expect("the re-created flow must still be in the table");
     assert!(Arc::ptr_eq(current, &fresh), "the idle sweep evicted the re-created flow");
     assert!(
-        removed.iter().all(|handle| !Arc::ptr_eq(handle, &fresh)),
+        removed.iter().all(|(_, handle)| !Arc::ptr_eq(handle, &fresh)),
         "the re-created flow must not be handed to the close pipeline",
     );
 }
@@ -117,8 +133,16 @@ async fn idle_sweep_still_evicts_untouched_idle_flows() {
     let live_key = UdpFlowKey { local_port: 50001, ..flow_key() };
     let flows: TestTable = Arc::new(RwLock::new(HashMap::new()));
 
-    let idle = Arc::new(Mutex::new(TestFlow { id: 1, last_seen: stale_stamp(now) }));
-    let live = Arc::new(Mutex::new(TestFlow { id: 2, last_seen: now }));
+    let idle = Arc::new(Mutex::new(TestFlow {
+        id: 1,
+        last_seen: stale_stamp(now),
+        eviction_indexed_at: stale_stamp(now),
+    }));
+    let live = Arc::new(Mutex::new(TestFlow {
+        id: 2,
+        last_seen: now,
+        eviction_indexed_at: now,
+    }));
     {
         let mut guard = flows.write().await;
         guard.insert(idle_key.clone(), Arc::clone(&idle));
@@ -128,7 +152,8 @@ async fn idle_sweep_still_evicts_untouched_idle_flows() {
     let removed = drain_idle_flows(&flows, IDLE_TIMEOUT, now).await;
 
     assert_eq!(removed.len(), 1, "exactly the idle flow must be drained");
-    assert!(Arc::ptr_eq(&removed[0], &idle), "the drained handle must be the idle flow's");
+    assert_eq!(removed[0].0, idle_key, "the drained entry must carry the idle flow's key");
+    assert!(Arc::ptr_eq(&removed[0].1, &idle), "the drained handle must be the idle flow's");
 
     let table = flows.read().await;
     assert!(!table.contains_key(&idle_key), "the idle flow must be gone from the table");
