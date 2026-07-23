@@ -24,7 +24,7 @@ pub(in crate::server) use control::{
     ControlDatagram, encode_throttle_hint, parse_control_datagram,
 };
 pub(in crate::server) use datagram::{read_datagram, write_datagram};
-pub(in crate::server) use endpoint::{MeshEndpoint, MeshStream, accept_relay};
+pub(in crate::server) use endpoint::{AcceptRelayError, MeshEndpoint, MeshStream, accept_relay};
 pub(in crate::server) use frame::{CarrierKind, CloseReason, OpenHeader};
 pub(in crate::server) use peer_pool::{MeshPeerPool, PooledRelay};
 pub(in crate::server) use throttle::ThrottleRegistry;

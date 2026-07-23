@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use outline_wire::cluster::ShardId;
+use tokio::sync::Semaphore;
 
 use crate::metrics::Metrics;
 
@@ -35,6 +36,11 @@ pub(in crate::server) struct ClusterCtx {
     /// Home-side map from a relayed session id to its live carrier monitor, so
     /// an edge `THROTTLE_HINT` datagram can wake the right relay writer.
     pub(in crate::server) throttle_registry: ThrottleRegistry,
+    /// Home-side cap on relayed sessions served concurrently, across every peer
+    /// connection. One permit per admitted relay stream, held for that relay's
+    /// lifetime; a stream arriving with none free is refused
+    /// (`CloseReason::Capacity`) instead of spawning an unbounded relay.
+    pub(in crate::server) relay_permits: Arc<Semaphore>,
     /// Metrics sink for the mesh data plane (relay-open outcomes on the edge,
     /// active relay gauge on the home).
     pub(in crate::server) metrics: Arc<Metrics>,
@@ -42,6 +48,13 @@ pub(in crate::server) struct ClusterCtx {
 
 /// Cap on concurrent relay streams this server dials out (bounded resources).
 const MESH_MAX_RELAY_STREAMS: usize = 4096;
+
+/// Cap on relayed sessions this server *serves* as a home, across all peers
+/// (bounded resources — the inbound twin of [`MESH_MAX_RELAY_STREAMS`]). Sized
+/// to match it: a home is expected to absorb at least what one edge can push,
+/// while a degraded peer opening streams in a loop still cannot grow the home's
+/// task/socket footprint without bound.
+const MESH_MAX_RELAYED_SESSIONS: usize = 4096;
 
 impl ClusterCtx {
     /// Builds the cluster runtime from resolved config: derives the mesh
@@ -63,6 +76,7 @@ impl ClusterCtx {
             pool,
             relay_budget: cfg.mesh_relay_budget,
             throttle_registry: ThrottleRegistry::new(),
+            relay_permits: Arc::new(Semaphore::new(MESH_MAX_RELAYED_SESSIONS)),
             metrics,
         }))
     }

@@ -161,6 +161,11 @@ See the "UDP cross-node migration" note in
     demand, not held). Also watch `outline_ss_orphan_resume_hit_total` on the
     home: it climbs whenever a home reattaches a parked upstream for a client
     that arrived via another edge.
+  - `outline_ss_mesh_relay_rejected_total{reason="capacity"}` rising ⇒ a home hit
+    its concurrent relayed-session cap and is refusing new relay streams (the
+    edges degrade to fresh local sessions). Expect zero; anything sustained means
+    the cluster is pushing more concurrent relayed sessions at one home than it
+    is sized for.
   - **Cluster traffic** (how much data actually crosses the mesh, not just how
     many relays open): `outline_ss_mesh_bytes_total{role,direction,transport}`
     and `outline_ss_mesh_datagrams_total{role,direction}`. `role="edge"` is the

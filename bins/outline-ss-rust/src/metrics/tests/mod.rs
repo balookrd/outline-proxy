@@ -217,6 +217,19 @@ fn renders_mesh_relay_metrics() {
 }
 
 #[test]
+fn renders_mesh_relay_rejections() {
+    let metrics = Metrics::new(&test_config());
+    metrics.record_mesh_relay_rejected("capacity");
+    metrics.record_mesh_relay_rejected("capacity");
+
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.contains("outline_ss_mesh_relay_rejected_total{reason=\"capacity\"} 2"),
+        "refused relay streams must be counted by reason:\n{rendered}",
+    );
+}
+
+#[test]
 fn renders_mesh_traffic_metrics() {
     let metrics = Metrics::new(&test_config());
 

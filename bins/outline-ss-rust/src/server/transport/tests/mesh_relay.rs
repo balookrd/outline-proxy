@@ -1,15 +1,26 @@
+use std::collections::{BTreeMap, HashMap};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
+use quinn::{Connection, ReadError, ReadToEndError, RecvStream, SendStream, VarInt};
+use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
-use super::{EdgeThrottleCtx, EdgeThrottleDetector, StallTracker};
+use super::{EdgeThrottleCtx, EdgeThrottleDetector, StallTracker, handle_mesh_connection};
 use crate::metrics::Metrics;
+use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    ControlDatagram, MeshEndpoint, MeshIdentity, parse_control_datagram,
+    CarrierKind, CloseReason, ControlDatagram, MeshEndpoint, MeshIdentity, MeshPeerPool,
+    OpenHeader, ThrottleRegistry, parse_control_datagram,
 };
+use crate::server::dns_cache::DnsCache;
+use crate::server::nat::NatTable;
+use crate::server::replay::ReplayStore;
+use crate::server::state::{RouteRegistry, RoutesSnapshot, Services, UdpServices};
 use crate::server::tests::sample_config;
+use crate::server::transport::XhttpRegistryLimits;
 use crate::server::transport::throughput_monitor::ThrottleDetectParams;
 
 fn test_metrics() -> Arc<Metrics> {
@@ -213,4 +224,187 @@ async fn edge_detector_stays_quiet_for_a_fast_send() {
     let got = tokio::time::timeout(Duration::from_millis(300), home_conn.read_datagram()).await;
     assert!(got.is_err(), "a fast send must not emit a datagram");
     drop((home, edge, detector));
+}
+
+// ── Home-side accept loop ──────────────────────────────────────────────────────
+
+/// A home-side mesh runtime over a fresh loopback endpoint, with empty route
+/// tables and a `relay_cap`-slot relayed-session cap: enough for
+/// `handle_mesh_connection` to admit relay streams and dispatch them. An
+/// admitted relay parks on its first carrier read — these tests never write
+/// payload bytes after the OPEN — so it holds its permit until the test drops
+/// the connection.
+fn home_runtime(psk: &[u8], relay_cap: usize) -> (Arc<ClusterCtx>, Arc<Services>, RoutesSnapshot) {
+    let metrics = test_metrics();
+    let endpoint = MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
+    let cluster = Arc::new(ClusterCtx {
+        pool: Arc::new(MeshPeerPool::new(endpoint.clone(), HashMap::new(), 8)),
+        endpoint,
+        relay_budget: Duration::from_secs(5),
+        throttle_registry: ThrottleRegistry::new(),
+        relay_permits: Arc::new(Semaphore::new(relay_cap)),
+        metrics: Arc::clone(&metrics),
+    });
+    let services = Arc::new(Services::new(
+        Arc::clone(&metrics),
+        DnsCache::new(Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(Duration::from_secs(300)),
+            replay_store: ReplayStore::new(Duration::from_secs(300), 0),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+        XhttpRegistryLimits::unbounded(),
+    ));
+    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: Arc::new(BTreeMap::new()),
+        xhttp_vless: Arc::new(BTreeMap::new()),
+        xhttp_ss: Arc::new(BTreeMap::new()),
+        xhttp_ss_udp: Arc::new(BTreeMap::new()),
+    }));
+    (cluster, services, routes)
+}
+
+/// Connects an edge to `home` and hands back both ends of the mesh connection.
+/// Both sides must be driven together: the home only progresses once it accepts.
+async fn connect_edge(home: &MeshEndpoint, edge: &MeshEndpoint) -> (Connection, Connection) {
+    let home_addr = home.local_addr().unwrap();
+    tokio::join!(async { home.accept().await.unwrap().unwrap() }, async {
+        edge.connect(home_addr).await.unwrap()
+    })
+}
+
+/// Opens a relay stream and writes `open` as its length-prefixed OPEN header —
+/// what `open_relay_stream` does on the edge, inlined here so a test can also
+/// send a header this build cannot parse.
+async fn open_relay(conn: &Connection, open: &[u8]) -> (SendStream, RecvStream) {
+    let (mut send, recv) = conn.open_bi().await.unwrap();
+    send.write_all(&(open.len() as u32).to_be_bytes()).await.unwrap();
+    send.write_all(open).await.unwrap();
+    (send, recv)
+}
+
+/// A well-formed OPEN header for an SS-over-WS relayed session.
+fn ss_tcp_open(session: u8) -> Vec<u8> {
+    OpenHeader {
+        carrier: CarrierKind::SsTcp,
+        session_id: [session; 16],
+        resume_capable: false,
+        ack_prefix: false,
+        symmetric_replay: false,
+        client_down_acked: 0,
+        path: "/tcp".to_string(),
+        peer_addr: None,
+    }
+    .encode()
+}
+
+/// Polls `outline_ss_mesh_relay_active` until it reads `want`, panicking after
+/// 5 s. The gauge is the observable "this relay was admitted and is being
+/// served" — it rises inside `serve_relayed` and falls when that returns.
+async fn wait_for_active_relays(metrics: &Arc<Metrics>, want: u32) {
+    let needle = format!("outline_ss_mesh_relay_active {want}");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rendered = metrics.render_prometheus();
+        if rendered.lines().any(|line| line == needle) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "active relays never reached {want}:\n{rendered}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// A relay stream whose OPEN this build cannot parse (a peer mid rolling
+/// upgrade) is a *per-stream* failure, not a connection one: the QUIC
+/// connection stays live, and the relays already riding it — plus the
+/// control-datagram receiver the accept loop owns — depend on the loop staying
+/// up. So the loop must drop that one stream and keep accepting.
+#[tokio::test]
+async fn an_unparsable_open_header_does_not_stop_the_accept_loop() {
+    let psk = b"mesh-accept-bad-open-psk";
+    let (cluster, services, routes) = home_runtime(psk, 8);
+    let edge = MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
+    let (home_conn, edge_conn) = connect_edge(&cluster.endpoint, &edge).await;
+
+    let metrics = Arc::clone(&cluster.metrics);
+    let home = tokio::spawn(handle_mesh_connection(home_conn, cluster, services, routes));
+
+    // Version 0xFF: a header this build rejects, exactly as a peer on a newer
+    // wire version would send. Waiting for the home to close the stream pins the
+    // ordering — the loop has seen this failure before the next stream opens.
+    let (_bad_send, mut bad_recv) = open_relay(&edge_conn, &[0xFF; 8]).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), bad_recv.read_to_end(64))
+        .await
+        .expect("the home must close a relay stream whose OPEN it cannot parse");
+
+    // A well-formed relay opened afterwards must still be served.
+    let (_send, _recv) = open_relay(&edge_conn, &ss_tcp_open(1)).await;
+    wait_for_active_relays(&metrics, 1).await;
+    assert!(!home.is_finished(), "the accept loop must outlive a per-stream failure");
+    drop((edge, edge_conn));
+}
+
+/// The one exit condition: when the peer closes the QUIC connection, the accept
+/// loop must return (releasing the control-datagram receiver with it) rather
+/// than spin on a dead connection.
+#[tokio::test]
+async fn a_closed_connection_ends_the_accept_loop() {
+    let psk = b"mesh-accept-close-psk";
+    let (cluster, services, routes) = home_runtime(psk, 8);
+    let edge = MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
+    let (home_conn, edge_conn) = connect_edge(&cluster.endpoint, &edge).await;
+
+    let home = tokio::spawn(handle_mesh_connection(home_conn, cluster, services, routes));
+    edge_conn.close(0u32.into(), b"edge done");
+
+    tokio::time::timeout(Duration::from_secs(5), home)
+        .await
+        .expect("a closed connection must end the accept loop")
+        .unwrap();
+    drop(edge);
+}
+
+/// Bounded resources: a home serves at most `relay_permits` relayed sessions at
+/// once. A stream arriving past the cap is refused outright — both halves reset
+/// with [`CloseReason::Capacity`], so the edge fails fast and serves its client
+/// locally — instead of spawning one more unbounded relay.
+#[tokio::test]
+async fn relay_streams_past_the_cap_are_refused() {
+    let psk = b"mesh-accept-cap-psk";
+    let (cluster, services, routes) = home_runtime(psk, 1);
+    let edge = MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
+    let (home_conn, edge_conn) = connect_edge(&cluster.endpoint, &edge).await;
+
+    let metrics = Arc::clone(&cluster.metrics);
+    let home = tokio::spawn(handle_mesh_connection(home_conn, cluster, services, routes));
+
+    // The single permit goes to the first relay, which parks on its carrier read
+    // and holds it for the rest of the test.
+    let (_first_send, _first_recv) = open_relay(&edge_conn, &ss_tcp_open(1)).await;
+    wait_for_active_relays(&metrics, 1).await;
+
+    let (_send, mut recv) = open_relay(&edge_conn, &ss_tcp_open(2)).await;
+    let error = tokio::time::timeout(Duration::from_secs(5), recv.read_to_end(64))
+        .await
+        .expect("a refused relay must be answered, not left hanging")
+        .expect_err("the home must reset a relay stream it has no capacity for");
+    let capacity = VarInt::from_u32(CloseReason::Capacity.code());
+    assert!(
+        matches!(error, ReadToEndError::Read(ReadError::Reset(code)) if code == capacity),
+        "expected a Capacity reset, got {error:?}",
+    );
+    // Refused, not served: the active-relay gauge never counted a second one.
+    let rendered = metrics.render_prometheus();
+    assert!(
+        rendered.lines().any(|line| line == "outline_ss_mesh_relay_active 1"),
+        "a refused relay must not be spawned:\n{rendered}",
+    );
+    assert!(!home.is_finished(), "refusing a relay must not stop the accept loop");
+    drop((edge, edge_conn));
 }

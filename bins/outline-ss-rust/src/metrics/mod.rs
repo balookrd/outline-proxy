@@ -568,6 +568,16 @@ impl Metrics {
         });
     }
 
+    /// Counts a relay stream this home refused before serving it. `reason` is
+    /// `capacity` when the node is already at its relayed-session cap; a rising
+    /// rate means edges are being pushed back to local sessions and the cap (or
+    /// the node's share of the cluster) needs review.
+    pub fn record_mesh_relay_rejected(&self, reason: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_mesh_relay_rejected_total", "reason" => reason).increment(1);
+        });
+    }
+
     /// Opens a home-side mesh relay guard. While held, `outline_ss_mesh_relay_active`
     /// counts this node as serving one more relayed session over the mesh; the
     /// gauge decrements when the guard drops (relay end or teardown).
