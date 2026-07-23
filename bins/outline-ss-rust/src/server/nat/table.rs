@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 use parking_lot::Mutex;
 use tokio::{net::UdpSocket, sync::OnceCell};
 use tracing::debug;
@@ -101,32 +101,47 @@ pub(crate) fn bind_nat_udp_socket(
     UdpSocket::from_std(std_socket).context("failed to register NAT UDP socket")
 }
 
+/// Ceilings on the NAT table. Both are entry counts and `0` disables the
+/// corresponding cap. See `TuningProfile::udp_nat_max_entries` and
+/// `TuningProfile::udp_nat_max_entries_per_user`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct NatLimits {
+    /// Upper bound on live entries process-wide.
+    pub max_entries: usize,
+    /// Upper bound on live entries owned by a single authenticated user, so one
+    /// tenant cannot claim the whole table and starve the others.
+    pub max_entries_per_user: usize,
+}
+
 /// Process-wide NAT table.  Shared via `Arc` in `AppState`.
 pub(crate) struct NatTable {
     entries: DashMap<NatKey, Arc<OnceCell<Arc<NatEntry>>>>,
     idle_timeout: Duration,
-    /// Upper bound on live entries; `0` disables the cap. See
-    /// `TuningProfile::udp_nat_max_entries`.
-    max_entries: usize,
+    limits: NatLimits,
+    /// Live entry count per user, maintained alongside `entries` so the
+    /// per-user cap costs a shard lookup instead of a full table scan.
+    /// A user's counter is removed once it drops to zero.
+    per_user: DashMap<Arc<str>, usize>,
     outbound_ipv6: Option<Arc<OutboundIpv6>>,
 }
 
 impl NatTable {
     #[cfg(test)]
     pub(crate) fn new(idle_timeout: Duration) -> Arc<Self> {
-        // Tests default to an unbounded table; the cap has dedicated coverage.
-        Self::with_outbound_ipv6(idle_timeout, 0, None)
+        // Tests default to an unbounded table; the caps have dedicated coverage.
+        Self::with_outbound_ipv6(idle_timeout, NatLimits::default(), None)
     }
 
     pub(crate) fn with_outbound_ipv6(
         idle_timeout: Duration,
-        max_entries: usize,
+        limits: NatLimits,
         outbound_ipv6: Option<Arc<OutboundIpv6>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             entries: DashMap::new(),
             idle_timeout,
-            max_entries,
+            limits,
+            per_user: DashMap::new(),
             outbound_ipv6,
         })
     }
@@ -171,21 +186,35 @@ impl NatTable {
             // a concurrent-creation race is harmless for a protective cap, and
             // `0` disables it. Existing entries are never evicted here, so a
             // full table only drops datagrams to *new* targets.
-            if self.max_entries > 0 && self.entries.len() >= self.max_entries {
+            if self.limits.max_entries > 0 && self.entries.len() >= self.limits.max_entries {
                 metrics.record_udp_nat_capacity_dropped();
-                bail!("UDP NAT table at capacity ({} entries)", self.max_entries);
+                bail!("UDP NAT table at capacity ({} entries)", self.limits.max_entries);
             }
-            Arc::clone(
-                self.entries
-                    .entry(key.clone())
-                    .or_insert_with(|| Arc::new(OnceCell::new()))
-                    .value(),
-            )
+            // Then the per-user share. The slot is reserved *before* the map
+            // insert so two concurrent creations for the same user cannot both
+            // pass the check, and handed back below if we lost the insert race.
+            if !self.reserve_user_slot(&key.user_id) {
+                metrics.record_udp_nat_capacity_dropped();
+                bail!(
+                    "UDP NAT table at per-user capacity ({} entries)",
+                    self.limits.max_entries_per_user
+                );
+            }
+            match self.entries.entry(key.clone()) {
+                Entry::Occupied(occupied) => {
+                    self.release_user_slot(&key.user_id);
+                    Arc::clone(occupied.get())
+                },
+                Entry::Vacant(vacant) => {
+                    Arc::clone(vacant.insert(Arc::new(OnceCell::new())).value())
+                },
+            }
         };
 
         // On error the cell stays uninitialised; evict_idle drops such cells
         // without counting them as evictions (they never incremented the
-        // active-entries metric), so no second lock is needed to clean up.
+        // active-entries metric) and returns their per-user slot, so no second
+        // lock is needed to clean up.
         let create_user = user.clone();
         let outbound = self.outbound_ipv6.clone();
         cell.get_or_try_init(|| async move {
@@ -193,6 +222,38 @@ impl NatTable {
         })
         .await
         .map(Arc::clone)
+    }
+
+    /// Claims one per-user entry slot, returning `false` when the user is
+    /// already at `max_entries_per_user`. A disabled cap always succeeds and
+    /// skips the bookkeeping entirely.
+    fn reserve_user_slot(&self, user: &Arc<str>) -> bool {
+        let cap = self.limits.max_entries_per_user;
+        if cap == 0 {
+            return true;
+        }
+        let mut count = self.per_user.entry(Arc::clone(user)).or_insert(0);
+        if *count >= cap {
+            return false;
+        }
+        *count += 1;
+        true
+    }
+
+    /// Returns a slot claimed by [`Self::reserve_user_slot`]. The counter is
+    /// dropped at zero so the map stays proportional to the users that
+    /// currently hold entries.
+    fn release_user_slot(&self, user: &Arc<str>) {
+        if self.limits.max_entries_per_user == 0 {
+            return;
+        }
+        if let Entry::Occupied(mut occupied) = self.per_user.entry(Arc::clone(user)) {
+            let count = occupied.get_mut();
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                occupied.remove();
+            }
+        }
     }
 
     async fn create_entry(
@@ -253,16 +314,31 @@ impl NatTable {
     pub(crate) fn evict_idle(&self, metrics: &Metrics) {
         let threshold = clock::current_unix_secs().saturating_sub(self.idle_timeout.as_secs());
         let mut evicted = 0usize;
-        self.entries.retain(|_, cell| match cell.get() {
-            Some(entry) => {
-                let keep = entry.last_active_secs().load(Ordering::Relaxed) >= threshold;
-                if !keep {
-                    evicted += 1;
-                }
-                keep
-            },
-            None => false,
+        // Removed keys whose per-user slot has to be handed back; skipped
+        // entirely when the per-user cap is disabled. Collected during the
+        // sweep and released after it, so we never take a `per_user` lock while
+        // `retain` holds an `entries` shard.
+        let track_users = self.limits.max_entries_per_user > 0;
+        let mut released: Vec<Arc<str>> = Vec::new();
+        self.entries.retain(|key, cell| {
+            let keep = match cell.get() {
+                Some(entry) => {
+                    let keep = entry.last_active_secs().load(Ordering::Relaxed) >= threshold;
+                    if !keep {
+                        evicted += 1;
+                    }
+                    keep
+                },
+                None => false,
+            };
+            if !keep && track_users {
+                released.push(Arc::clone(&key.user_id));
+            }
+            keep
         });
+        for user in &released {
+            self.release_user_slot(user);
+        }
         if evicted > 0 {
             metrics.record_udp_nat_entries_evicted(evicted);
             debug!(evicted, remaining = self.entries.len(), "evicted idle UDP NAT entries");

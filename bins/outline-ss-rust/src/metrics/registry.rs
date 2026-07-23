@@ -203,7 +203,8 @@ pub(super) fn register_descriptions() {
     describe_counter!(
         "outline_ss_udp_nat_capacity_dropped_total",
         "UDP datagrams to new targets dropped because the NAT table was at \
-         udp_nat_max_entries capacity."
+         udp_nat_max_entries capacity, or the user was at its \
+         udp_nat_max_entries_per_user share."
     );
     describe_counter!(
         "outline_ss_maintenance_task_panics_total",

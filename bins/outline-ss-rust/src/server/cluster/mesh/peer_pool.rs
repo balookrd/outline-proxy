@@ -45,11 +45,17 @@ impl PooledRelay {
     }
 }
 
+/// One shard's cached connection. Held behind its own lock so a dial to a dead
+/// peer only serializes further relays to *that* shard.
+type ConnSlot = Arc<Mutex<Option<Connection>>>;
+
 /// Connections to peer homes, dialed on demand and reused.
 pub(in crate::server) struct MeshPeerPool {
     endpoint: MeshEndpoint,
     peers: HashMap<ShardId, SocketAddr>,
-    conns: Mutex<HashMap<ShardId, Connection>>,
+    /// Maps a shard to its connection slot. The outer lock is only ever held
+    /// long enough to clone the slot handle — never across a dial.
+    conns: Mutex<HashMap<ShardId, ConnSlot>>,
     stream_permits: Arc<Semaphore>,
 }
 
@@ -91,9 +97,19 @@ impl MeshPeerPool {
 
     /// Returns a live connection to `addr` for `shard`, dialing if there is no
     /// cached connection or the cached one has closed.
+    ///
+    /// The dial happens under the shard's own slot lock, not the pool-wide one:
+    /// an unreachable peer stalls its handshake for the mesh idle timeout, and
+    /// holding the shared map across that would freeze relays to every other
+    /// shard. Concurrent callers for the *same* shard still serialize, so a
+    /// burst dials once and the rest reuse the result.
     async fn connection_for(&self, shard: ShardId, addr: SocketAddr) -> Result<Connection> {
-        let mut guard = self.conns.lock().await;
-        if let Some(conn) = guard.get(&shard)
+        let slot: ConnSlot = {
+            let mut guard = self.conns.lock().await;
+            Arc::clone(guard.entry(shard).or_insert_with(|| Arc::new(Mutex::new(None))))
+        };
+        let mut cached = slot.lock().await;
+        if let Some(conn) = cached.as_ref()
             && conn.close_reason().is_none()
         {
             return Ok(conn.clone());
@@ -103,7 +119,7 @@ impl MeshPeerPool {
             .connect(addr)
             .await
             .with_context(|| format!("dialing mesh peer shard {}", shard.get()))?;
-        guard.insert(shard, conn.clone());
+        *cached = Some(conn.clone());
         Ok(conn)
     }
 }

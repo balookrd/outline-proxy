@@ -10,7 +10,7 @@ use futures_util::future::BoxFuture;
 
 use super::super::constants::MAX_UDP_PAYLOAD_SIZE;
 use super::reader::record_oversized_socket_response_drop;
-use super::{NatKey, NatTable, ResponseSender, UdpResponseSender};
+use super::{NatKey, NatLimits, NatTable, ResponseSender, UdpResponseSender};
 use crate::{
     config::{CipherKind, Config},
     crypto::{UdpCipherMode, UserKey},
@@ -298,7 +298,11 @@ async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
     };
     let metrics = Metrics::new(&config);
     // Cap of 2 live entries; `0` would disable the cap.
-    let nat_table = NatTable::with_outbound_ipv6(Duration::from_secs(300), 2, None);
+    let nat_table = NatTable::with_outbound_ipv6(
+        Duration::from_secs(300),
+        NatLimits { max_entries: 2, max_entries_per_user: 0 },
+        None,
+    );
     let user = UserKey::new("cap", "secret-c", None, CipherKind::Chacha20IetfPoly1305, None)?;
 
     // Two distinct targets fill the table to capacity.
@@ -342,5 +346,101 @@ async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
 
     let rendered = metrics.render_prometheus();
     assert!(rendered.contains("outline_ss_udp_nat_capacity_dropped_total 1"));
+    Ok(())
+}
+
+fn nat_key(user: &UserKey, port: u16) -> NatKey {
+    NatKey {
+        user_id: user.id_arc(),
+        fwmark: None,
+        target: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        scope: None,
+    }
+}
+
+#[tokio::test]
+async fn caps_live_entries_per_user_without_starving_other_users() -> Result<()> {
+    let config = crate::server::tests::sample_config("127.0.0.1:3000".parse().unwrap());
+    let metrics = Metrics::new(&config);
+    // Roomy global cap, tight per-user cap: one tenant fanning out must not be
+    // able to claim the whole table.
+    let nat_table = NatTable::with_outbound_ipv6(
+        Duration::from_secs(300),
+        NatLimits { max_entries: 16, max_entries_per_user: 2 },
+        None,
+    );
+    let noisy = UserKey::new("noisy", "secret-n", None, CipherKind::Chacha20IetfPoly1305, None)?;
+    let quiet = UserKey::new("quiet", "secret-q", None, CipherKind::Chacha20IetfPoly1305, None)?;
+
+    for port in [7001u16, 7002] {
+        nat_table
+            .get_or_create(
+                nat_key(&noisy, port),
+                &noisy,
+                UdpCipherMode::Legacy,
+                Arc::clone(&metrics),
+            )
+            .await?;
+    }
+
+    let rejected = nat_table
+        .get_or_create(nat_key(&noisy, 7003), &noisy, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .await;
+    assert!(rejected.is_err(), "a new target beyond the per-user cap must be rejected");
+    assert_eq!(nat_table.len(), 2, "a rejected datagram must not add an entry");
+
+    // The other user is unaffected — the table itself is nowhere near full.
+    nat_table
+        .get_or_create(nat_key(&quiet, 7003), &quiet, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .await?;
+    assert_eq!(nat_table.len(), 3);
+
+    // An already-live target of the capped user still resolves to its entry.
+    nat_table
+        .get_or_create(nat_key(&noisy, 7001), &noisy, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .await?;
+    assert_eq!(nat_table.len(), 3, "an existing entry must not consume a fresh slot");
+
+    let rendered = metrics.render_prometheus();
+    assert!(rendered.contains("outline_ss_udp_nat_capacity_dropped_total 1"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn per_user_slots_are_reclaimed_by_idle_eviction() -> Result<()> {
+    let config = crate::server::tests::sample_config("127.0.0.1:3000".parse().unwrap());
+    let metrics = Metrics::new(&config);
+    let nat_table = NatTable::with_outbound_ipv6(
+        Duration::from_secs(300),
+        NatLimits { max_entries: 0, max_entries_per_user: 1 },
+        None,
+    );
+    let user = UserKey::new("solo", "secret-s", None, CipherKind::Chacha20IetfPoly1305, None)?;
+
+    let entry = nat_table
+        .get_or_create(nat_key(&user, 7101), &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .await?;
+    assert!(
+        nat_table
+            .get_or_create(nat_key(&user, 7102), &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+            .await
+            .is_err(),
+        "the user is at its per-user cap",
+    );
+
+    // Age the live entry past the idle timeout and sweep.
+    entry
+        .last_active_secs()
+        .store(crate::clock::current_unix_secs() - 600, std::sync::atomic::Ordering::Relaxed);
+    drop(entry);
+    nat_table.evict_idle(&metrics);
+    assert_eq!(nat_table.len(), 0);
+
+    // Eviction must give the slot back, otherwise the user stays locked out
+    // forever once the counter drifts up.
+    nat_table
+        .get_or_create(nat_key(&user, 7102), &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .await?;
+    assert_eq!(nat_table.len(), 1);
     Ok(())
 }

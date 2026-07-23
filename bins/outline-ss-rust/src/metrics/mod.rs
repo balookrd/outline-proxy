@@ -502,7 +502,8 @@ impl Metrics {
     }
 
     /// A datagram to a *new* `(user, fwmark, target)` was dropped because the
-    /// NAT table already held `udp_nat_max_entries` live entries. Existing
+    /// NAT table already held `udp_nat_max_entries` live entries, or the user
+    /// was already at its `udp_nat_max_entries_per_user` share. Existing
     /// entries are never evicted by this path, so the drop protects the
     /// file-descriptor / task budget without disturbing live sessions.
     pub fn record_udp_nat_capacity_dropped(&self) {

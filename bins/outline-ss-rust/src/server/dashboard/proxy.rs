@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, client::conn::http1};
 use hyper_util::rt::TokioIo;
 use rustls::pki_types::ServerName;
@@ -26,6 +26,12 @@ use crate::config::DashboardInstanceConfig;
 
 use super::DashboardState;
 use super::handlers::InstanceQuery;
+
+/// Cap on the control-API response body the dashboard buffers in memory.
+/// Responses are JSON user listings; a body past this is either a
+/// misconfigured or a hostile upstream, and the dashboard must not let one
+/// drive unbounded allocation on its behalf.
+const MAX_CONTROL_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
@@ -84,22 +90,30 @@ async fn send_control_request_inner(
     body: Option<Vec<u8>>,
 ) -> Result<(StatusCode, Bytes)> {
     let target = ControlTarget::new(&server.control_url, path)?;
-    let request = hyper::Request::builder()
-        .method(method)
-        .uri(target.path_and_query())
-        .header(header::HOST, target.host_header())
-        .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
-        .header(header::ACCEPT, "application/json")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(body.unwrap_or_default())))
-        .context("failed to build control request")?;
+    let pool_key = target.pool_key();
+
+    // Only replay-safe reads ride a parked connection: the upstream may close
+    // an idle keep-alive socket at any moment, and re-sending a mutation on a
+    // fresh connection after such a failure risks applying it twice.
+    if method == Method::GET
+        && let Some(mut sender) = state.control_pool.take(&pool_key)
+    {
+        let request = build_control_request(&target, method.clone(), server, body.as_deref())?;
+        if sender.ready().await.is_ok()
+            && let Ok(outcome) = exchange(&mut sender, request, MAX_CONTROL_RESPONSE_BYTES).await
+        {
+            state.control_pool.put(&pool_key, sender);
+            return Ok(outcome);
+        }
+        // The parked connection died between requests — dial a fresh one.
+    }
 
     let tcp = TcpStream::connect((target.host.as_str(), target.port))
         .await
         .with_context(|| format!("failed to connect to {}:{}", target.host, target.port))?;
 
-    match target.scheme {
-        ControlScheme::Http => exchange(tcp, request).await,
+    let mut sender = match target.scheme {
+        ControlScheme::Http => handshake(tcp).await?,
         ControlScheme::Https => {
             let server_name =
                 ServerName::try_from(target.host.clone()).context("invalid TLS server name")?;
@@ -108,28 +122,61 @@ async fn send_control_request_inner(
                 .connect(server_name, tcp)
                 .await
                 .context("TLS handshake with control API failed")?;
-            exchange(tls, request).await
+            handshake(tls).await?
         },
-    }
+    };
+    let request = build_control_request(&target, method, server, body.as_deref())?;
+    let outcome = exchange(&mut sender, request, MAX_CONTROL_RESPONSE_BYTES).await?;
+    state.control_pool.put(&pool_key, sender);
+    Ok(outcome)
 }
 
-async fn exchange<T>(io: T, request: hyper::Request<Full<Bytes>>) -> Result<(StatusCode, Bytes)>
+fn build_control_request(
+    target: &ControlTarget,
+    method: Method,
+    server: &DashboardInstanceConfig,
+    body: Option<&[u8]>,
+) -> Result<hyper::Request<Full<Bytes>>> {
+    hyper::Request::builder()
+        .method(method)
+        .uri(target.path_and_query())
+        .header(header::HOST, target.host_header())
+        .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
+        .header(header::ACCEPT, "application/json")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Full::new(body.map(Bytes::copy_from_slice).unwrap_or_default()))
+        .context("failed to build control request")
+}
+
+/// Completes the HTTP/1 handshake over `io` and spawns the connection driver.
+/// The returned sender keeps the connection alive; dropping it ends the driver.
+async fn handshake<T>(io: T) -> Result<http1::SendRequest<Full<Bytes>>>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let (mut sender, conn) = http1::handshake(TokioIo::new(io))
+    let (sender, conn) = http1::handshake(TokioIo::new(io))
         .await
         .context("HTTP/1 handshake with control API failed")?;
     tokio::spawn(async move {
         let _ = conn.await;
     });
+    Ok(sender)
+}
+
+async fn exchange(
+    sender: &mut http1::SendRequest<Full<Bytes>>,
+    request: hyper::Request<Full<Bytes>>,
+    max_body_bytes: usize,
+) -> Result<(StatusCode, Bytes)> {
     let response = sender.send_request(request).await.context("control request failed")?;
     let status = response.status();
-    let body = response
-        .into_body()
+    // Bounded read: the upstream declares (or streams) whatever length it
+    // likes, and the dashboard buffers the whole body before answering the
+    // browser. `Limited` aborts past the cap instead of growing the buffer.
+    let body = Limited::new(response.into_body(), max_body_bytes)
         .collect()
         .await
-        .context("failed to read control response body")?
+        .map_err(|error| anyhow::anyhow!("failed to read control response body: {error}"))?
         .to_bytes();
     Ok((status, body))
 }
@@ -185,6 +232,17 @@ impl ControlTarget {
 
     fn path_and_query(&self) -> &str {
         &self.path_and_query
+    }
+
+    /// Identity of the upstream endpoint, used to bucket pooled connections.
+    /// Deliberately excludes the request path — a keep-alive connection serves
+    /// any path on the same host.
+    fn pool_key(&self) -> String {
+        let scheme = match self.scheme {
+            ControlScheme::Http => "http",
+            ControlScheme::Https => "https",
+        };
+        format!("{scheme}://{}:{}", self.host, self.port)
     }
 }
 
