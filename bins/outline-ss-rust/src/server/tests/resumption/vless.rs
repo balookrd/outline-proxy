@@ -133,7 +133,8 @@ fn vless_mux_new_tcp_frame(session_id: u16, target: SocketAddr, payload: &[u8]) 
         Some(MuxNetwork::Tcp),
         Some(&target_addr),
         Some(payload),
-    );
+    )
+    .expect("test frame fits the mux length prefixes");
     buf.freeze()
 }
 
@@ -150,7 +151,8 @@ fn vless_mux_keep_frame(session_id: u16, payload: &[u8]) -> Bytes {
         None,
         None,
         Some(payload),
-    );
+    )
+    .expect("test frame fits the mux length prefixes");
     buf.freeze()
 }
 

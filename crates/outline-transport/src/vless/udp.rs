@@ -81,7 +81,7 @@ impl VlessUdpTransport {
         target: &TargetAddr,
         source: &'static str,
         keepalive_interval: Option<Duration>,
-    ) -> Self {
+    ) -> Result<Self> {
         // On H3 the QUIC layer owns liveness; disable the WS watchdog and the
         // keepalive Ping (the latter is unsafe on H3). See `carrier_liveness`.
         let (idle_timeout, keepalive) = carrier_liveness(ws_stream.is_h3(), keepalive_interval);
@@ -92,16 +92,17 @@ impl VlessUdpTransport {
 
     /// Build a VLESS UDP transport over an arbitrary
     /// [`crate::frame_io::DatagramChannel`]. The channel is opaque to
-    /// the protocol layer.
+    /// the protocol layer. Fails on a target the VLESS header cannot
+    /// express (domain past 255 bytes).
     pub fn from_channel(
         chan: Arc<dyn crate::frame_io::DatagramChannel>,
         uuid: &[u8; 16],
         target: &TargetAddr,
         source: &'static str,
-    ) -> Self {
-        let header = build_request_header(uuid, VLESS_CMD_UDP, target, &[]);
+    ) -> Result<Self> {
+        let header = build_request_header(uuid, VLESS_CMD_UDP, target, &[])?;
         let padding = carrier_padding::effective_carrier_padding();
-        Self {
+        Ok(Self {
             chan,
             pending_header: SyncMutex::new(Some(header)),
             recv_state: SyncMutex::new(VlessUdpRecvState {
@@ -113,7 +114,7 @@ impl VlessUdpTransport {
             throttle: None,
             throttle_fired: std::sync::atomic::AtomicBool::new(false),
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
-        }
+        })
     }
 
     /// Installs a carrier control-signal handler (server-initiated downstream
@@ -151,7 +152,7 @@ impl VlessUdpTransport {
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
-        Ok(Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval))
+        Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval)
     }
 
     /// Same as [`Self::connect`] but participates in cross-transport
@@ -205,7 +206,7 @@ impl VlessUdpTransport {
         // sit on the WS Upgrade response, not on the inner VLESS handshake.
         let issued = ws_stream.issued_session_id();
         let downgraded_from = ws_stream.downgraded_from();
-        let transport = Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval);
+        let transport = Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval)?;
         Ok((transport, issued, downgraded_from))
     }
 

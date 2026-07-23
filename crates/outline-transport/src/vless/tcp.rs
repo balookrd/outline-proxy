@@ -31,19 +31,20 @@ pub struct VlessTcpWriter {
 }
 
 impl VlessTcpWriter {
-    /// Build over an arbitrary [`crate::frame_io::FrameSink`].
+    /// Build over an arbitrary [`crate::frame_io::FrameSink`]. Fails on a
+    /// target the VLESS header cannot express (domain past 255 bytes).
     pub fn with_sink(
         sink: Box<dyn crate::frame_io::FrameSink>,
         uuid: &[u8; 16],
         target: &TargetAddr,
         lifetime: Arc<UpstreamTransportGuard>,
-    ) -> Self {
-        let header = build_request_header(uuid, VLESS_CMD_TCP, target, &[]);
-        Self {
+    ) -> Result<Self> {
+        let header = build_request_header(uuid, VLESS_CMD_TCP, target, &[])?;
+        Ok(Self {
             sink: Some(sink),
             pending_header: Some(header),
             _lifetime: lifetime,
-        }
+        })
     }
 
     /// Same as [`Self::with_sink`] but emits a populated Addons block
@@ -56,13 +57,13 @@ impl VlessTcpWriter {
         target: &TargetAddr,
         lifetime: Arc<UpstreamTransportGuard>,
         resume_id: Option<&[u8; 16]>,
-    ) -> Self {
-        let header = build_vless_tcp_request_header_with_resume(uuid, target, true, resume_id);
-        Self {
+    ) -> Result<Self> {
+        let header = build_vless_tcp_request_header_with_resume(uuid, target, true, resume_id)?;
+        Ok(Self {
             sink: Some(sink),
             pending_header: Some(header),
             _lifetime: lifetime,
-        }
+        })
     }
 
     pub fn supports_half_close(&self) -> bool {
@@ -596,13 +597,13 @@ pub fn vless_tcp_pair_from_ws(
     lifetime: Arc<UpstreamTransportGuard>,
     diag: crate::WsReadDiag,
     keepalive_interval: Option<Duration>,
-) -> (VlessTcpWriter, VlessTcpReader) {
+) -> Result<(VlessTcpWriter, VlessTcpReader)> {
     // On H3 the QUIC layer owns liveness; disable the WS watchdog and the
     // keepalive Ping (the latter is unsafe on H3). See `carrier_liveness`.
     let (idle_timeout, keepalive) = carrier_liveness(ws_stream.is_h3(), keepalive_interval);
     let (sink, source) = crate::frame_io_ws::from_ws_frames(ws_stream, idle_timeout, keepalive);
     let source = source.with_diag(diag.uplink, diag.target);
-    let writer = VlessTcpWriter::with_sink(Box::new(sink), uuid, target, Arc::clone(&lifetime));
+    let writer = VlessTcpWriter::with_sink(Box::new(sink), uuid, target, Arc::clone(&lifetime))?;
     let reader = VlessTcpReader::with_source(Box::new(source), lifetime);
-    (writer, reader)
+    Ok((writer, reader))
 }

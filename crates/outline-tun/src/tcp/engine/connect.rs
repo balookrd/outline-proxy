@@ -326,7 +326,7 @@ async fn do_tcp_ss_setup(
             lifetime,
             diag,
             keepalive_interval,
-        );
+        )?;
         let reader = TcpReader::Vless(reader)
             .with_expect_ack_prefix(expect_ack_prefix)
             .with_expect_downlink_replay(expect_downlink_replay);

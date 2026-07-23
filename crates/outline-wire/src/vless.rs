@@ -101,6 +101,10 @@ pub enum VlessError {
     InvalidDomain,
     #[error("invalid vless uuid")]
     InvalidUuid,
+    #[error("vless domain too long: {0} bytes")]
+    DomainTooLong(usize),
+    #[error("vless addons block too long: {0} bytes")]
+    AddonsTooLong(usize),
 }
 
 /// Server half: parse a client request header. `Ok(None)` means the buffer
@@ -315,20 +319,30 @@ pub fn parse_response_addons_session_id(block: &[u8]) -> Option<[u8; 16]> {
 /// | port | atyp | address`) in the VLESS ATYP numbering. The `port | atyp |
 /// address` tail is omitted for the Mux command, which carries no per-carrier
 /// destination (matching Xray-core and sing-box, and the parser above).
+///
+/// Both the Addons block and the domain ride behind a `u8` length, so either
+/// one past 255 bytes is rejected rather than truncated into a header the
+/// peer would parse as garbage — same contract as
+/// [`TargetAddr::to_wire_bytes`](crate::target::TargetAddr::to_wire_bytes).
 pub fn build_request_header(
     uuid: &[u8; 16],
     command: u8,
     target: &TargetAddr,
     addons: &[u8],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, VlessError> {
+    let addons_len: u8 = addons
+        .len()
+        .try_into()
+        .map_err(|_| VlessError::AddonsTooLong(addons.len()))?;
+
     let mut out = Vec::with_capacity(1 + 16 + 1 + addons.len() + 1 + 2 + 1 + 256);
     out.push(VERSION);
     out.extend_from_slice(uuid);
-    out.push(addons.len() as u8); // addons_len
+    out.push(addons_len);
     out.extend_from_slice(addons);
     out.push(command);
     if command == COMMAND_MUX {
-        return out;
+        return Ok(out);
     }
     match target {
         TargetAddr::IpV4(addr, port) => {
@@ -342,13 +356,17 @@ pub fn build_request_header(
             out.extend_from_slice(&addr.octets());
         },
         TargetAddr::Domain(host, port) => {
+            let host_len: u8 = host
+                .len()
+                .try_into()
+                .map_err(|_| VlessError::DomainTooLong(host.len()))?;
             out.extend_from_slice(&port.to_be_bytes());
             out.push(ATYP_DOMAIN);
-            out.push(host.len() as u8);
+            out.push(host_len);
             out.extend_from_slice(host.as_bytes());
         },
     }
-    out
+    Ok(out)
 }
 
 /// Parse a VLESS UUID in hex/dashed form into 16 raw bytes.

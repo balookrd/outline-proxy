@@ -4,6 +4,7 @@
 //! this module keeps the historical client-facing names and wraps the
 //! response-addons walk into the transport's [`SessionId`] type.
 
+use anyhow::Result;
 use socks5_proto::TargetAddr;
 
 use crate::resumption::SessionId;
@@ -21,14 +22,15 @@ pub(super) const MAX_VLESS_UDP_PAYLOAD: usize = 64 * 1024;
 
 /// Build the standard VLESS UDP request header. Exposed so transports
 /// that bypass the WebSocket layer (raw QUIC) can write it directly to
-/// the underlying control stream.
-pub fn build_vless_udp_request_header(uuid: &[u8; 16], target: &TargetAddr) -> Vec<u8> {
-    build_request_header(uuid, VLESS_CMD_UDP, target, &[])
+/// the underlying control stream. Fails on a target whose domain does not
+/// fit the header's `u8` length prefix.
+pub fn build_vless_udp_request_header(uuid: &[u8; 16], target: &TargetAddr) -> Result<Vec<u8>> {
+    build_request_header(uuid, VLESS_CMD_UDP, target, &[]).map_err(Into::into)
 }
 
 /// Build the standard VLESS TCP request header. Same exposure rationale.
-pub fn build_vless_tcp_request_header(uuid: &[u8; 16], target: &TargetAddr) -> Vec<u8> {
-    build_request_header(uuid, VLESS_CMD_TCP, target, &[])
+pub fn build_vless_tcp_request_header(uuid: &[u8; 16], target: &TargetAddr) -> Result<Vec<u8>> {
+    build_request_header(uuid, VLESS_CMD_TCP, target, &[]).map_err(Into::into)
 }
 
 /// Build a VLESS TCP request header with the resumption Addons opcodes
@@ -42,9 +44,9 @@ pub fn build_vless_tcp_request_header_with_resume(
     target: &TargetAddr,
     resume_capable: bool,
     resume_id: Option<&[u8; 16]>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let addons = outline_wire::vless::encode_request_addons(resume_capable, resume_id);
-    build_request_header(uuid, VLESS_CMD_TCP, target, &addons)
+    build_request_header(uuid, VLESS_CMD_TCP, target, &addons).map_err(Into::into)
 }
 
 /// Walk a server response Addons block and pull out the assigned
