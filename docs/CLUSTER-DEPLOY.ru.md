@@ -160,6 +160,11 @@ SS-UDP и VLESS-UDP предъявляют групповой shard-несущи
     требованию, не держатся). Плюс смотри `outline_ss_orphan_resume_hit_total`
     на home: растёт каждый раз, когда home переприкрепляет припаркованный
     upstream для клиента, пришедшего через другой edge.
+  - рост `outline_ss_mesh_relay_rejected_total{reason="capacity"}` ⇒ home упёрся
+    в лимит одновременных релеймых сессий и отвергает новые relay-стримы (edge'ы
+    деградируют к свежим локальным сессиям). Норма — ноль; устойчивый рост
+    означает, что кластер шлёт на одну home больше одновременных релеймых
+    сессий, чем она рассчитана держать.
   - **Кластерный трафик** (сколько данных реально идёт через mesh, а не только
     сколько relay открыто): `outline_ss_mesh_bytes_total{role,direction,transport}`
     и `outline_ss_mesh_datagrams_total{role,direction}`. `role="edge"` — трафик,

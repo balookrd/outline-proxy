@@ -5,7 +5,7 @@
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result, bail};
-use quinn::{Connection, Endpoint, RecvStream, SendStream};
+use quinn::{Connection, ConnectionError, Endpoint, RecvStream, SendStream};
 
 use super::frame::OpenHeader;
 use super::tls::{
@@ -88,10 +88,35 @@ pub(in crate::server) async fn open_relay_stream(
     Ok(MeshStream { send, recv })
 }
 
+/// Why [`accept_relay`] yielded no relay stream. The home's accept loop must
+/// tell the two apart: a failure that killed the whole connection ends it, but a
+/// failure confined to one stream must not — the connection is still carrying
+/// live relays (and the control-datagram receiver) that depend on the loop.
+#[derive(Debug)]
+pub(in crate::server) enum AcceptRelayError {
+    /// The QUIC connection is gone: the peer closed it, it timed out, or the
+    /// transport failed. No further stream will ever arrive on it.
+    Connection(ConnectionError),
+    /// One stream failed before it could be served — reset by the peer between
+    /// `open_bi` and the OPEN header, or carrying a header this build cannot
+    /// parse (a peer on a newer wire version during a rolling upgrade). The
+    /// connection itself is unaffected. A connection that dies mid-header also
+    /// lands here; the next `accept_relay` then reports it as `Connection`.
+    Stream(anyhow::Error),
+}
+
 /// Accepts the next relay stream on `conn`, reading and parsing its OPEN
 /// header. The remaining stream bytes are the relayed carrier payload.
-pub(in crate::server) async fn accept_relay(conn: &Connection) -> Result<(OpenHeader, MeshStream)> {
-    let (send, mut recv) = conn.accept_bi().await.context("accepting mesh relay stream")?;
+pub(in crate::server) async fn accept_relay(
+    conn: &Connection,
+) -> std::result::Result<(OpenHeader, MeshStream), AcceptRelayError> {
+    let (send, mut recv) = conn.accept_bi().await.map_err(AcceptRelayError::Connection)?;
+    let header = read_open_header(&mut recv).await.map_err(AcceptRelayError::Stream)?;
+    Ok((header, MeshStream { send, recv }))
+}
+
+/// Reads the length-prefixed OPEN header prefixing a relay stream.
+async fn read_open_header(recv: &mut RecvStream) -> Result<OpenHeader> {
     let mut len_buf = [0u8; 4];
     recv.read_exact(&mut len_buf)
         .await
@@ -102,8 +127,7 @@ pub(in crate::server) async fn accept_relay(conn: &Connection) -> Result<(OpenHe
     }
     let mut buf = vec![0u8; len];
     recv.read_exact(&mut buf).await.context("reading mesh OPEN header")?;
-    let header = OpenHeader::parse(&buf)?;
-    Ok((header, MeshStream { send, recv }))
+    OpenHeader::parse(&buf)
 }
 
 #[cfg(test)]

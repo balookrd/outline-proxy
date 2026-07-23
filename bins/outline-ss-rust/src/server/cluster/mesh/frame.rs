@@ -91,6 +91,11 @@ pub(in crate::server) enum CloseReason {
     Abort,
     /// The edge tore the relay down on its health budget (stalled progress).
     Budget,
+    /// The home refused the stream: it is already serving its cap of relayed
+    /// sessions. Distinct from [`CloseReason::Abort`] so the edge can tell "this
+    /// home is full" from a generic failure; a peer on an older build maps it to
+    /// `Abort` through [`CloseReason::from_code`], which is the right fallback.
+    Capacity,
 }
 
 impl CloseReason {
@@ -100,6 +105,7 @@ impl CloseReason {
             CloseReason::Fin => 0,
             CloseReason::Abort => 1,
             CloseReason::Budget => 2,
+            CloseReason::Capacity => 3,
         }
     }
 
@@ -109,6 +115,7 @@ impl CloseReason {
         match code {
             0 => CloseReason::Fin,
             2 => CloseReason::Budget,
+            3 => CloseReason::Capacity,
             _ => CloseReason::Abort,
         }
     }

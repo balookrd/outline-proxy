@@ -236,6 +236,12 @@ pub(super) fn register_descriptions() {
         "Edge attempts to open a cluster mesh relay to a home shard, by outcome \
          (ok = relay established; fail = home unreachable / at cap, degraded to a fresh session)."
     );
+    describe_counter!(
+        "outline_ss_mesh_relay_rejected_total",
+        "Relay streams a home node refused before serving them, by reason \
+         (capacity = already at its concurrent relayed-session cap; the edge \
+         degrades to a fresh local session)."
+    );
     describe_gauge!(
         "outline_ss_mesh_relay_active",
         "Relayed sessions this home node is currently serving over the cluster mesh."

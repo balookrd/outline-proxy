@@ -28,8 +28,9 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    CarrierKind, CloseReason, ControlDatagram, MeshStream, OpenHeader, PooledRelay, accept_relay,
-    encode_throttle_hint, parse_control_datagram, read_datagram, write_datagram,
+    AcceptRelayError, CarrierKind, CloseReason, ControlDatagram, MeshStream, OpenHeader,
+    PooledRelay, accept_relay, encode_throttle_hint, parse_control_datagram, read_datagram,
+    write_datagram,
 };
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::server::resumption::SessionId;
@@ -634,17 +635,52 @@ async fn handle_mesh_connection(
         }))
     };
 
-    // Ends when the peer closes the connection (accept_relay errors).
-    while let Ok((header, stream)) = accept_relay(&conn).await {
+    // Ends only when the peer closes the connection. A stream that fails on its
+    // way in is dropped on its own: the connection is still carrying every relay
+    // already accepted on it, plus the control-datagram receiver above.
+    loop {
+        let (header, stream) = match accept_relay(&conn).await {
+            Ok(accepted) => accepted,
+            Err(AcceptRelayError::Connection(error)) => {
+                debug!(?error, "mesh peer connection ended");
+                break;
+            },
+            Err(AcceptRelayError::Stream(error)) => {
+                debug!(?error, "dropping an unusable mesh relay stream");
+                continue;
+            },
+        };
+        // Bounded resources: one permit per served relay, held for its lifetime.
+        // Refusing beyond the cap keeps a degraded peer — one opening streams in
+        // a loop — from growing this home's task/socket footprint without bound.
+        // A refused edge fails fast and serves its client locally instead.
+        let Ok(permit) = Arc::clone(&cluster.relay_permits).try_acquire_owned() else {
+            cluster.metrics.record_mesh_relay_rejected("capacity");
+            warn!("mesh relayed-session cap reached; refusing a relay stream");
+            refuse_relay(stream, CloseReason::Capacity);
+            continue;
+        };
         let cluster = Arc::clone(&cluster);
         let services = Arc::clone(&services);
         let routes = Arc::clone(&routes);
         tokio::spawn(async move {
+            // Releases the slot when the relay ends, on every path.
+            let _permit = permit;
             if let Err(error) = serve_relayed(header, stream, &cluster, &services, &routes).await {
                 debug!(?error, "relayed session ended with error");
             }
         });
     }
+}
+
+/// Refuses one relay stream, resetting both halves with `reason` so the edge
+/// learns of the refusal on its next read or write instead of waiting out its
+/// health budget.
+fn refuse_relay(stream: MeshStream, reason: CloseReason) {
+    let MeshStream { mut send, mut recv } = stream;
+    let code = VarInt::from_u32(reason.code());
+    let _ = send.reset(code);
+    let _ = recv.stop(code);
 }
 
 /// Logs a one-shot diagnostic when a relayed carrier resolves to an empty route
