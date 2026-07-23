@@ -44,10 +44,14 @@ mesh-кластера серверов; отдельного raw-QUIC forward-н
 Workspace целиком:
 
 ```bash
-cargo check --workspace
-cargo test --workspace
+cargo check --workspace --exclude sockudo-ws   # vendored member исключён, как в CI
+cargo test --workspace --exclude sockudo-ws
 cargo fmt --all          # затрагивает и vendor/* — откатывай format-only diff в vendor
 ```
+
+`sockudo-ws` — явный member workspace (см. комментарий в корневом `Cargo.toml`),
+поэтому голый `--workspace` его захватывает, а CI — нет; держи `--exclude`, чтобы
+локальный прогон совпадал с гейтом.
 
 Один бинарь / cross-build (через корневые `.cargo` aliases):
 
@@ -57,6 +61,31 @@ cargo check -p outline-ws-rust
 cargo ss-release-musl-x86_64       # zigbuild server, нужен cargo-zigbuild + zig
 cargo ws-release-musl-aarch64      # zigbuild client
 ```
+
+### CI-гейт — гнать локально перед коммитом
+
+`.github/workflows/ci.yml`. Прогоняй ровно эти команды: у них есть
+vendored-исключения, без которых локальный результат расходится с CI.
+
+```bash
+cargo fmt --check -p outline-ss-rust -p outline-ws-rust \
+  -p outline-metrics -p outline-net -p outline-routing -p outline-transport \
+  -p outline-tun -p outline-uplink -p outline-wire \
+  -p shadowsocks-crypto -p socks5-proto
+cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps -- -D warnings
+cargo test --workspace --exclude sockudo-ws
+```
+
+Оба шага lint-джоба обязательны, и именно в этом порядке: `fmt` падает первым и
+маскирует собой clippy — «CI красный по формату» регулярно прячет за собой ещё и
+warning'и, которые всплывут вторым заходом. Явный список пакетов у `fmt`,
+`--exclude sockudo-ws` и `--no-deps` — не косметика: без них гейт лезет в
+vendored-крейты, которые держим в upstream-стиле.
+
+Третий job (`feature matrix + monorepo invariants`) гоняет
+`cargo check -p <bin> --no-default-features` и скриптовые проверки инвариантов —
+см. [Монорепо-инварианты](#монорепо-инварианты-специфичны-для-слияния) и
+[Vendored patches](#vendored-patches).
 
 ## Монорепо-инварианты (специфичны для слияния)
 
