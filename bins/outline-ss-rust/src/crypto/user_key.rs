@@ -10,6 +10,7 @@ use chacha20poly1305::XChaCha20Poly1305;
 use outline_net::IpAliasTable;
 use outline_wire::MasterKeyError;
 use subtle::ConstantTimeEq;
+use zeroize::Zeroizing;
 
 use super::error::CryptoError;
 use crate::config::CipherKind;
@@ -30,7 +31,9 @@ pub struct UserKey {
     id: Arc<str>,
     log_label: Arc<str>,
     cipher: CipherKind,
-    master_key: Arc<[u8]>,
+    /// Shared master key, wiped when the last clone of this user drops — a
+    /// removed/reloaded user must not leave its key in freed heap pages.
+    master_key: Arc<Zeroizing<Vec<u8>>>,
     fwmark: Option<u32>,
     /// Source-IP → alias table for accounting relabeling (metrics/NAT/logs).
     /// `None` for the common case of no aliases. See [`Self::effective_label`].
@@ -58,7 +61,7 @@ impl UserKey {
             id,
             log_label,
             cipher,
-            master_key: Arc::from(password_to_master_key(password, cipher)?),
+            master_key: Arc::new(password_to_master_key(password, cipher)?),
             fwmark,
             aliases,
             ciphers: Arc::new(CachedCiphers {
@@ -135,11 +138,14 @@ impl UserKey {
     }
 
     pub(super) fn master_key(&self) -> &[u8] {
-        self.master_key.as_ref()
+        &self.master_key
     }
 }
 
-fn password_to_master_key(password: &str, cipher: CipherKind) -> Result<Vec<u8>, CryptoError> {
+fn password_to_master_key(
+    password: &str,
+    cipher: CipherKind,
+) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
     // outline-wire's EVP stretch happily derives a key from an empty
     // password; the server rejects those up front.
     if !cipher.is_ss2022() && password.is_empty() {

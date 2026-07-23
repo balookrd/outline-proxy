@@ -24,6 +24,7 @@ use std::time::Duration;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
+use zeroize::Zeroizing;
 
 use ss2022::{Ss2022TcpReaderState, parse_ss2022_response_header};
 use transport::{ReadTransport, SocketReadTransport, WsReadTransport, WsStream};
@@ -31,8 +32,9 @@ use transport::{ReadTransport, SocketReadTransport, WsReadTransport, WsStream};
 pub struct TcpShadowsocksReader<T: ReadTransport> {
     transport: T,
     cipher: CipherKind,
-    /// Master key stored on the stack.  Active portion: `&master_key[..cipher.key_len()]`.
-    master_key: [u8; 32],
+    /// Master key stored on the stack, wiped on drop.  Active portion:
+    /// `&master_key[..cipher.key_len()]`.
+    master_key: Zeroizing<[u8; 32]>,
     /// Lazily-initialised session cipher (built after reading the response
     /// salt and deriving the subkey).  `None` until the first chunk arrives.
     cipher_state: Option<AeadCipher>,
@@ -98,7 +100,7 @@ impl TcpShadowsocksReader<WsReadTransport> {
         lifetime: Arc<UpstreamTransportGuard>,
         ctrl_tx: mpsc::Sender<Message>,
     ) -> Self {
-        let mut mk = [0u8; 32];
+        let mut mk = Zeroizing::new([0u8; 32]);
         mk[..master_key.len()].copy_from_slice(master_key);
         Self {
             transport: WsReadTransport {
@@ -142,7 +144,7 @@ impl TcpShadowsocksReader<SocketReadTransport> {
         master_key: &[u8],
         lifetime: Arc<UpstreamTransportGuard>,
     ) -> Self {
-        let mut mk = [0u8; 32];
+        let mut mk = Zeroizing::new([0u8; 32]);
         mk[..master_key.len()].copy_from_slice(master_key);
         Self {
             transport: SocketReadTransport { reader },

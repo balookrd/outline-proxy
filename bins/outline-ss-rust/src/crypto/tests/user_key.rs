@@ -25,6 +25,19 @@ fn rejects_empty_classic_password() {
     assert!(matches!(error, CryptoError::EmptyPassword));
 }
 
+// The per-user master key lives for the whole process lifetime behind an
+// `Arc`. Its backing buffer must carry zeroize-on-drop semantics so a
+// reloaded/removed user does not leave the key in freed heap pages.
+#[test]
+fn master_key_is_zeroizing() {
+    let key = UserKey::new("alice", "foobar", None, CipherKind::Aes256Gcm, None).unwrap();
+    let ty = std::any::type_name_of_val(&key.master_key);
+    assert!(
+        ty.contains("zeroize::Zeroizing<"),
+        "UserKey master key must be wrapped in Zeroizing, got `{ty}`"
+    );
+}
+
 #[test]
 fn classic_password_round_trips_through_matches_password() {
     let key = UserKey::new("alice", "foobar", None, CipherKind::Aes256Gcm, None).unwrap();

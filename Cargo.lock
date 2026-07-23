@@ -1800,6 +1800,7 @@ dependencies = [
  "url",
  "webpki-roots 1.0.7",
  "x509-parser",
+ "zeroize",
 ]
 
 [[package]]
@@ -1842,6 +1843,7 @@ dependencies = [
  "url",
  "webpki-roots 1.0.7",
  "x509-cert",
+ "zeroize",
 ]
 
 [[package]]
@@ -1915,6 +1917,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]
@@ -2672,6 +2675,7 @@ dependencies = [
  "serde",
  "sha1",
  "thiserror 2.0.18",
+ "zeroize",
 ]
 
 [[package]]

@@ -70,6 +70,7 @@ thiserror = "2.0"
 tracing = "0.1"
 url = { version = "2.5", features = ["serde"] }
 webpki-roots = "1.0"
+zeroize = "1.8"
 
 [dev-dependencies]
 # Used only by the XHTTP client tests (`xhttp/tests/`). The mock h2

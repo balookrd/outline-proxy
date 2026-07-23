@@ -18,6 +18,7 @@ clap = { version = "4.5", optional = true, default-features = false, features = 
 md5 = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
+zeroize = "1.8"
 
 [dev-dependencies]
 proptest = "1.5"
