@@ -48,6 +48,19 @@ async fn ss_socket_pair() -> (SocketTcpWriter, SocketTcpReader) {
     (writer, reader)
 }
 
+// The reader keeps the master key for the whole lifetime of the stream and
+// re-derives a subkey from it on every cipher init. The stored copy must
+// carry zeroize-on-drop semantics.
+#[tokio::test]
+async fn reader_master_key_is_zeroizing() {
+    let (_writer, reader) = ss_socket_pair().await;
+    let ty = std::any::type_name_of_val(&reader.master_key);
+    assert!(
+        ty.contains("zeroize::Zeroizing<"),
+        "reader master key must be wrapped in Zeroizing, got `{ty}`"
+    );
+}
+
 #[tokio::test]
 async fn read_chunk_consumes_exact_14_byte_prefix_and_returns_next_payload() {
     let (mut writer, reader) = ss_socket_pair().await;

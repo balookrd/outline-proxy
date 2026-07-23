@@ -92,6 +92,26 @@ fn build_server_aes_packet(
     packet
 }
 
+// The UDP transport holds the master key for the whole session and derives a
+// subkey from it per datagram. The stored copy must carry zeroize-on-drop
+// semantics so a closed session leaves no key material behind.
+#[test]
+fn udp_transport_master_key_is_zeroizing() {
+    let transport = UdpWsTransport::from_channel(
+        Arc::new(MockChannel::default()),
+        CipherKind::Aes256Gcm2022,
+        "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+        "test",
+        CarrierPadding::disabled(),
+    )
+    .unwrap();
+    let ty = std::any::type_name_of_val(&transport.master_key);
+    assert!(
+        ty.contains("zeroize::Zeroizing<"),
+        "UDP transport master key must be wrapped in Zeroizing, got `{ty}`"
+    );
+}
+
 fn is_replay_error(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         matches!(

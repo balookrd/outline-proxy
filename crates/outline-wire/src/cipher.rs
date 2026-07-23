@@ -2,6 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Shadowsocks AEAD cipher selection shared by server config, client uplink
 /// config and the SS2022 framing code. Serde names match the canonical
@@ -87,10 +88,17 @@ impl CipherKind {
     /// Materializes the master key from the configured secret: SS2022
     /// methods take a base64 PSK of exactly `key_len()` bytes, classic
     /// methods stretch the password via OpenSSL's EVP_BytesToKey.
-    pub fn derive_master_key(self, password: &str) -> Result<Vec<u8>, MasterKeyError> {
+    ///
+    /// The key is returned inside [`Zeroizing`] so the buffer is wiped when
+    /// the last owner drops it — a master key outlives the call that derives
+    /// it (transports, user tables), and freed pages must not keep it
+    /// readable in a core dump or swap. `Zeroizing<Vec<u8>>` derefs to
+    /// `Vec<u8>`/`[u8]`, so callers passing `&master_key` are unaffected.
+    pub fn derive_master_key(self, password: &str) -> Result<Zeroizing<Vec<u8>>, MasterKeyError> {
         if self.is_ss2022() {
             use base64::Engine;
-            let key = base64::engine::general_purpose::STANDARD.decode(password)?;
+            // Wrapped before the length check so a rejected PSK is wiped too.
+            let key = Zeroizing::new(base64::engine::general_purpose::STANDARD.decode(password)?);
             if key.len() != self.key_len() {
                 return Err(MasterKeyError::PskLengthMismatch {
                     got: key.len(),
@@ -109,17 +117,33 @@ impl CipherKind {
 /// this to their respective HKDF backends.
 pub const SS_SUBKEY_INFO: &[u8] = b"ss-subkey";
 
+/// Bytes an MD5 digest contributes per round of the stretch below.
+const MD5_BLOCK_LEN: usize = 16;
+
 /// OpenSSL's EVP_BytesToKey (MD5, no salt): the classic Shadowsocks
 /// password-to-key stretch.
-pub fn evp_bytes_to_key(password: &[u8], key_len: usize) -> Vec<u8> {
-    let mut key = Vec::with_capacity(key_len);
-    let mut prev = Vec::new();
+///
+/// Every buffer here holds key material — the running digest `prev` is a
+/// key block, and `input` carries the password — so all of them, including
+/// the MD5 output itself, are wiped on the way out. The returned key is
+/// [`Zeroizing`] for the same reason as [`CipherKind::derive_master_key`].
+///
+/// The output is sized to whole MD5 blocks up front: `Zeroizing` can only
+/// wipe the allocation it still owns, so a grow part-way through the loop
+/// would strand an unwiped copy of the earlier blocks in the freed one.
+pub fn evp_bytes_to_key(password: &[u8], key_len: usize) -> Zeroizing<Vec<u8>> {
+    let mut key =
+        Zeroizing::new(Vec::with_capacity(key_len.div_ceil(MD5_BLOCK_LEN) * MD5_BLOCK_LEN));
+    let mut prev = Zeroizing::new(Vec::new());
 
     while key.len() < key_len {
-        let mut input = Vec::with_capacity(prev.len() + password.len());
+        let mut input = Zeroizing::new(Vec::with_capacity(prev.len() + password.len()));
         input.extend_from_slice(&prev);
         input.extend_from_slice(password);
-        prev = md5::compute(input).0.to_vec();
+        let mut digest = md5::compute(&*input);
+        // Assigning through `prev` drops (and wipes) the previous block.
+        prev = Zeroizing::new(digest.0.to_vec());
+        digest.0.zeroize();
         key.extend_from_slice(&prev);
     }
 

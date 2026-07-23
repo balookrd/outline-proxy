@@ -1,5 +1,6 @@
 use hkdf::Hkdf;
 use sha1::Sha1;
+use zeroize::Zeroizing;
 
 use crate::cipher_kind::CipherKind;
 use crate::error::{CryptoError, Result};
@@ -16,8 +17,16 @@ pub use outline_wire::ss2022::SS2022_SUBKEY_CONTEXT as SHADOWSOCKS_2022_INFO;
 /// The active portion of the returned array is `&result[..cipher.key_len()]`;
 /// bytes beyond that index are zeroed padding.  All supported ciphers have
 /// `key_len() ≤ 32`, so the full key fits on the stack with no heap allocation.
-pub fn derive_subkey(cipher: CipherKind, master_key: &[u8], salt: &[u8]) -> Result<[u8; 32]> {
-    let mut subkey = [0u8; 32];
+///
+/// The array is wrapped in [`Zeroizing`] so each caller's stack copy is wiped
+/// on drop instead of lingering in a reclaimed frame.  It derefs to
+/// `[u8; 32]`, so `&subkey[..cipher.key_len()]` still works unchanged.
+pub fn derive_subkey(
+    cipher: CipherKind,
+    master_key: &[u8],
+    salt: &[u8],
+) -> Result<Zeroizing<[u8; 32]>> {
+    let mut subkey = Zeroizing::new([0u8; 32]);
     let key_len = cipher.key_len();
     if cipher.is_ss2022() {
         outline_wire::ss2022::ss2022_session_subkey_into(master_key, salt, &mut subkey[..key_len]);
@@ -28,3 +37,7 @@ pub fn derive_subkey(cipher: CipherKind, master_key: &[u8], salt: &[u8]) -> Resu
     }
     Ok(subkey)
 }
+
+#[cfg(test)]
+#[path = "tests/keys.rs"]
+mod tests;
