@@ -691,14 +691,13 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
 
     while in_flight.next().await.is_some() {}
 
-    // Park-on-drop: if the stream issued a Session ID and registered
-    // at least one NAT key, detach our sender from each entry and
-    // park the bundle in the orphan registry. The NAT entries
-    // themselves stay alive in `NatTable` and continue aging by
-    // their normal idle timeout — only the response-sender slot is
-    // released so upstream packets don't try to push to a dead
-    // channel.
-    park_ss_udp_stream_on_drop(&server, &route, &session).await;
+    // Release-on-drop: detach our sender from every NAT entry this stream
+    // registered on and, when the stream issued a Session ID, park the bundle in
+    // the orphan registry. The NAT entries themselves stay alive in `NatTable`
+    // and continue aging by their normal idle timeout — only the
+    // response-sender slot is released so upstream packets don't try to push to
+    // a dead channel.
+    release_ss_udp_stream_on_drop(&server, &route, &session).await;
 
     drop(outbound_ctrl_tx);
     drop(outbound_data_tx);
@@ -709,25 +708,39 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     loop_result
 }
 
-async fn park_ss_udp_stream_on_drop(
+/// Teardown: detach this stream's response sender from every NAT entry it
+/// registered on, then park the detached keys when the stream negotiated
+/// resumption.
+///
+/// The detach is unconditional, because a NAT entry holds a clone of the
+/// stream's response sender — and that sender holds a clone of the WS writer's
+/// data channel. Leaving it in place keeps `outbound_data_rx` open, so the
+/// writer task (and with it the carrier's write half and the client's read half)
+/// survives its own stream until the entry is idle-evicted, tens of seconds
+/// later. A talkative upstream self-heals on the first send to the departed
+/// client, but a silent one — the classic case being DNS over UDP, one reply and
+/// then nothing — never triggers that. Streams that cannot park at all
+/// (resumption disabled, or a third-party client that offered no
+/// `X-Outline-Resume-*` header and so was issued no Session ID) need exactly the
+/// same release, which is why it is not gated on the park.
+async fn release_ss_udp_stream_on_drop(
     server: &UdpServerCtx,
     route: &UdpRouteCtx,
     session: &UdpSessionState,
 ) {
-    let Some(session_id) = session.issued_session_id else {
-        return;
-    };
-    if !server.orphan_registry.enabled() {
-        return;
-    }
-    let Some(owner) = session.authenticated_user_id.get().map(Arc::clone) else {
-        return; // Stream never authenticated — nothing to park.
-    };
+    // Whether this stream can park, and under which id/owner. `None` for an
+    // unauthenticated stream too — it has nothing to park.
+    let park_target = session
+        .issued_session_id
+        .filter(|_| server.orphan_registry.enabled())
+        .zip(session.authenticated_user_id.get().map(Arc::clone));
     // Reserve the id so a racing resume of this SS-UDP stream waits for the park
     // to land rather than missing it (the detach + park below is brief but still
     // concurrent with a redial on another task). The guard clears on every
     // return; the park commits under it.
-    let _reservation = server.orphan_registry.reserve_park(session_id);
+    let _reservation = park_target
+        .as_ref()
+        .map(|(session_id, _)| server.orphan_registry.reserve_park(*session_id));
     let nat_keys: HashSet<NatKey> = session.nat_keys.lock().take();
     if nat_keys.is_empty() {
         return;
@@ -735,32 +748,35 @@ async fn park_ss_udp_stream_on_drop(
     // Detach our sender from each NAT entry. Skips entries where a
     // newer stream has already taken the slot (`stream_id` doesn't
     // match) — they're not ours to clear.
-    let mut keys_to_park = Vec::with_capacity(nat_keys.len());
+    let mut detached_keys = Vec::with_capacity(nat_keys.len());
     for key in nat_keys {
         if let Some(entry) = server.nat_table.try_get(&key) {
             let detached = entry.detach_session_for_stream(session.stream_id);
             if detached {
-                keys_to_park.push(key);
+                detached_keys.push(key);
             } else {
                 debug!(
                     target = %key.target,
-                    "ss-udp park: NAT entry already taken over by another stream; skipping"
+                    "ss-udp teardown: NAT entry already taken over by another stream; skipping"
                 );
             }
         }
     }
-    if keys_to_park.is_empty() {
+    let Some((session_id, owner)) = park_target else {
+        return;
+    };
+    if detached_keys.is_empty() {
         return;
     }
     debug!(
         user = %owner,
         path = %route.path,
-        keys = keys_to_park.len(),
+        keys = detached_keys.len(),
         "parking ss-udp stream into orphan registry"
     );
     server.orphan_registry.park(
         session_id,
-        Parked::SsUdpStream(ParkedSsUdpStream { nat_keys: keys_to_park, owner }),
+        Parked::SsUdpStream(ParkedSsUdpStream { nat_keys: detached_keys, owner }),
     );
 }
 
