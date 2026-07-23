@@ -6,6 +6,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, watch};
 use tracing::{debug, info, warn};
 
+use crate::accept::acquire_permit_or_shutdown;
 use crate::config::AppConfig;
 use crate::proxy::{self, ProxyConfig};
 use outline_uplink::UplinkRegistry;
@@ -114,7 +115,15 @@ pub(super) async fn run_accept_loop(
         }
         let config = Arc::clone(&proxy_config);
         let registry = registry.clone();
-        let permit = conn_sem.clone().acquire_owned().await.expect("semaphore closed");
+        let Some(permit) = acquire_permit_or_shutdown(&conn_sem, &mut shutdown).await else {
+            // Shutdown arrived while every slot was busy. The connection we
+            // just accepted is dropped unserved — on SIGTERM the in-flight
+            // tasks are being cancelled anyway, and a client that reconnects
+            // gets a clean refusal instead of a socket we never intended to
+            // serve.
+            debug!(%peer, "shutdown while waiting for a connection slot; dropping the connection");
+            break;
+        };
         // Clone the shutdown receiver into the task so long-lived connections
         // can be cancelled on SIGTERM. Dropping the serve future closes the
         // sockets, which lets the drain complete in milliseconds instead of

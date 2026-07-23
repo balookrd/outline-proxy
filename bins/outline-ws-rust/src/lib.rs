@@ -5,6 +5,7 @@
 //! and the optional read-only metrics and authenticated control-plane HTTP
 //! listeners ([`http`]).
 
+pub(crate) mod accept;
 pub(crate) mod client_io;
 pub mod config;
 pub(crate) mod error_class;

@@ -2,13 +2,12 @@
 
 use anyhow::{Context, Result, bail};
 use http::{Method, Request, StatusCode};
-use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::warn;
 
 use crate::config::DashboardInstanceConfig;
+use crate::http::body::read_limited_body;
 
 use super::DashboardState;
 use super::backend_client::{instance_url, send_instance_request};
@@ -130,12 +129,9 @@ pub async fn handle_activate(
     request: Request<Incoming>,
     state: DashboardState,
 ) -> DashboardResponse {
-    let body = match request.into_body().collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(error) => {
-            warn!(error = %format!("{error:#}"), "failed to read dashboard activate body");
-            return json_error(StatusCode::BAD_REQUEST, "invalid request body");
-        },
+    let body = match read_limited_body(request.into_body(), "/dashboard/api/activate").await {
+        Ok(body) => body,
+        Err(response) => return response,
     };
     let payload: DashboardActivateRequest = match serde_json::from_slice(&body) {
         Ok(payload) => payload,
@@ -331,12 +327,9 @@ async fn parse_proxy_envelope(
     request: Request<Incoming>,
 ) -> Result<(ProxyEnvelope, Option<String>), DashboardResponse> {
     let query = request.uri().query().map(str::to_owned);
-    let bytes = match request.into_body().collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(error) => {
-            warn!(error = %format!("{error:#}"), "failed to read dashboard proxy body");
-            return Err(json_error(StatusCode::BAD_REQUEST, "invalid request body"));
-        },
+    let bytes = match read_limited_body(request.into_body(), "/dashboard/api/proxy").await {
+        Ok(bytes) => bytes,
+        Err(response) => return Err(response),
     };
     let envelope: ProxyEnvelope = if bytes.is_empty() {
         return Err(json_error(StatusCode::BAD_REQUEST, "missing instance"));
@@ -406,12 +399,9 @@ pub async fn handle_set_enabled(
     request: Request<Incoming>,
     state: DashboardState,
 ) -> DashboardResponse {
-    let body = match request.into_body().collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(error) => {
-            warn!(error = %format!("{error:#}"), "failed to read dashboard set_enabled body");
-            return json_error(StatusCode::BAD_REQUEST, "invalid request body");
-        },
+    let body = match read_limited_body(request.into_body(), "/dashboard/api/set_enabled").await {
+        Ok(body) => body,
+        Err(response) => return response,
     };
     let payload: DashboardSetEnabledRequest = match serde_json::from_slice(&body) {
         Ok(payload) => payload,
