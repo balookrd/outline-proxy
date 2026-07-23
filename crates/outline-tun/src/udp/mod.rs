@@ -9,6 +9,7 @@ use socks5_proto::TargetAddr;
 
 mod engine;
 mod lifecycle;
+mod sni_cache;
 mod types;
 mod wire;
 
