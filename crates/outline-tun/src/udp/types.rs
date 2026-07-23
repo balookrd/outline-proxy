@@ -8,6 +8,7 @@ use bytes::Bytes;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock, mpsc};
 
+use super::eviction::{FlowEvictionIndex, record_flow_activity};
 use crate::utils::maybe_shrink_hash_map;
 use crate::wire::IpVersion;
 use outline_transport::AbortOnDrop;
@@ -34,12 +35,15 @@ pub(super) const UDP_OUTBOUND_QUEUE_CAP: usize = 64;
 pub(super) const UDP_PENDING_DIAL_BUFFER_CAP: usize = 256;
 
 /// Minimal view of a flow for table-level helpers: the per-flow `id`
-/// (generation counter) used to detect races against replacement, and the
-/// `last_seen` stamp bumped from reader tasks.
+/// (generation counter) used to detect races against replacement, the
+/// `last_seen` stamp bumped from reader tasks, and the `last_seen` value that
+/// stamp last published to the eviction index.
 pub(super) trait FlowStamp {
     fn id(&self) -> u64;
     fn last_seen(&self) -> Instant;
     fn set_last_seen(&mut self, now: Instant);
+    fn eviction_indexed_at(&self) -> Instant;
+    fn set_eviction_indexed_at(&mut self, at: Instant);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -63,6 +67,11 @@ pub(super) struct UdpFlowState {
     pub(super) group_name: Arc<str>,
     pub(super) created_at: Instant,
     pub(super) last_seen: Instant,
+    /// `last_seen` value currently published to the engine's eviction index.
+    /// Kept next to the flow so the per-datagram bump can decide *without* the
+    /// index lock whether the advance is worth re-keying — see
+    /// [`eviction_index_needs_refresh`](super::eviction::eviction_index_needs_refresh).
+    pub(super) eviction_indexed_at: Instant,
     /// Wall-clock stamp of the last ICMP "Frag Needed" / "Packet Too Big"
     /// we synthesised for this flow after a transport oversize drop. Used
     /// to throttle PTB emission per-flow: RFC 4443 §2.4(f) makes ICMPv6
@@ -109,6 +118,8 @@ pub(super) struct DirectUdpFlowState {
     pub(super) _reader: AbortOnDrop,
     pub(super) created_at: Instant,
     pub(super) last_seen: Instant,
+    /// See [`UdpFlowState::eviction_indexed_at`].
+    pub(super) eviction_indexed_at: Instant,
 }
 
 pub(super) type DirectFlowTable = Arc<RwLock<HashMap<UdpFlowKey, Arc<Mutex<DirectUdpFlowState>>>>>;
@@ -123,6 +134,12 @@ impl FlowStamp for UdpFlowState {
     fn set_last_seen(&mut self, now: Instant) {
         self.last_seen = now;
     }
+    fn eviction_indexed_at(&self) -> Instant {
+        self.eviction_indexed_at
+    }
+    fn set_eviction_indexed_at(&mut self, at: Instant) {
+        self.eviction_indexed_at = at;
+    }
 }
 
 impl FlowStamp for DirectUdpFlowState {
@@ -135,18 +152,29 @@ impl FlowStamp for DirectUdpFlowState {
     fn set_last_seen(&mut self, now: Instant) {
         self.last_seen = now;
     }
+    fn eviction_indexed_at(&self) -> Instant {
+        self.eviction_indexed_at
+    }
+    fn set_eviction_indexed_at(&mut self, at: Instant) {
+        self.eviction_indexed_at = at;
+    }
 }
 
 /// Bump `last_seen` on the flow at `key` — but only if the flow currently
 /// in the table still matches `flow_id`. Concurrent replacements (failover
 /// re-creation, eviction) would otherwise let a zombie reader update the
 /// wrong flow.
+///
+/// The flow's eviction-index position follows the bump, quantised so the
+/// per-datagram path only touches the index lock once per
+/// `UDP_EVICTION_INDEX_QUANTUM`.
 pub(super) async fn bump_last_seen_if_current<K, F>(
     flows: &RwLock<HashMap<K, Arc<Mutex<F>>>>,
+    eviction_index: &FlowEvictionIndex<K>,
     key: &K,
     flow_id: u64,
 ) where
-    K: Eq + Hash,
+    K: Clone + Eq + Hash,
     F: FlowStamp,
 {
     let handle = flows.read().await.get(key).map(Arc::clone);
@@ -154,6 +182,7 @@ pub(super) async fn bump_last_seen_if_current<K, F>(
         let mut flow = handle.lock().await;
         if flow.id() == flow_id {
             flow.set_last_seen(Instant::now());
+            record_flow_activity(eviction_index, key, &mut *flow);
         }
     }
 }
@@ -185,14 +214,15 @@ where
 /// the map unlocked, so a flow may be torn down and re-created under the same
 /// key while it is in progress.
 ///
-/// Returns the removed `Arc<Mutex<F>>` handles so callers can route them
-/// through their own close-work pipeline (each flow type has a distinct
-/// teardown path).
+/// Returns the removed entries — key and `Arc<Mutex<F>>` handle — so callers can
+/// route them through their own close-work pipeline (each flow type has a
+/// distinct teardown path) *and* drop their eviction-index entries; an index
+/// that kept keys for idle-reaped flows would leak one entry per reaped flow.
 pub(super) async fn drain_idle_flows<K, F>(
     flows: &RwLock<HashMap<K, Arc<Mutex<F>>>>,
     idle_timeout: Duration,
     now: Instant,
-) -> Vec<Arc<Mutex<F>>>
+) -> Vec<(K, Arc<Mutex<F>>)>
 where
     K: Eq + Hash + Clone,
     F: FlowStamp,
@@ -221,11 +251,12 @@ where
         // Removing by key alone would evict that brand-new flow as
         // `idle_timeout` at age ~0, dropping its outbound queue and its
         // buffered handshake preface. Comparing handle identity is lock-free
-        // and exact — a re-created flow is always a different `Arc`.
+        // and exact — a re-created flow is always a different `Arc`. Returns
+        // `(key, flow)` so the caller can also drop the eviction-index entry.
         if guard.get(&key).is_some_and(|current| Arc::ptr_eq(current, &snapshot))
             && let Some(flow) = guard.remove(&key)
         {
-            removed.push(flow);
+            removed.push((key, flow));
         }
     }
     maybe_shrink_hash_map(&mut guard);
