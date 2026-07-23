@@ -13,11 +13,13 @@ use anyhow::Context;
 use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
+use super::drop_cache::{DROP_ROUTE_CACHE_CAP, DROP_ROUTE_CACHE_TTL, DropRouteCache};
 use super::eviction::{FlowEvictionIndex, evict_oldest_flow, record_flow_activity};
 use super::lifecycle::CloseWork;
 use super::sni_cache::{SNI_ROUTE_CACHE_CAP, SNI_ROUTE_CACHE_TTL, SniRouteCache};
 use super::types::{
-    DirectFlowTable, DirectUdpFlowState, FlowTable, UdpFlowKey, bump_last_seen_if_current,
+    DirectFlowTable, DirectUdpFlowState, FlowTable, UDP_OUTBOUND_QUEUE_CAP, UdpFlowKey,
+    bump_last_seen_if_current,
 };
 use super::wire::{IpVersion, ParsedUdpPacket, build_ipv4_udp_packet, build_ipv6_udp_packet};
 use crate::atomic_counter::CounterU64;
@@ -86,6 +88,11 @@ pub(super) struct TunUdpEngineInner {
     /// `None` unless `route_by_sni` is on, so the feature-off path allocates
     /// nothing and never takes the lock.
     pub(super) sni_route_cache: Option<parking_lot::Mutex<SniRouteCache>>,
+    /// Flows the routing table said to drop, remembered for a few seconds — see
+    /// [`DropRouteCache`]. A dropped flow leaves no state behind, so without
+    /// this every one of the client's follow-up datagrams re-runs the whole
+    /// decision (under `route_by_sni`, a full QUIC Initial decrypt included).
+    pub(super) drop_route_cache: parking_lot::Mutex<DropRouteCache>,
     /// `TUN_F_USO` accepted at attach — coalesce equal-sized downlink UDP
     /// datagrams of one flow into a `GSO_UDP_L4` super-segment on write. See
     /// [`TunConfig::uso`](crate::TunConfig).
@@ -133,6 +140,10 @@ impl TunUdpEngine {
                         SNI_ROUTE_CACHE_TTL,
                     ))
                 }),
+                drop_route_cache: parking_lot::Mutex::new(DropRouteCache::new(
+                    DROP_ROUTE_CACHE_CAP,
+                    DROP_ROUTE_CACHE_TTL,
+                )),
                 udp_gso,
                 dial_admission: std::sync::OnceLock::new(),
             }),
@@ -167,18 +178,21 @@ impl TunUdpEngine {
             guard.get(&key).map(Arc::clone)
         };
         if let Some(flow_handle) = direct_flow {
-            let mut flow = flow_handle.lock().await;
-            flow.last_seen = Instant::now();
-            record_flow_activity(&self.inner.direct_eviction_index, &key, &mut *flow);
-            let target_addr = SocketAddr::new(key.remote_ip, key.remote_port);
-            // `send_to().await` runs under the per-flow Mutex only — other
-            // direct flows remain unblocked while the kernel completes the
-            // send. Ordering of datagrams within this flow is preserved.
-            flow.socket
-                .send_to(&packet.payload, target_addr)
-                .await
-                .context("direct UDP send failed")?;
-            metrics::direct_udp_counters("up").record(packet.payload.len());
+            let outbound_tx = {
+                let mut flow = flow_handle.lock().await;
+                flow.last_seen = Instant::now();
+                record_flow_activity(&self.inner.direct_eviction_index, &key, &mut *flow);
+                flow.outbound_tx.clone()
+            };
+            // Hand the datagram to the flow's queue and return: the send itself
+            // is awaited by the flow's sender task. A direct flow has no
+            // carrier to push back — its only back-pressure is the kernel's,
+            // and `send_to` parks on a full `SO_SNDBUF` / congested qdisc for
+            // however long a slow egress needs. Awaited here, that parked every
+            // other flow's packets behind this one, which is exactly what the
+            // tunnelled path's queue exists to prevent. Ordering within the
+            // flow is preserved (single queue, single sender).
+            super::lifecycle::queue_client_datagram(&outbound_tx, Bytes::from(packet.payload));
             return Ok(());
         }
 
@@ -197,6 +211,16 @@ impl TunUdpEngine {
                 flow.outbound_tx.clone()
             };
             super::lifecycle::queue_client_datagram(&outbound_tx, Bytes::from(packet.payload));
+            return Ok(());
+        }
+
+        // Neither table knows this 5-tuple. Before paying for a fresh decision,
+        // check whether we already took one and it was "drop": that outcome
+        // stores no flow state, so the client (which is never told) keeps
+        // sending and every datagram would otherwise re-run the full resolve —
+        // and, under SNI-routing, a complete QUIC Initial decrypt per datagram,
+        // which a blocked client's PTO retransmissions repeat for seconds.
+        if self.drop_route_is_remembered(&key) {
             return Ok(());
         }
 
@@ -227,9 +251,11 @@ impl TunUdpEngine {
         };
         match route {
             TunRoute::Direct { fwmark } => {
-                self.handle_direct_packet(key, &remote_target, &packet, fwmark).await
+                self.handle_direct_packet(key, &remote_target, Bytes::from(packet.payload), fwmark)
+                    .await
             },
             TunRoute::Drop { reason } => {
+                self.remember_dropped_route(&key);
                 debug!(target = %remote_target, reason, "TUN UDP route: dropping flow");
                 Ok(())
             },
@@ -249,6 +275,28 @@ impl TunUdpEngine {
                 Ok(())
             },
         }
+    }
+
+    /// Whether this 5-tuple was resolved to `Drop` recently enough — and under
+    /// the routing rules still in force — for the verdict to stand without
+    /// re-deciding. See [`DropRouteCache`] for why the memory is short-lived
+    /// and version-tagged.
+    fn drop_route_is_remembered(&self, key: &UdpFlowKey) -> bool {
+        self.inner.drop_route_cache.lock().is_dropped(
+            key,
+            self.inner.dispatch.routing_version(),
+            Instant::now(),
+        )
+    }
+
+    /// Remember that this 5-tuple resolves to `Drop`, so the client's follow-up
+    /// datagrams are discarded without re-running sniff + resolve.
+    fn remember_dropped_route(&self, key: &UdpFlowKey) {
+        self.inner.drop_route_cache.lock().remember(
+            key,
+            self.inner.dispatch.routing_version(),
+            Instant::now(),
+        );
     }
 
     /// Destination domain for a new SNI-routed flow: the SNI carried by this
@@ -296,8 +344,16 @@ impl TunUdpEngine {
     /// Connection sniffing for the UDP path: if QUIC sniffing is enabled and
     /// `payload` is a QUIC Initial whose ClientHello carries an SNI, return a
     /// `TargetAddr::Domain` for `remote_port`. Returns `None` otherwise — most
-    /// first datagrams (DNS, STUN, plain UDP) are not QUIC Initials, so only
-    /// successful overrides are counted to keep the metric low-cardinality.
+    /// first datagrams (DNS, STUN, plain UDP) are not QUIC Initials, so
+    /// `NotMatched` stays uncounted to keep the metric low-cardinality.
+    ///
+    /// `Incomplete` *is* counted, under its own label: it means the datagram
+    /// decrypted as an Initial but its ClientHello spans several datagrams
+    /// (post-quantum key shares — ML-KEM — routinely push it past one), which
+    /// no amount of retrying recovers here because only the first datagram is
+    /// ever inspected. Such a flow silently routes by literal IP instead of by
+    /// SNI, so the share of clients that path affects has to be observable
+    /// rather than folded into the (uncounted) not-a-QUIC-Initial case.
     fn sniff_quic_override(&self, payload: &[u8], remote_port: u16) -> Option<TargetAddr> {
         if !self.inner.sniff_quic {
             return None;
@@ -317,7 +373,15 @@ impl TunUdpEngine {
                 );
                 Some(TargetAddr::Domain(host, remote_port))
             },
-            crate::sniff::SniffOutcome::Incomplete | crate::sniff::SniffOutcome::NotMatched => None,
+            crate::sniff::SniffOutcome::Incomplete => {
+                metrics::record_tun_udp_sniff("incomplete");
+                debug!(
+                    port = remote_port,
+                    "TUN UDP sniff: QUIC ClientHello spans multiple datagrams, framing by IP"
+                );
+                None
+            },
+            crate::sniff::SniffOutcome::NotMatched => None,
         }
     }
 
@@ -446,14 +510,19 @@ impl TunUdpEngine {
         self.inner.writer.write_packet(&icmp).await
     }
 
-    /// Handle a packet that resolved to `via = "direct"`: open (or reuse) a
-    /// plain UDP socket, send the datagram, and spawn a response reader that
-    /// writes synthetic IP+UDP packets back into the TUN device.
+    /// Handle the first packet of a flow that resolved to `via = "direct"`:
+    /// open a plain UDP socket, spawn the flow's sender task (which owns every
+    /// `send_to` for this flow) and a response reader that writes synthetic
+    /// IP+UDP packets back into the TUN device, then queue `first_payload`.
+    ///
+    /// Nothing here awaits the socket: the send runs on the flow's own task,
+    /// mirroring the tunnelled path, so a slow egress cannot park the shared
+    /// TUN read-loop.
     async fn handle_direct_packet(
         &self,
         key: UdpFlowKey,
         remote_target: &TargetAddr,
-        packet: &ParsedUdpPacket,
+        first_payload: Bytes,
         fwmark: Option<u32>,
     ) -> Result<()> {
         let target_addr = SocketAddr::new(key.remote_ip, key.remote_port);
@@ -470,15 +539,40 @@ impl TunUdpEngine {
                 format!("failed to bind direct UDP socket for TUN flow to {remote_target}")
             })?;
         let sock = Arc::new(UdpSocket::from_std(std_sock)?);
-        sock.send_to(&packet.payload, target_addr)
-            .await
-            .context("direct TUN UDP send failed")?;
 
         let flow_id = self
             .inner
             .next_flow_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let now = Instant::now();
+
+        // Sender task: the sole owner of this flow's `send_to`. It drains the
+        // bounded outbound queue the read-loop feeds, so kernel back-pressure
+        // parks this task instead of the shared read-loop. A send error is the
+        // flow's own problem (an unroutable destination, a firewall rejection)
+        // and is counted here rather than reported back to the read-loop as if
+        // the loop had failed — the tunnelled path treats its carrier errors
+        // the same way.
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<Bytes>(UDP_OUTBOUND_QUEUE_CAP);
+        let sender_sock = Arc::clone(&sock);
+        // Direct flows carry constant `(direct, direct)` labels; resolve the
+        // uplink datagram+byte counters once for the sender's lifetime.
+        let up_counters = metrics::direct_udp_counters("up");
+        let sender = AbortOnDrop::new(tokio::spawn(async move {
+            while let Some(payload) = outbound_rx.recv().await {
+                match sender_sock.send_to(&payload, target_addr).await {
+                    Ok(sent) => up_counters.record(sent),
+                    Err(error) => {
+                        metrics::record_tun_udp_forward_error("direct_send_error");
+                        debug!(
+                            error = %error,
+                            target = %target_addr,
+                            "direct TUN UDP send failed"
+                        );
+                    },
+                }
+            }
+        }));
 
         // Spawn a reader task that receives responses on this socket and writes
         // them as synthetic IP+UDP packets back into the TUN device.
@@ -491,18 +585,26 @@ impl TunUdpEngine {
         // downlink datagram+byte counters once for the reader's lifetime.
         let down_counters = metrics::direct_udp_counters("down");
         let reader = AbortOnDrop::new(tokio::spawn(async move {
+            // One receive buffer for the reader's lifetime, allocated lazily on
+            // the first datagram: a flow that never receives anything still
+            // costs nothing, and a flow that does stops paying a 64 KiB
+            // allocation per datagram (`clear` keeps the capacity, so only the
+            // first datagram allocates). The datagram is copied straight into
+            // the response packet, so nothing outlives the iteration and
+            // steady-state memory is one buffer per *receiving* flow rather
+            // than one per in-flight datagram. Sized for the largest possible
+            // UDP datagram because a short receive buffer would silently
+            // truncate a big one.
+            let mut buf: Vec<u8> = Vec::new();
             loop {
-                // Park on readiness without holding a receive buffer, so an
-                // idle direct flow costs no per-flow datagram buffer. The
-                // buffer is allocated only once a datagram is actually ready
-                // and released before the next park — steady-state memory then
-                // tracks in-flight datagrams rather than the number of open
-                // flows. `try_recv_buf_from` fills the spare capacity without
-                // zeroing it first, avoiding a 64 KiB memset per datagram.
+                // Park on readiness first — `try_recv_buf_from` fills the spare
+                // capacity without zeroing it, avoiding a 64 KiB memset per
+                // datagram.
                 if reader_sock.readable().await.is_err() {
                     break;
                 }
-                let mut buf = Vec::with_capacity(MAX_UDP_DATAGRAM);
+                buf.clear();
+                buf.reserve(MAX_UDP_DATAGRAM);
                 let (len, src_addr) = match reader_sock.try_recv_buf_from(&mut buf) {
                     Ok(v) => v,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
@@ -540,9 +642,15 @@ impl TunUdpEngine {
             }
         }));
 
+        // Ship the first datagram through the same queue as every later one, so
+        // ordering holds from the very first packet and the read-loop never
+        // awaits a send even while opening the flow.
+        super::lifecycle::queue_client_datagram(&outbound_tx, first_payload);
+
         let state = Arc::new(Mutex::new(DirectUdpFlowState {
             id: flow_id,
-            socket: sock,
+            outbound_tx,
+            _sender: sender,
             _reader: reader,
             created_at: now,
             last_seen: now,
@@ -580,7 +688,8 @@ impl TunUdpEngine {
             self.enqueue_close_direct(flow, "evicted");
         }
 
-        metrics::direct_udp_counters("up").record(packet.payload.len());
+        // The uplink datagram+byte counters are recorded by the sender task
+        // once the datagram is actually on the wire.
         metrics::record_tun_flow_created(metrics::DIRECT_GROUP_LABEL, metrics::DIRECT_UPLINK_LABEL);
         info!(
             flow_id,

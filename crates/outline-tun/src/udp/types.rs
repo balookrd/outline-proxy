@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock, mpsc};
 
 use super::eviction::{FlowEvictionIndex, record_flow_activity};
@@ -110,11 +109,24 @@ pub(super) type FlowTable = Arc<RwLock<HashMap<UdpFlowKey, Arc<Mutex<UdpFlowStat
 /// datagrams to the destination without any tunnel framing.
 pub(super) struct DirectUdpFlowState {
     pub(super) id: u64,
-    pub(super) socket: Arc<UdpSocket>,
-    /// Reader task for inbound datagrams on `socket`. `AbortOnDrop`
+    /// Client→destination datagram queue, the direct mirror of
+    /// [`UdpFlowState::outbound_tx`]. The shared TUN read-loop `try_send`s here
+    /// and returns; the flow's sender task awaits `send_to`. A direct flow has
+    /// no carrier to absorb back-pressure — a full `SO_SNDBUF` or a congested
+    /// qdisc on a slow egress parks `send_to` for as long as the kernel needs,
+    /// which done inline on the read-loop parked *every* flow's packets behind
+    /// this one. Bounded by [`UDP_OUTBOUND_QUEUE_CAP`]; a full queue drops the
+    /// datagram (connectionless-correct) rather than blocking.
+    pub(super) outbound_tx: mpsc::Sender<Bytes>,
+    /// Sender task: drains `outbound_tx` into `send_to` on the flow's socket.
+    /// `AbortOnDrop`, so removing the flow entry stops it and releases the
+    /// captured `Arc<UdpSocket>`.
+    pub(super) _sender: AbortOnDrop,
+    /// Reader task for inbound datagrams on the same socket. `AbortOnDrop`
     /// cancels it on every removal path of the flow entry (idle
-    /// eviction, write-side error, engine teardown), releasing the
-    /// captured `Arc<UdpSocket>` so the kernel reclaims the FD.
+    /// eviction, write-side error, engine teardown); together with the sender
+    /// it holds the last references to the socket, so the kernel reclaims the
+    /// FD once both are gone.
     pub(super) _reader: AbortOnDrop,
     pub(super) created_at: Instant,
     pub(super) last_seen: Instant,

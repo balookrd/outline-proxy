@@ -7,6 +7,7 @@ use crate::wire::{ip_family_from_version, ip_to_target};
 use outline_uplink::{TransportKind, UplinkManager};
 use socks5_proto::TargetAddr;
 
+mod drop_cache;
 mod engine;
 mod eviction;
 mod lifecycle;
