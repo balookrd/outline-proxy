@@ -14,6 +14,7 @@ use tokio::net::UdpSocket;
 use tracing::{info, warn};
 
 use super::lifecycle::CloseWork;
+use super::sni_cache::{SNI_ROUTE_CACHE_CAP, SNI_ROUTE_CACHE_TTL, SniRouteCache};
 use super::types::{
     DirectFlowTable, DirectUdpFlowState, FlowTable, UdpFlowKey, bump_last_seen_if_current,
 };
@@ -73,6 +74,11 @@ pub(super) struct TunUdpEngineInner {
     /// Domain suffixes excluded from QUIC sniff destination-override. See
     /// [`TunConfig::sniff_override_exclude`](crate::TunConfig).
     pub(super) sniff_override_exclude: std::sync::Arc<[Box<str>]>,
+    /// Domain sniffed per `(client, destination)` pair, consulted when a new
+    /// flow's first datagram carries no ClientHello — see [`SniRouteCache`].
+    /// `None` unless `route_by_sni` is on, so the feature-off path allocates
+    /// nothing and never takes the lock.
+    pub(super) sni_route_cache: Option<parking_lot::Mutex<SniRouteCache>>,
     /// `TUN_F_USO` accepted at attach — coalesce equal-sized downlink UDP
     /// datagrams of one flow into a `GSO_UDP_L4` super-segment on write. See
     /// [`TunConfig::uso`](crate::TunConfig).
@@ -112,6 +118,12 @@ impl TunUdpEngine {
                 sniff_quic,
                 route_by_sni,
                 sniff_override_exclude,
+                sni_route_cache: route_by_sni.then(|| {
+                    parking_lot::Mutex::new(SniRouteCache::new(
+                        SNI_ROUTE_CACHE_CAP,
+                        SNI_ROUTE_CACHE_TTL,
+                    ))
+                }),
                 udp_gso,
                 dial_admission: std::sync::OnceLock::new(),
             }),
@@ -180,12 +192,15 @@ impl TunUdpEngine {
         // New flow. When SNI-routing is on we sniff the QUIC Initial up-front
         // so the recovered domain can steer the route (domain rules first, IP
         // fallback); that same sniff result also drives destination-override
-        // framing, so a flow is sniffed at most once. When off we keep the
-        // legacy order: route purely by IP, and sniff only inside the Group arm
-        // for framing — so a flow that resolves to Direct/Drop never pays the
-        // QUIC-decrypt cost.
+        // framing, so a flow is sniffed at most once. A datagram with no
+        // ClientHello falls back to the domain remembered for this
+        // `(client, destination)` pair, which keeps a QUIC connection whose
+        // flow was torn down mid-session on its original route. When off we
+        // keep the legacy order: route purely by IP, and sniff only inside the
+        // Group arm for framing — so a flow that resolves to Direct/Drop never
+        // pays the QUIC-decrypt cost.
         let presniffed: Option<Option<TargetAddr>> = if self.inner.route_by_sni {
-            Some(self.sniff_quic_override(&packet.payload, key.remote_port))
+            Some(self.sniffed_or_remembered_domain(&key, &packet.payload))
         } else {
             None
         };
@@ -221,6 +236,48 @@ impl TunUdpEngine {
                 self.spawn_tunnel_flow(key, &manager, override_target, Bytes::from(packet.payload))
                     .await;
                 Ok(())
+            },
+        }
+    }
+
+    /// Destination domain for a new SNI-routed flow: the SNI carried by this
+    /// datagram's QUIC Initial, or — when there is none to sniff — the domain
+    /// remembered for the same `(client, destination)` pair.
+    ///
+    /// Only a QUIC Initial carries a ClientHello, so a flow torn down while
+    /// its connection is still live (idle eviction, carrier read error,
+    /// `max_flows` eviction) is recreated from a Short Header and has nothing
+    /// to sniff. Resolving that by literal IP would hand a live QUIC
+    /// connection to a different exit — or drop it — mid-session, because the
+    /// domain rule that picked the original route no longer applies. The
+    /// recalled domain drives both the route and the destination-override
+    /// framing, exactly as the original sniff did.
+    ///
+    /// Only called with `route_by_sni` on; the memory is bounded and
+    /// invalidated by routing-table version (see [`SniRouteCache`]).
+    fn sniffed_or_remembered_domain(&self, key: &UdpFlowKey, payload: &[u8]) -> Option<TargetAddr> {
+        let table_version = self.inner.dispatch.routing_version();
+        let now = Instant::now();
+        let cache = self.inner.sni_route_cache.as_ref();
+        match self.sniff_quic_override(payload, key.remote_port) {
+            Some(TargetAddr::Domain(host, port)) => {
+                if let Some(cache) = cache {
+                    cache.lock().remember(key, &host, table_version, now);
+                }
+                Some(TargetAddr::Domain(host, port))
+            },
+            // `sniff_quic_override` only ever yields a domain; anything else
+            // is passed through untouched rather than assumed unreachable.
+            Some(other) => Some(other),
+            None => {
+                let host = cache?.lock().recall(key, table_version, now)?;
+                metrics::record_tun_udp_sniff("recalled");
+                debug!(
+                    host = %host,
+                    port = key.remote_port,
+                    "TUN UDP sniff: reusing domain remembered for this client/destination pair"
+                );
+                Some(TargetAddr::Domain(host.to_string(), key.remote_port))
             },
         }
     }

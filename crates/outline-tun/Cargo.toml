@@ -24,6 +24,7 @@ dashmap = "6.1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hkdf = "0.12"
 libc = "0.2"
+lru = { version = "0.18", default-features = false }
 outline-metrics = { path = "../outline-metrics", default-features = false }
 outline-net = { path = "../outline-net" }
 outline-routing = { path = "../outline-routing" }

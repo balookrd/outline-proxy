@@ -1855,6 +1855,7 @@ dependencies = [
  "futures-util",
  "hkdf",
  "libc",
+ "lru",
  "outline-metrics",
  "outline-net",
  "outline-routing",
