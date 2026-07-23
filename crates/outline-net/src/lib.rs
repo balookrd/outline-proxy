@@ -175,6 +175,11 @@ fn random_addr_in_prefix64(net: Ipv6Addr) -> Ipv6Addr {
 #[cfg(target_os = "linux")]
 fn set_ipv6_freebind(socket: &Socket) -> std::io::Result<()> {
     let on: libc::c_int = 1;
+    // SAFETY: `socket` borrows the fd for the whole call, so it cannot be closed
+    // underneath the syscall. The option pointer refers to a live stack `c_int`
+    // and `optlen` is that value's exact size, which is the `int` that
+    // `IPV6_FREEBIND` expects; the kernel only reads `optlen` bytes through it
+    // and never writes back. A non-zero return is checked below.
     let rc = unsafe {
         libc::setsockopt(
             socket.as_raw_fd(),
@@ -430,6 +435,11 @@ fn apply_fwmark(socket: &Socket, fwmark: Option<u32>) -> Result<()> {
         use std::os::fd::AsRawFd;
 
         let value = mark as libc::c_uint;
+        // SAFETY: `socket` borrows the fd for the whole call, so it cannot be
+        // closed underneath the syscall. The option pointer refers to a live
+        // stack `c_uint` and `optlen` is that value's exact size, which matches
+        // the `int`-sized option `SO_MARK` reads; the kernel only reads through
+        // the pointer and never writes back. A non-zero return is checked below.
         let rc = unsafe {
             libc::setsockopt(
                 socket.as_raw_fd(),

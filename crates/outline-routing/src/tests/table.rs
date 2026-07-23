@@ -498,10 +498,18 @@ mod counting_alloc {
     unsafe impl GlobalAlloc for CountingAlloc {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+            // SAFETY: `layout` is forwarded unchanged from our caller, which the
+            // `GlobalAlloc` contract already obliges to pass a valid, non-zero
+            // layout — we add no requirement of our own, and `System` is the
+            // allocator that will also see the matching `dealloc`.
             unsafe { System.alloc(layout) }
         }
 
         unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: `ptr` and `layout` are forwarded unchanged, and since this
+            // type is the process-wide `#[global_allocator]`, every pointer it
+            // can be handed came from the `System.alloc` above under that same
+            // layout, so `System` owns the block being freed.
             unsafe { System.dealloc(ptr, layout) }
         }
     }

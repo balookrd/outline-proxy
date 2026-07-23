@@ -26,6 +26,11 @@ members = [
 # remaining wide constructors carry targeted `#[allow]`s at the definition.
 [workspace.lints.clippy]
 type_complexity = "allow"
+# Every `unsafe` block/impl in our packages carries a `// SAFETY:` comment
+# stating the invariant that makes it sound (fd borrowed for the syscall,
+# length checked before the write, libc contract, …). Warn so CI catches a
+# regression; the vendored crates do not opt into these lints.
+undocumented_unsafe_blocks = "warn"
 
 # Shared release profile. lto="fat" + single codegen unit + panic=abort match
 # the previous per-repo release builds (ws used lto=true, which is "fat").

@@ -35,10 +35,18 @@ pub(crate) struct TunGso {
 
 pub(crate) fn set_nonblocking(file: &std::fs::File) -> Result<()> {
     let fd = file.as_raw_fd();
+    // SAFETY: `file` borrows the fd for the whole call, so it cannot be closed
+    // underneath the syscall; `fcntl` takes the fd by value and dereferences
+    // nothing. `F_GETFL` takes no variadic argument (the `0` is ignored) and
+    // returns the flag word, so the only failure mode is the checked `< 0`.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
     if flags < 0 {
         return Err(std::io::Error::last_os_error()).context("fcntl F_GETFL failed");
     }
+    // SAFETY: same still-borrowed fd; `F_SETFL` reads its variadic argument as a
+    // plain `int` flag word, which is what `flags | O_NONBLOCK` is — `flags`
+    // came from the `F_GETFL` above and was checked non-negative, so this only
+    // adds a bit to the flags the fd already had. No pointer is involved.
     if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
         return Err(std::io::Error::last_os_error()).context("fcntl F_SETFL O_NONBLOCK failed");
     }
@@ -134,10 +142,27 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
         for (index, byte) in name.as_bytes().iter().enumerate() {
             ifreq.name[index] = *byte as libc::c_char;
         }
+        // SAFETY: `ifreq.data` is a live, uniquely-owned `[u8; 24]` and the write
+        // covers only its first `size_of::<c_short>()` bytes, so it stays in
+        // bounds. `write_unaligned` imposes no alignment requirement, which is
+        // why it is used here: the array is `u8`-aligned. This reproduces the
+        // kernel `ifreq` layout, whose `ifr_ifru` union starts with
+        // `ifr_flags: short`; overwriting plain `u8`s drops nothing.
         unsafe {
             std::ptr::write_unaligned(ifreq.data.as_mut_ptr() as *mut libc::c_short, flags);
         }
-        let result = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETIFF as _, &ifreq) };
+        // SAFETY: `file` outlives this closure, so the fd is open for the call.
+        // `IfReq` is `#[repr(C)]` and mirrors the kernel `struct ifreq`:
+        // `IFNAMSIZ` name bytes plus a 24-byte tail covering the `ifr_ifru`
+        // union — 40 bytes, exactly `sizeof(struct ifreq)` on LP64 and larger
+        // than the 32-byte 32-bit layout, so the kernel's fixed-size copy stays
+        // inside the object either way. Every byte is initialised above (zeroed,
+        // then name and flags), and `name.len() < IFNAMSIZ` was checked, so the
+        // name is NUL-terminated in place. The pointer must be `*mut`: on success
+        // `TUNSETIFF` copies the (possibly kernel-assigned) `ifreq` back over the
+        // same buffer, and `ifreq` is a fresh local this closure owns uniquely,
+        // so that write aliases nothing.
+        let result = unsafe { libc::ioctl(file.as_raw_fd(), TUNSETIFF as _, &raw mut ifreq) };
         if result < 0 {
             Err(std::io::Error::last_os_error())
         } else {
@@ -193,6 +218,10 @@ fn open_tun_device(config: &TunConfig) -> Result<(std::fs::File, TunGso)> {
         if want_uso {
             offload |= TUN_F_CSUM | TUN_F_USO4 | TUN_F_USO6;
         }
+        // SAFETY: `file` outlives this closure, so the fd is open for the call.
+        // `TUNSETOFFLOAD` is a scalar-argument ioctl: the kernel consumes `arg`
+        // as the `TUN_F_*` bitmask itself and never dereferences it, so passing
+        // the value (not a pointer) is the correct calling convention here.
         let set = |value: u32| unsafe {
             libc::ioctl(file.as_raw_fd(), TUNSETOFFLOAD as _, value as libc::c_ulong)
         };
