@@ -24,7 +24,7 @@ use crate::protocol::TargetAddr;
 use crate::server::dns_cache::DnsCache;
 use crate::server::nat::{NatKey, NatTable, ResponseSender, UdpResponseSender};
 use crate::server::replay::ReplayStore;
-use crate::server::resumption::OrphanRegistry;
+use crate::server::resumption::{OrphanRegistry, Parked, ResumeOutcome, ResumptionConfig};
 use crate::server::tests::sample_config;
 use crate::server::transport::resume_headers::ResumeContext;
 use crate::server::transport::ws_socket::{WsFrame, WsSocket};
@@ -123,7 +123,7 @@ fn adopted_resume_keys_are_tracked() {
 /// `make_udp_response_sender` is a static trait fn, so the count cannot live on
 /// the carrier instance; the `SLOT` const parameter gives every test its own
 /// counter instead, so tests running concurrently never share one.
-static RESPONSE_SENDERS_BUILT: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
+static RESPONSE_SENDERS_BUILT: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
 
 enum CountingMsg {
     Binary(Bytes),
@@ -240,15 +240,35 @@ impl ResponseSender for CountingResponseSender {
 }
 
 fn test_server_ctx() -> Arc<UdpServerCtx> {
+    test_server_ctx_with_resumption(false)
+}
+
+/// Server context whose orphan registry is live (`resumption = true`) or the
+/// permanently disabled no-op one. The disabled registry is what a deployment
+/// with session resumption off runs — and, together with a `ResumeContext`
+/// carrying no issued id, also what any client that sends no `X-Outline-Resume-*`
+/// header gets.
+fn test_server_ctx_with_resumption(resumption: bool) -> Arc<UdpServerCtx> {
     let metrics = Metrics::new(&sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))));
+    let orphan_registry = if resumption {
+        OrphanRegistry::new(
+            ResumptionConfig {
+                enabled: true,
+                ..ResumptionConfig::defaults_disabled()
+            },
+            Arc::clone(&metrics),
+        )
+    } else {
+        OrphanRegistry::new_disabled(Arc::clone(&metrics))
+    };
     Arc::new(UdpServerCtx {
-        metrics: Arc::clone(&metrics),
+        metrics,
         nat_table: NatTable::new(Duration::from_secs(60)),
         replay_store: ReplayStore::new(Duration::from_secs(60), 1024),
         dns_cache: DnsCache::new(Duration::from_secs(60)),
         prefer_ipv4_upstream: true,
         relay_semaphore: None,
-        orphan_registry: Arc::new(OrphanRegistry::new_disabled(metrics)),
+        orphan_registry: Arc::new(orphan_registry),
         session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
         ws_data_channel_capacity: 8,
     })
@@ -359,5 +379,125 @@ async fn reused_response_sender_still_delivers_the_downlink() -> Result<()> {
     }
 
     relay.abort();
+    Ok(())
+}
+
+// ── Teardown ─────────────────────────────────────────────────────────────────
+
+/// A stream that never negotiated resumption still registers its response
+/// sender — a clone of the writer's data-channel sender — on every NAT entry it
+/// touches. Teardown must release those clones, or the writer never observes
+/// the data channel close: against a silent upstream (the classic case being
+/// DNS over UDP, one reply and then nothing) no downlink send ever fails, so
+/// nothing clears the entry's session slot on its own and the writer task, the
+/// carrier's write half and the client's read half stay pinned until the NAT
+/// entry is idle-evicted tens of seconds later.
+#[tokio::test]
+async fn teardown_without_resumption_releases_the_writer() -> Result<()> {
+    const SLOT: usize = 2;
+
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let user = UserKey::new("alice", "secret", None, CipherKind::Aes256Gcm, None)?;
+
+    // Resumption off and no issued session id — the park-on-drop path is inert,
+    // exactly as for a third-party client that sends no `X-Outline-Resume-*`.
+    let server = test_server_ctx();
+    let (inbound_tx, inbound_rx) = mpsc::channel::<Bytes>(4);
+    let (downlink_tx, mut downlink_rx) = mpsc::unbounded_channel::<usize>();
+    let relay = tokio::spawn(run_udp_relay::<CountingCarrier<SLOT>>(
+        CountingCarrier {
+            inbound: inbound_rx,
+            downlink: downlink_tx,
+        },
+        Arc::clone(&server),
+        test_route_ctx(&user),
+        ResumeContext::default(),
+        None,
+    ));
+
+    inbound_tx
+        .send(client_datagram(&user, upstream_addr, b"query")?)
+        .await?;
+    // Seeing the datagram upstream proves `register_session` already stored this
+    // stream's sender on the NAT entry. The upstream stays silent from here on.
+    let mut buf = [0_u8; 64];
+    timeout(Duration::from_secs(5), upstream.recv_from(&mut buf)).await??;
+
+    // Client goes away: the carrier's read half ends and the relay tears down.
+    // Nothing else can unblock it — the NAT idle timeout is 60s out and no
+    // eviction sweep runs in this test.
+    drop(inbound_tx);
+    timeout(Duration::from_secs(5), relay)
+        .await
+        .expect("teardown must not block until the NAT entry is idle-evicted")??;
+    assert!(
+        downlink_rx.recv().await.is_none(),
+        "the writer task must have finished, dropping the carrier's write half"
+    );
+    // Only the response-sender slot is released: the entry itself keeps ageing
+    // on its own idle timer, as it does after a park.
+    assert_eq!(server.nat_table.len(), 1, "the NAT entry must outlive the stream");
+    Ok(())
+}
+
+/// Releasing the writer unconditionally must not cost the resumption path its
+/// park: a stream that did issue a session id still hands its NAT keys to the
+/// orphan registry, and the entries behind them stay live for the resuming
+/// carrier to re-point at itself.
+#[tokio::test]
+async fn teardown_with_resumption_still_parks_the_nat_keys() -> Result<()> {
+    const SLOT: usize = 3;
+
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let user = UserKey::new("alice", "secret", None, CipherKind::Aes256Gcm, None)?;
+
+    let server = test_server_ctx_with_resumption(true);
+    let session_id = server
+        .orphan_registry
+        .mint_session_id()
+        .expect("an enabled registry mints session ids");
+    let (inbound_tx, inbound_rx) = mpsc::channel::<Bytes>(4);
+    let (downlink_tx, mut downlink_rx) = mpsc::unbounded_channel::<usize>();
+    let relay = tokio::spawn(run_udp_relay::<CountingCarrier<SLOT>>(
+        CountingCarrier {
+            inbound: inbound_rx,
+            downlink: downlink_tx,
+        },
+        Arc::clone(&server),
+        test_route_ctx(&user),
+        ResumeContext {
+            issued_session_id: Some(session_id),
+            ..ResumeContext::default()
+        },
+        None,
+    ));
+
+    inbound_tx
+        .send(client_datagram(&user, upstream_addr, b"query")?)
+        .await?;
+    let mut buf = [0_u8; 64];
+    timeout(Duration::from_secs(5), upstream.recv_from(&mut buf)).await??;
+
+    drop(inbound_tx);
+    timeout(Duration::from_secs(5), relay)
+        .await
+        .expect("teardown must not block until the NAT entry is idle-evicted")??;
+    assert!(
+        downlink_rx.recv().await.is_none(),
+        "the writer task must have finished, dropping the carrier's write half"
+    );
+
+    assert_eq!(server.nat_table.len(), 1, "the parked NAT entry must stay live");
+    match server.orphan_registry.take_for_resume(session_id, "alice").await {
+        ResumeOutcome::Hit(Parked::SsUdpStream(parked)) => {
+            assert_eq!(parked.nat_keys.len(), 1, "the stream's NAT key must be parked");
+        },
+        ResumeOutcome::Hit(other) => {
+            panic!("parked entry is not an ss-udp stream: {}", other.kind())
+        },
+        ResumeOutcome::Miss(_) => panic!("the stream must park its NAT keys for a later resume"),
+    }
     Ok(())
 }
