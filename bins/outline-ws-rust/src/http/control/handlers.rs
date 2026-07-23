@@ -1,11 +1,12 @@
 use bytes::Bytes;
 use http::{Method, Request, StatusCode};
-use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use outline_uplink::{TransportKind, UplinkRegistry};
+
+use crate::http::body::read_limited_body;
 
 use super::topology::{ControlTopologyResponse, build_instance_topology, build_summary};
 use super::{ControlResponse, json_error, json_response, plain_response, require_method};
@@ -164,12 +165,9 @@ pub(crate) async fn handle_activate(
         return response;
     }
 
-    let body = match request.into_body().collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(error) => {
-            warn!(error = %format!("{error:#}"), "failed to read /control/activate body");
-            return json_error(StatusCode::BAD_REQUEST, "invalid request body");
-        },
+    let body = match read_limited_body(request.into_body(), "/control/activate").await {
+        Ok(body) => body,
+        Err(response) => return response,
     };
 
     activate_from_json(&body, uplinks).await
@@ -266,12 +264,9 @@ pub(crate) async fn handle_set_enabled(
         return response;
     }
 
-    let body = match request.into_body().collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(error) => {
-            warn!(error = %format!("{error:#}"), "failed to read /control/uplink_enabled body");
-            return json_error(StatusCode::BAD_REQUEST, "invalid request body");
-        },
+    let body = match read_limited_body(request.into_body(), "/control/uplink_enabled").await {
+        Ok(body) => body,
+        Err(response) => return response,
     };
 
     set_enabled_from_json(&body, uplinks).await

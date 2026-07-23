@@ -12,6 +12,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+use crate::http::body::MAX_REQUEST_BODY_BYTES;
+use crate::http::tests::streamed_request;
 use handlers::activate_from_json;
 use server::{ControlState, handle_connection};
 use topology::{
@@ -268,6 +270,8 @@ fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
             uplink_name: "uplink-01".to_string(),
             expires_in_ms: 500,
         }],
+        sticky_routes_total: 1,
+        sticky_routes_by_uplink: vec![1, 0],
     }]
 }
 
@@ -597,6 +601,44 @@ async fn activate_soft_on_cluster_group_reports_soft() {
     assert_eq!(json["soft"], true, "soft must be honoured on a cluster group");
 }
 
+/// A control body larger than [`MAX_REQUEST_BODY_BYTES`] must be rejected with
+/// 413 instead of being buffered whole. The control listener admits 16
+/// concurrent connections, so an unbounded `collect()` lets an authorised peer
+/// (or one racing the bearer check) pin 16 × body bytes of heap at will.
+#[tokio::test]
+async fn rejects_body_over_the_limit() {
+    // Announce a body twice the ceiling, then stream just past the ceiling:
+    // the answer must come from the limit, without the remaining announced
+    // megabytes ever being sent — let alone buffered.
+    let announced = MAX_REQUEST_BODY_BYTES * 2;
+    let head = format!(
+        "POST /control/activate HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\n\
+         Content-Type: application/json\r\nContent-Length: {announced}\r\n\
+         Connection: close\r\n\r\n",
+    );
+    let parts = vec![head.into_bytes(), vec![b'a'; MAX_REQUEST_BODY_BYTES], vec![b'a'; 1]];
+    let state = control_state(test_registry(), "token");
+    let (status, _body) = streamed_request(parts, move |stream| async move {
+        let _ = handle_connection(stream, state).await;
+    })
+    .await;
+    assert_eq!(status, 413, "oversized control body must be rejected, not buffered");
+}
+
+/// The same endpoint still accepts a normal-sized body — the limit must not
+/// regress ordinary control traffic.
+#[tokio::test]
+async fn accepts_body_under_the_limit() {
+    let body = r#"{"group":"core","uplink":"uplink-02","transport":"tcp"}"#;
+    let request = format!(
+        "POST /control/activate HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    let (status, _body) = send_raw_http(&request, test_registry(), "token").await;
+    assert_eq!(status, 200);
+}
+
 #[tokio::test]
 async fn endpoint_requires_auth() {
     let (status, _body) = send_raw_http(
@@ -666,16 +708,21 @@ fn cluster_registry() -> UplinkRegistry {
     UplinkRegistry::from_single_manager(manager)
 }
 
-async fn send_raw_http(raw_request: &str, uplinks: UplinkRegistry, token: &str) -> (u16, String) {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let state = Arc::new(ControlState {
+/// Build a `ControlState` for the raw-socket helpers below.
+fn control_state(uplinks: UplinkRegistry, token: &str) -> Arc<ControlState> {
+    Arc::new(ControlState {
         token: token.to_string(),
         uplinks,
         config_path: None,
         config_write_lock: tokio::sync::Mutex::new(()),
         apply: None,
-    });
+    })
+}
+
+async fn send_raw_http(raw_request: &str, uplinks: UplinkRegistry, token: &str) -> (u16, String) {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let state = control_state(uplinks, token);
     let server_task = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         handle_connection(stream, state).await.unwrap();
