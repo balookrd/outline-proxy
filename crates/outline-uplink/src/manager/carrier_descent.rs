@@ -85,8 +85,8 @@ pub(crate) fn is_carrier_floor_mode(mode: TransportMode) -> bool {
 /// higher rank in its own family. Drives the walk-up path that lifts
 /// a probe-confirmed cap one rank at a time toward the configured
 /// carrier when the capped carrier itself proves healthy. Returns
-/// `None` for the deepest fallbacks (`WsH3`, `XhttpH3`) — they have
-/// nothing higher to walk to.
+/// `None` at the top of each family (`WsH3`, `XhttpH3`) — the walk-up
+/// has arrived and there is nothing higher to lift the cap to.
 pub(super) fn one_step_up(capped: TransportMode) -> Option<TransportMode> {
     match capped {
         TransportMode::WsH1 => Some(TransportMode::WsH2),

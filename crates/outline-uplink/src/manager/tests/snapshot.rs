@@ -1,12 +1,16 @@
 use std::time::Duration;
 
+use socks5_proto::TargetAddr;
 use url::Url;
 
 use crate::config::{
     CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TransportMode,
     UplinkConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
 };
-use crate::types::UplinkManager;
+use crate::routing_key::RoutingKey;
+use crate::types::{TransportKind, UplinkManager};
+
+use super::STICKY_ROUTES_SNAPSHOT_LIMIT;
 
 fn uplink() -> UplinkConfig {
     UplinkConfig {
@@ -220,5 +224,55 @@ async fn snapshot_reports_probed_dead_multiwire_uplink_as_down_not_ready() {
         snap.uplinks[0].tcp_health_effective,
         Some(false),
         "probed multi-wire uplink with no live wire must read down, not Ready",
+    );
+}
+
+/// The sticky map holds up to `MAX_STICKY_ROUTES` (100k) entries, and a
+/// snapshot is rebuilt on every Prometheus scrape and dashboard poll —
+/// serialising the whole cache meant a `String` allocation per entry per
+/// scrape. The entry list must be a bounded sample of the longest-lived pins,
+/// while the counts every metric reads (group total and the per-uplink
+/// breakdown) stay exact over the whole map.
+#[tokio::test(start_paused = true)]
+async fn snapshot_caps_sticky_route_entries_but_keeps_counts_exact() {
+    let manager = manager(false);
+    let stale = STICKY_ROUTES_SNAPSHOT_LIMIT + 25;
+    for i in 0..stale {
+        let key = RoutingKey::Target {
+            transport: TransportKind::Tcp,
+            target: TargetAddr::Domain(format!("host-{i}.example.com"), 443),
+        };
+        manager.store_sticky_route(&key, 0).await;
+    }
+
+    // One entry pinned later than the rest: with a bounded sample ranked by
+    // remaining TTL it must be the one that survives truncation.
+    tokio::time::advance(Duration::from_secs(10)).await;
+    let freshest = RoutingKey::Target {
+        transport: TransportKind::Tcp,
+        target: TargetAddr::Domain("freshest.example.com".to_string(), 443),
+    };
+    manager.store_sticky_route(&freshest, 0).await;
+
+    let snap = manager.snapshot().await;
+    assert_eq!(
+        snap.sticky_routes.len(),
+        STICKY_ROUTES_SNAPSHOT_LIMIT,
+        "the serialised entry list must be capped",
+    );
+    assert_eq!(
+        snap.sticky_routes_total,
+        stale + 1,
+        "the group total must count the whole map, not just the sample",
+    );
+    assert_eq!(
+        snap.sticky_routes_by_uplink,
+        vec![stale + 1],
+        "the per-uplink breakdown must count the whole map, not just the sample",
+    );
+    assert_eq!(
+        snap.sticky_routes.first().map(|route| route.key.as_str()),
+        Some(freshest.to_string().as_str()),
+        "the sample must keep the longest-lived pins, freshest first",
     );
 }
