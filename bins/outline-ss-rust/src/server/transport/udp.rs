@@ -286,25 +286,17 @@ async fn resolve_nat_scope(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn handle_udp_datagram_common<Msg>(
+/// Relays one inbound SS-UDP datagram. `response_sender` is the stream's
+/// downlink handle (see [`run_udp_relay`]): a clone of one `Arc` shared by every
+/// datagram of the stream, re-registered on the NAT entry alongside this
+/// datagram's `UdpCipherMode`.
+async fn handle_udp_datagram_common(
     server: &UdpServerCtx,
     route: &UdpRouteCtx,
     session: &UdpSessionState,
     data: Bytes,
-    outbound_tx: mpsc::Sender<Msg>,
-    make_response_sender: fn(
-        mpsc::Sender<Msg>,
-        Protocol,
-        AppProtocol,
-        PaddingScheme,
-        Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
-    ) -> UdpResponseSender,
-    monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
-) -> Result<()>
-where
-    Msg: Send + 'static,
-{
+    response_sender: UdpResponseSender,
+) -> Result<()> {
     let started_at = std::time::Instant::now();
     let preferred_user_index = match session.cached_user_index.load(Ordering::Relaxed) {
         UDP_CACHED_USER_INDEX_EMPTY => None,
@@ -397,14 +389,6 @@ where
         target = %target,
         resolved = %resolved,
         "udp datagram relay"
-    );
-
-    let response_sender = make_response_sender(
-        outbound_tx,
-        route.protocol,
-        AppProtocol::Shadowsocks,
-        route.padding,
-        monitor,
     );
 
     // Resolve this stream's NAT scope before keying the entry — on the first
@@ -540,6 +524,19 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
             true,
         ),
     };
+    // The stream's downlink handle. Every field a response sender carries — the
+    // outbound channel, protocol, app protocol, padding scheme and throttle
+    // monitor — is fixed for the life of the stream; the only per-datagram part
+    // is the `UdpCipherMode`, which the NAT entry stores next to the sender. So
+    // build it once here and let each datagram clone the `Arc` instead of
+    // allocating a fresh `Arc<dyn ResponseSender>` per packet.
+    let response_sender = T::make_udp_response_sender(
+        outbound_data_tx.clone(),
+        route.protocol,
+        AppProtocol::Shadowsocks,
+        route.padding,
+        throttle_monitor.clone(),
+    );
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
@@ -646,20 +643,17 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
                             }
                             None => None,
                         };
-                        let tx = outbound_data_tx.clone();
                         let server = Arc::clone(&server);
                         let route = Arc::clone(&route);
                         let session = Arc::clone(&session);
-                        let monitor = throttle_monitor.clone();
+                        let response_sender = response_sender.clone();
                         in_flight.push(async move {
                             if let Err(error) = handle_udp_datagram_common(
                                 &server,
                                 &route,
                                 &session,
                                 data,
-                                tx,
-                                T::make_udp_response_sender,
-                                monitor,
+                                response_sender,
                             )
                             .await
                             {
@@ -708,6 +702,9 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
 
     drop(outbound_ctrl_tx);
     drop(outbound_data_tx);
+    // The stream-scoped sender holds its own clone of the data channel, so it
+    // must go too — otherwise the writer task never sees the channel close.
+    drop(response_sender);
     writer_task.await.context("websocket writer task join failed")??;
     loop_result
 }
