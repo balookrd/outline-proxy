@@ -696,6 +696,21 @@ pub struct LoadBalancingConfig {
     pub failure_penalty_halflife: Duration,
     /// How long to downgrade from H3 to H2 after an H3 runtime error.
     pub mode_downgrade_duration: Duration,
+    /// Strict-mode (active/passive) carrier-quality failover: when the active
+    /// uplink has been **continuously** carrier-degraded (running below its
+    /// configured carrier under an unbroken descent window — e.g. every dial
+    /// silently falling back `ws_h3 → ws_h2`) for at least this long, and the
+    /// group has a probe-healthy candidate of equal-or-higher weight whose
+    /// carrier is NOT degraded and whose probe-success streak has reached
+    /// `probe.min_failures`, selection switches the active uplink to that
+    /// candidate. `None` disables the check (an uplink that is healthy on its
+    /// TCP fallback then keeps the leg forever, TCP-over-TCP included).
+    ///
+    /// The loader defaults this to `3 × mode_downgrade_duration`, so an
+    /// isolated flap (one descent window with no re-trigger) can never move
+    /// the leg — only a window that keeps being extended by ongoing failures
+    /// crosses the threshold.
+    pub carrier_degraded_failover: Option<Duration>,
     /// In `routing_scope = "global"`, controls whether UDP health gates the
     /// active uplink alongside TCP health. When `false` (default), UDP probe
     /// failures and UDP cooldown are informational only — used in score

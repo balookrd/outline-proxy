@@ -289,3 +289,81 @@ fn clear_and_open_grace_resets_everything_and_stamps_anchor() {
     assert_eq!(state.recovery_streak(), 0);
     assert_eq!(state.last_recovery_success_at(), Some(now));
 }
+
+#[test]
+fn degraded_since_tracks_the_continuous_window_episode() {
+    let mut state = CarrierDescentState::default();
+    let start = Instant::now();
+    assert_eq!(state.degraded_since(start), None);
+
+    // First trigger opens the episode at its own timestamp.
+    state.apply_descent_trigger(runtime_trigger(
+        start,
+        TransportMode::XhttpH2,
+        TransportMode::XhttpH3,
+    ));
+    assert_eq!(state.degraded_since(start), Some(start));
+
+    // A retrigger inside the active window extends the deadline but keeps
+    // the episode anchor — this is what lets the caller measure how long
+    // the uplink has been continuously degraded.
+    let later = start + Duration::from_secs(30);
+    state.apply_descent_trigger(runtime_trigger(
+        later,
+        TransportMode::XhttpH2,
+        TransportMode::XhttpH3,
+    ));
+    assert_eq!(state.degraded_since(later), Some(start));
+
+    // Once the window expires the episode is over.
+    let expired = later + WINDOW + Duration::from_secs(1);
+    assert_eq!(state.degraded_since(expired), None);
+
+    // A fresh trigger after expiry starts a NEW episode, not a resumed one.
+    state.apply_descent_trigger(runtime_trigger(
+        expired,
+        TransportMode::XhttpH2,
+        TransportMode::XhttpH3,
+    ));
+    assert_eq!(state.degraded_since(expired), Some(expired));
+}
+
+#[test]
+fn degraded_since_survives_walk_up_but_not_clears() {
+    let mut state = CarrierDescentState::default();
+    let start = Instant::now();
+    // Descend two ranks so walk_up has an intermediate rank to step to.
+    state.apply_descent_trigger(runtime_trigger(
+        start,
+        TransportMode::XhttpH2,
+        TransportMode::XhttpH3,
+    ));
+    state.apply_descent_trigger(runtime_trigger(
+        start,
+        TransportMode::XhttpH1,
+        TransportMode::XhttpH2,
+    ));
+
+    // Stepping one rank up keeps the window (and the episode) alive: the
+    // uplink is still below its configured carrier.
+    let mid = start + Duration::from_secs(10);
+    let outcome = state.walk_up(mid, WINDOW, TransportMode::XhttpH3, 2, 2);
+    assert!(matches!(outcome, WalkUpOutcome::SteppedUp { .. }));
+    assert_eq!(state.degraded_since(mid), Some(start));
+
+    // A full clear ends the episode.
+    state.clear_and_open_grace(mid);
+    assert_eq!(state.degraded_since(mid), None);
+
+    // Wire-change reset ends it too (fresh state: the post-recovery grace
+    // gate above would otherwise absorb the first trigger by design).
+    let mut state = CarrierDescentState::default();
+    state.apply_descent_trigger(runtime_trigger(
+        mid,
+        TransportMode::XhttpH2,
+        TransportMode::XhttpH3,
+    ));
+    assert!(state.degraded_since(mid).is_some());
+    state.reset_window_for_wire_change();
+    assert_eq!(state.degraded_since(mid), None);
+}
