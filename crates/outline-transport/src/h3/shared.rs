@@ -1,6 +1,6 @@
 // Connection infrastructure for the HTTP/3 WebSocket transport.
 //
-// Owns the QUIC/TLS configs, shared endpoints, per-key connect locks,
+// Owns the QUIC/TLS configs, per-dial endpoints, per-key connect locks,
 // shared-connection cache, and all connect / gc logic.  The stream adapter
 // types (`H3WsStream`, `H3ConnectionGuard`) and the message-conversion helpers
 // live in the parent module (`mod.rs`) because they are the public API
@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use http::{Method, Request};
-use once_cell::sync::OnceCell;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tracing::info;
@@ -183,6 +182,9 @@ async fn pick_h3_carrier_slot(server_name: &str, server_port: u16, fwmark: Optio
 
 pub(super) struct SharedH3Connection {
     pub(super) id: u64,
+    // Never read, but load-bearing: this connection's private UDP socket
+    // (per-dial source port) lives exactly as long as the endpoint handle.
+    // Dropping it with the connection is what closes the socket.
     #[allow(dead_code)]
     endpoint: quinn::Endpoint,
     connection: quinn::Connection,
@@ -365,70 +367,36 @@ impl crate::shared_cache::CachedEntry for SharedH3Connection {
 // range keeps the ~30 s idle budget that tears a silently-dropped QUIC path off
 // consumer-router conntrack, while QUIC PING (8–12 s) keeps NAT mappings fresh.
 
-// ── Shared endpoints ──────────────────────────────────────────────────────────
-
-// One UDP socket per address family, shared across all H3 connections that do
-// not require a per-socket fwmark. Sharing the endpoint eliminates the "N
-// warm-standby connections = N UDP sockets" resource explosion.
-static H3_CLIENT_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::new();
-static H3_CLIENT_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::new();
+// ── Dial endpoints ────────────────────────────────────────────────────────────
 
 /// Endpoint for one H3 dial, shared by the WS-over-H3 carrier and the
 /// XHTTP-over-H3 one.
 ///
-/// For fwmark connections the socket must be bound with the mark set before
-/// connect, so each dial needs its own UDP socket and endpoint. Every other
-/// dial reuses the shared per-address-family endpoint, so N connections share
-/// a single UDP socket instead of opening N.
+/// Every fresh dial binds its own UDP socket, so every new QUIC connection
+/// leaves from a fresh local port. A NAT device on the path keeps a UDP
+/// translation alive as long as packets keep flowing through it; with a
+/// process-wide shared socket a translation stuck on a dead destination
+/// (e.g. a re-pointed port-forward) pinned every future dial to that dead
+/// path — the constant dial retries themselves kept refreshing the stale
+/// entry, so only a process restart changed the source port. A per-dial
+/// port makes each retry negotiate a fresh translation instead.
+///
+/// The endpoint stays alive for exactly the lifetime of its connection:
+/// [`SharedH3Connection`] holds it, and the XHTTP driver task moves it in.
+/// Socket count therefore tracks the number of live H3 connections, which
+/// the carrier pool already bounds.
 pub(crate) fn client_endpoint(
     bind_addr: std::net::SocketAddr,
     fwmark: Option<u32>,
 ) -> Result<quinn::Endpoint> {
-    if fwmark.is_some() {
-        let socket = bind_udp_socket(bind_addr, fwmark)?;
-        return quinn::Endpoint::new(
-            quinn::EndpointConfig::default(),
-            None,
-            socket,
-            Arc::new(quinn::TokioRuntime),
-        )
-        .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"));
-    }
-    get_or_init_shared_h3_endpoint(bind_addr)
-}
-
-fn get_or_init_shared_h3_endpoint(bind_addr: std::net::SocketAddr) -> Result<quinn::Endpoint> {
-    // Cross-repo integration tests run each `#[tokio::test]` in its
-    // own runtime; the shared endpoint's driver task is spawned on
-    // whichever runtime first hit the cache, so it dies the moment
-    // that test ends. Bypass the cache in test mode and bind a fresh
-    // endpoint per dial — production behaviour is unchanged.
-    if crate::tls::test_mode_active() {
-        let socket = bind_udp_socket(bind_addr, None)?;
-        return quinn::Endpoint::new(
-            quinn::EndpointConfig::default(),
-            None,
-            socket,
-            Arc::new(quinn::TokioRuntime),
-        )
-        .with_context(|| format!("failed to bind H3 QUIC client endpoint on {bind_addr}"));
-    }
-    let cell = if bind_addr.is_ipv4() {
-        &H3_CLIENT_ENDPOINT_V4
-    } else {
-        &H3_CLIENT_ENDPOINT_V6
-    };
-    let endpoint = cell.get_or_try_init(|| {
-        let socket = bind_udp_socket(bind_addr, None)?;
-        quinn::Endpoint::new(
-            quinn::EndpointConfig::default(),
-            None,
-            socket,
-            Arc::new(quinn::TokioRuntime),
-        )
-        .with_context(|| format!("failed to bind shared QUIC client endpoint on {bind_addr}"))
-    })?;
-    Ok(endpoint.clone())
+    let socket = bind_udp_socket(bind_addr, fwmark)?;
+    quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        None,
+        socket,
+        Arc::new(quinn::TokioRuntime),
+    )
+    .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"))
 }
 
 // ── Shared-connection cache ───────────────────────────────────────────────────
@@ -567,8 +535,8 @@ async fn connect_h3_connection(
     let bind_addr = bind_addr_for(server_addr);
     let client_config = crate::quic::h3_quic_client_config();
 
-    // Own endpoint for fwmark dials, shared per-address-family endpoint
-    // otherwise — see [`client_endpoint`].
+    // Freshly-bound per-dial endpoint — see [`client_endpoint`] for why the
+    // source port must change between dials.
     let endpoint = client_endpoint(bind_addr, fwmark)?;
 
     let connecting = endpoint
