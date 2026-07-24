@@ -259,11 +259,11 @@ pub(super) async fn connect_xhttp_h3(
 
 /// QUIC endpoint backing one XHTTP-over-H3 session.
 ///
-/// XHTTP sessions are 1:1 with their upstream, so binding a private endpoint
-/// per session would grow the client's UDP socket count with the session
-/// count. Only an fwmark dial actually needs its own socket (the mark must be
-/// set before connect); everything else rides the same shared per-address-family
-/// endpoint the native `ws_h3` carrier uses — see [`crate::h3::client_endpoint`].
+/// Each session dials from its own freshly-bound UDP socket, same as the
+/// native `ws_h3` carrier — see [`crate::h3::client_endpoint`] for why a
+/// per-dial source port is required (stale NAT translations pin a shared
+/// port to a dead path). The endpoint moves into the session's driver task,
+/// so the socket lives exactly as long as the session.
 fn dial_endpoint(bind_addr: SocketAddr, fwmark: Option<u32>) -> Result<quinn::Endpoint> {
     crate::h3::client_endpoint(bind_addr, fwmark)
         .with_context(|| format!("failed to bind xhttp/h3 QUIC endpoint on {bind_addr}"))

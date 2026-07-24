@@ -66,3 +66,17 @@ fn probe_sources_do_not_reuse_shared_h3_connections() {
     assert!(!should_reuse_connection("probe_ws"));
     assert!(!should_reuse_connection("probe_http"));
 }
+
+#[tokio::test]
+async fn fresh_dials_bind_distinct_local_ports() {
+    // Every fresh H3 dial must leave from its own UDP socket so a NAT
+    // translation stuck on a previous source port can never pin new dials
+    // to a dead path (a router that re-created its port-forward keeps the
+    // old UDP mapping alive as long as packets keep flowing through it).
+    let bind: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
+    let a = super::client_endpoint(bind, None).expect("first endpoint");
+    let b = super::client_endpoint(bind, None).expect("second endpoint");
+    let port_a = a.local_addr().expect("local addr a").port();
+    let port_b = b.local_addr().expect("local addr b").port();
+    assert_ne!(port_a, port_b, "two fresh dials must not share a local UDP port");
+}
