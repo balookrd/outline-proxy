@@ -191,6 +191,7 @@ fn load_balancing_config_from_group(
         failure_penalty_max_ms: section.failure_penalty_max_ms,
         failure_penalty_halflife_secs: section.failure_penalty_halflife_secs,
         mode_downgrade_secs: section.mode_downgrade_secs,
+        carrier_degraded_failover_secs: section.carrier_degraded_failover_secs,
         runtime_failure_window_secs: section.runtime_failure_window_secs,
         chunk0_failure_window_secs: section.chunk0_failure_window_secs,
         global_udp_strict_health: section.global_udp_strict_health,

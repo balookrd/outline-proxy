@@ -44,6 +44,13 @@ pub(crate) struct CarrierDescentState {
     /// returns while [`Self::until`] is in the future. Updates
     /// monotonically downward inside an active window.
     capped_to: Option<TransportMode>,
+    /// Start of the current continuous downgrade episode: stamped when a
+    /// window opens over no (or an expired) previous window, preserved by
+    /// in-window extensions and walk-up steps, cleared with the window.
+    /// Lets selection ask "how long has this uplink been continuously
+    /// degraded" without confusing a stream of 60 s extensions with a
+    /// single isolated flap.
+    window_started_at: Option<Instant>,
     /// Cooldown after a failed configured-carrier recovery re-probe.
     /// While in the future, no new recovery probe is scheduled.
     recovery_probe_cooldown_until: Option<Instant>,
@@ -149,6 +156,29 @@ impl CarrierDescentState {
             (Some(until), Some(cap)) if until > now => Some(cap),
             _ => None,
         }
+    }
+
+    /// Start of the current continuous downgrade episode, or `None` when
+    /// no window is active right now. An episode spans every extension of
+    /// an uninterrupted window; a window that expired and was later
+    /// re-installed starts a fresh episode. The production time-gate lives
+    /// in `selection::carrier_degraded_since` (off the `Copy` view); this
+    /// method is the state-level equivalent for tests.
+    #[cfg(test)]
+    pub(crate) fn degraded_since(&self, now: Instant) -> Option<Instant> {
+        if self.window_active(now) {
+            self.window_started_at
+        } else {
+            None
+        }
+    }
+
+    /// Episode anchor, raw (`Some` even when the window has expired) —
+    /// the [`Self::until`] counterpart for `Copy` projections that apply
+    /// the time gate themselves. Use [`Self::degraded_since`] for the
+    /// time-gated value.
+    pub(crate) fn window_started_at(&self) -> Option<Instant> {
+        self.window_started_at
     }
 
     /// `true` while the recovery-probe cooldown deadline is in the
@@ -291,6 +321,12 @@ impl CarrierDescentState {
             if advances_deadline {
                 self.until = Some(new_until);
             }
+            if newly_started {
+                // A window over no (or an expired) previous window opens a
+                // fresh continuous-degradation episode; in-window extensions
+                // keep the existing anchor.
+                self.window_started_at = Some(now);
+            }
             self.capped_to = Some(updated_cap);
             if cap_changed {
                 // Cap is back in place — the post-recovery grace window
@@ -384,6 +420,7 @@ impl CarrierDescentState {
     fn clear_window_keep_grace_anchor(&mut self) {
         self.until = None;
         self.capped_to = None;
+        self.window_started_at = None;
         self.recovery_probe_cooldown_until = None;
         self.post_recovery_grace_descent_attempts = 0;
     }
@@ -395,6 +432,7 @@ impl CarrierDescentState {
     pub(crate) fn clear_and_open_grace(&mut self, now: Instant) {
         self.until = None;
         self.capped_to = None;
+        self.window_started_at = None;
         self.recovery_probe_cooldown_until = None;
         self.last_recovery_success_at = Some(now);
         self.post_recovery_grace_descent_attempts = 0;
@@ -408,6 +446,7 @@ impl CarrierDescentState {
     pub(crate) fn reset_window_for_wire_change(&mut self) {
         self.until = None;
         self.capped_to = None;
+        self.window_started_at = None;
         self.recovery_probe_success_streak = 0;
         self.recovery_probe_cooldown_until = None;
     }
@@ -444,11 +483,26 @@ impl CarrierDescentState {
 
     /// Test seam: install a window directly so tests can pre-stage a
     /// "previously degraded" slot without converging through synthetic
-    /// failures.
+    /// failures. The episode anchor is stamped "now" — use
+    /// [`Self::seed_window_with_episode`] to back-date it.
     #[cfg(any(test, feature = "test-helpers"))]
     pub(crate) fn seed_window(&mut self, until: Instant, cap: TransportMode) {
+        self.seed_window_with_episode(until, cap, Instant::now());
+    }
+
+    /// Test seam: like [`Self::seed_window`] but with an explicit episode
+    /// start, so selection tests can stage an uplink that has been
+    /// continuously degraded for longer than the failover threshold.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub(crate) fn seed_window_with_episode(
+        &mut self,
+        until: Instant,
+        cap: TransportMode,
+        started_at: Instant,
+    ) {
         self.until = Some(until);
         self.capped_to = Some(cap);
+        self.window_started_at = Some(started_at);
     }
 }
 

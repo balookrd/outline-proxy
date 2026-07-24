@@ -562,6 +562,12 @@ pub(super) struct UplinkGroupSection {
     /// H3 → H2) is still accepted. Default: 60.
     #[serde(alias = "h3_downgrade_secs")]
     pub(super) mode_downgrade_secs: Option<u64>,
+    /// Strict-mode carrier-quality failover: switch the active uplink away
+    /// once it has been continuously carrier-degraded (dialing below its
+    /// configured carrier, e.g. capped `ws_h3 -> ws_h2`) for this many
+    /// seconds while an equal-or-higher-weight, non-degraded, probe-stable
+    /// candidate exists. `0` disables. Default: `3 * mode_downgrade_secs`.
+    pub(super) carrier_degraded_failover_secs: Option<u64>,
     /// Window over which consecutive runtime (data-plane) failures are
     /// counted toward the health-flip escalation. A new failure arriving
     /// later than this window after the previous one resets the streak to
@@ -792,6 +798,12 @@ pub(super) struct LoadBalancingSection {
     /// H3 → H2) is still accepted. Default: 60.
     #[serde(alias = "h3_downgrade_secs")]
     pub(super) mode_downgrade_secs: Option<u64>,
+    /// Strict-mode carrier-quality failover: switch the active uplink away
+    /// once it has been continuously carrier-degraded (dialing below its
+    /// configured carrier, e.g. capped `ws_h3 -> ws_h2`) for this many
+    /// seconds while an equal-or-higher-weight, non-degraded, probe-stable
+    /// candidate exists. `0` disables. Default: `3 * mode_downgrade_secs`.
+    pub(super) carrier_degraded_failover_secs: Option<u64>,
     /// Window over which consecutive runtime (data-plane) failures are
     /// counted toward the health-flip escalation. A new failure arriving
     /// later than this window after the previous one resets the streak to

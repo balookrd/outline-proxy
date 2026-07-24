@@ -246,4 +246,30 @@ impl UplinkManager {
             per.consecutive_successes = 0;
         });
     }
+
+    /// Like [`Self::test_seed_mode_downgrade_for_test`] but back-dates the
+    /// continuous-degradation episode by `degraded_for`, so tests can stage
+    /// an uplink that has been running below its configured carrier long
+    /// enough to cross the `carrier_degraded_failover` threshold.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn test_seed_mode_downgrade_with_episode_for_test(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+        cap: crate::config::TransportMode,
+        degraded_for: Duration,
+    ) {
+        let now = tokio::time::Instant::now();
+        let until = now + self.inner.load_balancing.mode_downgrade_duration;
+        let started_at = now.checked_sub(degraded_for).unwrap_or(now);
+        self.inner.with_status_mut(index, |status| {
+            let per = match transport {
+                crate::types::TransportKind::Tcp => &mut status.tcp,
+                crate::types::TransportKind::Udp => &mut status.udp,
+            };
+            per.descent.seed_window_with_episode(until, cap, started_at);
+            per.consecutive_failures = 0;
+        });
+    }
 }

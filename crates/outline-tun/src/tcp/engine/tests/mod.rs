@@ -1987,6 +1987,7 @@ pub(crate) async fn build_test_manager_with_urls(
             failure_penalty_max: Duration::from_secs(30),
             failure_penalty_halflife: Duration::from_secs(60),
             mode_downgrade_duration: Duration::from_secs(60),
+            carrier_degraded_failover: None,
             runtime_failure_window: Duration::from_secs(60),
             chunk0_failure_window: Duration::from_secs(300),
             global_udp_strict_health: false,
