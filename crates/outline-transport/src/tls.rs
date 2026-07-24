@@ -151,21 +151,3 @@ pub fn install_test_tls_root(cert_der: CertificateDer<'static>) {
 fn test_override_roots() -> Option<Arc<RootCertStore>> {
     TEST_TLS_OVERRIDE_ROOTS.read().ok().and_then(|guard| guard.clone())
 }
-
-/// Test-mode probe used by transports that maintain process-wide
-/// runtime-bound caches (the shared QUIC endpoint, e.g.). When the
-/// test override is set, the shared endpoint's driver task is bound
-/// to the current `#[tokio::test]` runtime and will not survive the
-/// next test, so callers must skip the cache and bind a fresh
-/// endpoint each dial.
-///
-/// Gated behind `quic`: every caller lives in the QUIC/H3 modules
-/// (`h3` implies `quic`), so non-QUIC builds (router) would
-/// otherwise carry dead code.
-#[cfg(feature = "quic")]
-pub(crate) fn test_mode_active() -> bool {
-    TEST_TLS_OVERRIDE_ROOTS
-        .read()
-        .map(|guard| guard.is_some())
-        .unwrap_or(false)
-}

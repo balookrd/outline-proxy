@@ -371,27 +371,28 @@ async fn a_timed_out_post_releases_the_h3_connection() {
 }
 
 #[tokio::test]
-async fn xhttp_h3_reuses_the_shared_endpoint_when_the_dial_has_no_fwmark() {
+async fn xhttp_h3_binds_a_fresh_socket_per_session() {
     let first = dial_endpoint(wildcard_v4(), None).expect("first xhttp/h3 endpoint binds");
     let second = dial_endpoint(wildcard_v4(), None).expect("second xhttp/h3 endpoint binds");
 
-    // Two wildcard binds land on different ephemeral ports; an equal local
-    // address means both dials got the same shared socket back.
-    assert_eq!(
+    // A stale NAT translation is keyed on the source port; a session that
+    // reused a process-wide socket would stay pinned to a dead path forever.
+    // Distinct local ports prove each session negotiates its own translation.
+    assert_ne!(
         first.local_addr().expect("first endpoint has a local addr"),
         second.local_addr().expect("second endpoint has a local addr"),
-        "xhttp/h3 must not open a private UDP socket per session without fwmark"
+        "each xhttp/h3 session must dial from its own UDP source port"
     );
 }
 
 #[tokio::test]
-async fn xhttp_h3_shares_the_endpoint_with_the_native_ws_h3_carrier() {
+async fn xhttp_h3_does_not_share_a_socket_with_the_native_ws_h3_carrier() {
     let xhttp = dial_endpoint(wildcard_v4(), None).expect("xhttp/h3 endpoint binds");
     let ws = crate::h3::client_endpoint(wildcard_v4(), None).expect("ws_h3 endpoint binds");
 
-    assert_eq!(
+    assert_ne!(
         xhttp.local_addr().expect("xhttp endpoint has a local addr"),
         ws.local_addr().expect("ws endpoint has a local addr"),
-        "both H3 carriers must ride the same per-address-family UDP socket"
+        "carriers must not share a UDP source port either"
     );
 }
