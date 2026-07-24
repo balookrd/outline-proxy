@@ -42,6 +42,18 @@ pub(super) fn load_balancing_config(
         mode_downgrade_duration: Duration::from_secs(
             lb.and_then(|l| l.mode_downgrade_secs).unwrap_or(60),
         ),
+        // Default: 3 × mode_downgrade_secs — one isolated descent window
+        // (a single flap installs exactly `mode_downgrade_secs` of cap)
+        // can never cross the threshold; only a window continuously
+        // re-extended by ongoing carrier failures does. `0` disables.
+        carrier_degraded_failover: {
+            let downgrade_secs = lb.and_then(|l| l.mode_downgrade_secs).unwrap_or(60);
+            match lb.and_then(|l| l.carrier_degraded_failover_secs) {
+                Some(0) => None,
+                Some(secs) => Some(Duration::from_secs(secs)),
+                None => Some(Duration::from_secs(downgrade_secs.saturating_mul(3))),
+            }
+        },
         runtime_failure_window: Duration::from_secs(
             lb.and_then(|l| l.runtime_failure_window_secs).unwrap_or(60),
         ),

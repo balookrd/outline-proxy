@@ -255,6 +255,7 @@ pub(crate) struct TransportSelectionView {
     pub(crate) consecutive_successes: u32,
     pub(crate) penalty: PenaltyState,
     pub(crate) descent_window_until: Option<Instant>,
+    pub(crate) descent_window_started_at: Option<Instant>,
     pub(crate) base_latency: Option<Duration>,
 }
 
@@ -299,6 +300,10 @@ impl TransportStatusView for TransportSelectionView {
         self.descent_window_until
     }
 
+    fn descent_window_started_at(&self) -> Option<Instant> {
+        self.descent_window_started_at
+    }
+
     fn base_latency(&self) -> Option<Duration> {
         self.base_latency
     }
@@ -327,6 +332,10 @@ impl TransportStatusView for PerTransportStatus {
 
     fn descent_window_until(&self) -> Option<Instant> {
         self.descent.until()
+    }
+
+    fn descent_window_started_at(&self) -> Option<Instant> {
+        self.descent.window_started_at()
     }
 
     fn base_latency(&self) -> Option<Duration> {
@@ -362,6 +371,7 @@ impl PerTransportStatus {
             consecutive_successes: self.consecutive_successes,
             penalty: self.penalty,
             descent_window_until: self.descent.until(),
+            descent_window_started_at: self.descent.window_started_at(),
             base_latency: self.base_latency(),
         }
     }

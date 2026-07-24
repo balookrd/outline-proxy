@@ -9,8 +9,8 @@ use socks5_proto::TargetAddr;
 
 use super::super::routing_key::{routing_key, strict_route_key};
 use super::super::selection::{
-    cooldown_active, cooldown_remaining, score_latency, selection_health, selection_score,
-    strict_gate_transport, supports_transport_for_scope,
+    carrier_degraded_since, cooldown_active, cooldown_remaining, score_latency, selection_health,
+    selection_score, strict_gate_transport, supports_transport_for_scope,
 };
 use super::super::types::{TransportKind, Uplink, UplinkCandidate, UplinkManager};
 use super::status::SelectionView;
@@ -482,6 +482,49 @@ impl UplinkManager {
             .then_with(|| left.index.cmp(&right.index))
     }
 
+    /// Carrier-quality failover target: position (in `candidates`, which the
+    /// caller has already sorted by `primary_order`) of the best candidate to
+    /// take the strict active slot away from a **probe-healthy but
+    /// continuously carrier-degraded** active uplink.
+    ///
+    /// `Some` only when every one of these holds:
+    /// * the feature is on (`carrier_degraded_failover` in the group config);
+    /// * the active uplink's gate transport has been running below its
+    ///   configured carrier under one unbroken descent window for at least
+    ///   the threshold — an isolated flap (a single window that expires on
+    ///   its own) can never qualify;
+    /// * some other candidate is probe-healthy, NOT carrier-degraded right
+    ///   now, of equal-or-higher weight (operator priority still stands),
+    ///   and has `probe.min_failures` consecutive probe successes — the same
+    ///   stability bar `auto_failback` uses before trusting a candidate.
+    ///
+    /// Without this, an uplink whose TCP fallback keeps the probes green
+    /// holds the leg forever while every flow on it rides TCP-over-TCP, and
+    /// a sibling with a working QUIC carrier is never preferred.
+    fn carrier_degraded_switch_target(
+        &self,
+        candidates: &[CandidateState],
+        active_index: usize,
+        gate_transport: TransportKind,
+        now: Instant,
+    ) -> Option<usize> {
+        let threshold = self.inner.load_balancing.carrier_degraded_failover?;
+        let active = candidates.iter().find(|c| c.index == active_index)?;
+        let degraded_since = carrier_degraded_since(&active.status, gate_transport, now)?;
+        if now.duration_since(degraded_since) < threshold {
+            return None;
+        }
+        let active_weight = self.inner.uplinks[active_index].weight;
+        let min_streak = self.inner.probe.min_failures as u32;
+        candidates.iter().position(|c| {
+            c.index != active_index
+                && c.healthy
+                && self.inner.uplinks[c.index].weight >= active_weight
+                && carrier_degraded_since(&c.status, gate_transport, now).is_none()
+                && c.status.of(gate_transport).consecutive_successes >= min_streak
+        })
+    }
+
     fn build_candidate_states(
         &self,
         transport: TransportKind,
@@ -658,6 +701,53 @@ impl UplinkManager {
                     probe_healthy && active_failure_details.is_empty()
                 };
                 if should_keep && !active_failed {
+                    // Carrier-quality failover: a probe-healthy active that has
+                    // been continuously running below its configured carrier
+                    // (e.g. every dial silently capped `ws_h3 → ws_h2` =
+                    // TCP-over-TCP) yields the leg to a clean, stable,
+                    // equal-or-higher-weight sibling. Checked before both
+                    // keep-paths — it is orthogonal to the weight-driven
+                    // `auto_failback` rules below. The switch is `soft`: the
+                    // active is alive, so sessions migrate instead of being cut.
+                    if let Some(pos) = self.carrier_degraded_switch_target(
+                        &candidates,
+                        active_index,
+                        gate_transport,
+                        now,
+                    ) {
+                        let target = candidates[pos].clone();
+                        let reason = format!(
+                            "carrier-degraded failover: active \"{}\" ran below its \
+                             configured carrier beyond the threshold; switching to \
+                             \"{}\" with a clean carrier",
+                            self.inner.uplinks[active_index].name, target.uplink.name,
+                        );
+                        tracing::info!(
+                            group = %self.inner.group_name,
+                            from = %self.inner.uplinks[active_index].name,
+                            to = %target.uplink.name,
+                            transport = ?gate_transport,
+                            "carrier-degraded failover: switching strict active uplink"
+                        );
+                        if commit_selection {
+                            self.set_active_uplink_index_for_transport(
+                                transport,
+                                target.index,
+                                reason,
+                                true,
+                            )
+                            .await;
+                            let key = strict_route_key(
+                                transport,
+                                self.inner.load_balancing.routing_scope,
+                            );
+                            self.store_sticky_route(&key, target.index).await;
+                        }
+                        return vec![UplinkCandidate {
+                            index: target.index,
+                            uplink: target.uplink,
+                        }];
+                    }
                     // When auto_failback is disabled (default), never switch away
                     // from a healthy active uplink — only failure triggers a switch.
                     if !self.inner.load_balancing.auto_failback {

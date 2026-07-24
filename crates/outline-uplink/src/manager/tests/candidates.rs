@@ -109,6 +109,7 @@ fn lb_global() -> LoadBalancingConfig {
         failure_penalty_max: Duration::from_secs(30),
         failure_penalty_halflife: Duration::from_secs(60),
         mode_downgrade_duration: Duration::from_secs(60),
+        carrier_degraded_failover: Some(Duration::from_secs(180)),
         runtime_failure_window: Duration::from_secs(60),
         chunk0_failure_window: Duration::from_secs(300),
         global_udp_strict_health: false,
@@ -587,4 +588,275 @@ async fn enable_toggle_stores_a_probe_wakeup_permit_on_both_edges() {
         tokio::time::timeout(Duration::from_millis(200), manager.inner.probe_wakeup.notified())
             .await;
     assert!(woken.is_ok(), "re-enabling an uplink must store a probe wakeup permit");
+}
+
+// ── Carrier-quality failover ─────────────────────────────────────────────────
+//
+// An uplink that is probe-healthy but continuously carrier-degraded (every
+// dial silently falling back below the configured carrier, e.g.
+// `ws_h3 → ws_h2` = TCP-over-TCP) used to keep the strict active slot
+// forever: `should_keep` only consults probe health, so a group would never
+// prefer a sibling with a working QUIC carrier. These tests pin the
+// carrier-quality failover that moves the leg once the degradation has been
+// continuous for `carrier_degraded_failover` and a clean, stable,
+// equal-or-higher-weight candidate exists.
+
+const DEGRADED_LONG: Duration = Duration::from_secs(200); // over the 180 s default
+
+/// Two healthy uplinks; the active one continuously degraded beyond the
+/// threshold, the standby clean and probe-stable → the leg must move.
+#[tokio::test]
+async fn carrier_degraded_active_fails_over_to_clean_candidate() {
+    let manager = UplinkManager::new_for_test(
+        "grp",
+        vec![healthy_uplink("up-a", 1.0), healthy_uplink("up-b", 1.0)],
+        probe_enabled(),
+        lb_global(),
+    )
+    .unwrap();
+    manager.test_set_tcp_health(0, true, 30).await;
+    manager.test_set_udp_health(0, true, 30).await;
+    manager.test_set_tcp_health(1, true, 30).await;
+    manager.test_set_udp_health(1, true, 30).await;
+
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(manager.global_active_uplink_index().await, Some(0), "up-a selected initially");
+
+    // Stage: up-a continuously degraded for longer than the threshold,
+    // up-b stable for `min_failures` consecutive probe cycles.
+    manager.test_seed_mode_downgrade_with_episode_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::WsH2,
+        DEGRADED_LONG,
+    );
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+
+    let ranked = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(
+        manager.global_active_uplink_index().await,
+        Some(1),
+        "carrier-degraded active must yield to the clean candidate"
+    );
+    assert_eq!(ranked.first().map(|c| c.index), Some(1));
+}
+
+/// The same staging but with the degradation episode shorter than the
+/// threshold: an isolated flap must not move the leg.
+#[tokio::test]
+async fn short_carrier_degradation_keeps_the_active() {
+    let manager = UplinkManager::new_for_test(
+        "grp",
+        vec![healthy_uplink("up-a", 1.0), healthy_uplink("up-b", 1.0)],
+        probe_enabled(),
+        lb_global(),
+    )
+    .unwrap();
+    manager.test_set_tcp_health(0, true, 30).await;
+    manager.test_set_udp_health(0, true, 30).await;
+    manager.test_set_tcp_health(1, true, 30).await;
+    manager.test_set_udp_health(1, true, 30).await;
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+
+    manager.test_seed_mode_downgrade_with_episode_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::WsH2,
+        Duration::from_secs(30), // well under the 180 s threshold
+    );
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(
+        manager.global_active_uplink_index().await,
+        Some(0),
+        "short flap must not switch"
+    );
+}
+
+/// A candidate that is itself carrier-degraded is no refuge — keep the active.
+#[tokio::test]
+async fn degraded_candidate_is_not_a_switch_target() {
+    let manager = UplinkManager::new_for_test(
+        "grp",
+        vec![healthy_uplink("up-a", 1.0), healthy_uplink("up-b", 1.0)],
+        probe_enabled(),
+        lb_global(),
+    )
+    .unwrap();
+    manager.test_set_tcp_health(0, true, 30).await;
+    manager.test_set_udp_health(0, true, 30).await;
+    manager.test_set_tcp_health(1, true, 30).await;
+    manager.test_set_udp_health(1, true, 30).await;
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+
+    manager.test_seed_mode_downgrade_with_episode_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::WsH2,
+        DEGRADED_LONG,
+    );
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+    // ...but up-b is degraded too (freshly — duration does not matter for a
+    // candidate: any active window disqualifies it).
+    manager.test_seed_mode_downgrade_for_test(1, TransportKind::Tcp, TransportMode::WsH2);
+
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(manager.global_active_uplink_index().await, Some(0));
+}
+
+/// A clean candidate with lower weight must not win the leg on carrier
+/// quality alone — operator priority still stands.
+#[tokio::test]
+async fn lower_weight_candidate_does_not_take_the_leg() {
+    let manager = UplinkManager::new_for_test(
+        "grp",
+        vec![healthy_uplink("up-a", 1.0), healthy_uplink("up-b", 0.5)],
+        probe_enabled(),
+        lb_global(),
+    )
+    .unwrap();
+    manager.test_set_tcp_health(0, true, 30).await;
+    manager.test_set_udp_health(0, true, 30).await;
+    manager.test_set_tcp_health(1, true, 30).await;
+    manager.test_set_udp_health(1, true, 30).await;
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+
+    manager.test_seed_mode_downgrade_with_episode_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::WsH2,
+        DEGRADED_LONG,
+    );
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(manager.global_active_uplink_index().await, Some(0));
+}
+
+/// A clean candidate that has not yet proven `min_failures` consecutive
+/// probe successes is not stable enough to take the leg.
+#[tokio::test]
+async fn unstable_candidate_does_not_take_the_leg() {
+    let manager = UplinkManager::new_for_test(
+        "grp",
+        vec![healthy_uplink("up-a", 1.0), healthy_uplink("up-b", 1.0)],
+        probe_enabled(),
+        lb_global(),
+    )
+    .unwrap();
+    manager.test_set_tcp_health(0, true, 30).await;
+    manager.test_set_udp_health(0, true, 30).await;
+    manager.test_set_tcp_health(1, true, 30).await;
+    manager.test_set_udp_health(1, true, 30).await;
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+
+    manager.test_seed_mode_downgrade_with_episode_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::WsH2,
+        DEGRADED_LONG,
+    );
+    // Only one probe success — min_failures is 2.
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(manager.global_active_uplink_index().await, Some(0));
+}
+
+/// `carrier_degraded_failover = None` disables the whole check.
+#[tokio::test]
+async fn disabled_carrier_failover_keeps_the_active() {
+    let lb = LoadBalancingConfig {
+        carrier_degraded_failover: None,
+        ..lb_global()
+    };
+    let manager = UplinkManager::new_for_test(
+        "grp",
+        vec![healthy_uplink("up-a", 1.0), healthy_uplink("up-b", 1.0)],
+        probe_enabled(),
+        lb,
+    )
+    .unwrap();
+    manager.test_set_tcp_health(0, true, 30).await;
+    manager.test_set_udp_health(0, true, 30).await;
+    manager.test_set_tcp_health(1, true, 30).await;
+    manager.test_set_udp_health(1, true, 30).await;
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+
+    manager.test_seed_mode_downgrade_with_episode_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::WsH2,
+        DEGRADED_LONG,
+    );
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(manager.global_active_uplink_index().await, Some(0));
+}
+
+/// The check also runs with `auto_failback = true` (it is orthogonal to the
+/// weight-driven failback rules).
+#[tokio::test]
+async fn carrier_degraded_failover_works_with_auto_failback() {
+    let lb = LoadBalancingConfig { auto_failback: true, ..lb_global() };
+    let manager = UplinkManager::new_for_test(
+        "grp",
+        vec![healthy_uplink("up-a", 1.0), healthy_uplink("up-b", 1.0)],
+        probe_enabled(),
+        lb,
+    )
+    .unwrap();
+    manager.test_set_tcp_health(0, true, 30).await;
+    manager.test_set_udp_health(0, true, 30).await;
+    manager.test_set_tcp_health(1, true, 30).await;
+    manager.test_set_udp_health(1, true, 30).await;
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(manager.global_active_uplink_index().await, Some(0));
+
+    manager.test_seed_mode_downgrade_with_episode_for_test(
+        0,
+        TransportKind::Tcp,
+        TransportMode::WsH2,
+        DEGRADED_LONG,
+    );
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+    manager.test_apply_probe_outcome_for_test(1, probe_ok());
+
+    let _ = manager
+        .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+        .await;
+    assert_eq!(manager.global_active_uplink_index().await, Some(1));
 }

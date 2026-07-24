@@ -21,6 +21,9 @@ pub(crate) trait TransportStatusView {
     fn penalty(&self) -> PenaltyState;
     /// Raw deadline of the carrier-descent window (`Some` even when expired).
     fn descent_window_until(&self) -> Option<Instant>;
+    /// Raw start of the continuous carrier-descent episode (`Some` even when
+    /// the window expired). Time-gate with [`carrier_degraded_since`].
+    fn descent_window_started_at(&self) -> Option<Instant>;
     /// Penalty-free latency this transport is ranked by. See
     /// [`scoring_base_latency`].
     fn base_latency(&self) -> Option<Duration>;
@@ -179,6 +182,23 @@ pub(crate) fn strict_gate_transport(
     match scope {
         RoutingScope::Global => TransportKind::Tcp,
         RoutingScope::PerUplink | RoutingScope::PerFlow | RoutingScope::PerClient => transport,
+    }
+}
+
+/// Start of this transport's current continuous carrier-descent episode:
+/// `Some` only while the downgrade window is active right now. A stream of
+/// window extensions (each downgrade re-trigger refreshes the deadline)
+/// reads as one episode, so `now - since` measures how long the uplink has
+/// been continuously running below its configured carrier.
+pub(crate) fn carrier_degraded_since<S: StatusView>(
+    status: &S,
+    transport: TransportKind,
+    now: Instant,
+) -> Option<Instant> {
+    let ts = status.transport(transport);
+    match ts.descent_window_until() {
+        Some(until) if until > now => ts.descent_window_started_at(),
+        _ => None,
     }
 }
 
