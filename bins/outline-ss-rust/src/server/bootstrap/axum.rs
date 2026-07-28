@@ -369,7 +369,7 @@ async fn serve_tls_listener(
                         debug!(%peer_addr, "aborting SNI peek on shutdown");
                         return;
                     }
-                    res = sni_fallback::dispatch_sni(ctx, stream, peer_addr) => res,
+                    res = sni_fallback::dispatch_sni(ctx, &metrics, stream, peer_addr) => res,
                 };
                 match dispatch {
                     Ok(Some(accepted)) => (accepted.stream, accepted.sni),

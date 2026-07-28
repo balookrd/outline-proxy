@@ -230,8 +230,10 @@ fn liveness_zero_disables_override() {
 
 use anyhow::anyhow;
 
+use crate::config::{ProbeConfig, WsProbeConfig};
+
 use super::super::outcome::ProbeOutcome;
-use super::probe_confirms_failure;
+use super::{endpoint_check_worthwhile, probe_confirms_failure};
 
 fn outcome(tcp_ok: bool, udp_applicable: bool, udp_ok: bool) -> ProbeOutcome {
     ProbeOutcome {
@@ -274,4 +276,67 @@ fn a_tcp_only_uplink_is_judged_on_tcp_alone() {
 #[test]
 fn a_probe_that_could_not_run_at_all_confirms_the_failure() {
     assert!(probe_confirms_failure(&Err(anyhow!("probe timed out"))));
+}
+
+// ── endpoint_check_worthwhile ────────────────────────────────────────────────
+//
+// The bare-TCP check is a connect-and-drop against the uplink host, and the
+// far end logs every one of them as a connection that never sent a
+// ClientHello. It is only worth paying for on a cycle whose verdict can
+// actually use the answer.
+
+fn probe_config(endpoint_check: bool) -> ProbeConfig {
+    ProbeConfig {
+        interval: Duration::from_secs(10),
+        timeout: Duration::from_secs(10),
+        max_concurrent: 1,
+        max_dials: 1,
+        min_failures: 2,
+        attempts: 1,
+        endpoint_check,
+        endpoint_check_timeout: Duration::from_millis(2000),
+        skip_when_active: true,
+        liveness_interval: LIVENESS_INTERVAL,
+        ws: WsProbeConfig { enabled: false },
+        http: None,
+        dns: None,
+        tcp: None,
+        tls: None,
+    }
+}
+
+#[test]
+fn a_healthy_cycle_does_not_pay_for_the_endpoint_check() {
+    // The steady state: nothing downstream would ever read the verdict, so
+    // the connect must not be made.
+    assert!(!endpoint_check_worthwhile(&probe_config(true), &Ok(outcome(true, true, true))));
+}
+
+#[test]
+fn a_cycle_the_probe_survived_on_one_plane_does_not_pay_either() {
+    // Matches `probe_confirms_failure`: either plane getting through overrules
+    // whatever a bare connect would have said.
+    assert!(!endpoint_check_worthwhile(&probe_config(true), &Ok(outcome(true, true, false))));
+    assert!(!endpoint_check_worthwhile(&probe_config(true), &Ok(outcome(false, true, true))));
+}
+
+#[test]
+fn a_fully_failing_cycle_still_pays_for_the_endpoint_check() {
+    // The whole point of the shortcut — a host that is gone must still be
+    // condemned in `min_failures` cycles rather than by walking the carrier
+    // descent and the wire chain.
+    assert!(endpoint_check_worthwhile(&probe_config(true), &Ok(outcome(false, true, false))));
+    assert!(endpoint_check_worthwhile(&probe_config(true), &Err(anyhow!("probe timed out"))));
+}
+
+#[test]
+fn the_check_stays_off_when_the_operator_disabled_it() {
+    assert!(!endpoint_check_worthwhile(
+        &probe_config(false),
+        &Err(anyhow!("probe timed out"))
+    ));
+    assert!(!endpoint_check_worthwhile(
+        &probe_config(false),
+        &Ok(outcome(false, true, false))
+    ));
 }

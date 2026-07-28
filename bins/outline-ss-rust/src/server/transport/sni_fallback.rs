@@ -43,6 +43,7 @@ use tokio::{
 use tracing::{debug, warn};
 
 use crate::config::{SniBackend, SniFallbackConfig, SniMatcher};
+use crate::metrics::Metrics;
 
 use super::proxy_protocol::{PpTransport, encode_proxy_protocol};
 
@@ -177,6 +178,75 @@ fn insert_matcher(
     }
 }
 
+/// Why [`peek_sni`] gave up on an inbound stream. Drives both the log
+/// level and the `reason` label on
+/// `outline_ss_sni_peek_failed_total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::server) enum SniPeekFailure {
+    /// The peer went away (FIN/EOF/RST) before a complete ClientHello
+    /// arrived. This is the ordinary shape of a TCP liveness probe, a
+    /// port scanner, or a client that changed its mind — a listener on
+    /// a public port sees it continuously and there is nothing an
+    /// operator can act on, so it must not cost a `warn` line each
+    /// time. The counter keeps the volume observable.
+    PeerClosed,
+    /// The inbound socket read failed for a reason other than the peer
+    /// closing. Rare, and worth a look when it happens.
+    ReadFailed,
+    /// Bytes kept arriving but never formed a ClientHello within
+    /// `max_client_hello_bytes` — a peer speaking something that is not
+    /// TLS at all, or a deliberately oversized handshake.
+    Oversized,
+    /// The bytes were a TLS handshake and rustls rejected them. The
+    /// signal this whole path exists to surface — always `warn`.
+    Malformed,
+}
+
+impl SniPeekFailure {
+    pub(in crate::server) fn as_str(self) -> &'static str {
+        match self {
+            Self::PeerClosed => "peer_closed",
+            Self::ReadFailed => "read_failed",
+            Self::Oversized => "oversized",
+            Self::Malformed => "malformed",
+        }
+    }
+
+    /// Whether an operator should see a log line per occurrence.
+    /// `PeerClosed` is the only routine bucket; everything else says
+    /// something reached us that we could not make sense of.
+    pub(in crate::server) fn is_noteworthy(self) -> bool {
+        !matches!(self, Self::PeerClosed)
+    }
+}
+
+/// A failed [`peek_sni`], classified for logging and metrics while
+/// keeping the original error for the caller's context chain.
+pub(in crate::server) struct SniPeekError {
+    pub(in crate::server) failure: SniPeekFailure,
+    pub(in crate::server) source: anyhow::Error,
+}
+
+impl SniPeekError {
+    fn new(failure: SniPeekFailure, source: anyhow::Error) -> Self {
+        Self { failure, source }
+    }
+}
+
+/// Whether an inbound read error means "the peer is gone" rather than
+/// "something went wrong on our side". Mirrors the classification the
+/// TLS listener applies to handshake errors, so a connection aborted
+/// mid-peek and one aborted mid-handshake land in the same bucket.
+fn is_peer_gone(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::BrokenPipe
+    )
+}
+
 /// Outcome of [`peek_sni`]. Carries the bytes we already consumed off
 /// the wire so the caller can either replay them into the local TLS
 /// handshake or write them to the backend splice — without ever
@@ -197,22 +267,38 @@ pub(in crate::server) struct PeekedClientHello {
 pub(in crate::server) async fn peek_sni(
     stream: &mut TcpStream,
     max_bytes: usize,
-) -> Result<PeekedClientHello> {
+) -> std::result::Result<PeekedClientHello, SniPeekError> {
     let mut acceptor = rustls::server::Acceptor::default();
     let mut buffered = Vec::with_capacity(2048);
     let mut chunk = [0u8; 1024];
 
     loop {
-        let n = stream
-            .read(&mut chunk)
-            .await
-            .context("inbound TLS socket read failed during SNI peek")?;
+        let n = match stream.read(&mut chunk).await {
+            Ok(n) => n,
+            Err(error) => {
+                let failure = if is_peer_gone(&error) {
+                    SniPeekFailure::PeerClosed
+                } else {
+                    SniPeekFailure::ReadFailed
+                };
+                return Err(SniPeekError::new(
+                    failure,
+                    anyhow!(error).context("inbound TLS socket read failed during SNI peek"),
+                ));
+            },
+        };
         if n == 0 {
-            anyhow::bail!("inbound socket closed before TLS ClientHello");
+            return Err(SniPeekError::new(
+                SniPeekFailure::PeerClosed,
+                anyhow!("inbound socket closed before TLS ClientHello"),
+            ));
         }
         buffered.extend_from_slice(&chunk[..n]);
         if buffered.len() > max_bytes {
-            anyhow::bail!("TLS ClientHello exceeded max_client_hello_bytes ({max_bytes})");
+            return Err(SniPeekError::new(
+                SniPeekFailure::Oversized,
+                anyhow!("TLS ClientHello exceeded max_client_hello_bytes ({max_bytes})"),
+            ));
         }
 
         // `Acceptor::read_tls` consumes from the cursor, advancing
@@ -220,7 +306,10 @@ pub(in crate::server) async fn peek_sni(
         // each round so the codec doesn't see duplicates.
         let mut cursor = std::io::Cursor::new(&chunk[..n]);
         if let Err(error) = acceptor.read_tls(&mut cursor) {
-            return Err(anyhow!(error)).context("rustls Acceptor rejected ClientHello bytes");
+            return Err(SniPeekError::new(
+                SniPeekFailure::Malformed,
+                anyhow!(error).context("rustls Acceptor rejected ClientHello bytes"),
+            ));
         }
 
         match acceptor.accept() {
@@ -231,7 +320,10 @@ pub(in crate::server) async fn peek_sni(
             },
             Ok(None) => continue,
             Err((error, _)) => {
-                return Err(anyhow!(error)).context("invalid TLS ClientHello");
+                return Err(SniPeekError::new(
+                    SniPeekFailure::Malformed,
+                    anyhow!(error).context("invalid TLS ClientHello"),
+                ));
             },
         }
     }
@@ -373,14 +465,37 @@ pub(in crate::server) struct LocalTlsAccepted {
 /// processing it). Errors are fatal for this stream only.
 pub(in crate::server) async fn dispatch_sni(
     ctx: &SniFallbackContext,
+    metrics: &Metrics,
     mut inbound: TcpStream,
     peer_addr: SocketAddr,
 ) -> Result<Option<LocalTlsAccepted>> {
     let peeked = match peek_sni(&mut inbound, ctx.config.max_client_hello_bytes).await {
         Ok(p) => p,
-        Err(error) => {
-            warn!(?peer_addr, ?error, "sni_fallback could not parse ClientHello");
-            return Err(error);
+        Err(SniPeekError { failure, source }) => {
+            metrics.record_sni_peek_failed(failure.as_str());
+            // A connection that closes before its ClientHello is a normal
+            // event on a public port — liveness probes and scanners produce
+            // a steady stream of them, and our own clients' bare-TCP uplink
+            // checks alone were measured at ~1 400/hour per server. Left at
+            // `warn` it drowned the journal; the counter keeps it visible
+            // without one line per connect. Anything we could not parse
+            // still warns.
+            if failure.is_noteworthy() {
+                warn!(
+                    ?peer_addr,
+                    error = ?source,
+                    reason = failure.as_str(),
+                    "sni_fallback could not parse ClientHello",
+                );
+            } else {
+                debug!(
+                    ?peer_addr,
+                    error = ?source,
+                    reason = failure.as_str(),
+                    "sni_fallback peek ended before a ClientHello arrived",
+                );
+            }
+            return Err(source);
         },
     };
 

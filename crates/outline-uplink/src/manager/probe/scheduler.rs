@@ -19,10 +19,10 @@ use super::warm_udp::WarmUdpProbeSlot;
 
 /// What one uplink's probe task produced this cycle.
 ///
-/// The endpoint-reachability check runs ahead of the regular probe, but its
-/// answer is advisory: it decides how *fast* a failure escalates, never
-/// whether the uplink is failing. So a cycle always carries a real probe
-/// outcome, plus the endpoint verdict when the pre-check ran.
+/// The endpoint-reachability check is advisory: it decides how *fast* a
+/// failure escalates, never whether the uplink is failing. So a cycle always
+/// carries a real probe outcome, plus the endpoint verdict on the cycles where
+/// the check ran at all (see [`endpoint_check_worthwhile`]).
 pub(super) struct ProbeCycle {
     /// `Some(labels)` when every endpoint refused a bare TCP connect.
     ///
@@ -46,6 +46,28 @@ fn probe_confirms_failure(outcome: &Result<ProbeOutcome>) -> bool {
         Err(_) => true,
         Ok(result) => !result.tcp_ok && (!result.udp_applicable || !result.udp_ok),
     }
+}
+
+/// Whether this cycle should pay for the bare-TCP endpoint check at all.
+///
+/// The check used to run ahead of the regular probe, once per cycle, whatever
+/// the probe went on to say. But its verdict is only ever *consulted* when the
+/// probe also failed — `probe_all` gates it on [`probe_confirms_failure`],
+/// because "no endpoint accepts a connect" alone never condemns anything. So
+/// on a healthy cycle the connects were paid for and the answer discarded.
+///
+/// That was not free. Every wire of an uplink usually dials the same
+/// `host:port`, so the check is one connect-and-drop per uplink per cycle —
+/// 8 640 a day at `interval = 10 s` — and the far end sees each of them as a
+/// TCP connection that opens and closes without ever sending a ClientHello.
+/// On a server terminating TLS with `[sni_fallback]` that is one log line per
+/// connect: the fleet measured ~1 400/hour per server, from its own clients.
+///
+/// Deferring the check to the cycles whose outcome can actually use it costs
+/// nothing in detection latency — a failing cycle still pays probe + check,
+/// only in the other order — and takes the steady-state cost to zero.
+fn endpoint_check_worthwhile(probe: &ProbeConfig, outcome: &Result<ProbeOutcome>) -> bool {
+    probe.endpoint_check && probe_confirms_failure(outcome)
 }
 
 pub(super) fn should_skip_probe_cycle_for_recent_activity(
@@ -295,29 +317,6 @@ impl UplinkManager {
                     .acquire_owned()
                     .await
                     .expect("probe execution semaphore closed");
-                // Endpoint-reachability pre-check: one bare TCP connect per
-                // distinct `host:port` of the uplink, all concurrent, bounded
-                // by `endpoint_check_timeout`. Its job is to let a host that
-                // is simply gone be escalated in one short deadline instead of
-                // being rediscovered rank by rank and wire by wire, each step
-                // paying the full `probe.timeout`.
-                //
-                // It does NOT end the cycle. The regular probe runs either
-                // way and keeps the last word on health — a bare connect
-                // cannot tell "the server is gone" from "new TCP to it is
-                // being refused while traffic rides a live QUIC carrier", and
-                // treating the two alike condemned a working uplink.
-                let unreachable_endpoints = if probe.endpoint_check {
-                    unreachable_uplink_endpoints(
-                        &dns_cache,
-                        &group_name,
-                        &uplink,
-                        probe.endpoint_check_timeout,
-                    )
-                    .await
-                } else {
-                    None
-                };
                 // Retry the probe up to `attempts` times within one cycle.
                 // As soon as an attempt reports a *fully* healthy outcome we
                 // accept it and stop; a partial failure (a plane's
@@ -356,6 +355,34 @@ impl UplinkManager {
                         sleep(Duration::from_millis(500)).await;
                     }
                 }
+                // Endpoint-reachability check: one bare TCP connect per
+                // distinct `host:port` of the uplink, all concurrent, bounded
+                // by `endpoint_check_timeout`. Its job is to let a host that
+                // is simply gone be escalated in one short deadline instead of
+                // being rediscovered rank by rank and wire by wire, each step
+                // paying the full `probe.timeout`.
+                //
+                // It does NOT decide the cycle. The regular probe above keeps
+                // the last word on health — a bare connect cannot tell "the
+                // server is gone" from "new TCP to it is being refused while
+                // traffic rides a live QUIC carrier", and treating the two
+                // alike condemned a working uplink. That is also why the
+                // check runs *after* the probe rather than ahead of it: a
+                // cycle the probe got through can never use the answer, so
+                // dialing for it is pure cost (see
+                // [`endpoint_check_worthwhile`]). A failing cycle pays the
+                // same two stages it always did, in the other order.
+                let unreachable_endpoints = if endpoint_check_worthwhile(&probe, &outcome) {
+                    unreachable_uplink_endpoints(
+                        &dns_cache,
+                        &group_name,
+                        &uplink,
+                        probe.endpoint_check_timeout,
+                    )
+                    .await
+                } else {
+                    None
+                };
                 (
                     index,
                     uplink,
@@ -385,6 +412,12 @@ impl UplinkManager {
             // through, it says the failure is at the host — not at one carrier
             // rank or one wire — so the whole descent-and-rotate walk can be
             // skipped and health flipped now.
+            //
+            // The `probe_confirms_failure` guard is what the task-side
+            // `endpoint_check_worthwhile` gate already keys on, so it is
+            // redundant by construction — kept because this is where the
+            // "both must agree" rule belongs, and a future caller that
+            // populates the field differently must not slip past it.
             if self.inner.probe.endpoint_check {
                 match &unreachable_endpoints {
                     Some(endpoints) if probe_confirms_failure(&outcome) => {
@@ -404,8 +437,8 @@ impl UplinkManager {
                         // regular escalation handle this cycle as usual.
                     },
                     // Either some endpoint answered, or the probe got through
-                    // in spite of the pre-check. Both mean the shortcut has no
-                    // case to make, so its streak starts over.
+                    // (in which case the check was never run). Both mean the
+                    // shortcut has no case to make, so its streak starts over.
                     _ => self.note_endpoint_reachable(index),
                 }
             }
