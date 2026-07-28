@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use quinn::{Connection, ReadError, ReadToEndError, RecvStream, SendStream, VarInt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
@@ -13,7 +15,8 @@ use outline_wire::CipherKind;
 use outline_wire::cluster::ShardId;
 
 use super::{
-    EdgeThrottleCtx, EdgeThrottleDetector, StallTracker, handle_mesh_connection, open_edge_relay,
+    DownlinkEnd, EdgeThrottleCtx, EdgeThrottleDetector, SpliceEnd, SpliceFault, StallTracker,
+    StreamClose, handle_mesh_connection, open_edge_relay, splice_end, write_uplink_chunk,
 };
 use crate::crypto::UserKey;
 use crate::metrics::{AppProtocol, Metrics, Protocol};
@@ -644,6 +647,21 @@ fn test_registry() -> Arc<OrphanRegistry> {
     Arc::new(OrphanRegistry::new(enabled_resumption(), test_metrics()))
 }
 
+/// A registry with resumption on but the v2 downlink ring off — the *default*
+/// shape, since `downlink_buffer_bytes` defaults to `0`. Nothing here can replay
+/// a chunk the home dropped, so any byte lost between two carriers is lost for
+/// good; the continuity tests below run against this registry deliberately.
+fn ringless_registry() -> Arc<OrphanRegistry> {
+    Arc::new(OrphanRegistry::new(
+        ResumptionConfig {
+            enabled: true,
+            downlink_buffer_bytes: 0,
+            ..ResumptionConfig::defaults_disabled()
+        },
+        test_metrics(),
+    ))
+}
+
 /// The far end of a parked session's upstream socket, standing in for the
 /// target server. Held by the test so the socket stays open — dropping it would
 /// EOF the parked upstream the home is about to splice onto.
@@ -682,12 +700,28 @@ impl TestUpstream {
             .expect("setting SO_LINGER on the test upstream");
         drop(self);
     }
+
+    /// Splits the far end so a test can drive both directions at once: a task
+    /// that keeps the target answering, and the test body reading what the home
+    /// relayed onto the socket.
+    fn split(self) -> (OwnedReadHalf, OwnedWriteHalf) {
+        self.peer.into_split()
+    }
+}
+
+/// 4 MiB of a self-describing pattern. Larger than the mesh stream's receive
+/// window (quinn's 1.25 MB default), so a home writing it to an edge that is not
+/// reading is guaranteed to be *inside* a write when the test intervenes — and
+/// self-describing, so a dropped chunk surfaces as a content mismatch rather
+/// than a short read.
+fn flood_payload(seed: u8) -> Vec<u8> {
+    (0..4 * 1024 * 1024).map(|i| (i % 251) as u8 ^ seed).collect()
 }
 
 /// Parks a TCP session under `id` owned by `owner`, returning the far end of
 /// its upstream socket. Mirrors what the relay parks on a carrier drop.
 async fn park_test_session(registry: &OrphanRegistry, id: SessionId, owner: &str) -> TestUpstream {
-    park_parked_tcp(registry, id, owner, None).await
+    park_parked_tcp(registry, id, owner, None, None).await
 }
 
 /// Like [`park_test_session`] but with a v2 downlink ring already holding
@@ -701,7 +735,23 @@ async fn park_test_session_with_ring(
 ) -> TestUpstream {
     let ring = Arc::new(parking_lot::Mutex::new(DownlinkRing::new(64 * 1024)));
     ring.lock().push(already_sent);
-    park_parked_tcp(registry, id, owner, Some(ring)).await
+    park_parked_tcp(registry, id, owner, Some(ring), None).await
+}
+
+/// Send-buffer size, in bytes, that forces the home's upstream writes to be
+/// *partial*: well under the splice's 64 KiB chunk, so every chunk needs several
+/// writes and a cancellation lands in the middle of one. Without this the kernel
+/// swallows a whole chunk at a time and the interesting state never occurs.
+const TINY_SOCKET_BUFFER: usize = 16 * 1024;
+
+/// Like [`park_test_session`] but with the upstream socket's buffers shrunk to
+/// [`TINY_SOCKET_BUFFER`], so a flooded uplink blocks part-way through a chunk.
+async fn park_test_session_with_tiny_buffers(
+    registry: &OrphanRegistry,
+    id: SessionId,
+    owner: &str,
+) -> TestUpstream {
+    park_parked_tcp(registry, id, owner, None, Some(TINY_SOCKET_BUFFER)).await
 }
 
 async fn park_parked_tcp(
@@ -709,6 +759,7 @@ async fn park_parked_tcp(
     id: SessionId,
     owner: &str,
     downlink_ring: Option<Arc<parking_lot::Mutex<DownlinkRing>>>,
+    socket_buffer: Option<usize>,
 ) -> TestUpstream {
     let listener = tokio::net::TcpListener::bind(loopback()).await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -716,6 +767,17 @@ async fn park_parked_tcp(
         async { listener.accept().await.unwrap().0 },
         tokio::net::TcpStream::connect(addr),
     );
+    let peer = peer.unwrap();
+    if let Some(size) = socket_buffer {
+        for socket in [socket2::SockRef::from(&upstream), socket2::SockRef::from(&peer)] {
+            socket
+                .set_send_buffer_size(size)
+                .expect("shrinking the test socket send buffer");
+            socket
+                .set_recv_buffer_size(size)
+                .expect("shrinking the test socket recv buffer");
+        }
+    }
     let (upstream_reader, upstream_writer) = upstream.into_split();
     let metrics = test_metrics();
     let user = UserKey::new(owner, "relay-password", None, CipherKind::Chacha20IetfPoly1305, None)
@@ -739,7 +801,7 @@ async fn park_parked_tcp(
             downlink_ring,
         }),
     );
-    TestUpstream { peer: peer.unwrap() }
+    TestUpstream { peer }
 }
 
 /// A v5 OPEN header for a TCP-framed relayed session under `id`.
@@ -809,17 +871,38 @@ impl V5Session {
             .expect("a client-gone end must be a clean FIN, not a reset");
     }
 
-    /// Waits for the home to end the stream and reports how: `None` for a clean
-    /// FIN, `Some(reason)` for a reset.
-    async fn end_reason(mut self) -> Option<CloseReason> {
-        let ended = tokio::time::timeout(Duration::from_secs(5), self.recv.read_to_end(4096))
+    /// Aborts the edge's uplink half without a FIN, as a client carrier that
+    /// dies mid-request does. The home's next mesh read then fails — an uplink
+    /// fault, deterministically and without touching the upstream.
+    fn edge_reset(&mut self) {
+        self.send
+            .reset(VarInt::from_u32(CloseReason::Abort.code()))
+            .expect("resetting the edge uplink half");
+    }
+
+    /// Ends the edge's uplink half with a FIN, as a carrier switch does, without
+    /// waiting for the home — the caller goes on to read the downlink.
+    fn edge_switch(&mut self) {
+        self.send.finish().expect("finishing the edge half");
+    }
+
+    /// Reads the home's half to its end: the bytes it relayed, or the reason it
+    /// reset instead of finishing.
+    async fn drain(mut self, limit: usize) -> Result<Vec<u8>, CloseReason> {
+        let ended = tokio::time::timeout(Duration::from_secs(10), self.recv.read_to_end(limit))
             .await
             .expect("the home must end the relay, not leave it hanging");
         match ended {
-            Ok(_) => None,
-            Err(ReadToEndError::Read(error)) => Some(reset_reason_read(&error)),
+            Ok(bytes) => Ok(bytes),
+            Err(ReadToEndError::Read(error)) => Err(reset_reason_read(&error)),
             Err(other) => panic!("unexpected read-to-end failure: {other:?}"),
         }
+    }
+
+    /// Waits for the home to end the stream and reports how: `None` for a clean
+    /// FIN, `Some(reason)` for a reset.
+    async fn end_reason(self) -> Option<CloseReason> {
+        self.drain(4096).await.err()
     }
 }
 
@@ -839,8 +922,11 @@ struct MeshHomeHarness {
 
 impl MeshHomeHarness {
     async fn new() -> Self {
+        Self::with_registry(test_registry()).await
+    }
+
+    async fn with_registry(registry: Arc<OrphanRegistry>) -> Self {
         let psk = b"mesh-home-v5-psk";
-        let registry = test_registry();
         let (cluster, services, routes) =
             home_runtime_with_registry(psk, 8, &["/tcp"], Arc::clone(&registry));
         let edge_endpoint =
@@ -874,6 +960,13 @@ impl MeshHomeHarness {
     }
 
     async fn serve_v5_with_user(&self, header: OpenHeaderV5, user: &str) -> V5Outcome {
+        self.serve_v5_raw_user(header, &UserFrame { user: user.to_string() }.encode())
+            .await
+    }
+
+    /// Like [`Self::serve_v5_with_user`] but writing `user_frame` verbatim, so a
+    /// test can hand the home a second-phase frame it cannot parse.
+    async fn serve_v5_raw_user(&self, header: OpenHeaderV5, user_frame: &[u8]) -> V5Outcome {
         let (mut send, mut recv) = open_relay(&self.edge_conn, &header.encode()).await;
         let mut ack = [0u8; 1];
         let read = tokio::time::timeout(Duration::from_secs(5), recv.read_exact(&mut ack))
@@ -886,9 +979,7 @@ impl MeshHomeHarness {
             };
         }
         assert_eq!(ack[0], OPEN_ACK_ACCEPTED, "an ack byte must mark the relay accepted");
-        send.write_all(&UserFrame { user: user.to_string() }.encode())
-            .await
-            .expect("writing the USER frame");
+        send.write_all(user_frame).await.expect("writing the USER frame");
         let ended = tokio::time::timeout(Duration::from_secs(5), recv.read_to_end(64))
             .await
             .expect("the home must resolve phase 2, not leave it hanging");
@@ -1249,5 +1340,336 @@ async fn a_clean_upstream_eof_still_finishes_the_relay_stream() {
         session.end_reason().await,
         None,
         "a clean upstream EOF must finish the relay stream, not reset it",
+    );
+}
+
+/// A stream the downlink already finished must never be reset afterwards. The
+/// common shape: the target answers in full and closes, the client is still
+/// uploading, so the uplink faults *after* the FIN. quinn does not reject a
+/// reset after a finish — it drops whatever is still unacked and queues
+/// RESET_STREAM — so resetting here would hand the edge a **complete** response
+/// as an abort, the exact harm the reset was added to prevent.
+#[tokio::test]
+async fn an_uplink_fault_after_a_clean_upstream_eof_still_finishes() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([28u8; 16]);
+    let mut upstream = park_test_session(harness.registry(), id, "beerloga").await;
+    let mut session = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    let response = b"HTTP/1.1 200 OK\r\ncontent-length: 4\r\n\r\ndone";
+    upstream.write(response).await;
+    drop(upstream); // ordinary close: the response is complete
+
+    // Order the two events: once the edge holds the response the home has
+    // written it and looped back into its upstream read, where the FIN is
+    // already queued. The sleep covers the scheduling gap between that read
+    // returning 0 and the reset below arriving.
+    assert_eq!(session.edge_read(response.len()).await, response);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Now the edge's client carrier dies without a FIN: the home's next mesh
+    // read fails, which is an uplink fault on an already-finished stream.
+    session.edge_reset();
+    // Give a RESET_STREAM the home should never send time to arrive; reading
+    // straight away would race it and pass either way.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(
+        session.drain(4096).await,
+        Ok(Vec::new()),
+        "a finished stream must stay finished; the edge must not see an abort",
+    );
+}
+
+/// Bytes already read out of the upstream must not vanish when the carrier
+/// switches. `select!` drops the losing future wherever it stands, so a downlink
+/// cancelled inside its mesh write would discard a chunk — and with the session
+/// re-parked right afterwards and no v2 ring by default, the next carrier would
+/// resume a stream with a silent hole. Stopping the pump at a read boundary
+/// leaves the unread bytes in the socket, which is exactly what the park hands
+/// on: carrier one plus carrier two must reconstruct the payload exactly.
+#[tokio::test]
+async fn a_carrier_switch_mid_downlink_loses_no_bytes() {
+    let registry = ringless_registry();
+    let harness = MeshHomeHarness::with_registry(Arc::clone(&registry)).await;
+    let id = SessionId::from_bytes([29u8; 16]);
+    let upstream = park_test_session(&registry, id, "beerloga").await;
+    let mut first = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    let payload = flood_payload(0x00);
+    // The far end only writes here; the home's own read half stays untouched.
+    let (_peer_reader, mut peer_writer) = upstream.split();
+    let target = {
+        let payload = payload.clone();
+        tokio::spawn(async move {
+            peer_writer
+                .write_all(&payload)
+                .await
+                .expect("the target answers in full");
+            peer_writer
+        })
+    };
+
+    // The edge reads nothing yet, so the home fills the mesh stream's receive
+    // window and parks inside `write_all` — the state a plain `select!` would
+    // cancel it in.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    first.edge_switch();
+    let delivered = first
+        .drain(payload.len() + 1)
+        .await
+        .expect("a carrier switch is a clean end, not a reset");
+    assert!(delivered.len() < payload.len(), "the switch must land mid-payload");
+
+    // The home must have re-parked the still-healthy upstream.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !registry.has_park(id) {
+        assert!(Instant::now() < deadline, "the home never re-parked the relayed session");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // Second carrier: the remainder must continue exactly where the first left
+    // off — no hole, no duplicate.
+    let mut second = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+    let rest = second.edge_read(payload.len() - delivered.len()).await;
+    assert_eq!(
+        [delivered, rest].concat(),
+        payload,
+        "the two carriers must reconstruct the payload"
+    );
+
+    target.await.expect("the target write task must finish");
+}
+
+/// `upstream_bytes_acked` must name exactly the bytes the upstream socket took,
+/// including at a cancellation point: the uplink pump is dropped where it stands
+/// when the downlink faults. Counting a whole chunk only after `write_all`
+/// returns reports nothing for a cancelled partial write, and a later ack-prefix
+/// replay from that counter would resend a prefix the target already has.
+///
+/// The far end reads in a slow trickle rather than not at all: that keeps
+/// re-opening a small send window, so the home's writes are genuinely partial
+/// and the cancellation lands inside one. A far end that never reads leaves the
+/// socket flatly full, where even the whole-chunk accounting happens to be right.
+#[tokio::test]
+async fn a_cancelled_uplink_write_accounts_for_every_byte_the_socket_took() {
+    let registry = ringless_registry();
+    let harness = MeshHomeHarness::with_registry(Arc::clone(&registry)).await;
+    let id = SessionId::from_bytes([30u8; 16]);
+    let upstream = park_test_session_with_tiny_buffers(&registry, id, "beerloga").await;
+    let V5Session { mut send, mut recv } = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    let (mut peer_reader, mut peer_writer) = upstream.split();
+    // The target keeps answering into a mesh stream the edge never reads, so the
+    // home's downlink pump sits inside a write that STOP_SENDING can fail.
+    let target = tokio::spawn(async move {
+        let _ = peer_writer.write_all(&flood_payload(0xff)).await;
+        peer_writer
+    });
+    // The edge floods the uplink, so the home's uplink pump is always writing.
+    let edge = tokio::spawn(async move {
+        let _ = send.write_all(&flood_payload(0x5a)).await;
+        send
+    });
+    let received = Arc::new(AtomicUsize::new(0));
+    let trickle = {
+        let received = Arc::clone(&received);
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            loop {
+                match tokio::time::timeout(Duration::from_millis(500), peer_reader.read(&mut buf))
+                    .await
+                {
+                    Ok(Ok(0)) | Ok(Err(_)) | Err(_) => return peer_reader,
+                    Ok(Ok(n)) => {
+                        received.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    },
+                }
+            }
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // STOP_SENDING fails the home's pending downlink write: a mesh fault, which
+    // leaves the upstream healthy and cancels the uplink where it stands.
+    recv.stop(VarInt::from_u32(CloseReason::Abort.code()))
+        .expect("stopping the edge downlink half");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !registry.has_park(id) {
+        assert!(Instant::now() < deadline, "the home never re-parked the relayed session");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let ResumeOutcome::Hit(Parked::Tcp(parked)) = registry.take_for_resume(id, "beerloga").await
+    else {
+        panic!("the re-parked tcp session must be takeable");
+    };
+    // The uplink pump is gone, so the counter is final. The parked halves stay
+    // alive until the trickle has drained the socket — dropping them first would
+    // reset the connection and discard the very tail being measured.
+    let accounted = parked.upstream_bytes_acked.load(std::sync::atomic::Ordering::Relaxed);
+    let _peer_reader = trickle.await.expect("the trickle reader must finish");
+    let received = received.load(std::sync::atomic::Ordering::Relaxed);
+
+    assert!(received > 0, "the test must have moved bytes before cancelling");
+    assert_eq!(
+        accounted, received as u64,
+        "upstream_bytes_acked must equal what the upstream socket actually received",
+    );
+
+    drop(parked);
+    let _ = target.await;
+    let _ = edge.await;
+}
+
+/// The malformed-USER-frame arm. Deterministic (a zero-length name can never
+/// name a park owner, and `read_user_frame` rejects it without waiting), unlike
+/// the 5 s timeout arm beside it.
+#[tokio::test]
+async fn a_malformed_user_frame_is_refused_and_counted() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([31u8; 16]);
+    let _upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    let outcome_seen = harness.serve_v5_raw_user(v5_header(id), &[0u8]).await;
+
+    assert!(outcome_seen.acked(), "phase 1 answers before the USER frame is read");
+    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(rejected(&rendered, "bad_setup"), 1, "{rendered}");
+    assert_eq!(outcome(&rendered, "error"), 1, "{rendered}");
+}
+
+// ── v5 splice end-state decisions ─────────────────────────────────────────────
+
+/// A stream the downlink pump already finished on upstream EOF must never be
+/// reset afterwards, however the splice ended. quinn accepts a reset after a
+/// finish — it drops whatever is still unacked and queues RESET_STREAM — so the
+/// edge would read a **complete** response as an abort.
+///
+/// Asserted on the decision rather than over a live mesh: on loopback the FIN is
+/// acknowledged within microseconds, after which quinn retires the send stream
+/// and swallows the late reset, so an end-to-end test cannot observe the harm.
+#[test]
+fn a_finished_stream_is_never_reset() {
+    let faulted = SpliceFault::mesh(anyhow::anyhow!("the edge carrier died")).into_end();
+    assert_eq!(faulted.stream_close(false), StreamClose::Reset(CloseReason::Abort));
+    assert_eq!(faulted.stream_close(true), StreamClose::Finish);
+
+    let stalled = SpliceFault::stalled_mesh(anyhow::anyhow!("the edge wedged")).into_end();
+    assert_eq!(stalled.stream_close(false), StreamClose::Reset(CloseReason::Budget));
+    assert_eq!(stalled.stream_close(true), StreamClose::Finish);
+
+    let graceful = SpliceEnd::Graceful { upstream_healthy: true };
+    assert_eq!(graceful.stream_close(false), StreamClose::Finish);
+    assert_eq!(graceful.stream_close(true), StreamClose::Finish);
+}
+
+/// The two halves' verdicts merge: the fault decides what the edge sees, while
+/// the park decision is the AND of both — an upstream either half found EOF'd or
+/// broken must never be handed to a later carrier.
+#[test]
+fn a_splice_end_merges_both_halves() {
+    assert!(matches!(
+        splice_end(Ok(()), Ok(DownlinkEnd::Stopped)),
+        SpliceEnd::Graceful { upstream_healthy: true },
+    ));
+    assert!(matches!(
+        splice_end(Ok(()), Ok(DownlinkEnd::UpstreamEof)),
+        SpliceEnd::Graceful { upstream_healthy: false },
+    ));
+    assert!(matches!(
+        splice_end(Err(SpliceFault::mesh(anyhow::anyhow!("gone"))), Ok(DownlinkEnd::Stopped)),
+        SpliceEnd::Faulted {
+            upstream_healthy: true,
+            reset: CloseReason::Abort,
+            ..
+        },
+    ));
+    assert!(matches!(
+        splice_end(Err(SpliceFault::mesh(anyhow::anyhow!("gone"))), Ok(DownlinkEnd::UpstreamEof)),
+        SpliceEnd::Faulted { upstream_healthy: false, .. },
+    ));
+    assert!(matches!(
+        splice_end(Ok(()), Err(SpliceFault::upstream(anyhow::anyhow!("rst")))),
+        SpliceEnd::Faulted {
+            upstream_healthy: false,
+            reset: CloseReason::Abort,
+            ..
+        },
+    ));
+}
+
+/// A writer that takes at most `capacity` bytes and then blocks forever, as a
+/// socket does once its send buffer fills. Records everything it took.
+struct BlockingWriter {
+    capacity: usize,
+    written: usize,
+}
+
+impl tokio::io::AsyncWrite for BlockingWriter {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let free = self.capacity - self.written;
+        if free == 0 {
+            // Never woken: the test polls once and then drops the future, which
+            // is exactly the cancellation being exercised.
+            return std::task::Poll::Pending;
+        }
+        let took = free.min(buf.len());
+        self.written += took;
+        std::task::Poll::Ready(Ok(took))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// Cancelling the uplink pump part-way through a chunk must leave
+/// `upstream_bytes_acked` naming exactly the bytes the socket took. Counting the
+/// whole chunk after `write_all` returns records nothing for the partial write,
+/// and a later ack-prefix replay from that counter would resend a prefix the
+/// target already has.
+#[tokio::test]
+async fn a_cancelled_uplink_chunk_write_counts_only_what_the_socket_took() {
+    let mut writer = BlockingWriter { capacity: 3000, written: 0 };
+    let chunk = vec![0x7fu8; 8192];
+    let acked = std::sync::atomic::AtomicU64::new(0);
+    let counter = test_metrics().mesh_bytes_counter("home", "up", "tcp");
+
+    let mut pump = Box::pin(write_uplink_chunk(
+        &mut writer,
+        &chunk,
+        Duration::from_secs(5),
+        &counter,
+        &acked,
+    ));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(
+        std::future::Future::poll(pump.as_mut(), &mut cx).is_pending(),
+        "the socket must block part-way through the chunk",
+    );
+    drop(pump);
+
+    assert_eq!(writer.written, 3000, "the socket took a partial chunk");
+    assert_eq!(
+        acked.load(std::sync::atomic::Ordering::Relaxed),
+        3000,
+        "every byte the socket took must be accounted for at the cancellation point",
     );
 }
