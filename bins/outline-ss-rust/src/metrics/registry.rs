@@ -247,6 +247,13 @@ pub(super) fn register_descriptions() {
          could authenticate — fix the cluster config. The edge degrades to a fresh \
          local session)."
     );
+    describe_counter!(
+        "outline_ss_mesh_relay_outcome_total",
+        "Relayed sessions a home node resolved, by outcome (hit = the parked \
+         session was found and spliced onto the relay; miss = no park matched, so \
+         the edge serves its client a fresh local session). The direct signal that \
+         cluster relaying works, which byte counters alone never gave."
+    );
     describe_gauge!(
         "outline_ss_mesh_relay_active",
         "Relayed sessions this home node is currently serving over the cluster mesh."
