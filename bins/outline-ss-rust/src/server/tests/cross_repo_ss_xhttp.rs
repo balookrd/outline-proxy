@@ -246,6 +246,69 @@ async fn cross_repo_ss_udp_xhttp_packet_up_h2_round_trip() -> Result<()> {
     Ok(())
 }
 
+/// SS-UDP-over-XHTTP with several datagrams in flight: the carrier is a byte
+/// stream, so a burst of downlink packets can reach the client's body reader
+/// coalesced into one chunk (or split across two). Record framing is what makes
+/// the boundaries survive that — this pins the negotiation end to end (the
+/// client only frames when the server echoed the capability, so a mismatch
+/// shows up here as a decrypt failure, not as a silent fallback).
+#[tokio::test]
+async fn cross_repo_ss_udp_xhttp_multi_datagram_round_trip() -> Result<()> {
+    const BURST: usize = 4;
+
+    // UDP echo upstream: reply to every datagram it receives.
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let mut buf = [0_u8; 1500];
+        for _ in 0..BURST {
+            let (n, peer) = upstream.recv_from(&mut buf).await?;
+            upstream.send_to(&buf[..n], peer).await?;
+        }
+        Result::<_, anyhow::Error>::Ok(())
+    });
+
+    let (listen_addr, server) = setup_ss_xhttp_server("/ssub", true).await?;
+    let url = Url::parse(&format!("http://{listen_addr}/ssub"))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    // Dial through `connect_transport` (what `UdpWsTransport::connect` does
+    // internally) so the negotiated state is observable before the SS layer
+    // consumes the stream.
+    let stream = connect_transport(
+        TransportDialOptions::new(&cache, &url, TransportMode::XhttpH2, "cross-repo-ss-udp-burst")
+            .with_datagram_records(true),
+    )
+    .await?;
+    assert!(
+        stream.xhttp_udp_records(),
+        "server must echo the datagram-record capability on an SS-UDP xhttp path"
+    );
+    let transport =
+        UdpWsTransport::from_websocket(stream, TEST_CIPHER, TEST_PASSWORD, "cross-repo-udp", None)?;
+
+    for index in 0..BURST {
+        let payload = format!("ping-{index}");
+        transport
+            .send_packet(&ss_first_chunk(upstream_addr, payload.as_bytes()))
+            .await?;
+    }
+    // Every echo must come back as its own datagram, intact.
+    let mut seen = Vec::with_capacity(BURST);
+    for _ in 0..BURST {
+        let reply = tokio::time::timeout(Duration::from_secs(5), transport.read_packet()).await??;
+        let tail = reply[reply.len() - "ping-0".len()..].to_vec();
+        seen.push(String::from_utf8(tail)?);
+    }
+    seen.sort();
+    let expected: Vec<String> = (0..BURST).map(|index| format!("ping-{index}")).collect();
+    assert_eq!(seen, expected, "each datagram must survive the byte-stream carrier intact");
+
+    tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    transport.close().await?;
+    server.abort();
+    Ok(())
+}
+
 /// Stand up a server whose single base path is *combined*: registered in BOTH
 /// the `xhttp_ss` and `xhttp_ss_udp` tables, so `build_app` tags it
 /// `SsCombined` and the server picks the tcp or udp relay from the hidden bit

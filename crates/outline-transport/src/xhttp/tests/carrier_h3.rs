@@ -17,7 +17,7 @@ fn dummy_xhttp_stream(carrier_is_h3: bool) -> XhttpStream {
     let driver = AbortOnDrop::new(tokio::spawn(async {
         std::future::pending::<()>().await;
     }));
-    XhttpStream::from_channels(in_rx, out_tx, driver, XhttpSubmode::PacketUp, carrier_is_h3)
+    XhttpStream::from_channels(in_rx, out_tx, driver, XhttpSubmode::PacketUp, carrier_is_h3, false)
 }
 
 #[tokio::test]

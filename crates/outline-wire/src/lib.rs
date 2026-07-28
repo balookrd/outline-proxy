@@ -17,6 +17,7 @@ pub mod padding;
 pub mod resume;
 pub mod ss2022;
 pub mod target;
+pub mod udp_records;
 pub mod vless;
 pub mod vless_mux;
 pub mod xhttp;
