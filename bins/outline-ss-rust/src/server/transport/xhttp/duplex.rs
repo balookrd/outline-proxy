@@ -9,13 +9,16 @@
 //! `touch()` that holds off idle eviction; Pong is a no-op and
 //! Close tears the session down.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use outline_wire::padding::PaddingScheme;
+use outline_wire::udp_records::{UdpRecordDecoder, encode_record_into};
 use tokio::sync::mpsc;
+use tracing::warn;
 
 use super::super::carrier_padding;
 
@@ -42,14 +45,41 @@ pub(in crate::server) enum XhttpMsg {
 
 pub(in crate::server) struct XhttpDuplex {
     pub(in crate::server) session: Arc<XhttpSession>,
+    /// Datagram record framing negotiated for this session (see
+    /// [`outline_wire::udp_records`]). `true` only on an SS-UDP path whose
+    /// client advertised `X-Outline-Udp-Records: 1`. XHTTP carries a byte
+    /// stream, so without framing an uplink chunk is not a datagram: two
+    /// packets coalesce (AEAD tag mismatch) or one arrives halved ("packet too
+    /// short"). `false` keeps the historical wire for every other session.
+    pub(in crate::server) udp_records: bool,
+}
+
+impl XhttpDuplex {
+    /// Builds a duplex over `session`, framing datagrams when the session
+    /// negotiated it. `spawn_relay` uses this for the SS-UDP arm; the TCP /
+    /// VLESS arms construct the struct directly with framing off.
+    pub(in crate::server) fn with_udp_records(
+        session: Arc<XhttpSession>,
+        udp_records: bool,
+    ) -> Self {
+        Self { session, udp_records }
+    }
 }
 
 pub(in crate::server) struct XhttpReader {
     session: Arc<XhttpSession>,
+    /// Reassembly state when framing is negotiated; `None` keeps `recv`
+    /// forwarding raw chunks. Bounded by the `u16` record length.
+    records: Option<UdpRecordDecoder>,
+    /// Datagrams recovered from the last chunk, not yet returned. One `recv`
+    /// yields one datagram, so the relay's per-packet path is unchanged.
+    pending: VecDeque<Bytes>,
 }
 
 pub(in crate::server) struct XhttpWriter {
     session: Arc<XhttpSession>,
+    /// Frames each downlink datagram as its own record when negotiated.
+    udp_records: bool,
 }
 
 impl WsSocket for XhttpDuplex {
@@ -58,15 +88,31 @@ impl WsSocket for XhttpDuplex {
     type Writer = XhttpWriter;
 
     fn split_io(self) -> (Self::Reader, Self::Writer) {
-        let reader = XhttpReader { session: Arc::clone(&self.session) };
-        let writer = XhttpWriter { session: self.session };
+        let reader = XhttpReader {
+            session: Arc::clone(&self.session),
+            records: self.udp_records.then(UdpRecordDecoder::new),
+            pending: VecDeque::new(),
+        };
+        let writer = XhttpWriter {
+            session: self.session,
+            udp_records: self.udp_records,
+        };
         (reader, writer)
     }
 
     async fn recv(reader: &mut Self::Reader) -> Result<Option<XhttpMsg>> {
         loop {
+            // A datagram recovered from an earlier chunk goes out first: one
+            // `recv` is one datagram, whatever the carrier's chunking was.
+            if let Some(record) = reader.pending.pop_front() {
+                return Ok(Some(XhttpMsg::Binary(record)));
+            }
             if let Some(chunk) = reader.session.pop_uplink_ready() {
-                return Ok(Some(XhttpMsg::Binary(chunk)));
+                match take_records(&mut reader.records, &mut reader.pending, chunk) {
+                    Some(msg) => return Ok(Some(msg)),
+                    // The chunk completed no record — read the next one.
+                    None => continue,
+                }
             }
             if reader.session.is_closed() || reader.session.uplink_eof() {
                 return Ok(None);
@@ -76,7 +122,10 @@ impl WsSocket for XhttpDuplex {
             // notify subscription cannot lose the wake-up.
             let notified = reader.session.uplink_notify.notified();
             if let Some(chunk) = reader.session.pop_uplink_ready() {
-                return Ok(Some(XhttpMsg::Binary(chunk)));
+                match take_records(&mut reader.records, &mut reader.pending, chunk) {
+                    Some(msg) => return Ok(Some(msg)),
+                    None => continue,
+                }
             }
             if reader.session.is_closed() || reader.session.uplink_eof() {
                 return Ok(None);
@@ -86,6 +135,18 @@ impl WsSocket for XhttpDuplex {
     }
 
     async fn send(writer: &mut Self::Writer, msg: XhttpMsg) -> Result<()> {
+        let msg = match msg {
+            // Framing negotiated: length-prefix the datagram so the client can
+            // recover the boundary from whatever body chunking the carrier
+            // (and any CDN on the path) produces.
+            XhttpMsg::Binary(data) if writer.udp_records => match frame_datagram(&data) {
+                Some(record) => XhttpMsg::Binary(record),
+                // Past the `u16` record ceiling — no real UDP datagram gets
+                // here. Drop it rather than tearing down a healthy session.
+                None => return Ok(()),
+            },
+            other => other,
+        };
         match msg {
             XhttpMsg::Binary(data) => match writer.session.push_downlink(data).await {
                 Ok(()) => Ok(()),
@@ -187,6 +248,38 @@ impl WsSocket for XhttpDuplex {
             padding: scheme,
             monitor,
         }))
+    }
+}
+
+/// Feeds one uplink chunk through the reader's record decoder and returns the
+/// first datagram it completed (the rest queue in `pending`). `None` means the
+/// chunk held no complete record yet — the caller reads on. With framing off
+/// the chunk is forwarded unchanged, which is the historical behaviour.
+fn take_records(
+    records: &mut Option<UdpRecordDecoder>,
+    pending: &mut VecDeque<Bytes>,
+    chunk: Bytes,
+) -> Option<XhttpMsg> {
+    let Some(decoder) = records.as_mut() else {
+        return Some(XhttpMsg::Binary(chunk));
+    };
+    decoder.push(&chunk);
+    while let Some(record) = decoder.next_record() {
+        pending.push_back(record);
+    }
+    pending.pop_front().map(XhttpMsg::Binary)
+}
+
+/// Wraps one downlink datagram as a length-prefixed record, or `None` when it
+/// overflows the `u16` length field (the caller drops it).
+fn frame_datagram(payload: &[u8]) -> Option<Bytes> {
+    let mut out = Vec::with_capacity(payload.len() + 2);
+    match encode_record_into(payload, &mut out) {
+        Ok(()) => Some(Bytes::from(out)),
+        Err(error) => {
+            warn!(?error, len = payload.len(), "dropping oversized xhttp datagram record");
+            None
+        },
     }
 }
 

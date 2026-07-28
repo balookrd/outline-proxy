@@ -98,6 +98,7 @@ TUN PMTUD).
 
 Сквозные темы под [`docs/`](docs/):
 [carrier-padding](docs/PADDING.ru.md) ·
+[фрейминг записей SS-UDP поверх XHTTP](docs/XHTTP-UDP-RECORDS.ru.md) ·
 [выбор исходящего IPv6](docs/OUTBOUND-IPV6.ru.md) ·
 [mesh-кластер серверов](docs/CLUSTER.ru.md).
 

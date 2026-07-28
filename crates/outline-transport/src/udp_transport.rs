@@ -71,16 +71,20 @@ pub struct UdpWsTransport {
     /// Only set on the WS / XHTTP datagram carrier (`from_websocket`); the raw
     /// socket and raw-QUIC datagram channel stay plain (padding is a WS-carrier
     /// fingerprint feature, mirroring VLESS-UDP). Per-datagram, no cover frames
-    /// on the uplink — UDP preserves packet boundaries so one frame wraps one
-    /// packet.
+    /// on the uplink: one frame wraps one packet. On a WS carrier the frame
+    /// boundary is the datagram boundary; on an XHTTP carrier (an HTTP byte
+    /// stream) the boundary is re-established one layer down by the negotiated
+    /// record framing in `outline_wire::udp_records`, which wraps whatever this
+    /// layer produced — padded or bare.
     padding: CarrierPadding,
     /// `Some` iff [`Self::padding`] is enabled: inbound datagrams run through
     /// this decoder before SS decryption. `read_packet` is the only reader; the
     /// `SyncMutex` keeps the type `Send` without holding the guard across the
-    /// decrypt await. One WS Binary frame carries exactly one padding frame
-    /// (the sender emits one per `send_packet`), so the decoder always lands on
-    /// a frame boundary — a `real_len = 0` cover frame decodes to nothing and
-    /// is skipped.
+    /// decrypt await. One inbound datagram carries exactly one padding frame
+    /// (the sender emits one per `send_packet`, and the XHTTP record layer
+    /// hands this one back whole), so the decoder always lands on a frame
+    /// boundary — a `real_len = 0` cover frame decodes to nothing and is
+    /// skipped.
     recv_decoder: Option<SyncMutex<PaddingDecoder>>,
     /// Reaction for a recognised carrier control signal (server-initiated
     /// downstream throttle), set by the dispatch layer. `None` keeps the
@@ -242,7 +246,11 @@ impl UdpWsTransport {
         let ws_stream = connect_transport(
             TransportDialOptions::new(cache, url, mode, source)
                 .with_network(DialNetworkOptions { fwmark, ipv6_first })
-                .with_combined_ss_kind(combined_ss_kind),
+                .with_combined_ss_kind(combined_ss_kind)
+                // Datagram session: ask an XHTTP carrier to frame packets as
+                // length-prefixed records so the byte stream underneath cannot
+                // coalesce or split them (WS carriers ignore the flag).
+                .with_datagram_records(true),
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
@@ -282,6 +290,9 @@ impl UdpWsTransport {
             TransportDialOptions::new(cache, url, mode, source)
                 .with_network(DialNetworkOptions { fwmark, ipv6_first })
                 .with_combined_ss_kind(combined_ss_kind)
+                // See `connect`: SS-UDP over XHTTP needs explicit record
+                // framing to keep datagram boundaries.
+                .with_datagram_records(true)
                 .with_resume(DialResumeOptions {
                     resume_request,
                     // Ack-Prefix Protocol is a TCP-side mid-session retry feature;

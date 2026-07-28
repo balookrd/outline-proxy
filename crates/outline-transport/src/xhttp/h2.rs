@@ -84,6 +84,7 @@ pub(super) async fn connect_xhttp_h2(
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
     combined_ss_kind: Option<SsPathKind>,
+    datagram_records: bool,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     let submode = resolve_effective_submode(url, mode).await;
     let host = url
@@ -134,100 +135,104 @@ pub(super) async fn connect_xhttp_h2(
             session_id: session_id.clone(),
         });
 
-        let (issued_session_id, ack_prefix_echo, symmetric_replay_echo, driver, active_submode) =
-            match submode {
-                XhttpSubmode::PacketUp => {
-                    // Open the GET synchronously so the resume-id
-                    // round-trip completes before we hand the stream to
-                    // the caller. The body drain is spawned as a
-                    // sub-task; POSTs are pipelined per `start_send`.
-                    let (issued, echo, sym_echo, body) = open_h2_get(
-                        send_request.clone(),
-                        &target,
-                        resume_request,
-                        ack_prefix_requested,
-                        symmetric_replay_requested,
-                        client_acked_offset,
-                        profile,
-                    )
-                    .await?;
-                    let driver = tokio::spawn(driver_loop_h2(
-                        send_request,
-                        target.clone(),
-                        in_tx,
-                        out_rx,
-                        body,
-                        profile,
-                    ));
-                    (issued, echo, sym_echo, driver, XhttpSubmode::PacketUp)
-                },
-                XhttpSubmode::StreamOne => {
-                    // Stream-one is a single bidirectional POST: open
-                    // it synchronously to read response headers, then
-                    // hand the response body and the request-body
-                    // sender to the driver. On dial-time failure we
-                    // retry packet-up on the same h2 connection — the
-                    // TCP/TLS/h2 cost is sunk and the failure is most
-                    // likely middlebox-shaped (the CDN refused to
-                    // forward the streaming request body), so trying
-                    // the simpler carrier on the surviving connection
-                    // recovers without burning a fresh handshake.
-                    match open_h2_stream_one(
-                        send_request.clone(),
-                        &target,
-                        resume_request,
-                        ack_prefix_requested,
-                        symmetric_replay_requested,
-                        client_acked_offset,
-                        profile,
-                    )
-                    .await
-                    {
-                        Ok((issued, echo, sym_echo, body, frame_tx)) => {
-                            let driver = tokio::spawn(driver_loop_h2_stream_one(
-                                in_tx, out_rx, body, frame_tx,
-                            ));
-                            crate::xhttp_submode_cache::record_success(
-                                url,
-                                XhttpSubmode::StreamOne,
-                            )
+        let (
+            issued_session_id,
+            ack_prefix_echo,
+            symmetric_replay_echo,
+            udp_records,
+            driver,
+            active_submode,
+        ) = match submode {
+            XhttpSubmode::PacketUp => {
+                // Open the GET synchronously so the resume-id
+                // round-trip completes before we hand the stream to
+                // the caller. The body drain is spawned as a
+                // sub-task; POSTs are pipelined per `start_send`.
+                let (issued, echo, sym_echo, records, body) = open_h2_get(
+                    send_request.clone(),
+                    &target,
+                    resume_request,
+                    ack_prefix_requested,
+                    symmetric_replay_requested,
+                    client_acked_offset,
+                    datagram_records,
+                    profile,
+                )
+                .await?;
+                let driver = tokio::spawn(driver_loop_h2(
+                    send_request,
+                    target.clone(),
+                    in_tx,
+                    out_rx,
+                    body,
+                    datagram_records,
+                    profile,
+                ));
+                (issued, echo, sym_echo, records, driver, XhttpSubmode::PacketUp)
+            },
+            XhttpSubmode::StreamOne => {
+                // Stream-one is a single bidirectional POST: open
+                // it synchronously to read response headers, then
+                // hand the response body and the request-body
+                // sender to the driver. On dial-time failure we
+                // retry packet-up on the same h2 connection — the
+                // TCP/TLS/h2 cost is sunk and the failure is most
+                // likely middlebox-shaped (the CDN refused to
+                // forward the streaming request body), so trying
+                // the simpler carrier on the surviving connection
+                // recovers without burning a fresh handshake.
+                match open_h2_stream_one(
+                    send_request.clone(),
+                    &target,
+                    resume_request,
+                    ack_prefix_requested,
+                    symmetric_replay_requested,
+                    client_acked_offset,
+                    datagram_records,
+                    profile,
+                )
+                .await
+                {
+                    Ok((issued, echo, sym_echo, records, body, frame_tx)) => {
+                        let driver =
+                            tokio::spawn(driver_loop_h2_stream_one(in_tx, out_rx, body, frame_tx));
+                        crate::xhttp_submode_cache::record_success(url, XhttpSubmode::StreamOne)
                             .await;
-                            (issued, echo, sym_echo, driver, XhttpSubmode::StreamOne)
-                        },
-                        Err(stream_err) => {
-                            warn!(
-                                %url,
-                                error = %format!("{stream_err:#}"),
-                                "xhttp h2 stream-one failed, falling back to packet-up on same connection"
-                            );
-                            crate::xhttp_submode_cache::record_failure(
-                                url,
-                                XhttpSubmode::StreamOne,
-                            )
+                        (issued, echo, sym_echo, records, driver, XhttpSubmode::StreamOne)
+                    },
+                    Err(stream_err) => {
+                        warn!(
+                            %url,
+                            error = %format!("{stream_err:#}"),
+                            "xhttp h2 stream-one failed, falling back to packet-up on same connection"
+                        );
+                        crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
                             .await;
-                            let (issued, echo, sym_echo, body) = open_h2_get(
-                                send_request.clone(),
-                                &target,
-                                resume_request,
-                                ack_prefix_requested,
-                                symmetric_replay_requested,
-                                client_acked_offset,
-                                profile,
-                            )
-                            .await?;
-                            let driver = tokio::spawn(driver_loop_h2(
-                                send_request,
-                                target.clone(),
-                                in_tx,
-                                out_rx,
-                                body,
-                                profile,
-                            ));
-                            (issued, echo, sym_echo, driver, XhttpSubmode::PacketUp)
-                        },
-                    }
-                },
-            };
+                        let (issued, echo, sym_echo, records, body) = open_h2_get(
+                            send_request.clone(),
+                            &target,
+                            resume_request,
+                            ack_prefix_requested,
+                            symmetric_replay_requested,
+                            client_acked_offset,
+                            datagram_records,
+                            profile,
+                        )
+                        .await?;
+                        let driver = tokio::spawn(driver_loop_h2(
+                            send_request,
+                            target.clone(),
+                            in_tx,
+                            out_rx,
+                            body,
+                            datagram_records,
+                            profile,
+                        ));
+                        (issued, echo, sym_echo, records, driver, XhttpSubmode::PacketUp)
+                    },
+                }
+            },
+        };
 
         debug!(
             %url, %session_id, mode = "xhttp_h2", ?submode, ?active_submode,
@@ -241,6 +246,7 @@ pub(super) async fn connect_xhttp_h2(
                 AbortOnDrop::new(driver),
                 active_submode,
                 false,
+                udp_records,
             ),
             issued_session_id,
             ack_prefix_echo,
@@ -262,6 +268,7 @@ pub(super) async fn connect_xhttp_h2(
 /// the issued id synchronously (rather than via a side channel) is
 /// what lets the dial path stash the token in the resume cache
 /// before any data flows.
+#[allow(clippy::too_many_arguments)]
 async fn open_h2_get(
     mut send: http2::SendRequest<RequestBody>,
     target: &XhttpTarget,
@@ -269,8 +276,9 @@ async fn open_h2_get(
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
+    datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(Option<SessionId>, bool, bool, hyper::body::Incoming)> {
+) -> Result<(Option<SessionId>, bool, bool, bool, hyper::body::Incoming)> {
     let mut builder = Request::builder()
         .method(Method::GET)
         .uri(target.full_uri())
@@ -290,6 +298,7 @@ async fn open_h2_get(
         builder =
             builder.header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
     }
+    builder = super::apply_udp_records_request_header(datagram_records, builder);
     let mut req = builder
         .body(empty_request_body())
         .context("failed to build xhttp GET request")?;
@@ -315,7 +324,8 @@ async fn open_h2_get(
     // v2 echo: requires v1 echo (per spec, v2 without v1 is undefined).
     let sym_echo =
         symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
-    Ok((issued, echo, sym_echo, resp.into_body()))
+    let udp_records = super::parse_udp_records_echo(datagram_records, resp.headers());
+    Ok((issued, echo, sym_echo, udp_records, resp.into_body()))
 }
 
 /// Stream-one carrier on h2: a single bidirectional POST whose
@@ -323,6 +333,7 @@ async fn open_h2_get(
 /// downlink. The synchronously-built `frame_tx` lets the driver
 /// task feed body chunks into the request stream, while the
 /// returned `Incoming` is consumed by the downlink drain.
+#[allow(clippy::too_many_arguments)]
 async fn open_h2_stream_one(
     mut send: http2::SendRequest<RequestBody>,
     target: &XhttpTarget,
@@ -330,9 +341,11 @@ async fn open_h2_stream_one(
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
+    datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(
     Option<SessionId>,
+    bool,
     bool,
     bool,
     hyper::body::Incoming,
@@ -373,6 +386,7 @@ async fn open_h2_stream_one(
         builder =
             builder.header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
     }
+    builder = super::apply_udp_records_request_header(datagram_records, builder);
     let mut req = builder
         .body(body)
         .context("failed to build xhttp stream-one request")?;
@@ -395,7 +409,8 @@ async fn open_h2_stream_one(
     let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
     let sym_echo =
         symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
-    Ok((issued, echo, sym_echo, resp.into_body(), frame_tx))
+    let udp_records = super::parse_udp_records_echo(datagram_records, resp.headers());
+    Ok((issued, echo, sym_echo, udp_records, resp.into_body(), frame_tx))
 }
 
 async fn driver_loop_h2_stream_one(
@@ -502,6 +517,7 @@ async fn driver_loop_h2(
     in_tx: InboundSender,
     mut out_rx: OutboundReceiver,
     body: hyper::body::Incoming,
+    datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) {
     // GET drain sub-task. The GET request and response headers were
@@ -527,7 +543,7 @@ async fn driver_loop_h2(
     // header map / append the seq per frame instead of re-running the
     // fingerprint `apply` and re-`format!`-ing the whole absolute URI on
     // every uplink write.
-    let base_headers = match build_post_headers(&target, profile) {
+    let base_headers = match build_post_headers(&target, datagram_records, profile) {
         Ok(headers) => Arc::new(headers),
         Err(error) => {
             warn!(?error, "xhttp h2 POST header template build failed");
@@ -616,6 +632,7 @@ async fn driver_loop_h2(
 /// fingerprint stays byte-identical.
 pub(super) fn build_post_headers(
     target: &XhttpTarget,
+    datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
@@ -624,6 +641,15 @@ pub(super) fn build_post_headers(
         HeaderValue::try_from(target.authority.as_str())
             .context("invalid xhttp authority for POST host header")?,
     );
+    // Uplink POSTs advertise the capability too: a session whose first
+    // request is a POST (seq=0 racing the GET) must reach the server with the
+    // same negotiation state the GET carries.
+    if datagram_records {
+        headers.insert(
+            http::HeaderName::from_static(super::UDP_RECORDS_HEADER),
+            HeaderValue::from_static(super::UDP_RECORDS_ENABLED),
+        );
+    }
     if let Some(profile) = profile {
         crate::fingerprint_profile::apply(
             profile,
