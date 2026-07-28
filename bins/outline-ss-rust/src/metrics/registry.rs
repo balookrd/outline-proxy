@@ -244,15 +244,25 @@ pub(super) fn register_descriptions() {
         "Relay streams a home node refused before serving them, by reason \
          (capacity = already at its concurrent relayed-session cap; no_route = the \
          relayed path and carrier resolve to no configured users here, so no packet \
-         could authenticate — fix the cluster config. The edge degrades to a fresh \
-         local session)."
+         could authenticate — fix the cluster config; no_session = no park exists \
+         under the relayed resume id, or it expired between the two setup phases; \
+         unknown_user = a park exists but belongs to another user, so user names \
+         disagree across the cluster (or it is a genuine security event); \
+         udp_unsupported = the peer asked for plaintext UDP framing this build does \
+         not serve yet; framing_mismatch = the park under that id is not the kind \
+         the relayed framing needs; bad_setup = the peer was acked but its \
+         second-phase USER frame was malformed or never arrived. The edge degrades \
+         to a fresh local session)."
     );
     describe_counter!(
         "outline_ss_mesh_relay_outcome_total",
         "Relayed sessions a home node resolved, by outcome (hit = the parked \
          session was found and spliced onto the relay; miss = no park matched, so \
-         the edge serves its client a fresh local session). The direct signal that \
-         cluster relaying works, which byte counters alone never gave."
+         the edge serves its client a fresh local session; error = setup failed \
+         before any park could be resolved). Every relay stream that reaches the \
+         handler records exactly one outcome, so the series reconciles against \
+         relays actually served — the direct signal that cluster relaying works, \
+         which byte counters alone never gave."
     );
     describe_gauge!(
         "outline_ss_mesh_relay_active",
