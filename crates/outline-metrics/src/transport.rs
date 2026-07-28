@@ -281,6 +281,26 @@ pub fn record_runtime_failure_suppressed(transport: &'static str, group: &str, u
         .inc();
 }
 
+/// Counts a payload-integrity failure observed on `uplink` — an AEAD open
+/// failure, a truncated datagram, or an SS2022 replay/reorder rejection.
+///
+/// Separate from `record_runtime_failure*` on purpose: those drive cooldown,
+/// penalty and the carrier-downgrade cascade, and a corrupt payload is
+/// evidence about the *content*, never about the carrier that delivered it.
+/// This counter is the operator-visible signal that the degradation exists —
+/// see `outline_ws_uplink_payload_integrity_errors_total`.
+pub fn record_payload_integrity_error(
+    transport: &'static str,
+    group: &str,
+    uplink: &str,
+    cause: &'static str,
+) {
+    METRICS
+        .uplink_payload_integrity_errors_total
+        .with_label_values(&[transport, group, uplink, cause])
+        .inc();
+}
+
 pub fn record_failover(transport: &'static str, group: &str, from_uplink: &str, to_uplink: &str) {
     METRICS
         .uplink_failovers_total

@@ -1,12 +1,13 @@
-//! Tests for the UDP flow-reader's clean-close classification.
+//! Tests for the UDP flow-reader's stop classification.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::anyhow;
 use outline_transport::WsClosed;
+use shadowsocks_crypto::CryptoError;
 use socks5_proto::TargetAddr;
 
-use super::is_clean_ws_close;
+use super::{ReaderStop, is_clean_ws_close};
 use crate::udp::UdpFlowKey;
 use crate::wire::IpVersion;
 
@@ -41,6 +42,52 @@ fn dirty_read_error_is_not_clean() {
         !is_clean_ws_close(&err),
         "a genuine read error must NOT be suppressed as a clean close",
     );
+}
+
+#[test]
+fn corrupt_datagram_stops_the_flow_without_charging_the_carrier() {
+    // A payload the AEAD could not open says nothing about the carrier that
+    // delivered it. The flow still goes away (its SS2022 replay state is now
+    // out of step), but it must be closed as a payload error — escalating it
+    // caps xhttp_h3 → xhttp_h2 for the whole uplink over a single datagram.
+    let err = anyhow::Error::new(CryptoError::DecryptFailed { cipher: "aes-256-gcm" })
+        .context("failed to read UDP downlink packet");
+    let stop = ReaderStop::classify(&err);
+    assert!(
+        matches!(stop, ReaderStop::PayloadIntegrity("decrypt_failed")),
+        "an AEAD open failure must classify as a payload error, got {stop:?}",
+    );
+    assert!(
+        !stop.escalates_to_carrier(),
+        "a payload error must not reach the uplink manager"
+    );
+    assert_eq!(stop.close_reason(), "payload_error");
+}
+
+#[test]
+fn carrier_read_failure_still_escalates() {
+    let err = anyhow!("websocket read failed: IO error: Invalid close code: 1013");
+    let stop = ReaderStop::classify(&err);
+    assert!(
+        matches!(stop, ReaderStop::CarrierFailure),
+        "a dirty read error must still classify as a carrier failure, got {stop:?}",
+    );
+    assert!(
+        stop.escalates_to_carrier(),
+        "a carrier failure must still reach the uplink manager"
+    );
+    assert_eq!(stop.close_reason(), "read_error");
+}
+
+#[test]
+fn clean_ws_close_neither_escalates_nor_counts_as_payload_corruption() {
+    let stop = ReaderStop::classify(&anyhow::Error::from(WsClosed));
+    assert!(
+        matches!(stop, ReaderStop::CleanClose),
+        "a Close frame is routine lifecycle, got {stop:?}",
+    );
+    assert!(!stop.escalates_to_carrier());
+    assert_eq!(stop.close_reason(), "closed");
 }
 
 #[test]

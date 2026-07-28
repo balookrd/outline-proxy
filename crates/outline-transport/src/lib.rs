@@ -258,6 +258,7 @@ pub use tcp_transport::{
 // Error-chain inspection helpers shared across crates.
 pub use error_classify::{
     contains_any, find_io_error_kind, is_transport_level_disconnect, lower_error,
+    payload_integrity_cause,
 };
 
 // HTTP/2 window-size tuning: called once during startup from the main binary.

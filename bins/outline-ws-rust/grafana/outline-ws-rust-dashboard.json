@@ -902,6 +902,11 @@
           "expr": "label_replace((sum by (instance, from_uplink, to_uplink) (rate(outline_ws_uplink_failovers_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} failover {{from_uplink}} -> {{to_uplink}}",
           "refId": "B"
+        },
+        {
+          "expr": "label_replace((sum by (instance, uplink, transport, cause) (rate(outline_ws_uplink_payload_integrity_errors_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} {{transport}} payload {{cause}} (not charged)",
+          "refId": "C"
         }
       ],
       "title": "Failures and Failovers",

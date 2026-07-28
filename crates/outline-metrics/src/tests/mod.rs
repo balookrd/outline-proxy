@@ -326,6 +326,7 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     record_runtime_failure_cause("tcp", "main", "primary", "timeout");
     record_runtime_failure_signature("tcp", "main", "primary", "read_failed");
     record_runtime_failure_other_detail("tcp", "main", "primary", "failed_to_read_chunk");
+    record_payload_integrity_error("udp", "main", "senko", "decrypt_failed");
     add_udp_datagram("up", "main", "nuxt");
     add_udp_datagram("down", "main", "senko");
     add_udp_datagram("down", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL);
@@ -362,6 +363,9 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     ));
     assert!(rendered.contains(
         "outline_ws_uplink_runtime_failure_other_details_total{detail=\"failed_to_read_chunk\",group=\"main\",transport=\"tcp\",uplink=\"primary\"} 1"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_uplink_payload_integrity_errors_total{cause=\"decrypt_failed\",group=\"main\",transport=\"udp\",uplink=\"senko\"} 1"
     ));
     assert!(rendered.contains(
         "outline_ws_udp_datagrams_total{direction=\"up\",group=\"main\",uplink=\"nuxt\"} 1"
