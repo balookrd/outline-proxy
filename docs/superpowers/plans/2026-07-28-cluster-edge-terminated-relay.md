@@ -38,22 +38,24 @@ cargo test --workspace --exclude sockudo-ws
 
 | File | Responsibility | Task |
 |---|---|---|
-| `server/cluster/mesh/frame.rs` | T1 adds the `UserFrame` codec + `NoSession`; T3 switches to v5 (drops `path`, narrows `CarrierKind`, retires `NoRoute`) | 1, 3 |
+| `server/cluster/mesh/frame.rs` | T1 adds the `UserFrame` codec + `NoSession`; T3 adds the v5 header beside v4; T7 deletes v4 | 1, 3, 7 |
 | `server/cluster/mesh/tests/frame.rs` | Codec roundtrips, bounds rejection (T1); v5 layout and version rejection (T3) | 1, 3 |
 | `server/relay.rs` | New `UpstreamRead` trait; `relay_upstream_to_client` generified off `OwnedReadHalf` | 2 |
 | `server/tests/relay.rs` | Trait behaviour against a fake upstream | 2 |
 | `server/resumption/registry.rs` | Read-only `has_park(id)` probe for the phase-1 ACK | 3 |
-| `server/transport/mesh_relay.rs` | Home: two-phase accept + plaintext splice. Deletes `RelayedRoute`, `resolve_relayed_route`, `refuse_unroutable_relay` | 3 |
+| `server/transport/mesh_relay.rs` | T3 adds the v5 two-phase accept + plaintext splice beside v4; T7 deletes the v4 path and its route lookup | 3, 7 |
 | `server/transport/tests/mesh_relay.rs` | Home-side hit/miss/owner-mismatch | 3 |
 | `server/transport/upstream_source.rs` | `UpstreamSource` enum (`Direct` / `Mesh`) shared by all three carriers | 4 |
 | `server/transport/tcp.rs` | Edge SS-TCP: authenticate, send USER, relay over mesh upstream, never park | 4 |
 | `server/transport/vless/mod.rs`, `vless/tcp.rs` | Same for VLESS | 5 |
 | `server/transport/udp.rs` | Same for SS-UDP (datagram framing) | 6 |
-| `server/tests/resumption/cluster.rs` | Cross-node continuity with asymmetric paths and credentials | 7 |
-| `server/config/` (validator), `metrics/registry.rs` | Shared-user-namespace validation; `no_session`/`unknown_user` labels registered | 8 |
-| `docs/CLUSTER.md` + `.ru.md`, `docs/CLUSTER-DEPLOY.md` + `.ru.md` | Per-node paths/creds documented; §3a symmetry requirement replaced | 8 |
+| `server/tests/resumption/cluster.rs` | Cross-node continuity with asymmetric paths and credentials | 8 |
+| `server/config/` (validator), `metrics/registry.rs` | Shared-user-namespace validation; `no_session`/`unknown_user` labels registered | 9 |
+| `docs/CLUSTER.md` + `.ru.md`, `docs/CLUSTER-DEPLOY.md` + `.ru.md` | Per-node paths/creds documented; §3a symmetry requirement replaced | 9 |
 
-**Milestone:** after Task 4 the feature works end-to-end for SS-TCP — the largest carrier on the fleet. Tasks 5–6 extend it to VLESS and SS-UDP. The branch is deployable (behind `[cluster] enabled`, currently `false` fleet-wide) only after Task 6.
+**Milestone:** after Task 4 the feature works end-to-end for SS-TCP — the largest carrier on the fleet. Tasks 5–6 extend it to VLESS and SS-UDP, Task 7 removes the superseded v4 path. The branch is deployable (behind `[cluster] enabled`, currently `false` fleet-wide) after Task 7.
+
+**Why the home speaks two versions for a while:** 24 end-to-end cluster tests exercise the live v4 relay across all three carriers. Switching the home and the edges in one step would leave those red for four consecutive tasks, which no CI gate can pass and which hides a Task 3 defect until Task 6. So Task 3 adds v5 beside v4, Tasks 4–6 move one carrier at a time, and Task 7 deletes v4. Every commit stays green, and version-skew tolerance — which the design promises — ends up genuinely tested.
 
 ---
 
@@ -426,32 +428,46 @@ git commit -m "refactor(relay): read the upstream through a trait instead of a c
 
 ---
 
-### Task 3: Home side — two-phase accept and plaintext splice
+### Task 3: Home learns v5 alongside v4
+
+**Additive at the protocol level.** The home gains a v5 branch while its v4
+branch stays byte-identical, dispatching on the OPEN version byte. This matters
+because 24 end-to-end cluster relay tests exercise the live v4 relay across all
+three carriers; the edges do not speak v5 until Tasks 4–6, so v4 must keep
+working. Task 7 retires v4 once every edge has moved.
+
+A second payoff: the design promises that version skew degrades to a loss of
+continuity rather than a loss of traffic. Building the home to tolerate both
+versions makes that property **tested** instead of merely asserted.
 
 **Files:**
-- Modify: `bins/outline-ss-rust/src/server/resumption/registry.rs` (add probe next to `symmetric_replay_enabled` at `:150`)
-- Modify: `bins/outline-ss-rust/src/server/transport/mesh_relay.rs` (`serve_relayed` at `:800`; delete `RelayedRoute` `:711`, `resolve_relayed_route` `:733`, `refuse_unroutable_relay` `:782`)
-- Test: `bins/outline-ss-rust/src/server/transport/tests/mesh_relay.rs`
+- Modify: `bins/outline-ss-rust/src/server/cluster/mesh/frame.rs` (add v5 alongside v4)
+- Modify: `bins/outline-ss-rust/src/server/resumption/registry.rs` (probe next to `symmetric_replay_enabled` at `:150`)
+- Modify: `bins/outline-ss-rust/src/metrics/mod.rs` (next to `record_mesh_relay_rejected` at `:582`)
+- Modify: `bins/outline-ss-rust/src/server/transport/mesh_relay.rs` (version dispatch + the v5 home path)
+- Test: `bins/outline-ss-rust/src/server/cluster/mesh/tests/frame.rs`, `bins/outline-ss-rust/src/server/transport/tests/mesh_relay.rs`
 
 **Interfaces:**
 - Consumes: `UserFrame`, `MAX_USER_LEN`, `CloseReason::NoSession` from Task 1.
 - Produces:
+  - `fn peek_open_version(buf: &[u8]) -> Result<u8>` — reads the leading version byte without consuming the frame
+  - `enum MeshFraming { Tcp, Udp }` (`Tcp` = 0, `Udp` = 1) — all a v5 home needs, since crypto is the edge's business
+  - `struct OpenHeaderV5 { framing: MeshFraming, session_id: [u8; 16], resume_capable: bool, ack_prefix: bool, symmetric_replay: bool, client_down_acked: u64, peer_addr: Option<SocketAddr> }` with `encode`/`parse`, version byte `5`, **no path field**
   - `OrphanRegistry::has_park(&self, id: SessionId) -> bool`
-  - `Metrics::record_mesh_relay_outcome(&self, outcome: &'static str)` — defined here because `serve_relayed` calls it; its registry entry and label tests come in Task 8
-  - The **v5 switch**, contracting what Task 1 expanded: `OPEN_VERSION = 5`, `OpenHeader` without `path`, `enum CarrierKind { Tcp, Udp }` (`Tcp` = 0, `Udp` = 1), `MAX_PATH_LEN` and `CloseReason::NoRoute` deleted
-  - Home-side `serve_relayed` that acks on park-existence, reads `UserFrame`, calls `take_for_resume(id, &user)`, and splices plaintext — **no crypto, no route table**
+  - `Metrics::record_mesh_relay_outcome(&self, outcome: &'static str)`
+  - Home-side `serve_relayed_v5`: ack on park existence → read `UserFrame` → `take_for_resume(id, &user)` → splice plaintext. **No crypto, no route table.**
+
+**Untouched in this task:** `OPEN_VERSION` (stays `4`), `OpenHeader`, `CarrierKind`, `MAX_PATH_LEN`, `CloseReason::NoRoute`, and the whole existing `serve_relayed`. Task 7 removes them.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add the v5 layout tests to
-`bins/outline-ss-rust/src/server/cluster/mesh/tests/frame.rs` — the switch and
-the home rewrite land in one commit, so they are tested together:
+Add to `bins/outline-ss-rust/src/server/cluster/mesh/tests/frame.rs`:
 
 ```rust
 #[test]
-fn open_header_v5_roundtrips_without_peer_addr() {
-    let header = OpenHeader {
-        carrier: CarrierKind::Tcp,
+fn v5_header_roundtrips_without_peer_addr() {
+    let header = OpenHeaderV5 {
+        framing: MeshFraming::Tcp,
         session_id: [7u8; 16],
         resume_capable: true,
         ack_prefix: true,
@@ -459,14 +475,14 @@ fn open_header_v5_roundtrips_without_peer_addr() {
         client_down_acked: 4096,
         peer_addr: None,
     };
-    let parsed = OpenHeader::parse(&header.encode()).expect("v5 header parses");
+    let parsed = OpenHeaderV5::parse(&header.encode()).expect("v5 header parses");
     assert_eq!(parsed, header);
 }
 
 #[test]
-fn open_header_v5_roundtrips_with_peer_addr() {
-    let header = OpenHeader {
-        carrier: CarrierKind::Udp,
+fn v5_header_roundtrips_with_peer_addr() {
+    let header = OpenHeaderV5 {
+        framing: MeshFraming::Udp,
         session_id: [9u8; 16],
         resume_capable: true,
         ack_prefix: false,
@@ -474,14 +490,14 @@ fn open_header_v5_roundtrips_with_peer_addr() {
         client_down_acked: u64::MAX,
         peer_addr: Some("198.51.100.7:443".parse().unwrap()),
     };
-    let parsed = OpenHeader::parse(&header.encode()).expect("v5 header parses");
+    let parsed = OpenHeaderV5::parse(&header.encode()).expect("v5 header parses");
     assert_eq!(parsed, header);
 }
 
 #[test]
-fn open_header_rejects_the_previous_version() {
-    let header = OpenHeader {
-        carrier: CarrierKind::Tcp,
+fn v5_parser_refuses_a_v4_frame_and_vice_versa() {
+    let v5 = OpenHeaderV5 {
+        framing: MeshFraming::Tcp,
         session_id: [1u8; 16],
         resume_capable: false,
         ack_prefix: false,
@@ -489,24 +505,38 @@ fn open_header_rejects_the_previous_version() {
         client_down_acked: 0,
         peer_addr: None,
     };
-    let mut encoded = header.encode();
-    encoded[0] = 4; // a v4 peer's frame
-    let err = OpenHeader::parse(&encoded).expect_err("v4 must be refused");
-    assert!(err.to_string().contains("unsupported mesh OPEN version"), "got: {err}");
+    let mut encoded = v5.encode();
+    encoded[0] = 4;
+    OpenHeaderV5::parse(&encoded).expect_err("a v4 frame is not a v5 frame");
 }
 
 #[test]
-fn carrier_kind_is_narrowed_to_the_framing_distinction() {
-    assert_eq!(CarrierKind::from_u8(0).unwrap(), CarrierKind::Tcp);
-    assert_eq!(CarrierKind::from_u8(1).unwrap(), CarrierKind::Udp);
-    // The v4 kinds (SsXhttp = 4, VlessXhttp = 5, SsUdpXhttp = 6) are gone:
-    // crypto is the edge's business now, so the home only needs the framing.
-    assert!(CarrierKind::from_u8(4).is_err());
-    assert!(CarrierKind::from_u8(6).is_err());
+fn peek_open_version_reads_the_leading_byte_without_consuming() {
+    let v5 = OpenHeaderV5 {
+        framing: MeshFraming::Udp,
+        session_id: [2u8; 16],
+        resume_capable: false,
+        ack_prefix: false,
+        symmetric_replay: false,
+        client_down_acked: 0,
+        peer_addr: None,
+    };
+    let encoded = v5.encode();
+    assert_eq!(peek_open_version(&encoded).unwrap(), 5);
+    // The frame is still fully parseable afterwards.
+    assert_eq!(OpenHeaderV5::parse(&encoded).unwrap(), v5);
+    assert!(peek_open_version(&[]).is_err(), "an empty buffer has no version");
+}
+
+#[test]
+fn mesh_framing_covers_only_the_two_shapes() {
+    assert_eq!(MeshFraming::from_u8(0).unwrap(), MeshFraming::Tcp);
+    assert_eq!(MeshFraming::from_u8(1).unwrap(), MeshFraming::Udp);
+    assert!(MeshFraming::from_u8(2).is_err());
 }
 ```
 
-Append to `bins/outline-ss-rust/src/server/transport/tests/mesh_relay.rs`:
+Add to `bins/outline-ss-rust/src/server/transport/tests/mesh_relay.rs`:
 
 ```rust
 #[tokio::test]
@@ -545,92 +575,115 @@ async fn has_park_does_not_consume_the_park() {
 }
 
 #[tokio::test]
-async fn home_refuses_when_no_park_exists() {
+async fn v5_home_refuses_when_no_park_exists() {
     let harness = MeshHomeHarness::new().await;
-    let header = open_header(SessionId::from_bytes([6u8; 16]), CarrierKind::Tcp);
 
-    let outcome = harness.serve(header, "beerloga").await;
+    let outcome = harness.serve_v5(v5_header(SessionId::from_bytes([6u8; 16]))).await;
 
     assert_eq!(outcome.close_reason(), Some(CloseReason::NoSession));
-    assert!(!outcome.acked(), "the refusal must arrive instead of the ack, before any 101");
+    assert!(!outcome.acked(), "the refusal replaces the ack, before the edge upgrades its client");
 }
 
 #[tokio::test]
-async fn home_refuses_when_the_user_does_not_own_the_park() {
+async fn v5_home_refuses_when_the_user_does_not_own_the_park() {
     let harness = MeshHomeHarness::new().await;
     let id = SessionId::from_bytes([7u8; 16]);
     park_test_session(harness.registry(), id, "beerloga").await;
 
-    // Phase 1 acks (a park exists), phase 2 rejects (wrong owner).
-    let outcome = harness.serve(open_header(id, CarrierKind::Tcp), "cloud").await;
+    let outcome = harness.serve_v5_with_user(v5_header(id), "cloud").await;
 
     assert!(outcome.acked(), "phase 1 cannot know the user yet, so it acks");
     assert_eq!(outcome.close_reason(), Some(CloseReason::NoSession));
 }
 
 #[tokio::test]
-async fn home_splices_plaintext_to_the_parked_upstream() {
+async fn v5_home_splices_plaintext_to_the_parked_upstream() {
     let harness = MeshHomeHarness::new().await;
     let id = SessionId::from_bytes([8u8; 16]);
     park_test_session(harness.registry(), id, "beerloga").await;
 
-    let mut session = harness.serve_ok(open_header(id, CarrierKind::Tcp), "beerloga").await;
+    let mut session = harness.serve_v5_ok(v5_header(id), "beerloga").await;
 
     // Uplink: what the edge writes as plaintext reaches the parked upstream verbatim.
     session.edge_write(b"GET / HTTP/1.1\r\n\r\n").await;
     assert_eq!(session.upstream_read().await, b"GET / HTTP/1.1\r\n\r\n");
 
-    // Downlink: what the upstream sends reaches the edge as plaintext — the home
-    // performs no encryption; the edge seals it under its own client key.
+    // Downlink: the home encrypts nothing — the edge seals it under its own key.
     session.upstream_write(b"HTTP/1.1 200 OK\r\n\r\n").await;
     assert_eq!(session.edge_read().await, b"HTTP/1.1 200 OK\r\n\r\n");
 }
 
 #[tokio::test]
-async fn home_replays_the_ring_suffix_before_new_downlink() {
+async fn v5_home_replays_the_ring_suffix_before_new_downlink() {
     let harness = MeshHomeHarness::new().await;
     let id = SessionId::from_bytes([9u8; 16]);
     // 12 plaintext bytes already sent, client acked the first 5.
     park_test_session_with_ring(harness.registry(), id, "beerloga", b"HELLO-WORLD!", 5).await;
 
-    let mut header = open_header(id, CarrierKind::Tcp);
+    let mut header = v5_header(id);
     header.symmetric_replay = true;
     header.client_down_acked = 5;
 
-    let mut session = harness.serve_ok(header, "beerloga").await;
+    let mut session = harness.serve_v5_ok(header, "beerloga").await;
 
     assert_eq!(
         session.edge_read().await,
         b"-WORLD!",
-        "the home must replay exactly the unacked suffix, as plaintext"
+        "the home replays exactly the unacked suffix, as plaintext"
+    );
+}
+
+#[tokio::test]
+async fn a_v4_relay_still_takes_the_untouched_v4_path() {
+    // The 24 end-to-end cluster tests depend on this until Task 7 retires v4.
+    let harness = MeshHomeHarness::new().await;
+
+    assert!(
+        harness.serve_v4_reaches_legacy_path().await,
+        "a v4 OPEN must still dispatch into the original serve_relayed"
     );
 }
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test -p outline-ss-rust --lib cluster::mesh::frame transport::mesh_relay`
-Expected: FAIL — `OpenHeader` still has a `path` field so the v5 tests do not compile; `no method named has_park`; the harness/`serve_ok` helpers do not exist.
+Run: `cargo test -p outline-ss-rust --lib cluster::mesh::frame transport::mesh_relay resumption::registry`
+Expected: FAIL — `OpenHeaderV5`, `MeshFraming`, `peek_open_version`, `has_park` and the `serve_v5*` harness helpers do not exist.
 
-- [ ] **Step 3: Switch the frame to v5**
+- [ ] **Step 3: Add the v5 frame types**
 
-Contract what Task 1 expanded, in `cluster/mesh/frame.rs`:
+In `frame.rs`, leave every existing item alone and add beside them:
 
-- `OPEN_VERSION` 4 → 5, extending the version doc-log with: *v5 removed the
-  request path and narrowed `CarrierKind` to the framing distinction — the edge
-  now terminates client crypto, so the home neither resolves a route nor
-  decrypts.*
-- Delete the `path: String` field from `OpenHeader`, its doc comment, the two
-  path lines in `encode` (fixing the layout doc to
-  `version(1) | carrier(1) | flags(1) | down_acked(8) | session_id(16) | [peer_addr]`
-  and the capacity hint to `27 + 19`), and the three `path_len`/`path` lines in
-  `parse`.
-- Delete `MAX_PATH_LEN`.
-- Replace the seven-variant `CarrierKind` with `{ Tcp, Udp }` (`to_u8`/`from_u8`
-  mapping `0`/`1`), documenting that body framing is all the home needs.
-- Delete `CloseReason::NoRoute` and its arms in `code()`/`from_code()`; code `4`
-  becomes unmapped and falls back to `Abort`, which is correct for a peer that
-  still sends it.
+```rust
+/// Wire-format version of [`OpenHeaderV5`]. Coexists with [`OPEN_VERSION`]
+/// (v4) while the edges migrate: the home dispatches on the leading byte via
+/// [`peek_open_version`], so a v4 edge and a v5 edge can both be served.
+const OPEN_VERSION_V5: u8 = 5;
+
+/// How a relayed v5 stream is framed. The edge owns the client crypto, so
+/// SS-vs-VLESS and WS-vs-XHTTP never reach the home — only the framing does:
+/// TCP-shaped carriers relay as a byte stream, UDP as length-delimited
+/// datagrams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::server) enum MeshFraming {
+    Tcp,
+    Udp,
+}
+```
+
+Give `MeshFraming` `to_u8`/`from_u8` (`0`/`1`, unknown → `bail!`). Add
+`OpenHeaderV5` with the same flag bits and peer-addr encoding as v4 but **no
+path**, layout
+`version(1) | framing(1) | flags(1) | down_acked(8) | session_id(16) | [peer_addr]`,
+and its `parse` rejecting any version byte that is not `5`. Add:
+
+```rust
+/// Reads the version byte a mesh OPEN frame starts with, without consuming it,
+/// so the accept loop can route the frame to the matching parser.
+pub(in crate::server) fn peek_open_version(buf: &[u8]) -> Result<u8> {
+    buf.first().copied().ok_or_else(|| anyhow::anyhow!("empty mesh OPEN frame"))
+}
+```
 
 - [ ] **Step 4: Add the read-only park probe**
 
@@ -654,7 +707,7 @@ In `registry.rs`, next to `symmetric_replay_enabled` (`:150`):
 
 - [ ] **Step 5: Add the relay-outcome counter**
 
-`serve_relayed` reports its verdict, so the method must exist before Step 5
+`serve_relayed_v5` reports its verdict, so this must exist before Step 6
 compiles. Add to `metrics/mod.rs` next to `record_mesh_relay_rejected` (`:582`):
 
 ```rust
@@ -671,106 +724,63 @@ compiles. Add to `metrics/mod.rs` next to `record_mesh_relay_rejected` (`:582`):
     }
 ```
 
-- [ ] **Step 6: Rewrite the home side**
+- [ ] **Step 6: Add the v5 home path and dispatch on the version**
 
-In `mesh_relay.rs` delete `RelayedRoute` (`:711`), `resolve_relayed_route` (`:733`) and `refuse_unroutable_relay` (`:782`) outright, together with their imports of the route tables. Replace the body of `serve_relayed` (`:800`) with the two-phase flow:
+In `mesh_relay.rs`, keep `serve_relayed` exactly as it is and route to it or to
+a new `serve_relayed_v5` from wherever the OPEN frame is first parsed, using
+`peek_open_version`. An unknown version keeps today's behaviour (refuse).
 
-```rust
-/// Dispatches one relayed carrier: phase-1 ack on park existence, phase-2 owner
-/// check, then a plaintext splice onto the parked upstream.
-///
-/// The home performs **no crypto and no route lookup**. The edge terminated the
-/// client's SS/VLESS layer, so what arrives here is application plaintext inside
-/// the mesh's own TLS 1.3 QUIC tunnel; the home only owns the upstream socket,
-/// the park and the replay ring.
-async fn serve_relayed(
-    header: OpenHeader,
-    mut stream: MeshStream,
-    cluster: &ClusterCtx,
-    services: &Services,
-) -> Result<()> {
-    let session_id = SessionId::from_bytes(header.session_id);
+`serve_relayed_v5` performs, in order: `has_park` → refuse `NoSession` with
+`record_mesh_relay_rejected("no_session")` if absent → `write_open_ack` →
+read a bounded `UserFrame` (one length byte, then at most `MAX_USER_LEN`) →
+`take_for_resume(session_id, &user.user)` → on `ResumeMiss::OwnerMismatch`
+refuse with reason `"unknown_user"`, on any other miss `"no_session"` → on hit
+`record_mesh_relay_outcome("hit")` and splice.
 
-    // Phase 1: the only question answerable before the edge has authenticated
-    // its client. A miss here is ordinary (parks expire), so the edge just
-    // serves a fresh local session.
-    if !services.orphan_registry.has_park(session_id) {
-        cluster.metrics.record_mesh_relay_rejected("no_session");
-        refuse_relay(stream, CloseReason::NoSession);
-        return Ok(());
-    }
-    write_open_ack(&mut stream.send).await?;
-
-    // Phase 2: the edge has now upgraded its client and authenticated it.
-    let user = read_user_frame(&mut stream.recv).await?;
-    let parked = match services.orphan_registry.take_for_resume(session_id, &user.user).await {
-        ResumeOutcome::Hit(parked) => parked,
-        ResumeOutcome::Miss(miss) => {
-            let reason = match miss {
-                ResumeMiss::OwnerMismatch => "unknown_user",
-                _ => "no_session",
-            };
-            cluster.metrics.record_mesh_relay_rejected(reason);
-            refuse_relay(stream, CloseReason::NoSession);
-            return Ok(());
-        },
-    };
-
-    let _relay_active = cluster.metrics.open_mesh_relay();
-    cluster.metrics.record_mesh_relay_outcome("hit");
-
-    match (header.carrier, parked) {
-        (CarrierKind::Tcp, Parked::Tcp(parked)) => {
-            splice_plaintext_tcp(stream, parked, header.client_down_acked, cluster).await
-        },
-        (CarrierKind::Udp, parked) => {
-            splice_plaintext_udp(stream, parked, services, cluster).await
-        },
-        (carrier, _) => {
-            // The park kind and the relayed framing disagree — a forged or
-            // mismatched-version peer. Defensive refusal rather than a panic.
-            warn!(?carrier, "relayed carrier framing does not match the parked session kind");
-            refuse_relay(stream, CloseReason::Abort);
-            Ok(())
-        },
-    }
-}
-```
-
-Add `read_user_frame` (bounded read: one length byte then at most `MAX_USER_LEN`) and `splice_plaintext_tcp`. The latter is a plain bidirectional byte pump between the mesh stream and `parked.upstream_reader`/`upstream_writer`, prefixed by the ring suffix:
+The splice for `MeshFraming::Tcp` sends the replay suffix first, then pumps
+bidirectionally between the mesh stream and the parked upstream's
+reader/writer halves under the existing `cluster.relay_budget`:
 
 ```rust
 /// Splices a relayed plaintext stream onto a parked TCP upstream.
 ///
-/// Simpler than the pre-v5 path it replaces: there is no decryptor, no
-/// encryptor and no route context — just the unacked replay suffix followed by a
-/// bidirectional pump. The ring already holds **plaintext** keyed by plaintext
-/// offsets, so the suffix goes out as-is and the edge seals it under its own
-/// client key.
+/// Simpler than the v4 path beside it: no decryptor, no encryptor, no route
+/// context — just the unacked replay suffix followed by a bidirectional pump.
+/// The ring already holds **plaintext** keyed by plaintext offsets, so the
+/// suffix goes out as-is and the edge seals it under its own client key.
 async fn splice_plaintext_tcp(
     mut stream: MeshStream,
     parked: ParkedTcp,
     client_down_acked: u64,
     cluster: &ClusterCtx,
 ) -> Result<()> {
-    if let Some(ring) = parked.downlink_ring.as_ref() {
-        let suffix = ring.lock().replay_from(client_down_acked);
-        for chunk in suffix.chunks {
-            stream.send.write_all(&chunk).await?;
-        }
-    }
-    // Bidirectional pump under the existing progress budget.
-    pump_plaintext(stream, parked.upstream_reader, parked.upstream_writer, cluster.relay_budget)
-        .await
-}
 ```
+
+Do the same for `MeshFraming::Udp` over the datagram framing `MeshUdpCarrier`
+already provides, leaving NAT and parking on the home. A framing that
+disagrees with the parked session's kind is a forged or mismatched peer:
+refuse with `CloseReason::Abort` rather than panicking.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run: `cargo test -p outline-ss-rust --lib cluster::mesh::frame transport::mesh_relay resumption::registry`
-Expected: PASS — 7 new tests.
+Expected: PASS — 13 new tests.
+
+Then confirm the v4 relay is genuinely untouched:
+
+Run: `cargo test -p outline-ss-rust --lib resumption::cluster`
+Expected: PASS — all 24 end-to-end cluster tests still green. **If any of them
+fail, the v4 path was disturbed; fix that before continuing.**
 
 - [ ] **Step 8: Run the full gate and commit**
+
+```bash
+cargo fmt --check -p outline-ss-rust -p outline-ws-rust -p outline-metrics -p outline-net -p outline-routing -p outline-transport -p outline-tun -p outline-uplink -p outline-wire -p shadowsocks-crypto -p socks5-proto
+```
+
+```bash
+cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps -- -D warnings
+```
 
 ```bash
 cargo test --workspace --exclude sockudo-ws
@@ -778,7 +788,7 @@ cargo test --workspace --exclude sockudo-ws
 
 ```bash
 git add bins/outline-ss-rust/src/server/cluster/mesh/frame.rs bins/outline-ss-rust/src/server/cluster/mesh/tests/frame.rs bins/outline-ss-rust/src/server/resumption/registry.rs bins/outline-ss-rust/src/metrics/mod.rs bins/outline-ss-rust/src/server/transport/mesh_relay.rs bins/outline-ss-rust/src/server/transport/tests/mesh_relay.rs
-git commit -m "feat(cluster): switch mesh OPEN to v5 and accept relays in two phases"
+git commit -m "feat(cluster): home serves v5 relays alongside v4 during the edge migration"
 ```
 
 ---
@@ -792,7 +802,8 @@ git commit -m "feat(cluster): switch mesh OPEN to v5 and accept relays in two ph
 - Test: `bins/outline-ss-rust/src/server/transport/tests/tcp.rs`
 
 **Interfaces:**
-- Consumes: `UpstreamRead` (Task 2), `UserFrame`/`OpenHeader` v5 (Task 1), home behaviour (Task 3).
+- Consumes: `UpstreamRead` (Task 2), `UserFrame` (Task 1), `OpenHeaderV5`/`MeshFraming`/the v5 home path (Task 3).
+- The edge's SS-TCP carrier switches from a v4 OPEN to `OpenHeaderV5` with `MeshFraming::Tcp` plus the `UserFrame`. VLESS and SS-UDP edges stay on v4 until Tasks 5–6, and the home still serves both — so the SS-TCP subset of the 24 end-to-end cluster tests now exercises v5 while the rest keep exercising v4. All 24 must stay green.
 - Produces:
   - `enum UpstreamSource { Direct, Mesh(MeshStream) }` in `upstream_source.rs`
   - `run_tcp_relay<T: WsSocket>(socket, server, route, resume, peer_addr, injected_monitor, upstream: UpstreamSource)` — one new trailing parameter
@@ -943,7 +954,8 @@ git commit -m "feat(cluster): edge terminates SS-TCP crypto and relays plaintext
 
 **Interfaces:**
 - Consumes: `UpstreamSource`, `MeshUpstream` (Task 4).
-- Produces: `run_vless_relay<T: WsSocket>(socket, server, route, resume, injected_monitor, upstream: UpstreamSource)`.
+- Produces: `run_vless_relay<T: WsSocket>(socket, server, route, resume, injected_monitor, upstream: UpstreamSource)`; the VLESS edge sending `OpenHeaderV5` with `MeshFraming::Tcp` plus the `UserFrame`.
+- SS-UDP stays on v4 until Task 6. All 24 end-to-end cluster tests must stay green.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1011,7 +1023,8 @@ git commit -m "feat(cluster): edge terminates VLESS crypto and relays plaintext 
 
 **Interfaces:**
 - Consumes: `UpstreamSource` (Task 4).
-- Produces: `run_udp_relay<T: WsSocket>(socket, server, route, resume, injected_monitor, upstream: UpstreamSource)`.
+- Produces: `run_udp_relay<T: WsSocket>(socket, server, route, resume, injected_monitor, upstream: UpstreamSource)`; the SS-UDP edge sending `OpenHeaderV5` with `MeshFraming::Udp` plus the `UserFrame`.
+- After this task every edge speaks v5, which is what lets Task 7 delete v4. All 24 end-to-end cluster tests must stay green.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1073,7 +1086,100 @@ git commit -m "feat(cluster): edge terminates SS-UDP crypto and relays plaintext
 
 ---
 
-### Task 7: Cross-node continuity — the proof of the goal
+### Task 7: Retire v4 on the home
+
+Every edge speaks v5 after Tasks 4–6, so the v4 branch is now dead weight. This
+is the contract half of the expand/contract: delete it, and let v5 become the
+only shape the home understands.
+
+**Files:**
+- Modify: `bins/outline-ss-rust/src/server/cluster/mesh/frame.rs`
+- Modify: `bins/outline-ss-rust/src/server/transport/mesh_relay.rs`
+- Test: `bins/outline-ss-rust/src/server/cluster/mesh/tests/frame.rs`
+
+**Interfaces:**
+- Consumes: v5 edges for all three carriers (Tasks 4–6).
+- Produces: a home that parses only v5. `OpenHeader`, `CarrierKind`, `MAX_PATH_LEN`, `CloseReason::NoRoute`, `RelayedRoute`, `resolve_relayed_route`, `refuse_unroutable_relay` and the old `serve_relayed` are gone.
+
+- [ ] **Step 1: Write the failing test**
+
+```rust
+#[test]
+fn a_v4_frame_is_refused_outright() {
+    // v4 is retired: every edge in a cluster running this build speaks v5. A
+    // straggler gets a clean refusal and serves its client locally, which is the
+    // documented "skew costs continuity, not traffic" behaviour.
+    let v5 = OpenHeaderV5 {
+        framing: MeshFraming::Tcp,
+        session_id: [1u8; 16],
+        resume_capable: false,
+        ack_prefix: false,
+        symmetric_replay: false,
+        client_down_acked: 0,
+        peer_addr: None,
+    };
+    let mut encoded = v5.encode();
+    encoded[0] = 4;
+    let err = OpenHeaderV5::parse(&encoded).expect_err("a v4 frame must be refused");
+    assert!(err.to_string().contains("version"), "got: {err}");
+}
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `cargo test -p outline-ss-rust --lib cluster::mesh::frame::tests::a_v4_frame_is_refused_outright`
+Expected: FAIL only if the parser still accepts v4; if it already passes, the
+deletions below are still required — proceed and rely on the compiler.
+
+- [ ] **Step 3: Delete the v4 frame types**
+
+From `frame.rs` remove: `OPEN_VERSION`, `OpenHeader` and its `encode`/`parse`,
+`CarrierKind` with `to_u8`/`from_u8`, `MAX_PATH_LEN`, and the
+`CloseReason::NoRoute` variant together with its arms in `code()`/`from_code()`
+(code `4` becomes unmapped and falls back to `Abort`, correct for a straggler
+that still sends it). Rename `OPEN_VERSION_V5` to `OPEN_VERSION` now that it is
+the only one, and fold the v5 doc-log into the main version comment.
+
+Consider renaming `OpenHeaderV5`/`MeshFraming` to `OpenHeader`/`CarrierKind`
+now the originals are gone — but only if it is a pure rename; do not reshape
+anything while deleting.
+
+- [ ] **Step 4: Delete the v4 home path**
+
+From `mesh_relay.rs` remove `serve_relayed`, `RelayedRoute`,
+`resolve_relayed_route`, `refuse_unroutable_relay` and the route-table imports
+they needed, plus the version dispatch added in Task 3 (there is one version
+now). `serve_relayed_v5` becomes the only entry point — rename it to
+`serve_relayed`.
+
+- [ ] **Step 5: Verify nothing depended on the deleted code**
+
+Run: `cargo test -p outline-ss-rust --lib resumption::cluster`
+Expected: PASS — all 24 end-to-end cluster tests, now exercising v5 end to end
+on every carrier. This is the moment the migration is genuinely complete.
+
+- [ ] **Step 6: Run the full gate and commit**
+
+```bash
+cargo fmt --check -p outline-ss-rust -p outline-ws-rust -p outline-metrics -p outline-net -p outline-routing -p outline-transport -p outline-tun -p outline-uplink -p outline-wire -p shadowsocks-crypto -p socks5-proto
+```
+
+```bash
+cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps -- -D warnings
+```
+
+```bash
+cargo test --workspace --exclude sockudo-ws
+```
+
+```bash
+git add bins/outline-ss-rust/src/server/cluster/mesh/frame.rs bins/outline-ss-rust/src/server/cluster/mesh/tests/frame.rs bins/outline-ss-rust/src/server/transport/mesh_relay.rs
+git commit -m "refactor(cluster): retire the v4 mesh relay path now every edge speaks v5"
+```
+
+---
+
+### Task 8: Cross-node continuity — the proof of the goal
 
 **Files:**
 - Modify: `bins/outline-ss-rust/src/server/tests/resumption/cluster.rs`
@@ -1261,7 +1367,7 @@ git commit -m "test(cluster): session continuity across nodes with different pat
 
 ---
 
-### Task 8: Validation, metrics and documentation
+### Task 9: Validation, metrics and documentation
 
 **Files:**
 - Modify: `bins/outline-ss-rust/src/server/config/` (cluster validation)
