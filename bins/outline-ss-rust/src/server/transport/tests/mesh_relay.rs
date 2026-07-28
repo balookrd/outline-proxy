@@ -29,8 +29,8 @@ use crate::server::peer_user_cache::PeerUserCache;
 use crate::server::replay::ReplayStore;
 use crate::server::resumption::downlink_ring::DownlinkRing;
 use crate::server::resumption::{
-    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, ResumptionConfig, SessionId,
-    TcpProtocolContext,
+    OrphanRegistry, Parked, ParkedSsUdpStream, ParkedTcp, ResumeOutcome, ResumptionConfig,
+    SessionId, TcpProtocolContext,
 };
 use crate::server::state::{RouteRegistry, RoutesSnapshot, Services, TransportRoute, UdpServices};
 use crate::server::tests::sample_config;
@@ -669,6 +669,19 @@ impl TestUpstream {
             .await
             .expect("writing the upstream downlink");
     }
+
+    /// Kills the upstream with an RST, as a target that dies mid-response does.
+    /// `SO_LINGER = 0` turns the close into a reset, so the home's next upstream
+    /// read fails instead of reading a clean EOF. Set through `socket2` on the
+    /// borrowed fd — tokio's own setter is deprecated, and a zero linger cannot
+    /// block on close anyway (there is nothing to flush).
+    fn abort(self) {
+        let socket = socket2::SockRef::from(&self.peer);
+        socket
+            .set_linger(Some(Duration::ZERO))
+            .expect("setting SO_LINGER on the test upstream");
+        drop(self);
+    }
 }
 
 /// Parks a TCP session under `id` owned by `owner`, returning the far end of
@@ -784,6 +797,30 @@ impl V5Session {
             .expect("reading the relayed downlink");
         buf
     }
+
+    /// Ends the edge's half as a carrier switch does, then waits for the home to
+    /// close its own. The client-gone path is the one failure-free end, so the
+    /// home must answer it with a FIN rather than a reset.
+    async fn edge_finish(mut self) {
+        self.send.finish().expect("finishing the edge half");
+        tokio::time::timeout(Duration::from_secs(5), self.recv.read_to_end(4096))
+            .await
+            .expect("the home must close its half once the edge finishes")
+            .expect("a client-gone end must be a clean FIN, not a reset");
+    }
+
+    /// Waits for the home to end the stream and reports how: `None` for a clean
+    /// FIN, `Some(reason)` for a reset.
+    async fn end_reason(mut self) -> Option<CloseReason> {
+        let ended = tokio::time::timeout(Duration::from_secs(5), self.recv.read_to_end(4096))
+            .await
+            .expect("the home must end the relay, not leave it hanging");
+        match ended {
+            Ok(_) => None,
+            Err(ReadToEndError::Read(error)) => Some(reset_reason_read(&error)),
+            Err(other) => panic!("unexpected read-to-end failure: {other:?}"),
+        }
+    }
 }
 
 /// A home node running the real mesh accept loop, plus an edge connection to
@@ -824,6 +861,10 @@ impl MeshHomeHarness {
 
     fn registry(&self) -> &Arc<OrphanRegistry> {
         &self.registry
+    }
+
+    fn metrics(&self) -> &Arc<Metrics> {
+        &self.metrics
     }
 
     /// Opens a v5 relay and reports the outcome, sending the USER frame only if
@@ -1019,5 +1060,194 @@ async fn a_v4_relay_still_takes_the_untouched_v4_path() {
     assert!(
         harness.serve_v4_reaches_legacy_path().await,
         "a v4 OPEN must still dispatch into the original serve_relayed"
+    );
+}
+
+/// Value of the rendered Prometheus counter whose line starts with `prefix`, or
+/// `0` when the series was never touched (an untouched counter is not rendered).
+fn counter_value(rendered: &str, prefix: &str) -> u64 {
+    rendered
+        .lines()
+        .find(|line| line.starts_with(prefix))
+        .and_then(|line| line.rsplit(' ').next())
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+}
+
+fn rejected(rendered: &str, reason: &str) -> u64 {
+    counter_value(
+        rendered,
+        &format!("outline_ss_mesh_relay_rejected_total{{reason=\"{reason}\"}}"),
+    )
+}
+
+fn outcome(rendered: &str, outcome: &str) -> u64 {
+    counter_value(
+        rendered,
+        &format!("outline_ss_mesh_relay_outcome_total{{outcome=\"{outcome}\"}}"),
+    )
+}
+
+/// Parks a session of a kind the TCP splice cannot serve, so a TCP-framed v5
+/// OPEN for the same id hits the parked-kind mismatch arm.
+fn park_ss_udp_stream(registry: &OrphanRegistry, id: SessionId, owner: &str) {
+    registry.park(
+        id,
+        Parked::SsUdpStream(ParkedSsUdpStream {
+            nat_keys: Vec::new(),
+            owner: Arc::from(owner),
+        }),
+    );
+}
+
+/// The home does not own a plaintext SS-UDP path yet, so a v5 OPEN carrying UDP
+/// framing must be refused before anything is consumed — and, critically, before
+/// the park is taken, so the session survives for a carrier this home can serve.
+#[tokio::test]
+async fn v5_home_refuses_udp_framing() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([20u8; 16]);
+    let _upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    let mut header = v5_header(id);
+    header.framing = MeshFraming::Udp;
+    let outcome_seen = harness.serve_v5(header).await;
+
+    assert!(!outcome_seen.acked(), "the refusal replaces the ack");
+    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
+    assert!(
+        harness.registry().has_park(id),
+        "a refused UDP relay must leave the park untouched for a servable carrier",
+    );
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(rejected(&rendered, "udp_unsupported"), 1, "{rendered}");
+    assert_eq!(outcome(&rendered, "miss"), 1, "{rendered}");
+}
+
+/// A TCP-framed v5 OPEN whose id resolves to a park of another kind is a forged
+/// or mismatched peer. It must be refused — and counted, so a home that keeps
+/// hitting this is visible rather than silently dropping relays.
+#[tokio::test]
+async fn v5_home_refuses_a_park_of_the_wrong_kind() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([21u8; 16]);
+    park_ss_udp_stream(harness.registry(), id, "beerloga");
+
+    let outcome_seen = harness.serve_v5(v5_header(id)).await;
+
+    assert!(outcome_seen.acked(), "phase 1 only asks whether a park exists");
+    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(rejected(&rendered, "framing_mismatch"), 1, "{rendered}");
+    assert_eq!(outcome(&rendered, "miss"), 1, "{rendered}");
+}
+
+/// Accounting completeness: every terminal path through the v5 handler records
+/// exactly one outcome, so `outline_ss_mesh_relay_outcome_total` reconciles
+/// against the relays this home actually served. A never-working relay went
+/// unnoticed in production precisely because it did not.
+#[tokio::test]
+async fn v5_relay_outcomes_are_counted_on_every_path() {
+    let harness = MeshHomeHarness::new().await;
+
+    // Miss: nothing parked under the id.
+    let missed = harness.serve_v5(v5_header(SessionId::from_bytes([22u8; 16]))).await;
+    assert_eq!(missed.close_reason(), Some(CloseReason::NoSession));
+
+    // Miss: a park exists but belongs to someone else.
+    let stolen = SessionId::from_bytes([23u8; 16]);
+    let _stolen_upstream = park_test_session(harness.registry(), stolen, "beerloga").await;
+    let rejected_owner = harness.serve_v5_with_user(v5_header(stolen), "cloud").await;
+    assert_eq!(rejected_owner.close_reason(), Some(CloseReason::NoSession));
+
+    // Hit: the park this user owns is spliced onto the relay.
+    let served = SessionId::from_bytes([24u8; 16]);
+    let _served_upstream = park_test_session(harness.registry(), served, "beerloga").await;
+    let _session = harness.serve_v5_ok(v5_header(served), "beerloga").await;
+    wait_for_active_relays(harness.metrics(), 1).await;
+
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(outcome(&rendered, "hit"), 1, "{rendered}");
+    assert_eq!(outcome(&rendered, "miss"), 2, "{rendered}");
+    assert_eq!(rejected(&rendered, "no_session"), 1, "{rendered}");
+    assert_eq!(rejected(&rendered, "unknown_user"), 1, "{rendered}");
+}
+
+/// A v5 session must survive more than one carrier switch. The home owns the
+/// upstream socket, so when the mesh carrier ends it has to put the session back
+/// into the registry under the same id — otherwise the second switch closes the
+/// upstream and the client silently loses its connection.
+#[tokio::test]
+async fn a_v5_session_can_be_resumed_twice() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([25u8; 16]);
+    let mut upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    // First carrier.
+    let mut first = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+    first.edge_write(b"first").await;
+    assert_eq!(upstream.read(5).await, b"first");
+    upstream.write(b"one").await;
+    assert_eq!(first.edge_read(3).await, b"one");
+    first.edge_finish().await;
+
+    // The home must have re-parked the still-healthy upstream.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !harness.registry().has_park(id) {
+        assert!(Instant::now() < deadline, "the home never re-parked the relayed session");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // Second carrier: the same upstream socket, still live.
+    let mut second = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+    second.edge_write(b"second").await;
+    assert_eq!(
+        upstream.read(6).await,
+        b"second",
+        "the second carrier must reach the very same upstream socket"
+    );
+    upstream.write(b"two").await;
+    assert_eq!(second.edge_read(3).await, b"two");
+
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(outcome(&rendered, "hit"), 2, "both carriers are hits:\n{rendered}");
+}
+
+/// A failure mid-splice must not reach the edge as a graceful FIN. Dropping the
+/// mesh send half would `finish` it, and the edge would seal a truncated
+/// response to its client as complete — so every failure arm resets instead.
+#[tokio::test]
+async fn a_failed_splice_does_not_present_as_a_clean_close() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([26u8; 16]);
+    let upstream = park_test_session(harness.registry(), id, "beerloga").await;
+    let session = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    // The target dies with an RST, so the home's upstream read fails.
+    upstream.abort();
+
+    assert_eq!(
+        session.end_reason().await,
+        Some(CloseReason::Abort),
+        "a broken upstream must reach the edge as a reset, never as a clean FIN",
+    );
+}
+
+/// The other half of the contract: a genuine upstream EOF still ends the mesh
+/// stream gracefully, so the edge can seal a complete response.
+#[tokio::test]
+async fn a_clean_upstream_eof_still_finishes_the_relay_stream() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([27u8; 16]);
+    let mut upstream = park_test_session(harness.registry(), id, "beerloga").await;
+    let session = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    upstream.write(b"done").await;
+    drop(upstream); // ordinary close: FIN, not RST
+
+    assert_eq!(
+        session.end_reason().await,
+        None,
+        "a clean upstream EOF must finish the relay stream, not reset it",
     );
 }

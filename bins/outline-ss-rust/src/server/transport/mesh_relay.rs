@@ -44,7 +44,9 @@ use crate::server::cluster::mesh::{
 };
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::server::resumption::downlink_ring::ReplayOutcome;
-use crate::server::resumption::{Parked, ParkedTcp, ResumeMiss, ResumeOutcome, SessionId};
+use crate::server::resumption::{
+    OrphanRegistry, Parked, ParkedTcp, ResumeMiss, ResumeOutcome, SessionId,
+};
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::state::{
     RoutesSnapshot, Services, TransportRoute, VlessTransportRoute, empty_transport_route,
@@ -976,6 +978,17 @@ async fn serve_relayed(
     }
 }
 
+/// Upper bound on how long the home waits for the second-phase USER frame after
+/// acking a v5 OPEN.
+///
+/// The accept loop's relay permit is held for the whole wait, so an acked peer
+/// that then withholds the frame would otherwise pin a slot until the QUIC idle
+/// timeout — minutes, and one slot per stream it opens. Deliberately the same
+/// order as the registry's own `RESERVATION_WAIT` (5 s), which bounds the
+/// neighbouring phase-2 `take_for_resume`. On expiry the stream is refused like
+/// any other malformed setup.
+const USER_FRAME_WAIT: Duration = Duration::from_secs(5);
+
 /// Reads the second-phase USER frame off a v5 relay stream.
 ///
 /// Bounded by construction: one length byte, then at most [`MAX_USER_LEN`]
@@ -1049,10 +1062,39 @@ async fn serve_relayed_v5(
     }
     // Admitted so far. The ack releases the edge to upgrade its client carrier
     // and echo continuity, and is the first downlink byte of the stream.
-    write_open_ack(&mut stream.send).await?;
+    if let Err(error) = write_open_ack(&mut stream.send).await {
+        // The mesh stream broke during setup, before any park was consulted:
+        // neither a hit nor a miss, but still one relay that entered this
+        // handler — counted so the outcome series reconciles against the
+        // streams actually served.
+        cluster.metrics.record_mesh_relay_outcome("error");
+        return Err(error);
+    }
 
-    // Phase 2: the user the edge authenticated, then the owner check.
-    let user = read_user_frame(&mut stream.recv).await?;
+    // Phase 2: the user the edge authenticated, then the owner check. Bounded by
+    // [`USER_FRAME_WAIT`]: an acked peer that never sends the frame would
+    // otherwise hold its relay permit for the QUIC idle timeout.
+    let user = match tokio::time::timeout(USER_FRAME_WAIT, read_user_frame(&mut stream.recv)).await
+    {
+        Ok(Ok(user)) => user,
+        Ok(Err(error)) => {
+            cluster.metrics.record_mesh_relay_rejected("bad_setup");
+            cluster.metrics.record_mesh_relay_outcome("error");
+            debug!(?error, "refusing a v5 relay whose USER frame is unusable");
+            refuse_relay(stream, CloseReason::Abort);
+            return Ok(());
+        },
+        Err(_elapsed) => {
+            cluster.metrics.record_mesh_relay_rejected("bad_setup");
+            cluster.metrics.record_mesh_relay_outcome("error");
+            warn!(
+                wait_secs = USER_FRAME_WAIT.as_secs(),
+                "refusing a v5 relay: the peer was acked but never sent its USER frame",
+            );
+            refuse_relay(stream, CloseReason::Abort);
+            return Ok(());
+        },
+    };
     let parked = match registry.take_for_resume(session_id, &user.user).await {
         ResumeOutcome::Hit(parked) => parked,
         ResumeOutcome::Miss(miss) => {
@@ -1082,6 +1124,8 @@ async fn serve_relayed_v5(
         // The OPEN's framing disagrees with what is actually parked under the
         // id — a forged or mismatched peer. Refuse rather than panic; the park
         // is already consumed, so the client loses continuity but nothing else.
+        cluster.metrics.record_mesh_relay_rejected("framing_mismatch");
+        cluster.metrics.record_mesh_relay_outcome("miss");
         warn!("relayed TCP framing does not match the parked session kind; aborting the relay");
         refuse_relay(stream, CloseReason::Abort);
         return Ok(());
@@ -1090,7 +1134,74 @@ async fn serve_relayed_v5(
     // Count this relay as active for its whole lifetime; the guard drops on
     // return, including every early bail inside the splice.
     let _relay_active = cluster.metrics.open_mesh_relay();
-    splice_plaintext_tcp(stream, parked, &header, cluster).await
+    splice_plaintext_tcp(stream, parked, &header, session_id, cluster, registry).await
+}
+
+/// A failed half of a v5 splice: what the edge must see, and whether the parked
+/// upstream survived it.
+struct SpliceFault {
+    /// Reset code sent on the mesh stream before the splice returns. Without it
+    /// quinn's `Drop for SendStream` finishes the stream, so the edge would read
+    /// a stalled home or a broken upstream as a clean close and seal a truncated
+    /// response to its client.
+    reset: CloseReason,
+    /// Whether the parked upstream is still healthy — i.e. whether the session
+    /// is worth re-parking for a later carrier.
+    upstream_healthy: bool,
+    error: anyhow::Error,
+}
+
+impl SpliceFault {
+    /// The mesh peer failed (read or write): the upstream is untouched, so the
+    /// session is re-parked exactly as if the client had simply gone away.
+    fn mesh(error: anyhow::Error) -> Self {
+        Self {
+            reset: CloseReason::Abort,
+            upstream_healthy: true,
+            error,
+        }
+    }
+
+    /// The upstream socket failed: a later resume would reattach to a dead
+    /// socket, so nothing is parked.
+    fn upstream(error: anyhow::Error) -> Self {
+        Self {
+            reset: CloseReason::Abort,
+            upstream_healthy: false,
+            error,
+        }
+    }
+
+    /// A single write stalled past the health budget. `upstream_healthy` says
+    /// which side stalled: a stalled mesh write means a wedged edge (the parked
+    /// upstream is fine), a stalled upstream write means the socket itself is
+    /// not draining. The edge sees [`CloseReason::Budget`] either way, mirroring
+    /// what the edge pump signals to the home.
+    fn stalled(upstream_healthy: bool, error: anyhow::Error) -> Self {
+        Self {
+            reset: CloseReason::Budget,
+            upstream_healthy,
+            error,
+        }
+    }
+
+    fn into_end(self) -> SpliceEnd {
+        SpliceEnd {
+            upstream_healthy: self.upstream_healthy,
+            reset: Some(self.reset),
+            error: Some(self.error),
+        }
+    }
+}
+
+/// How a v5 splice ended, once both halves are back in the caller's hands.
+struct SpliceEnd {
+    /// Whether to re-park the upstream for the next carrier.
+    upstream_healthy: bool,
+    /// `Some` on every failure path; `None` on the two graceful ends (the edge
+    /// finished the mesh stream, or the upstream EOF'd).
+    reset: Option<CloseReason>,
+    error: Option<anyhow::Error>,
 }
 
 /// Splices a relayed plaintext stream onto a parked TCP upstream.
@@ -1104,33 +1215,50 @@ async fn serve_relayed_v5(
 /// direction, so a peer (or an upstream) that stops draining tears the relay
 /// down instead of pinning the parked socket forever. It measures progress, not
 /// RTT — an idle relay blocks on a read, never on a write.
+///
+/// Both pumps borrow their halves rather than consuming them, so whichever side
+/// ends first this function gets the halves back. That is what makes the two
+/// obligations below possible:
+///
+/// * **Failures never look graceful.** Every error arm resets the mesh stream
+///   ([`CloseReason::Budget`] for a stalled write, [`CloseReason::Abort`]
+///   otherwise) before returning. Dropping the send half instead would `finish`
+///   it, and the edge would read a stalled home or a broken upstream as a clean
+///   upstream close — sealing a truncated response to its client as complete.
+/// * **The session is re-parked.** When the client side goes away while the
+///   upstream is healthy, the upstream halves go back into the registry under
+///   the same id, mirroring the direct path's `try_park_on_drop`. Without it a
+///   v5 session would survive exactly one carrier switch.
 async fn splice_plaintext_tcp(
     stream: MeshStream,
     parked: ParkedTcp,
     header: &OpenHeaderV5,
+    session_id: SessionId,
     cluster: &ClusterCtx,
+    registry: &OrphanRegistry,
 ) -> Result<()> {
     let MeshStream { mut send, mut recv } = stream;
+    // Every field is kept: the plaintext splice itself needs only the socket
+    // halves and the ring, but a re-park has to hand the whole bundle back to
+    // the registry with the same field semantics the direct path parks with.
+    // The user is already authenticated (by the edge, attested in the USER
+    // frame) and the owner check is done, so neither the identity nor the SS
+    // user key does any work *here* — `owner` still keys the park and
+    // `protocol_context` still guards a later cross-protocol resume.
     let ParkedTcp {
         mut upstream_writer,
         mut upstream_reader,
         target_display,
-        // The user is already authenticated (by the edge, attested in the USER
-        // frame) and the owner check is done; neither identity nor the SS user
-        // key has any part to play in a plaintext splice.
-        owner: _,
-        protocol_context: _,
+        owner,
+        protocol_context,
         // Per-user byte accounting stays with the node that terminates the
         // client session, i.e. the edge; the home counts this traffic on its
         // `role="home"` mesh counters below.
-        user_counters: _,
+        user_counters,
         upstream_guard,
         upstream_bytes_acked,
         downlink_ring,
     } = parked;
-    // Keeps the upstream-connection gauge counting this socket for as long as
-    // the splice holds it.
-    let _upstream_guard = upstream_guard;
 
     let up_bytes = cluster.metrics.mesh_bytes_counter("home", "up", "tcp");
     let down_bytes = cluster.metrics.mesh_bytes_counter("home", "down", "tcp");
@@ -1155,67 +1283,197 @@ async fn splice_plaintext_tcp(
             // Eviction rolled past the requested offset, or the client claims
             // more than was ever sent. Continuity is lost for the gap; the
             // session still runs from here.
-            other => debug!(
-                ?other,
-                target = %target_display,
-                "no replayable downlink suffix for a relayed resume",
-            ),
+            //
+            // TODO: the v5 OPEN ack carries no flag for this, so unlike the
+            // direct path (which sets REPLAY_TRUNCATED in its "ORDR" frame) the
+            // home cannot yet tell the edge to fail the client fast, as
+            // `docs/SESSION-RESUMPTION.md` requires. Until that protocol field
+            // exists the condition is at least observable on the same counter
+            // the direct path feeds.
+            other => {
+                cluster.metrics.record_orphan_downlink_replay_truncated("tcp");
+                debug!(
+                    ?other,
+                    target = %target_display,
+                    "no replayable downlink suffix for a relayed resume; the client is not yet \
+                     told about the gap",
+                );
+            },
         }
     }
 
-    // Uplink: mesh → parked upstream. The ONLY writer to the upstream socket.
-    let uplink = async {
-        while let Some(chunk) = recv
-            .read_chunk(MESH_HOME_SPLICE_CHUNK, true)
-            .await
-            .context("relayed uplink read from the mesh")?
-        {
-            let len = chunk.bytes.len();
-            match tokio::time::timeout(budget, upstream_writer.write_all(&chunk.bytes)).await {
-                Ok(result) => result.context("relayed uplink write to the upstream")?,
-                Err(_elapsed) => bail!("relayed uplink stalled past the health budget"),
-            }
-            up_bytes.increment(len as u64);
-            // Keeps the Ack-Prefix counter monotonic across this reattach, the
-            // same guarantee the direct relay gives.
-            upstream_bytes_acked.fetch_add(len as u64, Ordering::Relaxed);
-        }
-        // The edge finished the stream: half-close the upstream so the target
-        // sees the end of the request body.
-        let _ = upstream_writer.shutdown().await;
-        Ok::<(), anyhow::Error>(())
-    };
+    let end = {
+        // Reborrows, so the pumps own references and the halves come back to
+        // this scope when the pumps drop.
+        let recv = &mut recv;
+        let send = &mut send;
+        let writer = &mut upstream_writer;
+        let reader = &mut upstream_reader;
+        let acked = &upstream_bytes_acked;
+        let ring = &downlink_ring;
 
-    // Downlink: parked upstream → mesh. The ONLY writer to the mesh stream.
-    // One buffer for the relay's lifetime, bounded by MESH_HOME_SPLICE_CHUNK.
-    let downlink = async {
-        let mut buf = vec![0u8; MESH_HOME_SPLICE_CHUNK];
+        // Uplink: mesh → parked upstream. The ONLY writer to the upstream socket.
+        let uplink = async move {
+            loop {
+                let chunk = match recv
+                    .read_chunk(MESH_HOME_SPLICE_CHUNK, true)
+                    .await
+                    .context("relayed uplink read from the mesh")
+                {
+                    Ok(Some(chunk)) => chunk,
+                    // The edge finished the stream: the client carrier is gone.
+                    // The upstream is deliberately left open — the caller
+                    // re-parks it for the next carrier, and a half-close would
+                    // make that park useless. The non-park path shuts it down.
+                    Ok(None) => return Ok(()),
+                    Err(error) => return Err(SpliceFault::mesh(error)),
+                };
+                let len = chunk.bytes.len();
+                match tokio::time::timeout(budget, writer.write_all(&chunk.bytes)).await {
+                    Ok(Ok(())) => {},
+                    Ok(Err(error)) => {
+                        return Err(SpliceFault::upstream(
+                            anyhow::Error::new(error)
+                                .context("relayed uplink write to the upstream"),
+                        ));
+                    },
+                    Err(_elapsed) => {
+                        return Err(SpliceFault::stalled(
+                            false,
+                            anyhow::anyhow!("relayed uplink stalled past the health budget"),
+                        ));
+                    },
+                }
+                up_bytes.increment(len as u64);
+                // Keeps the Ack-Prefix counter monotonic across this reattach,
+                // the same guarantee the direct relay gives.
+                acked.fetch_add(len as u64, Ordering::Relaxed);
+            }
+        };
+
+        // Downlink: parked upstream → mesh. The ONLY writer to the mesh stream.
+        // One buffer for the relay's lifetime, bounded by MESH_HOME_SPLICE_CHUNK.
+        let downlink = async move {
+            let mut buf = vec![0u8; MESH_HOME_SPLICE_CHUNK];
+            loop {
+                let len = match reader
+                    .read(&mut buf)
+                    .await
+                    .context("relayed downlink read from the upstream")
+                {
+                    Ok(len) => len,
+                    Err(error) => return Err(SpliceFault::upstream(error)),
+                };
+                if len == 0 {
+                    // Upstream EOF — the one case where a graceful FIN is the
+                    // truth, so the edge can seal a complete response.
+                    let _ = send.finish();
+                    return Ok(());
+                }
+                // Capture plaintext into the ring before it leaves the home,
+                // exactly as the direct relay does — so a later park under this
+                // id can still replay the suffix from a consistent offset.
+                if let Some(ring) = ring {
+                    ring.lock().push(&buf[..len]);
+                }
+                match tokio::time::timeout(budget, send.write_all(&buf[..len])).await {
+                    Ok(Ok(())) => {},
+                    Ok(Err(error)) => {
+                        return Err(SpliceFault::mesh(
+                            anyhow::Error::new(error).context("relayed downlink write to the mesh"),
+                        ));
+                    },
+                    Err(_elapsed) => {
+                        return Err(SpliceFault::stalled(
+                            true,
+                            anyhow::anyhow!("relayed downlink stalled past the health budget"),
+                        ));
+                    },
+                }
+                down_bytes.increment(len as u64);
+            }
+        };
+
+        tokio::pin!(uplink, downlink);
+        let mut upstream_eof = false;
         loop {
-            let len = upstream_reader
-                .read(&mut buf)
-                .await
-                .context("relayed downlink read from the upstream")?;
-            if len == 0 {
-                break;
+            tokio::select! {
+                result = &mut uplink => break match result {
+                    Ok(()) => SpliceEnd {
+                        upstream_healthy: !upstream_eof,
+                        reset: None,
+                        error: None,
+                    },
+                    Err(fault) => {
+                        let mut end = fault.into_end();
+                        // An upstream that already EOF'd is never worth parking,
+                        // whatever broke afterwards — a resume would reattach to
+                        // a socket with nothing left to read.
+                        end.upstream_healthy &= !upstream_eof;
+                        end
+                    },
+                },
+                result = &mut downlink, if !upstream_eof => match result {
+                    // The upstream is done, but the edge may still be uploading
+                    // a request body, so the uplink keeps running until it ends
+                    // too — the same shape the previous join had.
+                    Ok(()) => upstream_eof = true,
+                    Err(fault) => break fault.into_end(),
+                },
             }
-            // Capture plaintext into the ring before it leaves the home, exactly
-            // as the direct relay does — so a later park under this id can still
-            // replay the suffix from a consistent offset.
-            if let Some(ring) = &downlink_ring {
-                ring.lock().push(&buf[..len]);
-            }
-            match tokio::time::timeout(budget, send.write_all(&buf[..len])).await {
-                Ok(result) => result.context("relayed downlink write to the mesh")?,
-                Err(_elapsed) => bail!("relayed downlink stalled past the health budget"),
-            }
-            down_bytes.increment(len as u64);
         }
-        let _ = send.finish();
-        Ok::<(), anyhow::Error>(())
     };
 
-    tokio::try_join!(uplink, downlink)?;
-    Ok(())
+    match end.reset {
+        Some(reason) => {
+            let _ = send.reset(VarInt::from_u32(reason.code()));
+        },
+        // Graceful end. A no-op when the downlink pump already finished the
+        // stream on upstream EOF.
+        None => {
+            let _ = send.finish();
+        },
+    }
+
+    if end.upstream_healthy && registry.enabled() {
+        // Mirror of the direct path's `transport::tcp::try_park_on_drop`: the
+        // client side went away while the upstream is healthy, so the whole
+        // bundle goes back under the same id for the next carrier to resume.
+        //
+        // No `reserve_park` is taken (the direct path needs one only because it
+        // awaits a reader harvest between deciding to park and committing): here
+        // both halves are already in hand and `park` commits synchronously, so
+        // there is no window for a racing resume to miss.
+        debug!(
+            user = %owner,
+            target = %target_display,
+            "re-parking a relayed tcp upstream after the mesh carrier ended",
+        );
+        registry.park(
+            session_id,
+            Parked::Tcp(ParkedTcp {
+                upstream_writer,
+                upstream_reader,
+                target_display,
+                owner,
+                protocol_context,
+                user_counters,
+                upstream_guard,
+                upstream_bytes_acked,
+                downlink_ring,
+            }),
+        );
+    } else {
+        // Nothing worth parking (the upstream EOF'd or failed, or resumption is
+        // off): half-close so the target sees the end of the request body. The
+        // upstream guard drops with this scope, releasing the gauge.
+        let _ = upstream_writer.shutdown().await;
+    }
+
+    match end.error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
