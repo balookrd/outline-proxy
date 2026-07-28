@@ -1,4 +1,4 @@
-mod fallback;
+pub(crate) mod fallback;
 mod resume;
 mod standby_refill;
 

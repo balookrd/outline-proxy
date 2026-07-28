@@ -8,6 +8,8 @@ use outline_metrics as metrics;
 use super::super::error_classify::{
     classify_runtime_failure_cause, classify_runtime_failure_signature, is_try_again_close,
 };
+use outline_transport::payload_integrity_cause;
+
 use super::super::penalty::{add_penalty, current_penalty, update_rtt_ewma};
 use super::super::types::{TransportKind, UplinkManager};
 use super::mode_downgrade::ModeDowngradeTrigger;
@@ -172,6 +174,45 @@ impl UplinkManager {
         self.report_runtime_failure(index, transport, &error).await;
     }
 
+    /// Records a payload-integrity failure on `index`: a datagram/stream the
+    /// AEAD could not open, one that was truncated, or an SS2022
+    /// replay/reorder rejection. Counts it on
+    /// `outline_ws_uplink_payload_integrity_errors_total{cause}` and stops
+    /// there — no cooldown, no penalty, no runtime-failure streak, no carrier
+    /// descent, no standby flush.
+    ///
+    /// Callers that can classify the error themselves (the TUN UDP flow
+    /// reader) should call this directly, so the code reads the way the
+    /// invariant does. Callers that cannot are still covered:
+    /// [`Self::report_runtime_failure`] routes payload errors here before it
+    /// touches any state.
+    pub fn report_payload_integrity_failure(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        cause: &'static str,
+        error: &anyhow::Error,
+    ) {
+        let kind = match transport {
+            TransportKind::Tcp => "tcp",
+            TransportKind::Udp => "udp",
+        };
+        metrics::record_payload_integrity_error(
+            kind,
+            &self.inner.group_name,
+            &self.inner.uplinks[index].name,
+            cause,
+        );
+        debug!(
+            uplink = %self.inner.uplinks[index].name,
+            uplink_index = index,
+            transport = ?transport,
+            cause,
+            error = %format!("{error:#}"),
+            "payload-integrity failure not charged to the uplink: a corrupt payload is not a carrier fault",
+        );
+    }
+
     async fn report_runtime_failure_inner(
         &self,
         index: usize,
@@ -211,6 +252,32 @@ impl UplinkManager {
                     return;
                 }
             }
+        }
+
+        // Payload-integrity gate. A datagram the AEAD could not open, a
+        // truncated one, or an SS2022 replay/reorder rejection is evidence
+        // about the *bytes*, never about the carrier that delivered them: the
+        // carrier did its job, what arrived was corrupt. Charging it here
+        // would stamp a cooldown and drive the `xhttp_h3 → xhttp_h2` descent
+        // for the whole uplink — a "fix" that cannot repair corruption and
+        // instead demotes a healthy QUIC carrier to UDP-over-TCP for the
+        // window. Measured on 198.18.1.104: a ~0.1 % corrupt-datagram rate
+        // (11 of 10 959) opened 682 cap windows in 16 h, leaving the uplink
+        // degraded 69.6 % of the time.
+        //
+        // Same invariant the probe half already enforces by splitting
+        // `carrier_ok` from `transport_ok`: the carrier descends only on
+        // evidence about the carrier. The affected flow is still torn down by
+        // its own caller (its replay state is out of step); it just no longer
+        // takes the uplink down with it. The counter below is the
+        // operator-visible signal that the corruption is happening at all.
+        //
+        // Placed ahead of every mutation on purpose — this is the single
+        // choke point every ingress (TUN UDP, TUN TCP, SOCKS5) reports
+        // through, so no caller can reintroduce the misattribution.
+        if let Some(payload_cause) = payload_integrity_cause(error) {
+            self.report_payload_integrity_failure(index, transport, payload_cause, error);
+            return;
         }
 
         let failure_cause = classify_runtime_failure_cause(error);
@@ -734,3 +801,7 @@ impl UplinkManager {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "tests/failures.rs"]
+mod tests;
