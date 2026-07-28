@@ -685,6 +685,17 @@ How dispatch decides:
 
 PROXY-protocol on this layer is much more useful than on `[http_fallback]`: we forward raw TCP bytes, so without it the backend sees `127.0.0.1` as the peer for every spliced connection — log/ACL/rate-limit blind. As with `[http_fallback]`, the destination address in the header is the inbound listener's bind address (degrades to UNKNOWN / UNSPEC for `0.0.0.0` / `[::]`).
 
+**Observability of failed peeks.** A stream that never yields a ClientHello is counted in `outline_ss_sni_peek_failed_total{reason=...}` with four buckets:
+
+| `reason` | What it is | Log level |
+| --- | --- | --- |
+| `peer_closed` | The peer went away (FIN/EOF/RST) before sending a ClientHello | `debug` |
+| `read_failed` | The inbound read failed for another reason | `warn` |
+| `oversized` | Bytes kept arriving without forming a ClientHello within `max_client_hello_bytes` | `warn` |
+| `malformed` | rustls rejected the bytes as a TLS handshake | `warn` |
+
+`peer_closed` is background noise on any public port — TCP liveness probes, port scanners, clients that changed their mind — and a listener sees a continuous stream of it with nothing an operator can act on, so it is deliberately kept off `warn` and observed through the counter instead. A jump in `malformed` is the bucket worth chasing: something is speaking not-quite-TLS at the listener.
+
 Limitations:
 
 - TLS only. Plain (non-TLS) `[server] listen` cannot dispatch on SNI because there is no SNI to dispatch on. Validation rejects this configuration.
