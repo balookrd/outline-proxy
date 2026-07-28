@@ -1226,6 +1226,7 @@ function renderInstanceBody(panel, instance, groups) {
           <div class="group-table-meta">
             <div class="cfg-chips">${groupConfigChips(group)}${groupFpChip}${activeProtoChip}</div>
             <span class="cfg-active">${activeInGroup} active</span>
+            <button class="action-btn" type="button" data-act="reselect-group" aria-label="Reselect the active uplink for this group" data-tip="Reselect now: weighted-random re-pick of the active uplink — same rotation the scheduled re-selection performs. Hard switch unless this is a cluster group." data-tip-wrap>⟳</button>
             <span class="collapse-chev">⌃</span>
           </div>
         </div>
@@ -1242,6 +1243,10 @@ function renderInstanceBody(panel, instance, groups) {
           </div>
         </div>`;
       groupEl.querySelector(".group-table-head").addEventListener("click", () => toggleGroup(groupKey));
+      groupEl.querySelector('[data-act="reselect-group"]').addEventListener("click", ev => {
+        ev.stopPropagation();
+        reselectGroup(instance.name, group.name);
+      });
       const rows = groupEl.querySelector(".rows");
       for (const uplink of group.uplinks || []) {
         const entry = { instance: instance.name, group: group.name, uplink };
@@ -1437,6 +1442,19 @@ async function activateEntries(entries, soft = false) {
   });
   const touched = new Set(entries.map(e => e.instance));
   await Promise.all(Array.from(touched).map(name => loadInstance(name)));
+}
+// Reselect now: force the same weighted-random re-selection the scheduled
+// loops perform, for the group's strict active uplink. Unlike soft switch this
+// is offered on every group, not just clusters — off-cluster it is simply a
+// hard switch (the instance reports the effective `soft` in its response, but
+// the dashboard doesn't need it: the topology refresh below shows the result).
+async function reselectGroup(instanceName, groupName) {
+  await fetch("/dashboard/api/reselect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ instance: instanceName, group: groupName, soft: true })
+  });
+  await loadInstance(instanceName);
 }
 // Operator on/off: take an uplink out of (or back into) every automatic check
 // — probing, candidate selection, failover, warm standby. `enabled === true`

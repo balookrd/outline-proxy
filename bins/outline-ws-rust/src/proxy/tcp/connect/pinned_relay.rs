@@ -780,7 +780,10 @@ async fn try_soft_switch_migrate(
         return None;
     }
     let snapshot = uplinks.active_uplinks_snapshot();
-    // Only an operator soft switch migrates; a hard / health switch tears down.
+    // The gate is the published `soft` bit alone, not which mechanism set it:
+    // an operator switch, carrier-degraded failover, and scheduled/manual
+    // re-selection all migrate when they publish `soft = true`; only a hard
+    // switch (soft = false) tears the session down.
     if !snapshot.soft {
         return None;
     }

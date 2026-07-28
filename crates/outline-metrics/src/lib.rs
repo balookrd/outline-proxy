@@ -66,9 +66,9 @@ pub use self::transport::{
     record_request, record_resume_lookup, record_runtime_failure, record_runtime_failure_cause,
     record_runtime_failure_other_detail, record_runtime_failure_signature,
     record_runtime_failure_suppressed, record_socks_tcp_strict_abort, record_soft_switch,
-    record_transport_connect, record_uplink_connection_close, record_uplink_selected,
-    record_upstream_transport, record_warm_standby_acquire, record_warm_standby_refill,
-    udp_flow_counters,
+    record_transport_connect, record_uplink_connection_close, record_uplink_reselect,
+    record_uplink_selected, record_upstream_transport, record_warm_standby_acquire,
+    record_warm_standby_refill, udp_flow_counters,
 };
 #[cfg(all(feature = "prometheus", feature = "tun"))]
 pub use self::tun::{
@@ -229,6 +229,7 @@ struct Metrics {
     uplink_connection_close_total: IntCounterVec,
     socks_tcp_strict_aborts_total: IntCounterVec,
     soft_switch_total: IntCounterVec,
+    uplink_reselect_total: IntCounterVec,
     resume_lookup_total: IntCounterVec,
 }
 

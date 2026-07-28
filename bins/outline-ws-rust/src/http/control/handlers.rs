@@ -238,6 +238,91 @@ pub(crate) async fn activate_from_json(body: &[u8], uplinks: UplinkRegistry) -> 
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct ReselectRequest {
+    pub(crate) group: String,
+    /// Soft switch (migrate live sessions via cluster resume) — the default;
+    /// clamped to hard off-cluster, mirroring the scheduler's behaviour.
+    #[serde(default = "default_reselect_soft")]
+    pub(crate) soft: bool,
+}
+
+fn default_reselect_soft() -> bool {
+    true
+}
+
+#[derive(Debug, Serialize)]
+struct ReselectResponse {
+    group: String,
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
+    soft: bool,
+}
+
+/// `POST /control/reselect` — force the same weighted-random re-selection the
+/// scheduled loops perform ("reselect now"), reported under the
+/// `manual_reselect` reason. See [`outline_uplink::UplinkRegistry::reselect_group`].
+pub(crate) async fn handle_reselect(
+    request: Request<Incoming>,
+    uplinks: UplinkRegistry,
+) -> ControlResponse {
+    if let Some(response) = require_method(request.method(), Method::POST, "POST") {
+        return response;
+    }
+    let body = match read_limited_body(request.into_body(), "/control/reselect").await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    reselect_from_json(&body, uplinks).await
+}
+
+pub(crate) async fn reselect_from_json(body: &[u8], uplinks: UplinkRegistry) -> ControlResponse {
+    let payload: ReselectRequest = match serde_json::from_slice(body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            let msg = format!("invalid JSON: {error}");
+            return json_response(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": msg }));
+        },
+    };
+    if payload.group.trim().is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "\"group\" is required");
+    }
+    match uplinks.reselect_group(payload.group.trim(), payload.soft).await {
+        Ok(outcome) => {
+            info!(
+                group = %payload.group,
+                soft_requested = payload.soft,
+                ?outcome,
+                "manual weighted re-selection via /control/reselect"
+            );
+            let (from, to, soft) = match &outcome {
+                outline_uplink::ReselectOutcome::Switched { from, to, soft } => {
+                    (from.clone(), Some(to.clone()), *soft)
+                },
+                _ => (None, None, false),
+            };
+            json_response(
+                StatusCode::OK,
+                &ReselectResponse {
+                    group: payload.group.trim().to_string(),
+                    outcome: outcome.metric_label(),
+                    from,
+                    to,
+                    soft,
+                },
+            )
+        },
+        Err(error) => {
+            warn!(error = %format!("{error:#}"), "manual /control/reselect failed");
+            let msg = format!("{error}");
+            json_response(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": msg }))
+        },
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct EnableRequest {
     pub(crate) group: String,
     pub(crate) uplink: String,

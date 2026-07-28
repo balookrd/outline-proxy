@@ -424,6 +424,78 @@ pub async fn handle_set_enabled(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct DashboardReselectRequest {
+    instance: String,
+    group: String,
+    /// Defaults to `true`: reselect is intended to preserve live sessions via
+    /// cluster resume where possible. Mirrors `/control/reselect`'s own
+    /// default — the instance still clamps this to a hard switch off-cluster
+    /// and echoes the effective value in the proxied body.
+    #[serde(default = "default_reselect_soft")]
+    soft: bool,
+}
+
+fn default_reselect_soft() -> bool {
+    true
+}
+
+/// `POST /dashboard/api/reselect` — proxy the operator "reselect now" action
+/// (forced weighted re-selection of the group's strict active uplink) to the
+/// target instance's `/control/reselect`. Unlike soft switch, this control is
+/// NOT gated on `cluster_resume_enabled`: re-selection is meaningful on
+/// non-cluster groups too, it just performs a hard switch there.
+pub async fn handle_reselect(
+    request: Request<Incoming>,
+    state: DashboardState,
+) -> DashboardResponse {
+    let body = match read_limited_body(request.into_body(), "/dashboard/api/reselect").await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let payload: DashboardReselectRequest = match serde_json::from_slice(&body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            let msg = format!("invalid JSON: {error}");
+            return json_response(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": msg }));
+        },
+    };
+    let Some(instance) = state.instances.iter().find(|i| i.name == payload.instance) else {
+        return json_error(StatusCode::BAD_REQUEST, "unknown instance");
+    };
+    match reselect_instance(instance, &payload.group, payload.soft, state.request_timeout_secs)
+        .await
+    {
+        Ok((status, body)) => {
+            json_response(status, &serde_json::json!({ "ok": status.is_success(), "body": body }))
+        },
+        Err(error) => json_response(
+            StatusCode::BAD_GATEWAY,
+            &serde_json::json!({ "ok": false, "error": format!("{error:#}") }),
+        ),
+    }
+}
+
+async fn reselect_instance(
+    instance: &DashboardInstanceConfig,
+    group: &str,
+    soft: bool,
+    request_timeout_secs: u64,
+) -> Result<(StatusCode, Value)> {
+    let url = instance_url(&instance.control_url, "/control/reselect")?;
+    let payload = serde_json::json!({
+        "group": group,
+        "soft": soft,
+    });
+    let body = serde_json::to_vec(&payload)?;
+    let (status, response_body) =
+        send_instance_request(instance, Method::POST, url, Some(body), request_timeout_secs)
+            .await?;
+    let parsed = serde_json::from_slice(&response_body)
+        .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&response_body) }));
+    Ok((status, parsed))
+}
+
 async fn set_enabled_instance(
     instance: &DashboardInstanceConfig,
     req: &DashboardSetEnabledRequest,

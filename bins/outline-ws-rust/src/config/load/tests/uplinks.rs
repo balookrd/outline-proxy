@@ -13,7 +13,7 @@ use url::Url;
 use outline_uplink::{TransportMode, UplinkConfig, UplinkTransport};
 
 use super::super::super::schema::{FallbackSection, UplinkSection};
-use super::super::uplinks::ResolvedUplinkInput;
+use super::super::uplinks::{ResolvedUplinkInput, parse_human_duration};
 
 fn ws_uplink_section(name: &str, url: &str, fallbacks: Vec<FallbackSection>) -> UplinkSection {
     UplinkSection {
@@ -952,4 +952,20 @@ fn ss_share_link_rejects_transport_vless() {
     section.transport = Some(UplinkTransport::Vless);
     let err = resolve(section).expect_err("ss:// link with transport=vless must error");
     assert!(format!("{err:#}").contains("transport=ss"));
+}
+
+// ── parse_human_duration key parameterization ──────────────────────────────
+//
+// The bulk of `parse_human_duration`'s behaviour is covered by the
+// pre-existing `duration_tests` inline module in `uplinks/mod.rs` (kept
+// there, out of scope for this test's relocation). This test only pins the
+// `key` parameter itself: error messages must name the caller-supplied key,
+// not a stale hardcoded one.
+#[test]
+fn parse_human_duration_error_message_uses_the_given_key() {
+    let err = parse_human_duration("reselect_interval", "0")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("reselect_interval"), "{err}");
+    assert!(!err.contains("shuffle_timer"), "{err}");
 }

@@ -169,6 +169,7 @@ pub fn record_mid_session_retry(
 ) {
 }
 pub fn record_soft_switch(_group: &str, _outcome: &'static str) {}
+pub fn record_uplink_reselect(_group: &str, _outcome: &'static str) {}
 pub fn record_resume_lookup(_transport: &'static str, _scope: &'static str, _result: &'static str) {
 }
 pub fn record_probe(

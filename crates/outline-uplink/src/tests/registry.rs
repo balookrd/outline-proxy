@@ -124,6 +124,8 @@ fn make_group(name: &str, uplink_names: &[&str]) -> UplinkGroupConfig {
             tun_suppress_icmp_reply_when_down: false,
             tun_icmp_liveness_window: None,
             bypass_when_down: false,
+            reselect_at: Vec::new(),
+            reselect_interval: None,
         },
     }
 }
@@ -254,6 +256,29 @@ async fn shared_connection_gc_loop_survives_apply_new_groups() {
         !gc.is_finished(),
         "the process-wide shared-connection GC loop must outlive a hot-apply"
     );
+}
+
+// ── reselect_group ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn reselect_group_rejects_unknown_group() {
+    let reg = UplinkRegistry::new_for_test(vec![make_group("g1", &["u1"])]).unwrap();
+    let err = reg.reselect_group("nope", true).await.unwrap_err();
+    assert!(err.to_string().contains("nope"), "error should name the missing group");
+}
+
+#[tokio::test]
+async fn reselect_group_delegates_to_the_named_manager() {
+    // `make_group`'s default load_balancing (active_active/per_flow) has no
+    // strict active slot, so `reselect_active_uplink` reports `Skipped` — this
+    // just proves the registry resolves the right manager and forwards the
+    // call (the outcome semantics themselves are `UplinkManager`'s job, tested
+    // in `manager::reselect::tests`).
+    let reg =
+        UplinkRegistry::new_for_test(vec![make_group("g1", &["u1"]), make_group("g2", &["u2"])])
+            .unwrap();
+    let outcome = reg.reselect_group("g2", true).await.unwrap();
+    assert_eq!(outcome.metric_label(), "skipped");
 }
 
 #[tokio::test]
