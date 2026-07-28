@@ -28,10 +28,11 @@ use outline_wire::padding::PaddingDecoder;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::{Message, frame::coding::CloseCode};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::carrier_padding::{self, CarrierPadding};
 use crate::carrier_queue::{self, BudgetedSender};
+use crate::ws_writer_diag::{KIND_COVER, KIND_CTRL, KIND_DATA, WRITER_FRAME, send_or_report};
 
 /// Pings/Pongs/Close are tiny and rare; a deeper queue would only
 /// delay close propagation.
@@ -122,8 +123,7 @@ fn spawn_ws_writer(
                     biased;
                     msg = ctrl_rx.recv() => match msg {
                         Some(m) => {
-                            if let Err(error) = ws_sink.send(m).await {
-                                warn!(%error, "ws frame writer ctrl send failed, terminating writer task");
+                            if !send_or_report(&mut ws_sink, m, WRITER_FRAME, KIND_CTRL).await {
                                 return;
                             }
                             arm_cover(cover_sleep.as_mut(), &cover);
@@ -139,8 +139,7 @@ fn spawn_ws_writer(
                                 let _ = ws_sink.close().await;
                                 return;
                             }
-                            if let Err(error) = ws_sink.send(m).await {
-                                warn!(%error, "ws frame writer data send failed, terminating writer task");
+                            if !send_or_report(&mut ws_sink, m, WRITER_FRAME, KIND_DATA).await {
                                 return;
                             }
                             drop(permit);
@@ -165,8 +164,7 @@ fn spawn_ws_writer(
                                 let _ = ws_sink.close().await;
                                 return;
                             }
-                            if let Err(error) = ws_sink.send(m).await {
-                                warn!(%error, "ws frame writer data send failed, terminating writer task");
+                            if !send_or_report(&mut ws_sink, m, WRITER_FRAME, KIND_DATA).await {
                                 return;
                             }
                             drop(permit);
@@ -206,11 +204,8 @@ async fn send_cover(
     let Some(c) = cover else {
         return true;
     };
-    if let Err(error) = ws_sink.send(Message::Binary(c.cover_frame().into())).await {
-        warn!(%error, "ws frame writer cover send failed, terminating writer task");
-        return false;
-    }
-    true
+    let frame = Message::Binary(c.cover_frame().into());
+    send_or_report(ws_sink, frame, WRITER_FRAME, KIND_COVER).await
 }
 
 fn spawn_keepalive(ctrl_tx: mpsc::Sender<Message>, interval: Duration) -> AbortOnDrop {
