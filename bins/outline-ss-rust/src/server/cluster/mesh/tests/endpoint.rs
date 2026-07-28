@@ -2,9 +2,19 @@ use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 
-use super::super::frame::{CarrierKind, OpenHeader};
+use super::super::frame::{CarrierKind, OpenHeader, RelayOpen};
 use super::super::tls::MeshIdentity;
 use super::*;
+
+/// Unwraps the v4 header these transport-level tests always send. The accept
+/// path now returns a versioned frame; the version dispatch itself is covered
+/// in `frame.rs` and by the home-side relay tests.
+fn expect_v4(open: RelayOpen) -> OpenHeader {
+    match open {
+        RelayOpen::V4(header) => header,
+        RelayOpen::V5(_) => panic!("expected a v4 mesh OPEN header"),
+    }
+}
 
 fn identity(psk: &[u8]) -> MeshIdentity {
     MeshIdentity::derive(psk).unwrap()
@@ -38,7 +48,8 @@ async fn relay_round_trips_open_header_and_payload() {
     // is delivered before the connection drops.
     let server = async {
         let conn = home.accept().await.unwrap().unwrap();
-        let (hdr, mut stream) = accept_relay(&conn).await.unwrap();
+        let (open, mut stream) = accept_relay(&conn).await.unwrap();
+        let hdr = expect_v4(open);
         let mut buf = [0u8; 5];
         stream.recv.read_exact(&mut buf).await.unwrap();
         stream.send.write_all(&buf).await.unwrap();

@@ -151,6 +151,20 @@ impl OrphanRegistry {
         self.config.symmetric_replay_enabled()
     }
 
+    /// Whether a park exists under `id`, without consuming it and without
+    /// knowing the user yet.
+    ///
+    /// Used for the mesh phase-1 ack: the edge must decide what to echo in its
+    /// `101` before it can authenticate the client, so the home answers the
+    /// narrower question "is there a session under this id?" and defers the
+    /// owner check to phase 2 ([`Self::take_for_resume`]). An in-flight
+    /// reservation counts as present — otherwise a fast redial arriving while
+    /// the park is still landing would be told "no session" and would lose
+    /// continuity, which is the very race `take_for_resume` already waits out.
+    pub(crate) fn has_park(&self, id: SessionId) -> bool {
+        self.by_id.contains_key(&id) || self.reservations.contains_key(&id)
+    }
+
     /// Per-session downlink ring buffer capacity in bytes. `0` means
     /// v2 is off. Used by relay paths that allocate the ring at
     /// session-handshake time.

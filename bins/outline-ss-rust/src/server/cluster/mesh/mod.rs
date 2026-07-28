@@ -29,7 +29,10 @@ pub(in crate::server) use endpoint::{
 };
 #[cfg(test)]
 pub(in crate::server) use frame::OPEN_ACK_ACCEPTED;
-pub(in crate::server) use frame::{CarrierKind, CloseReason, OpenHeader};
+pub(in crate::server) use frame::{
+    CarrierKind, CloseReason, MAX_USER_LEN, MeshFraming, OpenHeader, OpenHeaderV5, RelayOpen,
+    UserFrame,
+};
 pub(in crate::server) use peer_pool::{MeshPeerPool, PooledRelay};
 pub(in crate::server) use throttle::ThrottleRegistry;
 pub(in crate::server) use tls::MeshIdentity;

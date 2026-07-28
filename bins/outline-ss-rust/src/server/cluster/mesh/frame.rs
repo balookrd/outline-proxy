@@ -12,6 +12,13 @@
 //! [`super::datagram`]. The stream closes with a QUIC `finish` (graceful) or
 //! `reset` whose error code is a [`CloseReason`].
 //!
+//! Two header versions coexist while the fleet migrates: [`OpenHeader`] (v4,
+//! described above and below) and [`OpenHeaderV5`], where the edge terminates
+//! the client's crypto and the mesh carries plaintext. A v5 home needs neither
+//! the request path nor the carrier's protocol — only [`MeshFraming`] — and
+//! learns the user from a second-phase [`UserFrame`]. [`RelayOpen::parse`]
+//! routes a frame to the matching parser by its leading version byte.
+//!
 //! The edge never decrypts, so the header carries only carrier metadata the
 //! edge can see before the payload: the resume id, the carrier kind, the
 //! resume capability bits the client advertised, the request path (for the
@@ -305,6 +312,174 @@ impl UserFrame {
         let user = String::from_utf8(r.bytes(len)?.to_vec())
             .map_err(|_| anyhow::anyhow!("mesh USER frame user name is not valid UTF-8"))?;
         Ok(Self { user })
+    }
+}
+
+/// Wire-format version of an [`OpenHeaderV5`]. Coexists with [`OPEN_VERSION`]
+/// (v4) while the edges migrate: the home dispatches on the leading byte via
+/// [`peek_open_version`], so a v4 edge and a v5 edge can both be served.
+///
+/// v5 is where client crypto moves to the edge. The home no longer decrypts
+/// anything, so the header loses the request path (routing and padding become a
+/// local matter of the edge) and the carrier byte narrows to the only
+/// distinction the home still needs — how the relayed body is framed.
+const OPEN_VERSION_V5: u8 = 5;
+
+/// How a relayed v5 stream is framed. The edge owns the client crypto, so
+/// SS-vs-VLESS and WS-vs-XHTTP never reach the home — only the framing does:
+/// TCP-shaped carriers relay as a byte stream, UDP as length-delimited
+/// datagrams (see [`super::datagram`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::server) enum MeshFraming {
+    Tcp,
+    Udp,
+}
+
+impl MeshFraming {
+    fn to_u8(self) -> u8 {
+        match self {
+            MeshFraming::Tcp => 0,
+            MeshFraming::Udp => 1,
+        }
+    }
+
+    fn from_u8(v: u8) -> Result<Self> {
+        Ok(match v {
+            0 => MeshFraming::Tcp,
+            1 => MeshFraming::Udp,
+            other => bail!("unknown mesh framing {other}"),
+        })
+    }
+}
+
+/// Metadata prefixing a v5 relayed session stream: everything the home needs to
+/// find the park the edge is resuming, and nothing about the client's crypto.
+///
+/// The authenticated user is deliberately absent — the edge cannot know it when
+/// it sends OPEN (it must decide what to echo in its `101` before reading the
+/// client's first encrypted frame), so it arrives in the second-phase
+/// [`UserFrame`] after the home's ack. See `docs/CLUSTER.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::server) struct OpenHeaderV5 {
+    /// How the relayed body is framed on this stream.
+    pub(in crate::server) framing: MeshFraming,
+    /// The resume id the client presented (shard already routes to this home).
+    pub(in crate::server) session_id: [u8; 16],
+    /// Client advertised `X-Outline-Resume-Capable`.
+    pub(in crate::server) resume_capable: bool,
+    /// Client advertised the Ack-Prefix (v1) capability.
+    pub(in crate::server) ack_prefix: bool,
+    /// Client advertised Symmetric Downlink Replay (v2).
+    pub(in crate::server) symmetric_replay: bool,
+    /// Client-reported downstream-acked offset (v2), else 0.
+    pub(in crate::server) client_down_acked: u64,
+    /// Optional client address hint (for logging / routing scope).
+    pub(in crate::server) peer_addr: Option<SocketAddr>,
+}
+
+impl OpenHeaderV5 {
+    /// Serializes the header. Layout (all integers big-endian):
+    /// `version(1) | framing(1) | flags(1) | down_acked(8) | session_id(16) |
+    ///  [peer_addr]`, where peer_addr (present iff the flag is set) is
+    /// `family(1: 4|6) | addr(4|16) | port(2)`. Identical to v4 minus the
+    /// length-prefixed path, so the flag bits and address encoding are shared.
+    pub(in crate::server) fn encode(&self) -> Vec<u8> {
+        let mut flags = 0u8;
+        if self.resume_capable {
+            flags |= FLAG_RESUME_CAPABLE;
+        }
+        if self.ack_prefix {
+            flags |= FLAG_ACK_PREFIX;
+        }
+        if self.symmetric_replay {
+            flags |= FLAG_SYMMETRIC_REPLAY;
+        }
+        if self.peer_addr.is_some() {
+            flags |= FLAG_HAS_PEER_ADDR;
+        }
+
+        let mut out = Vec::with_capacity(27 + 19);
+        out.push(OPEN_VERSION_V5);
+        out.push(self.framing.to_u8());
+        out.push(flags);
+        out.extend_from_slice(&self.client_down_acked.to_be_bytes());
+        out.extend_from_slice(&self.session_id);
+        if let Some(addr) = self.peer_addr {
+            match addr.ip() {
+                IpAddr::V4(v4) => {
+                    out.push(4);
+                    out.extend_from_slice(&v4.octets());
+                },
+                IpAddr::V6(v6) => {
+                    out.push(6);
+                    out.extend_from_slice(&v6.octets());
+                },
+            }
+            out.extend_from_slice(&addr.port().to_be_bytes());
+        }
+        out
+    }
+
+    /// Parses a v5 header from the stream prefix. Rejects any version byte that
+    /// is not `5` — including a v4 frame, which is what makes a mixed cluster
+    /// degrade to a lost resume instead of a misparsed stream.
+    pub(in crate::server) fn parse(buf: &[u8]) -> Result<Self> {
+        let mut r = Reader::new(buf);
+        let version = r.u8()?;
+        if version != OPEN_VERSION_V5 {
+            bail!("unsupported mesh OPEN version {version}");
+        }
+        let framing = MeshFraming::from_u8(r.u8()?)?;
+        let flags = r.u8()?;
+        let client_down_acked = r.u64()?;
+        let session_id = r.array16()?;
+        let peer_addr = if flags & FLAG_HAS_PEER_ADDR != 0 {
+            let ip = match r.u8()? {
+                4 => IpAddr::V4(Ipv4Addr::from(r.array4()?)),
+                6 => IpAddr::V6(Ipv6Addr::from(r.array16()?)),
+                fam => bail!("unknown mesh OPEN address family {fam}"),
+            };
+            Some(SocketAddr::new(ip, r.u16()?))
+        } else {
+            None
+        };
+        Ok(Self {
+            framing,
+            session_id,
+            resume_capable: flags & FLAG_RESUME_CAPABLE != 0,
+            ack_prefix: flags & FLAG_ACK_PREFIX != 0,
+            symmetric_replay: flags & FLAG_SYMMETRIC_REPLAY != 0,
+            client_down_acked,
+            peer_addr,
+        })
+    }
+}
+
+/// Reads the version byte a mesh OPEN frame starts with, without consuming it,
+/// so the accept loop can route the frame to the matching parser.
+pub(in crate::server) fn peek_open_version(buf: &[u8]) -> Result<u8> {
+    buf.first()
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("empty mesh OPEN frame"))
+}
+
+/// A parsed mesh OPEN frame, in whichever version the peer sent. The home
+/// dispatches on this: v4 keeps the legacy still-encrypted relay path, v5 takes
+/// the plaintext one. Both are served for as long as the fleet runs a mix.
+pub(in crate::server) enum RelayOpen {
+    V4(OpenHeader),
+    V5(OpenHeaderV5),
+}
+
+impl RelayOpen {
+    /// Parses a frame by its leading version byte. An unknown version is an
+    /// error, exactly as an unparsable header has always been.
+    pub(in crate::server) fn parse(buf: &[u8]) -> Result<Self> {
+        match peek_open_version(buf)? {
+            OPEN_VERSION => Ok(RelayOpen::V4(OpenHeader::parse(buf)?)),
+            OPEN_VERSION_V5 => Ok(RelayOpen::V5(OpenHeaderV5::parse(buf)?)),
+            other => bail!("unsupported mesh OPEN version {other}"),
+        }
     }
 }
 

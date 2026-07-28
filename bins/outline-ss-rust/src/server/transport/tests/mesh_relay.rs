@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use quinn::{Connection, ReadError, ReadToEndError, RecvStream, SendStream, VarInt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
@@ -15,17 +16,22 @@ use super::{
     EdgeThrottleCtx, EdgeThrottleDetector, StallTracker, handle_mesh_connection, open_edge_relay,
 };
 use crate::crypto::UserKey;
-use crate::metrics::Metrics;
+use crate::metrics::{AppProtocol, Metrics, Protocol};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    CarrierKind, CloseReason, ControlDatagram, MeshEndpoint, MeshIdentity, MeshPeerPool,
-    OPEN_ACK_ACCEPTED, OpenHeader, ThrottleRegistry, parse_control_datagram,
+    CarrierKind, CloseReason, ControlDatagram, MeshEndpoint, MeshFraming, MeshIdentity,
+    MeshPeerPool, OPEN_ACK_ACCEPTED, OpenHeader, OpenHeaderV5, ThrottleRegistry, UserFrame,
+    parse_control_datagram,
 };
 use crate::server::dns_cache::DnsCache;
 use crate::server::nat::NatTable;
 use crate::server::peer_user_cache::PeerUserCache;
 use crate::server::replay::ReplayStore;
-use crate::server::resumption::SessionId;
+use crate::server::resumption::downlink_ring::DownlinkRing;
+use crate::server::resumption::{
+    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, ResumptionConfig, SessionId,
+    TcpProtocolContext,
+};
 use crate::server::state::{RouteRegistry, RoutesSnapshot, Services, TransportRoute, UdpServices};
 use crate::server::tests::sample_config;
 use crate::server::transport::XhttpRegistryLimits;
@@ -266,6 +272,27 @@ fn home_runtime_serving(
     relay_cap: usize,
     tcp_paths: &[&str],
 ) -> (Arc<ClusterCtx>, Arc<Services>, RoutesSnapshot) {
+    home_runtime_inner(psk, relay_cap, tcp_paths, None)
+}
+
+/// [`home_runtime_serving`] with a caller-supplied orphan registry, so a test
+/// can park sessions the home will be asked to resume. The v4 tests pass `None`
+/// and get the disabled no-op registry they have always had.
+fn home_runtime_with_registry(
+    psk: &[u8],
+    relay_cap: usize,
+    tcp_paths: &[&str],
+    registry: Arc<OrphanRegistry>,
+) -> (Arc<ClusterCtx>, Arc<Services>, RoutesSnapshot) {
+    home_runtime_inner(psk, relay_cap, tcp_paths, Some(registry))
+}
+
+fn home_runtime_inner(
+    psk: &[u8],
+    relay_cap: usize,
+    tcp_paths: &[&str],
+    registry: Option<Arc<OrphanRegistry>>,
+) -> (Arc<ClusterCtx>, Arc<Services>, RoutesSnapshot) {
     let metrics = test_metrics();
     let endpoint = MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
     let cluster = Arc::new(ClusterCtx {
@@ -286,7 +313,7 @@ fn home_runtime_serving(
             replay_store: ReplayStore::new(Duration::from_secs(300), 0),
             relay_semaphore: None,
         },
-        None,
+        registry,
         16,
         XhttpRegistryLimits::unbounded(),
     ));
@@ -599,4 +626,398 @@ async fn an_edge_relay_refused_for_no_route_falls_back_to_a_local_session() {
         "the home must count the refusal it issued:\n{home_rendered}",
     );
     home.abort();
+}
+
+// ── Home-side v5 (edge-terminated crypto) ─────────────────────────────────────
+
+/// A resumption config with the feature and the v2 downlink ring both on — the
+/// shape a home needs to hold parks and replay their unacked suffix.
+fn enabled_resumption() -> ResumptionConfig {
+    ResumptionConfig {
+        enabled: true,
+        downlink_buffer_bytes: 64 * 1024,
+        ..ResumptionConfig::defaults_disabled()
+    }
+}
+
+fn test_registry() -> Arc<OrphanRegistry> {
+    Arc::new(OrphanRegistry::new(enabled_resumption(), test_metrics()))
+}
+
+/// The far end of a parked session's upstream socket, standing in for the
+/// target server. Held by the test so the socket stays open — dropping it would
+/// EOF the parked upstream the home is about to splice onto.
+struct TestUpstream {
+    peer: tokio::net::TcpStream,
+}
+
+impl TestUpstream {
+    /// Reads exactly `n` bytes the home wrote to the parked upstream.
+    async fn read(&mut self, n: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; n];
+        tokio::time::timeout(Duration::from_secs(5), self.peer.read_exact(&mut buf))
+            .await
+            .expect("the upstream must receive the relayed bytes")
+            .expect("reading the relayed uplink");
+        buf
+    }
+
+    /// Writes `data` as if the target server answered.
+    async fn write(&mut self, data: &[u8]) {
+        self.peer
+            .write_all(data)
+            .await
+            .expect("writing the upstream downlink");
+    }
+}
+
+/// Parks a TCP session under `id` owned by `owner`, returning the far end of
+/// its upstream socket. Mirrors what the relay parks on a carrier drop.
+async fn park_test_session(registry: &OrphanRegistry, id: SessionId, owner: &str) -> TestUpstream {
+    park_parked_tcp(registry, id, owner, None).await
+}
+
+/// Like [`park_test_session`] but with a v2 downlink ring already holding
+/// `already_sent` — the plaintext the session had emitted before the carrier
+/// died, which the next resume replays the unacked suffix of.
+async fn park_test_session_with_ring(
+    registry: &OrphanRegistry,
+    id: SessionId,
+    owner: &str,
+    already_sent: &[u8],
+) -> TestUpstream {
+    let ring = Arc::new(parking_lot::Mutex::new(DownlinkRing::new(64 * 1024)));
+    ring.lock().push(already_sent);
+    park_parked_tcp(registry, id, owner, Some(ring)).await
+}
+
+async fn park_parked_tcp(
+    registry: &OrphanRegistry,
+    id: SessionId,
+    owner: &str,
+    downlink_ring: Option<Arc<parking_lot::Mutex<DownlinkRing>>>,
+) -> TestUpstream {
+    let listener = tokio::net::TcpListener::bind(loopback()).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (upstream, peer) = tokio::join!(
+        async { listener.accept().await.unwrap().0 },
+        tokio::net::TcpStream::connect(addr),
+    );
+    let (upstream_reader, upstream_writer) = upstream.into_split();
+    let metrics = test_metrics();
+    let user = UserKey::new(owner, "relay-password", None, CipherKind::Chacha20IetfPoly1305, None)
+        .unwrap();
+    let user_id = user.id_arc();
+    registry.park(
+        id,
+        Parked::Tcp(ParkedTcp {
+            upstream_writer,
+            upstream_reader,
+            target_display: Arc::from("example.com:443"),
+            owner: Arc::clone(&user_id),
+            protocol_context: TcpProtocolContext::Ss(user),
+            user_counters: metrics.user_counters(&user_id),
+            upstream_guard: metrics.open_tcp_upstream_connection(
+                user_id,
+                Protocol::Http3,
+                AppProtocol::Shadowsocks,
+            ),
+            upstream_bytes_acked: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            downlink_ring,
+        }),
+    );
+    TestUpstream { peer: peer.unwrap() }
+}
+
+/// A v5 OPEN header for a TCP-framed relayed session under `id`.
+fn v5_header(id: SessionId) -> OpenHeaderV5 {
+    OpenHeaderV5 {
+        framing: MeshFraming::Tcp,
+        session_id: *id.as_bytes(),
+        resume_capable: true,
+        ack_prefix: true,
+        symmetric_replay: false,
+        client_down_acked: 0,
+        peer_addr: None,
+    }
+}
+
+/// What an edge observes from a v5 relay attempt: whether the home acked, and
+/// the reason it eventually closed the stream with (if any).
+struct V5Outcome {
+    acked: bool,
+    close_reason: Option<CloseReason>,
+}
+
+impl V5Outcome {
+    fn acked(&self) -> bool {
+        self.acked
+    }
+
+    fn close_reason(&self) -> Option<CloseReason> {
+        self.close_reason
+    }
+}
+
+/// A live v5 relay: the edge's half of an admitted, spliced session.
+struct V5Session {
+    send: SendStream,
+    recv: RecvStream,
+}
+
+impl V5Session {
+    /// Writes plaintext toward the home, as an edge does once it has decrypted
+    /// a client frame.
+    async fn edge_write(&mut self, data: &[u8]) {
+        self.send
+            .write_all(data)
+            .await
+            .expect("writing plaintext to the home");
+    }
+
+    /// Reads exactly `n` plaintext bytes the home relayed back.
+    async fn edge_read(&mut self, n: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; n];
+        tokio::time::timeout(Duration::from_secs(5), self.recv.read_exact(&mut buf))
+            .await
+            .expect("the home must relay the downlink")
+            .expect("reading the relayed downlink");
+        buf
+    }
+}
+
+/// A home node running the real mesh accept loop, plus an edge connection to
+/// drive it with. Exercises the live version dispatch: every header goes over a
+/// real mesh QUIC stream into `handle_mesh_connection`.
+struct MeshHomeHarness {
+    /// Held so the home endpoint and its relay-permit pool outlive the harness.
+    _cluster: Arc<ClusterCtx>,
+    registry: Arc<OrphanRegistry>,
+    metrics: Arc<Metrics>,
+    /// Held so the edge socket stays bound for the harness's lifetime.
+    _edge_endpoint: MeshEndpoint,
+    edge_conn: Connection,
+    home: tokio::task::JoinHandle<()>,
+}
+
+impl MeshHomeHarness {
+    async fn new() -> Self {
+        let psk = b"mesh-home-v5-psk";
+        let registry = test_registry();
+        let (cluster, services, routes) =
+            home_runtime_with_registry(psk, 8, &["/tcp"], Arc::clone(&registry));
+        let edge_endpoint =
+            MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
+        let (home_conn, edge_conn) = connect_edge(&cluster.endpoint, &edge_endpoint).await;
+        let metrics = Arc::clone(&cluster.metrics);
+        let home =
+            tokio::spawn(handle_mesh_connection(home_conn, Arc::clone(&cluster), services, routes));
+        Self {
+            _cluster: cluster,
+            registry,
+            metrics,
+            _edge_endpoint: edge_endpoint,
+            edge_conn,
+            home,
+        }
+    }
+
+    fn registry(&self) -> &Arc<OrphanRegistry> {
+        &self.registry
+    }
+
+    /// Opens a v5 relay and reports the outcome, sending the USER frame only if
+    /// the home acked (as a real edge does).
+    async fn serve_v5(&self, header: OpenHeaderV5) -> V5Outcome {
+        self.serve_v5_with_user(header, "beerloga").await
+    }
+
+    async fn serve_v5_with_user(&self, header: OpenHeaderV5, user: &str) -> V5Outcome {
+        let (mut send, mut recv) = open_relay(&self.edge_conn, &header.encode()).await;
+        let mut ack = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(5), recv.read_exact(&mut ack))
+            .await
+            .expect("the home must answer a v5 OPEN, not leave it hanging");
+        if let Err(error) = read {
+            return V5Outcome {
+                acked: false,
+                close_reason: Some(reset_reason(&error)),
+            };
+        }
+        assert_eq!(ack[0], OPEN_ACK_ACCEPTED, "an ack byte must mark the relay accepted");
+        send.write_all(&UserFrame { user: user.to_string() }.encode())
+            .await
+            .expect("writing the USER frame");
+        let ended = tokio::time::timeout(Duration::from_secs(5), recv.read_to_end(64))
+            .await
+            .expect("the home must resolve phase 2, not leave it hanging");
+        let close_reason = match ended {
+            Ok(_) => None,
+            Err(ReadToEndError::Read(error)) => Some(reset_reason_read(&error)),
+            Err(other) => panic!("unexpected read-to-end failure: {other:?}"),
+        };
+        V5Outcome { acked: true, close_reason }
+    }
+
+    /// Opens a v5 relay that must be admitted, returning the spliced session.
+    async fn serve_v5_ok(&self, header: OpenHeaderV5, user: &str) -> V5Session {
+        let (mut send, mut recv) = open_relay(&self.edge_conn, &header.encode()).await;
+        let mut ack = [0u8; 1];
+        tokio::time::timeout(Duration::from_secs(5), recv.read_exact(&mut ack))
+            .await
+            .expect("the home must ack an admitted v5 relay")
+            .expect("reading the v5 OPEN ack");
+        assert_eq!(ack[0], OPEN_ACK_ACCEPTED);
+        send.write_all(&UserFrame { user: user.to_string() }.encode())
+            .await
+            .expect("writing the USER frame");
+        V5Session { send, recv }
+    }
+
+    /// Drives a v4 OPEN and reports whether it reached the untouched v4 path.
+    /// Only that path admits a header carrying a route path with no park behind
+    /// it — the v5 path would refuse it with `NoSession`.
+    async fn serve_v4_reaches_legacy_path(&self) -> bool {
+        let (_send, mut recv) = open_relay(&self.edge_conn, &ss_tcp_open(1)).await;
+        let mut ack = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(5), recv.read_exact(&mut ack)).await;
+        if !matches!(read, Ok(Ok(()))) || ack[0] != OPEN_ACK_ACCEPTED {
+            return false;
+        }
+        wait_for_active_relays(&self.metrics, 1).await;
+        true
+    }
+}
+
+impl Drop for MeshHomeHarness {
+    fn drop(&mut self) {
+        self.home.abort();
+    }
+}
+
+/// The `CloseReason` behind a `quinn` read failure, or `Abort` for any other
+/// failure shape (a reset is a reset).
+fn reset_reason(error: &quinn::ReadExactError) -> CloseReason {
+    match error {
+        quinn::ReadExactError::ReadError(error) => reset_reason_read(error),
+        quinn::ReadExactError::FinishedEarly(_) => CloseReason::Fin,
+    }
+}
+
+fn reset_reason_read(error: &ReadError) -> CloseReason {
+    match error {
+        ReadError::Reset(code) => CloseReason::from_code(
+            u32::try_from(code.into_inner()).expect("close reasons fit in a u32"),
+        ),
+        _ => CloseReason::Abort,
+    }
+}
+
+#[tokio::test]
+async fn has_park_reports_a_committed_park() {
+    let registry = test_registry();
+    let id = SessionId::from_bytes([3u8; 16]);
+    assert!(!registry.has_park(id), "no park yet");
+
+    let _upstream = park_test_session(&registry, id, "beerloga").await;
+
+    assert!(registry.has_park(id), "a committed park must be visible");
+}
+
+#[tokio::test]
+async fn has_park_reports_an_in_flight_reservation() {
+    // The phase-1 ack must not answer "no session" while a park is still
+    // landing — that is the park-miss race `take_for_resume` already guards.
+    let registry = test_registry();
+    let id = SessionId::from_bytes([4u8; 16]);
+    let _reservation = registry.reserve_park(id);
+
+    assert!(registry.has_park(id), "a reserved park must count as present");
+}
+
+#[tokio::test]
+async fn has_park_does_not_consume_the_park() {
+    let registry = test_registry();
+    let id = SessionId::from_bytes([5u8; 16]);
+    let _upstream = park_test_session(&registry, id, "beerloga").await;
+
+    assert!(registry.has_park(id));
+    assert!(registry.has_park(id), "the probe must be read-only");
+
+    let outcome = registry.take_for_resume(id, "beerloga").await;
+    assert!(matches!(outcome, ResumeOutcome::Hit(_)), "the park must still be takeable");
+}
+
+#[tokio::test]
+async fn v5_home_refuses_when_no_park_exists() {
+    let harness = MeshHomeHarness::new().await;
+
+    let outcome = harness.serve_v5(v5_header(SessionId::from_bytes([6u8; 16]))).await;
+
+    assert_eq!(outcome.close_reason(), Some(CloseReason::NoSession));
+    assert!(
+        !outcome.acked(),
+        "the refusal replaces the ack, before the edge upgrades its client"
+    );
+}
+
+#[tokio::test]
+async fn v5_home_refuses_when_the_user_does_not_own_the_park() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([7u8; 16]);
+    let _upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    let outcome = harness.serve_v5_with_user(v5_header(id), "cloud").await;
+
+    assert!(outcome.acked(), "phase 1 cannot know the user yet, so it acks");
+    assert_eq!(outcome.close_reason(), Some(CloseReason::NoSession));
+}
+
+#[tokio::test]
+async fn v5_home_splices_plaintext_to_the_parked_upstream() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([8u8; 16]);
+    let mut upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    let mut session = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    // Uplink: what the edge writes as plaintext reaches the parked upstream verbatim.
+    session.edge_write(b"GET / HTTP/1.1\r\n\r\n").await;
+    assert_eq!(upstream.read(18).await, b"GET / HTTP/1.1\r\n\r\n");
+
+    // Downlink: the home encrypts nothing — the edge seals it under its own key.
+    upstream.write(b"HTTP/1.1 200 OK\r\n\r\n").await;
+    assert_eq!(session.edge_read(19).await, b"HTTP/1.1 200 OK\r\n\r\n");
+}
+
+#[tokio::test]
+async fn v5_home_replays_the_ring_suffix_before_new_downlink() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([9u8; 16]);
+    // 12 plaintext bytes already sent, client acked the first 5.
+    let _upstream =
+        park_test_session_with_ring(harness.registry(), id, "beerloga", b"HELLO-WORLD!").await;
+
+    let mut header = v5_header(id);
+    header.symmetric_replay = true;
+    header.client_down_acked = 5;
+
+    let mut session = harness.serve_v5_ok(header, "beerloga").await;
+
+    assert_eq!(
+        session.edge_read(7).await,
+        b"-WORLD!",
+        "the home replays exactly the unacked suffix, as plaintext"
+    );
+}
+
+#[tokio::test]
+async fn a_v4_relay_still_takes_the_untouched_v4_path() {
+    // The 24 end-to-end cluster tests depend on this until Task 7 retires v4.
+    let harness = MeshHomeHarness::new().await;
+
+    assert!(
+        harness.serve_v4_reaches_legacy_path().await,
+        "a v4 OPEN must still dispatch into the original serve_relayed"
+    );
 }

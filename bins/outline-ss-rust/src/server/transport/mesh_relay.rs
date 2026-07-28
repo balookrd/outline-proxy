@@ -12,9 +12,18 @@
 //! Resume: the header's session id is both the requested resume id and the
 //! issued id — the home parks under the id the client already holds (there is
 //! no HTTP response over the mesh to echo a fresh one). See `docs/CLUSTER.md`.
+//!
+//! Two wire versions are served side by side while the fleet migrates. The
+//! paragraph above describes v4, which [`serve_relayed`] still implements
+//! unchanged. In v5 the *edge* terminates the client's crypto and the mesh
+//! carries application plaintext, so [`serve_relayed_v5`] resolves a park and
+//! splices onto it directly — no route table, no crypto, no accept path. The
+//! accept loop dispatches on the OPEN version byte; the two paths share only
+//! the stream and the refusal helper.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -23,17 +32,19 @@ use axum::response::Response;
 use bytes::Bytes;
 use outline_wire::cluster::ShardId;
 use quinn::{Connection, RecvStream, SendStream, VarInt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, warn};
 
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    AcceptRelayError, CarrierKind, CloseReason, ControlDatagram, MeshStream, OpenHeader,
-    PooledRelay, accept_relay, encode_throttle_hint, parse_control_datagram, read_datagram,
-    write_datagram, write_open_ack,
+    AcceptRelayError, CarrierKind, CloseReason, ControlDatagram, MAX_USER_LEN, MeshFraming,
+    MeshStream, OpenHeader, OpenHeaderV5, PooledRelay, RelayOpen, UserFrame, accept_relay,
+    encode_throttle_hint, parse_control_datagram, read_datagram, write_datagram, write_open_ack,
 };
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
-use crate::server::resumption::SessionId;
+use crate::server::resumption::downlink_ring::ReplayOutcome;
+use crate::server::resumption::{Parked, ParkedTcp, ResumeMiss, ResumeOutcome, SessionId};
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::state::{
     RoutesSnapshot, Services, TransportRoute, VlessTransportRoute, empty_transport_route,
@@ -51,6 +62,11 @@ use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 
 /// Read granularity for the mesh→client direction on the edge.
 const MESH_EDGE_CHUNK: usize = 256 * 1024;
+
+/// Read granularity of the home's v5 plaintext splice, in both directions. Also
+/// the size of the single upstream read buffer the splice allocates once per
+/// relay — the explicit bound on that buffer.
+const MESH_HOME_SPLICE_CHUNK: usize = 64 * 1024;
 
 /// What the edge needs to signal a throttled client segment to the home: the
 /// mesh connection to send the control datagram on, the relayed session id to
@@ -689,7 +705,20 @@ async fn handle_mesh_connection(
         tokio::spawn(async move {
             // Releases the slot when the relay ends, on every path.
             let _permit = permit;
-            if let Err(error) = serve_relayed(header, stream, &cluster, &services, &routes).await {
+            // Version dispatch. Both wire versions are served while the fleet
+            // runs a mix: a v4 edge still relays its still-encrypted carrier
+            // into the legacy path, a v5 edge relays plaintext for a park this
+            // home owns. An unknown version never reaches here — `accept_relay`
+            // already refused it as an unparsable stream.
+            let result = match header {
+                RelayOpen::V4(header) => {
+                    serve_relayed(header, stream, &cluster, &services, &routes).await
+                },
+                RelayOpen::V5(header) => {
+                    serve_relayed_v5(header, stream, &cluster, &services).await
+                },
+            };
+            if let Err(error) = result {
                 debug!(?error, "relayed session ended with error");
             }
         });
@@ -945,6 +974,248 @@ async fn serve_relayed(
         // Defensive (not a panic) rather than provable to the compiler.
         (carrier, _) => bail!("mesh carrier {carrier:?} has no matching relayed route table"),
     }
+}
+
+/// Reads the second-phase USER frame off a v5 relay stream.
+///
+/// Bounded by construction: one length byte, then at most [`MAX_USER_LEN`]
+/// bytes. A peer can never drive an unbounded read or allocation here, however
+/// large a length it claims — the length is checked before the body is read.
+async fn read_user_frame(recv: &mut RecvStream) -> Result<UserFrame> {
+    let mut len = [0u8; 1];
+    recv.read_exact(&mut len)
+        .await
+        .context("reading the mesh USER frame length")?;
+    let claimed = len[0] as usize;
+    if claimed > MAX_USER_LEN {
+        bail!("mesh USER frame user name too long: {claimed}");
+    }
+    let mut frame = vec![0u8; 1 + claimed];
+    frame[0] = len[0];
+    recv.read_exact(&mut frame[1..])
+        .await
+        .context("reading the mesh USER frame")?;
+    UserFrame::parse(&frame)
+}
+
+/// Serves one v5 relayed session: the two-phase resume hand-off.
+///
+/// Where [`serve_relayed`] admits a still-encrypted carrier and re-runs the
+/// whole accept path against it, this path does none of that — the edge already
+/// terminated the client's crypto, so the home is a pure session owner. There
+/// is no route lookup (the path is a local matter of the edge), no decryptor and
+/// no encryptor: the mesh carries application plaintext inside the QUIC/TLS
+/// tunnel the peers already authenticated to each other with.
+///
+/// The two phases exist because the edge must decide what to echo in its `101`
+/// before it can read the client's first encrypted frame, so it cannot name the
+/// user in OPEN. Phase 1 therefore answers the narrower question "is there a
+/// park under this id?" and phase 2 does the owner check `take_for_resume` has
+/// always done, one round trip later. A refusal in phase 1 reaches the edge
+/// *before* the client carrier is upgraded, which is what keeps a failed relay
+/// from becoming a black hole.
+async fn serve_relayed_v5(
+    header: OpenHeaderV5,
+    mut stream: MeshStream,
+    cluster: &ClusterCtx,
+    services: &Services,
+) -> Result<()> {
+    let session_id = SessionId::from_bytes(header.session_id);
+    let registry = &services.orphan_registry;
+
+    if header.framing == MeshFraming::Udp {
+        // The home's plaintext SS-UDP path (NAT + park against SOCKS5-wrapped
+        // datagrams) lands with the SS-UDP edge; until then no peer sends this
+        // framing, so a stream carrying it is a peer running ahead of this
+        // build. Refuse before consuming anything, and never take the park.
+        cluster.metrics.record_mesh_relay_rejected("udp_unsupported");
+        cluster.metrics.record_mesh_relay_outcome("miss");
+        warn!("refusing a v5 SS-UDP relay: this home does not serve UDP framing yet");
+        refuse_relay(stream, CloseReason::Abort);
+        return Ok(());
+    }
+
+    // Phase 1: does a park exist under this id? The user is not known yet, so
+    // this is deliberately the weaker check; an in-flight park counts as present
+    // (see `OrphanRegistry::has_park`).
+    if !registry.has_park(session_id) {
+        cluster.metrics.record_mesh_relay_rejected("no_session");
+        cluster.metrics.record_mesh_relay_outcome("miss");
+        // An ordinary outcome — parks expire and are evicted — so this is not a
+        // warning. The edge simply serves its client a fresh local session.
+        debug!("no parked session for a relayed resume id; refusing the relay");
+        refuse_relay(stream, CloseReason::NoSession);
+        return Ok(());
+    }
+    // Admitted so far. The ack releases the edge to upgrade its client carrier
+    // and echo continuity, and is the first downlink byte of the stream.
+    write_open_ack(&mut stream.send).await?;
+
+    // Phase 2: the user the edge authenticated, then the owner check.
+    let user = read_user_frame(&mut stream.recv).await?;
+    let parked = match registry.take_for_resume(session_id, &user.user).await {
+        ResumeOutcome::Hit(parked) => parked,
+        ResumeOutcome::Miss(miss) => {
+            let reason = match miss {
+                // A park exists but under a different owner. Either a genuine
+                // security event or the shared-user-namespace invariant broken
+                // by config — worth a warning either way, and the user name is
+                // an identifier, not a secret.
+                ResumeMiss::OwnerMismatch => {
+                    warn!(
+                        user = %user.user,
+                        "relayed resume rejected: the parked session belongs to another user — \
+                         check that user names denote the same person on every cluster node",
+                    );
+                    "unknown_user"
+                },
+                // The park expired or was evicted between phase 1 and phase 2.
+                _ => "no_session",
+            };
+            cluster.metrics.record_mesh_relay_rejected(reason);
+            cluster.metrics.record_mesh_relay_outcome("miss");
+            refuse_relay(stream, CloseReason::NoSession);
+            return Ok(());
+        },
+    };
+    let Parked::Tcp(parked) = parked else {
+        // The OPEN's framing disagrees with what is actually parked under the
+        // id — a forged or mismatched peer. Refuse rather than panic; the park
+        // is already consumed, so the client loses continuity but nothing else.
+        warn!("relayed TCP framing does not match the parked session kind; aborting the relay");
+        refuse_relay(stream, CloseReason::Abort);
+        return Ok(());
+    };
+    cluster.metrics.record_mesh_relay_outcome("hit");
+    // Count this relay as active for its whole lifetime; the guard drops on
+    // return, including every early bail inside the splice.
+    let _relay_active = cluster.metrics.open_mesh_relay();
+    splice_plaintext_tcp(stream, parked, &header, cluster).await
+}
+
+/// Splices a relayed plaintext stream onto a parked TCP upstream.
+///
+/// Simpler than the v4 path beside it: no decryptor, no encryptor, no route
+/// context — just the unacked replay suffix followed by a bidirectional pump.
+/// The ring already holds **plaintext** keyed by plaintext offsets, so the
+/// suffix goes out as-is and the edge seals it under its own client key.
+///
+/// Health budget: `cluster.relay_budget` bounds a single write in each
+/// direction, so a peer (or an upstream) that stops draining tears the relay
+/// down instead of pinning the parked socket forever. It measures progress, not
+/// RTT — an idle relay blocks on a read, never on a write.
+async fn splice_plaintext_tcp(
+    stream: MeshStream,
+    parked: ParkedTcp,
+    header: &OpenHeaderV5,
+    cluster: &ClusterCtx,
+) -> Result<()> {
+    let MeshStream { mut send, mut recv } = stream;
+    let ParkedTcp {
+        mut upstream_writer,
+        mut upstream_reader,
+        target_display,
+        // The user is already authenticated (by the edge, attested in the USER
+        // frame) and the owner check is done; neither identity nor the SS user
+        // key has any part to play in a plaintext splice.
+        owner: _,
+        protocol_context: _,
+        // Per-user byte accounting stays with the node that terminates the
+        // client session, i.e. the edge; the home counts this traffic on its
+        // `role="home"` mesh counters below.
+        user_counters: _,
+        upstream_guard,
+        upstream_bytes_acked,
+        downlink_ring,
+    } = parked;
+    // Keeps the upstream-connection gauge counting this socket for as long as
+    // the splice holds it.
+    let _upstream_guard = upstream_guard;
+
+    let up_bytes = cluster.metrics.mesh_bytes_counter("home", "up", "tcp");
+    let down_bytes = cluster.metrics.mesh_bytes_counter("home", "down", "tcp");
+    let budget = cluster.relay_budget;
+
+    // Byte-continuity: everything the session emitted past the offset the client
+    // acknowledged goes out first, ahead of any fresh upstream byte, so the
+    // client's stream has no gap and no duplicate across the carrier switch.
+    if header.symmetric_replay
+        && let Some(ring) = &downlink_ring
+    {
+        let outcome = ring.lock().replay_from(header.client_down_acked);
+        match outcome {
+            ReplayOutcome::Available(bytes) if !bytes.is_empty() => {
+                send.write_all(&bytes)
+                    .await
+                    .context("replaying the downlink suffix over the mesh")?;
+                down_bytes.increment(bytes.len() as u64);
+            },
+            // Nothing outstanding: the client observed everything sent.
+            ReplayOutcome::Available(_) => {},
+            // Eviction rolled past the requested offset, or the client claims
+            // more than was ever sent. Continuity is lost for the gap; the
+            // session still runs from here.
+            other => debug!(
+                ?other,
+                target = %target_display,
+                "no replayable downlink suffix for a relayed resume",
+            ),
+        }
+    }
+
+    // Uplink: mesh → parked upstream. The ONLY writer to the upstream socket.
+    let uplink = async {
+        while let Some(chunk) = recv
+            .read_chunk(MESH_HOME_SPLICE_CHUNK, true)
+            .await
+            .context("relayed uplink read from the mesh")?
+        {
+            let len = chunk.bytes.len();
+            match tokio::time::timeout(budget, upstream_writer.write_all(&chunk.bytes)).await {
+                Ok(result) => result.context("relayed uplink write to the upstream")?,
+                Err(_elapsed) => bail!("relayed uplink stalled past the health budget"),
+            }
+            up_bytes.increment(len as u64);
+            // Keeps the Ack-Prefix counter monotonic across this reattach, the
+            // same guarantee the direct relay gives.
+            upstream_bytes_acked.fetch_add(len as u64, Ordering::Relaxed);
+        }
+        // The edge finished the stream: half-close the upstream so the target
+        // sees the end of the request body.
+        let _ = upstream_writer.shutdown().await;
+        Ok::<(), anyhow::Error>(())
+    };
+
+    // Downlink: parked upstream → mesh. The ONLY writer to the mesh stream.
+    // One buffer for the relay's lifetime, bounded by MESH_HOME_SPLICE_CHUNK.
+    let downlink = async {
+        let mut buf = vec![0u8; MESH_HOME_SPLICE_CHUNK];
+        loop {
+            let len = upstream_reader
+                .read(&mut buf)
+                .await
+                .context("relayed downlink read from the upstream")?;
+            if len == 0 {
+                break;
+            }
+            // Capture plaintext into the ring before it leaves the home, exactly
+            // as the direct relay does — so a later park under this id can still
+            // replay the suffix from a consistent offset.
+            if let Some(ring) = &downlink_ring {
+                ring.lock().push(&buf[..len]);
+            }
+            match tokio::time::timeout(budget, send.write_all(&buf[..len])).await {
+                Ok(result) => result.context("relayed downlink write to the mesh")?,
+                Err(_elapsed) => bail!("relayed downlink stalled past the health budget"),
+            }
+            down_bytes.increment(len as u64);
+        }
+        let _ = send.finish();
+        Ok::<(), anyhow::Error>(())
+    };
+
+    tokio::try_join!(uplink, downlink)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use anyhow::{Context, Result, bail};
 use quinn::{Connection, ConnectionError, Endpoint, RecvStream, SendStream};
 
-use super::frame::{OPEN_ACK_ACCEPTED, OpenHeader};
+use super::frame::{OPEN_ACK_ACCEPTED, OpenHeader, RelayOpen};
 use super::tls::{
     MESH_SERVER_NAME, MeshIdentity, build_mesh_client_quic_config, build_mesh_server_quic_config,
 };
@@ -129,17 +129,19 @@ pub(in crate::server) enum AcceptRelayError {
 }
 
 /// Accepts the next relay stream on `conn`, reading and parsing its OPEN
-/// header. The remaining stream bytes are the relayed carrier payload.
+/// header in whichever wire version the peer sent. The remaining stream bytes
+/// are the relayed carrier payload.
 pub(in crate::server) async fn accept_relay(
     conn: &Connection,
-) -> std::result::Result<(OpenHeader, MeshStream), AcceptRelayError> {
+) -> std::result::Result<(RelayOpen, MeshStream), AcceptRelayError> {
     let (send, mut recv) = conn.accept_bi().await.map_err(AcceptRelayError::Connection)?;
     let header = read_open_header(&mut recv).await.map_err(AcceptRelayError::Stream)?;
     Ok((header, MeshStream { send, recv }))
 }
 
-/// Reads the length-prefixed OPEN header prefixing a relay stream.
-async fn read_open_header(recv: &mut RecvStream) -> Result<OpenHeader> {
+/// Reads the length-prefixed OPEN header prefixing a relay stream, dispatching
+/// on its version byte.
+async fn read_open_header(recv: &mut RecvStream) -> Result<RelayOpen> {
     let mut len_buf = [0u8; 4];
     recv.read_exact(&mut len_buf)
         .await
@@ -150,7 +152,7 @@ async fn read_open_header(recv: &mut RecvStream) -> Result<OpenHeader> {
     }
     let mut buf = vec![0u8; len];
     recv.read_exact(&mut buf).await.context("reading mesh OPEN header")?;
-    OpenHeader::parse(&buf)
+    RelayOpen::parse(&buf)
 }
 
 #[cfg(test)]
