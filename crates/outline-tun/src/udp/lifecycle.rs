@@ -11,6 +11,7 @@ use tracing::{debug, warn};
 use outline_metrics as metrics;
 use outline_transport::{
     AbortOnDrop, UdpSessionTransport, WsClosed, is_dropped_oversized_udp_error,
+    payload_integrity_cause,
 };
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
 use socks5_proto::TargetAddr;
@@ -612,33 +613,50 @@ impl TunUdpEngine {
                 Ok::<(), anyhow::Error>(())
             }
             .await;
-            // A clean WebSocket close (Close frame / EOF from the peer, surfaced
-            // as `WsClosed`) is NOT a data-path failure. UDP associations are
-            // ephemeral and the server closing the mux carrier — e.g. on its own
-            // idle timeout — is normal lifecycle, not an outage. Treat it like
-            // the TCP downlink does (`closed_cleanly()` → stop without error):
-            // do not stamp a runtime-failure cooldown, which would otherwise
-            // flap the UDP health indicator on every routine close. A *dirty*
-            // read error still escalates exactly as before. The flow is closed
-            // as "closed" either way and re-created on the next packet.
-            let clean_close = result.as_ref().err().is_some_and(is_clean_ws_close);
-            let close_reason = if result.is_ok() || clean_close {
-                "closed"
-            } else {
-                "read_error"
-            };
+            // Why the reader stopped decides what the uplink is charged for:
+            // only a carrier fault may escalate (see [`ReaderStop`]). The flow
+            // itself goes away in every case and is re-created on the next
+            // packet; only the close reason and the uplink-level accounting
+            // differ.
+            let stop = result.as_ref().err().map(ReaderStop::classify);
+            let close_reason = stop.as_ref().map_or("closed", ReaderStop::close_reason);
 
             if let Err(ref error) = result
-                && !clean_close
+                && let Some(ref stop) = stop
+                && !matches!(stop, ReaderStop::CleanClose)
                 && flow_is_current(&engine.inner.flows, &key, flow_id).await
             {
-                report_udp_runtime_failure(&manager, uplink_index, error).await;
-                metrics::record_tun_packet("down", ip_family_from_version(key.version), "error");
-                warn!(
-                    flow_id,
-                    error = %format!("{error:#}"),
-                    "TUN UDP flow reader stopped"
-                );
+                if stop.escalates_to_carrier() {
+                    report_udp_runtime_failure(&manager, uplink_index, error).await;
+                    metrics::record_tun_packet(
+                        "down",
+                        ip_family_from_version(key.version),
+                        "error",
+                    );
+                    warn!(
+                        flow_id,
+                        error = %format!("{error:#}"),
+                        "TUN UDP flow reader stopped"
+                    );
+                } else if let ReaderStop::PayloadIntegrity(cause) = stop {
+                    manager.report_payload_integrity_failure(
+                        uplink_index,
+                        TransportKind::Udp,
+                        cause,
+                        error,
+                    );
+                    metrics::record_tun_packet(
+                        "down",
+                        ip_family_from_version(key.version),
+                        "payload_error",
+                    );
+                    debug!(
+                        flow_id,
+                        cause,
+                        error = %format!("{error:#}"),
+                        "TUN UDP flow reader stopped on a corrupt datagram"
+                    );
+                }
             }
             engine.close_flow_if_current(&key, flow_id, close_reason).await;
         }))
@@ -716,6 +734,59 @@ pub(super) fn queue_client_datagram(tx: &mpsc::Sender<Bytes>, payload: Bytes) {
         Err(mpsc::error::TrySendError::Closed(_)) => {
             metrics::record_tun_udp_forward_error("outbound_queue_closed");
         },
+    }
+}
+
+/// Why a UDP flow reader stopped — and, with it, what the uplink is charged
+/// for. The flow is torn down in all three cases; only the accounting differs.
+#[derive(Debug)]
+pub(super) enum ReaderStop {
+    /// A clean WebSocket close (Close frame / EOF from the peer, surfaced as
+    /// [`WsClosed`]). UDP associations are ephemeral and the server closing
+    /// the mux carrier — e.g. on its own idle timeout — is normal lifecycle,
+    /// not an outage. Mirrors the TCP downlink's `closed_cleanly()`.
+    CleanClose,
+    /// The carrier delivered bytes that could not be turned back into a
+    /// datagram: an AEAD open failure, a truncated packet, or an SS2022
+    /// replay/reorder rejection. Carries the low-cardinality cause label.
+    ///
+    /// This is *not* a carrier fault, and reporting it as one is the bug this
+    /// variant exists to prevent: it capped `xhttp_h3 → xhttp_h2` per
+    /// occurrence, so a ~0.1 % corrupt-datagram rate held one production
+    /// uplink in UDP-over-TCP 69.6 % of the time. The flow is still recreated
+    /// (its SS2022 replay state is out of step after the rejection); the
+    /// uplink just does not pay for it.
+    PayloadIntegrity(&'static str),
+    /// A dirty transport error — read failure, timeout, reset, frame-send
+    /// error. The one shape that says something about the carrier, and the
+    /// only one that escalates.
+    CarrierFailure,
+}
+
+impl ReaderStop {
+    pub(super) fn classify(error: &anyhow::Error) -> Self {
+        if is_clean_ws_close(error) {
+            return Self::CleanClose;
+        }
+        match payload_integrity_cause(error) {
+            Some(cause) => Self::PayloadIntegrity(cause),
+            None => Self::CarrierFailure,
+        }
+    }
+
+    /// Whether this stop may be reported as a runtime uplink failure
+    /// (cooldown, penalty, failure streak, carrier descent).
+    pub(super) fn escalates_to_carrier(&self) -> bool {
+        matches!(self, Self::CarrierFailure)
+    }
+
+    /// The flow-close reason recorded on `tun_flows_closed_total`.
+    pub(super) fn close_reason(&self) -> &'static str {
+        match self {
+            Self::CleanClose => "closed",
+            Self::PayloadIntegrity(_) => "payload_error",
+            Self::CarrierFailure => "read_error",
+        }
     }
 }
 
