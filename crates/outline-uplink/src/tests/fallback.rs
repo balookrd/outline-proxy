@@ -10,7 +10,7 @@ use url::Url;
 
 use crate::config::{CipherKind, FallbackTransport, TransportMode, UplinkConfig, UplinkTransport};
 
-fn vless_xhttp_primary() -> UplinkConfig {
+pub(crate) fn vless_xhttp_primary() -> UplinkConfig {
     UplinkConfig {
         name: "edge".to_string(),
         transport: UplinkTransport::Vless,
@@ -402,7 +402,7 @@ fn make_probe(min_failures: usize) -> ProbeConfig {
     }
 }
 
-fn manager_with_uplink(uplink: UplinkConfig, min_failures: usize) -> UplinkManager {
+pub(crate) fn manager_with_uplink(uplink: UplinkConfig, min_failures: usize) -> UplinkManager {
     UplinkManager::new_for_test(
         "test",
         vec![uplink],

@@ -8,8 +8,8 @@ use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
 
-use outline_transport::is_dropped_oversized_udp_error;
-use outline_uplink::{UplinkManager, UplinkRegistry};
+use outline_transport::{is_dropped_oversized_udp_error, payload_integrity_cause};
+use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
 use socks5_proto::TargetAddr;
 
 use super::transport::{
@@ -246,6 +246,32 @@ pub(super) async fn run_group_downlink(
             }
             result = transport.read_packet() => match result {
                 Ok(payload) => payload,
+                Err(error) if payload_integrity_cause(&error).is_some() => {
+                    // A datagram that failed AEAD open / was truncated / was
+                    // rejected as an SS2022 replay is a per-datagram event on
+                    // a connectionless path, not a carrier fault: the next
+                    // datagram resynchronises on its own. Failing the
+                    // transport over here would migrate every flow of this
+                    // association onto another uplink over one corrupt
+                    // packet — the same "one bad datagram must not take the
+                    // association with it" rule the ingress parser already
+                    // follows, applied to the downlink.
+                    let cause = payload_integrity_cause(&error)
+                        .expect("payload cause matched in the guard above");
+                    debug!(
+                        uplink = %name,
+                        cause,
+                        error = %format!("{error:#}"),
+                        "dropping corrupt UDP downlink datagram",
+                    );
+                    ctx.manager.report_payload_integrity_failure(
+                        index,
+                        TransportKind::Udp,
+                        cause,
+                        &error,
+                    );
+                    continue;
+                },
                 Err(error) => {
                     let replacement = failover_udp_transport(
                         &ctx.manager,
