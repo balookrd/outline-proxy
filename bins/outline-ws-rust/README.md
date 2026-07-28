@@ -151,6 +151,7 @@ tun2udp + tun2tcp"]
 - auto-failback disabled by default (`auto_failback = false`): switches only on failure, never proactively back to a recovered primary
 - warm-standby WebSocket pools for TCP and UDP
 - active-uplink selection persisted across restarts (TOML state file, debounced async writes)
+- scheduled weighted re-selection of the strict active uplink (`active_passive` only): wall-clock `reselect_at` slots or a fixed `reselect_interval`, forced rotation that always excludes the current active, weighted by health/penalty like `health_weighted_selection`, plus `POST /control/reselect` for an on-demand trigger. See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) "Scheduled re-selection".
 
 ### Health probing
 
@@ -813,6 +814,8 @@ Routing scope behavior:
 - `false` (default): the active uplink is **only replaced when it fails** (enters cooldown or is no longer healthy). While the active uplink is still healthy, it stays active regardless of whether a higher-priority uplink has recovered. This is the recommended setting for production because it avoids connection disruption caused by proactive primary preference.
 - `true`: when the current active uplink is healthy and a probe-healthy candidate with a higher `weight` (or equal weight and lower config index) exists, the proxy may return traffic to that candidate — but only after the candidate has accumulated `min_failures` consecutive successful probe cycles. Priority is determined by `weight`, not EWMA: this prevents spurious switches under load, when the active uplink's EWMA is temporarily elevated. Failback only moves toward higher weight; switching to a lower-weight uplink requires a probe-confirmed failover.
 
+**Scheduled re-selection:** `load_balancing.reselect_at` (wall-clock `"HH:MM"` slots, due for up to 90 s after the configured time) or `load_balancing.reselect_interval` (a fixed period) forces a weighted-random rotation of the strict active uplink in `active_passive` mode on a timer — the current active is always excluded, and the winner is drawn among healthy, enabled, non-cooldown candidates weighted by `penalty_weight × weight` (floored by `health_weight_floor`). Mutually exclusive with each other; both require `active_passive`. **Caution with `auto_failback = true`:** since the draw has no priority rule, it can land on a lower-weight uplink than the one it replaced, and the very next stretch of consecutive-healthy probes on the higher-weight uplink then silently reverts the move via failback. Use equal `weight` across the group if the scheduled move should stick, or leave `auto_failback` off (the default) with this feature. `POST /control/reselect` triggers the same rotation on demand. See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) "Scheduled re-selection" for full semantics.
+
 **Penalty-aware failover:** when the current active uplink enters cooldown and the selector must pick a replacement, candidates are re-sorted as: healthy first → cooldown remaining → `weight` (higher first) → penalty-aware EWMA score (`(EWMA + penalty) / weight`) → config index. `weight` is the primary ordering signal so a deliberately downranked backup is not promoted by a faster probe RTT alone; the penalty-aware score still breaks ties within the same weight, preventing oscillation with three or more equal-weight uplinks (without penalties a probe-cleared primary with a better raw EWMA would be selected again immediately even though it just failed).
 
 Runtime failover:
@@ -983,6 +986,7 @@ If `[control]` is configured the process serves mutating endpoints on a
 - `GET /control/topology` - instance/group/uplink topology for dashboards
 - `GET /control/summary` - compact group/uplink health counters
 - `POST /control/activate` - JSON activation API for UI click actions
+- `POST /control/reselect` - force a weighted-random re-selection of a group's strict active uplink ("reselect now"), the same rotation the scheduled `reselect_at`/`reselect_interval` loops perform. JSON body `{"group":"main","soft":true}` (`soft` defaults to `true`)
 - `POST /control/uplink_enabled` - administratively enable/disable an uplink (operator on/off). JSON body `{"group":"main","uplink":"backup","enabled":false}`. A disabled uplink is removed from **all** automatic machinery — probing, candidate selection, failover, and warm-standby refill — until re-enabled; if it was the active uplink, traffic fails over to an enabled standby immediately. Runtime-only: the override is **not** persisted, so a process restart starts every uplink enabled. Exposed in the dashboard as the per-uplink On/Off button.
 - `GET`/`POST`/`PATCH`/`DELETE /control/uplinks` - stage `[[outline.uplinks]]` edits in the config file
 - `POST /control/apply` - hot-apply staged uplink edits without a process restart
@@ -1062,6 +1066,41 @@ logic as `/switch`:
   "transport": "tcp"
 }
 ```
+
+`POST /control/reselect` forces the same weighted-random re-selection the
+scheduled re-selection loops (`reselect_at` / `reselect_interval`) perform,
+outside of their schedule ("reselect now"). Only meaningful for a group in
+`active_passive` mode with a single strict active slot (`global` or
+`per_uplink` routing scope); other groups report `outcome: "skipped"`.
+
+```json
+{
+  "group": "main",
+  "soft": true
+}
+```
+
+`soft` defaults to `true` and requests a session-preserving switch via cluster
+resume; it is clamped to a hard switch on a group without `shared_resume`, same
+as `/control/activate`. The response reports the *effective* `soft` value,
+plus `from`/`to` uplink names when the slot moved:
+
+```json
+{
+  "group": "main",
+  "outcome": "switched",
+  "from": "uplink-01",
+  "to": "uplink-02",
+  "soft": true
+}
+```
+
+`outcome` is one of `switched`, `no_candidate` (no eligible uplink remained
+once the current active and disabled/unhealthy/cooldown uplinks were
+excluded), or `skipped` (the group is not in `active_passive` mode, or has no
+single strict active slot to rotate). Exposed in the dashboard as the
+per-group "⟳ Reselect" button — unlike soft switch, it is offered regardless
+of `cluster_resume_enabled`.
 
 `/control/uplinks` mutates the canonical `[[outline.uplinks]]` array in the
 on-disk TOML. Mutation responses include `apply_required: true` when

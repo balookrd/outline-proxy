@@ -30,7 +30,7 @@ pub use ss_share_link::SsShareLink;
 #[cfg(test)]
 mod tests;
 
-pub use manager::deduplicate_attempted_uplink_names;
+pub use manager::{ReselectOutcome, deduplicate_attempted_uplink_names};
 pub use registry::{UplinkGroupHandle, UplinkRegistry, log_registry_summary};
 pub use state::StateStore;
 pub use types::{

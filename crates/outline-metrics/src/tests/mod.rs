@@ -143,6 +143,20 @@ fn render_prometheus_exports_cluster_soft_switch_and_resume_metrics() {
 }
 
 #[test]
+fn render_prometheus_exports_uplink_reselect_total() {
+    let _guard = test_guard();
+    init();
+    record_uplink_reselect("main", "switched");
+
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
+    assert!(
+        rendered
+            .contains("outline_ws_uplink_reselect_total{group=\"main\",outcome=\"switched\"} 1"),
+        "reselect counter missing from exposition:\n{rendered}"
+    );
+}
+
+#[test]
 fn render_prometheus_exports_uplink_cert_expiry_gauge() {
     let _guard = test_guard();
     init();

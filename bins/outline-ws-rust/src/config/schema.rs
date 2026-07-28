@@ -651,6 +651,14 @@ pub(super) struct UplinkGroupSection {
     /// of a `fallback_direct = true` route fallback; explicit `[[route]]`
     /// fallbacks take precedence. Default: `false`.
     pub(super) bypass_when_down: Option<bool>,
+    /// Wall-clock times (`"HH:MM"`, system local time) at which the strict
+    /// active uplink is re-selected (weighted-random, forced move; soft switch
+    /// when the group has `shared_resume`). Mutually exclusive with
+    /// `reselect_interval`. Requires `mode = "active_passive"`.
+    pub(super) reselect_at: Option<Vec<String>>,
+    /// Period between automatic re-selections ("10h", "1h30m", bare seconds).
+    /// Mutually exclusive with `reselect_at`. Requires `mode = "active_passive"`.
+    pub(super) reselect_interval: Option<String>,
     /// Per-group override of top-level `[probe]`; unspecified fields inherit.
     pub(super) probe: Option<ProbeSection>,
 }
@@ -877,4 +885,12 @@ pub(super) struct LoadBalancingSection {
     /// (implicit) group has no healthy uplink. See the same-named
     /// field on `UplinkGroupSection`. Default: `false`.
     pub(super) bypass_when_down: Option<bool>,
+    /// Wall-clock times (`"HH:MM"`, system local time) at which the strict
+    /// active uplink is re-selected (weighted-random, forced move; soft switch
+    /// when the group has `shared_resume`). Mutually exclusive with
+    /// `reselect_interval`. Requires `mode = "active_passive"`.
+    pub(super) reselect_at: Option<Vec<String>>,
+    /// Period between automatic re-selections ("10h", "1h30m", bare seconds).
+    /// Mutually exclusive with `reselect_at`. Requires `mode = "active_passive"`.
+    pub(super) reselect_interval: Option<String>,
 }

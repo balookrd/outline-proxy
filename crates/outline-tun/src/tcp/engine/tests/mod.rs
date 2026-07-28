@@ -2009,6 +2009,8 @@ pub(crate) async fn build_test_manager_with_urls(
             tun_suppress_icmp_reply_when_down: false,
             tun_icmp_liveness_window: None,
             bypass_when_down: false,
+            reselect_at: Vec::new(),
+            reselect_interval: None,
         },
     )
     .unwrap()

@@ -602,6 +602,8 @@ fields are optional; omitted fields fall back to the defaults below.
 | `vless_udp_max_sessions`             | `256`              | int   | hard cap on concurrent VLESS UDP sessions (LRU-evicted on overflow)                               |
 | `vless_udp_session_idle_secs`        | `60`               | s     | evict VLESS UDP sessions idle longer than this (`0` disables eviction)                            |
 | `vless_udp_janitor_interval_secs`    | `15`               | s     | how often the VLESS UDP janitor scans for idle sessions                                           |
+| `reselect_at`                        | unset (disabled)   | list  | wall-clock `"HH:MM"` local-time slots for scheduled weighted re-selection of the strict active uplink (`active_passive` only); mutually exclusive with `reselect_interval`. See "Scheduled re-selection" below |
+| `reselect_interval`                  | unset (disabled)   | duration | fixed-period equivalent of `reselect_at` (`"90m"`, `"1h30m"`; a bare integer is read as seconds but a unit suffix is recommended); minimum `60s`; mutually exclusive with `reselect_at`         |
 
 Source of defaults:
 [`src/config/load/balancing.rs`](src/config/load/balancing.rs); the
@@ -686,9 +688,16 @@ the client ever seeing a reset — the server re-attaches the parked
 upstream via the mesh relay. It falls back to the hard RST teardown
 above when the switch was a hard/health one, the group is not a
 cluster, mid-session retry is disabled (no replay ring), the new active
-is not a WS-family uplink, or the resume redial fails. Health and
-probe-driven switches are always hard; only an explicit operator soft
-switch migrates. The dashboard offers a **⇄ Soft switch** button next to
+is not a WS-family uplink, or the resume redial fails. The gate is the
+published `soft` bit alone (`try_soft_switch_migrate` in
+`pinned_relay.rs` reads `snapshot.soft`), not which mechanism triggered
+the switch: automatic soft switches — the carrier-degraded automatic
+failover and scheduled or manual re-selection (see "Scheduled
+re-selection" below) — migrate live sessions exactly like an explicit
+operator soft switch does. Only a *hard* switch (an ordinary
+health/probe-driven failover, or any soft request clamped to hard
+off-cluster) tears sessions down. The dashboard offers a **⇄ Soft
+switch** button next to
 **▶ Activate** on cluster groups (shown only when `cluster_resume_enabled`);
 it posts `soft: true` to `/control/activate`, and the response's `soft`
 field reports whether the migration was actually applied or clamped to a
@@ -713,6 +722,102 @@ flow on its original home instead of re-establishing it on the new edge:
 Off a cluster (`shared_resume = false`) UDP stays per-uplink and every wire
 resolves locally, exactly as before — sharing a UDP id across unrelated homes
 would only ever miss.
+
+**Scheduled re-selection (`reselect_at` / `reselect_interval`).**
+Independent of failover, a group in `active_passive` mode can rotate its
+strict active uplink on a timer — forcing traffic off a working uplink on
+a schedule, not only when something fails:
+
+```toml
+# reselect_at = ["03:00", "10:10"]   # wall-clock slots, system local time
+# reselect_interval = "10h"          # ...or a fixed period ("90m", "1h30m"); minimum 60s
+```
+
+- **`reselect_interval` shares `parse_human_duration` with `shuffle_timer`**:
+  a bare integer (e.g. `"300"`) is still read as seconds, but a unit suffix
+  is the recommended form for this key — a bare-integer typo one keystroke
+  off the intended unit (`"10"` instead of `"10h"`) is exactly the kind of
+  mistake the 60 s floor below exists to catch, and it only catches values
+  below that floor, not a bare integer that lands above it by accident
+  (e.g. `"600"` meant as `"600m"`).
+- **Mutually exclusive**, and both require `mode = "active_passive"` and
+  `routing_scope = "global"` or `"per_uplink"` (the config loader rejects
+  any other combination) — re-selection moves the
+  strict active slot, which exists only there.
+- **The draw is a forced rotation.** The current active is always
+  excluded, so every tick actually moves the slot (barring
+  `no_candidate`, below) rather than only "maybe" switching. Among the
+  remaining uplinks that are administratively enabled, healthy, and not
+  in `failure_cooldown_secs`, one is picked with probability proportional
+  to `penalty_weight × weight` — the same decaying-failure-penalty score
+  `health_weighted_selection` uses elsewhere — floored by
+  `health_weight_floor` so a currently-penalised uplink keeps a small
+  chance rather than being permanently skipped. If no eligible candidate
+  remains (a single-uplink group, or every other uplink is down,
+  disabled, or cooling down) the tick is a no-op
+  (`outcome = "no_candidate"`).
+- **`routing_scope = "per_uplink"` draws TCP and UDP independently** —
+  each transport's slot is gated on that transport's own
+  health/cooldown/penalty and excludes only that transport's own current
+  active, so the two transports can legitimately land on different
+  uplinks from the same tick.
+- **Scheduling.** `reselect_at` entries are local-time `"HH:MM"` slots,
+  parsed, sorted, and deduplicated by the config loader. The wall-clock
+  loop polls every 30 s and treats a slot as due for up to roughly 90 s
+  *after* its configured time — never before it; a slot slept through
+  entirely (host suspend, a stalled process) is skipped once noticed
+  late rather than fired retroactively. This loop also seeds an
+  "already fired today" guard from the clock at spawn, so a process
+  restart or hot-apply landing inside a slot's tolerance window is
+  treated as already handled instead of firing that slot a second time.
+  A slot configured within that ~90 s window of local midnight has its
+  effective window truncated at the day rollover instead of wrapping
+  into the next day — avoid scheduling slots that close to midnight if
+  the full window matters. `reselect_interval` is a different, simpler
+  mechanism: a plain monotonic sleep loop counted from process start (or
+  the last `/control/apply` hot-apply), unrelated to wall-clock time and
+  with no "already fired" guard of its own — a restart or hot-apply
+  restarts the countdown from zero, so the next re-selection always
+  fires one full `interval` measured from the moment of the restart
+  itself, never sooner. Relative to the schedule that would have run had
+  the restart never happened, this can only push the next firing later,
+  by anywhere up to almost a full extra `interval` (worst case: the
+  restart lands an instant before the undisturbed schedule's next tick
+  was due) — it never brings a firing forward.
+- **Soft switch.** The scheduled or manually-triggered rotation requests a
+  soft (resume-preserving) switch, same as the carrier-degraded automatic
+  failover; it is clamped to a hard switch off a `shared_resume` cluster
+  group, same as `/control/activate` and `/control/reselect`. See "Soft
+  switch" above.
+- **Accumulated state is not reset.** Unlike the clean-slate reset a
+  manual operator switch performs via `/control/activate`, a scheduled or
+  manual re-selection leaves every uplink's accumulated
+  health/RTT-EWMA/failure-penalty state untouched — only the active slot
+  moves.
+- **Manual trigger.** `POST /control/reselect` performs the same
+  weighted draw on demand ("reselect now"), outside of the schedule — see
+  the README's control-plane reference for the request/response shape.
+- **Interaction with `auto_failback = true`.** `auto_failback` only ever
+  moves the active slot *up*: from a probe-healthy active to a candidate
+  with strictly higher `weight` (or equal weight and a lower config
+  index), and only once that candidate has stayed probe-healthy for
+  `probe.min_failures` consecutive successful probe cycles — it is
+  otherwise a no-op while the active stays healthy. A scheduled
+  re-selection has no such priority rule; it is a pure weighted draw, so
+  it can just as easily land on a *lower*-weight uplink than the one it
+  replaced. If it does, and `auto_failback = true`, the next stretch of
+  consecutive-healthy probes on the higher-weight uplink triggers a
+  failback that silently reverts the scheduled move — the group ends up
+  back on the higher-weight uplink on `auto_failback`'s timetable, not
+  the one configured for scheduled re-selection. Give the group's
+  uplinks equal `weight` if a scheduled re-selection is meant to actually
+  stick until the next slot, or keep `auto_failback` off (the default)
+  when relying on this feature.
+- Metric: `outline_ws_uplink_reselect_total{group,outcome}` —
+  `outcome` is `switched` (the slot moved), `no_candidate` (nothing
+  eligible besides the current active), or `skipped` (the group is not
+  in `active_passive` mode, or has no single strict active slot to
+  rotate).
 
 Bypass on a fully-down group (`bypass_when_down`):
 

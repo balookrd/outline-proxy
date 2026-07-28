@@ -954,6 +954,17 @@ pub struct LoadBalancingConfig {
     /// Default: `false` — a down group keeps the legacy behaviour (traffic
     /// stays parked on the group and fails until an uplink recovers).
     pub bypass_when_down: bool,
+    /// Wall-clock re-selection slots (system local time) at which the strict
+    /// active uplink is re-drawn weighted-randomly among healthy candidates,
+    /// excluding the current active (forced rotation). Sorted, deduped
+    /// `(hour, minute)`. Empty = disabled. Mutually exclusive with
+    /// `reselect_interval`; only valid in `active_passive` mode. The switch is
+    /// always requested soft and clamps to hard when `shared_resume` is off.
+    pub reselect_at: Vec<(u8, u8)>,
+    /// Fixed period between automatic weighted re-selections (monotonic timer
+    /// from loop start). `None` = disabled. Mutually exclusive with
+    /// `reselect_at`; only valid in `active_passive` mode.
+    pub reselect_interval: Option<Duration>,
 }
 
 /// Policy for the `tcp_mid_session_retry_overflow_policy` knob.

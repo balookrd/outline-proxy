@@ -121,6 +121,7 @@ async fn handle_request(request: Request<Incoming>, state: DashboardState) -> Da
         (&Method::POST, "/dashboard/api/set_enabled") => {
             api::handle_set_enabled(request, state).await
         },
+        (&Method::POST, "/dashboard/api/reselect") => api::handle_reselect(request, state).await,
         (&Method::GET, "/dashboard/api/uplinks")
         | (&Method::POST, "/dashboard/api/uplinks")
         | (&Method::PATCH, "/dashboard/api/uplinks")

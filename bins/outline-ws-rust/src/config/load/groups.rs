@@ -216,6 +216,8 @@ fn load_balancing_config_from_group(
         tun_suppress_icmp_reply_when_down: section.tun_suppress_icmp_reply_when_down,
         tun_icmp_liveness_window_secs: section.tun_icmp_liveness_window_secs,
         bypass_when_down: section.bypass_when_down,
+        reselect_at: section.reselect_at.clone(),
+        reselect_interval: section.reselect_interval.clone(),
     };
     load_balancing_config(Some(&shim))
 }

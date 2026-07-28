@@ -111,6 +111,8 @@ fn icmp_gate_manager_with_probes(
             // liveness 300 s ⇒ 360 s).
             tun_icmp_liveness_window: None,
             bypass_when_down,
+            reselect_at: Vec::new(),
+            reselect_interval: None,
         },
     )
     .unwrap()

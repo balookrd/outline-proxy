@@ -7,6 +7,7 @@ mod failures;
 pub(crate) mod mode_downgrade;
 pub(crate) mod probe;
 mod reporting;
+pub(crate) mod reselect;
 mod snapshot;
 pub(crate) mod standby;
 pub(crate) mod standby_pool;
@@ -19,6 +20,7 @@ mod test_helpers;
 
 pub use reporting::deduplicate_attempted_uplink_names;
 pub(crate) use reporting::log_uplink_summary_named;
+pub use reselect::ReselectOutcome;
 
 use std::collections::HashMap;
 use std::sync::Arc;

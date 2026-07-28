@@ -377,6 +377,8 @@ fn make_lb(mode_downgrade_duration: std::time::Duration) -> LoadBalancingConfig 
         tun_suppress_icmp_reply_when_down: false,
         tun_icmp_liveness_window: None,
         bypass_when_down: false,
+        reselect_at: Vec::new(),
+        reselect_interval: None,
     }
 }
 

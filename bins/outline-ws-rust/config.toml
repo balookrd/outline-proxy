@@ -392,6 +392,16 @@ name = "example.com"
 # auto_failback = false
 # health_weighted_selection = true  # rank wire + carrier-family choice by liveness (false = legacy)
 # health_weight_floor = 0.05        # min selection weight (retry floor for a flaky wire / carrier)
+# Scheduled weighted re-selection of the strict active uplink (active_passive
+# only). Random but biased by probe quality; the current active is always
+# excluded (forced rotation); soft switch when the group has shared_resume.
+# The two keys are mutually exclusive.
+# reselect_at = ["03:00", "10:10"]   # wall-clock slots, system local time
+# reselect_interval = "10h"          # ...or a fixed period ("90m", "1h30m"); minimum 60s.
+#                                    # A bare integer is still read as seconds, but prefer a
+#                                    # unit suffix: "10" one keystroke off "10h" would still
+#                                    # be rejected below 60s, but a typo landing at/above the
+#                                    # floor (e.g. "600" meant as "600m") would not be caught.
 # udp_ws_keepalive_secs = 60        # ignored on the H3 carrier (QUIC keep-alive owns liveness)
 # tcp_ws_keepalive_secs = 60
 # tcp_ws_standby_keepalive_secs = 20

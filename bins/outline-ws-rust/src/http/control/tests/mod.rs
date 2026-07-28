@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 
 use crate::http::body::MAX_REQUEST_BODY_BYTES;
 use crate::http::tests::streamed_request;
-use handlers::activate_from_json;
+use handlers::{activate_from_json, reselect_from_json};
 use server::{ControlState, handle_connection};
 use topology::{
     ControlSummaryResponse, ControlTopologyResponse, build_instance_topology, build_summary,
@@ -344,6 +344,8 @@ fn lb() -> LoadBalancingConfig {
         tun_suppress_icmp_reply_when_down: false,
         tun_icmp_liveness_window: None,
         bypass_when_down: false,
+        reselect_at: Vec::new(),
+        reselect_interval: None,
     }
 }
 
@@ -600,6 +602,99 @@ async fn activate_soft_on_cluster_group_reports_soft() {
     assert_eq!(status, 200);
     let json: Value = serde_json::from_str(&resp_body).unwrap();
     assert_eq!(json["soft"], true, "soft must be honoured on a cluster group");
+}
+
+#[tokio::test]
+async fn reselect_rejects_unknown_group() {
+    let response = reselect_from_json(br#"{"group":"nope"}"#, test_registry()).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn reselect_rejects_empty_group() {
+    let response = reselect_from_json(br#"{"group":"  "}"#, test_registry()).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn reselect_rejects_invalid_json() {
+    let response = reselect_from_json(b"not json", test_registry()).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// `test_registry`'s group is strict `active_passive`/`global` (see `lb()`),
+/// so a reselect either switches or legitimately reports `no_candidate`
+/// (probe is disabled and health is never seeded in this fixture) — never an
+/// error. `soft` defaults to `true` when omitted from the body.
+#[tokio::test]
+async fn reselect_reports_outcome() {
+    let body = r#"{"group":"core"}"#;
+    let request = format!(
+        "POST /control/reselect HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    let (status, resp_body) = send_raw_http(&request, test_registry(), "token").await;
+    assert_eq!(status, 200);
+    let json: Value = serde_json::from_str(&resp_body).unwrap();
+    assert_eq!(json["group"], "core");
+    let outcome = json["outcome"].as_str().unwrap();
+    assert!(outcome == "switched" || outcome == "no_candidate", "unexpected outcome: {json}",);
+}
+
+/// A soft reselect requested on a non-cluster group (`shared_resume = false`)
+/// is clamped to a hard switch; the response reports `soft: false` so the
+/// caller knows live sessions were NOT migrated. Mirrors
+/// `activate_soft_on_non_cluster_group_reports_hard`.
+#[tokio::test]
+async fn reselect_soft_on_non_cluster_group_reports_hard() {
+    let body = r#"{"group":"core","soft":true}"#;
+    let request = format!(
+        "POST /control/reselect HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    let (status, resp_body) = send_raw_http(&request, test_registry(), "token").await;
+    assert_eq!(status, 200);
+    let json: Value = serde_json::from_str(&resp_body).unwrap();
+    assert_eq!(json["soft"], false, "soft must clamp to hard on a non-cluster group");
+}
+
+/// The default (omitted `soft`) is `true`, but on a cluster group it is
+/// honoured rather than clamped — mirroring `activate_soft_on_cluster_group_reports_soft`.
+#[tokio::test]
+async fn reselect_defaults_soft_true_and_honours_cluster_group() {
+    let body = r#"{"group":"core"}"#;
+    let request = format!(
+        "POST /control/reselect HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    let (status, resp_body) = send_raw_http(&request, cluster_registry(), "token").await;
+    assert_eq!(status, 200);
+    let json: Value = serde_json::from_str(&resp_body).unwrap();
+    // The fixture's single active-passive candidate pool may report either
+    // outcome; only `Switched` carries a `soft` field that reflects the
+    // (defaulted) request. `NoCandidate`/`Skipped` report `soft: false`
+    // unconditionally (see `reselect_from_json`), so only assert when switched.
+    if json["outcome"] == "switched" {
+        assert_eq!(
+            json["soft"], true,
+            "soft must default to true and be honoured on a cluster group"
+        );
+    }
+}
+
+#[tokio::test]
+async fn reselect_rejects_bad_method() {
+    let (status, body) = send_raw_http(
+        "GET /control/reselect HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nConnection: close\r\n\r\n",
+        test_registry(),
+        "token",
+    )
+    .await;
+    assert_eq!(status, 405);
+    assert!(body.contains("use POST"));
 }
 
 /// A control body larger than [`MAX_REQUEST_BODY_BYTES`] must be rejected with

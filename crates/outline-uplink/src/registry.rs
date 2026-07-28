@@ -23,6 +23,7 @@ use tokio::sync::watch;
 use tracing::info;
 
 use crate::config::UplinkGroupConfig;
+use crate::manager::ReselectOutcome;
 
 use super::state::StateStore;
 use super::types::{TransportKind, UplinkManager, UplinkManagerSnapshot};
@@ -207,6 +208,15 @@ impl UplinkRegistry {
         }
     }
 
+    /// Spawn one scheduled re-selection loop per group that has `reselect_at`
+    /// or `reselect_interval` configured. No-op for other groups. See
+    /// [`UplinkManager::spawn_reselect_timer_loops`].
+    pub fn spawn_reselect_timer_loops(&self) {
+        for group in self.state.load().groups.iter() {
+            group.manager.spawn_reselect_timer_loops();
+        }
+    }
+
     /// Spawn a single process-wide sweeper for the H2/H3 shared-connection
     /// caches. Independent of warm-standby so that groups with
     /// `warm_standby_tcp = warm_standby_udp = 0` still get stale entries
@@ -315,6 +325,20 @@ impl UplinkRegistry {
         Ok((manager.group_name().to_string(), index))
     }
 
+    /// Weighted-random forced re-selection of the strict active uplink for
+    /// `group` ("reselect now"): same code path the scheduled loops use. `soft`
+    /// requests session migration via cluster resume; clamped to a hard switch
+    /// off-cluster. See [`UplinkManager::reselect_active_uplink`].
+    pub async fn reselect_group(&self, group: &str, soft: bool) -> Result<ReselectOutcome> {
+        let state = self.state.load();
+        let manager = state
+            .by_name
+            .get(group)
+            .map(|&i| state.groups[i].manager.clone())
+            .ok_or_else(|| anyhow::anyhow!("uplink group \"{}\" not found", group))?;
+        Ok(manager.reselect_active_uplink("manual_reselect", soft).await)
+    }
+
     /// Snapshot each group for Prometheus rendering. The returned vector
     /// preserves declaration order, matching the `groups` view.
     pub async fn snapshots(&self) -> Vec<UplinkManagerSnapshot> {
@@ -378,6 +402,10 @@ impl UplinkRegistry {
             // rotation stops at the first hot-apply, since the loops belong to
             // the displaced managers and are shut down together with them.
             group.manager.spawn_shuffle_timer_loops();
+            // Ditto for scheduled re-selection: `reselect_at`/`reselect_interval`
+            // loops belong to the displaced managers too, so they must be
+            // respawned here or a hot-apply silently stops scheduled rotation.
+            group.manager.spawn_reselect_timer_loops();
         }
         // Prime strict active-uplink selection on the new managers.
         for group in &new_state.groups {

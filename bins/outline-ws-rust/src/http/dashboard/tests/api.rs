@@ -74,3 +74,21 @@ fn activate_request_parses_soft_true() {
     .unwrap();
     assert!(req.soft);
 }
+
+/// Unlike activate's `soft` (defaults to a hard switch), the reselect request
+/// defaults `soft` to `true` — mirroring `/control/reselect`'s own default,
+/// since re-selection is generally intended to preserve live sessions where
+/// the group is a cluster.
+#[test]
+fn reselect_request_defaults_soft_to_true() {
+    let req: DashboardReselectRequest =
+        serde_json::from_str(r#"{"instance":"i","group":"g"}"#).unwrap();
+    assert!(req.soft, "soft must default to true, mirroring /control/reselect");
+}
+
+#[test]
+fn reselect_request_parses_soft_false() {
+    let req: DashboardReselectRequest =
+        serde_json::from_str(r#"{"instance":"i","group":"g","soft":false}"#).unwrap();
+    assert!(!req.soft);
+}

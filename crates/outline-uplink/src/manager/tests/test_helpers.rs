@@ -201,6 +201,32 @@ impl UplinkManager {
         });
     }
 
+    /// Test helper: add `secs` of decaying uplink-level failure penalty on
+    /// `(index, transport)` — the same `PerTransportStatus::penalty` field
+    /// `penalty_weight` reads for weighted re-selection (`manager::reselect`).
+    /// Distinct from [`Self::test_add_wire_penalty`], which accrues penalty on
+    /// a per-*wire* slot (`wire_penalty`) consumed by wire-level dial-order /
+    /// active-wire rerolls; this one is the uplink-level penalty consulted
+    /// when weighing whole uplinks against each other.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub(crate) fn test_add_uplink_penalty(
+        &self,
+        index: usize,
+        transport: crate::types::TransportKind,
+        secs: u64,
+    ) {
+        let now = tokio::time::Instant::now();
+        self.inner.with_status_mut(index, |status| {
+            let ts = match transport {
+                crate::types::TransportKind::Tcp => &mut status.tcp,
+                crate::types::TransportKind::Udp => &mut status.udp,
+            };
+            ts.penalty.value_secs = secs as f64;
+            ts.penalty.updated_at = Some(now);
+        });
+    }
+
     /// Test helper: directly set the sticky `active_wire` index for
     /// `(index, transport)` without going through the dial / probe state
     /// machine.
