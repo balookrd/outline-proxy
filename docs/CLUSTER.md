@@ -150,10 +150,49 @@ Mesh stream control messages:
 
 ```
 OPEN  { session_id, carrier_kind, client_meta (resume headers / addons), peer_addr_hint }
+ACK   { accepted }                       // one byte, home → edge, before any payload
 DATA  { dir: up | down, bytes }          // application bytes, both directions
-CLOSE { reason: fin | abort | budget | capacity }
-       // graceful FIN / RST / health-budget hit / home at its relayed-session cap
+CLOSE { reason: fin | abort | budget | capacity | no_route }
+       // graceful FIN / RST / health-budget hit / home at its relayed-session
+       // cap / home does not serve this path+carrier
 ```
+
+**Setup is acknowledged.** Before relaying a byte, the home resolves the OPEN
+header's path and carrier against its own route tables and answers: one `ACK`
+byte if that resolves to configured users, or a `no_route` reset if it does not.
+The edge waits for that answer *before* it upgrades the client carrier, which is
+what makes a config mismatch survivable: a refused relay leaves the edge free to
+serve the client a fresh local session (`open_relay_total{outcome="refused"}` on
+the edge, `relay_rejected_total{reason="no_route"}` on the home). Without the
+ack the refusal could only surface once bytes were already flowing — with the
+client committed to a relay that authenticates nothing. It costs one mesh RTT on
+the happy path, paid once per relayed session at setup.
+
+This matters because the home authenticates the relayed user from the byte
+stream against the route table the **edge's** path selects. If that path is not
+one this home serves, the route is empty, no configured key can match, and every
+packet on the session would fail authentication and be dropped — silently, for
+the session's whole life. See [Symmetric config](#the-cluster-config-must-be-symmetric).
+
+## The cluster config must be symmetric
+
+The mesh carries the client's path in the OPEN header, and the home resolves its
+own users against it. So beyond the shared `cluster_psk`, every node must agree
+on the parts of the config a relayed session is resolved through:
+
+- the **`[websocket]` / `[padding]` paths** (`ws_path_*`, `xhttp_path_*` and the
+  per-user path overrides) — a home that does not serve the edge's path resolves
+  to an empty route;
+- the **users** that may be relayed: same ids, same `password` / `method` /
+  `vless_id`. The edge never decrypts; the home does, using *its own* copy of the
+  user. A per-node password means the relayed stream cannot authenticate even
+  when the path matches.
+
+A cluster whose nodes differ in either is not a supported topology: relays
+between them cannot work, and every relayed session degrades to a fresh local
+one (visible as a steady `no_route` refusal rate). Nodes that must keep
+per-node paths or credentials should run standalone (`[cluster] enabled = false`)
+rather than as cluster peers.
 
 The home's accept loop treats the two failure scopes apart: a *connection*
 error (the peer closed it, it timed out) ends the loop for that peer, while a
@@ -277,6 +316,7 @@ wherever the client happened to be when it opened the session.
 | mesh too slow | edge tears down on health budget → fresh session on the edge | lost (acceptable) |
 | home dies | shard points at a dead server; edge cannot reach it over mesh → resume-miss → fresh session | lost (= today) |
 | shard unknown (server decommissioned) | edge treats it as home-down → fresh session | lost |
+| home does not serve the edge's path/carrier (asymmetric config) | home refuses at setup (`no_route`); edge has not upgraded the client yet → fresh session on the edge | lost (config bug — fix the asymmetry) |
 
 ## Interaction with downstream-throttle detection
 
