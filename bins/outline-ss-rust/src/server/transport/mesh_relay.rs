@@ -23,16 +23,18 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use axum::extract::ws::WebSocketUpgrade;
 use axum::response::Response;
 use bytes::Bytes;
+use metrics::Counter;
 use outline_wire::cluster::ShardId;
 use quinn::{Connection, RecvStream, SendStream, VarInt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Notify;
 use tracing::{debug, warn};
 
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
@@ -1087,9 +1089,14 @@ async fn serve_relayed_v5(
         Err(_elapsed) => {
             cluster.metrics.record_mesh_relay_rejected("bad_setup");
             cluster.metrics.record_mesh_relay_outcome("error");
+            // "Sent", not "delivered": nothing came back on this arm, so whether
+            // the edge ever read the ack is exactly what is unknown — and the
+            // refusal below resets the stream, which drops the ack byte if it
+            // was still unacked. Either way the edge degrades to a fresh local
+            // session, which is what both a reset and a silent home mean to it.
             warn!(
                 wait_secs = USER_FRAME_WAIT.as_secs(),
-                "refusing a v5 relay: the peer was acked but never sent its USER frame",
+                "refusing a v5 relay: the ack was sent but no USER frame followed",
             );
             refuse_relay(stream, CloseReason::Abort);
             return Ok(());
@@ -1140,10 +1147,11 @@ async fn serve_relayed_v5(
 /// A failed half of a v5 splice: what the edge must see, and whether the parked
 /// upstream survived it.
 struct SpliceFault {
-    /// Reset code sent on the mesh stream before the splice returns. Without it
-    /// quinn's `Drop for SendStream` finishes the stream, so the edge would read
-    /// a stalled home or a broken upstream as a clean close and seal a truncated
-    /// response to its client.
+    /// Reset code sent on the mesh stream before the splice returns — unless the
+    /// downlink pump already finished the stream on upstream EOF, in which case
+    /// the caller suppresses it. Without the reset quinn's `Drop for SendStream`
+    /// finishes the stream, so the edge would read a stalled home or a broken
+    /// upstream as a clean close and seal a truncated response to its client.
     reset: CloseReason,
     /// Whether the parked upstream is still healthy — i.e. whether the session
     /// is worth re-parking for a later carrier.
@@ -1172,36 +1180,181 @@ impl SpliceFault {
         }
     }
 
-    /// A single write stalled past the health budget. `upstream_healthy` says
-    /// which side stalled: a stalled mesh write means a wedged edge (the parked
-    /// upstream is fine), a stalled upstream write means the socket itself is
-    /// not draining. The edge sees [`CloseReason::Budget`] either way, mirroring
-    /// what the edge pump signals to the home.
-    fn stalled(upstream_healthy: bool, error: anyhow::Error) -> Self {
+    /// An upstream write stalled past the health budget: the socket itself is
+    /// not draining, so it is not worth handing to a later carrier.
+    fn stalled_upstream(error: anyhow::Error) -> Self {
         Self {
             reset: CloseReason::Budget,
-            upstream_healthy,
+            upstream_healthy: false,
+            error,
+        }
+    }
+
+    /// A mesh write stalled past the health budget: the edge is wedged, but the
+    /// parked upstream is fine and worth keeping for the next carrier. The edge
+    /// sees [`CloseReason::Budget`] on both stall arms, mirroring what the edge
+    /// pump signals to the home.
+    fn stalled_mesh(error: anyhow::Error) -> Self {
+        Self {
+            reset: CloseReason::Budget,
+            upstream_healthy: true,
             error,
         }
     }
 
     fn into_end(self) -> SpliceEnd {
-        SpliceEnd {
+        SpliceEnd::Faulted {
+            reset: self.reset,
             upstream_healthy: self.upstream_healthy,
-            reset: Some(self.reset),
-            error: Some(self.error),
+            error: self.error,
         }
     }
 }
 
 /// How a v5 splice ended, once both halves are back in the caller's hands.
-struct SpliceEnd {
-    /// Whether to re-park the upstream for the next carrier.
-    upstream_healthy: bool,
-    /// `Some` on every failure path; `None` on the two graceful ends (the edge
-    /// finished the mesh stream, or the upstream EOF'd).
-    reset: Option<CloseReason>,
-    error: Option<anyhow::Error>,
+///
+/// One enum rather than a `reset: Option<_>` / `error: Option<_>` pair: a fault
+/// always carries both and a graceful end carries neither, so the two mixed
+/// combinations the pair could express were never reachable and are now
+/// unrepresentable.
+enum SpliceEnd {
+    /// Neither half failed: the edge finished the mesh stream, or the upstream
+    /// EOF'd, or both.
+    Graceful { upstream_healthy: bool },
+    /// One half failed. The edge is told with `reset` — unless the stream was
+    /// already finished on upstream EOF — and the caller returns `error`.
+    Faulted {
+        reset: CloseReason,
+        upstream_healthy: bool,
+        error: anyhow::Error,
+    },
+}
+
+/// What the home does to the mesh send half once a v5 splice ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamClose {
+    /// Finish the stream. A no-op when the downlink pump already finished it.
+    Finish,
+    /// Reset it, so the edge cannot mistake a failed relay for a complete
+    /// response.
+    Reset(CloseReason),
+}
+
+impl SpliceEnd {
+    /// How the mesh send half must be closed.
+    ///
+    /// `stream_finished` — the downlink pump finished the stream on upstream EOF
+    /// — is the one thing that overrides a fault. quinn does not reject a reset
+    /// after a finish: it drops whatever of the stream is still unacked and
+    /// queues RESET_STREAM. Resetting there would hand the edge a **complete**
+    /// response as an abort, the mirror image of the truncation the reset exists
+    /// to prevent.
+    fn stream_close(&self, stream_finished: bool) -> StreamClose {
+        match self {
+            SpliceEnd::Faulted { reset, .. } if !stream_finished => StreamClose::Reset(*reset),
+            _ => StreamClose::Finish,
+        }
+    }
+
+    /// Marks the parked upstream unusable whatever else this end says. Used when
+    /// the *other* half already found the socket EOF'd or broken: a resume would
+    /// reattach to something with nothing left to read.
+    fn deny_park(self) -> Self {
+        match self {
+            SpliceEnd::Graceful { .. } => SpliceEnd::Graceful { upstream_healthy: false },
+            SpliceEnd::Faulted { reset, error, .. } => {
+                SpliceEnd::Faulted { reset, upstream_healthy: false, error }
+            },
+        }
+    }
+}
+
+/// Why the downlink pump stopped, when it stopped without failing.
+enum DownlinkEnd {
+    /// The upstream EOF'd. The pump finished the mesh stream on its way out, so
+    /// the caller must never reset it afterwards.
+    UpstreamEof,
+    /// The uplink asked the pump to stop and it returned at a read boundary,
+    /// with the upstream socket intact.
+    Stopped,
+}
+
+/// Writes one relayed uplink chunk to the parked upstream, counting every byte
+/// the socket takes *as it takes it*.
+///
+/// Incremental, rather than one `write_all` followed by a single `fetch_add` for
+/// the whole chunk, because this future is dropped where it stands when the
+/// downlink faults: `upstream_bytes_acked` must still name exactly the bytes the
+/// socket received. A whole-chunk add records nothing for a cancelled partial
+/// write, and a later ack-prefix replay from that counter would resend a prefix
+/// the target already has.
+///
+/// `budget` bounds one write, not the chunk: a socket that keeps taking bytes
+/// keeps renewing it, and only a socket that stops draining trips it.
+async fn write_uplink_chunk<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    chunk: &[u8],
+    budget: Duration,
+    up_bytes: &Counter,
+    acked: &AtomicU64,
+) -> Result<(), SpliceFault> {
+    let mut written = 0usize;
+    while written < chunk.len() {
+        match tokio::time::timeout(budget, writer.write(&chunk[written..])).await {
+            // A socket that takes nothing is not going to take the rest either;
+            // looping on it would spin.
+            Ok(Ok(0)) => {
+                return Err(SpliceFault::upstream(anyhow::anyhow!(
+                    "relayed uplink write to the upstream accepted no bytes"
+                )));
+            },
+            Ok(Ok(n)) => {
+                written += n;
+                up_bytes.increment(n as u64);
+                // Keeps the Ack-Prefix counter monotonic across this reattach,
+                // the same guarantee the direct relay gives.
+                acked.fetch_add(n as u64, Ordering::Relaxed);
+            },
+            Ok(Err(error)) => {
+                return Err(SpliceFault::upstream(
+                    anyhow::Error::new(error).context("relayed uplink write to the upstream"),
+                ));
+            },
+            Err(_elapsed) => {
+                return Err(SpliceFault::stalled_upstream(anyhow::anyhow!(
+                    "relayed uplink stalled past the health budget"
+                )));
+            },
+        }
+    }
+    Ok(())
+}
+
+/// Merges the two halves' verdicts once both have ended.
+///
+/// The uplink decides what the edge sees — it is the half that ended first and
+/// stopped the other — but the park decision is the AND of both: an upstream
+/// that either half found EOF'd or broken must never be handed to a later
+/// carrier.
+fn splice_end(
+    uplink: Result<(), SpliceFault>,
+    downlink: Result<DownlinkEnd, SpliceFault>,
+) -> SpliceEnd {
+    let downlink_healthy = match &downlink {
+        Ok(DownlinkEnd::Stopped) => true,
+        Ok(DownlinkEnd::UpstreamEof) => false,
+        Err(fault) => fault.upstream_healthy,
+    };
+    let end = match uplink {
+        Ok(()) => match downlink {
+            Ok(_) => SpliceEnd::Graceful { upstream_healthy: true },
+            // The uplink ended cleanly but the downlink failed on its way out;
+            // the edge must still be told, so the fault wins.
+            Err(fault) => fault.into_end(),
+        },
+        Err(fault) => fault.into_end(),
+    };
+    if downlink_healthy { end } else { end.deny_park() }
 }
 
 /// Splices a relayed plaintext stream onto a parked TCP upstream.
@@ -1214,10 +1367,11 @@ struct SpliceEnd {
 /// Health budget: `cluster.relay_budget` bounds a single write in each
 /// direction, so a peer (or an upstream) that stops draining tears the relay
 /// down instead of pinning the parked socket forever. It measures progress, not
-/// RTT — an idle relay blocks on a read, never on a write.
+/// RTT — an idle relay blocks on a read, never on a write, and a socket that
+/// keeps taking bytes keeps renewing the budget.
 ///
 /// Both pumps borrow their halves rather than consuming them, so whichever side
-/// ends first this function gets the halves back. That is what makes the two
+/// ends first this function gets the halves back. That is what makes the three
 /// obligations below possible:
 ///
 /// * **Failures never look graceful.** Every error arm resets the mesh stream
@@ -1225,10 +1379,19 @@ struct SpliceEnd {
 ///   otherwise) before returning. Dropping the send half instead would `finish`
 ///   it, and the edge would read a stalled home or a broken upstream as a clean
 ///   upstream close — sealing a truncated response to its client as complete.
+///   The one exception is a stream the downlink already finished on upstream
+///   EOF: quinn accepts a reset after a finish and drops the still-unacked tail,
+///   so resetting there would turn a *complete* response into an abort.
 /// * **The session is re-parked.** When the client side goes away while the
 ///   upstream is healthy, the upstream halves go back into the registry under
 ///   the same id, mirroring the direct path's `try_park_on_drop`. Without it a
 ///   v5 session would survive exactly one carrier switch.
+/// * **The hand-off loses no bytes.** Because the session is re-parked, a pump
+///   dropped mid-operation would silently punch a hole in the client's stream.
+///   The downlink is therefore stopped cooperatively at a read boundary (as the
+///   direct path's `relay_cancel` does) instead of being cancelled inside a
+///   write, and the uplink accounts for every byte the socket took as it takes
+///   them, so `upstream_bytes_acked` is exact at any cancellation point.
 async fn splice_plaintext_tcp(
     stream: MeshStream,
     parked: ParkedTcp,
@@ -1302,7 +1465,20 @@ async fn splice_plaintext_tcp(
         }
     }
 
-    let end = {
+    // Cooperative stop for the downlink pump, mirroring `relay_cancel` on the
+    // direct path (`super::tcp`). `select!` drops the losing future wherever it
+    // happens to be, and for the downlink that means discarding bytes already
+    // read out of the upstream socket. Those bytes survive only if a v2 ring
+    // exists and the next resume negotiates one — and `downlink_buffer_bytes`
+    // defaults to 0 — so with the session re-parked below, the next carrier
+    // would resume a stream with a silent hole. Stopping at a read boundary
+    // instead loses nothing: unread bytes stay in the socket, which is exactly
+    // what the park hands on.
+    let stop_downlink = Notify::new();
+
+    // `stream_finished` records that the downlink pump already `finish`ed the
+    // mesh stream on upstream EOF; the caller must not reset it after that.
+    let (end, stream_finished) = {
         // Reborrows, so the pumps own references and the halves come back to
         // this scope when the pumps drop.
         let recv = &mut recv;
@@ -1311,6 +1487,7 @@ async fn splice_plaintext_tcp(
         let reader = &mut upstream_reader;
         let acked = &upstream_bytes_acked;
         let ring = &downlink_ring;
+        let stop = &stop_downlink;
 
         // Uplink: mesh → parked upstream. The ONLY writer to the upstream socket.
         let uplink = async move {
@@ -1328,26 +1505,7 @@ async fn splice_plaintext_tcp(
                     Ok(None) => return Ok(()),
                     Err(error) => return Err(SpliceFault::mesh(error)),
                 };
-                let len = chunk.bytes.len();
-                match tokio::time::timeout(budget, writer.write_all(&chunk.bytes)).await {
-                    Ok(Ok(())) => {},
-                    Ok(Err(error)) => {
-                        return Err(SpliceFault::upstream(
-                            anyhow::Error::new(error)
-                                .context("relayed uplink write to the upstream"),
-                        ));
-                    },
-                    Err(_elapsed) => {
-                        return Err(SpliceFault::stalled(
-                            false,
-                            anyhow::anyhow!("relayed uplink stalled past the health budget"),
-                        ));
-                    },
-                }
-                up_bytes.increment(len as u64);
-                // Keeps the Ack-Prefix counter monotonic across this reattach,
-                // the same guarantee the direct relay gives.
-                acked.fetch_add(len as u64, Ordering::Relaxed);
+                write_uplink_chunk(writer, &chunk.bytes, budget, &up_bytes, acked).await?;
             }
         };
 
@@ -1356,19 +1514,27 @@ async fn splice_plaintext_tcp(
         let downlink = async move {
             let mut buf = vec![0u8; MESH_HOME_SPLICE_CHUNK];
             loop {
-                let len = match reader
-                    .read(&mut buf)
-                    .await
-                    .context("relayed downlink read from the upstream")
-                {
-                    Ok(len) => len,
-                    Err(error) => return Err(SpliceFault::upstream(error)),
+                let len = tokio::select! {
+                    // Biased: once the uplink has ended, every further chunk is
+                    // one more thing to hand over, so a pending stop wins over
+                    // more upstream data. Both branches are cancel-safe — a
+                    // dropped `Notified` hands its notification back, and a
+                    // cancelled `read` consumes nothing from the socket.
+                    biased;
+                    () = stop.notified() => return Ok(DownlinkEnd::Stopped),
+                    read = reader.read(&mut buf) => match read
+                        .context("relayed downlink read from the upstream")
+                    {
+                        Ok(len) => len,
+                        Err(error) => return Err(SpliceFault::upstream(error)),
+                    },
                 };
                 if len == 0 {
                     // Upstream EOF — the one case where a graceful FIN is the
-                    // truth, so the edge can seal a complete response.
+                    // truth, so the edge can seal a complete response. From here
+                    // on the stream must never be reset.
                     let _ = send.finish();
-                    return Ok(());
+                    return Ok(DownlinkEnd::UpstreamEof);
                 }
                 // Capture plaintext into the ring before it leaves the home,
                 // exactly as the direct relay does — so a later park under this
@@ -1384,10 +1550,9 @@ async fn splice_plaintext_tcp(
                         ));
                     },
                     Err(_elapsed) => {
-                        return Err(SpliceFault::stalled(
-                            true,
-                            anyhow::anyhow!("relayed downlink stalled past the health budget"),
-                        ));
+                        return Err(SpliceFault::stalled_mesh(anyhow::anyhow!(
+                            "relayed downlink stalled past the health budget"
+                        )));
                     },
                 }
                 down_bytes.increment(len as u64);
@@ -1395,47 +1560,53 @@ async fn splice_plaintext_tcp(
         };
 
         tokio::pin!(uplink, downlink);
-        let mut upstream_eof = false;
+        let mut downlink_ended: Option<Result<DownlinkEnd, SpliceFault>> = None;
         loop {
             tokio::select! {
-                result = &mut uplink => break match result {
-                    Ok(()) => SpliceEnd {
-                        upstream_healthy: !upstream_eof,
-                        reset: None,
-                        error: None,
-                    },
-                    Err(fault) => {
-                        let mut end = fault.into_end();
-                        // An upstream that already EOF'd is never worth parking,
-                        // whatever broke afterwards — a resume would reattach to
-                        // a socket with nothing left to read.
-                        end.upstream_healthy &= !upstream_eof;
-                        end
-                    },
+                result = &mut uplink => {
+                    let downlink_end = match downlink_ended {
+                        Some(ended) => ended,
+                        // The uplink is done, so ask the downlink to stop at its
+                        // next read boundary and wait for it rather than
+                        // dropping it mid-write. Bounded: its one blocking
+                        // operation, the mesh write, is bounded by `budget`.
+                        None => {
+                            stop.notify_one();
+                            downlink.as_mut().await
+                        },
+                    };
+                    let finished = matches!(downlink_end, Ok(DownlinkEnd::UpstreamEof));
+                    break (splice_end(result, downlink_end), finished);
                 },
-                result = &mut downlink, if !upstream_eof => match result {
+                result = &mut downlink, if downlink_ended.is_none() => match result {
                     // The upstream is done, but the edge may still be uploading
                     // a request body, so the uplink keeps running until it ends
                     // too — the same shape the previous join had.
-                    Ok(()) => upstream_eof = true,
-                    Err(fault) => break fault.into_end(),
+                    Ok(ended) => downlink_ended = Some(Ok(ended)),
+                    // The downlink failed, so the whole relay is over: the
+                    // uplink is dropped here, and only the byte accounting above
+                    // makes that safe.
+                    Err(fault) => break (fault.into_end(), false),
                 },
             }
         }
     };
 
-    match end.reset {
-        Some(reason) => {
+    match end.stream_close(stream_finished) {
+        StreamClose::Reset(reason) => {
             let _ = send.reset(VarInt::from_u32(reason.code()));
         },
-        // Graceful end. A no-op when the downlink pump already finished the
-        // stream on upstream EOF.
-        None => {
+        StreamClose::Finish => {
             let _ = send.finish();
         },
     }
 
-    if end.upstream_healthy && registry.enabled() {
+    let (upstream_healthy, error) = match end {
+        SpliceEnd::Graceful { upstream_healthy } => (upstream_healthy, None),
+        SpliceEnd::Faulted { upstream_healthy, error, .. } => (upstream_healthy, Some(error)),
+    };
+
+    if upstream_healthy && registry.enabled() {
         // Mirror of the direct path's `transport::tcp::try_park_on_drop`: the
         // client side went away while the upstream is healthy, so the whole
         // bundle goes back under the same id for the next carrier to resume.
@@ -1470,7 +1641,7 @@ async fn splice_plaintext_tcp(
         let _ = upstream_writer.shutdown().await;
     }
 
-    match end.error {
+    match error {
         Some(error) => Err(error),
         None => Ok(()),
     }
