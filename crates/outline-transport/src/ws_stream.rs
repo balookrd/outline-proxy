@@ -396,6 +396,17 @@ impl TransportStream {
         }
     }
 
+    /// Whether an XHTTP carrier negotiated SS-UDP record framing with the
+    /// server (`X-Outline-Udp-Records`). Always `false` for the WS carriers,
+    /// which preserve datagram boundaries on their own, and for any session
+    /// that did not ask (TCP, VLESS) or whose server did not echo.
+    pub fn xhttp_udp_records(&self) -> bool {
+        match self {
+            TransportStream::Xhttp { inner, .. } => inner.udp_records(),
+            _ => false,
+        }
+    }
+
     /// Stamp the originally-requested mode so the caller can detect that
     /// this stream is the result of a fallback. Chainable; intended to be
     /// called inside `connect_transport` immediately before

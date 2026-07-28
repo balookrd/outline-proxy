@@ -67,6 +67,10 @@ mod tests_carrier_h3;
 #[path = "tests/post_headers.rs"]
 mod tests_post_headers;
 
+#[cfg(test)]
+#[path = "tests/udp_records.rs"]
+mod tests_udp_records;
+
 // Re-exports kept at the previous `super::*` paths so sibling carrier
 // modules (`h1`, `h2`, `h3`) and the rest of the crate keep working
 // after the file split — h1 still does `use super::{XhttpStream, …}`.
@@ -79,6 +83,7 @@ pub(super) use outline_wire::resume::{
     ACK_PREFIX_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER,
 };
 pub use outline_wire::xhttp::{SsPathKind, XhttpSubmode};
+pub(super) use outline_wire::xhttp::{UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER};
 
 /// Extracts the submode from a `?mode=...` query parameter on the
 /// dial URL. The mode is not threaded through the dial-dispatcher
@@ -197,6 +202,7 @@ pub(crate) async fn connect_xhttp(
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
     combined_ss_kind: Option<SsPathKind>,
+    datagram_records: bool,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     match mode {
         TransportMode::XhttpH2 => {
@@ -211,6 +217,7 @@ pub(crate) async fn connect_xhttp(
                 symmetric_replay_requested,
                 client_acked_offset,
                 combined_ss_kind,
+                datagram_records,
             )
             .await
         },
@@ -227,6 +234,7 @@ pub(crate) async fn connect_xhttp(
                 symmetric_replay_requested,
                 client_acked_offset,
                 combined_ss_kind,
+                datagram_records,
             )
             .await
         },
@@ -244,6 +252,7 @@ pub(crate) async fn connect_xhttp(
                 symmetric_replay_requested,
                 client_acked_offset,
                 combined_ss_kind,
+                datagram_records,
             )
             .await
         },
@@ -270,6 +279,29 @@ pub(super) fn parse_session_response(headers: &http::HeaderMap) -> Option<Sessio
 /// echo from the server is treated as `false`.
 pub(super) fn parse_ack_prefix_echo(headers: &http::HeaderMap) -> bool {
     headers.get(ACK_PREFIX_HEADER).and_then(|v| v.to_str().ok()) == Some("1")
+}
+
+/// Applies the datagram-record capability to an outgoing request when this
+/// dial carries datagrams. No-op otherwise, so a TCP / VLESS session's request
+/// headers stay byte-identical to what they were before the feature.
+pub(super) fn apply_udp_records_request_header(
+    requested: bool,
+    builder: http::request::Builder,
+) -> http::request::Builder {
+    if requested {
+        builder.header(UDP_RECORDS_HEADER, UDP_RECORDS_ENABLED)
+    } else {
+        builder
+    }
+}
+
+/// Reads the server-side echo of `X-Outline-Udp-Records: 1`. Framing is on
+/// only when we asked AND the server confirmed — an unsolicited echo (or a
+/// server that never learned the header) leaves the wire unframed.
+pub(super) fn parse_udp_records_echo(requested: bool, headers: &http::HeaderMap) -> bool {
+    requested
+        && headers.get(UDP_RECORDS_HEADER).and_then(|v| v.to_str().ok())
+            == Some(UDP_RECORDS_ENABLED)
 }
 
 /// Reads the server-side echo of `X-Outline-Resume-Symmetric-Replay: 1`.

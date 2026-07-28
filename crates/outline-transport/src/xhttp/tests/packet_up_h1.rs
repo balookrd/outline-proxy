@@ -89,6 +89,7 @@ async fn xhttp_h1_client_round_trip_through_mock_server() -> Result<()> {
         false,
         0,
         None,
+        false,
     )
     .await?;
     // The mock does not echo `X-Outline-Session`; the resume token
@@ -150,6 +151,7 @@ async fn xhttp_h1_silently_coerces_stream_one_to_packet_up() -> Result<()> {
         false,
         0,
         None,
+        false,
     )
     .await;
     let err = match result {

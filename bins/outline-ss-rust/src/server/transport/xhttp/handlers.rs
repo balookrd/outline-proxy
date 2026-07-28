@@ -43,9 +43,10 @@ use super::super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::padding::post_response_headers;
 use super::{
-    AttachOutcome, FIN_HEADER, RelayPermit, SEQ_HEADER, UplinkIngestError, XhttpDuplex,
-    XhttpRegistry, XhttpSession, XhttpSubmode, generate_anonymous_session_id,
-    generate_padding_header, is_valid_session_id, masquerade_response_headers,
+    AttachOutcome, FIN_HEADER, RelayPermit, SEQ_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER,
+    UplinkIngestError, XhttpDuplex, XhttpRegistry, XhttpSession, XhttpSubmode,
+    generate_anonymous_session_id, generate_padding_header, is_valid_session_id,
+    masquerade_response_headers,
 };
 
 /// Cap on the bytes a single POST may carry, to bound memory per
@@ -329,6 +330,10 @@ async fn xhttp_get(
         },
     };
 
+    // Latch the datagram-framing negotiation before the relay is spawned — it
+    // reads the flag when it builds its duplex.
+    let udp_records = negotiate_udp_records(&session, &route, headers);
+
     if created
         && !spawn_relay(
             Arc::clone(&session),
@@ -353,7 +358,7 @@ async fn xhttp_get(
 
     debug!(
         method = "GET", ?version, base = %state.base_path, %peer_addr,
-        session = %session_id, created,
+        session = %session_id, created, udp_records,
         "xhttp downlink attached"
     );
 
@@ -366,6 +371,7 @@ async fn xhttp_get(
     let mut response = (StatusCode::OK, body).into_response();
     apply_response_masquerade(response.headers_mut());
     echo.apply(response.headers_mut());
+    apply_udp_records_echo(response.headers_mut(), udp_records);
     response
 }
 
@@ -450,6 +456,8 @@ async fn xhttp_post(
         return short_status(StatusCode::GONE);
     }
 
+    let udp_records = negotiate_udp_records(&session, &route, &headers);
+
     if created
         && !spawn_relay(
             Arc::clone(&session),
@@ -512,6 +520,7 @@ async fn xhttp_post(
         symmetric_replay: symmetric_replay_for_response,
     }
     .apply(resp_headers);
+    apply_udp_records_echo(resp_headers, udp_records);
     response
 }
 
@@ -579,6 +588,7 @@ async fn xhttp_stream_one(
     if session.is_closed() {
         return short_status(StatusCode::GONE);
     }
+    let udp_records = negotiate_udp_records(&session, &route, &headers);
     if created
         && !spawn_relay(
             Arc::clone(&session),
@@ -646,6 +656,7 @@ async fn xhttp_stream_one(
     let mut response = (StatusCode::OK, body).into_response();
     apply_response_masquerade(response.headers_mut());
     echo.apply(response.headers_mut());
+    apply_udp_records_echo(response.headers_mut(), udp_records);
     response
 }
 
@@ -710,6 +721,50 @@ struct DownlinkStreamState {
 impl Drop for DownlinkStreamState {
     fn drop(&mut self) {
         self.session.detach_get();
+    }
+}
+
+/// Negotiates datagram record framing for this request and reports whether the
+/// session frames its wire.
+///
+/// Framing is on only when both halves agree: the route carries SS-UDP (a TCP
+/// or VLESS path is a byte stream by design and must stay unframed) and the
+/// client advertised [`UDP_RECORDS_HEADER`]. The decision is latched on the
+/// session, because a packet-up client's GET and POST are separate requests and
+/// either may be the one that creates it. A client that predates the feature
+/// sends no header, gets no echo, and keeps the historical wire — so a
+/// half-rolled-out pair degrades to today's behaviour instead of talking past
+/// each other.
+///
+/// Must be called before `spawn_relay` on a session-creating request: the relay
+/// reads the latched flag when it builds its duplex.
+pub(in crate::server::transport::xhttp) fn negotiate_udp_records(
+    session: &XhttpSession,
+    route: &XhttpRoute,
+    headers: &HeaderMap,
+) -> bool {
+    let client_wants = headers
+        .get(UDP_RECORDS_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == UDP_RECORDS_ENABLED);
+    if client_wants && matches!(route, XhttpRoute::SsUdp(_)) {
+        session.enable_udp_records();
+    }
+    session.udp_records()
+}
+
+/// Echoes the negotiated capability back so the client knows to frame its
+/// uplink. Absent when framing was not negotiated, which is what keeps an
+/// unframed session's response headers byte-identical to before.
+pub(in crate::server::transport::xhttp) fn apply_udp_records_echo(
+    headers: &mut HeaderMap,
+    negotiated: bool,
+) {
+    if negotiated {
+        headers.insert(
+            axum::http::HeaderName::from_static(UDP_RECORDS_HEADER),
+            axum::http::HeaderValue::from_static(UDP_RECORDS_ENABLED),
+        );
     }
 }
 
@@ -842,7 +897,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 let _relay_permit = relay_permit;
                 let relay =
                     open_xhttp_mesh(edge, CarrierKind::VlessXhttp, &relay_path, peer_addr).await;
-                let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
+                let socket = XhttpDuplex::with_udp_records(Arc::clone(&session_for_task), false);
                 let result = match relay {
                     Some((pooled, budget, detect)) => {
                         let (send, recv, _permit) = pooled.into_parts();
@@ -896,7 +951,7 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 let _relay_permit = relay_permit;
                 let relay =
                     open_xhttp_mesh(edge, CarrierKind::SsXhttp, &relay_path, peer_addr).await;
-                let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
+                let socket = XhttpDuplex::with_udp_records(Arc::clone(&session_for_task), false);
                 let result = match relay {
                     Some((pooled, budget, detect)) => {
                         let (send, recv, _permit) = pooled.into_parts();
@@ -956,7 +1011,14 @@ pub(in crate::server::transport::xhttp) fn spawn_relay(
                 // is served locally on this node.
                 let relay =
                     open_xhttp_mesh(edge, CarrierKind::SsUdpXhttp, &relay_path, peer_addr).await;
-                let socket = XhttpDuplex { session: Arc::clone(&session_for_task) };
+                // Datagram record framing, negotiated by the request that
+                // created this session (see `negotiate_udp_records`). The
+                // duplex recovers packet boundaries from the carrier's byte
+                // stream on the way in and re-frames them on the way out.
+                let socket = XhttpDuplex::with_udp_records(
+                    Arc::clone(&session_for_task),
+                    session_for_task.udp_records(),
+                );
                 let result = match relay {
                     Some((pooled, budget, detect)) => {
                         let (send, recv, _permit) = pooled.into_parts();

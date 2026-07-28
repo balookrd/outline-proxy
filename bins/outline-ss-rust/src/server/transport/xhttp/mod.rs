@@ -59,7 +59,7 @@ pub(in crate::server) use padding::{generate_padding_header, masquerade_response
 // XHTTP wire vocabulary (header names, `?mode=` submode selector) is
 // shared with the client and lives in `outline_wire::xhttp`.
 pub(in crate::server) use outline_wire::xhttp::{
-    FIN_HEADER, PADDING_HEADER, SEQ_HEADER, XhttpSubmode,
+    FIN_HEADER, PADDING_HEADER, SEQ_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER, XhttpSubmode,
 };
 
 /// Soft cap on the bytes the per-session downlink ring may hold.
@@ -277,6 +277,14 @@ pub(in crate::server) struct XhttpSession {
     /// the server or the client did not opt in. Held by value
     /// because `SessionId` is `Copy`.
     pub(in crate::server) issued_resume_id: Option<SessionId>,
+    /// Datagram record framing negotiated for this session (see
+    /// [`outline_wire::udp_records`]). Latched by whichever request first
+    /// arrives on an SS-UDP path carrying `X-Outline-Udp-Records: 1` — GET and
+    /// POST can arrive in either order, so it is not fixed at creation — then
+    /// read back by every handler to echo the capability and by `spawn_relay`
+    /// to build the duplex. Never set on a TCP / VLESS path, so those wires
+    /// stay byte-for-byte as they were.
+    udp_records: AtomicBool,
 }
 
 pub(in crate::server) struct UplinkState {
@@ -318,7 +326,22 @@ impl XhttpSession {
             last_activity_nanos: AtomicI64::new(0),
             created_at: Instant::now(),
             issued_resume_id,
+            udp_records: AtomicBool::new(false),
         }
+    }
+
+    /// Latches datagram record framing for this session. Called by the request
+    /// handlers when an SS-UDP path sees the client capability header; the
+    /// relay reads it back through [`Self::udp_records`]. Idempotent, and only
+    /// ever moves `false → true` — a later request that omits the header does
+    /// not un-negotiate a session already framing its wire.
+    pub(in crate::server) fn enable_udp_records(&self) {
+        self.udp_records.store(true, Ordering::Release);
+    }
+
+    /// Whether this session frames datagrams as length-prefixed records.
+    pub(in crate::server) fn udp_records(&self) -> bool {
+        self.udp_records.load(Ordering::Acquire)
     }
 
     pub(in crate::server) fn touch(&self) {

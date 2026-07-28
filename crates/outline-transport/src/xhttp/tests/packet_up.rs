@@ -89,6 +89,7 @@ async fn xhttp_client_round_trip_through_mock_server() -> Result<()> {
         false,
         0,
         None,
+        false,
     )
     .await?;
     // The mock server does not echo `X-Outline-Session`, so the
@@ -175,6 +176,7 @@ async fn xhttp_client_stream_one_round_trip_through_mock_server() -> Result<()> 
         false,
         0,
         None,
+        false,
     )
     .await?;
     assert!(issued.is_none());
