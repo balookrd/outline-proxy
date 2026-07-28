@@ -87,7 +87,13 @@ fn parse_rejects_overlong_path() {
 
 #[test]
 fn close_reason_code_round_trips() {
-    for reason in [CloseReason::Fin, CloseReason::Abort, CloseReason::Budget] {
+    for reason in [
+        CloseReason::Fin,
+        CloseReason::Abort,
+        CloseReason::Budget,
+        CloseReason::Capacity,
+        CloseReason::NoRoute,
+    ] {
         assert_eq!(CloseReason::from_code(reason.code()), reason);
     }
     // Unknown codes collapse to Abort.

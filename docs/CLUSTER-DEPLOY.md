@@ -65,6 +65,35 @@ Validation is fail-fast at startup: `shard_id` required and `< 16`;
 duplicate `peers` shard is an error. `enabled = false` (or omitting the whole
 section) means standalone — byte-for-byte the current behaviour.
 
+### 3a. Paths and users must be identical on every node
+
+The `[cluster]` block is not the whole contract. A relayed session is resolved
+on the home against **the path the edge saw**, so every node must also agree on:
+
+- `[websocket]` `ws_path_*` / `xhttp_path_*`, the `[padding] paths` list, and any
+  per-user path overrides;
+- the users that may be relayed — same ids and the same `password`, `method` and
+  `vless_id` (the edge never decrypts; the home authenticates with *its own* copy).
+
+Differ in either and relays between those nodes cannot work: the home resolves an
+empty route, refuses the stream (`no_route`) and every relayed session falls back
+to a fresh local one. This is a config error, not a transport fault — a node that
+must keep per-node paths or credentials should run standalone
+(`[cluster] enabled = false`) instead of joining the cluster.
+
+No node can check this for itself (it never sees a peer's config), so verify it
+out of band before rollout — e.g. compare the relevant fields across nodes:
+
+```bash
+for h in nodeA nodeB; do ssh "$h" "sudo grep -E '^(ws_path_|xhttp_path_|id|method) ' /etc/outline-ss-rust/config.toml" | sha256sum; done
+```
+
+Identical digests (extend the pattern to the secret fields you rotate together)
+mean the relay half of the config matches. After rollout, a non-zero
+`outline_ss_mesh_relay_rejected_total{reason="no_route"}` on any node — or
+`outline_ss_mesh_relay_opened_total{outcome="refused"}` on its peers — means it
+does not.
+
 ## 4. Network / firewall
 
 - Open the **mesh port (9443/UDP)** between nodes. It is QUIC — **UDP**, not TCP.
@@ -166,13 +195,22 @@ See the "UDP cross-node migration" note in
     edges degrade to fresh local sessions). Expect zero; anything sustained means
     the cluster is pushing more concurrent relayed sessions at one home than it
     is sized for.
+  - `outline_ss_mesh_relay_rejected_total{reason="no_route"}` rising ⇒ **the
+    cluster config is asymmetric** (§3a): an edge is relaying a path or carrier
+    this home does not serve, so no relayed session can authenticate here. Its
+    peers show the same event as
+    `outline_ss_mesh_relay_opened_total{outcome="refused"}`. Expect a flat zero;
+    anything else is a config bug to fix, and until it is, every affected session
+    falls back to a fresh local one.
   - **Cluster traffic** (how much data actually crosses the mesh, not just how
     many relays open): `outline_ss_mesh_bytes_total{role,direction,transport}`
     and `outline_ss_mesh_datagrams_total{role,direction}`. `role="edge"` is the
     traffic this node forwards into the cluster; `role="home"` is what it serves
     for foreign edges — the same relayed session counted from opposite ends. Zero
-    on both means no traffic is crossing the mesh (all sessions are local). Panels
-    *Mesh Throughput — edge/home* and *Mesh Datagram Rate*.
+    on both means no traffic is crossing the mesh (all sessions are local). A
+    sustained `direction="up"` with `direction="down"` pinned at zero is the
+    signature of relayed traffic that never authenticates — check the `no_route`
+    counter above. Panels *Mesh Throughput — edge/home* and *Mesh Datagram Rate*.
   - `outline_ss_mesh_throttle_hints_sent_total` /
     `outline_ss_mesh_throttle_hints_received_total{outcome}` /
     `outline_ss_mesh_control_datagram_errors_total` track edge→home throttle
