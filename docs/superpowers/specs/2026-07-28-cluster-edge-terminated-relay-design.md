@@ -112,15 +112,64 @@ Two deliberate shifts, both documented:
   person on every node. Credentials and paths stay per-node. This is the only
   remaining cluster-wide invariant, and it is checkable by a config validator.
 
+## Two problems found while planning
+
+Both were under-estimated in the first draft of this design and are recorded
+here because they shape the work.
+
+### The upstream is not abstracted anywhere
+
+`relay_upstream_to_client` takes a concrete `OwnedReadHalf`
+(`server/relay.rs:74`), and the upstream is `tokio::net::TcpStream` throughout
+(`transport/tcp.rs:960`, `transport/vless/tcp.rs:404`,
+`transport/vless_udp.rs:38`). The only trait with a suggestive name,
+`UpstreamSink` (`server/relay.rs:57`), is the sink **towards the client**, not a
+connection. There is no `Upstream`/`OutboundStream` abstraction.
+
+So the edge — where a mesh stream plays the role of the upstream — needs a new
+upstream trait plus a generified `relay.rs`. That is a task of its own, not a
+detail.
+
+`resumption/` still needs no change: on the **home** `ParkedTcp` keeps holding a
+real `TcpStream` exactly as today (`resumption/parked.rs:97`). The abstraction is
+required on the edge only.
+
+### Echo and authentication are circularly dependent
+
+`X-Outline-Resume-Session` is echoed in the `101` response headers. Deciding
+whether to echo continuity requires a hit from the home, but
+`take_for_resume(id, authenticated_user)` (`resumption/registry.rs:274`) is keyed
+by **(session id, user)** — so it needs authentication, which is only possible
+*after* `101` (the SS salt arrives in the first binary frame). The echo cannot be
+decided before authentication, and authentication cannot happen before the echo.
+
+Resolved with a **two-phase OPEN**, which preserves today's open-before-`101`
+shape:
+
+```
+edge: OPEN(resume-id, caps)      ──▶ home     // no user yet
+home: ACK / NoSession            ◀──          // "is there a park under this id?"
+edge: 101 to the client (echo now decided)
+edge: authenticate the client → user
+edge: USER(user name)            ──▶ home
+home: take_for_resume(id, user) → owner check // exactly as today, one phase later
+      then the plaintext stream
+```
+
+The owner check is preserved in full, just moved one phase later. On
+`ResumeMiss::OwnerMismatch` — a rare security event — the session is torn down
+after `101`, which is the acceptable cost.
+
 ## Wire protocol
 
-`OPEN_VERSION` 4 → 5.
+`OPEN_VERSION` 4 → 5, and OPEN becomes two-phase (see above): a `USER` frame
+follows the ACK.
 
 | Field | Today | Becomes |
 |---|---|---|
 | `path` | home resolves users + padding scheme from it | **removed** — the path stays a local matter of the edge |
 | `carrier` | selects which route table to resolve | **narrowed** to `Tcp` / `Udp`; the home no longer distinguishes SS/VLESS/xhttp — that is the edge's crypto |
-| `user` | — | **added**, `String` ≤ 64 bytes: the edge-attested user name |
+| `user` | — | **added**, but in the second-phase `USER` frame (≤ 64 bytes), not in OPEN — it is not known when OPEN is sent |
 | `session_id`, `ack_prefix`, `symmetric_replay`, `client_down_acked`, `peer_addr` | | unchanged |
 
 `OPEN_ACK_ACCEPTED` (v4) stays and gains a sharper meaning: the home
@@ -140,17 +189,23 @@ black hole.
   there is no route resolution on the home any more. A home-side "splice
   plaintext to the parked upstream" replaces them. The file shrinks
   substantially, which is the answer to its current size.
+- `server/relay.rs` — **new upstream abstraction.** `relay_upstream_to_client`
+  is generified off `OwnedReadHalf` onto a trait implemented by both a real TCP
+  upstream and a mesh stream. Prerequisite for the edge side.
 - **Edge side, the substantive change.** `try_relay_edge` is called *before* the
-  upgrade today, to decide relay-vs-local. Now the order inverts: upgrade and
-  authenticate the client first (the user name is needed), then send the mesh
-  OPEN. So the edge path becomes "accept as a local session, but take the
-  upstream over the mesh": the branch point moves out of the accept phase into
-  upstream selection, and `transport/tcp.rs`, `transport/vless/`,
-  `transport/udp.rs` gain an upstream variant "mesh stream to home" alongside
-  "TCP connect out". The relay functions are already parameterised over the
-  carrier but not over the upstream — this is the delicate part of the work.
-- `resumption/` — **untouched.** `DownlinkRing`, `OrphanRegistry` and
-  `take_for_resume` work as they are.
+  upgrade today, to decide relay-vs-local. That stays (the OPEN phase still
+  precedes `101`), but the edge now also authenticates the client after `101`
+  and sends the `USER` frame. The edge path becomes "accept as a local session,
+  but take the upstream over the mesh": `transport/tcp.rs`,
+  `transport/vless/`, `transport/udp.rs` gain an upstream variant "mesh stream
+  to home" alongside "TCP connect out", and must **not** park on the edge —
+  parking stays a home concern.
+- `resumption/` — **no behavioural change.** `DownlinkRing`, `OrphanRegistry`
+  and `take_for_resume` work as they are; the edge never parks, so `ParkedTcp`
+  keeps holding a real `TcpStream` on the home. One addition only: a read-only
+  existence probe `has_park(id) -> bool`, needed for the phase-1 ACK (which must
+  answer "is there a park under this id?" before a user is known). It touches no
+  state and does not consume the park.
 - `outline-ws-rust` (client) — **untouched.**
 
 ### UDP
