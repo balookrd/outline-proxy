@@ -250,7 +250,7 @@ pub(super) fn register_descriptions() {
          disagree across the cluster (or it is a genuine security event); \
          udp_unsupported = the peer asked for plaintext UDP framing this build does \
          not serve yet; framing_mismatch = the park under that id is not the kind \
-         the relayed framing needs; bad_setup = the peer was acked but its \
+         the relayed framing needs; bad_setup = the home sent its ack but the \
          second-phase USER frame was malformed or never arrived. The edge degrades \
          to a fresh local session)."
     );
@@ -259,10 +259,12 @@ pub(super) fn register_descriptions() {
         "Relayed sessions a home node resolved, by outcome (hit = the parked \
          session was found and spliced onto the relay; miss = no park matched, so \
          the edge serves its client a fresh local session; error = setup failed \
-         before any park could be resolved). Every relay stream that reaches the \
-         handler records exactly one outcome, so the series reconciles against \
-         relays actually served — the direct signal that cluster relaying works, \
-         which byte counters alone never gave."
+         before any park could be resolved). Every v5 relay stream that reaches \
+         the v5 handler records exactly one outcome, so the series reconciles \
+         against the v5 relays actually served — the direct signal that cluster \
+         relaying works, which byte counters alone never gave. Scoped to v5: \
+         streams refused before the handler (see the capacity reason on \
+         outline_ss_mesh_relay_rejected_total) and legacy v4 relays record none."
     );
     describe_gauge!(
         "outline_ss_mesh_relay_active",
