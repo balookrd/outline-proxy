@@ -707,6 +707,26 @@ impl Metrics {
         });
     }
 
+    /// Counts an inbound stream the `[sni_fallback]` peek could not turn
+    /// into a ClientHello. `reason` is one of:
+    /// - `peer_closed` — the peer went away (FIN/EOF/RST) before sending
+    ///   one. Routine on a public port: TCP liveness probes, scanners,
+    ///   clients that changed their mind. Logged at `debug`, so this
+    ///   counter is the way to see the volume.
+    /// - `read_failed` — the inbound read failed for some other reason.
+    /// - `oversized` — bytes kept arriving without forming a ClientHello
+    ///   within `max_client_hello_bytes`.
+    /// - `malformed` — rustls rejected the bytes as a TLS handshake.
+    ///
+    /// A rising `peer_closed` rate is noise-shaped and usually means a
+    /// prober somewhere got more frequent; a rising `malformed` rate is
+    /// the one worth chasing.
+    pub fn record_sni_peek_failed(&self, reason: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_sni_peek_failed_total", "reason" => reason).increment(1);
+        });
+    }
+
     /// Counts a `no_cert_chain` failure broken down by the rejected
     /// SNI. Companion to [`Self::record_tls_handshake_failed`] —
     /// `failed_total{reason="no_cert_chain"}` always equals the sum of
