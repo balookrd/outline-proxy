@@ -279,3 +279,41 @@ async fn snapshot_caps_sticky_route_entries_but_keeps_counts_exact() {
         "the sample must keep the longest-lived pins, freshest first",
     );
 }
+
+/// The mode-downgrade cap the snapshot publishes must be the one in effect
+/// right now, not the last one ever installed. `uplink_mode_downgrade_capped_to_info`
+/// and the control topology view both read this field, and the raw
+/// last-value read left them pinned at "carrier degraded" forever after a
+/// single 60 s downgrade: on a live client the cap gauge was present in
+/// 225 of 225 scrapes while the sibling `remaining_seconds` series — the one
+/// that is time-gated — appeared in 8.
+#[tokio::test(start_paused = true)]
+async fn snapshot_clears_mode_cap_once_the_downgrade_window_expires() {
+    let manager = manager(false);
+    manager.test_seed_mode_downgrade_for_test(0, TransportKind::Tcp, TransportMode::WsH2);
+
+    let snap = manager.snapshot().await;
+    assert_eq!(
+        snap.uplinks[0].tcp_mode_capped_to.as_deref(),
+        Some("ws_h2"),
+        "an active window must publish its cap",
+    );
+    assert!(
+        snap.uplinks[0].h3_tcp_downgrade_until_ms.is_some(),
+        "an active window must publish its remaining time",
+    );
+
+    // Past `mode_downgrade_duration` (60 s): the cap and the remaining-time
+    // field have to clear together, so observers cannot read a degraded
+    // carrier off an expired window.
+    tokio::time::advance(Duration::from_secs(61)).await;
+    let snap = manager.snapshot().await;
+    assert_eq!(
+        snap.uplinks[0].h3_tcp_downgrade_until_ms, None,
+        "an expired window must stop publishing remaining time",
+    );
+    assert_eq!(
+        snap.uplinks[0].tcp_mode_capped_to, None,
+        "an expired window must stop publishing a cap",
+    );
+}

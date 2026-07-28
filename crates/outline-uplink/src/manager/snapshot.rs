@@ -420,8 +420,14 @@ impl UplinkManager {
                     .until()
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
-                tcp_mode_capped_to: status.tcp.descent.capped_to().map(|m| m.to_string()),
-                udp_mode_capped_to: status.udp.descent.capped_to().map(|m| m.to_string()),
+                // Time-gated: the raw `capped_to()` keeps its last value after
+                // the window expires, which would pin
+                // `uplink_mode_downgrade_capped_to_info` (and the control
+                // topology view) at "carrier degraded" forever after a single
+                // downgrade. Observers must see the cap that is actually in
+                // effect, in step with `h3_*_downgrade_until_ms` above.
+                tcp_mode_capped_to: status.tcp.descent.active_cap(now).map(|m| m.to_string()),
+                udp_mode_capped_to: status.udp.descent.active_cap(now).map(|m| m.to_string()),
                 tcp_xhttp_submode,
                 udp_xhttp_submode,
                 tcp_xhttp_submode_block_remaining_ms,

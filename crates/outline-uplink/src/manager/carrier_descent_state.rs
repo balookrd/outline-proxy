@@ -137,8 +137,13 @@ impl CarrierDescentState {
         self.until
     }
 
-    /// Cap value, raw (`Some` even when the window has expired). Use
-    /// [`Self::active_cap`] for the time-gated effective value.
+    /// Cap value, raw (`Some` even when the window has expired) — test-only,
+    /// for asserting *which* cap a descent step installed without having to
+    /// keep its window open. Production code, including the metrics/topology
+    /// snapshot, reads [`Self::active_cap`]: a raw read there published an
+    /// expired cap forever and made a single flap look like a permanently
+    /// degraded carrier.
+    #[cfg(test)]
     pub(crate) fn capped_to(&self) -> Option<TransportMode> {
         self.capped_to
     }
