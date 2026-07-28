@@ -7,6 +7,7 @@ use outline_uplink::{
 };
 
 use super::super::schema::LoadBalancingSection;
+use super::uplinks::parse_human_duration;
 
 pub(super) fn load_balancing_config(
     lb: Option<&LoadBalancingSection>,
@@ -15,9 +16,29 @@ pub(super) fn load_balancing_config(
     if !(rtt_ewma_alpha.is_finite() && 0.0 < rtt_ewma_alpha && rtt_ewma_alpha <= 1.0) {
         bail!("load_balancing.rtt_ewma_alpha must be in the range (0, 1]");
     }
+    let mode = lb.and_then(|l| l.mode).unwrap_or(LoadBalancingMode::ActiveActive);
+    let routing_scope = lb.and_then(|l| l.routing_scope).unwrap_or(RoutingScope::PerFlow);
+    let has_reselect_at = lb.and_then(|l| l.reselect_at.as_ref()).is_some_and(|v| !v.is_empty());
+    let has_reselect_interval = lb.and_then(|l| l.reselect_interval.as_ref()).is_some();
+    if has_reselect_at && has_reselect_interval {
+        bail!(
+            "load_balancing.reselect_at and load_balancing.reselect_interval are mutually \
+             exclusive"
+        );
+    }
+    if (has_reselect_at || has_reselect_interval)
+        && (mode != LoadBalancingMode::ActivePassive
+            || !matches!(routing_scope, RoutingScope::Global | RoutingScope::PerUplink))
+    {
+        bail!(
+            "load_balancing.reselect_at / reselect_interval require mode = \"active_passive\" \
+             and routing_scope = \"global\" or \"per_uplink\" (scheduled re-selection moves \
+             the strict active slot, which only exists there)"
+        );
+    }
     Ok(LoadBalancingConfig {
-        mode: lb.and_then(|l| l.mode).unwrap_or(LoadBalancingMode::ActiveActive),
-        routing_scope: lb.and_then(|l| l.routing_scope).unwrap_or(RoutingScope::PerFlow),
+        mode,
+        routing_scope,
         shared_resume: lb.and_then(|l| l.shared_resume).unwrap_or(false),
         sticky_ttl: Duration::from_secs(lb.and_then(|l| l.sticky_ttl_secs).unwrap_or(300)),
         hysteresis: Duration::from_millis(lb.and_then(|l| l.hysteresis_ms).unwrap_or(50)),
@@ -213,5 +234,58 @@ pub(super) fn load_balancing_config(
                     .unwrap_or(defaults.janitor_interval),
             }
         },
+        reselect_at: {
+            let mut slots = Vec::new();
+            for entry in lb.and_then(|l| l.reselect_at.as_ref()).into_iter().flatten() {
+                slots.push(parse_wall_clock(entry)?);
+            }
+            slots.sort_unstable();
+            slots.dedup();
+            slots
+        },
+        reselect_interval: lb
+            .and_then(|l| l.reselect_interval.as_deref())
+            .map(|s| parse_human_duration("reselect_interval", s))
+            .transpose()?
+            .map(|d| {
+                if d < RESELECT_INTERVAL_MIN {
+                    bail!(
+                        "load_balancing.reselect_interval must be at least {}s: each firing \
+                         moves the active uplink, and off a cluster (shared_resume = false) \
+                         that tears down every in-flight SOCKS5 TCP session on this group",
+                        RESELECT_INTERVAL_MIN.as_secs()
+                    );
+                }
+                Ok(d)
+            })
+            .transpose()?,
     })
 }
+
+/// Floor for `reselect_interval`: below this, a firing every few seconds
+/// would RST every in-flight SOCKS5 TCP session on a non-cluster group far
+/// too often to be an operator-intended schedule rather than a typo (e.g.
+/// bare `"10"` seconds instead of `"10h"`).
+const RESELECT_INTERVAL_MIN: Duration = Duration::from_secs(60);
+
+/// Parse a `"HH:MM"` local-time slot for `reselect_at`.
+fn parse_wall_clock(input: &str) -> Result<(u8, u8)> {
+    let parse = |part: &str, what: &str| -> Result<u8> {
+        if part.is_empty() || part.len() > 2 || !part.chars().all(|c| c.is_ascii_digit()) {
+            bail!("load_balancing.reselect_at entry \"{input}\": invalid {what}");
+        }
+        Ok(part.parse().expect("digits only, len <= 2"))
+    };
+    let Some((h, m)) = input.split_once(':') else {
+        bail!("load_balancing.reselect_at entry \"{input}\" must be \"HH:MM\"");
+    };
+    let (hours, minutes) = (parse(h, "hours")?, parse(m, "minutes")?);
+    if hours > 23 || minutes > 59 {
+        bail!("load_balancing.reselect_at entry \"{input}\" out of range (00:00 - 23:59)");
+    }
+    Ok((hours, minutes))
+}
+
+#[cfg(test)]
+#[path = "tests/balancing.rs"]
+mod tests;

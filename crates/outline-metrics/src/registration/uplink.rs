@@ -126,6 +126,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_connection_close_total: IntCounterVec,
     pub(super) socks_tcp_strict_aborts_total: IntCounterVec,
     pub(super) soft_switch_total: IntCounterVec,
+    pub(super) uplink_reselect_total: IntCounterVec,
     pub(super) resume_lookup_total: IntCounterVec,
 }
 
@@ -451,6 +452,19 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
          current uplink (no-op).",
         ["group", "outcome"]
     );
+    let uplink_reselect_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_uplink_reselect_total",
+        "Scheduled / manual weighted-random re-selection of the strict active uplink, by \
+         outcome. `switched` = the active slot moved to a new weighted-random pick (the \
+         current active is always excluded — a forced rotation); `no_candidate` = no \
+         healthy, enabled, off-cooldown candidate besides the current active existed, \
+         nothing changed; `skipped` = the group is not in active_passive mode, or its \
+         routing scope has no single strict active slot to rotate (only global / \
+         per_uplink have one).",
+        ["group", "outcome"]
+    );
     let resume_lookup_total = register_labeled!(
         registry,
         IntCounterVec,
@@ -502,6 +516,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_connection_close_total,
         socks_tcp_strict_aborts_total,
         soft_switch_total,
+        uplink_reselect_total,
         resume_lookup_total,
     }
 }

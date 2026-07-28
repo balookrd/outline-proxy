@@ -70,6 +70,7 @@ impl Metrics {
             uplink_connection_close_total: u.uplink_connection_close_total,
             socks_tcp_strict_aborts_total: u.socks_tcp_strict_aborts_total,
             soft_switch_total: u.soft_switch_total,
+            uplink_reselect_total: u.uplink_reselect_total,
             resume_lookup_total: u.resume_lookup_total,
             probe_runs_total: p.probe_runs_total,
             probe_duration_seconds: p.probe_duration_seconds,

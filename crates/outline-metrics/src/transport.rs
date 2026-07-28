@@ -337,6 +337,15 @@ pub fn record_soft_switch(group: &str, outcome: &'static str) {
     METRICS.soft_switch_total.with_label_values(&[group, outcome]).inc();
 }
 
+/// Record a scheduled/manual weighted re-selection attempt for a group
+/// (`switched`, `no_candidate`, `skipped`). See `outline_ws_uplink_reselect_total`.
+pub fn record_uplink_reselect(group: &str, outcome: &'static str) {
+    METRICS
+        .uplink_reselect_total
+        .with_label_values(&[group, outcome])
+        .inc();
+}
+
 /// Counts one resume-cache lookup at an uplink dial, by `transport`
 /// (`tcp`/`udp`), `scope` (`group` for cluster `shared_resume`, else `uplink`)
 /// and `result` (`hit`/`miss`). See `outline_ws_resume_lookup_total`.

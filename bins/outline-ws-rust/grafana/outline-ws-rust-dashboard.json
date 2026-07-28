@@ -2496,12 +2496,107 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Scheduled or manual weighted-random re-selection of a group's strict active uplink (`active_passive` mode), by outcome. `switched` = the active slot moved to a new weighted-random pick (the current active is always excluded, so this is always a forced rotation, never a no-op reselection of the same uplink); `no_candidate` = no healthy, enabled, non-cooldown candidate besides the current active existed, nothing changed; `skipped` = the group is not in `active_passive` mode (or has no single strict active slot to rotate), so re-selection does not apply. Driven by `reselect_at` / `reselect_interval` on a timer, or by an operator `POST /control/reselect` call.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 82
+      },
+      "id": 305,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.2",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (group, outcome) (increase(outline_ws_uplink_reselect_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval]))",
+          "legendFormat": "{{group}} {{outcome}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Uplink Re-selections (scheduled/manual)",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 82
+        "y": 89
       },
       "id": 107,
       "panels": [],
@@ -2590,7 +2685,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 83
+        "y": 90
       },
       "id": 9,
       "options": {
@@ -2744,7 +2839,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 83
+        "y": 90
       },
       "id": 12,
       "options": {
@@ -2858,7 +2953,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 89
+        "y": 96
       },
       "id": 10,
       "options": {
@@ -2967,7 +3062,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 89
+        "y": 96
       },
       "id": 19,
       "options": {
@@ -3118,7 +3213,7 @@
         "h": 6,
         "w": 12,
         "x": 0,
-        "y": 95
+        "y": 102
       },
       "id": 200,
       "options": {
@@ -3211,7 +3306,7 @@
         "h": 6,
         "w": 12,
         "x": 12,
-        "y": 95
+        "y": 102
       },
       "id": 201,
       "options": {
@@ -3247,7 +3342,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 101
+        "y": 108
       },
       "id": 105,
       "panels": [
@@ -3361,7 +3456,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 102,
+            "y": 109,
             "w": 12,
             "h": 7
           },
@@ -3501,7 +3596,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 102,
+            "y": 109,
             "w": 12,
             "h": 7
           },
@@ -3641,7 +3736,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 109,
+            "y": 116,
             "w": 12,
             "h": 7
           },
@@ -3711,7 +3806,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 109,
+            "y": 116,
             "w": 12,
             "h": 7
           },
@@ -3839,7 +3934,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 116,
+            "y": 123,
             "w": 24,
             "h": 6
           },
@@ -3983,7 +4078,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 122,
+            "y": 129,
             "w": 8,
             "h": 7
           },
@@ -4107,7 +4202,7 @@
           },
           "gridPos": {
             "x": 8,
-            "y": 122,
+            "y": 129,
             "w": 8,
             "h": 7
           },
@@ -4231,7 +4326,7 @@
           },
           "gridPos": {
             "x": 16,
-            "y": 122,
+            "y": 129,
             "w": 8,
             "h": 7
           },
@@ -4324,7 +4419,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 129,
+            "y": 136,
             "w": 12,
             "h": 7
           },
@@ -4463,7 +4558,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 129,
+            "y": 136,
             "w": 12,
             "h": 7
           },
@@ -4587,7 +4682,7 @@
           },
           "gridPos": {
             "x": 0,
-            "y": 136,
+            "y": 143,
             "w": 12,
             "h": 7
           },
@@ -4746,7 +4841,7 @@
           },
           "gridPos": {
             "x": 12,
-            "y": 136,
+            "y": 143,
             "w": 12,
             "h": 7
           },
@@ -4788,7 +4883,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 102
+        "y": 109
       },
       "panels": []
     },
@@ -4855,7 +4950,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 103
+        "y": 110
       },
       "id": 241,
       "options": {
@@ -4950,7 +5045,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 103
+        "y": 110
       },
       "id": 242,
       "options": {
@@ -5049,7 +5144,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 103
+        "y": 110
       },
       "id": 243,
       "options": {
@@ -5144,7 +5239,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 111
+        "y": 118
       },
       "id": 244,
       "options": {
@@ -5182,7 +5277,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 119
+        "y": 126
       },
       "id": 250,
       "panels": [],
@@ -5252,7 +5347,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 120
+        "y": 127
       },
       "id": 251,
       "options": {
@@ -5361,7 +5456,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 120
+        "y": 127
       },
       "id": 252,
       "options": {
@@ -5463,7 +5558,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 128
+        "y": 135
       },
       "id": 253,
       "options": {
@@ -5558,7 +5653,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 128
+        "y": 135
       },
       "id": 254,
       "options": {
@@ -5653,7 +5748,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 128
+        "y": 135
       },
       "id": 255,
       "options": {
@@ -5705,7 +5800,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 135
+        "y": 142
       },
       "id": 106,
       "panels": [],
@@ -5748,7 +5843,7 @@
         "h": 3,
         "w": 6,
         "x": 0,
-        "y": 136
+        "y": 143
       },
       "id": 130,
       "options": {
@@ -5830,7 +5925,7 @@
         "h": 3,
         "w": 6,
         "x": 6,
-        "y": 136
+        "y": 143
       },
       "id": 123,
       "options": {
@@ -5897,7 +5992,7 @@
         "h": 3,
         "w": 6,
         "x": 12,
-        "y": 136
+        "y": 143
       },
       "id": 132,
       "options": {
@@ -5956,7 +6051,7 @@
         "h": 3,
         "w": 6,
         "x": 18,
-        "y": 136
+        "y": 143
       },
       "id": 133,
       "options": {
@@ -6084,7 +6179,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 139
+        "y": 146
       },
       "id": 26,
       "options": {
@@ -6122,7 +6217,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 145
+        "y": 152
       },
       "id": 126,
       "panels": [],
@@ -6181,7 +6276,7 @@
         "h": 4,
         "w": 4,
         "x": 0,
-        "y": 146
+        "y": 153
       },
       "id": 30,
       "options": {
@@ -6264,7 +6359,7 @@
         "h": 4,
         "w": 4,
         "x": 4,
-        "y": 146
+        "y": 153
       },
       "id": 152,
       "options": {
@@ -6349,7 +6444,7 @@
         "h": 4,
         "w": 4,
         "x": 8,
-        "y": 146
+        "y": 153
       },
       "id": 124,
       "options": {
@@ -6522,7 +6617,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 146
+        "y": 153
       },
       "id": 31,
       "options": {
@@ -6646,7 +6741,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 146
+        "y": 153
       },
       "id": 121,
       "options": {
@@ -6755,7 +6850,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 150
+        "y": 157
       },
       "id": 153,
       "options": {
@@ -6894,7 +6989,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 150
+        "y": 157
       },
       "id": 29,
       "options": {
@@ -7033,7 +7128,7 @@
         "h": 4,
         "w": 8,
         "x": 16,
-        "y": 150
+        "y": 157
       },
       "id": 32,
       "options": {
@@ -7157,7 +7252,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 154
+        "y": 161
       },
       "id": 122,
       "options": {
@@ -7295,6 +7390,6 @@
   "timezone": "browser",
   "title": "outline-ws-rust",
   "uid": "outline-ws-rust",
-  "version": 86,
+  "version": 87,
   "weekStart": ""
 }
