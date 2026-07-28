@@ -29,7 +29,18 @@ use anyhow::{Result, bail};
 ///
 /// v2 added the `SsXhttp` / `VlessXhttp` carrier kinds.
 /// v3 added the `SsUdpXhttp` carrier kind (SS-UDP over XHTTP).
-const OPEN_VERSION: u8 = 3;
+/// v4 added the [`OPEN_ACK_ACCEPTED`] setup acknowledgement: the home now
+/// prefixes the downlink with one ack byte, which an older edge would misread as
+/// carrier payload — so the version gate is what keeps the two apart.
+const OPEN_VERSION: u8 = 4;
+
+/// The home's setup acknowledgement, sent as the first downlink byte of an
+/// admitted relay stream (v4+) and consumed by the edge before it splices the
+/// client carrier. It answers the one question the edge cannot decide alone:
+/// whether this home can actually serve the relayed path and carrier. A refusal
+/// is not a byte value but a stream reset carrying a [`CloseReason`], so an edge
+/// waiting for the ack learns of it immediately either way.
+pub(in crate::server) const OPEN_ACK_ACCEPTED: u8 = 1;
 
 /// Upper bound on the request path length carried in an OPEN header. Guards the
 /// parser against an oversized allocation from a malformed peer.
@@ -96,6 +107,13 @@ pub(in crate::server) enum CloseReason {
     /// home is full" from a generic failure; a peer on an older build maps it to
     /// `Abort` through [`CloseReason::from_code`], which is the right fallback.
     Capacity,
+    /// The home refused the stream: the relayed path and carrier resolve to no
+    /// configured users here, so it holds no key that could authenticate a
+    /// single packet on it. Only reachable under an asymmetric cluster config
+    /// (the homes and edges disagree on paths or users); the edge degrades to a
+    /// fresh local session rather than relaying into a black hole. A peer on an
+    /// older build maps it to `Abort`, which is the right fallback.
+    NoRoute,
 }
 
 impl CloseReason {
@@ -106,6 +124,7 @@ impl CloseReason {
             CloseReason::Abort => 1,
             CloseReason::Budget => 2,
             CloseReason::Capacity => 3,
+            CloseReason::NoRoute => 4,
         }
     }
 
@@ -116,6 +135,7 @@ impl CloseReason {
             0 => CloseReason::Fin,
             2 => CloseReason::Budget,
             3 => CloseReason::Capacity,
+            4 => CloseReason::NoRoute,
             _ => CloseReason::Abort,
         }
     }

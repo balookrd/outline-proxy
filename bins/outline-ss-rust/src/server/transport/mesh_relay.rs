@@ -30,13 +30,14 @@ use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     AcceptRelayError, CarrierKind, CloseReason, ControlDatagram, MeshStream, OpenHeader,
     PooledRelay, accept_relay, encode_throttle_hint, parse_control_datagram, read_datagram,
-    write_datagram,
+    write_datagram, write_open_ack,
 };
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::server::resumption::SessionId;
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::state::{
-    RoutesSnapshot, Services, empty_transport_route, empty_vless_transport_route,
+    RoutesSnapshot, Services, TransportRoute, VlessTransportRoute, empty_transport_route,
+    empty_vless_transport_route,
 };
 
 use super::carrier_padding;
@@ -383,11 +384,19 @@ pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
 }
 
 /// Opens a mesh relay to the home for an edge-routed carrier: builds the OPEN
-/// header from the client's advertisement and dials the home. Returns the
-/// pooled relay on success (the caller splices the client carrier into it and
-/// echoes `advert.session_id` for continuity), or `None` when the relay is
-/// unavailable (the caller serves a fresh local session instead). Carrier-
-/// agnostic, so the axum (h1/h2) and h3 accept paths share it.
+/// header from the client's advertisement, dials the home and waits for its
+/// setup acknowledgement. Returns the pooled relay on success (the caller
+/// splices the client carrier into it and echoes `advert.session_id` for
+/// continuity), or `None` when the relay is unavailable (the caller serves a
+/// fresh local session instead). Carrier-agnostic, so the axum (h1/h2) and h3
+/// accept paths share it.
+///
+/// Waiting for the ack costs one mesh RTT before the `101`, and buys the
+/// difference between a relay that works and a black hole: a home that does not
+/// serve this path/carrier refuses here, while the client carrier is still
+/// un-upgraded and the caller can still serve it locally. Without the wait the
+/// refusal would only surface once bytes were already flowing — after the
+/// client had been committed to a relay that drops every packet.
 pub(in crate::server) async fn open_edge_relay(
     cluster: &ClusterCtx,
     shard: ShardId,
@@ -406,11 +415,8 @@ pub(in crate::server) async fn open_edge_relay(
         path: path.to_string(),
         peer_addr: Some(peer_addr),
     };
-    match cluster.pool.open_relay(shard, &header).await {
-        Ok(pooled) => {
-            cluster.metrics.record_mesh_relay_opened("ok");
-            Some(pooled)
-        },
+    let mut pooled = match cluster.pool.open_relay(shard, &header).await {
+        Ok(pooled) => pooled,
         Err(error) => {
             cluster.metrics.record_mesh_relay_opened("fail");
             debug!(
@@ -418,9 +424,26 @@ pub(in crate::server) async fn open_edge_relay(
                 shard = shard.get(),
                 "mesh relay open failed; serving a fresh local session",
             );
-            None
+            return None;
         },
+    };
+    // The home admits or refuses before the client carrier is upgraded. A
+    // refusal is counted apart from an unreachable home: it means the peer is
+    // healthy but cannot serve this path/carrier, which is a config mismatch to
+    // fix, not a transport fault.
+    if let Err(error) = pooled.await_ack(cluster.relay_budget).await {
+        cluster.metrics.record_mesh_relay_opened("refused");
+        warn!(
+            ?error,
+            shard = shard.get(),
+            path,
+            "home refused the mesh relay; serving a fresh local session — check that the home \
+             serves this path and carrier (cluster config must be symmetric)",
+        );
+        return None;
     }
+    cluster.metrics.record_mesh_relay_opened("ok");
+    Some(pooled)
 }
 
 /// Splices an h3 client carrier to an already-opened mesh relay. The h3 accept
@@ -683,30 +706,100 @@ fn refuse_relay(stream: MeshStream, reason: CloseReason) {
     let _ = recv.stop(code);
 }
 
-/// Logs a one-shot diagnostic when a relayed carrier resolves to an empty route
-/// table on the home. Every stream/datagram on an empty route fails
-/// authentication (no configured key matches) and is dropped, so without this a
-/// home/edge path- or carrier-table mismatch is a silent black hole — the exact
-/// failure the SS-UDP relay hit. Only reachable under an asymmetric cluster
-/// config; a symmetric cluster (shared PSK + matching config, the supported
-/// topology) always resolves the path. Fires once per relayed session, not per
-/// datagram, so it stays low-noise.
-fn warn_if_empty_relayed_route(is_empty: bool, carrier: CarrierKind, path: &str) {
-    if is_empty {
-        warn!(
-            ?carrier,
-            path,
-            "relayed carrier resolved to an empty route on the home; every packet will fail \
-             authentication and be dropped — check that this home serves the edge's path and \
-             carrier (cluster config must be symmetric)"
-        );
+/// The home-side route a relayed carrier will authenticate against, resolved
+/// once from the OPEN header's path and carrier kind.
+enum RelayedRoute {
+    /// Shadowsocks route table entry (`SsTcp` / `SsUdp` and their `*Xhttp` twins).
+    Ss(Arc<TransportRoute>),
+    /// VLESS route table entry (`VlessTcp` / `VlessXhttp`).
+    Vless(Arc<VlessTransportRoute>),
+}
+
+impl RelayedRoute {
+    /// Whether the path resolved to no configured users. Such a route holds no
+    /// key, so every stream/datagram relayed onto it fails authentication.
+    fn is_empty(&self) -> bool {
+        match self {
+            RelayedRoute::Ss(route) => route.users.is_empty(),
+            RelayedRoute::Vless(route) => route.users.is_empty(),
+        }
     }
+}
+
+/// Resolves the relayed carrier's path against the route table its kind uses.
+/// The `*Xhttp` kinds differ from the WS kinds only in which table holds the
+/// path. `None` for [`CarrierKind::VlessUdp`], which owns no route table (it is
+/// unreachable in practice — VLESS-UDP rides the `VlessTcp` carrier).
+fn resolve_relayed_route(
+    routes: &RoutesSnapshot,
+    carrier: CarrierKind,
+    path: &str,
+) -> Option<RelayedRoute> {
+    let snap = routes.load();
+    Some(match carrier {
+        CarrierKind::SsTcp => {
+            RelayedRoute::Ss(snap.tcp.get(path).cloned().unwrap_or_else(empty_transport_route))
+        },
+        CarrierKind::SsXhttp => {
+            RelayedRoute::Ss(snap.xhttp_ss.get(path).cloned().unwrap_or_else(empty_transport_route))
+        },
+        CarrierKind::SsUdp => {
+            RelayedRoute::Ss(snap.udp.get(path).cloned().unwrap_or_else(empty_transport_route))
+        },
+        CarrierKind::SsUdpXhttp => RelayedRoute::Ss(
+            snap.xhttp_ss_udp
+                .get(path)
+                .cloned()
+                .unwrap_or_else(empty_transport_route),
+        ),
+        CarrierKind::VlessTcp => RelayedRoute::Vless(
+            snap.vless
+                .get(path)
+                .cloned()
+                .unwrap_or_else(empty_vless_transport_route),
+        ),
+        CarrierKind::VlessXhttp => RelayedRoute::Vless(
+            snap.xhttp_vless
+                .get(path)
+                .cloned()
+                .unwrap_or_else(empty_vless_transport_route),
+        ),
+        CarrierKind::VlessUdp => return None,
+    })
+}
+
+/// Refuses a relayed carrier whose path and kind resolve to no configured users
+/// on this home, and says why.
+///
+/// Serving it instead would be a black hole: the relay would run against a route
+/// holding no key, so every stream/datagram on it fails authentication and is
+/// dropped, for the life of the session, with the client seeing only silence.
+/// That is exactly what an asymmetric cluster config produced in production. A
+/// reset carrying [`CloseReason::NoRoute`] instead fails the setup fast and
+/// explicitly, so the edge serves its client a fresh local session. Only
+/// reachable under an asymmetric config; a symmetric cluster (shared PSK +
+/// matching paths and users, the supported topology) always resolves the path.
+fn refuse_unroutable_relay(
+    stream: MeshStream,
+    cluster: &ClusterCtx,
+    carrier: CarrierKind,
+    path: &str,
+) {
+    cluster.metrics.record_mesh_relay_rejected("no_route");
+    warn!(
+        ?carrier,
+        path,
+        "refusing a relayed carrier: it resolves to an empty route on this home, so every packet \
+         would fail authentication — check that this home serves the edge's path and carrier \
+         (cluster config must be symmetric)"
+    );
+    refuse_relay(stream, CloseReason::NoRoute);
 }
 
 /// Dispatches one relayed carrier into the matching accept path.
 async fn serve_relayed(
     header: OpenHeader,
-    stream: MeshStream,
+    mut stream: MeshStream,
     cluster: &ClusterCtx,
     services: &Services,
     routes: &RoutesSnapshot,
@@ -715,6 +808,30 @@ async fn serve_relayed(
     // TCP/VLESS carriers use the byte-stream `MeshCarrier`, while SS-UDP uses
     // the datagram-framed `MeshUdpCarrier` (moving `stream` into the arm taken).
     let path: Arc<str> = Arc::from(header.path.as_str());
+
+    // Admission comes first: resolve the route this carrier would authenticate
+    // against, and refuse the stream outright if it holds no users. Doing it
+    // here — before the active-relay gauge, the throttle registration and the
+    // carrier — keeps an unroutable relay from ever counting as served.
+    let Some(route) = resolve_relayed_route(routes, header.carrier, &path) else {
+        // Unreachable in practice: an edge never builds a VlessUdp carrier.
+        // VLESS-UDP rides the VlessTcp carrier — the edge forwards the VLESS
+        // byte stream verbatim and the home's `run_vless_relay` parses the UDP
+        // command from it. Kept as a defensive refusal (not a panic) in case a
+        // peer sends a forged or mismatched-version header.
+        warn!("unexpected VlessUdp mesh carrier (VLESS-UDP rides VlessTcp); refusing");
+        refuse_relay(stream, CloseReason::Abort);
+        bail!("VlessUdp mesh carrier is unreachable on the edge")
+    };
+    if route.is_empty() {
+        refuse_unroutable_relay(stream, cluster, header.carrier, &path);
+        return Ok(());
+    }
+    // Admitted. The ack is the first downlink byte, ahead of any carrier
+    // payload: it releases the edge to upgrade its client carrier, knowing this
+    // home will actually serve it.
+    write_open_ack(&mut stream.send).await?;
+
     let padding = carrier_padding::scheme_for_path(&path);
     let session_id = SessionId::from_bytes(header.session_id);
     // The home parks under the id the client already holds; there is no HTTP
@@ -752,18 +869,8 @@ async fn serve_relayed(
     // drops (decrementing the gauge) on return, including every early bail.
     let _relay_active = cluster.metrics.open_mesh_relay();
 
-    match header.carrier {
-        CarrierKind::SsTcp | CarrierKind::SsXhttp => {
-            let route = {
-                let snap = routes.load();
-                let map = if header.carrier == CarrierKind::SsXhttp {
-                    &snap.xhttp_ss
-                } else {
-                    &snap.tcp
-                };
-                map.get(&*path).cloned().unwrap_or_else(empty_transport_route)
-            };
-            warn_if_empty_relayed_route(route.users.is_empty(), header.carrier, &path);
+    match (header.carrier, route) {
+        (CarrierKind::SsTcp | CarrierKind::SsXhttp, RelayedRoute::Ss(route)) => {
             let route_ctx = WsTcpRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
@@ -786,17 +893,7 @@ async fn serve_relayed(
             )
             .await
         },
-        CarrierKind::VlessTcp | CarrierKind::VlessXhttp => {
-            let route = {
-                let snap = routes.load();
-                let map = if header.carrier == CarrierKind::VlessXhttp {
-                    &snap.xhttp_vless
-                } else {
-                    &snap.vless
-                };
-                map.get(&*path).cloned().unwrap_or_else(empty_vless_transport_route)
-            };
-            warn_if_empty_relayed_route(route.users.is_empty(), header.carrier, &path);
+        (CarrierKind::VlessTcp | CarrierKind::VlessXhttp, RelayedRoute::Vless(route)) => {
             let route_ctx = VlessWsRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
@@ -818,17 +915,7 @@ async fn serve_relayed(
             )
             .await
         },
-        CarrierKind::SsUdp | CarrierKind::SsUdpXhttp => {
-            let route = {
-                let snap = routes.load();
-                let map = if header.carrier == CarrierKind::SsUdpXhttp {
-                    &snap.xhttp_ss_udp
-                } else {
-                    &snap.udp
-                };
-                map.get(&*path).cloned().unwrap_or_else(empty_transport_route)
-            };
-            warn_if_empty_relayed_route(route.users.is_empty(), header.carrier, &path);
+        (CarrierKind::SsUdp | CarrierKind::SsUdpXhttp, RelayedRoute::Ss(route)) => {
             let route_ctx = Arc::new(UdpRouteCtx {
                 users: Arc::clone(&route.users),
                 protocol,
@@ -853,15 +940,10 @@ async fn serve_relayed(
             )
             .await
         },
-        CarrierKind::VlessUdp => {
-            // Unreachable in practice: an edge never builds a VlessUdp carrier.
-            // VLESS-UDP rides the VlessTcp carrier — the edge forwards the VLESS
-            // byte stream verbatim and the home's `run_vless_relay` parses the
-            // UDP command from it. Kept as a defensive close (not a panic) in
-            // case a peer sends a forged or mismatched-version header.
-            warn!("unexpected VlessUdp mesh carrier (VLESS-UDP rides VlessTcp); dropping");
-            bail!("VlessUdp mesh carrier is unreachable on the edge")
-        },
+        // Unreachable: `resolve_relayed_route` pairs each carrier kind with the
+        // route table it dispatches into, and `VlessUdp` was refused above.
+        // Defensive (not a panic) rather than provable to the compiler.
+        (carrier, _) => bail!("mesh carrier {carrier:?} has no matching relayed route table"),
     }
 }
 
