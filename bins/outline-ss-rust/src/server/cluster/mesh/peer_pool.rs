@@ -9,13 +9,14 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use outline_wire::cluster::ShardId;
 use quinn::Connection;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
-use super::endpoint::{MeshEndpoint, MeshStream, open_relay_stream};
+use super::endpoint::{MeshEndpoint, MeshStream, open_relay_stream, read_open_ack};
 use super::frame::OpenHeader;
 
 /// A relay stream plus the pool permit that keeps it counted against the
@@ -33,6 +34,20 @@ impl PooledRelay {
     /// datagrams. Cloneable and cheap (quinn `Connection` is `Arc`-backed).
     pub(in crate::server) fn connection(&self) -> Connection {
         self.conn.clone()
+    }
+
+    /// Waits for the home's setup acknowledgement, bounded by `timeout`.
+    ///
+    /// This is what turns a home-side refusal into a *fast, explicit* failure on
+    /// the edge: the caller awaits it before upgrading the client carrier, so a
+    /// home that cannot serve the relayed path (asymmetric cluster config) sends
+    /// its `NoRoute` reset while the edge can still fall back to a fresh local
+    /// session. The timeout bounds a home that neither acks nor resets — it
+    /// costs one mesh RTT on the happy path.
+    pub(in crate::server) async fn await_ack(&mut self, timeout: Duration) -> Result<()> {
+        tokio::time::timeout(timeout, read_open_ack(&mut self.stream.recv))
+            .await
+            .context("timed out awaiting the home's mesh OPEN ack")?
     }
 
     /// Splits into the owned stream halves and the pool permit. The caller

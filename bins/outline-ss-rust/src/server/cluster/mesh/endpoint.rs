@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use anyhow::{Context, Result, bail};
 use quinn::{Connection, ConnectionError, Endpoint, RecvStream, SendStream};
 
-use super::frame::OpenHeader;
+use super::frame::{OPEN_ACK_ACCEPTED, OpenHeader};
 use super::tls::{
     MESH_SERVER_NAME, MeshIdentity, build_mesh_client_quic_config, build_mesh_server_quic_config,
 };
@@ -86,6 +86,29 @@ pub(in crate::server) async fn open_relay_stream(
         .context("writing mesh OPEN length")?;
     send.write_all(&open).await.context("writing mesh OPEN header")?;
     Ok(MeshStream { send, recv })
+}
+
+/// Writes the home's setup acknowledgement, the first downlink byte of an
+/// admitted relay stream. Sent once the home has resolved the relayed carrier to
+/// a servable route, so an edge that has read it knows its client will be served
+/// rather than dropped.
+pub(in crate::server) async fn write_open_ack(send: &mut SendStream) -> Result<()> {
+    send.write_all(&[OPEN_ACK_ACCEPTED])
+        .await
+        .context("writing the mesh OPEN ack")
+}
+
+/// Reads the home's setup acknowledgement on the edge. Errors when the home
+/// refused the stream (a reset carrying a [`super::frame::CloseReason`]), when it
+/// closed without answering, or when the byte is not one this build understands
+/// — in every case the caller degrades to a fresh local session.
+pub(in crate::server) async fn read_open_ack(recv: &mut RecvStream) -> Result<()> {
+    let mut ack = [0u8; 1];
+    recv.read_exact(&mut ack).await.context("reading the mesh OPEN ack")?;
+    if ack[0] != OPEN_ACK_ACCEPTED {
+        bail!("unexpected mesh OPEN ack byte {}", ack[0]);
+    }
+    Ok(())
 }
 
 /// Why [`accept_relay`] yielded no relay stream. The home's accept loop must

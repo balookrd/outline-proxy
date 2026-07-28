@@ -235,13 +235,17 @@ pub(super) fn register_descriptions() {
     describe_counter!(
         "outline_ss_mesh_relay_opened_total",
         "Edge attempts to open a cluster mesh relay to a home shard, by outcome \
-         (ok = relay established; fail = home unreachable / at cap, degraded to a fresh session)."
+         (ok = relay established; fail = home unreachable / at cap; refused = home \
+         reachable but declined the relay, i.e. it does not serve this path/carrier — \
+         an asymmetric cluster config. All non-ok outcomes degrade to a fresh session)."
     );
     describe_counter!(
         "outline_ss_mesh_relay_rejected_total",
         "Relay streams a home node refused before serving them, by reason \
-         (capacity = already at its concurrent relayed-session cap; the edge \
-         degrades to a fresh local session)."
+         (capacity = already at its concurrent relayed-session cap; no_route = the \
+         relayed path and carrier resolve to no configured users here, so no packet \
+         could authenticate — fix the cluster config. The edge degrades to a fresh \
+         local session)."
     );
     describe_gauge!(
         "outline_ss_mesh_relay_active",

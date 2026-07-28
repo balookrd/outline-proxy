@@ -8,19 +8,28 @@ use quinn::{Connection, ReadError, ReadToEndError, RecvStream, SendStream, VarIn
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
-use super::{EdgeThrottleCtx, EdgeThrottleDetector, StallTracker, handle_mesh_connection};
+use outline_wire::CipherKind;
+use outline_wire::cluster::ShardId;
+
+use super::{
+    EdgeThrottleCtx, EdgeThrottleDetector, StallTracker, handle_mesh_connection, open_edge_relay,
+};
+use crate::crypto::UserKey;
 use crate::metrics::Metrics;
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     CarrierKind, CloseReason, ControlDatagram, MeshEndpoint, MeshIdentity, MeshPeerPool,
-    OpenHeader, ThrottleRegistry, parse_control_datagram,
+    OPEN_ACK_ACCEPTED, OpenHeader, ThrottleRegistry, parse_control_datagram,
 };
 use crate::server::dns_cache::DnsCache;
 use crate::server::nat::NatTable;
+use crate::server::peer_user_cache::PeerUserCache;
 use crate::server::replay::ReplayStore;
-use crate::server::state::{RouteRegistry, RoutesSnapshot, Services, UdpServices};
+use crate::server::resumption::SessionId;
+use crate::server::state::{RouteRegistry, RoutesSnapshot, Services, TransportRoute, UdpServices};
 use crate::server::tests::sample_config;
 use crate::server::transport::XhttpRegistryLimits;
+use crate::server::transport::resume_headers::EdgeResumeAdvert;
 use crate::server::transport::throughput_monitor::ThrottleDetectParams;
 
 fn test_metrics() -> Arc<Metrics> {
@@ -234,7 +243,29 @@ async fn edge_detector_stays_quiet_for_a_fast_send() {
 /// admitted relay parks on its first carrier read — these tests never write
 /// payload bytes after the OPEN — so it holds its permit until the test drops
 /// the connection.
-fn home_runtime(psk: &[u8], relay_cap: usize) -> (Arc<ClusterCtx>, Arc<Services>, RoutesSnapshot) {
+/// One TCP route with a single configured user — the minimum a relayed carrier
+/// needs to be admitted, since a path resolving to an empty user list is refused
+/// at setup (every packet on it would fail authentication).
+fn tcp_route() -> Arc<TransportRoute> {
+    let user =
+        UserKey::new("relay-user", "relay-password", None, CipherKind::Chacha20IetfPoly1305, None)
+            .unwrap();
+    Arc::new(TransportRoute {
+        users: Arc::from(vec![user].into_boxed_slice()),
+        candidate_users: Arc::from(vec![Arc::<str>::from("relay-user")].into_boxed_slice()),
+        peer_user_cache: Arc::new(PeerUserCache::with_capacity(8)),
+    })
+}
+
+/// Builds a home runtime whose TCP route table serves exactly `tcp_paths`. A
+/// relayed carrier is admitted only when its OPEN path resolves to a non-empty
+/// user list, so a test wanting an admitted relay must list the path its header
+/// carries — and passing `&[]` models the config mismatch this home cannot serve.
+fn home_runtime_serving(
+    psk: &[u8],
+    relay_cap: usize,
+    tcp_paths: &[&str],
+) -> (Arc<ClusterCtx>, Arc<Services>, RoutesSnapshot) {
     let metrics = test_metrics();
     let endpoint = MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
     let cluster = Arc::new(ClusterCtx {
@@ -259,8 +290,12 @@ fn home_runtime(psk: &[u8], relay_cap: usize) -> (Arc<ClusterCtx>, Arc<Services>
         16,
         XhttpRegistryLimits::unbounded(),
     ));
+    let tcp = tcp_paths
+        .iter()
+        .map(|path| ((*path).to_string(), tcp_route()))
+        .collect::<BTreeMap<_, _>>();
     let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
-        tcp: Arc::new(BTreeMap::new()),
+        tcp: Arc::new(tcp),
         udp: Arc::new(BTreeMap::new()),
         vless: Arc::new(BTreeMap::new()),
         xhttp_vless: Arc::new(BTreeMap::new()),
@@ -268,6 +303,11 @@ fn home_runtime(psk: &[u8], relay_cap: usize) -> (Arc<ClusterCtx>, Arc<Services>
         xhttp_ss_udp: Arc::new(BTreeMap::new()),
     }));
     (cluster, services, routes)
+}
+
+/// The common case: a home that serves the `/tcp` path [`ss_tcp_open`] carries.
+fn home_runtime(psk: &[u8], relay_cap: usize) -> (Arc<ClusterCtx>, Arc<Services>, RoutesSnapshot) {
+    home_runtime_serving(psk, relay_cap, &["/tcp"])
 }
 
 /// Connects an edge to `home` and hands back both ends of the mesh connection.
@@ -407,4 +447,156 @@ async fn relay_streams_past_the_cap_are_refused() {
     );
     assert!(!home.is_finished(), "refusing a relay must not stop the accept loop");
     drop((edge, edge_conn));
+}
+
+/// Config-mismatch guard: a relayed carrier whose path resolves to no users on
+/// this home must be refused at setup, not served. Serving it would hand the
+/// relay a route with no keys, so every stream/datagram on it fails
+/// authentication and is silently dropped — the black hole an asymmetric cluster
+/// config produced in production (an edge relaying its own path to a home that
+/// never served it). The refusal is explicit: a `NoRoute` reset the edge can act
+/// on, plus a counted reason.
+#[tokio::test]
+async fn a_relayed_carrier_with_no_home_route_is_refused() {
+    let psk = b"mesh-accept-no-route-psk";
+    // This home serves no TCP path at all, so `/tcp` in the OPEN header cannot
+    // resolve — exactly the asymmetric-path case.
+    let (cluster, services, routes) = home_runtime_serving(psk, 8, &[]);
+    let edge = MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
+    let (home_conn, edge_conn) = connect_edge(&cluster.endpoint, &edge).await;
+
+    let metrics = Arc::clone(&cluster.metrics);
+    let home = tokio::spawn(handle_mesh_connection(home_conn, cluster, services, routes));
+
+    let (_send, mut recv) = open_relay(&edge_conn, &ss_tcp_open(1)).await;
+    let error = tokio::time::timeout(Duration::from_secs(5), recv.read_to_end(64))
+        .await
+        .expect("a relay with no servable route must be refused, not left hanging")
+        .expect_err("the home must reset a relay stream it has no route for");
+    let no_route = VarInt::from_u32(CloseReason::NoRoute.code());
+    assert!(
+        matches!(error, ReadToEndError::Read(ReadError::Reset(code)) if code == no_route),
+        "expected a NoRoute reset, got {error:?}",
+    );
+
+    let rendered = metrics.render_prometheus();
+    // The gauge is only published once something touched it, so "never served"
+    // reads as absent-or-zero.
+    assert!(
+        !rendered.lines().any(|line| {
+            line.starts_with("outline_ss_mesh_relay_active ")
+                && line != "outline_ss_mesh_relay_active 0"
+        }),
+        "a relay with no route must never be served:\n{rendered}",
+    );
+    assert!(
+        rendered.lines().any(|line| {
+            line.starts_with("outline_ss_mesh_relay_rejected_total{reason=\"no_route\"}")
+                && line.ends_with(" 1")
+        }),
+        "the refusal must be counted under reason=\"no_route\":\n{rendered}",
+    );
+    assert!(!home.is_finished(), "refusing a relay must not stop the accept loop");
+    drop((edge, edge_conn));
+}
+
+/// The positive half of the setup handshake: a path this home does serve is
+/// admitted, and the home says so with the one-byte OPEN ack before any carrier
+/// byte. The ack is what lets an edge tell "the home took this relay" from "the
+/// home refused it" *before* it upgrades the client carrier.
+#[tokio::test]
+async fn an_admitted_relay_acks_before_serving() {
+    let psk = b"mesh-accept-ack-psk";
+    let (cluster, services, routes) = home_runtime(psk, 8);
+    let edge = MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
+    let (home_conn, edge_conn) = connect_edge(&cluster.endpoint, &edge).await;
+
+    let metrics = Arc::clone(&cluster.metrics);
+    let home = tokio::spawn(handle_mesh_connection(home_conn, cluster, services, routes));
+
+    let (_send, mut recv) = open_relay(&edge_conn, &ss_tcp_open(1)).await;
+    let mut ack = [0u8; 1];
+    tokio::time::timeout(Duration::from_secs(5), recv.read_exact(&mut ack))
+        .await
+        .expect("the home must ack an admitted relay")
+        .expect("reading the mesh OPEN ack");
+    assert_eq!(ack[0], OPEN_ACK_ACCEPTED, "the ack byte must mark the relay accepted");
+
+    wait_for_active_relays(&metrics, 1).await;
+    assert!(!home.is_finished());
+    drop((edge, edge_conn));
+}
+
+/// End-to-end degradation: when the home refuses for a config mismatch, the
+/// edge's `open_edge_relay` returns `None` *before* the client carrier is
+/// upgraded, so the caller serves a fresh local session instead of splicing the
+/// client into a relay that would drop everything. This is the whole point of
+/// gating the `101` on the ack.
+#[tokio::test]
+async fn an_edge_relay_refused_for_no_route_falls_back_to_a_local_session() {
+    let psk = b"mesh-edge-fallback-psk";
+    let (home_cluster, services, routes) = home_runtime_serving(psk, 8, &[]);
+    let home_addr = home_cluster.endpoint.local_addr().unwrap();
+    let home_endpoint = home_cluster.endpoint.clone();
+
+    // Home side: accept the edge's dial and serve its streams.
+    let home_metrics = Arc::clone(&home_cluster.metrics);
+    let home = tokio::spawn(async move {
+        let conn = home_endpoint.accept().await.unwrap().unwrap();
+        handle_mesh_connection(conn, home_cluster, services, routes).await;
+    });
+
+    let shard = ShardId::new(0).unwrap();
+    let edge_endpoint =
+        MeshEndpoint::bind(loopback(), &MeshIdentity::derive(psk).unwrap()).unwrap();
+    let edge_cluster = ClusterCtx {
+        pool: Arc::new(MeshPeerPool::new(
+            edge_endpoint.clone(),
+            HashMap::from([(shard, home_addr)]),
+            8,
+        )),
+        endpoint: edge_endpoint,
+        relay_budget: Duration::from_secs(5),
+        throttle_registry: ThrottleRegistry::new(),
+        relay_permits: Arc::new(Semaphore::new(8)),
+        metrics: test_metrics(),
+    };
+
+    let advert = EdgeResumeAdvert {
+        session_id: SessionId::from_bytes([1u8; 16]),
+        resume_capable: true,
+        ack_prefix: false,
+        symmetric_replay: false,
+        down_acked: 0,
+    };
+    let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 40000));
+    let opened = tokio::time::timeout(
+        Duration::from_secs(5),
+        open_edge_relay(&edge_cluster, shard, &advert, CarrierKind::SsTcp, "/tcp", peer),
+    )
+    .await
+    .expect("a refused relay must resolve, not hang the upgrade");
+    assert!(
+        opened.is_none(),
+        "a home refusing for no route must leave the edge to serve a fresh local session",
+    );
+
+    let rendered = edge_cluster.metrics.render_prometheus();
+    assert!(
+        rendered.lines().any(|line| {
+            line.starts_with("outline_ss_mesh_relay_opened_total{outcome=\"refused\"}")
+                && line.ends_with(" 1")
+        }),
+        "an explicit home refusal must be counted apart from an unreachable home:\n{rendered}",
+    );
+    // The home counted the same event on its side.
+    let home_rendered = home_metrics.render_prometheus();
+    assert!(
+        home_rendered.lines().any(|line| {
+            line.starts_with("outline_ss_mesh_relay_rejected_total{reason=\"no_route\"}")
+                && line.ends_with(" 1")
+        }),
+        "the home must count the refusal it issued:\n{home_rendered}",
+    );
+    home.abort();
 }
