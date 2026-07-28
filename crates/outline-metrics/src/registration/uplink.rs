@@ -95,6 +95,7 @@ pub(super) struct UplinkFields {
     pub(super) uplink_runtime_failure_causes_total: IntCounterVec,
     pub(super) uplink_runtime_failure_signatures_total: IntCounterVec,
     pub(super) uplink_runtime_failure_other_details_total: IntCounterVec,
+    pub(super) uplink_payload_integrity_errors_total: IntCounterVec,
     pub(super) uplink_failovers_total: IntCounterVec,
     pub(super) uplink_mid_session_retries_total: IntCounterVec,
     pub(super) uplink_health: GaugeVec,
@@ -172,6 +173,13 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         "outline_ws_uplink_runtime_failure_other_details_total",
         "Runtime transport failures that remained in the 'other' bucket, grouped by a normalized raw detail signature.",
         ["transport", "group", "uplink", "detail"]
+    );
+    let uplink_payload_integrity_errors_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_uplink_payload_integrity_errors_total",
+        "Datagrams/streams that failed payload integrity (AEAD open, truncated datagram, SS2022 replay or reorder) on an uplink. Deliberately NOT counted as a runtime failure: the payload was corrupt, the carrier was not, so these take no cooldown and drive no carrier downgrade.",
+        ["transport", "group", "uplink", "cause"]
     );
     let uplink_failovers_total = register_labeled!(
         registry,
@@ -485,6 +493,7 @@ pub(super) fn build(registry: &Registry) -> UplinkFields {
         uplink_runtime_failure_causes_total,
         uplink_runtime_failure_signatures_total,
         uplink_runtime_failure_other_details_total,
+        uplink_payload_integrity_errors_total,
         uplink_failovers_total,
         uplink_mid_session_retries_total,
         uplink_health,

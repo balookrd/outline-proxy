@@ -186,3 +186,83 @@ async fn ss2022_udp_replay_protection_rejects_duplicate_and_reorder() {
     let err = transport.read_packet().await.unwrap_err();
     assert!(is_replay_error(&err), "duplicate in new session must be rejected: {err:#}");
 }
+
+// The classifier that keeps a corrupt datagram off the carrier-descent path
+// must recognise the errors `read_packet` *actually* produces, not just
+// hand-built ones: this is the seam where a changed error type would silently
+// re-enable the misattribution (a payload error read as a carrier fault caps
+// `xhttp_h3 → xhttp_h2` and stamps an uplink cooldown).
+#[tokio::test]
+async fn read_packet_payload_failures_classify_as_payload_integrity() {
+    let cipher = CipherKind::Aes256Gcm2022;
+    let password = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
+    let master_key = cipher.derive_master_key(password).unwrap();
+
+    let channel = Arc::new(MockChannel::default());
+    let transport = UdpWsTransport::from_channel(
+        channel.clone(),
+        cipher,
+        password,
+        "test",
+        CarrierPadding::disabled(),
+    )
+    .unwrap();
+    let client_session_id = transport.ss2022.as_ref().unwrap().lock().await.client_session_id;
+    let target = [1_u8, 127, 0, 0, 1, 0, 53];
+
+    // A datagram far too short to hold even the SS2022 separate header.
+    channel.push(vec![0_u8; 4]);
+    let err = transport.read_packet().await.unwrap_err();
+    assert_eq!(
+        crate::payload_integrity_cause(&err),
+        Some("packet_too_short"),
+        "a truncated datagram must classify as a payload error: {err:#}",
+    );
+
+    // A full-length datagram whose ciphertext does not authenticate.
+    let mut corrupt = build_server_aes_packet(
+        cipher,
+        &master_key,
+        0xAA,
+        1,
+        client_session_id,
+        &target,
+        b"payload",
+    );
+    let last = corrupt.len() - 1;
+    corrupt[last] ^= 0xFF;
+    channel.push(corrupt);
+    let err = transport.read_packet().await.unwrap_err();
+    assert_eq!(
+        crate::payload_integrity_cause(&err),
+        Some("decrypt_failed"),
+        "a datagram that fails AEAD open must classify as a payload error: {err:#}",
+    );
+
+    // Replay rejection travels the same route.
+    channel.push(build_server_aes_packet(
+        cipher,
+        &master_key,
+        0xAA,
+        5,
+        client_session_id,
+        &target,
+        b"first",
+    ));
+    transport.read_packet().await.unwrap();
+    channel.push(build_server_aes_packet(
+        cipher,
+        &master_key,
+        0xAA,
+        5,
+        client_session_id,
+        &target,
+        b"dup",
+    ));
+    let err = transport.read_packet().await.unwrap_err();
+    assert_eq!(
+        crate::payload_integrity_cause(&err),
+        Some("udp_out_of_order"),
+        "a replayed datagram must classify as a payload error: {err:#}",
+    );
+}
