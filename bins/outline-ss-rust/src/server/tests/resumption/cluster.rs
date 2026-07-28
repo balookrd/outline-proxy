@@ -1622,19 +1622,25 @@ async fn cluster_udp_concurrent_carriers_do_not_share_response_slot() -> Result<
     Ok(())
 }
 
-/// A relayed SS-UDP carrier whose home does not serve the edge's path resolves
-/// to an *empty* route table, so every datagram fails authentication and is
-/// dropped. The home keys the relayed user lookup on the edge-supplied
-/// `header.path`, so any home/edge path- or carrier-table mismatch is a silent
-/// black hole (bug #2). This documents that failure mode — now made diagnosable
-/// by `warn_if_empty_relayed_route` — and guards against a future change that
-/// would silently weaken path scoping. Only reachable under an asymmetric
-/// cluster config; a symmetric cluster (matching config, the supported topology)
-/// always resolves the path, as `cluster_udp_relays_datagrams_to_home` and
-/// `cluster_udp_xhttp_relays_to_home` cover across the `udp` and `xhttp_ss_udp`
-/// tables respectively.
+/// A relayed SS-UDP carrier whose home does not serve the edge's path must
+/// degrade to a fresh local session on the edge, not disappear.
+///
+/// The home keys the relayed user lookup on the edge-supplied `header.path`, so
+/// under an asymmetric cluster config that path resolves to an *empty* route
+/// table — no configured key can authenticate a single datagram. This used to be
+/// served anyway and every packet was silently dropped for the life of the
+/// session (a black hole seen in production). The home now refuses such a stream
+/// at setup with `CloseReason::NoRoute`, and because the edge waits for the
+/// home's ack before upgrading the client carrier, it still has the choice to
+/// serve the client itself — which is what this asserts: the echo comes back,
+/// through the edge's own local session.
+///
+/// Only reachable under an asymmetric config; a symmetric cluster (matching
+/// paths and users, the supported topology) always resolves the path, as
+/// `cluster_udp_relays_datagrams_to_home` and `cluster_udp_xhttp_relays_to_home`
+/// cover across the `udp` and `xhttp_ss_udp` tables respectively.
 #[tokio::test]
-async fn cluster_udp_relay_drops_when_home_lacks_the_path() -> Result<()> {
+async fn cluster_udp_relay_falls_back_locally_when_home_lacks_the_path() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-udp-emptyroute-psk";
     let (target_addr, _sources) = spawn_echo_udp_target().await?;
 
@@ -1679,17 +1685,20 @@ async fn cluster_udp_relay_drops_when_home_lacks_the_path() -> Result<()> {
     let (mut socket, _) = connect_ws_h1(edge.listen_addr, "/udp", Some(session_id), true).await?;
 
     let mut plaintext = TargetAddr::from(target_addr).to_wire_bytes()?;
-    plaintext.extend_from_slice(b"into-the-void");
+    plaintext.extend_from_slice(b"not-into-the-void");
     socket
         .send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext)?.into()))
         .await?;
 
-    // The home has no /udp users, so the datagram never authenticates and no echo
-    // returns — the drop bug #2 describes.
-    let reply = expect_binary_reply(&mut socket).await;
+    // The home refused the relay for lack of a route, so the edge served this
+    // carrier locally: the datagram reaches the target and the echo comes back.
+    let reply = expect_binary_reply(&mut socket)
+        .await
+        .context("a relay the home refused must fall back to a local session, not be dropped")?;
+    let decoded = decrypt_udp_packet(std::slice::from_ref(&user), &reply)?;
     assert!(
-        reply.is_err(),
-        "a relayed datagram to a home lacking the path must be dropped, got {reply:?}",
+        decoded.payload.ends_with(b"not-into-the-void"),
+        "the edge's local session must carry the datagram end to end",
     );
 
     socket.close(None).await?;

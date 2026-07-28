@@ -559,10 +559,13 @@ impl Metrics {
     // ── Cluster mesh metrics ───────────────────────────────────────────────────
 
     /// Counts an edge's attempt to open a mesh relay to a home shard. `outcome`
-    /// is `ok` when the relay stream was established, or `fail` when the home was
-    /// unreachable / at its relay cap and the edge degraded to a fresh local
-    /// session. The `fail` rate is the direct signal that a cluster peer is
-    /// unreachable (mesh port blocked, peer down, PSK mismatch).
+    /// is `ok` when the relay stream was established and acknowledged, `fail`
+    /// when the home was unreachable / at its relay cap, or `refused` when a
+    /// reachable home declined the relay because it does not serve that
+    /// path/carrier. Either failure degrades to a fresh local session. The
+    /// `fail` rate is the direct signal that a cluster peer is unreachable (mesh
+    /// port blocked, peer down, PSK mismatch); `refused` instead means the peer
+    /// is healthy and the cluster config is asymmetric.
     pub fn record_mesh_relay_opened(&self, outcome: &'static str) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_mesh_relay_opened_total", "outcome" => outcome).increment(1);
@@ -570,9 +573,12 @@ impl Metrics {
     }
 
     /// Counts a relay stream this home refused before serving it. `reason` is
-    /// `capacity` when the node is already at its relayed-session cap; a rising
+    /// `capacity` when the node is already at its relayed-session cap — a rising
     /// rate means edges are being pushed back to local sessions and the cap (or
-    /// the node's share of the cluster) needs review.
+    /// the node's share of the cluster) needs review — or `no_route` when the
+    /// relayed path and carrier resolve to no configured users here, which is a
+    /// cluster-config asymmetry: any non-zero rate needs the config fixed, not
+    /// the cap.
     pub fn record_mesh_relay_rejected(&self, reason: &'static str) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_mesh_relay_rejected_total", "reason" => reason).increment(1);
