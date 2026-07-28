@@ -75,6 +75,7 @@ pub(super) async fn connect_xhttp_h1(
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
     combined_ss_kind: Option<SsPathKind>,
+    datagram_records: bool,
 ) -> Result<(XhttpStream, Option<SessionId>, bool, bool)> {
     if !matches!(submode, XhttpSubmode::PacketUp) {
         bail!("xhttp/h1 carrier supports packet-up only (got submode {submode:?})");
@@ -137,18 +138,27 @@ pub(super) async fn connect_xhttp_h1(
         // Open the GET synchronously so the resume-id round-trip
         // completes before we hand the stream to the caller. Mirrors
         // the h2/h3 packet-up dial shape.
-        let (issued_session_id, ack_prefix_echo, symmetric_replay_echo, body) = open_h1_get(
-            down_send,
-            &target,
-            resume_request,
-            ack_prefix_requested,
-            symmetric_replay_requested,
-            client_acked_offset,
+        let (issued_session_id, ack_prefix_echo, symmetric_replay_echo, udp_records, body) =
+            open_h1_get(
+                down_send,
+                &target,
+                resume_request,
+                ack_prefix_requested,
+                symmetric_replay_requested,
+                client_acked_offset,
+                datagram_records,
+                profile,
+            )
+            .await?;
+        let driver = tokio::spawn(driver_loop_h1(
+            up_send,
+            target.clone(),
+            in_tx,
+            out_rx,
+            body,
+            datagram_records,
             profile,
-        )
-        .await?;
-        let driver =
-            tokio::spawn(driver_loop_h1(up_send, target.clone(), in_tx, out_rx, body, profile));
+        ));
 
         debug!(
             %url, %session_id, mode = "xhttp_h1",
@@ -162,6 +172,7 @@ pub(super) async fn connect_xhttp_h1(
                 AbortOnDrop::new(driver),
                 XhttpSubmode::PacketUp,
                 false,
+                udp_records,
             ),
             issued_session_id,
             ack_prefix_echo,
@@ -221,6 +232,7 @@ where
     Ok(send_request)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn open_h1_get(
     mut send: http1::SendRequest<RequestBody>,
     target: &XhttpTarget,
@@ -228,8 +240,9 @@ async fn open_h1_get(
     ack_prefix_requested: bool,
     symmetric_replay_requested: bool,
     client_acked_offset: u64,
+    datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
-) -> Result<(Option<SessionId>, bool, bool, hyper::body::Incoming)> {
+) -> Result<(Option<SessionId>, bool, bool, bool, hyper::body::Incoming)> {
     let mut builder = Request::builder()
         .method(Method::GET)
         .uri(target.full_uri())
@@ -249,6 +262,7 @@ async fn open_h1_get(
         builder =
             builder.header(crate::resumption::DOWN_ACKED_HEADER, client_acked_offset.to_string());
     }
+    builder = super::apply_udp_records_request_header(datagram_records, builder);
     let mut req = builder
         .body(empty_request_body())
         .context("failed to build xhttp/h1 GET request")?;
@@ -271,7 +285,8 @@ async fn open_h1_get(
     let echo = ack_prefix_requested && parse_ack_prefix_echo(resp.headers());
     let sym_echo =
         symmetric_replay_requested && echo && super::parse_symmetric_replay_echo(resp.headers());
-    Ok((issued, echo, sym_echo, resp.into_body()))
+    let udp_records = super::parse_udp_records_echo(datagram_records, resp.headers());
+    Ok((issued, echo, sym_echo, udp_records, resp.into_body()))
 }
 
 async fn driver_loop_h1(
@@ -280,6 +295,7 @@ async fn driver_loop_h1(
     in_tx: InboundSender,
     mut out_rx: OutboundReceiver,
     body: hyper::body::Incoming,
+    datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) {
     // GET drain sub-task. Headers were exchanged synchronously in
@@ -305,7 +321,7 @@ async fn driver_loop_h1(
     // Content-Length value in place — `HeaderMap::insert` on an existing
     // key keeps the entry's position, so the wire header order stays
     // byte-identical while the fingerprint `apply` runs only once.
-    let base_headers = match build_post_headers(&target, profile) {
+    let base_headers = match build_post_headers(&target, datagram_records, profile) {
         Ok(headers) => headers,
         Err(error) => {
             warn!(?error, "xhttp/h1 POST header template build failed");
@@ -372,6 +388,7 @@ async fn driver_loop_h1(
 /// is byte-identical.
 pub(super) fn build_post_headers(
     target: &XhttpTarget,
+    datagram_records: bool,
     profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
@@ -381,6 +398,13 @@ pub(super) fn build_post_headers(
             .context("invalid xhttp/h1 authority for POST host header")?,
     );
     headers.insert(http::header::CONTENT_LENGTH, HeaderValue::from(0_usize));
+    // Uplink POSTs advertise the capability too — see the h2 sibling.
+    if datagram_records {
+        headers.insert(
+            http::HeaderName::from_static(super::UDP_RECORDS_HEADER),
+            HeaderValue::from_static(super::UDP_RECORDS_ENABLED),
+        );
+    }
     if let Some(profile) = profile {
         crate::fingerprint_profile::apply(
             profile,

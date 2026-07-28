@@ -152,6 +152,7 @@ async fn session_with_one_pending_post(server: &mut SilentServer) -> XhttpStream
         false,
         0,
         None,
+        false,
     )
     .await
     .expect("xhttp h2 dial to the mock succeeds");

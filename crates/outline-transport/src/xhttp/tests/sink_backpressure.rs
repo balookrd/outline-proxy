@@ -35,8 +35,14 @@ fn big_frame() -> Message {
 async fn full_outbound_queue_pends_instead_of_erroring() {
     let (_in_tx, in_rx) = inbound_channel();
     let (out_tx, mut out_rx) = outbound_channel();
-    let mut stream =
-        XhttpStream::from_channels(in_rx, out_tx, dummy_driver(), XhttpSubmode::PacketUp, false);
+    let mut stream = XhttpStream::from_channels(
+        in_rx,
+        out_tx,
+        dummy_driver(),
+        XhttpSubmode::PacketUp,
+        false,
+        false,
+    );
 
     // Fill the byte budget with writer-sized frames.
     let admitted = CARRIER_QUEUE_BYTES / FRAME_SOFT_CAP;
@@ -83,8 +89,14 @@ async fn full_outbound_queue_pends_instead_of_erroring() {
 async fn small_frames_are_not_throttled_by_the_byte_budget() {
     let (_in_tx, in_rx) = inbound_channel();
     let (out_tx, mut out_rx) = outbound_channel();
-    let mut stream =
-        XhttpStream::from_channels(in_rx, out_tx, dummy_driver(), XhttpSubmode::PacketUp, false);
+    let mut stream = XhttpStream::from_channels(
+        in_rx,
+        out_tx,
+        dummy_driver(),
+        XhttpSubmode::PacketUp,
+        false,
+        false,
+    );
 
     // Datagram-sized frames keep the full slot window — the byte bound must not
     // cost packet rate on SS-UDP / VLESS-UDP over XHTTP.
@@ -110,8 +122,14 @@ async fn closed_receiver_surfaces_as_sink_error() {
     let (_in_tx, in_rx) = inbound_channel();
     let (out_tx, out_rx) = outbound_channel();
     drop(out_rx);
-    let mut stream =
-        XhttpStream::from_channels(in_rx, out_tx, dummy_driver(), XhttpSubmode::PacketUp, false);
+    let mut stream = XhttpStream::from_channels(
+        in_rx,
+        out_tx,
+        dummy_driver(),
+        XhttpSubmode::PacketUp,
+        false,
+        false,
+    );
 
     let err = stream
         .send(Message::Binary(Bytes::from_static(&[1])))

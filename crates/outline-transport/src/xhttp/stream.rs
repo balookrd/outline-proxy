@@ -2,13 +2,17 @@
 //! the small `BoxedIo` enum that lets the h2 handshake hold either a
 //! plain TCP or TLS stream behind a single `TokioIo`.
 
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use bytes::Bytes;
 use futures_util::{Sink, Stream};
+use outline_wire::udp_records::{UdpRecordDecoder, encode_record_into};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
+use tracing::warn;
 
 use crate::carrier_queue::BudgetedSink;
 use crate::guards::AbortOnDrop;
@@ -40,6 +44,22 @@ pub(crate) struct XhttpStream {
     /// QUIC carriers (which run their own keep-alive / `max_idle_timeout`),
     /// exactly as it does for the native `ws_h3` carrier.
     pub(super) carrier_is_h3: bool,
+    /// Datagram record framing, negotiated at dial time (see
+    /// [`outline_wire::udp_records`]). `true` only on an SS-UDP session whose
+    /// server echoed `X-Outline-Udp-Records: 1`: every outbound `Binary`
+    /// message is then length-prefixed, and inbound bytes are reassembled into
+    /// exactly the datagrams the peer framed — the XHTTP carrier is a byte
+    /// stream, so without this a chunk boundary is not a datagram boundary.
+    /// `false` (TCP sessions, VLESS, an older server) leaves the wire
+    /// byte-for-byte as it was.
+    pub(super) udp_records: bool,
+    /// Reassembly state for [`Self::udp_records`]. `Some` iff framing is on;
+    /// `poll_next` is the only user, and it drains whole records into
+    /// `pending_in` so one poll yields one datagram.
+    pub(super) recv_records: Option<UdpRecordDecoder>,
+    /// Datagrams recovered from the last chunk but not yet handed to the
+    /// caller. Bounded by the chunk that produced them.
+    pub(super) pending_in: VecDeque<Bytes>,
     // The driver task owns the h2 SendRequest, the GET reader
     // sub-task and the POST fan-out sub-tasks. Dropping the stream
     // aborts the driver, which cancels every sub-task and frees the
@@ -74,6 +94,15 @@ impl XhttpStream {
         self.carrier_is_h3
     }
 
+    /// Whether this session negotiated datagram record framing with the
+    /// server (see [`outline_wire::udp_records`]). `false` on every TCP /
+    /// VLESS session and on an SS-UDP session whose server did not echo the
+    /// capability. Surfaced so callers (and cross-repo tests) can assert the
+    /// two ends agreed rather than inferring it from the wire.
+    pub fn udp_records(&self) -> bool {
+        self.udp_records
+    }
+
     /// Constructor used by the h3 sibling module: it builds the
     /// driver task and the channel pair on its own and hands the
     /// finished triple here. Keeps the field-level details of
@@ -85,6 +114,7 @@ impl XhttpStream {
         driver: AbortOnDrop,
         active_submode: XhttpSubmode,
         carrier_is_h3: bool,
+        udp_records: bool,
     ) -> Self {
         Self {
             incoming,
@@ -92,6 +122,9 @@ impl XhttpStream {
             closed: false,
             active_submode,
             carrier_is_h3,
+            udp_records,
+            recv_records: udp_records.then(UdpRecordDecoder::new),
+            pending_in: VecDeque::new(),
             _driver: driver,
         }
     }
@@ -100,12 +133,39 @@ impl XhttpStream {
 impl Stream for XhttpStream {
     type Item = Result<Message, WsError>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Handing the frame to the reader releases its budget permit: the bytes
-        // are no longer queued, they are the caller's.
-        self.incoming
-            .poll_recv(cx)
-            .map(|queued| queued.map(|q| q.into_parts().0))
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            // A datagram recovered from an earlier chunk goes out first, so
+            // one poll always yields exactly one datagram.
+            if let Some(record) = this.pending_in.pop_front() {
+                return Poll::Ready(Some(Ok(Message::Binary(record))));
+            }
+            // Handing the frame to the reader releases its budget permit: the
+            // bytes are no longer queued, they are the caller's.
+            let item = match this.incoming.poll_recv(cx) {
+                Poll::Ready(Some(queued)) => queued.into_parts().0,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            };
+            let Some(decoder) = this.recv_records.as_mut() else {
+                return Poll::Ready(Some(item));
+            };
+            // Framing negotiated: a `Binary` message is a slice of the record
+            // stream, not a datagram. Everything else (control frames, errors)
+            // rides above the framing and passes through untouched.
+            match item {
+                Ok(Message::Binary(chunk)) => {
+                    decoder.push(&chunk);
+                    while let Some(record) = decoder.next_record() {
+                        this.pending_in.push_back(record);
+                    }
+                    // A chunk that completed no record yields nothing — poll
+                    // again rather than surfacing a partial datagram.
+                },
+                other => return Poll::Ready(Some(other)),
+            }
+        }
     }
 }
 
@@ -128,6 +188,19 @@ impl Sink<Message> for XhttpStream {
         if self.closed {
             return Err(io_ws_err("xhttp stream already closed"));
         }
+        // Framing negotiated: wrap the datagram in its length-prefixed record
+        // so the peer can recover the boundary from the byte stream. Control
+        // frames never reach the wire as body bytes, so they stay unframed.
+        let item = match item {
+            Message::Binary(payload) if self.udp_records => match frame_datagram(&payload) {
+                Some(record) => Message::Binary(record),
+                // Past the `u16` record ceiling — no real UDP datagram gets
+                // here. Drop it like the transports drop an oversized packet
+                // rather than tearing down a healthy carrier.
+                None => return Ok(()),
+            },
+            other => other,
+        };
         // The caller observed `Ready` from `poll_ready`, so nothing is staged.
         // The frame is admitted to the queue by the `poll_flush` that
         // `SinkExt::send` drives next, once its bytes fit the budget.
@@ -160,6 +233,21 @@ impl Sink<Message> for XhttpStream {
         // sub-task.
         self.outgoing.close();
         Poll::Ready(Ok(()))
+    }
+}
+
+/// Wraps one datagram as a length-prefixed record, or `None` when it
+/// overflows the `u16` length field (logged once per occurrence — the caller
+/// drops the datagram).
+fn frame_datagram(payload: &[u8]) -> Option<Bytes> {
+    let mut out = Vec::with_capacity(payload.len() + 2);
+    match encode_record_into(payload, &mut out) {
+        Ok(()) => Some(Bytes::from(out)),
+        Err(error) => {
+            warn!(?error, len = payload.len(), "dropping oversized xhttp datagram record");
+            outline_metrics::record_dropped_oversized_udp_packet("up", "xhttp_records");
+            None
+        },
     }
 }
 
