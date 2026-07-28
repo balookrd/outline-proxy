@@ -146,3 +146,77 @@ fn no_session_close_reason_roundtrips_on_the_wire() {
     assert_eq!(CloseReason::NoSession.code(), 5);
     assert_eq!(CloseReason::from_code(5), CloseReason::NoSession);
 }
+
+#[test]
+fn v5_header_roundtrips_without_peer_addr() {
+    let header = OpenHeaderV5 {
+        framing: MeshFraming::Tcp,
+        session_id: [7u8; 16],
+        resume_capable: true,
+        ack_prefix: true,
+        symmetric_replay: false,
+        client_down_acked: 4096,
+        peer_addr: None,
+    };
+    let parsed = OpenHeaderV5::parse(&header.encode()).expect("v5 header parses");
+    assert_eq!(parsed, header);
+}
+
+#[test]
+fn v5_header_roundtrips_with_peer_addr() {
+    let header = OpenHeaderV5 {
+        framing: MeshFraming::Udp,
+        session_id: [9u8; 16],
+        resume_capable: true,
+        ack_prefix: false,
+        symmetric_replay: true,
+        client_down_acked: u64::MAX,
+        peer_addr: Some("198.51.100.7:443".parse().unwrap()),
+    };
+    let parsed = OpenHeaderV5::parse(&header.encode()).expect("v5 header parses");
+    assert_eq!(parsed, header);
+}
+
+#[test]
+fn v5_parser_refuses_a_v4_frame_and_vice_versa() {
+    let v5 = OpenHeaderV5 {
+        framing: MeshFraming::Tcp,
+        session_id: [1u8; 16],
+        resume_capable: false,
+        ack_prefix: false,
+        symmetric_replay: false,
+        client_down_acked: 0,
+        peer_addr: None,
+    };
+    let mut encoded = v5.encode();
+    encoded[0] = 4;
+    OpenHeaderV5::parse(&encoded).expect_err("a v4 frame is not a v5 frame");
+    // ...and the v4 parser refuses a v5 frame, which is what makes a mixed
+    // cluster degrade to a lost resume rather than a misparsed stream.
+    OpenHeader::parse(&v5.encode()).expect_err("a v5 frame is not a v4 frame");
+}
+
+#[test]
+fn peek_open_version_reads_the_leading_byte_without_consuming() {
+    let v5 = OpenHeaderV5 {
+        framing: MeshFraming::Udp,
+        session_id: [2u8; 16],
+        resume_capable: false,
+        ack_prefix: false,
+        symmetric_replay: false,
+        client_down_acked: 0,
+        peer_addr: None,
+    };
+    let encoded = v5.encode();
+    assert_eq!(peek_open_version(&encoded).unwrap(), 5);
+    // The frame is still fully parseable afterwards.
+    assert_eq!(OpenHeaderV5::parse(&encoded).unwrap(), v5);
+    assert!(peek_open_version(&[]).is_err(), "an empty buffer has no version");
+}
+
+#[test]
+fn mesh_framing_covers_only_the_two_shapes() {
+    assert_eq!(MeshFraming::from_u8(0).unwrap(), MeshFraming::Tcp);
+    assert_eq!(MeshFraming::from_u8(1).unwrap(), MeshFraming::Udp);
+    assert!(MeshFraming::from_u8(2).is_err());
+}

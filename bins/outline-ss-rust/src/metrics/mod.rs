@@ -585,6 +585,18 @@ impl Metrics {
         });
     }
 
+    /// Outcome of a relayed session as the home decided it. `hit` means the
+    /// park was found and spliced; `miss` means the edge fell back to a fresh
+    /// local session. Low cardinality: two values.
+    ///
+    /// Exists because a never-working relay went unnoticed in production —
+    /// success was only inferrable from byte counters.
+    pub fn record_mesh_relay_outcome(&self, outcome: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_mesh_relay_outcome_total", "outcome" => outcome).increment(1);
+        });
+    }
+
     /// Opens a home-side mesh relay guard. While held, `outline_ss_mesh_relay_active`
     /// counts this node as serving one more relayed session over the mesh; the
     /// gauge decrements when the guard drops (relay end or teardown).
