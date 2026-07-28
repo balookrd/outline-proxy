@@ -168,7 +168,18 @@ impl<'a> StandbyCtx<'a> {
                         // the echo never returns — combined-SS UDP looks dead while
                         // VLESS-UDP (no pool) keeps working. Split-path uplinks are
                         // unaffected (`combined_ss_kind` is `None` regardless of leg).
-                        .with_combined_ss_kind(self.uplink.combined_ss_kind(self.pool_ss_leg())),
+                        .with_combined_ss_kind(self.uplink.combined_ss_kind(self.pool_ss_leg()))
+                        // A pooled SS-UDP stream is handed to a datagram
+                        // session, so it must negotiate XHTTP record framing at
+                        // dial time exactly like an on-demand
+                        // `UdpWsTransport::connect` does — the negotiation
+                        // rides the dial's request headers and cannot be added
+                        // afterwards. VLESS pools frame their own records and
+                        // opt out.
+                        .with_datagram_records(
+                            matches!(self.transport, TransportKind::Udp)
+                                && matches!(self.uplink.transport, UplinkTransport::Ss),
+                        ),
                 ),
             )
             .await

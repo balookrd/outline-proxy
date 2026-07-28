@@ -44,7 +44,11 @@ pub struct VlessUdpTransport {
     /// `len||payload` record, plus a random pad tail) before `send_datagram`,
     /// and inbound datagrams are decoded before record parsing. Disabled by
     /// default → plain wire (matches SS-UDP). Per-datagram with no cover
-    /// frames, since UDP preserves packet boundaries. Unlike SS-UDP, VLESS-UDP
+    /// frames: one padding frame wraps one VLESS-UDP record, and the record's
+    /// own `len` prefix is what re-establishes the packet boundary when the
+    /// carrier underneath does not preserve it (an XHTTP body is a byte
+    /// stream; SS-UDP gets the same property from
+    /// `outline_wire::udp_records`). Unlike SS-UDP, VLESS-UDP
     /// must pad here because VLESS multiplexes tcp/udp on one path and the
     /// server cannot tell the legs apart before reading data (see PADDING.md).
     padding: CarrierPadding,

@@ -56,6 +56,13 @@ pub struct TransportDialOptions<'a> {
     /// the WS carriers append it as a `/{token}` URL segment. `None` for
     /// split-path SS and for VLESS, which keeps the historical wire shape.
     pub combined_ss_kind: Option<SsPathKind>,
+    /// Set when this dial carries datagrams (SS-UDP). The XHTTP carriers then
+    /// negotiate record framing with the server, because an HTTP body is a
+    /// byte stream and does not preserve datagram boundaries on its own — see
+    /// [`outline_wire::udp_records`]. The WS carriers ignore it: a WS `Binary`
+    /// frame already is one datagram. `false` for TCP dials and for VLESS,
+    /// which frames its own `len || payload` records.
+    pub datagram_records: bool,
 }
 
 impl<'a> TransportDialOptions<'a> {
@@ -73,6 +80,7 @@ impl<'a> TransportDialOptions<'a> {
             network: DialNetworkOptions::default(),
             resume: DialResumeOptions::default(),
             combined_ss_kind: None,
+            datagram_records: false,
         }
     }
 
@@ -91,6 +99,13 @@ impl<'a> TransportDialOptions<'a> {
     /// hidden discriminator accordingly; leave unset for split paths.
     pub fn with_combined_ss_kind(mut self, kind: Option<SsPathKind>) -> Self {
         self.combined_ss_kind = kind;
+        self
+    }
+
+    /// Marks this dial as carrying datagrams, so an XHTTP carrier asks the
+    /// server for record framing (SS-UDP only; see the field docs).
+    pub fn with_datagram_records(mut self, datagram_records: bool) -> Self {
+        self.datagram_records = datagram_records;
         self
     }
 }
@@ -341,6 +356,7 @@ impl DialPlan {
             options.resume.symmetric_replay_requested,
             options.resume.client_acked_offset,
             options.combined_ss_kind,
+            options.datagram_records,
         )
         .await
         {
@@ -381,6 +397,7 @@ impl DialPlan {
             options.resume.symmetric_replay_requested,
             options.resume.client_acked_offset,
             options.combined_ss_kind,
+            options.datagram_records,
         )
         .await
         {
@@ -421,6 +438,7 @@ impl DialPlan {
                         options.resume.symmetric_replay_requested,
                         options.resume.client_acked_offset,
                         options.combined_ss_kind,
+                        options.datagram_records,
                     )
                     .await?;
                 debug!(
@@ -451,6 +469,7 @@ impl DialPlan {
                 options.resume.symmetric_replay_requested,
                 options.resume.client_acked_offset,
                 options.combined_ss_kind,
+                options.datagram_records,
             )
             .await?;
         debug!(url = %options.url, selected_mode = "xhttp_h1", ?issued, "xhttp h1 connected");

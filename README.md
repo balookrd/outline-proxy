@@ -96,6 +96,7 @@ Per-binary documentation lives next to each binary —
 
 Cross-cutting topics under [`docs/`](docs/):
 [carrier padding](docs/PADDING.md) ·
+[SS-UDP record framing over XHTTP](docs/XHTTP-UDP-RECORDS.md) ·
 [outbound IPv6 source selection](docs/OUTBOUND-IPV6.md) ·
 [server mesh cluster](docs/CLUSTER.md).
 

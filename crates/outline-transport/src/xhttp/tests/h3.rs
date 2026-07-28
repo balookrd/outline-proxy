@@ -303,8 +303,15 @@ async fn dropping_the_session_kills_in_flight_posts() {
     let (in_tx, _in_rx) = inbound_channel();
     let (mut out_tx, out_rx) = outbound_channel();
 
-    let driver =
-        tokio::spawn(driver_loop_h3(send_request, stub_target(), in_tx, out_rx, get_stream, None));
+    let driver = tokio::spawn(driver_loop_h3(
+        send_request,
+        stub_target(),
+        in_tx,
+        out_rx,
+        get_stream,
+        false,
+        None,
+    ));
 
     // One uplink frame: the driver turns it into a POST the silent server will
     // never answer.

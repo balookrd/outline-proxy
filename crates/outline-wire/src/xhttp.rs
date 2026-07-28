@@ -19,6 +19,17 @@ pub const SEQ_HEADER: &str = "x-xhttp-seq";
 /// ignores) any client-emitted value.
 pub const PADDING_HEADER: &str = "x-padding";
 
+/// HTTP request/response header negotiating datagram record framing for
+/// SS-UDP over an XHTTP carrier (see [`crate::udp_records`]). The client sends
+/// `1` on every request of a datagram session; the server echoes `1` on the
+/// SS-UDP paths it will frame. Framing is on only when both sides said `1`, so
+/// a peer that predates the feature keeps the historical unframed wire.
+pub const UDP_RECORDS_HEADER: &str = "x-outline-udp-records";
+
+/// The single value either side sends to opt into record framing. Any other
+/// value (or absence) means "not negotiated".
+pub const UDP_RECORDS_ENABLED: &str = "1";
+
 /// Hint header sent on the final POST of a session so the server can
 /// collapse the uplink without waiting for an idle timeout. Optional —
 /// its absence does not change correctness.

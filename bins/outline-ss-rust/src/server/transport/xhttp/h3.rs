@@ -21,7 +21,10 @@ use crate::server::cluster::ClusterCtx;
 use super::super::super::state::Services;
 use super::super::is_normal_h3_shutdown;
 use super::super::resume_headers::{ResumeContext, ResumeResponseEcho};
-use super::handlers::{XhttpRoute, spawn_relay, xhttp_edge_plan, xhttp_issued_id};
+use super::handlers::{
+    XhttpRoute, apply_udp_records_echo, negotiate_udp_records, spawn_relay, xhttp_edge_plan,
+    xhttp_issued_id,
+};
 use super::padding::post_response_headers;
 use super::{
     AttachOutcome, FIN_HEADER, SEQ_HEADER, UplinkIngestError, XhttpRegistry, XhttpSession,
@@ -145,6 +148,10 @@ async fn xhttp_h3_get(
         },
     };
 
+    // Latch the datagram-framing negotiation before the relay spawns — it
+    // reads the flag when it builds its duplex.
+    let udp_records = negotiate_udp_records(&session, &ctx.route, &request_headers);
+
     if created
         && !spawn_relay(
             Arc::clone(&session),
@@ -169,7 +176,7 @@ async fn xhttp_h3_get(
 
     debug!(
         method = "GET", version = ?version, base = %ctx.base_path, %peer_addr,
-        session = %session_id, created,
+        session = %session_id, created, udp_records,
         "xhttp/h3 downlink attached"
     );
 
@@ -185,6 +192,7 @@ async fn xhttp_h3_get(
         symmetric_replay: symmetric_replay_for_response,
     }
     .apply(response.headers_mut());
+    apply_udp_records_echo(response.headers_mut(), udp_records);
     if let Err(error) = stream.send_response(response).await {
         session.detach_get();
         return Err(anyhow!(error)).context("failed to send xhttp/h3 GET response head");
@@ -246,6 +254,8 @@ async fn xhttp_h3_post(
     if session.is_closed() {
         return finish_with_status(stream, StatusCode::GONE).await;
     }
+
+    let udp_records = negotiate_udp_records(&session, &ctx.route, &headers);
 
     if created
         && !spawn_relay(
@@ -340,6 +350,7 @@ async fn xhttp_h3_post(
         symmetric_replay: symmetric_replay_for_response,
     }
     .apply(resp_headers);
+    apply_udp_records_echo(resp_headers, udp_records);
     stream
         .send_response(response)
         .await
@@ -385,6 +396,7 @@ async fn xhttp_h3_stream_one(
     if session.is_closed() {
         return finish_with_status(stream, StatusCode::GONE).await;
     }
+    let udp_records = negotiate_udp_records(&session, &ctx.route, &headers);
     if created
         && !spawn_relay(
             Arc::clone(&session),
@@ -422,6 +434,7 @@ async fn xhttp_h3_stream_one(
         symmetric_replay: symmetric_replay_for_response,
     }
     .apply(response.headers_mut());
+    apply_udp_records_echo(response.headers_mut(), udp_records);
     if let Err(error) = stream.send_response(response).await {
         session.detach_get();
         return Err(anyhow!(error)).context("failed to send xhttp/h3 stream-one response head");
