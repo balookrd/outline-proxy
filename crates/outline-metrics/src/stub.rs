@@ -57,6 +57,7 @@ pub fn render_prometheus(_: &[UplinkManagerSnapshot]) -> anyhow::Result<String> 
 pub fn record_transport_connect(_source: &'static str, _mode: &'static str, _result: &'static str) {
 }
 pub fn add_transport_connects_active(_source: &'static str, _mode: &'static str, _delta: i64) {}
+pub fn record_carrier_writer_termination(_writer: &'static str, _reason: &'static str) {}
 pub fn record_upstream_transport(
     _source: &'static str,
     _protocol: &'static str,

@@ -23,6 +23,20 @@ pub fn add_transport_connects_active(source: &'static str, mode: &'static str, d
         .add(delta);
 }
 
+/// Record a WebSocket carrier writer task stopping because a sink write failed.
+///
+/// `writer` names the writer (`"ss"` for the SS-over-WS writer, `"frame"` for
+/// the VLESS / datagram frame writer) and `reason` is `"peer_closed"` when the
+/// carrier was already closed (the routine case, logged at debug) or `"error"`
+/// for a genuine write failure (still logged at warn). Both label sets are
+/// closed compile-time constants — four series in total.
+pub fn record_carrier_writer_termination(writer: &'static str, reason: &'static str) {
+    METRICS
+        .carrier_writer_terminations_total
+        .with_label_values(&[writer, reason])
+        .inc();
+}
+
 pub fn record_upstream_transport(
     source: &'static str,
     protocol: &'static str,
