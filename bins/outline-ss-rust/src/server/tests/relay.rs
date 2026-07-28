@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use parking_lot::Mutex;
 
 use crate::config::CipherKind;
@@ -93,10 +93,10 @@ impl UpstreamRead for ScriptedUpstream {
         Ok(())
     }
 
-    fn try_read_buf(&mut self, buf: &mut BytesMut) -> std::io::Result<usize> {
+    fn try_read_buf<B: bytes::BufMut>(&mut self, buf: &mut B) -> std::io::Result<usize> {
         match self.chunks.pop_front() {
             Some(chunk) => {
-                buf.extend_from_slice(&chunk);
+                buf.put_slice(&chunk);
                 Ok(chunk.len())
             },
             None => Ok(0), // EOF
