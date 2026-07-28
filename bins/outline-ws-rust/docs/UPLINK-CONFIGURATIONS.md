@@ -1608,6 +1608,23 @@ Semantics:
   mode (idle WS read on an established session) would never tick
   `active_wire` and dashboards would show no rotation despite the
   wire being demonstrably broken.
+
+  **Payload-integrity errors are not one of these sources.** A
+  datagram the AEAD could not open, a truncated one, or an SS2022
+  replay/reorder rejection describes the *bytes*, not the carrier
+  that delivered them, so `report_runtime_failure*` routes it to
+  `report_payload_integrity_failure` instead: counted on
+  `outline_ws_uplink_payload_integrity_errors_total{cause}` and
+  otherwise inert — no cooldown, no penalty, no runtime-failure
+  streak, no wire-round tick, no carrier cap. Only the affected flow
+  is torn down (`payload_error` on the TUN UDP path); the SOCKS5 UDP
+  downlink drops the datagram and keeps its transport. The
+  motivating field case: a ~0.1% corrupt-datagram rate opened 682
+  `xhttp_h3 → xhttp_h2` windows in 16 h on one node, holding it in
+  UDP-over-TCP 69.6% of the time. This is the data-plane half of the
+  same invariant the probe enforces with `carrier_ok` vs
+  `transport_ok` — a carrier descends only on evidence about the
+  carrier.
 - **Round counter**: a per-transport `wires_failed_in_round`
   increments each time the active wire advances, regardless of which
   failure source drove the advance. The moment it reaches

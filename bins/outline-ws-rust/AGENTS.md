@@ -298,6 +298,23 @@ cargo release-musl-aarch64
   primary-only), поэтому кэп поднимается пошагово через
   `walk_up_mode_downgrade_for_wire`, а последний шаг на configured — за TTL
   `mode_downgrade_secs`.
+- Payload-integrity ≠ отказ носителя: ошибка расшифровки/парсинга payload
+  (`CryptoError::DecryptFailed`, `CryptoError::UdpPacketTooShort`,
+  `Ss2022Error::DuplicateOrOutOfOrderUdpPacket`) говорит о БАЙТАХ, а не о
+  носителе, который их доставил. Такие ошибки распознаёт
+  `outline_transport::payload_integrity_cause` и уводит в
+  `report_payload_integrity_failure`: только счётчик
+  `outline_ws_uplink_payload_integrity_errors_total{cause}`, без cooldown,
+  penalty, streak'а runtime-провалов и без carrier-спуска. `report_runtime_failure*`
+  гейтит их первым делом, до любой мутации статуса, — это единственная точка,
+  через которую отчитываются все ingress'ы (TUN UDP, TUN TCP, SOCKS5), поэтому
+  новый вызывающий не может вернуть мисатрибуцию. Рвётся только пострадавший
+  flow (TUN UDP: причина `payload_error`), SOCKS5 UDP-downlink дропает
+  датаграмму и сохраняет транспорт. Классификатор строго типизированный:
+  строковый матч по «decrypt/decryption failed» ловил бы и ошибки
+  TLS/QUIC-хендшейка, а это КАК РАЗ отказ носителя, и failover бы молча умер.
+  Третий случай того же класса, что 7196a62d (`carrier_ok` vs `transport_ok`)
+  и 95844368 (per-wire атрибуция спуска).
 - Strict-mode active-uplink switch: в `active_passive` манёвр manual control /
   probe-driven failover, который сдвигает активный uplink с in-flight сессии,
   обязан рвать TCP-сессию SOCKS5 с RST (`SO_LINGER {l_onoff=1, l_linger=0}`) и
