@@ -10,11 +10,12 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 // ── Error classification ──────────────────────────────────────────────────────
 
@@ -36,56 +37,162 @@ pub(crate) fn classify_by_substrings(
     fallback
 }
 
-// ── Connection-close logging ──────────────────────────────────────────────────
+// ── Connection-lifecycle logging ──────────────────────────────────────────────
 
-/// Identity fields common to every `conn_life` log line emitted from a driver
-/// task.  Packaging them in a struct keeps the call site short and guarantees
-/// H2 and H3 produce the same schema.
-pub(crate) struct ConnCloseLog<'a> {
-    pub id: u64,
-    pub peer: &'a str,
-    pub mode: &'static str,
-    pub age_secs: u64,
-    pub streams: u64,
+/// Class recorded on a connection that died because *we* dropped it — the
+/// driver task never observed a protocol close because its `AbortOnDrop`
+/// cancelled it first.
+pub(crate) const CONN_CLASS_LOCAL_DROP: &str = "local_drop";
+
+/// Verbosity of the open/close pair a connection emits on
+/// `outline_transport::conn_life`.
+///
+/// A cached (shared) carrier is what an operator reasons about — how long it
+/// lived, how many streams rode it, how it died — so it logs at `info`. A probe
+/// connection is one-shot (dialled, measured, dropped) and outnumbers real
+/// carriers by orders of magnitude — 34 515 opens in 48 h on one production
+/// node — so it logs the very same pair at `debug`: the lifecycle stays fully
+/// traceable when debug is on, without burying the carriers that matter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConnLifeLevel {
+    Shared,
+    Probe,
 }
 
-/// Emit the standard `outline_transport::conn_life` close log.
+impl ConnLifeLevel {
+    /// A dial that carries no cache key never enters the shared-connection
+    /// registry — that is exactly the probe path in `shared_dial`.
+    pub(crate) fn for_cached(is_cached: bool) -> Self {
+        if is_cached { Self::Shared } else { Self::Probe }
+    }
+}
+
+/// One connection's `conn_life` identity plus the "already logged" latch.
 ///
-/// `error_text = None` signals a clean close (`Ok(())` from the driver).
-/// Otherwise `class` describes the error bucket and `is_expected` gates whether
-/// an additional `error!` line is emitted; expected closes (graceful shutdown,
-/// local cancel, idle timeout already reported elsewhere) stay at info level
-/// to avoid log noise.
-pub(crate) fn log_conn_close(
-    fields: ConnCloseLog<'_>,
-    error_text: Option<&str>,
-    class: &'static str,
-    is_expected: bool,
-) {
-    let ConnCloseLog { id, peer, mode, age_secs, streams } = fields;
-    match error_text {
-        None => {
-            info!(
+/// Two independent paths can observe the death of a shared H2/H3 connection:
+/// the driver task (which sees the protocol-level close) and `Drop` (which runs
+/// when the last `Arc` goes away, aborting the driver task before it can report
+/// anything). Both go through [`ConnLife::close`]; the latch guarantees exactly
+/// one close line per open line, so `opened`/`closed` counts in the log balance
+/// and a genuine connection leak is visible as a real gap between them.
+pub(crate) struct ConnLife {
+    id: u64,
+    peer: String,
+    mode: &'static str,
+    level: ConnLifeLevel,
+    opened_at: Instant,
+    /// Monotonic count of WS streams opened on this connection, shared with the
+    /// connection itself so the close line reports the final total.
+    streams_opened: Arc<AtomicU64>,
+    closed: AtomicBool,
+}
+
+impl ConnLife {
+    /// Log the connection open and return the tracker shared by the driver task
+    /// and the connection's [`ConnLifeGuard`].
+    pub(crate) fn open(
+        id: u64,
+        peer: String,
+        mode: &'static str,
+        level: ConnLifeLevel,
+        streams_opened: Arc<AtomicU64>,
+    ) -> Arc<Self> {
+        match level {
+            ConnLifeLevel::Shared => info!(
                 target: "outline_transport::conn_life",
-                id, peer, mode, age_secs, streams, class,
-                "{mode} connection closed"
-            );
-        },
-        Some(err) if is_expected => {
-            info!(
+                id, peer = %peer, mode, "{mode} connection opened"
+            ),
+            ConnLifeLevel::Probe => debug!(
                 target: "outline_transport::conn_life",
-                id, peer, mode, age_secs, streams, class, error = %err,
-                "{mode} connection closed"
-            );
-        },
-        Some(err) => {
-            info!(
-                target: "outline_transport::conn_life",
-                id, peer, mode, age_secs, streams, class, error = %err,
-                "{mode} connection closed with error"
-            );
-            error!("{mode} connection error: {err}");
-        },
+                id, peer = %peer, mode, "{mode} connection opened"
+            ),
+        }
+        Arc::new(Self {
+            id,
+            peer,
+            mode,
+            level,
+            opened_at: Instant::now(),
+            streams_opened,
+            closed: AtomicBool::new(false),
+        })
+    }
+
+    /// Emit the close line, at most once per connection. Returns `true` when
+    /// this call was the one that logged.
+    ///
+    /// `error_text = None` signals a close with no error to report (a clean
+    /// `Ok(())` from the driver, or a local drop). Otherwise `class` describes
+    /// the error bucket and `is_expected` gates the additional `error!` line;
+    /// expected closes (graceful shutdown, local cancel, idle timeout already
+    /// reported elsewhere) stay at the connection's own level to avoid noise.
+    pub(crate) fn close(
+        &self,
+        error_text: Option<&str>,
+        class: &'static str,
+        is_expected: bool,
+    ) -> bool {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        let (id, peer, mode) = (self.id, self.peer.as_str(), self.mode);
+        let age_secs = self.opened_at.elapsed().as_secs();
+        let streams = self.streams_opened.load(Ordering::Relaxed);
+        // The level is a runtime choice but `tracing` needs a static callsite,
+        // so the three shapes are expanded once per level rather than branched
+        // inside a single macro call.
+        macro_rules! emit {
+            ($level:ident) => {
+                match error_text {
+                    None => $level!(
+                        target: "outline_transport::conn_life",
+                        id, peer, mode, age_secs, streams, class,
+                        "{mode} connection closed"
+                    ),
+                    Some(err) if is_expected => $level!(
+                        target: "outline_transport::conn_life",
+                        id, peer, mode, age_secs, streams, class, error = %err,
+                        "{mode} connection closed"
+                    ),
+                    Some(err) => {
+                        $level!(
+                            target: "outline_transport::conn_life",
+                            id, peer, mode, age_secs, streams, class, error = %err,
+                            "{mode} connection closed with error"
+                        );
+                        error!("{mode} connection error: {err}");
+                    },
+                }
+            };
+        }
+        match self.level {
+            ConnLifeLevel::Shared => emit!(info),
+            ConnLifeLevel::Probe => emit!(debug),
+        }
+        true
+    }
+}
+
+/// Drop half of the `conn_life` open/close pair.
+///
+/// Held by the connection itself. The driver task that watches for a
+/// protocol-level close is wrapped in an `AbortOnDrop`, so a connection dropped
+/// locally — a probe released right after its measurement, a carrier evicted
+/// from the cache once its last stream ended — cancels that task before it can
+/// log anything. This guard closes that hole and classifies the death honestly
+/// as [`CONN_CLASS_LOCAL_DROP`]; it is a no-op when the driver task already
+/// reported.
+pub(crate) struct ConnLifeGuard(Arc<ConnLife>);
+
+impl ConnLifeGuard {
+    pub(crate) fn new(life: Arc<ConnLife>) -> Self {
+        Self(life)
+    }
+}
+
+impl Drop for ConnLifeGuard {
+    fn drop(&mut self) {
+        self.0.close(None, CONN_CLASS_LOCAL_DROP, true);
     }
 }
 
@@ -357,3 +464,9 @@ where
     registry.insert(key, shared).await;
     Ok(stream)
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+#[path = "tests/shared_cache.rs"]
+mod tests;

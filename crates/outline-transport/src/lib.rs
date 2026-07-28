@@ -168,6 +168,7 @@ mod mode_health;
 mod url_utils;
 mod ws_mode_cache;
 mod ws_stream;
+mod ws_writer_diag;
 mod xhttp;
 mod xhttp_mode_cache;
 mod xhttp_submode_cache;
