@@ -25,7 +25,6 @@ use crate::{
 };
 
 use super::resumption::downlink_ring::DownlinkRing;
-use super::scratch::ScratchBuf;
 
 /// Upper bound for the greedy-drain loop in [`relay_upstream_to_client`]
 /// and the matching VLESS-WS / VLESS-mux readers. Once the in-progress
@@ -53,6 +52,36 @@ pub(in crate::server) enum UpstreamRelayOutcome<R> {
     Cancelled(R),
 }
 
+/// The upstream half a relay reads application plaintext from.
+///
+/// Two shapes exist. On a standalone server or a cluster home it is the real
+/// TCP socket to the target. On a cluster **edge** the home owns that socket and
+/// the edge reads the same plaintext off a mesh stream — the edge terminates the
+/// client's crypto, so what crosses the mesh is already decrypted.
+///
+/// The two methods mirror `TcpStream`'s readiness API rather than `AsyncRead`
+/// deliberately: the relay's hot loop is a greedy drain (`readable().await` then
+/// repeated non-blocking `try_read_buf`), and flattening that into `AsyncRead`
+/// would cost a syscall per chunk.
+pub(in crate::server) trait UpstreamRead: Send + Unpin {
+    /// Resolves when at least one byte may be readable.
+    async fn readable(&self) -> std::io::Result<()>;
+
+    /// Non-blocking read appending into `buf`. `Ok(0)` is EOF;
+    /// `ErrorKind::WouldBlock` means nothing is pending right now.
+    fn try_read_buf(&mut self, buf: &mut BytesMut) -> std::io::Result<usize>;
+}
+
+impl UpstreamRead for OwnedReadHalf {
+    async fn readable(&self) -> std::io::Result<()> {
+        OwnedReadHalf::readable(self).await
+    }
+
+    fn try_read_buf(&mut self, buf: &mut BytesMut) -> std::io::Result<usize> {
+        OwnedReadHalf::try_read_buf(self, buf)
+    }
+}
+
 /// Destination for encrypted upstream bytes, parameterised by transport.
 pub(in crate::server) trait UpstreamSink: Send {
     /// Forward a ciphertext chunk to the client.
@@ -72,8 +101,8 @@ pub(in crate::server) trait UpstreamSink: Send {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(in crate::server) async fn relay_upstream_to_client<S>(
-    mut upstream_reader: OwnedReadHalf,
+pub(in crate::server) async fn relay_upstream_to_client<S, U>(
+    mut upstream_reader: U,
     mut sink: S,
     encryptor: &mut AeadStreamEncryptor,
     metrics: Arc<Metrics>,
@@ -95,9 +124,10 @@ pub(in crate::server) async fn relay_upstream_to_client<S>(
     // with detection on. Fed inbound (from-internet) bytes here; the backlog
     // and outbound side are fed by the `ChannelSink` and the writer.
     monitor: Option<Arc<crate::server::transport::throughput_monitor::ThroughputMonitor>>,
-) -> Result<UpstreamRelayOutcome<OwnedReadHalf>>
+) -> Result<UpstreamRelayOutcome<U>>
 where
     S: UpstreamSink,
+    U: UpstreamRead,
 {
     let user_counters = metrics.user_counters(&user_id);
     let target_to_client = user_counters.tcp_out(app_protocol, protocol);
@@ -130,12 +160,18 @@ where
             }
             ready = upstream_reader.readable() => {
                 ready.context("failed to await upstream")?;
-                // Take the pooled plaintext buffer only once data is ready,
-                // so an idle download relay holds no per-connection receive
-                // buffer; it returns to the pool before the next park.
-                let mut buffer = ScratchBuf::take();
+                // Freshly-allocated plaintext buffer, taken only once data
+                // is ready, so an idle download relay holds no
+                // per-connection receive buffer between reads. The
+                // `UpstreamRead::try_read_buf` trait method fixes the
+                // buffer type to `BytesMut` (needed so a non-TCP upstream,
+                // e.g. a mesh stream on a cluster edge, can implement it
+                // too), which forgoes the thread-local `ScratchBuf` pool —
+                // the same trade-off `transport::vless::tcp`'s downlink
+                // loop already makes for the same reason.
+                let mut buffer = BytesMut::new();
                 buffer.reserve(MAX_CHUNK_SIZE);
-                let read = match upstream_reader.try_read_buf(&mut *buffer) {
+                let read = match upstream_reader.try_read_buf(&mut buffer) {
                     Ok(read) => read,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => return Err(error).context("failed to read from upstream"),
@@ -157,13 +193,11 @@ where
                 // send`. The drain is non-blocking: it never yields,
                 // so it cannot delay ack-only or low-rate streams.
                 while buffer.len() < GREEDY_DRAIN_TARGET {
-                    match try_read_now(&mut upstream_reader, &mut buffer)
-                        .await
-                        .context("failed to drain upstream")?
-                    {
-                        Some(0) => break, // EOF: stop draining; encrypt what we have
-                        Some(_) => {},    // got more, keep pulling
-                        None => break,    // nothing immediately available
+                    match upstream_reader.try_read_buf(&mut buffer) {
+                        Ok(0) => break, // EOF: stop draining; encrypt what we have
+                        Ok(_) => {},    // got more, keep pulling
+                        Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(error) => return Err(error).context("failed to drain upstream"),
                     }
                 }
                 let read = buffer.len();
@@ -201,52 +235,15 @@ where
     Ok(UpstreamRelayOutcome::Closed)
 }
 
-/// Single non-blocking poll of `reader`, appending whatever is already
-/// available to `buffer` without yielding the runtime.
-///
-/// Returns:
-/// - `Ok(Some(n))` — `n` bytes read (`n == 0` is EOF).
-/// - `Ok(None)`    — the reader returned `Poll::Pending`; nothing was
-///   buffered in the kernel beyond what the caller has already consumed.
-/// - `Err(_)`      — the underlying `poll_read` reported an I/O error.
-///
-/// The caller is expected to have reserved enough spare capacity in
-/// `buffer` before calling — we write into `spare_capacity_mut` and only
-/// commit the filled bytes via `set_len` on success.
-async fn try_read_now<R>(reader: &mut R, buffer: &mut Vec<u8>) -> std::io::Result<Option<usize>>
-where
-    R: AsyncRead + Unpin,
-{
-    poll_fn(|cx| {
-        let prev_len = buffer.len();
-        let spare = buffer.spare_capacity_mut();
-        if spare.is_empty() {
-            return Poll::Ready(Ok(Some(0)));
-        }
-        let mut read_buf = ReadBuf::uninit(spare);
-        match Pin::new(&mut *reader).poll_read(cx, &mut read_buf) {
-            Poll::Ready(Ok(())) => {
-                let n = read_buf.filled().len();
-                // SAFETY: `poll_read` populated the first `n` bytes of
-                // the spare-capacity slice with initialised bytes.
-                unsafe { buffer.set_len(prev_len + n) };
-                Poll::Ready(Ok(Some(n)))
-            },
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Ready(Ok(None)),
-        }
-    })
-    .await
-}
-
-/// Slice-flavoured counterpart of [`try_read_now`]. Used by the VLESS
+/// Slice-flavoured non-blocking poll of `reader`. Used by the VLESS
 /// upstream readers, which share a fixed-length scratch slice across
 /// the loop instead of a `Vec` with grow-on-demand capacity. Caller
 /// passes the empty-tail half of the buffer (`&mut buf[total_read..]`)
 /// and adds the returned byte count to its running total.
 ///
-/// Same return semantics as [`try_read_now`]: `Some(0)` is EOF,
-/// `Some(n)` for `n > 0` is bytes-buffered, `None` is `Poll::Pending`.
+/// Returns `Ok(Some(0))` on EOF, `Ok(Some(n))` for `n > 0` bytes
+/// buffered, `Ok(None)` when the reader reported `Poll::Pending`, and
+/// `Err(_)` on an underlying `poll_read` I/O error.
 pub(in crate::server) async fn try_read_now_into_slice<R>(
     reader: &mut R,
     buf: &mut [u8],

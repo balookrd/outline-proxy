@@ -25,6 +25,7 @@ mod dns_cache;
 mod fallback;
 mod h3;
 mod nat;
+mod relay;
 mod resumption;
 mod sni_fallback;
 mod vless;
