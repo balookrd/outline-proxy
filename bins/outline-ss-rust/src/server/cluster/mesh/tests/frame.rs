@@ -99,3 +99,50 @@ fn close_reason_code_round_trips() {
     // Unknown codes collapse to Abort.
     assert_eq!(CloseReason::from_code(999), CloseReason::Abort);
 }
+
+#[test]
+fn user_frame_roundtrips() {
+    let frame = UserFrame { user: "beerloga".to_string() };
+    let parsed = UserFrame::parse(&frame.encode()).expect("user frame parses");
+    assert_eq!(parsed.user, "beerloga");
+}
+
+#[test]
+fn user_frame_roundtrips_at_the_length_ceiling() {
+    let frame = UserFrame { user: "u".repeat(MAX_USER_LEN) };
+    let parsed = UserFrame::parse(&frame.encode()).expect("a max-length name is valid");
+    assert_eq!(parsed.user.len(), MAX_USER_LEN);
+}
+
+#[test]
+fn user_frame_rejects_empty_name() {
+    let encoded = vec![0u8]; // len = 0
+    let err = UserFrame::parse(&encoded).expect_err("an empty user must be refused");
+    assert!(err.to_string().contains("empty"), "got: {err}");
+}
+
+#[test]
+fn user_frame_rejects_over_long_name() {
+    let frame = UserFrame { user: "u".repeat(MAX_USER_LEN + 1) };
+    let err = UserFrame::parse(&frame.encode()).expect_err("an over-long user must be refused");
+    assert!(err.to_string().contains("too long"), "got: {err}");
+}
+
+#[test]
+fn user_frame_rejects_invalid_utf8() {
+    let encoded = vec![2u8, 0xff, 0xfe];
+    let err = UserFrame::parse(&encoded).expect_err("invalid UTF-8 must be refused");
+    assert!(err.to_string().contains("UTF-8"), "got: {err}");
+}
+
+#[test]
+fn user_frame_rejects_a_truncated_buffer() {
+    let encoded = vec![8u8, b'a', b'b']; // claims 8 bytes, carries 2
+    UserFrame::parse(&encoded).expect_err("a truncated frame must be refused");
+}
+
+#[test]
+fn no_session_close_reason_roundtrips_on_the_wire() {
+    assert_eq!(CloseReason::NoSession.code(), 5);
+    assert_eq!(CloseReason::from_code(5), CloseReason::NoSession);
+}
