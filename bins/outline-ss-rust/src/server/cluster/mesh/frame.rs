@@ -46,6 +46,11 @@ pub(in crate::server) const OPEN_ACK_ACCEPTED: u8 = 1;
 /// parser against an oversized allocation from a malformed peer.
 const MAX_PATH_LEN: usize = 512;
 
+/// Upper bound on the user name carried in a [`UserFrame`]. Guards the parser
+/// against an oversized allocation from a malformed peer; a single length byte
+/// is enough because names are short identifiers.
+pub(in crate::server) const MAX_USER_LEN: usize = 64;
+
 /// Which carrier a relayed stream is, so the home dispatches it into the right
 /// accept path. Combined-SS path-kind is already resolved into the Tcp/Udp
 /// split here. The `*Xhttp` kinds differ from the WS kinds only in which route
@@ -114,6 +119,12 @@ pub(in crate::server) enum CloseReason {
     /// fresh local session rather than relaying into a black hole. A peer on an
     /// older build maps it to `Abort`, which is the right fallback.
     NoRoute,
+    /// The home refused the stream: it holds no parked session under the
+    /// relayed resume id, or the id's owner is not the user the edge
+    /// authenticated. An ordinary outcome — parks expire and are evicted — so
+    /// the edge simply serves its client a fresh local session. A peer on an
+    /// older build maps it to `Abort`, which is the right fallback.
+    NoSession,
 }
 
 impl CloseReason {
@@ -125,6 +136,7 @@ impl CloseReason {
             CloseReason::Budget => 2,
             CloseReason::Capacity => 3,
             CloseReason::NoRoute => 4,
+            CloseReason::NoSession => 5,
         }
     }
 
@@ -136,6 +148,7 @@ impl CloseReason {
             2 => CloseReason::Budget,
             3 => CloseReason::Capacity,
             4 => CloseReason::NoRoute,
+            5 => CloseReason::NoSession,
             _ => CloseReason::Abort,
         }
     }
@@ -251,6 +264,47 @@ impl OpenHeader {
             path,
             peer_addr,
         })
+    }
+}
+
+/// Second-phase frame: the user the edge authenticated, sent after the home's
+/// setup ack.
+///
+/// It is a separate frame rather than an OPEN field because the edge does not
+/// know the user when it sends OPEN — it must decide what to echo in its `101`
+/// before it can read the client's first encrypted frame. The home trusts this
+/// attestation (a peer holding the mesh PSK is already a full cluster member)
+/// and checks it against the park's owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::server) struct UserFrame {
+    pub(in crate::server) user: String,
+}
+
+impl UserFrame {
+    /// Layout: `user_len(1) | user`. One length byte suffices: names are bounded
+    /// by [`MAX_USER_LEN`].
+    pub(in crate::server) fn encode(&self) -> Vec<u8> {
+        let user = self.user.as_bytes();
+        let mut out = Vec::with_capacity(1 + user.len());
+        out.push(user.len() as u8);
+        out.extend_from_slice(user);
+        out
+    }
+
+    /// Parses the frame. Rejects an empty name (it could never match a park
+    /// owner), an over-long one, or invalid UTF-8.
+    pub(in crate::server) fn parse(buf: &[u8]) -> Result<Self> {
+        let mut r = Reader::new(buf);
+        let len = r.u8()? as usize;
+        if len == 0 {
+            bail!("mesh USER frame carries an empty user name");
+        }
+        if len > MAX_USER_LEN {
+            bail!("mesh USER frame user name too long: {len}");
+        }
+        let user = String::from_utf8(r.bytes(len)?.to_vec())
+            .map_err(|_| anyhow::anyhow!("mesh USER frame user name is not valid UTF-8"))?;
+        Ok(Self { user })
     }
 }
 
