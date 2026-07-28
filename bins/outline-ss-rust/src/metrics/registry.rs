@@ -299,6 +299,12 @@ pub(super) fn register_descriptions() {
         "TLS handshake failures on the TCP listener grouped by classified reason."
     );
     describe_counter!(
+        "outline_ss_sni_peek_failed_total",
+        "Inbound streams the [sni_fallback] ClientHello peek gave up on, by reason. \
+         peer_closed is routine (TCP liveness probes, scanners, aborted clients) and is \
+         logged only at debug; malformed / oversized / read_failed stay at warn."
+    );
+    describe_counter!(
         "outline_ss_tls_handshake_no_cert_chain_total",
         "Subset of TLS handshake failures where the cert resolver returned None, broken down by the rejected SNI. \
          Special label values: <none> (no SNI sent), <invalid> (non-ASCII/control bytes), <long> (>253 chars), \

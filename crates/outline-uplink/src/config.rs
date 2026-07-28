@@ -481,11 +481,17 @@ pub struct ProbeConfig {
     /// so the total time per cycle can be up to
     /// `attempts × (per-transport probe timeout budget + 500 ms)`. Default: 2.
     pub attempts: usize,
-    /// Endpoint-reachability short-circuit: before the (expensive) carrier and
-    /// application probes run, try a bare TCP connect against the `host:port`
-    /// of every wire of the uplink. When *all* of them fail
-    /// [`Self::min_failures`] cycles in a row the uplink is declared down at
-    /// once — no carrier descent, no wire-by-wire walk.
+    /// Endpoint-reachability short-circuit: on a cycle where the carrier and
+    /// application probes failed on every plane, try a bare TCP connect
+    /// against the `host:port` of every wire of the uplink. When *all* of them
+    /// fail [`Self::min_failures`] cycles in a row the uplink is declared down
+    /// at once — no carrier descent, no wire-by-wire walk.
+    ///
+    /// The check deliberately runs *after* the probe, not ahead of it: its
+    /// verdict is only ever consulted when the probe failed too, so on a
+    /// healthy cycle the connects would be paid for and thrown away. Failing
+    /// cycles pay exactly the same two stages either way, so the ordering
+    /// costs nothing in detection latency.
     ///
     /// This exists because a host that is switched off (or blackholed) makes
     /// every wire fail for the same reason, yet the normal escalation path
@@ -499,9 +505,9 @@ pub struct ProbeConfig {
     /// endpoint answers TCP (the usual case — TLS/WS/XHTTP all need it).
     pub endpoint_check: bool,
     /// Per-endpoint deadline for the [`Self::endpoint_check`] connect. Kept
-    /// well below [`Self::timeout`]: the check must be cheap enough to run
-    /// ahead of every probe cycle, and a dead host costs the full deadline
-    /// (a blackholed SYN never gets an RST back). Default: 2 s.
+    /// well below [`Self::timeout`]: the check runs on top of a probe cycle
+    /// that already failed, and a dead host costs the full deadline every
+    /// time (a blackholed SYN never gets an RST back). Default: 2 s.
     pub endpoint_check_timeout: Duration,
     /// When true (default), probe cycles are skipped on uplinks that are
     /// already carrying real traffic, are probe-confirmed healthy, and have
