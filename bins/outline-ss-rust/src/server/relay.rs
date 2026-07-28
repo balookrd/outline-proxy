@@ -25,6 +25,7 @@ use crate::{
 };
 
 use super::resumption::downlink_ring::DownlinkRing;
+use super::scratch::ScratchBuf;
 
 /// Upper bound for the greedy-drain loop in [`relay_upstream_to_client`]
 /// and the matching VLESS-WS / VLESS-mux readers. Once the in-progress
@@ -63,13 +64,18 @@ pub(in crate::server) enum UpstreamRelayOutcome<R> {
 /// deliberately: the relay's hot loop is a greedy drain (`readable().await` then
 /// repeated non-blocking `try_read_buf`), and flattening that into `AsyncRead`
 /// would cost a syscall per chunk.
+///
+/// `try_read_buf` is generic over the buffer, mirroring
+/// `TcpStream::try_read_buf<B: BufMut>`, so callers can keep feeding it the
+/// pooled `ScratchBuf` (which derefs to `Vec<u8>`, itself `BufMut`) instead of
+/// allocating a fresh `BytesMut` every read cycle.
 pub(in crate::server) trait UpstreamRead: Send + Unpin {
     /// Resolves when at least one byte may be readable.
     async fn readable(&self) -> std::io::Result<()>;
 
     /// Non-blocking read appending into `buf`. `Ok(0)` is EOF;
     /// `ErrorKind::WouldBlock` means nothing is pending right now.
-    fn try_read_buf(&mut self, buf: &mut BytesMut) -> std::io::Result<usize>;
+    fn try_read_buf<B: bytes::BufMut>(&mut self, buf: &mut B) -> std::io::Result<usize>;
 }
 
 impl UpstreamRead for OwnedReadHalf {
@@ -77,7 +83,7 @@ impl UpstreamRead for OwnedReadHalf {
         OwnedReadHalf::readable(self).await
     }
 
-    fn try_read_buf(&mut self, buf: &mut BytesMut) -> std::io::Result<usize> {
+    fn try_read_buf<B: bytes::BufMut>(&mut self, buf: &mut B) -> std::io::Result<usize> {
         OwnedReadHalf::try_read_buf(self, buf)
     }
 }
@@ -160,18 +166,12 @@ where
             }
             ready = upstream_reader.readable() => {
                 ready.context("failed to await upstream")?;
-                // Freshly-allocated plaintext buffer, taken only once data
-                // is ready, so an idle download relay holds no
-                // per-connection receive buffer between reads. The
-                // `UpstreamRead::try_read_buf` trait method fixes the
-                // buffer type to `BytesMut` (needed so a non-TCP upstream,
-                // e.g. a mesh stream on a cluster edge, can implement it
-                // too), which forgoes the thread-local `ScratchBuf` pool —
-                // the same trade-off `transport::vless::tcp`'s downlink
-                // loop already makes for the same reason.
-                let mut buffer = BytesMut::new();
+                // Take the pooled plaintext buffer only once data is ready,
+                // so an idle download relay holds no per-connection receive
+                // buffer; it returns to the pool before the next park.
+                let mut buffer = ScratchBuf::take();
                 buffer.reserve(MAX_CHUNK_SIZE);
-                let read = match upstream_reader.try_read_buf(&mut buffer) {
+                let read = match upstream_reader.try_read_buf(&mut *buffer) {
                     Ok(read) => read,
                     Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(error) => return Err(error).context("failed to read from upstream"),
@@ -193,7 +193,7 @@ where
                 // send`. The drain is non-blocking: it never yields,
                 // so it cannot delay ack-only or low-rate streams.
                 while buffer.len() < GREEDY_DRAIN_TARGET {
-                    match upstream_reader.try_read_buf(&mut buffer) {
+                    match upstream_reader.try_read_buf(&mut *buffer) {
                         Ok(0) => break, // EOF: stop draining; encrypt what we have
                         Ok(_) => {},    // got more, keep pulling
                         Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
