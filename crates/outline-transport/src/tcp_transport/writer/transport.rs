@@ -1,6 +1,7 @@
 use crate::TransportOperation;
 use crate::carrier_padding::{self, CarrierPadding};
 use crate::carrier_queue::{self, BudgetedSender};
+use crate::ws_writer_diag::{KIND_COVER, KIND_CTRL, KIND_DATA, WRITER_SS, send_or_report};
 use crate::{AbortOnDrop, TransportStream};
 use anyhow::{Context, Result, anyhow};
 use futures_util::SinkExt;
@@ -9,7 +10,6 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tracing::warn;
 
 /// Control frames are tiny and rare (Ping/Pong/Close); a deeper
 /// queue would only delay close propagation.
@@ -87,8 +87,7 @@ impl WsWriteTransport {
                         biased;
                         msg = ctrl_rx.recv() => match msg {
                             Some(m) => {
-                                if let Err(error) = ws_sink.send(m).await {
-                                    warn!(%error, "ws writer ctrl send failed, terminating writer task");
+                                if !send_or_report(&mut ws_sink, m, WRITER_SS, KIND_CTRL).await {
                                     return;
                                 }
                                 arm_cover(cover_sleep.as_mut(), &cover);
@@ -102,8 +101,7 @@ impl WsWriteTransport {
                                 // let the queue refill while these bytes are still
                                 // buffered downstream.
                                 let (m, permit) = queued.into_parts();
-                                if let Err(error) = ws_sink.send(m).await {
-                                    warn!(%error, "ws writer data send failed, terminating writer task");
+                                if !send_or_report(&mut ws_sink, m, WRITER_SS, KIND_DATA).await {
                                     return;
                                 }
                                 drop(permit);
@@ -124,8 +122,7 @@ impl WsWriteTransport {
                         msg = data_rx.recv() => match msg {
                             Some(queued) => {
                                 let (m, permit) = queued.into_parts();
-                                if let Err(error) = ws_sink.send(m).await {
-                                    warn!(%error, "ws writer data send failed, terminating writer task");
+                                if !send_or_report(&mut ws_sink, m, WRITER_SS, KIND_DATA).await {
                                     return;
                                 }
                                 drop(permit);
@@ -172,11 +169,8 @@ async fn send_cover(ws_sink: &mut WsSink, cover: &Option<CarrierPadding>) -> boo
     let Some(c) = cover else {
         return true;
     };
-    if let Err(error) = ws_sink.send(Message::Binary(c.cover_frame().into())).await {
-        warn!(%error, "ws writer cover send failed, terminating writer task");
-        return false;
-    }
-    true
+    let frame = Message::Binary(c.cover_frame().into());
+    send_or_report(ws_sink, frame, WRITER_SS, KIND_COVER).await
 }
 
 impl WriteTransport for WsWriteTransport {

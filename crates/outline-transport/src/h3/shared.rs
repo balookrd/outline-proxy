@@ -9,17 +9,16 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use http::{Method, Request};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
-use tracing::info;
 use url::Url;
 
 use crate::shared_cache::{
-    ConnCloseLog, SharedConnectionRegistry, classify_by_substrings, log_conn_close,
+    ConnLife, ConnLifeGuard, ConnLifeLevel, SharedConnectionRegistry, classify_by_substrings,
 };
 use crate::{AbortOnDrop, DnsCache, TransportStream, bind_addr_for, bind_udp_socket};
 
@@ -211,6 +210,10 @@ pub(super) struct SharedH3Connection {
     active_streams: Arc<AtomicU64>,
     _connection_guard: H3ConnectionGuard,
     _driver_task: AbortOnDrop,
+    // Declared last so it drops *after* `_driver_task`: the driver is aborted
+    // first, then this guard writes the `conn_life` close line the aborted task
+    // can no longer produce. Keeps every `connection opened` paired.
+    _conn_life: ConnLifeGuard,
 }
 
 /// RAII counter for the live streams on a single carrier. Cloned off the
@@ -562,14 +565,16 @@ async fn connect_h3_connection(
 
     let id = h3_registry().next_id();
     let streams_opened = Arc::new(AtomicU64::new(0));
-    let streams_opened_driver = Arc::clone(&streams_opened);
-    let opened_at = Instant::now();
-    let peer = server_addr.to_string();
-    let peer_for_driver = peer.clone();
-    info!(
-        target: "outline_transport::conn_life",
-        id, peer = %peer, mode = "h3", "h3 connection opened"
+    // A dial with no cache key is a probe: one-shot, never shared, and by far
+    // the most frequent kind — it keeps its lifecycle pair at debug.
+    let conn_life = ConnLife::open(
+        id,
+        server_addr.to_string(),
+        "h3",
+        ConnLifeLevel::for_cached(cache_key.is_some()),
+        Arc::clone(&streams_opened),
     );
+    let conn_life_driver = Arc::clone(&conn_life);
     let driver_task = AbortOnDrop::new(tokio::spawn(async move {
         let err = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
         if let Some(cache_key) = cache_key {
@@ -578,14 +583,7 @@ async fn connect_h3_connection(
         let err_text = err.to_string();
         let class = classify_h3_close(&err_text);
         let expected = is_expected_h3_close(&err_text);
-        let fields = ConnCloseLog {
-            id,
-            peer: &peer_for_driver,
-            mode: "h3",
-            age_secs: opened_at.elapsed().as_secs(),
-            streams: streams_opened_driver.load(Ordering::Relaxed),
-        };
-        log_conn_close(fields, Some(&err_text), class, expected);
+        conn_life_driver.close(Some(&err_text), class, expected);
     }));
 
     Ok(SharedH3Connection {
@@ -598,6 +596,7 @@ async fn connect_h3_connection(
         active_streams: Arc::new(AtomicU64::new(0)),
         _connection_guard: H3ConnectionGuard(connection_handle),
         _driver_task: driver_task,
+        _conn_life: ConnLifeGuard::new(conn_life),
     })
 }
 

@@ -17,6 +17,33 @@ use tracing::{debug, info, warn};
 
 use crate::accept::acquire_permit_or_shutdown;
 
+/// Failure texts that mean the peer went away rather than that we failed to
+/// serve it. The header-read timeout is the common one: hyper arms it on every
+/// accepted connection (5 s on the metrics and control listeners), so a poller
+/// that opens a socket and disappears — or any half-open connection a NAT
+/// dropped — produces exactly this. Complements the io-kind based
+/// [`is_transport_level_disconnect`], which cannot see errors hyper renders as
+/// plain text.
+///
+/// [`is_transport_level_disconnect`]: outline_transport::is_transport_level_disconnect
+const CLIENT_DISCONNECT_STRINGS: &[&str] = &[
+    "read header from client timeout",
+    "connection closed before message completed",
+    "connection reset",
+    "broken pipe",
+    "unexpected eof",
+    "early eof",
+];
+
+/// `true` when a per-connection failure is the client going away.
+fn is_client_disconnect(error: &anyhow::Error) -> bool {
+    outline_transport::is_transport_level_disconnect(error)
+        || outline_transport::contains_any(
+            &outline_transport::lower_error(error),
+            CLIENT_DISCONNECT_STRINGS,
+        )
+}
+
 pub(crate) struct ServeConfig {
     pub server_name: &'static str,
     pub max_concurrent: usize,
@@ -72,7 +99,16 @@ where
             tokio::select! {
                 res = handle(stream, peer) => {
                     if let Err(error) = res {
-                        warn!(server, %peer, error = %format!("{error:#}"), "request failed");
+                        // A poller that hangs up mid-request is the client's
+                        // business, not a listener fault — the metrics port sees
+                        // a few per minute from any monitoring agent. Keep those
+                        // at debug and reserve `warn!` for failures that say
+                        // something about this process.
+                        if is_client_disconnect(&error) {
+                            debug!(server, %peer, error = %format!("{error:#}"), "request aborted by client");
+                        } else {
+                            warn!(server, %peer, error = %format!("{error:#}"), "request failed");
+                        }
                     }
                 }
                 _ = task_shutdown.wait_for(|&v| v) => {
@@ -101,3 +137,7 @@ where
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/serve.rs"]
+mod tests;
