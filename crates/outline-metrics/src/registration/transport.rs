@@ -7,6 +7,7 @@ pub(super) struct TransportFields {
     pub(super) upstream_transports_total: IntCounterVec,
     pub(super) upstream_transports_active: IntGaugeVec,
     pub(super) metrics_http_requests_total: IntCounterVec,
+    pub(super) carrier_writer_terminations_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> TransportFields {
@@ -46,11 +47,20 @@ pub(super) fn build(registry: &Registry) -> TransportFields {
         ["path", "status"]
     );
 
+    let carrier_writer_terminations_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_carrier_writer_terminations_total",
+        "WebSocket carrier writer tasks stopped by a failed sink write, by writer and reason.",
+        ["writer", "reason"]
+    );
+
     TransportFields {
         transport_connects_total,
         transport_connects_active,
         upstream_transports_total,
         upstream_transports_active,
         metrics_http_requests_total,
+        carrier_writer_terminations_total,
     }
 }

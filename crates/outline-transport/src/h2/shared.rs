@@ -9,7 +9,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
@@ -26,11 +26,10 @@ use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use tracing::info;
 use url::Url;
 
 use crate::shared_cache::{
-    ConnCloseLog, SharedConnectionRegistry, classify_by_substrings, log_conn_close,
+    ConnLife, ConnLifeGuard, ConnLifeLevel, SharedConnectionRegistry, classify_by_substrings,
 };
 use crate::url_utils::{format_authority, websocket_path};
 use crate::{AbortOnDrop, DnsCache, SharedConnectionHealth, TransportStream, connect_tcp_socket};
@@ -213,6 +212,10 @@ struct SharedH2Connection {
     // with a single underlying connection's death.
     streams_opened: Arc<AtomicU64>,
     _driver_task: AbortOnDrop,
+    // Declared last so it drops *after* `_driver_task`: the driver is aborted
+    // first, then this guard writes the `conn_life` close line the aborted task
+    // can no longer produce. Keeps every `connection opened` paired.
+    _conn_life: ConnLifeGuard,
 }
 
 impl SharedH2Connection {
@@ -527,37 +530,32 @@ async fn connect_h2_connection(
     let closed = Arc::new(AtomicBool::new(false));
     let closed_flag = Arc::clone(&closed);
     let streams_opened = Arc::new(AtomicU64::new(0));
-    let streams_opened_driver = Arc::clone(&streams_opened);
-    let opened_at = Instant::now();
-    let peer = server_addr.to_string();
-    let peer_for_driver = peer.clone();
     let mode = if use_tls { "h2s" } else { "h2c" };
-    info!(
-        target: "outline_transport::conn_life",
-        id, peer = %peer, mode, "h2 connection opened"
+    // A dial with no cache key is a probe: one-shot, never shared, and by far
+    // the most frequent kind — it keeps its lifecycle pair at debug.
+    let conn_life = ConnLife::open(
+        id,
+        server_addr.to_string(),
+        mode,
+        ConnLifeLevel::for_cached(cache_key.is_some()),
+        Arc::clone(&streams_opened),
     );
+    let conn_life_driver = Arc::clone(&conn_life);
     let driver_task = AbortOnDrop::new(tokio::spawn(async move {
         let result = conn.await;
         closed_flag.store(true, Ordering::Release);
         if let Some(cache_key) = cache_key {
             h2_registry().invalidate_if_current(&cache_key, id).await;
         }
-        let fields = ConnCloseLog {
-            id,
-            peer: &peer_for_driver,
-            mode,
-            age_secs: opened_at.elapsed().as_secs(),
-            streams: streams_opened_driver.load(Ordering::Relaxed),
-        };
         match result {
-            Ok(()) => log_conn_close(fields, None, "normal", true),
+            Ok(()) => conn_life_driver.close(None, "normal", true),
             Err(error) => {
                 let error_text = error.to_string();
                 let class = classify_h2_close(&error_text);
                 let expected = is_expected_h2_close(&error_text);
-                log_conn_close(fields, Some(&error_text), class, expected);
+                conn_life_driver.close(Some(&error_text), class, expected)
             },
-        }
+        };
     }));
 
     Ok(SharedH2Connection {
@@ -566,6 +564,7 @@ async fn connect_h2_connection(
         closed,
         streams_opened,
         _driver_task: driver_task,
+        _conn_life: ConnLifeGuard::new(conn_life),
     })
 }
 

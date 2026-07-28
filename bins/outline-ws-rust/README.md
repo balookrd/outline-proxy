@@ -1192,6 +1192,15 @@ Both are wired to the dashboard row `Inactive Uplink Leak (Global / Per-Uplink)`
 in `grafana/outline-ws-rust-dashboard.json`. Probe / health-check
 connections are intentionally *not* attributed — the metrics cover only
 user-traffic dials.
+
+`outline_ws_carrier_writer_terminations_total{writer, reason}` counts WebSocket
+carrier writer tasks that stopped because a sink write failed. `writer` is `ss`
+(the SS-over-WS writer) or `frame` (the VLESS byte-chunk / datagram writer);
+`reason` is `peer_closed` when the carrier was already closed — the routine
+case, which is logged at debug — or `error` for a genuine write failure, which
+is still logged at warn. Sustained `reason="error"` means the uplink is failing
+writes; `peer_closed` tracks ordinary session churn. Dashboard row: `Carrier
+Writer Terminations`.
 When TUN UDP forwarding fails before a packet can be delivered upstream, `outline_ws_tun_udp_forward_errors_total{reason}` breaks that down into `all_uplinks_failed`, `transport_error`, `connect_failed`, and `other`.
 Oversized SOCKS5 UDP packets dropped before uplink forwarding, and oversized UDP responses dropped before client delivery, are exported as `outline_ws_udp_oversized_dropped_total{direction="incoming|outgoing", cause}` (the `cause` label distinguishes `quic_dgram`, `vless_quic_dgram`, `vless_udp`, `ss_socket`, `socks_client`, `socks_relay`, `socks_direct`, `socks_in_tcp`).
 Client datagrams the SOCKS5 UDP ingress cannot decode are dropped individually — the association and its other flows keep running — and counted as `outline_ws_udp_malformed_dropped_total{cause}` (`parse` for a malformed SOCKS5 UDP request header or unsupported address type, `reassembly` for a fragment sequence rejected as out-of-order, target-changed, or over the reassembly cap).
@@ -1346,6 +1355,28 @@ RUST_LOG=info
 ```
 
 Use `debug` only during troubleshooting — connection lifecycle and transport-layer events become much more verbose.
+
+Carrier lifecycle lines are emitted on the `outline_transport::conn_life`
+target and are **paired**: every `… connection opened` has exactly one
+`… connection closed`, at the same level, carrying `id`, `peer`, `mode`,
+`age_secs`, `streams`, and a `class`. A connection torn down locally (a probe
+released after its measurement, a cached carrier whose last stream ended) is
+reported by the connection's own drop guard as `class=local_drop` — the driver
+task that watches for a protocol-level close is cancelled on drop and cannot
+report it. Because the pair balances, a real descriptor leak shows up as a
+genuine gap between the two counts; before this pairing existed, `opened` vs
+`closed` read 34 515 vs 0 on a busy node and looked exactly like one.
+
+Shared (cached) carriers log that pair at `info`; probe connections — one dial
+per measurement, tens of thousands a day — log the identical pair at `debug`.
+
+Two other routine events are deliberately kept off `warn`, since neither says
+anything about this process: a WS writer task stopping because its carrier was
+already closed (counted instead by
+`outline_ws_carrier_writer_terminations_total{reason="peer_closed"}`), and an
+HTTP client hanging up on the metrics / control / dashboard listener before its
+request completed (`request aborted by client`). Genuine write failures and
+genuine request failures keep their `warn`.
 
 ### Security Notes
 
