@@ -110,6 +110,13 @@ and the receiver runs each inbound datagram through a streaming decoder before
 the SS / VLESS layer parses it. A `real_len = 0` cover frame on a quiet downlink
 decodes to nothing and is dropped.
 
+"One datagram, one frame" holds only while the carrier itself preserves packet
+boundaries — true on WebSocket, false on XHTTP, whose payload is an HTTP byte
+stream. SS-UDP over XHTTP therefore wraps the (padded or bare) datagram in a
+length-prefixed record of its own; padding sits *inside* that record and the two
+compose in either combination. See
+[SS-UDP record framing over XHTTP](XHTTP-UDP-RECORDS.md).
+
 - **VLESS-UDP** multiplexes TCP and UDP on a *single* path (distinguished by a
   command byte *inside* the first frame), so the server cannot tell the legs
   apart before it reads data — a padded VLESS path therefore *must* pad the UDP

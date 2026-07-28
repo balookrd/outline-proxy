@@ -60,7 +60,7 @@ fn h2_post_headers_match_legacy_per_post_build() {
             }
 
             // New path: base headers cloned per POST (no per-POST delta on h2).
-            let base = super::h2::build_post_headers(&target, profile).unwrap();
+            let base = super::h2::build_post_headers(&target, false, profile).unwrap();
 
             assert_eq!(
                 header_lines(legacy.headers()),
@@ -92,7 +92,7 @@ fn h1_post_headers_match_legacy_per_post_build() {
                 }
 
                 // New path: clone the placeholder base, overwrite Content-Length.
-                let base = super::h1::build_post_headers(&target, profile).unwrap();
+                let base = super::h1::build_post_headers(&target, false, profile).unwrap();
                 let mut new_headers = base.clone();
                 new_headers.insert(header::CONTENT_LENGTH, HeaderValue::from(content_length));
 
@@ -123,7 +123,7 @@ fn h3_post_headers_match_legacy_per_post_build() {
             apply(profile, legacy.headers_mut(), SecFetchPreset::XhrCors);
         }
 
-        let base = super::h3::build_post_headers(profile);
+        let base = super::h3::build_post_headers(false, profile);
 
         assert_eq!(
             header_lines(legacy.headers()),
