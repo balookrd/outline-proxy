@@ -59,33 +59,22 @@ use udp::try_park_vless_udp_single;
 /// UDP and mux onto the same carrier, and their upstream shapes (a bound
 /// `UdpSocket`, a bundle of sub-connections) are not what the v5 splice carries —
 /// so those commands release the relay and are served locally.
-#[allow(clippy::too_many_arguments)]
 pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     socket: T,
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
     resume: ResumeContext,
-    injected_monitor: Option<Arc<throughput_monitor::ThroughputMonitor>>,
     upstream: UpstreamSource,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) =
         mpsc::channel::<T::Msg>(server.ws_data_channel_capacity);
     let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
-    // Per-carrier downstream-throttle monitor. A direct carrier (`None`) builds
-    // it from the route and drives the local detection tick (`Some` only on a
-    // padded path with detection enabled; else `None` keeps the wire identical).
-    // A relayed carrier (`Some`) uses the home monitor the mesh receiver pings
-    // from an edge THROTTLE_HINT and runs NO local tick — the home's send
-    // counters measure the fast home→mesh hop, not the edge→client last mile.
-    let (throttle_monitor, run_local_tick) = match injected_monitor {
-        Some(m) => (Some(m), false),
-        None => (
-            carrier_padding::throttle_params_for_path(&route.path)
-                .map(throughput_monitor::ThroughputMonitor::new),
-            true,
-        ),
-    };
+    // Per-carrier downstream-throttle monitor, built from the route: `Some` only
+    // on a padded path with detection enabled, else `None` keeps the wire
+    // identical.
+    let throttle_monitor = carrier_padding::throttle_params_for_path(&route.path)
+        .map(throughput_monitor::ThroughputMonitor::new);
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
@@ -101,15 +90,11 @@ pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
         carrier_padding::cover_for_path(&route.path),
         throttle_monitor.clone(),
     ));
-    // Detection tick (direct carriers only). Bounded: aborted when this handle
-    // drops at carrier teardown, so it never outlives the carrier.
-    let _throttle_tick = run_local_tick
-        .then(|| {
-            throttle_monitor
-                .clone()
-                .map(|m| AbortOnDrop::new(tokio::spawn(throughput_monitor::run_throttle_tick(m))))
-        })
-        .flatten();
+    // Detection tick. Bounded: aborted when this handle drops at carrier
+    // teardown, so it never outlives the carrier.
+    let _throttle_tick = throttle_monitor
+        .clone()
+        .map(|m| AbortOnDrop::new(tokio::spawn(throughput_monitor::run_throttle_tick(m))));
 
     let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);
     let pong_deadline = ping_interval * WS_PONG_DEADLINE_MULTIPLIER;
@@ -700,10 +685,10 @@ pub(super) async fn handle_vless_connection(
     resume: ResumeContext,
     upstream: UpstreamSource,
 ) -> Result<()> {
-    // Client-terminating carrier either way: no injected monitor, so local
-    // throttle detection runs — including for a relayed session, where this node
-    // owns the last mile to the client.
-    run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, None, upstream).await
+    // Client-terminating carrier either way, so local throttle detection is the
+    // right one — including for a relayed session, where this node still owns
+    // the last mile to the client.
+    run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, upstream).await
 }
 
 pub(in crate::server) async fn handle_vless_h3_connection(
@@ -713,5 +698,5 @@ pub(in crate::server) async fn handle_vless_h3_connection(
     resume: ResumeContext,
     upstream: UpstreamSource,
 ) -> Result<()> {
-    run_vless_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, None, upstream).await
+    run_vless_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, upstream).await
 }

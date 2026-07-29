@@ -309,36 +309,24 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
 /// lives on the home, so this node authenticates the client, attests the user
 /// over the mesh and exchanges plaintext with the home instead of dialling. A
 /// mesh session is never parked here (see [`try_park_on_drop`]).
-#[allow(clippy::too_many_arguments)]
 pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     socket: T,
     server: &WsTcpServerCtx,
     route: &WsTcpRouteCtx,
     resume: ResumeContext,
     peer_addr: Option<SocketAddr>,
-    injected_monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
     upstream: UpstreamSource,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) =
         mpsc::channel::<T::Msg>(server.ws_data_channel_capacity);
     let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
-    // Per-carrier downstream-throttle monitor. A direct carrier (`None`) builds
-    // it from the route and drives the local detection tick — `Some` only on a
-    // padded path with detection enabled (the notice rides a cover frame, so
+    // Per-carrier downstream-throttle monitor, built from the route: `Some` only
+    // on a padded path with detection enabled (the notice rides a cover frame, so
     // only a padded SS carrier — our own clients — can receive it), else `None`
-    // keeps the wire byte-for-byte identical. A relayed carrier (`Some`) instead
-    // uses the home monitor the mesh receiver pings from an edge THROTTLE_HINT,
-    // and runs NO local tick: the home's send counters measure the fast
-    // home→mesh hop, not the throttled edge→client last mile.
-    let (throttle_monitor, run_local_tick) = match injected_monitor {
-        Some(m) => (Some(m), false),
-        None => (
-            carrier_padding::throttle_params_for_path(&route.path)
-                .map(super::throughput_monitor::ThroughputMonitor::new),
-            true,
-        ),
-    };
+    // keeps the wire byte-for-byte identical.
+    let throttle_monitor = carrier_padding::throttle_params_for_path(&route.path)
+        .map(super::throughput_monitor::ThroughputMonitor::new);
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
@@ -352,17 +340,13 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
         carrier_padding::cover_for_path(&route.path),
         throttle_monitor.clone(),
     ));
-    // Detection tick (direct carriers only). Bounded: aborted when this handle
-    // drops at carrier teardown, so it never outlives the carrier.
-    let _throttle_tick = run_local_tick
-        .then(|| {
-            throttle_monitor.clone().map(|m| {
-                crate::server::abort::AbortOnDrop::new(tokio::spawn(
-                    super::throughput_monitor::run_throttle_tick(m),
-                ))
-            })
-        })
-        .flatten();
+    // Detection tick. Bounded: aborted when this handle drops at carrier
+    // teardown, so it never outlives the carrier.
+    let _throttle_tick = throttle_monitor.clone().map(|m| {
+        crate::server::abort::AbortOnDrop::new(tokio::spawn(
+            super::throughput_monitor::run_throttle_tick(m),
+        ))
+    });
 
     let mut decryptor = AeadStreamDecryptor::new(route.users.clone());
     // Try last-seen user first when this peer reconnects: cache hit avoids
@@ -1342,11 +1326,10 @@ pub(super) async fn handle_tcp_connection(
     peer_addr: Option<SocketAddr>,
     upstream: UpstreamSource,
 ) -> Result<()> {
-    // Client-terminating carrier either way: no injected monitor, so local
-    // throttle detection runs — including for a relayed session, where this node
-    // owns the last mile to the client.
-    run_tcp_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, peer_addr, None, upstream)
-        .await
+    // Client-terminating carrier either way, so local throttle detection is the
+    // right one — including for a relayed session, where this node still owns
+    // the last mile to the client.
+    run_tcp_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, peer_addr, upstream).await
 }
 
 pub(in crate::server) async fn handle_tcp_h3_connection(
@@ -1357,7 +1340,7 @@ pub(in crate::server) async fn handle_tcp_h3_connection(
     peer_addr: Option<SocketAddr>,
     upstream: UpstreamSource,
 ) -> Result<()> {
-    run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, peer_addr, None, upstream).await
+    run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, peer_addr, upstream).await
 }
 
 #[cfg(test)]

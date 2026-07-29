@@ -1074,7 +1074,6 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     server: Arc<UdpServerCtx>,
     route: Arc<UdpRouteCtx>,
     resume: ResumeContext,
-    injected_monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
     upstream: UpstreamSource,
 ) -> Result<()> {
     // Cluster edge (v5): the session being served lives on another node, so this
@@ -1100,22 +1099,12 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         nat_scope: OnceCell::new(),
     });
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
-    // Per-carrier downstream-throttle monitor. A direct carrier (`None`) builds
-    // it from the route and drives the local detection tick (`Some` only on a
-    // padded SS-UDP path with detection enabled — the notice rides a cover
-    // datagram only our own padded clients can receive; else `None` keeps the
-    // plain wire unchanged). A relayed carrier (`Some`) uses the home monitor
-    // the mesh receiver pings from an edge THROTTLE_HINT and runs NO local tick —
-    // the home's send counters measure the fast home→mesh hop, not the throttled
-    // edge→client last mile.
-    let (throttle_monitor, run_local_tick) = match injected_monitor {
-        Some(m) => (Some(m), false),
-        None => (
-            carrier_padding::throttle_params_for_path(&route.path)
-                .map(super::throughput_monitor::ThroughputMonitor::new),
-            true,
-        ),
-    };
+    // Per-carrier downstream-throttle monitor, built from the route: `Some` only
+    // on a padded SS-UDP path with detection enabled (the notice rides a cover
+    // datagram only our own padded clients can receive), else `None` keeps the
+    // plain wire unchanged.
+    let throttle_monitor = carrier_padding::throttle_params_for_path(&route.path)
+        .map(super::throughput_monitor::ThroughputMonitor::new);
     // The stream's downlink handle. Every field a response sender carries — the
     // outbound channel, protocol, app protocol, padding scheme and throttle
     // monitor — is fixed for the life of the stream; the only per-datagram part
@@ -1144,17 +1133,13 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
         carrier_padding::cover_for_path(&route.path),
         throttle_monitor.clone(),
     ));
-    // Detection tick (direct carriers only). Bounded: aborted when this handle
-    // drops at carrier teardown, so it never outlives the carrier.
-    let _throttle_tick = run_local_tick
-        .then(|| {
-            throttle_monitor.clone().map(|m| {
-                crate::server::abort::AbortOnDrop::new(tokio::spawn(
-                    super::throughput_monitor::run_throttle_tick(m),
-                ))
-            })
-        })
-        .flatten();
+    // Detection tick. Bounded: aborted when this handle drops at carrier
+    // teardown, so it never outlives the carrier.
+    let _throttle_tick = throttle_monitor.clone().map(|m| {
+        crate::server::abort::AbortOnDrop::new(tokio::spawn(
+            super::throughput_monitor::run_throttle_tick(m),
+        ))
+    });
 
     // Strip carrier padding from inbound datagrams before SS decryption when
     // this path pads. One WS Binary frame carries exactly one padding frame
@@ -1414,10 +1399,10 @@ pub(super) async fn handle_udp_connection(
     resume: ResumeContext,
     upstream: UpstreamSource,
 ) -> Result<()> {
-    // Client-facing carrier either way: no injected monitor, so local throttle
-    // detection runs — this node owns the last mile whether the upstream is its
-    // own NAT or a home's.
-    run_udp_relay::<AxumWs>(AxumWs(socket), server, route, resume, None, upstream).await
+    // Client-facing carrier either way, so local throttle detection is the right
+    // one — this node owns the last mile whether the upstream is its own NAT or
+    // a home's.
+    run_udp_relay::<AxumWs>(AxumWs(socket), server, route, resume, upstream).await
 }
 
 pub(in crate::server) async fn handle_udp_h3_connection(
@@ -1427,7 +1412,7 @@ pub(in crate::server) async fn handle_udp_h3_connection(
     resume: ResumeContext,
     upstream: UpstreamSource,
 ) -> Result<()> {
-    run_udp_relay::<H3Ws>(H3Ws(socket), server, route, resume, None, upstream).await
+    run_udp_relay::<H3Ws>(H3Ws(socket), server, route, resume, upstream).await
 }
 
 #[cfg(test)]

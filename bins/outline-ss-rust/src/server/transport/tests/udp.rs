@@ -348,7 +348,6 @@ async fn response_sender_is_built_once_per_stream() -> Result<()> {
         test_server_ctx(),
         test_route_ctx(&user),
         ResumeContext::default(),
-        None,
         UpstreamSource::Direct,
     ));
 
@@ -394,7 +393,6 @@ async fn reused_response_sender_still_delivers_the_downlink() -> Result<()> {
         test_server_ctx(),
         test_route_ctx(&user),
         ResumeContext::default(),
-        None,
         UpstreamSource::Direct,
     ));
 
@@ -448,7 +446,6 @@ async fn teardown_without_resumption_releases_the_writer() -> Result<()> {
         Arc::clone(&server),
         test_route_ctx(&user),
         ResumeContext::default(),
-        None,
         UpstreamSource::Direct,
     ));
 
@@ -507,7 +504,6 @@ async fn teardown_with_resumption_still_parks_the_nat_keys() -> Result<()> {
             issued_session_id: Some(session_id),
             ..ResumeContext::default()
         },
-        None,
         UpstreamSource::Direct,
     ));
 
@@ -655,7 +651,6 @@ async fn a_burst_of_datagrams_stays_framed_under_concurrent_relays() -> Result<(
         test_server_ctx(),
         test_route_ctx(&user),
         ResumeContext::default(),
-        None,
         UpstreamSource::Direct,
     ));
 
@@ -948,7 +943,6 @@ impl UdpEdgeHarness {
             Arc::clone(&self.server),
             Arc::clone(&self.route),
             edge.resume,
-            None,
             edge.source,
         ));
         (inbound_tx, downlink_rx, relay)
