@@ -442,6 +442,7 @@ impl EdgeHarness {
             pooled,
             &advert,
             &self.cluster,
+            MeshFraming::Tcp,
             &self.server.metrics,
             &self.registry,
         ))
@@ -757,10 +758,7 @@ async fn a_refused_relay_echoes_a_local_id_on_the_ws_and_h3_edges() -> Result<()
 async fn a_refused_relay_echoes_a_local_id_on_the_xhttp_edges() -> Result<()> {
     let (harness, _home) =
         EdgeHarness::with_credentials("beerloga", "edge-secret", HomeAnswer::NoSession).await;
-    let edge = XhttpEdge {
-        stream: harness.open_relay().await,
-        v4: None,
-    };
+    let edge = XhttpEdge { stream: harness.open_relay().await };
     assert!(
         edge.stream.is_none(),
         "the fixture must actually refuse, or this proves nothing"
@@ -821,7 +819,7 @@ async fn an_admitted_relay_echoes_continuity_but_never_confirms_symmetric_replay
     );
 
     // Both XHTTP entry points, which answer with the same echo.
-    let xhttp = XhttpEdge { stream: Some(edge), v4: None };
+    let xhttp = XhttpEdge { stream: Some(edge) };
     let relayed = xhttp
         .relayed_echo()
         .expect("an admitted relay answers with the mesh echo, not the local negotiation");
