@@ -1128,7 +1128,30 @@ git commit -m "feat(cluster): edge terminates SS-TCP crypto and relays plaintext
 
 ---
 
-### Task 6: Edge side — VLESS
+### Task 6: Edge side — VLESS (TCP command only)
+
+**Scoped to the VLESS `Tcp` command.** VLESS multiplexes TCP, UDP and mux on one
+carrier, and its parks come in three kinds (`Parked::Tcp`,
+`Parked::VlessUdpSingle`, `Parked::VlessMux`) while `serve_relayed_v5` serves
+only `Parked::Tcp`. On a `Udp`/`Mux` command the edge resets the mesh stream
+before sending `UserFrame` and serves the session locally; cross-node migration
+for those two degrades to a fresh upstream until Task 7 lands their home paths.
+
+**Also fixes a live defect this task would otherwise expose.** Phase 1
+(`has_park`) is kind-agnostic while `take_for_resume` at `mesh_relay.rs:1311`
+**consumes** the park before the `Parked::Tcp` check at `:1336` — so a park of
+the wrong kind is destroyed before the mismatch is noticed, and the client loops
+reconnecting into repeated destruction. Unreachable today because only SS
+byte-stream edges speak v5 and they always park `Parked::Tcp`. Phase 1 must
+become kind-aware so a foreign kind is refused before anything is consumed.
+
+**Two VLESS-UDP cluster tests assert something that stops being true.**
+`cluster_vless_udp_survives_edge_switch` and `cluster_vless_udp_relays_via_vless_tcp`
+claim one upstream across an edge switch, which v5 cannot honour for
+`VlessUdpSingle` until Task 7. Rewrite them to assert the honest new behaviour
+and state in each doc comment exactly which claim was withdrawn and why — this
+is a deliberate, temporary narrowing, not an accidental weakening. Add a
+VLESS-**TCP** edge-switch test that is strictly stronger for its shape.
 
 **Files:**
 - Modify: `bins/outline-ss-rust/src/server/transport/vless/mod.rs` (`run_vless_relay` at `:46`, auth at `:454`), `vless/tcp.rs` (connect at `:404`, resume at `:177`)
@@ -1197,7 +1220,13 @@ git commit -m "feat(cluster): edge terminates VLESS crypto and relays plaintext 
 
 ---
 
-### Task 7: v5 plaintext UDP home path
+### Task 7: v5 plaintext home paths for the non-TCP park kinds
+
+**Scope covers every park kind `serve_relayed_v5` cannot serve today** —
+`Parked::SsUdpStream`, `Parked::VlessUdpSingle` and `Parked::VlessMux` — not
+SS-UDP alone. Task 6 leaves VLESS-UDP and VLESS-mux degrading to a fresh
+upstream on a foreign shard, so **this task blocks retiring v4** (Task 9):
+until it lands, v4 is the only path with cross-node continuity for them.
 
 Task 3 refuses `MeshFraming::Udp` deliberately, because the UDP home path is not
 a splice like TCP's. A parked SS-UDP session holds only NAT keys and an owner
