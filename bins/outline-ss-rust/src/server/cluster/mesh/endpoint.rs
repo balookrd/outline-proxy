@@ -114,7 +114,7 @@ pub(in crate::server) async fn read_open_ack(recv: &mut RecvStream) -> Result<()
 /// Why [`accept_relay`] yielded no relay stream. The home's accept loop must
 /// tell the two apart: a failure that killed the whole connection ends it, but a
 /// failure confined to one stream must not — the connection is still carrying
-/// live relays (and the control-datagram receiver) that depend on the loop.
+/// live relays that depend on the loop.
 #[derive(Debug)]
 pub(in crate::server) enum AcceptRelayError {
     /// The QUIC connection is gone: the peer closed it, it timed out, or the

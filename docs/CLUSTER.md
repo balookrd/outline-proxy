@@ -265,7 +265,7 @@ error (the peer closed it, it timed out) ends the loop for that peer, while a
 *stream* error — one reset before its OPEN arrived, or an OPEN this build cannot
 parse (a peer mid rolling upgrade, in either direction) — drops only that stream,
 after refusing it explicitly. The connection keeps carrying the relays already
-accepted on it, plus the control-datagram receiver the loop owns.
+accepted on it.
 
 Serving a relay is bounded: the home holds one permit per in-flight relayed
 session (4096 across all peers, the inbound twin of the edge's outbound relay-
@@ -445,13 +445,16 @@ server `[padding] throttle_detect` knob (off by default), read per node like the
 rest of the padding config.
 
 Earlier, when the home did the decryption, the edge could not inject anything and
-instead sent the home a `THROTTLE_HINT` mesh control datagram to do it. The
-sender went with the relay version it belonged to. The home still *decodes and
-counts* such a datagram from a peer on an older build
-(`outline_ss_mesh_throttle_hints_received_total`) rather than logging it as
-malformed — but there is no relayed monitor left for it to reach, so it is
-observability, not behaviour. A steady zero there is the expected reading once
-every node is on this build.
+instead sent the home a `THROTTLE_HINT` mesh control datagram to do it. Both
+halves are gone with the relay version they belonged to: the sender with the v4
+edge detector, and — since a pre-v5 peer's OPEN is refused outright, so it never
+has a relayed session on this home to hint about — the home's receiver, its
+session registry and its two counters
+(`outline_ss_mesh_throttle_hints_received_total`,
+`outline_ss_mesh_control_datagram_errors_total`) with it. The mesh advertises no
+QUIC-datagram support at all now: a straggler that still tries to send a hint
+fails locally on its own send instead of putting bytes on the wire. The relay
+stream carries everything the mesh needs.
 
 ## Security
 
@@ -540,5 +543,7 @@ has an explicit limit:
    detector's floors remain a heuristic. The feature stays off by default; keep
    the budget-vs-sustain ordering in mind when enabling it. The
    `throttle_edge_min_bytes_per_sec` knob belonged to the retired mesh
-   `THROTTLE_HINT` detector and no longer has an effect; it is still accepted so
-   an existing config keeps loading.
+   `THROTTLE_HINT` detector and has no effect. It is still *accepted* (the
+   `[padding]` section rejects unknown keys, so removing the field outright would
+   refuse to load a config that still sets it) and logs a warning on startup;
+   drop it from your configs, and the field goes away in a later release.

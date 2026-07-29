@@ -654,24 +654,6 @@ impl Metrics {
         })
     }
 
-    /// Counts one THROTTLE_HINT the home received. `outcome` is `delivered` when
-    /// it routed to a live relay monitor, or `dropped` when no live monitor was
-    /// registered for the session id.
-    pub fn record_mesh_throttle_hint_received(&self, outcome: &'static str) {
-        with_local_recorder(&self.recorder, || {
-            counter!("outline_ss_mesh_throttle_hints_received_total", "outcome" => outcome)
-                .increment(1);
-        });
-    }
-
-    /// Counts one malformed mesh control datagram the home dropped on a parse
-    /// failure.
-    pub fn record_mesh_control_datagram_error(&self) {
-        with_local_recorder(&self.recorder, || {
-            counter!("outline_ss_mesh_control_datagram_errors_total").increment(1);
-        });
-    }
-
     /// Counts plaintext bytes the server replayed in a v2 Symmetric
     /// Downlink Replay frame (`ORDR`) on a resume hit. Called once per
     /// emitted frame with the payload length; `bytes == 0` is a no-op

@@ -323,14 +323,14 @@ pub(in crate::server::transport) async fn run_tcp_relay<T: WsSocket>(
     let (outbound_data_tx, outbound_data_rx) =
         mpsc::channel::<T::Msg>(server.ws_data_channel_capacity);
     let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
-    // Per-carrier downstream-throttle monitor. A direct carrier (`None`) builds
-    // it from the route and drives the local detection tick — `Some` only on a
-    // padded path with detection enabled (the notice rides a cover frame, so
-    // only a padded SS carrier — our own clients — can receive it), else `None`
-    // keeps the wire byte-for-byte identical. A relayed carrier (`Some`) instead
-    // uses the home monitor the mesh receiver pings from an edge THROTTLE_HINT,
-    // and runs NO local tick: the home's send counters measure the fast
-    // home→mesh hop, not the throttled edge→client last mile.
+    // Per-carrier downstream-throttle monitor, built from the route and driving
+    // the local detection tick: `Some` only on a padded path with detection
+    // enabled (the notice rides a cover frame, so only a padded SS carrier — our
+    // own clients — can receive it), else `None` keeps the wire byte-for-byte
+    // identical. `injected_monitor` served the retired v4 home, which drove a
+    // relayed carrier off the monitor its mesh receiver pinged from an edge
+    // THROTTLE_HINT and ran no local tick; every caller now passes `None`, since
+    // detection lives on the node that terminates the client.
     let (throttle_monitor, run_local_tick) = match injected_monitor {
         Some(m) => (Some(m), false),
         None => (
