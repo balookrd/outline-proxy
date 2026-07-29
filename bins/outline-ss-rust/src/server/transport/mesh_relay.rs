@@ -2161,7 +2161,13 @@ const RELAYED_UDP_PATH: &str = "mesh";
 /// on both framings — but reports `0`, because a datagram session has no uplink
 /// byte offset to be short of. `symmetric_replay` likewise has nothing to
 /// replay: UDP is lossy by contract and no ring is kept.
-#[allow(clippy::too_many_arguments)]
+///
+/// Per-user byte accounting is deliberately absent, as in
+/// [`splice_plaintext_tcp`]: it belongs to the node that terminates the client
+/// session, which here is the edge. The `UdpResponseCoding::Plaintext`
+/// attachment is what carries that decision down into
+/// [`relay_socks5_datagram`] and the NAT reader; this splice counts the same
+/// traffic on its `role="home"` mesh counters instead.
 async fn splice_plaintext_udp(
     stream: MeshStream,
     parked: ParkedSsUdpStream,

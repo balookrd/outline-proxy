@@ -131,8 +131,15 @@ pub(super) async fn nat_reader_task(ctx: NatReaderCtx) {
 
         let protocol = sender.protocol();
         let app_protocol = sender.app_protocol();
-        user_counters.udp_out(app_protocol, protocol).increment(n as u64);
-        metrics.record_udp_response_datagrams(Arc::clone(&user_id), protocol, app_protocol, 1);
+        // Only the node that terminates the client session accounts the user's
+        // bytes; see [`UdpResponseCoding::terminates_client_session`]. The
+        // coding is read from the same snapshot as the sender, so a socket that
+        // changes hands between a decrypting carrier and a relayed one accounts
+        // each response under whichever owns it at that moment.
+        if coding.terminates_client_session() {
+            user_counters.udp_out(app_protocol, protocol).increment(n as u64);
+            metrics.record_udp_response_datagrams(Arc::clone(&user_id), protocol, app_protocol, 1);
+        }
         if sender.send_bytes(Bytes::from(response)).await {
             // Only a delivered response resets the idle timer. Otherwise a
             // chatty upstream pointed at a dead client would hold the NAT
