@@ -532,6 +532,9 @@ async fn boot_h3_edge_node(parts: ClusterParts) -> Result<(H3EdgeNode, UserKey)>
 /// quinn probes use. Aborts its task on drop.
 struct H3ClientNode {
     addr: SocketAddr,
+    /// The node's orphan registry, so a test can assert what it parked — the h3
+    /// node has no `ClusterNode` to reach it through.
+    registry: Arc<OrphanRegistry>,
     h3_task: JoinHandle<Result<()>>,
 }
 
@@ -579,6 +582,7 @@ async fn spawn_combined_xhttp_h3_node(
         0,
         false,
     )?;
+    let registry = Arc::clone(&services.orphan_registry);
     let ctx = H3ServeCtx {
         routes,
         services,
@@ -589,7 +593,7 @@ async fn spawn_combined_xhttp_h3_node(
     };
     let h3_task = tokio::spawn(serve_h3_server(server, ctx, ShutdownSignal::never()));
 
-    Ok((H3ClientNode { addr, h3_task }, user))
+    Ok((H3ClientNode { addr, registry, h3_task }, user))
 }
 
 /// Fabricates a resume id whose shard decodes to `shard` under `psk` — as if a
@@ -742,8 +746,14 @@ async fn park_udp_client_session_on_home(
 /// ends, on the server's own schedule, so every case that resumes has to wait
 /// for it rather than assume it.
 async fn wait_for_park(node: &ClusterNode, id: SessionId) -> Result<()> {
+    wait_for_park_in(&node.registry, id).await
+}
+
+/// [`wait_for_park`] against a bare registry, for the h3 node (which has no
+/// `ClusterNode` wrapper).
+async fn wait_for_park_in(registry: &OrphanRegistry, id: SessionId) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while !node.registry.has_park(id) {
+    while !registry.has_park(id) {
         if tokio::time::Instant::now() >= deadline {
             bail!("the node never parked the session under {}", id.to_hex());
         }
@@ -1550,6 +1560,128 @@ async fn cluster_node_udp_combined_xhttp_no_resume_roundtrips() -> Result<()> {
     );
 
     transport.close().await?;
+    Ok(())
+}
+
+/// A closing SS-UDP-over-XHTTP client must park its session *now*, the way the
+/// WS carrier does — not sit live until the 180 s idle sweep.
+///
+/// The park is what a cross-transport resume takes over, so a carrier that only
+/// releases it on idle eviction cannot be soft-switched: the redial finds no
+/// park, opens a fresh upstream, and the flow's NAT entries stay pinned to a
+/// carrier nobody is reading. XHTTP packet-up has no transport-level FIN — every
+/// request is its own — so the close has to travel as the `X-Xhttp-Fin` hint on
+/// the session's final POST.
+///
+/// Split `/ssu` (no combined discriminator) keeps this on the plainest SS-UDP
+/// shape: the failure is in the carrier, not in path resolution.
+#[tokio::test]
+async fn xhttp_udp_client_close_parks_session() -> Result<()> {
+    const PSK: &[u8] = b"xhttp-udp-close-park-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+    let (node, _user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, Some("/ssu"))
+            .await?;
+
+    let url = Url::parse(&format!("http://{}/ssu", node.listen_addr))?;
+    // Round-trips a datagram, closes the transport, then waits for the park —
+    // the same helper the WS carriers already satisfy in milliseconds.
+    park_udp_client_session_on_home(
+        &node,
+        &url,
+        TransportMode::XhttpH2,
+        CipherKind::Chacha20IetfPoly1305,
+        "secret-b",
+        None,
+        "xhttp-udp-close-park",
+        target_addr,
+    )
+    .await?;
+    Ok(())
+}
+
+/// The teardown the TUN data plane actually performs: the transport is
+/// **dropped**, never closed. `close_udp_flow` drops the flow state and lets the
+/// `AbortOnDrop` chain release the carrier — no `transport.close()` anywhere on
+/// that path — so a park that only happens on an explicit close would never
+/// happen for a tunnelled flow, which is the one that soft-switches.
+///
+/// Dropping aborts the client's XHTTP driver task, so the FIN has to survive the
+/// abort: it is issued from the driver's own drop guard, detached.
+#[tokio::test]
+async fn xhttp_udp_client_drop_parks_session() -> Result<()> {
+    const PSK: &[u8] = b"xhttp-udp-drop-park-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+    let (node, _user) =
+        spawn_cluster_node(PSK, 1, HashMap::new(), Duration::from_secs(4), None, Some("/ssu"))
+            .await?;
+
+    let url = Url::parse(&format!("http://{}/ssu", node.listen_addr))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let (transport, issued, _downgraded) = UdpWsTransport::connect_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        CipherKind::Chacha20IetfPoly1305,
+        "secret-b",
+        None,
+        false,
+        "xhttp-udp-drop-park",
+        None,
+        None,
+        None,
+    )
+    .await?;
+    let issued = issued.context("a resume-capable dial must be issued a session id")?;
+
+    transport.send_packet(&ss_first_chunk(target_addr, b"seed")).await?;
+    let reply = transport.read_packet().await?;
+    anyhow::ensure!(reply.ends_with(b"seed"), "the node must serve the seeding datagram itself");
+
+    drop(transport);
+    wait_for_park(&node, SessionId::from_bytes(*issued.as_bytes())).await?;
+    Ok(())
+}
+
+/// The h3 twin of [`xhttp_udp_client_close_parks_session`], on the combined
+/// `/ssc` base the owner actually deploys. XHTTP-over-h3 has its own request
+/// handler on the server *and* its own packet-up driver on the client, so
+/// neither end's half of the FIN is covered by the h2 case.
+#[tokio::test]
+async fn xhttp_h3_udp_client_close_parks_session() -> Result<()> {
+    const PSK: &[u8] = b"xhttp-h3-udp-close-park-psk";
+    let (target_addr, _sources) = spawn_echo_udp_target().await?;
+    let (node, _user) =
+        spawn_combined_xhttp_h3_node(PSK, 1, HashMap::new(), Duration::from_secs(4), "/ssc")
+            .await?;
+
+    // h3 mandates `https://`; the shared test root is installed on the client by
+    // the node spawner, so the dial trusts the self-signed cert.
+    let url = Url::parse(&format!("https://localhost:{}/ssc", node.addr.port()))?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let (transport, issued, _downgraded) = UdpWsTransport::connect_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH3,
+        CipherKind::Chacha20IetfPoly1305,
+        "secret-b",
+        None,
+        false,
+        "xhttp-h3-udp-close-park",
+        None,
+        None,
+        // Combined base → the hidden UDP discriminator rides the session id.
+        Some(SsPathKind::Udp),
+    )
+    .await?;
+    let issued = issued.context("a resume-capable dial must be issued a session id")?;
+
+    transport.send_packet(&ss_first_chunk(target_addr, b"seed")).await?;
+    let reply = transport.read_packet().await?;
+    anyhow::ensure!(reply.ends_with(b"seed"), "the node must serve the seeding datagram itself");
+
+    transport.close().await?;
+    wait_for_park_in(&node.registry, SessionId::from_bytes(*issued.as_bytes())).await?;
     Ok(())
 }
 

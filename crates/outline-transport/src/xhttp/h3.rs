@@ -13,6 +13,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -452,7 +453,17 @@ async fn driver_loop_h3<T, S>(
     // enough to keep the QUIC connection, its driver task and the endpoint
     // underneath alive until the POST's own deadline expires.
     let mut posts: JoinSet<()> = JoinSet::new();
-    let mut next_seq: u64 = 0;
+    // Shared with the FIN guard — see the h2 sibling; an aborted driver never
+    // reaches the bottom of this function, but its locals still drop.
+    let next_seq = Arc::new(AtomicU64::new(0));
+    let fin = {
+        let send_request = send_request.clone();
+        let uri_prefix = Arc::clone(&uri_prefix);
+        let base_headers = Arc::clone(&base_headers);
+        super::FinOnDrop::new(Arc::clone(&next_seq), move |seq| {
+            Box::pin(send_fin(send_request, uri_prefix, base_headers, seq))
+        })
+    };
     loop {
         let queued = match out_rx.recv().await {
             Some(queued) => queued,
@@ -471,8 +482,7 @@ async fn driver_loop_h3<T, S>(
             Message::Close(_) => break,
             _ => continue,
         };
-        let seq = next_seq;
-        next_seq = next_seq.saturating_add(1);
+        let seq = next_seq.fetch_add(1, Ordering::Relaxed);
         let send = send_request.clone();
         let base_headers = Arc::clone(&base_headers);
         let uri_prefix = Arc::clone(&uri_prefix);
@@ -499,7 +509,30 @@ async fn driver_loop_h3<T, S>(
     // driver never reaches this point — dropping the `JoinSet` aborts the
     // in-flight POSTs instead, which is exactly what bounds the leak.
     while posts.join_next().await.is_some() {}
+    // Dropping `fin` here — after the drain — is what puts the FIN on the wire;
+    // see the h2 sibling for why the ordering matters.
+    drop(fin);
     debug!("xhttp/h3 driver exiting");
+}
+
+/// Closes the session's uplink with an empty `X-Xhttp-Fin` POST — the h3 twin of
+/// the h2 sibling's `send_fin`; see [`super::FinOnDrop`].
+async fn send_fin<T>(
+    send: SendRequest<T, Bytes>,
+    uri_prefix: Arc<str>,
+    base_headers: Arc<HeaderMap>,
+    seq: u64,
+) where
+    T: h3::quic::OpenStreams<Bytes> + Clone + Send + 'static,
+    T::BidiStream: Send,
+{
+    let headers = super::fin_post_headers(&base_headers);
+    let post = post_one(send, &uri_prefix, &headers, seq, Bytes::new());
+    match timeout(super::FIN_TIMEOUT, post).await {
+        Ok(Ok(())) => {},
+        Ok(Err(error)) => debug!(?error, seq, "xhttp/h3 FIN POST failed"),
+        Err(_) => debug!(seq, "xhttp/h3 FIN POST timed out"),
+    }
 }
 
 /// Header map shared by every packet-up POST in an h3 session: just the
