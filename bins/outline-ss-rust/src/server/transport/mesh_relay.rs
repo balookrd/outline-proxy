@@ -1,28 +1,19 @@
-//! Home-side mesh relay: accept relayed carriers from edge peers and serve them
-//! through the existing accept path.
+//! Home-side mesh relay: accept relayed sessions from edge peers and splice
+//! them onto the parked upstreams this node owns.
 //!
 //! A relayed session arrives as a QUIC stream carrying an [`OpenHeader`] plus
-//! the still-encrypted application bytes. We wrap the stream in a
-//! [`MeshCarrier`] (a `WsSocket`) and hand it to the same `run_tcp_relay` /
-//! `run_vless_relay` used for a direct carrier — so crypto, upstream and
-//! park/unpark behave identically. The home authenticates the user from the
-//! relayed stream itself (SS salt / VLESS UUID); the header only carries the
-//! resume id, capabilities, path and client-address hint.
+//! application **plaintext**: the edge terminated the client's crypto, so the
+//! home is a pure session owner. [`serve_relayed`] resolves the park behind the
+//! relayed resume id and splices onto it directly — no route table, no
+//! decryptor, no accept path. There is exactly one wire version; a peer sending
+//! anything else is refused by `accept_relay` before it reaches here.
 //!
 //! Resume: the header's session id is both the requested resume id and the
 //! issued id — the home parks under the id the client already holds (there is
 //! no HTTP response over the mesh to echo a fresh one). See `docs/CLUSTER.md`.
 //!
-//! Two wire versions are served side by side while the fleet migrates. The
-//! paragraph above describes v4, which [`serve_relayed`] still implements
-//! unchanged. In v5 the *edge* terminates the client's crypto and the mesh
-//! carries application plaintext, so [`serve_relayed_v5`] resolves a park and
-//! splices onto it directly — no route table, no crypto, no accept path. The
-//! accept loop dispatches on the OPEN version byte; the two paths share only
-//! the stream and the refusal helper.
-//!
-//! Two v5-only signals keep a resumed session whole; the cluster mesh `frame`
-//! module documents the layout of both. The home opens a resumed splice with an
+//! Two signals keep a resumed session whole; the cluster mesh `frame` module
+//! documents the layout of both. The home opens a resumed splice with an
 //! [`UpstreamAckFrame`] saying how far its upstream socket actually got, and the
 //! edge closes one with a [`CloseIntent`] saying whether to expect the client
 //! back.
@@ -35,13 +26,11 @@ use std::task::{Context as TaskContext, Poll, Waker};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use axum::extract::ws::WebSocketUpgrade;
-use axum::response::Response;
 use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use metrics::Counter;
 use outline_wire::cluster::ShardId;
-use quinn::{Connection, RecvStream, SendStream, VarInt};
+use quinn::{RecvStream, SendStream, VarInt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc};
 use tracing::{debug, warn};
@@ -49,12 +38,10 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    AcceptRelayError, CarrierKind, CloseIntent, CloseReason, ControlDatagram, MAX_USER_LEN,
-    MeshFraming, MeshProtocol, MeshStream, OpenHeader, OpenHeaderV5, PooledRelay, RelayOpen,
-    UpstreamAckFrame, UserFrame, accept_relay, encode_throttle_hint, parse_control_datagram,
-    read_datagram, write_datagram, write_open_ack,
+    AcceptRelayError, CloseIntent, CloseReason, ControlDatagram, MAX_USER_LEN, MeshFraming,
+    MeshProtocol, MeshStream, OpenHeader, PooledRelay, UpstreamAckFrame, UserFrame, accept_relay,
+    parse_control_datagram, read_datagram, write_datagram, write_open_ack,
 };
-use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::server::nat::{NatKey, ResponseSender, UdpResponseCoding, UdpResponseSender};
 use crate::server::resumption::downlink_ring::ReplayOutcome;
 use crate::server::resumption::{
@@ -62,26 +49,17 @@ use crate::server::resumption::{
     ResumeOutcome, SessionId, TcpProtocolContext,
 };
 use crate::server::shutdown::ShutdownSignal;
-use crate::server::state::{
-    RoutesSnapshot, Services, TransportRoute, VlessTransportRoute, empty_transport_route,
-    empty_vless_transport_route,
-};
+use crate::server::state::Services;
 
 use super::super::constants::UDP_MAX_CONCURRENT_RELAY_TASKS;
-use super::carrier_padding;
-use super::mesh_carrier::{MeshCarrier, MeshUdpCarrier};
 use super::resume_headers::{EdgeResumeAdvert, ResumeContext, ResumeResponseEcho};
-use super::tcp::{WsTcpRouteCtx, run_tcp_relay};
-use super::throughput_monitor::ThrottleDetectParams;
 use super::udp::{
-    StreamNatKeys, UdpDatagramCtx, UdpRouteCtx, UdpServerCtx, detach_stream_nat_keys,
-    next_ss_udp_stream_id, reattach_parked_nat_keys, relay_socks5_datagram, run_udp_relay,
+    StreamNatKeys, UdpDatagramCtx, UdpServerCtx, detach_stream_nat_keys, next_ss_udp_stream_id,
+    reattach_parked_nat_keys, relay_socks5_datagram,
 };
 use super::upstream_source::{MeshUpstreamSetup, UpstreamSource};
-use super::vless::{VlessWsRouteCtx, run_vless_relay};
-use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 
-/// Read granularity of the home's v5 plaintext splice, in both directions. Also
+/// Read granularity of the home's plaintext splice, in both directions. Also
 /// the size of the single upstream read buffer the splice allocates once per
 /// relay — the explicit bound on that buffer.
 const MESH_HOME_SPLICE_CHUNK: usize = 64 * 1024;
@@ -92,324 +70,7 @@ const MESH_HOME_SPLICE_CHUNK: usize = 64 * 1024;
 /// [`CloseIntent::metric_label`].
 const CLOSE_NONE: &str = "none";
 
-/// What the edge needs to signal a throttled client segment to the home: the
-/// mesh connection to send the control datagram on, the relayed session id to
-/// key it, and the detection tunables. Built only when throttle detection is
-/// enabled for the path (`None` otherwise, leaving the splice untouched).
-#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
-pub(in crate::server) struct EdgeThrottleCtx {
-    conn: Connection,
-    session_id: [u8; 16],
-    params: ThrottleDetectParams,
-}
-
-/// Builds the edge throttle-detection context for a relay, or `None` when
-/// detection is off for `path`. Must be called before [`PooledRelay::into_parts`]
-/// — it borrows the pooled relay's mesh connection.
-pub(in crate::server) fn edge_throttle_ctx(
-    pooled: &PooledRelay,
-    session_id: SessionId,
-    path: &str,
-) -> Option<EdgeThrottleCtx> {
-    carrier_padding::throttle_params_for_path(path).map(|params| EdgeThrottleCtx {
-        conn: pooled.connection(),
-        session_id: *session_id.as_bytes(),
-        params,
-    })
-}
-
-/// Edge-side detection of a throttled client segment, driven by how long each
-/// downlink write to the client takes. When the home keeps feeding the edge but
-/// the client stops draining, the client-facing `send` blocks; a send that
-/// blocks past a detection window is a stalled window. Sustained past
-/// `sustain_windows`, the edge sends one THROTTLE_HINT datagram to the home
-/// (rate-limited by `signal_cooldown`), which injects an OCTL cover frame so the
-/// client backs off.
-///
-/// The edge times `send` rather than reusing the home's rate-based
-/// [`super::throughput_monitor::ThroughputMonitor`] because a slow mesh shows up
-/// as a *read* stall (waiting on `mesh_recv`), not a *send* stall — only the
-/// throttled client segment blocks the writer.
-#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
-struct EdgeThrottleDetector {
-    ctx: EdgeThrottleCtx,
-    tracker: StallTracker,
-    metrics: Arc<Metrics>,
-}
-
-impl EdgeThrottleDetector {
-    fn new(ctx: EdgeThrottleCtx, metrics: Arc<Metrics>) -> Self {
-        let tracker = StallTracker::new(&ctx.params);
-        Self { ctx, tracker, metrics }
-    }
-
-    /// Feeds one client-facing send's elapsed time and the `bytes` it delivered;
-    /// on a sustained stall that also cleared the low-bandwidth floor and the
-    /// cooldown, fires one THROTTLE_HINT to the home. Fire-and-forget: an
-    /// unreliable QUIC datagram, re-sent next window if lost, idempotent on the
-    /// client.
-    fn observe_send(&mut self, elapsed: Duration, bytes: usize) {
-        if self.tracker.observe(elapsed, bytes, tokio::time::Instant::now()) {
-            let _ = self
-                .ctx
-                .conn
-                .send_datagram(Bytes::from(encode_throttle_hint(&self.ctx.session_id)));
-            self.metrics.record_mesh_throttle_hint_sent();
-            debug!("edge signalled a throttled client segment to the home");
-        }
-    }
-}
-
-/// Pure stall-streak tracker: the counting + floor + cooldown decision behind
-/// [`EdgeThrottleDetector`], split out from the I/O so it is unit-testable
-/// without a live mesh connection. A send spanning one or more detection windows
-/// adds that many stalled windows to the streak (accumulating the bytes it
-/// delivered and the time it took); a fast send resets it. Once the streak
-/// reaches `sustain_windows`, the streak's delivered rate clears
-/// `min_bytes_per_sec`, and the cooldown has elapsed, [`observe`] returns `true`
-/// once and re-arms.
-///
-/// The floor keeps a genuinely slow (or idle) client from tripping a spurious
-/// hint: the edge only sees how long each `send` blocks, and that delivered rate
-/// is capped by the chunk over the window, so without a floor any client slow
-/// enough to block would signal. A streak below the floor is suppressed but not
-/// reset — if delivery climbs past the floor it can still fire.
-///
-/// [`observe`]: StallTracker::observe
-#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
-struct StallTracker {
-    window_secs: f64,
-    sustain_windows: u32,
-    min_bytes_per_sec: u64,
-    cooldown: Duration,
-    sustain: u32,
-    stall_bytes: u64,
-    stall_secs: f64,
-    last_hint: Option<tokio::time::Instant>,
-}
-
-impl StallTracker {
-    fn new(params: &ThrottleDetectParams) -> Self {
-        Self {
-            window_secs: params.window.as_secs_f64().max(0.001),
-            sustain_windows: params.sustain_windows,
-            min_bytes_per_sec: params.edge_min_bytes_per_sec,
-            cooldown: params.signal_cooldown,
-            sustain: 0,
-            stall_bytes: 0,
-            stall_secs: 0.0,
-            last_hint: None,
-        }
-    }
-
-    /// Feeds one send's `elapsed` time and delivered `bytes` at instant `now`;
-    /// returns `true` exactly when a hint should fire (a sustained stall whose
-    /// delivered rate clears the floor, past the cooldown), recording the
-    /// cooldown start and resetting the streak.
-    fn observe(&mut self, elapsed: Duration, bytes: usize, now: tokio::time::Instant) -> bool {
-        let windows = (elapsed.as_secs_f64() / self.window_secs).floor() as u32;
-        if windows >= 1 {
-            self.sustain = self.sustain.saturating_add(windows);
-            self.stall_bytes = self.stall_bytes.saturating_add(bytes as u64);
-            self.stall_secs += elapsed.as_secs_f64();
-        } else {
-            self.sustain = 0;
-            self.stall_bytes = 0;
-            self.stall_secs = 0.0;
-        }
-        if self.sustain < self.sustain_windows {
-            return false;
-        }
-        // Low-bandwidth floor: a sustained stall that delivered too little to the
-        // client is a slow/idle client, not an actionable throttle. Stay quiet
-        // but keep the streak so a later pickup past the floor can still fire.
-        let delivered_rate = if self.stall_secs > 0.0 {
-            self.stall_bytes as f64 / self.stall_secs
-        } else {
-            0.0
-        };
-        if delivered_rate < self.min_bytes_per_sec as f64 {
-            return false;
-        }
-        let cooled = self.last_hint.is_none_or(|t| now.duration_since(t) >= self.cooldown);
-        if !cooled {
-            return false;
-        }
-        self.last_hint = Some(now);
-        self.sustain = 0;
-        self.stall_bytes = 0;
-        self.stall_secs = 0.0;
-        true
-    }
-}
-
-/// Edge-side relay for SS-UDP over **v4**, and with it the whole v4 edge side:
-/// every carrier now terminates its client crypto on the edge and relays
-/// plaintext instead (see [`edge_upstream`] and `transport::udp`'s
-/// `MeshUdpEdge`). Nothing constructs one any more, so this and the helpers it
-/// pulls in — [`EdgeRelay`], [`try_relay_edge_udp`], [`edge_relay_h3_udp`],
-/// [`open_edge_relay`] and the edge throttle detector — carry an explicit
-/// `allow(dead_code)` rather than being deleted piecemeal: the v4 *home* half
-/// below is still served for a mixed-version fleet, and the whole wire version
-/// goes in one later change. Left byte-for-byte as it shipped.
-///
-/// The edge does not decode the SS layer — it moves the WS binary
-/// payload verbatim (padding + ciphertext) so the home strips both — but unlike
-/// a byte stream it preserves datagram boundaries. An SS-UDP packet is atomic —
-/// one client `Binary` frame is one AEAD-sealed packet with no length prefix —
-/// so a raw byte splice would let QUIC coalesce or split packets and the home's
-/// per-packet AEAD open would then fail on a mis-boundaried buffer. Each
-/// direction therefore length-frames the datagram onto the mesh stream
-/// ([`write_datagram`]) and de-frames it off the other side
-/// ([`read_datagram`]). One writer per direction, so backpressure
-/// rides the QUIC / WS windows. The health `budget` bounds a single uplink
-/// datagram write: when the home stops draining, the QUIC send window fills and
-/// the write blocks, and exceeding `budget` resets the stream with
-/// [`CloseReason::Budget`] so the client reconnects rather than hanging. It
-/// measures *progress*, not RTT — a peer that keeps taking bytes keeps renewing
-/// it. See `docs/CLUSTER.md` § Health budget.
-#[allow(dead_code)] // See the note above: v4 only, and no edge builds one now.
-pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
-    client: T,
-    mut mesh_send: SendStream,
-    mut mesh_recv: RecvStream,
-    budget: Duration,
-    detect: Option<EdgeThrottleCtx>,
-    metrics: Arc<Metrics>,
-) -> Result<()> {
-    let (mut reader, mut writer) = client.split_io();
-    // `role="edge"` byte + datagram counters, one pair per direction.
-    let up_bytes = metrics.mesh_bytes_counter("edge", "up", "udp");
-    let up_datagrams = metrics.mesh_datagrams_counter("edge", "up");
-    let down_bytes = metrics.mesh_bytes_counter("edge", "down", "udp");
-    let down_datagrams = metrics.mesh_datagrams_counter("edge", "down");
-
-    // Uplink: the ONLY writer to `mesh_send`. One client Binary = one datagram.
-    let uplink = async {
-        while let Some(msg) = T::recv(&mut reader).await? {
-            match T::classify(msg) {
-                WsFrame::Binary(data) => {
-                    match tokio::time::timeout(budget, write_datagram(&mut mesh_send, &data)).await
-                    {
-                        Ok(result) => result.context("mesh edge uplink datagram write")?,
-                        Err(_elapsed) => {
-                            // Stalled past the budget: the home is not draining.
-                            let _ = mesh_send.reset(VarInt::from_u32(CloseReason::Budget.code()));
-                            bail!("mesh relay stalled past the health budget");
-                        },
-                    }
-                    up_bytes.increment(data.len() as u64);
-                    up_datagrams.increment(1);
-                },
-                WsFrame::Close => break,
-                // The edge does not interpret the carrier; drop control frames.
-                WsFrame::Ping(_) | WsFrame::Pong | WsFrame::Text => {},
-            }
-        }
-        let _ = mesh_send.finish();
-        Ok::<(), anyhow::Error>(())
-    };
-
-    // Downlink: the ONLY writer to the client `writer`. One datagram = one Binary.
-    // When detection is on, time each client-facing send: a send that blocks
-    // means the client isn't draining (edge→client throttle).
-    let downlink = async {
-        let mut detector = detect.map(|ctx| EdgeThrottleDetector::new(ctx, Arc::clone(&metrics)));
-        let mut buf = Vec::new();
-        while let Some(len) = read_datagram(&mut mesh_recv, &mut buf)
-            .await
-            .context("mesh edge downlink datagram read")?
-        {
-            let msg = T::binary_msg(Bytes::copy_from_slice(&buf[..len]));
-            match detector.as_mut() {
-                Some(d) => {
-                    let started = tokio::time::Instant::now();
-                    T::send(&mut writer, msg)
-                        .await
-                        .context("edge client downlink datagram write")?;
-                    d.observe_send(started.elapsed(), len);
-                },
-                None => {
-                    T::send(&mut writer, msg)
-                        .await
-                        .context("edge client downlink datagram write")?;
-                },
-            }
-            down_bytes.increment(len as u64);
-            down_datagrams.increment(1);
-        }
-        T::finish(&mut writer).await;
-        Ok::<(), anyhow::Error>(())
-    };
-
-    tokio::try_join!(uplink, downlink)?;
-    Ok(())
-}
-
-/// Opens a mesh relay to the home for an edge-routed carrier: builds the OPEN
-/// header from the client's advertisement, dials the home and waits for its
-/// setup acknowledgement. Returns the pooled relay on success (the caller
-/// splices the client carrier into it and echoes `advert.session_id` for
-/// continuity), or `None` when the relay is unavailable (the caller serves a
-/// fresh local session instead). Carrier-agnostic, so the axum (h1/h2) and h3
-/// accept paths share it.
-///
-/// Waiting for the ack costs one mesh RTT before the `101`, and buys the
-/// difference between a relay that works and a black hole: a home that does not
-/// serve this path/carrier refuses here, while the client carrier is still
-/// un-upgraded and the caller can still serve it locally. Without the wait the
-/// refusal would only surface once bytes were already flowing — after the
-/// client had been committed to a relay that drops every packet.
-pub(in crate::server) async fn open_edge_relay(
-    cluster: &ClusterCtx,
-    shard: ShardId,
-    advert: &EdgeResumeAdvert,
-    carrier: CarrierKind,
-    path: &str,
-    peer_addr: SocketAddr,
-) -> Option<PooledRelay> {
-    let header = OpenHeader {
-        carrier,
-        session_id: *advert.session_id.as_bytes(),
-        resume_capable: advert.resume_capable,
-        ack_prefix: advert.ack_prefix,
-        symmetric_replay: advert.symmetric_replay,
-        client_down_acked: advert.down_acked,
-        path: path.to_string(),
-        peer_addr: Some(peer_addr),
-    };
-    let mut pooled = match cluster.pool.open_relay(shard, &header).await {
-        Ok(pooled) => pooled,
-        Err(error) => {
-            cluster.metrics.record_mesh_relay_opened("fail");
-            debug!(
-                ?error,
-                shard = shard.get(),
-                "mesh relay open failed; serving a fresh local session",
-            );
-            return None;
-        },
-    };
-    // The home admits or refuses before the client carrier is upgraded. A
-    // refusal is counted apart from an unreachable home: it means the peer is
-    // healthy but cannot serve this path/carrier, which is a config mismatch to
-    // fix, not a transport fault.
-    if let Err(error) = pooled.await_ack(cluster.relay_budget).await {
-        cluster.metrics.record_mesh_relay_opened("refused");
-        warn!(
-            ?error,
-            shard = shard.get(),
-            path,
-            "home refused the mesh relay; serving a fresh local session — check that the home \
-             serves this path and carrier (cluster config must be symmetric)",
-        );
-        return None;
-    }
-    cluster.metrics.record_mesh_relay_opened("ok");
-    Some(pooled)
-}
-
-/// Ceiling on how long a v5 OPEN ack is waited for, whatever the relay's
+/// Ceiling on how long an OPEN ack is waited for, whatever the relay's
 /// progress budget is.
 ///
 /// The wait sits in front of the client's `101`, so every foreign-shard
@@ -423,7 +84,7 @@ pub(in crate::server) async fn open_edge_relay(
 /// its own value (the wait is the smaller of the two).
 const OPEN_ACK_WAIT: Duration = Duration::from_secs(3);
 
-/// The deadline for a v5 OPEN ack: [`OPEN_ACK_WAIT`], never longer than the
+/// The deadline for an OPEN ack: [`OPEN_ACK_WAIT`], never longer than the
 /// relay's own progress budget.
 fn open_ack_wait(relay_budget: Duration) -> Duration {
     relay_budget.min(OPEN_ACK_WAIT)
@@ -449,7 +110,7 @@ fn open_ack_wait(relay_budget: Duration) -> Duration {
 /// `None` means serve the client locally: the home is unreachable, or it holds
 /// no park under this id — an ordinary outcome now that fresh sessions are never
 /// created over the mesh. The caller then becomes the home for a fresh session.
-pub(in crate::server) async fn open_edge_relay_v5(
+pub(in crate::server) async fn open_edge_relay(
     cluster: &ClusterCtx,
     shard: ShardId,
     advert: &EdgeResumeAdvert,
@@ -457,7 +118,7 @@ pub(in crate::server) async fn open_edge_relay_v5(
     protocol: MeshProtocol,
     peer_addr: SocketAddr,
 ) -> Option<PooledRelay> {
-    let header = OpenHeaderV5 {
+    let header = OpenHeader {
         framing,
         protocol,
         session_id: *advert.session_id.as_bytes(),
@@ -467,7 +128,7 @@ pub(in crate::server) async fn open_edge_relay_v5(
         client_down_acked: advert.down_acked,
         peer_addr: Some(peer_addr),
     };
-    let mut pooled = match cluster.pool.open_relay_v5(shard, &header).await {
+    let mut pooled = match cluster.pool.open_relay(shard, &header).await {
         Ok(pooled) => pooled,
         Err(error) => {
             cluster.metrics.record_mesh_relay_opened("fail");
@@ -632,104 +293,12 @@ pub(in crate::server) fn edge_udp_echo(
     }
 }
 
-/// Splices an h3 client carrier to an already-opened mesh relay with datagram
-/// framing, so per-packet SS-UDP boundaries survive the hop. The h3 accept path
-/// holds the carrier directly (not behind an `on_upgrade` closure), so it calls
-/// this after sending the extended-CONNECT response; the pool permit is held for
-/// the relay's lifetime.
-#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
-pub(in crate::server) async fn edge_relay_h3_udp(
-    socket: H3WebSocketStream<H3Stream<H3Transport>>,
-    pooled: PooledRelay,
-    budget: Duration,
-    detect: Option<EdgeThrottleCtx>,
-    metrics: Arc<Metrics>,
-) -> Result<()> {
-    let (send, recv, _permit) = pooled.into_parts();
-    edge_relay_udp::<H3Ws>(H3Ws(socket), send, recv, budget, detect, metrics).await
-}
-
-/// Describes a carrier the edge is about to relay to its home over **v4**. Only
-/// SS-UDP still does: every byte-stream carrier terminates its client crypto on
-/// the edge and relays plaintext instead (see [`edge_upstream`]).
-#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
-pub(in crate::server::transport) struct EdgeRelay {
-    /// Home shard the resume id decoded to.
-    pub(in crate::server::transport) shard: ShardId,
-    /// Raw client resume advertisement to carry in the OPEN header.
-    pub(in crate::server::transport) advert: EdgeResumeAdvert,
-    /// Carrier kind (already resolved to a Tcp/Udp leg for combined-SS).
-    pub(in crate::server::transport) carrier: CarrierKind,
-    /// Request path, for the home's padding-scheme selection and routing.
-    pub(in crate::server::transport) path: Arc<str>,
-    /// Client address hint (logging / routing scope on the home).
-    pub(in crate::server::transport) peer_addr: SocketAddr,
-    /// HTTP version of the client carrier (metrics label).
-    pub(in crate::server::transport) protocol: Protocol,
-    /// Application protocol of the carrier (metrics label).
-    pub(in crate::server::transport) app_protocol: AppProtocol,
-    /// Short carrier name for session-teardown logging (`"tcp"` / `"vless"`).
-    pub(in crate::server::transport) kind: &'static str,
-}
-
-/// Edge side: relay a foreign-shard SS-UDP carrier to its home over the mesh.
-///
-/// The mesh relay is opened **before** the WebSocket `101` handshake so the
-/// echoed session id reflects the real outcome: on success the response upgrades
-/// the client carrier and echoes the id the client already holds (the home parks
-/// under exactly that one), and on failure the [`WebSocketUpgrade`] is handed
-/// back so the caller serves a fresh local session instead. The carrier is
-/// spliced with [`edge_relay_udp`] to preserve datagram boundaries and metrics
-/// are labelled UDP. Takes the [`EdgeRelay`] bundle (with
-/// `carrier` = [`CarrierKind::SsUdp`]); `peer_addr` is a client hint carried in
-/// the OPEN header that the UDP relay does not need for routing.
-#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
-pub(in crate::server::transport) async fn try_relay_edge_udp(
-    ws: WebSocketUpgrade,
-    cluster: &ClusterCtx,
-    metrics: &Arc<Metrics>,
-    relay: EdgeRelay,
-) -> std::result::Result<Response, WebSocketUpgrade> {
-    let EdgeRelay {
-        shard,
-        advert,
-        carrier,
-        path,
-        peer_addr,
-        protocol,
-        app_protocol,
-        kind,
-    } = relay;
-    let Some(pooled) = open_edge_relay(cluster, shard, &advert, carrier, &path, peer_addr).await
-    else {
-        return Err(ws);
-    };
-    let session = metrics.open_websocket_session(Transport::Udp, protocol, app_protocol);
-    let budget = cluster.relay_budget;
-    let detect = edge_throttle_ctx(&pooled, advert.session_id, &path);
-    let echo = ResumeResponseEcho {
-        session_id: Some(advert.session_id),
-        ..Default::default()
-    };
-    let relay_metrics = Arc::clone(metrics);
-    let mut response = ws.on_upgrade(move |socket| async move {
-        let (send, recv, _permit) = pooled.into_parts();
-        let result =
-            edge_relay_udp::<AxumWs>(AxumWs(socket), send, recv, budget, detect, relay_metrics)
-                .await;
-        super::finish_ws_session(session, result, kind);
-    });
-    echo.apply(response.headers_mut());
-    Ok(response)
-}
-
 /// Accepts relayed connections from edge peers until the endpoint closes or the
 /// server shuts down. One task per peer connection; one task per relayed
 /// session on it.
 pub(in crate::server) async fn run_mesh_listener(
     cluster: Arc<ClusterCtx>,
     services: Arc<Services>,
-    routes: RoutesSnapshot,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     loop {
@@ -739,8 +308,7 @@ pub(in crate::server) async fn run_mesh_listener(
                     Some(Ok(conn)) => {
                         let cluster = Arc::clone(&cluster);
                         let services = Arc::clone(&services);
-                        let routes = Arc::clone(&routes);
-                        tokio::spawn(handle_mesh_connection(conn, cluster, services, routes));
+                        tokio::spawn(handle_mesh_connection(conn, cluster, services));
                     },
                     Some(Err(error)) => debug!(?error, "mesh peer connection failed"),
                     None => break, // endpoint closed
@@ -757,7 +325,6 @@ async fn handle_mesh_connection(
     conn: quinn::Connection,
     cluster: Arc<ClusterCtx>,
     services: Arc<Services>,
-    routes: RoutesSnapshot,
 ) {
     // Per-connection control-datagram receiver: routes each THROTTLE_HINT to the
     // matching relay's carrier monitor by session id (waking its writer to inject
@@ -814,24 +381,13 @@ async fn handle_mesh_connection(
         };
         let cluster = Arc::clone(&cluster);
         let services = Arc::clone(&services);
-        let routes = Arc::clone(&routes);
         tokio::spawn(async move {
             // Releases the slot when the relay ends, on every path.
             let _permit = permit;
-            // Version dispatch. Both wire versions are served while the fleet
-            // runs a mix: a v4 edge still relays its still-encrypted carrier
-            // into the legacy path, a v5 edge relays plaintext for a park this
-            // home owns. An unknown version never reaches here — `accept_relay`
-            // already refused it as an unparsable stream.
-            let result = match header {
-                RelayOpen::V4(header) => {
-                    serve_relayed(header, stream, &cluster, &services, &routes).await
-                },
-                RelayOpen::V5(header) => {
-                    serve_relayed_v5(header, stream, &cluster, &services).await
-                },
-            };
-            if let Err(error) = result {
+            // One wire version, so no dispatch: `accept_relay` has already
+            // refused anything this build cannot parse — including a straggler's
+            // retired v4 OPEN — before the stream got here.
+            if let Err(error) = serve_relayed(header, stream, &cluster, &services).await {
                 debug!(?error, "relayed session ended with error");
             }
         });
@@ -846,253 +402,6 @@ fn refuse_relay(stream: MeshStream, reason: CloseReason) {
     let code = VarInt::from_u32(reason.code());
     let _ = send.reset(code);
     let _ = recv.stop(code);
-}
-
-/// The home-side route a relayed carrier will authenticate against, resolved
-/// once from the OPEN header's path and carrier kind.
-enum RelayedRoute {
-    /// Shadowsocks route table entry (`SsTcp` / `SsUdp` and their `*Xhttp` twins).
-    Ss(Arc<TransportRoute>),
-    /// VLESS route table entry (`VlessTcp` / `VlessXhttp`).
-    Vless(Arc<VlessTransportRoute>),
-}
-
-impl RelayedRoute {
-    /// Whether the path resolved to no configured users. Such a route holds no
-    /// key, so every stream/datagram relayed onto it fails authentication.
-    fn is_empty(&self) -> bool {
-        match self {
-            RelayedRoute::Ss(route) => route.users.is_empty(),
-            RelayedRoute::Vless(route) => route.users.is_empty(),
-        }
-    }
-}
-
-/// Resolves the relayed carrier's path against the route table its kind uses.
-/// The `*Xhttp` kinds differ from the WS kinds only in which table holds the
-/// path. `None` for [`CarrierKind::VlessUdp`], which owns no route table (it is
-/// unreachable in practice — VLESS-UDP rides the `VlessTcp` carrier).
-fn resolve_relayed_route(
-    routes: &RoutesSnapshot,
-    carrier: CarrierKind,
-    path: &str,
-) -> Option<RelayedRoute> {
-    let snap = routes.load();
-    Some(match carrier {
-        CarrierKind::SsTcp => {
-            RelayedRoute::Ss(snap.tcp.get(path).cloned().unwrap_or_else(empty_transport_route))
-        },
-        CarrierKind::SsXhttp => {
-            RelayedRoute::Ss(snap.xhttp_ss.get(path).cloned().unwrap_or_else(empty_transport_route))
-        },
-        CarrierKind::SsUdp => {
-            RelayedRoute::Ss(snap.udp.get(path).cloned().unwrap_or_else(empty_transport_route))
-        },
-        CarrierKind::SsUdpXhttp => RelayedRoute::Ss(
-            snap.xhttp_ss_udp
-                .get(path)
-                .cloned()
-                .unwrap_or_else(empty_transport_route),
-        ),
-        CarrierKind::VlessTcp => RelayedRoute::Vless(
-            snap.vless
-                .get(path)
-                .cloned()
-                .unwrap_or_else(empty_vless_transport_route),
-        ),
-        CarrierKind::VlessXhttp => RelayedRoute::Vless(
-            snap.xhttp_vless
-                .get(path)
-                .cloned()
-                .unwrap_or_else(empty_vless_transport_route),
-        ),
-        CarrierKind::VlessUdp => return None,
-    })
-}
-
-/// Refuses a relayed carrier whose path and kind resolve to no configured users
-/// on this home, and says why.
-///
-/// Serving it instead would be a black hole: the relay would run against a route
-/// holding no key, so every stream/datagram on it fails authentication and is
-/// dropped, for the life of the session, with the client seeing only silence.
-/// That is exactly what an asymmetric cluster config produced in production. A
-/// reset carrying [`CloseReason::NoRoute`] instead fails the setup fast and
-/// explicitly, so the edge serves its client a fresh local session. Only
-/// reachable under an asymmetric config; a symmetric cluster (shared PSK +
-/// matching paths and users, the supported topology) always resolves the path.
-fn refuse_unroutable_relay(
-    stream: MeshStream,
-    cluster: &ClusterCtx,
-    carrier: CarrierKind,
-    path: &str,
-) {
-    cluster.metrics.record_mesh_relay_rejected("no_route");
-    warn!(
-        ?carrier,
-        path,
-        "refusing a relayed carrier: it resolves to an empty route on this home, so every packet \
-         would fail authentication — check that this home serves the edge's path and carrier \
-         (cluster config must be symmetric)"
-    );
-    refuse_relay(stream, CloseReason::NoRoute);
-}
-
-/// Dispatches one relayed carrier into the matching accept path.
-async fn serve_relayed(
-    header: OpenHeader,
-    mut stream: MeshStream,
-    cluster: &ClusterCtx,
-    services: &Services,
-    routes: &RoutesSnapshot,
-) -> Result<()> {
-    // The carrier wrapping the mesh stream is built inside each arm: the
-    // TCP/VLESS carriers use the byte-stream `MeshCarrier`, while SS-UDP uses
-    // the datagram-framed `MeshUdpCarrier` (moving `stream` into the arm taken).
-    let path: Arc<str> = Arc::from(header.path.as_str());
-
-    // Admission comes first: resolve the route this carrier would authenticate
-    // against, and refuse the stream outright if it holds no users. Doing it
-    // here — before the active-relay gauge, the throttle registration and the
-    // carrier — keeps an unroutable relay from ever counting as served.
-    let Some(route) = resolve_relayed_route(routes, header.carrier, &path) else {
-        // Unreachable in practice: an edge never builds a VlessUdp carrier.
-        // VLESS-UDP rides the VlessTcp carrier — the edge forwards the VLESS
-        // byte stream verbatim and the home's `run_vless_relay` parses the UDP
-        // command from it. Kept as a defensive refusal (not a panic) in case a
-        // peer sends a forged or mismatched-version header.
-        warn!("unexpected VlessUdp mesh carrier (VLESS-UDP rides VlessTcp); refusing");
-        refuse_relay(stream, CloseReason::Abort);
-        bail!("VlessUdp mesh carrier is unreachable on the edge")
-    };
-    if route.is_empty() {
-        refuse_unroutable_relay(stream, cluster, header.carrier, &path);
-        return Ok(());
-    }
-    // Admitted. The ack is the first downlink byte, ahead of any carrier
-    // payload: it releases the edge to upgrade its client carrier, knowing this
-    // home will actually serve it.
-    write_open_ack(&mut stream.send).await?;
-
-    let padding = carrier_padding::scheme_for_path(&path);
-    let session_id = SessionId::from_bytes(header.session_id);
-    // The home parks under the id the client already holds; there is no HTTP
-    // response over the mesh to hand back a freshly minted one.
-    let resume = ResumeContext {
-        requested_resume: Some(session_id),
-        issued_session_id: Some(session_id),
-        ack_prefix_requested: header.ack_prefix,
-        symmetric_replay_requested: header.symmetric_replay,
-        client_acked_offset: header.client_down_acked,
-    };
-    let peer_addr = header.peer_addr;
-    // The `*Xhttp` carriers differ only in which route table holds the path.
-    let protocol = match header.carrier {
-        CarrierKind::SsXhttp | CarrierKind::VlessXhttp | CarrierKind::SsUdpXhttp => {
-            Protocol::XhttpH3
-        },
-        _ => Protocol::Http3,
-    };
-
-    // Downstream-throttle monitor for this relayed carrier. Built here (not in
-    // the relay) so it can be registered under the session id: the home cannot
-    // detect the throttled edge→client segment locally, so the mesh control-
-    // datagram receiver wakes this writer from an edge THROTTLE_HINT instead. The
-    // registration guard lives across the relay (dropped when this fn returns).
-    // `None` when detection is off for this path — the relay then behaves exactly
-    // as before (byte-for-byte identical wire).
-    let throttle_monitor = carrier_padding::throttle_params_for_path(&path)
-        .map(super::throughput_monitor::ThroughputMonitor::new);
-    let _throttle_registration = throttle_monitor
-        .as_ref()
-        .map(|m| cluster.throttle_registry.register(header.session_id, m));
-
-    // Count this relay as active on the home for its whole lifetime; the guard
-    // drops (decrementing the gauge) on return, including every early bail.
-    let _relay_active = cluster.metrics.open_mesh_relay();
-
-    match (header.carrier, route) {
-        (CarrierKind::SsTcp | CarrierKind::SsXhttp, RelayedRoute::Ss(route)) => {
-            let route_ctx = WsTcpRouteCtx {
-                users: Arc::clone(&route.users),
-                protocol,
-                path: Arc::clone(&path),
-                candidate_users: Arc::clone(&route.candidate_users),
-                peer_user_cache: Arc::clone(&route.peer_user_cache),
-                padding,
-            };
-            run_tcp_relay(
-                MeshCarrier::new(
-                    stream,
-                    cluster.metrics.mesh_bytes_counter("home", "up", "tcp"),
-                    cluster.metrics.mesh_bytes_counter("home", "down", "tcp"),
-                ),
-                &services.tcp_server,
-                &route_ctx,
-                resume,
-                peer_addr,
-                throttle_monitor.clone(),
-                // v4: the home owns the upstream and connects out itself.
-                UpstreamSource::Direct,
-            )
-            .await
-        },
-        (CarrierKind::VlessTcp | CarrierKind::VlessXhttp, RelayedRoute::Vless(route)) => {
-            let route_ctx = VlessWsRouteCtx {
-                users: Arc::clone(&route.users),
-                protocol,
-                path: Arc::clone(&path),
-                candidate_users: Arc::clone(&route.candidate_users),
-                padding,
-                peer: peer_addr.map(|addr| addr.ip()),
-            };
-            run_vless_relay(
-                MeshCarrier::new(
-                    stream,
-                    cluster.metrics.mesh_bytes_counter("home", "up", "tcp"),
-                    cluster.metrics.mesh_bytes_counter("home", "down", "tcp"),
-                ),
-                &services.vless_server,
-                &route_ctx,
-                resume,
-                throttle_monitor.clone(),
-                // v4: the home owns the upstream and connects out itself.
-                UpstreamSource::Direct,
-            )
-            .await
-        },
-        (CarrierKind::SsUdp | CarrierKind::SsUdpXhttp, RelayedRoute::Ss(route)) => {
-            let route_ctx = Arc::new(UdpRouteCtx {
-                users: Arc::clone(&route.users),
-                protocol,
-                path: Arc::clone(&path),
-                candidate_users: Arc::clone(&route.candidate_users),
-                padding,
-            });
-            // Datagram-framed carrier keeps SS-UDP packet boundaries intact
-            // across the mesh; the existing UDP relay owns NAT/park/unpark.
-            run_udp_relay(
-                MeshUdpCarrier::new(
-                    stream,
-                    cluster.metrics.mesh_bytes_counter("home", "up", "udp"),
-                    cluster.metrics.mesh_bytes_counter("home", "down", "udp"),
-                    cluster.metrics.mesh_datagrams_counter("home", "up"),
-                    cluster.metrics.mesh_datagrams_counter("home", "down"),
-                ),
-                Arc::clone(&services.udp_server),
-                route_ctx,
-                resume,
-                throttle_monitor.clone(),
-                // v4: the home owns the NAT entries and connects out itself.
-                UpstreamSource::Direct,
-            )
-            .await
-        },
-        // Unreachable: `resolve_relayed_route` pairs each carrier kind with the
-        // route table it dispatches into, and `VlessUdp` was refused above.
-        // Defensive (not a panic) rather than provable to the compiler.
-        (carrier, _) => bail!("mesh carrier {carrier:?} has no matching relayed route table"),
-    }
 }
 
 /// Upper bound on how long the home waits for the second-phase USER frame after
@@ -1149,14 +458,14 @@ enum SplicableParked {
     SsUdp(ParkedSsUdpStream),
 }
 
-/// Serves one v5 relayed session: the two-phase resume hand-off.
+/// Serves one relayed session: the two-phase resume hand-off.
 ///
-/// Where [`serve_relayed`] admits a still-encrypted carrier and re-runs the
-/// whole accept path against it, this path does none of that — the edge already
-/// terminated the client's crypto, so the home is a pure session owner. There
-/// is no route lookup (the path is a local matter of the edge), no decryptor and
-/// no encryptor: the mesh carries application plaintext inside the QUIC/TLS
-/// tunnel the peers already authenticated to each other with.
+/// The edge already terminated the client's crypto, so the home is a pure
+/// session owner. There is no route lookup (the request path is a local matter
+/// of the edge), no decryptor and no encryptor: the mesh carries application
+/// plaintext inside the QUIC/TLS tunnel the peers already authenticated to each
+/// other with. The retired v4 path that re-ran the whole accept path against a
+/// still-encrypted carrier is gone with the wire version that carried it.
 ///
 /// The two phases exist because the edge must decide what to echo in its `101`
 /// before it can read the client's first encrypted frame, so it cannot name the
@@ -1165,16 +474,16 @@ enum SplicableParked {
 /// always done, one round trip later. A refusal in phase 1 reaches the edge
 /// *before* the client carrier is upgraded, which is what keeps a failed relay
 /// from becoming a black hole.
-async fn serve_relayed_v5(
-    header: OpenHeaderV5,
+async fn serve_relayed(
+    header: OpenHeader,
     mut stream: MeshStream,
     cluster: &ClusterCtx,
     services: &Services,
 ) -> Result<()> {
     let session_id = SessionId::from_bytes(header.session_id);
     let registry = &services.orphan_registry;
-    // The OPEN's framing is the only shape signal a v5 relay carries, and it
-    // names exactly one of the two splices below.
+    // The OPEN's framing is the only shape signal a relay carries, and it names
+    // exactly one of the two splices below.
     let want = match header.framing {
         MeshFraming::Tcp => ParkShape::Stream,
         MeshFraming::Udp => ParkShape::Datagram,
@@ -1774,7 +1083,7 @@ fn splice_end(
 async fn splice_plaintext_tcp(
     stream: MeshStream,
     parked: ParkedTcp,
-    header: &OpenHeaderV5,
+    header: &OpenHeader,
     session_id: SessionId,
     cluster: &ClusterCtx,
     registry: &OrphanRegistry,
@@ -2188,9 +1497,9 @@ const RELAYED_UDP_PATH: &str = "mesh";
 ///
 /// Datagram boundaries are the point (an SS-UDP packet is atomic, and two
 /// coalescing into one decrypt is the production incident this migration
-/// started from), so both directions use the length framing of
-/// [`super::mesh_carrier::MeshUdpCarrier`] — [`read_datagram`] /
-/// [`write_datagram`] — rather than any byte splice. The halves are held
+/// started from), so both directions use the mesh's own length framing —
+/// [`read_datagram`] / [`write_datagram`] — rather than any byte splice. The
+/// halves are held
 /// directly instead of behind that carrier only because the close-intent
 /// handling below needs `reset`/`finish`/`stopped` on the raw stream.
 ///
@@ -2216,7 +1525,7 @@ const RELAYED_UDP_PATH: &str = "mesh";
 async fn splice_plaintext_udp(
     stream: MeshStream,
     parked: ParkedSsUdpStream,
-    header: &OpenHeaderV5,
+    header: &OpenHeader,
     session_id: SessionId,
     user: &str,
     cluster: &ClusterCtx,

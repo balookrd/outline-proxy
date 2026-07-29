@@ -5630,13 +5630,6 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (short_instance) (label_replace(rate(outline_ss_mesh_throttle_hints_sent_total{instance=~\"$instance\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"))",
-          "legendFormat": "{{short_instance}} hints sent (edge)",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
           "expr": "sum by (short_instance, outcome) (label_replace(rate(outline_ss_mesh_throttle_hints_received_total{instance=~\"$instance\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"))",
           "legendFormat": "{{short_instance}} hints recv {{outcome}}",
           "range": true,

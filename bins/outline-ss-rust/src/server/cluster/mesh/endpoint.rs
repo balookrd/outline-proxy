@@ -5,9 +5,9 @@
 use std::net::SocketAddr;
 
 use anyhow::{Context, Result, bail};
-use quinn::{Connection, ConnectionError, Endpoint, RecvStream, SendStream};
+use quinn::{Connection, ConnectionError, Endpoint, RecvStream, SendStream, VarInt};
 
-use super::frame::{OPEN_ACK_ACCEPTED, OpenHeader, OpenHeaderV5, RelayOpen};
+use super::frame::{CloseReason, OPEN_ACK_ACCEPTED, OpenHeader};
 use super::tls::{
     MESH_SERVER_NAME, MeshIdentity, build_mesh_client_quic_config, build_mesh_server_quic_config,
 };
@@ -79,32 +79,19 @@ pub(in crate::server) async fn open_relay_stream(
     conn: &Connection,
     header: &OpenHeader,
 ) -> Result<MeshStream> {
-    open_relay_stream_encoded(conn, &header.encode()).await
-}
-
-/// v5 twin of [`open_relay_stream`]. The framing on the wire is identical — a
-/// length prefix and the encoded header — and the home tells the versions apart
-/// by the header's leading byte.
-pub(in crate::server) async fn open_relay_stream_v5(
-    conn: &Connection,
-    header: &OpenHeaderV5,
-) -> Result<MeshStream> {
-    open_relay_stream_encoded(conn, &header.encode()).await
-}
-
-async fn open_relay_stream_encoded(conn: &Connection, open: &[u8]) -> Result<MeshStream> {
+    let open = header.encode();
     let (mut send, recv) = conn.open_bi().await.context("opening mesh relay stream")?;
     send.write_all(&(open.len() as u32).to_be_bytes())
         .await
         .context("writing mesh OPEN length")?;
-    send.write_all(open).await.context("writing mesh OPEN header")?;
+    send.write_all(&open).await.context("writing mesh OPEN header")?;
     Ok(MeshStream { send, recv })
 }
 
 /// Writes the home's setup acknowledgement, the first downlink byte of an
-/// admitted relay stream. Sent once the home has resolved the relayed carrier to
-/// a servable route, so an edge that has read it knows its client will be served
-/// rather than dropped.
+/// admitted relay stream. Sent once the home has found a park it can splice the
+/// relay onto, so an edge that has read it knows its client's session continues
+/// here rather than being dropped.
 pub(in crate::server) async fn write_open_ack(send: &mut SendStream) -> Result<()> {
     send.write_all(&[OPEN_ACK_ACCEPTED])
         .await
@@ -135,26 +122,40 @@ pub(in crate::server) enum AcceptRelayError {
     Connection(ConnectionError),
     /// One stream failed before it could be served — reset by the peer between
     /// `open_bi` and the OPEN header, or carrying a header this build cannot
-    /// parse (a peer on a newer wire version during a rolling upgrade). The
-    /// connection itself is unaffected. A connection that dies mid-header also
-    /// lands here; the next `accept_relay` then reports it as `Connection`.
+    /// parse: a peer on a newer wire version during a rolling upgrade, or a
+    /// straggler still speaking the retired v4. The connection itself is
+    /// unaffected. A connection that dies mid-header also lands here; the next
+    /// `accept_relay` then reports it as `Connection`.
     Stream(anyhow::Error),
 }
 
-/// Accepts the next relay stream on `conn`, reading and parsing its OPEN
-/// header in whichever wire version the peer sent. The remaining stream bytes
-/// are the relayed carrier payload.
+/// Accepts the next relay stream on `conn`, reading and parsing its OPEN header.
+/// The remaining stream bytes are the relayed session's plaintext body.
+///
+/// A header this build cannot parse is refused *explicitly*, with a
+/// [`CloseReason::Abort`] reset on both halves, rather than left to quinn's drop
+/// semantics. That is what makes version skew cost continuity and not traffic: a
+/// straggler peer — one still sending the retired v4 OPEN — learns on its very
+/// next read that this home will not serve the relay, while its client carrier
+/// is still un-upgraded, and serves that client locally instead of waiting out a
+/// timeout with the session already committed to a black hole.
 pub(in crate::server) async fn accept_relay(
     conn: &Connection,
-) -> std::result::Result<(RelayOpen, MeshStream), AcceptRelayError> {
-    let (send, mut recv) = conn.accept_bi().await.map_err(AcceptRelayError::Connection)?;
-    let header = read_open_header(&mut recv).await.map_err(AcceptRelayError::Stream)?;
-    Ok((header, MeshStream { send, recv }))
+) -> std::result::Result<(OpenHeader, MeshStream), AcceptRelayError> {
+    let (mut send, mut recv) = conn.accept_bi().await.map_err(AcceptRelayError::Connection)?;
+    match read_open_header(&mut recv).await {
+        Ok(header) => Ok((header, MeshStream { send, recv })),
+        Err(error) => {
+            let code = VarInt::from_u32(CloseReason::Abort.code());
+            let _ = send.reset(code);
+            let _ = recv.stop(code);
+            Err(AcceptRelayError::Stream(error))
+        },
+    }
 }
 
-/// Reads the length-prefixed OPEN header prefixing a relay stream, dispatching
-/// on its version byte.
-async fn read_open_header(recv: &mut RecvStream) -> Result<RelayOpen> {
+/// Reads the length-prefixed OPEN header prefixing a relay stream.
+async fn read_open_header(recv: &mut RecvStream) -> Result<OpenHeader> {
     let mut len_buf = [0u8; 4];
     recv.read_exact(&mut len_buf)
         .await
@@ -165,7 +166,7 @@ async fn read_open_header(recv: &mut RecvStream) -> Result<RelayOpen> {
     }
     let mut buf = vec![0u8; len];
     recv.read_exact(&mut buf).await.context("reading mesh OPEN header")?;
-    RelayOpen::parse(&buf)
+    OpenHeader::parse(&buf)
 }
 
 #[cfg(test)]

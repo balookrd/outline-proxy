@@ -242,9 +242,9 @@ fn renders_mesh_traffic_metrics() {
     dg.increment(1);
     dg.increment(1);
 
-    // Throttle-hint accounting: edge sends, home receives (delivered/dropped),
-    // and a malformed control datagram is dropped.
-    metrics.record_mesh_throttle_hint_sent();
+    // Throttle-hint accounting: a home receives (delivered/dropped) and drops a
+    // malformed control datagram. Nothing on this build sends one — that was the
+    // retired v4 edge — so there is no sent-side counter to assert.
     metrics.record_mesh_throttle_hint_received("delivered");
     metrics.record_mesh_throttle_hint_received("dropped");
     metrics.record_mesh_control_datagram_error();
@@ -260,7 +260,6 @@ fn renders_mesh_traffic_metrics() {
         "outline_ss_mesh_bytes_total{role=\"home\",direction=\"up\",transport=\"udp\"} 500"
     ));
     assert!(rendered.contains("outline_ss_mesh_datagrams_total{role=\"edge\",direction=\"up\"} 2"));
-    assert!(rendered.contains("outline_ss_mesh_throttle_hints_sent_total 1"));
     assert!(
         rendered.contains("outline_ss_mesh_throttle_hints_received_total{outcome=\"delivered\"} 1")
     );

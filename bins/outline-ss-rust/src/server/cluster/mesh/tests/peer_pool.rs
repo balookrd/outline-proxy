@@ -5,19 +5,9 @@ use outline_wire::cluster::ShardId;
 use tokio::io::AsyncWriteExt;
 
 use super::super::endpoint::{MeshEndpoint, accept_relay};
-use super::super::frame::{CarrierKind, OpenHeader, RelayOpen};
+use super::super::frame::{MeshFraming, MeshProtocol, OpenHeader};
 use super::super::tls::MeshIdentity;
 use super::*;
-
-/// Unwraps the v4 header these transport-level tests always send. The accept
-/// path now returns a versioned frame; the version dispatch itself is covered
-/// in `frame.rs` and by the home-side relay tests.
-fn expect_v4(open: RelayOpen) -> OpenHeader {
-    match open {
-        RelayOpen::V4(header) => header,
-        RelayOpen::V5(_) => panic!("expected a v4 mesh OPEN header"),
-    }
-}
 
 fn identity(psk: &[u8]) -> MeshIdentity {
     MeshIdentity::derive(psk).unwrap()
@@ -25,13 +15,13 @@ fn identity(psk: &[u8]) -> MeshIdentity {
 
 fn header() -> OpenHeader {
     OpenHeader {
-        carrier: CarrierKind::VlessTcp,
+        framing: MeshFraming::Tcp,
+        protocol: MeshProtocol::Vless,
         session_id: [9u8; 16],
         resume_capable: false,
         ack_prefix: false,
         symmetric_replay: false,
         client_down_acked: 0,
-        path: "/vless".to_string(),
         peer_addr: None,
     }
 }
@@ -54,8 +44,7 @@ async fn open_relay_reaches_the_home_for_its_shard() {
 
     let server = async {
         let conn = home.accept().await.unwrap().unwrap();
-        let (open, mut stream) = accept_relay(&conn).await.unwrap();
-        let hdr = expect_v4(open);
+        let (hdr, mut stream) = accept_relay(&conn).await.unwrap();
         let mut buf = [0u8; 3];
         stream.recv.read_exact(&mut buf).await.unwrap();
         stream.send.write_all(&buf).await.unwrap();

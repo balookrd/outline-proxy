@@ -237,15 +237,15 @@ pub(super) fn register_descriptions() {
         "outline_ss_mesh_relay_opened_total",
         "Edge attempts to open a cluster mesh relay to a home shard, by outcome \
          (ok = relay established; fail = home unreachable / at cap; refused = home \
-         reachable but declined the relay, i.e. it does not serve this path/carrier — \
-         an asymmetric cluster config. All non-ok outcomes degrade to a fresh session)."
+         reachable but holds no park under the relayed resume id — the ordinary \
+         answer for an expired or never-parked session. All non-ok outcomes \
+         degrade to a fresh session)."
     );
     describe_counter!(
         "outline_ss_mesh_relay_rejected_total",
         "Relay streams a home node refused before serving them, by reason \
-         (capacity = already at its concurrent relayed-session cap; no_route = the \
-         relayed path and carrier resolve to no configured users here, so no packet \
-         could authenticate — fix the cluster config; no_session = no park exists \
+         (capacity = already at its concurrent relayed-session cap; \
+         no_session = no park exists \
          under the relayed resume id, or it expired between the two setup phases; \
          unknown_user = a park exists but belongs to another user, so user names \
          disagree across the cluster (or it is a genuine security event); \
@@ -304,15 +304,13 @@ pub(super) fn register_descriptions() {
          give the mean relayed datagram size."
     );
     describe_counter!(
-        "outline_ss_mesh_throttle_hints_sent_total",
-        "THROTTLE_HINT control datagrams an edge sent to a home after detecting a \
-         stalled (throttled) client segment on a relayed carrier."
-    );
-    describe_counter!(
         "outline_ss_mesh_throttle_hints_received_total",
         "THROTTLE_HINT control datagrams a home received from edges, by outcome \
          (delivered = routed to a live relay monitor; dropped = no live monitor for \
-         the session id, e.g. torn down or unknown)."
+         the session id, e.g. torn down or unknown). Only a peer still running a \
+         pre-v5 build emits one: an edge on this build terminates the client's \
+         crypto itself and signals its own client directly, so a steady zero is \
+         the expected reading."
     );
     describe_counter!(
         "outline_ss_mesh_control_datagram_errors_total",

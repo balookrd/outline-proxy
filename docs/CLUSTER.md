@@ -5,11 +5,12 @@
 How several `outline-ss-rust` servers can act as one cluster so that an
 `outline-ws-rust` client may enter through **any** server, while a session
 always stays pinned to its **home** server. A non-home server (the **edge**)
-that the client happens to reach forwards the still-encrypted application
-bytes to the home server over a QUIC **mesh** link, routed by a shard id
-embedded in the session id. If the home is unreachable or the mesh is too
-slow, the system degrades gracefully to a fresh session — exactly the
-behaviour you get today when servers know nothing about each other.
+that the client happens to reach terminates the client's crypto itself and
+forwards the application **plaintext** to the home server over a QUIC **mesh**
+link, routed by a shard id embedded in the session id. If the home is
+unreachable or the mesh is too slow, the system degrades gracefully to a fresh
+session — exactly the behaviour you get today when servers know nothing about
+each other.
 
 This document only covers VLESS and combined-SS carriers; split-SS is out of
 scope for the cluster.
@@ -30,13 +31,15 @@ time.
 ## Roles
 
 - **home** — the server that owns a session: the upstream connection to the
-  target, the SS/VLESS crypto state, and the resumption parking
-  (`OrphanRegistry`). Chosen once, at first connect, and pinned for the life
-  of the session.
-- **edge** — the server that terminated the client carrier. May *be* the home
-  (everything is local) or be a different server (it relays to home).
+  target (or its NAT entries) and the resumption parking (`OrphanRegistry`).
+  Chosen once, at first connect, and pinned for the life of the session. It
+  holds no crypto state for a *relayed* session — only for the clients it
+  serves directly.
+- **edge** — the server that terminated the client carrier, and with it the
+  client's crypto. May *be* the home (everything is local) or be a different
+  server (it relays to home).
 - **mesh** — the authenticated QUIC link edge → home that carries the
-  still-encrypted application bytes.
+  application plaintext, inside its own mutually-authenticated TLS 1.3 tunnel.
 - **shard id** — a 4-bit home identifier embedded in the session id.
 
 ## Shard id in the session id
@@ -89,12 +92,12 @@ available in carrier metadata that arrives ahead of the body:
         ┌─────────────┘└──────────────┐
         ▼                              ▼
   LOCAL (as today)            MESH RELAY to home[shard]
-  accept→crypto→park          terminate carrier, stream
-  →upstream→target            app bytes over mesh QUIC
+  accept→crypto→park          terminate carrier AND crypto,
+  →upstream→target            stream plaintext over mesh QUIC
                                        │
                                        ▼
                               HOME[shard]
-                              accept / crypto / park / unpark
+                              resume the park / re-park
                               upstream → target   (state lives only here)
 ```
 
@@ -104,38 +107,38 @@ later resumes from that client — through any edge — point back to that home.
 So the home is chosen where the client first established the session, normally
 the nearest working server.
 
-## Mesh transport (relay boundary depends on the carrier)
+## Mesh transport (the edge terminates the client's crypto)
 
-Two relay boundaries are in service while the fleet migrates, and they differ in
-what the edge sees.
+There is one relay boundary, and it is the same on every carrier: **the edge
+terminates the client's crypto and relays application plaintext.** It holds the
+SS keys and VLESS UUIDs of its *own* configuration, authenticates the client
+against them, and hands the home nothing but bytes; the home keeps only the
+upstream socket (or the session's NAT entries) and the park, and neither
+decrypts nor re-encrypts anything. This is what makes a session survive a node
+switch without the two nodes having to share client credentials. The plaintext
+never travels in the clear: the mesh is the mutually-authenticated TLS 1.3 QUIC
+tunnel described below, between two nodes that already proved possession of the
+`cluster_psk`.
 
-**Byte streams (SS-TCP and VLESS-TCP, over WS / XHTTP / H3) — the edge
-terminates the client's crypto.** It holds the SS keys and VLESS UUIDs of its
-own configuration, authenticates the client against them, and relays
-**application plaintext** to the home; the home keeps only the upstream socket
-and the park, and neither decrypts nor re-encrypts anything. This is what makes
-a session survive a node switch without the two nodes having to share client
-credentials. The plaintext never travels in the clear: the mesh is the
-mutually-authenticated TLS 1.3 QUIC tunnel described below, between two nodes
-that already proved possession of the `cluster_psk`.
+Only two things about the body reach the home, and both ride the OPEN header:
+how it is **framed** (a byte stream, or length-delimited datagrams) and which
+**proxy protocol** the edge terminated (SS or VLESS). The framing is what the
+home splices; the protocol only keeps a park from being resumed across a
+protocol boundary, the same rule the direct resume paths enforce. There is no
+request path in the header — routing and padding are a local matter of the edge
+— and no carrier kind: WS-versus-XHTTP never reaches the home at all.
 
-**SS-UDP (and every non-TCP park shape) — the home still decrypts.** The edge
-terminates only the carrier (WS frames / H3 stream), extracts the still-encrypted
-SS bytes as-is and tunnels them to the home, which does the crypto and owns the
-upstream. Those carriers stay on the older relay version until the home learns
-to serve their park shapes over the plaintext path.
-
-For SS-UDP the home half of that plaintext path already exists, so the edge can
-migrate without further home work. It routes a relayed datagram with no key at
-all: the **identity** (user, session) arrives once per stream in the setup
-exchange, and the **target** rides inside each datagram, because what a plaintext
-edge forwards is the SOCKS5-wrapped body (`TargetAddr || payload`) the SS-UDP
-packet already contains. Responses take the mirror route — the home wraps the
-upstream datagram and the edge seals it under the client's key, which it must,
-since an SS-2022 response is sealed against the client session id that only the
-decrypting node ever sees. The NAT entry therefore carries the response encoding
-on the *attachment* rather than on the entry, so one upstream socket can be
-served by a decrypting carrier and a relayed one in turn across a session's life.
+An **SS-UDP** relay routes with no key either. The **identity** (user, routing
+mark, session scope) arrives once per stream in the setup exchange, and the
+**target** rides inside each datagram, because what a plaintext edge forwards is
+the SOCKS5-wrapped body (`TargetAddr || payload`) the SS-UDP packet already
+contains. Responses take the mirror route — the home wraps the upstream datagram
+and the edge seals it under the client's key, which it must, since an SS-2022
+response is sealed against the client session id that only the terminating node
+ever sees. The response encoding therefore lives on the NAT entry's *attachment*
+rather than on the entry itself, so one upstream socket can be served by a
+locally-decrypting carrier and a relayed one in turn across a session's life —
+and the same attachment is what decides which node does the per-user accounting.
 
 The identity is also the access rule, and it is worth stating because a relayed
 datagram is otherwise unattested content: `user`, routing mark and session scope
@@ -153,26 +156,20 @@ emits no `user`-labelled `outline_ss_udp_*` series for it at all. Counting on
 both nodes would double every relayed user's bytes and requests, and would do it
 on the home under `protocol="http3"` — the mesh's own protocol — where the
 duplicate is indistinguishable from genuine direct H3 traffic on that node and
-cannot be subtracted back out. The byte-stream splice makes the same split. The
-decision travels with the *attachment* (`UdpResponseCoding`), so a NAT socket
-handed back and forth between a decrypting carrier and a relayed one accounts
-under whichever owns it at that moment. Drops the home itself decided on
-(oversized datagram, relay concurrency limit) are node-local facts counted
-nowhere else, and stay.
+cannot be subtracted back out. The byte-stream splice makes the same split. Drops
+the home itself decided on (oversized datagram, relay concurrency limit) are
+node-local facts counted nowhere else, and stay.
 
-**VLESS-UDP and VLESS-mux have no plaintext home path.** Their park shapes are
+**VLESS-UDP and VLESS-mux have no home splice yet.** Their park shapes are
 indistinguishable from VLESS-TCP in the relay setup — the edge must choose the
-framing before the client's first frame reveals the command — so admitting them
-would consume parks the home cannot serve. They keep the decrypting boundary
-until the relay setup can name them.
+framing before the client's first frame reveals the command — so the home refuses
+such a park in phase 1 (`relay_rejected_total{reason="park_shape"}`) *without
+consuming it*, and the edge serves that client a fresh local session. The park
+survives for a carrier the home can serve.
 
-On that older path the "application bytes" include the **carrier padding
-layer**: the edge carries the padding-wrapped ciphertext through untouched, and
-home does both the padding decode and the AEAD (on the server the two are fused
-— the padding decoder recovers straight into the AEAD ciphertext buffer). This
-is why such an edge can stay padding-unaware and why the throttle `OCTL` cover
-frame (below) survives the relay. A byte-stream edge owns the padding layer
-itself, along with the crypto above it.
+The **carrier padding layer** belongs to the edge along with the crypto above it:
+the edge encodes and decodes padding for its own client and relays unpadded
+plaintext, so the home never sees a padding frame on a relayed session.
 
 - **Link:** long-lived **QUIC** connections between cluster members. QUIC
   mandates a TLS 1.3 handshake (quinn on rustls, aws-lc-rs — the single crypto
@@ -205,57 +202,70 @@ itself, along with the crypto above it.
 Mesh stream control messages:
 
 ```
-OPEN  { session_id, carrier_kind, client_meta (resume headers / addons), peer_addr_hint }
+OPEN  { version, session_id, framing: tcp | udp, protocol: ss | vless,
+        client resume capabilities, peer_addr_hint }
 ACK   { accepted }                       // one byte, home → edge, before any payload
-DATA  { dir: up | down, bytes }          // application bytes, both directions
-CLOSE { reason: fin | abort | budget | capacity | no_route }
+USER  { name }                           // edge → home, after the ack: who it authenticated
+DATA  { dir: up | down, bytes }          // application plaintext, both directions
+CLOSE { reason: fin | abort | budget | capacity | no_session }
        // graceful FIN / RST / health-budget hit / home at its relayed-session
-       // cap / home does not serve this path+carrier
+       // cap / home holds no park under this resume id
 ```
 
-**Setup is acknowledged.** Before relaying a byte, the home resolves the OPEN
-header's path and carrier against its own route tables and answers: one `ACK`
-byte if that resolves to configured users, or a `no_route` reset if it does not.
-The edge waits for that answer *before* it upgrades the client carrier, which is
-what makes a config mismatch survivable: a refused relay leaves the edge free to
-serve the client a fresh local session (`open_relay_total{outcome="refused"}` on
-the edge, `relay_rejected_total{reason="no_route"}` on the home). Without the
-ack the refusal could only surface once bytes were already flowing — with the
-client committed to a relay that authenticates nothing. It costs one mesh RTT on
-the happy path, paid once per relayed session at setup.
+**Setup is a two-phase, acknowledged exchange.** The edge cannot name the user in
+its OPEN: it must decide what to echo in the client's `101` before it can read
+the client's first encrypted frame. So phase 1 asks the narrower question — *is
+there a park under this resume id, of a shape this framing can splice?* — and the
+home answers with one `ACK` byte or a `no_session` reset. Phase 2, one round trip
+later, sends the `USER` frame with the identity the edge authenticated, and the
+home does the owner check it has always done before handing the park over.
 
-This matters because the home authenticates the relayed user from the byte
-stream against the route table the **edge's** path selects. If that path is not
-one this home serves, the route is empty, no configured key can match, and every
-packet on the session would fail authentication and be dropped — silently, for
-the session's whole life. See [Symmetric config](#the-cluster-config-must-be-symmetric).
+The edge waits for the phase-1 answer *before* it upgrades the client carrier,
+which is what makes a refusal survivable: it leaves the edge free to serve the
+client a fresh local session (`open_relay_total{outcome="refused"}` on the edge,
+`relay_rejected_total{reason="no_session"}` on the home). A refusal is the
+**ordinary** answer now — every expired park, every id this home never minted —
+so only a rate near 100% is a symptom. It costs one mesh RTT on the happy path,
+paid once per relayed session at setup.
 
-## The cluster config must be symmetric
+**There is exactly one wire version.** The home parses it and nothing else: a
+peer on a build the cluster has moved past — including one still sending the
+retired v4 OPEN, where the home did the decryption — is refused explicitly, with
+a reset on both halves, before any ack. That edge then serves its client a fresh
+local session. **Version skew costs continuity, not traffic.**
 
-The mesh carries the client's path in the OPEN header, and the home resolves its
-own users against it. So beyond the shared `cluster_psk`, every node must agree
-on the parts of the config a relayed session is resolved through:
+## Per-node config, shared user names
 
-- the **`[websocket]` / `[padding]` paths** (`ws_path_*`, `xhttp_path_*` and the
-  per-user path overrides) — a home that does not serve the edge's path resolves
-  to an empty route;
-- the **users** that may be relayed: same ids, same `password` / `method` /
-  `vless_id`. The edge never decrypts; the home does, using *its own* copy of the
-  user. A per-node password means the relayed stream cannot authenticate even
-  when the path matches.
+Only the `cluster_psk` (and the peer table) has to match across nodes. Paths and
+credentials are deliberately **per-node**: the edge authenticates the client
+against its *own* configuration and the home never decrypts, so nothing about a
+relayed session is resolved on the home at all — no path lookup, no route table,
+no user key. A node can serve `/tcp` where its peer serves `/a1b2`, with a
+different `password` / `method` / `vless_id` per user, and relays between them
+work.
 
-A cluster whose nodes differ in either is not a supported topology: relays
-between them cannot work, and every relayed session degrades to a fresh local
-one (visible as a steady `no_route` refusal rate). Nodes that must keep
-per-node paths or credentials should run standalone (`[cluster] enabled = false`)
-rather than as cluster peers.
+What *must* agree is the **user name**, the identifier `X-Outline-Session` parks
+are keyed to: the home checks the name the edge attests against the park's owner
+before handing the session over. If `beerloga` denotes different people on two
+nodes, a resume is refused
+(`relay_rejected_total{reason="unknown_user"}`) — and that is the desired
+outcome, not a bug to configure around. The same applies across proxy protocols:
+a park authenticated under SS is never handed to a VLESS carrier or the reverse
+(`reason="protocol_mismatch"`).
+
+This is what the earlier design got backwards. When the home did the decryption,
+the relayed *path* and the relayed *user's credentials* both had to be identical
+fleet-wide, and an asymmetry produced a silent black hole — a relay onto a route
+holding no key, every packet failing authentication for the life of the session.
+Moving the crypto to the edge removed the requirement along with the failure
+mode.
 
 The home's accept loop treats the two failure scopes apart: a *connection*
 error (the peer closed it, it timed out) ends the loop for that peer, while a
 *stream* error — one reset before its OPEN arrived, or an OPEN this build cannot
-parse during a rolling upgrade — drops only that stream. The connection keeps
-carrying the relays already accepted on it, plus the control-datagram receiver
-the loop owns.
+parse (a peer mid rolling upgrade, in either direction) — drops only that stream,
+after refusing it explicitly. The connection keeps carrying the relays already
+accepted on it, plus the control-datagram receiver the loop owns.
 
 Serving a relay is bounded: the home holds one permit per in-flight relayed
 session (4096 across all peers, the inbound twin of the edge's outbound relay-
@@ -265,15 +275,18 @@ stream cap). A stream arriving with no permit free is refused with
 and serves that client locally instead. A peer on an older build maps the code
 to `abort`, which is the right fallback.
 
-For VLESS mux, the whole multiplex parks atomically, so the relay carries the
-entire multiplex over one mesh stream and never splits sub-connections across
-streams.
+For VLESS mux, the whole multiplex parks atomically, so the relay would have to
+carry the entire multiplex over one mesh stream and never split sub-connections
+across streams — which is why the home refuses a mux-shaped park rather than
+half-serving it.
 
-For **SS-UDP** the body is not a byte stream. Each SS-UDP packet is atomic — one
-WebSocket `Binary` frame is one AEAD-sealed datagram with no length prefix — so
-the relay length-frames each datagram as `u32 length | payload` on the mesh
-stream and de-frames it on the far side. A raw byte splice would let QUIC
-coalesce or split packets and break the home's per-packet AEAD open. The mesh
+For **SS-UDP** the body is not a byte stream. A datagram is atomic, so the relay
+length-frames each one as `u32 length | payload` on the mesh stream and de-frames
+it on the far side. A raw byte splice would let QUIC coalesce or split packets,
+and the home routes per datagram — a mis-boundaried buffer is a mis-routed
+packet. (Before the crypto moved to the edge the same coalescing broke the home's
+per-packet AEAD open, which is the production incident this framing came from.)
+The mesh
 QUIC stream is reliable and ordered, so the mesh hop no longer drops packets;
 the client↔target UDP path stays best-effort over the last mile, so this only
 improves delivery. On the home, each relayed SS-UDP session is pinned to its own
@@ -282,10 +295,11 @@ the same `(user, target)` — a second edge relaying the same user, or a client
 warm-probe alongside real traffic — never share one upstream socket or
 last-writer-wins response slot; a resume adopts the parked scope, so an edge
 switch still reuses the single entry (one source port to the target).
-**VLESS-UDP needs no such treatment:** it rides the VLESS-TCP
-carrier — the edge forwards the VLESS byte stream verbatim and the home parses
-the UDP command out of it — so an edge never emits a UDP carrier kind for VLESS,
-and VLESS-UDP is covered by the same path as VLESS-TCP.
+**VLESS-UDP is not framed this way:** it rides the VLESS-TCP carrier, so an edge
+never opens a datagram-framed relay for VLESS. What the edge cannot do is tell,
+before the client's first frame, whether the session behind a VLESS resume id is
+TCP, UDP or mux — so it opens a byte-stream relay and the home refuses the
+non-TCP shapes on `park_shape`, leaving the park intact.
 
 ### Health budget ("slow neighbour → tear down")
 
@@ -306,11 +320,12 @@ always long. The mesh is therefore best-effort, not a reliable backbone:
 
 ## Home: park/unpark unchanged
 
-Because the relay boundary is the still-encrypted byte stream, a relayed
-session is **indistinguishable** to the home from a direct client carrier.
-The `OrphanRegistry`, the `Parked` variants and the resume wire protocol work
-**without changes**. The only difference is that the "client transport" is a
-mesh stream from an edge rather than a socket from the client.
+The `OrphanRegistry`, the `Parked` variants and the park/resume semantics are
+the same ones a direct carrier uses: a relayed resume is `take_for_resume(id,
+user)` like any other, and a relayed carrier that ends re-parks the upstream
+under the same id. The difference is that the home splices the park onto a mesh
+stream carrying plaintext instead of re-running its accept path over a client
+socket — so it runs no crypto and no route lookup on that session.
 
 "Park on A, unpark on B" then falls out for free: the client leaves edge A (or
 edge A dies), home parks as it would on any carrier drop; the client arrives at
@@ -372,7 +387,9 @@ wherever the client happened to be when it opened the session.
 | mesh too slow | edge tears down on health budget → fresh session on the edge | lost (acceptable) |
 | home dies | shard points at a dead server; edge cannot reach it over mesh → resume-miss → fresh session | lost (= today) |
 | shard unknown (server decommissioned) | edge treats it as home-down → fresh session | lost |
-| home does not serve the edge's path/carrier (asymmetric config) | home refuses at setup (`no_route`); edge has not upgraded the client yet → fresh session on the edge | lost (config bug — fix the asymmetry) |
+| home holds no park under the resume id (expired, or never minted there) | home refuses at setup (`no_session`); edge has not upgraded the client yet → fresh session on the edge | lost (ordinary — parks expire) |
+| the park is a shape this home cannot splice (VLESS-UDP / mux) | home refuses at setup (`park_shape`) **without consuming the park** → fresh session on the edge | lost on this carrier; the park survives for the next |
+| peer on a retired wire version | home refuses the OPEN outright, before any ack → fresh session on the edge | lost (continuity only; traffic flows) |
 
 ## Interaction with downstream-throttle detection
 
@@ -385,34 +402,33 @@ same uplink index, so it relays over its own mesh stream to the same home and
 is subject to the same caveats below — a detected UDP throttle penalises the
 UDP leg and migrates just it.
 
-- **The signal passes the relay transparently — which validates the relay
-  boundary.** The padding layer (including cover / `OCTL` frames) lives on
-  **home**, on top of the SS/VLESS stream. The edge is a padding-unaware byte
-  relay, so the `OCTL` frame rides through it as ordinary bytes and reaches the
-  client intact. The client's `PaddingDecoder` is stream-oriented (it does not
-  depend on WS message boundaries), so re-framing on the edge does not break
-  it. This *requires* the relay to carry the stream byte-exact — the same
-  invariant the mesh data plane needs anyway.
+- **The signal is produced where the throttled segment is.** The padding layer
+  (including cover / `OCTL` frames) belongs to the node that terminates the
+  client — the edge — so on a relayed session the edge both detects the stalled
+  last mile and injects the `OCTL` frame into its own client's carrier. Nothing
+  about the signal crosses the mesh.
 - **The client reaction is cluster-agnostic.** The client does not know about
   the cluster; it receives `OCTL` over the carrier from the edge, penalises the
   uplink (= that edge) and migrates to another edge — which relays to the same
   home, so the session survives. No client-side change is needed.
-- **But the detector on home measures the wrong segment.** In the cluster,
-  `out`/backlog on home reflect the **home→mesh** segment, not home→client.
-  End-to-end backpressure (the client stalls → the edge stops draining the mesh
-  stream → the QUIC window closes → home sees backlog) makes a client-side
-  throttle propagate to the detector, but home **cannot tell the segments
-  apart**:
+- **A detector on the home would measure the wrong segment**, which is why a
+  relayed session does not run one there. On the home, `out`/backlog reflect the
+  **home→mesh** segment, not home→client. End-to-end backpressure (the client
+  stalls → the edge stops draining the mesh stream → the QUIC window closes →
+  home sees backlog) makes a client-side throttle propagate, but the home
+  **cannot tell the segments apart**:
   - throttle on `edge→client` (the last mile) → switching edge **helps**;
   - throttle on `home→edge` (the cross-country interconnect) → switching edge
     *may* help (a different mesh path);
   - throttle on `home→target` (upstream) → switching edge **does not help**;
     the client flaps between edges, all go on cooldown, and it eventually moves
     to a new home — **losing the park**.
-- **False positives from a slow interconnect** are the main concern: a slow
-  mesh between countries (which this document calls normal) produces backlog on
-  home and so a spurious `OCTL`. The detector, written for a "VPS→Russia last
-  mile", would also fire on the interconnect.
+- **False positives from a slow interconnect** were the main concern for a
+  home-side detector: a slow mesh between countries (which this document calls
+  normal) produces backlog on home and so a spurious `OCTL`. Detecting on the
+  edge removes the confusion structurally — the edge only ever sees the client
+  mile, and a slow interconnect is a *read* stall on the mesh, not a
+  client-facing write stall.
 - **It overlaps the health budget.** Both react to a slow downstream, but
   differently: throttle is *soft* (keep home, drain traffic away), the health
   budget is *hard* (tear the carrier down, new home). Keep the budget a hard
@@ -420,38 +436,22 @@ UDP leg and migrates just it.
   wall-clock than the throttle sustain window — otherwise the budget tears the
   session down (losing the park) before the soft migration can run.
 
-**Edge-side client-segment detection (`THROTTLE_HINT`).** To avoid the wrong-
-segment problem above, a relayed carrier does **not** run home's local detector
-(it would measure `home→mesh`); the **edge** detects the client segment and
-tells home. While it splices the carrier, the edge times each client-facing
-downlink write: when home keeps feeding the relay but the client stops draining,
-that write blocks. A write that blocks past the detection window is a stalled
-window; sustained past `sustain_windows` and rate-limited by `signal_cooldown`,
-the edge sends a `THROTTLE_HINT` — a mesh **control datagram** (a QUIC datagram
-on the relay's connection, keyed by session id; see the mesh transport control
-channel). Home routes it to that session's `ThroughputMonitor` and injects one
-`OCTL` cover frame, which rides the relay to the client exactly as above. It
-runs per mesh stream, so the TCP and UDP legs are covered uniformly.
+**Detection is local to the edge.** Because the edge owns the client's crypto
+and its padded writer, the node that observes the throttled last mile is the node
+that can act on it: it runs the `ThroughputMonitor` over its own client-facing
+carrier and injects the `OCTL` cover frame directly. `home→edge` and
+`home→target` slowness is left to the health budget. Detection is gated on the
+server `[padding] throttle_detect` knob (off by default), read per node like the
+rest of the padding config.
 
-This cleanly separates the segments: the edge sees only the client mile, and a
-slow interconnect shows up as a *read* stall on the mesh stream (waiting on more
-relayed bytes), not a client-`send` stall — so it never trips the edge detector,
-removing the interconnect false positives. `home→edge` / `home→target` slowness
-is left to the health budget. Detection shares the server `[padding]
-throttle_detect` gate (off by default; a symmetric cluster shares one config, so
-enabling it turns on home-local detection for direct carriers **and** the edge
-hint for relayed ones). The edge signal is timing-based, so it carries its own
-low-bandwidth floor to keep a genuinely slow (or idle) client from tripping a
-spurious hint: a stalled streak fires only when the throughput it actually
-delivered to the client clears `throttle_edge_min_bytes_per_sec` (default ~512
-Kbit/s). This is a separate, much lower floor than home's inbound
-`throttle_min_bytes_per_sec` (~8 Mbit/s), because the edge measures how long each
-client-facing `send` blocks and that delivered rate is capped by the chunk over
-the window — reusing the home floor would silence the edge detector outright. Set
-it well below the last-mile throttle target you want to catch. Even so the `OCTL`
-nudge is idempotent and cooldown-limited, so a stray hint costs only one uplink
-reconsideration. The hint is best-effort: an unreliable QUIC datagram, re-sent on
-the next detection window if lost.
+Earlier, when the home did the decryption, the edge could not inject anything and
+instead sent the home a `THROTTLE_HINT` mesh control datagram to do it. The
+sender went with the relay version it belonged to. The home still *decodes and
+counts* such a datagram from a peer on an older build
+(`outline_ss_mesh_throttle_hints_received_total`) rather than logging it as
+malformed — but there is no relayed monitor left for it to reach, so it is
+observability, not behaviour. A steady zero there is the expected reading once
+every node is on this build.
 
 ## Security
 
@@ -463,15 +463,15 @@ the next detection window if lost.
   silent). An observer cannot distinguish "no such shard" from "home is down".
 - **Shard is obfuscated** under the cluster key, so the session id stays
   wire-random for DPI.
-- **What an edge sees depends on the carrier** (see the mesh-transport section
-  above). For a byte stream (SS-TCP / VLESS-TCP) the edge terminates the
-  client's crypto, so it does see that client's plaintext and does hold the
-  credentials its own configuration gives it — the same exposure any entry node
-  has for the sessions it serves directly, and no more: it holds nothing for
-  sessions it is not carrying, and the plaintext crosses the mesh only inside
-  the mutually-authenticated TLS 1.3 QUIC tunnel. For SS-UDP the boundary is
-  still encrypted application bytes, and the edge sees only metadata (a session
-  id; the target is inside the SS stream it does not parse).
+- **What an edge sees** (see the mesh-transport section above). On every
+  carrier the edge terminates the client's crypto, so it does see that client's plaintext and does hold the credentials its own
+  configuration gives it — the same exposure any entry node has for the sessions
+  it serves directly, and no more: it holds nothing for sessions it is not
+  carrying, and the plaintext crosses the mesh only inside the
+  mutually-authenticated TLS 1.3 QUIC tunnel between two nodes that proved
+  possession of the `cluster_psk`. The home, conversely, now holds *no* client
+  key for a relayed session: it cannot read what it forwards beyond the target
+  address it must route on.
 
 ## Configuration
 
@@ -533,13 +533,12 @@ has an explicit limit:
    mesh, a separate phase.
 3. **VLESS mux** parks atomically; the relay must carry the whole multiplex on
    one mesh stream, never splitting it, or partial-resume breaks.
-4. **Downstream-throttle detection on relayed carriers now runs on the edge**
-   (see the section above): the edge times its client-facing writes and sends a
-   `THROTTLE_HINT`, so the home no longer conflates the interconnect with the
-   client last mile. The timing signal now carries an edge-specific
-   delivered-rate floor (`throttle_edge_min_bytes_per_sec`, default ~512 Kbit/s),
-   so a genuinely slow or idle client no longer trips a spurious `OCTL`. Residual:
-   the edge cannot tell a real last-mile throttle from a client whose own link is
-   simply that slow, so the floor is a heuristic — set it below the throttle
-   target you expect but above idle noise. The feature stays off by default; keep
-   the budget-vs-sustain ordering in mind when enabling it.
+4. **Downstream-throttle detection on relayed carriers runs entirely on the
+   edge** (see the section above), so the home no longer conflates the
+   interconnect with the client last mile. Residual: the edge cannot tell a real
+   last-mile throttle from a client whose own link is simply that slow, so the
+   detector's floors remain a heuristic. The feature stays off by default; keep
+   the budget-vs-sustain ordering in mind when enabling it. The
+   `throttle_edge_min_bytes_per_sec` knob belonged to the retired mesh
+   `THROTTLE_HINT` detector and no longer has an effect; it is still accepted so
+   an existing config keeps loading.

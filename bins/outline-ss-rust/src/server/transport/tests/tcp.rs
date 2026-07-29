@@ -19,7 +19,7 @@ use ring::rand::SystemRandom;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, oneshot};
 
-use super::super::mesh_relay::{EdgeUpstream, edge_echo, edge_upstream, open_edge_relay_v5};
+use super::super::mesh_relay::{EdgeUpstream, edge_echo, edge_upstream, open_edge_relay};
 use super::super::resume_headers::{
     ACK_PREFIX_HEADER, EdgeResumeAdvert, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
     SYMMETRIC_REPLAY_HEADER,
@@ -33,7 +33,7 @@ use crate::server::abort::AbortOnDrop;
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     CloseReason, MeshEndpoint, MeshFraming, MeshIdentity, MeshPeerPool, MeshProtocol,
-    OPEN_ACK_ACCEPTED, RelayOpen, ThrottleRegistry, UpstreamAckFrame, UserFrame,
+    OPEN_ACK_ACCEPTED, OpenHeader, ThrottleRegistry, UpstreamAckFrame, UserFrame,
 };
 use crate::server::nat::UdpResponseSender;
 use crate::server::peer_user_cache::PeerUserCache;
@@ -427,7 +427,7 @@ impl EdgeHarness {
         let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 40404));
         let pooled = tokio::time::timeout(
             Duration::from_secs(5),
-            open_edge_relay_v5(
+            open_edge_relay(
                 &self.cluster,
                 self.shard,
                 &advert,
@@ -470,10 +470,7 @@ fn spawn_fake_home(endpoint: MeshEndpoint, answer: HomeAnswer) -> FakeHome {
         recv.read_exact(&mut len).await.expect("reading the OPEN length");
         let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
         recv.read_exact(&mut buf).await.expect("reading the OPEN header");
-        let header = match RelayOpen::parse(&buf).expect("parsing the OPEN header") {
-            RelayOpen::V5(header) => header,
-            RelayOpen::V4(_) => panic!("an SS-TCP edge must open v5, not v4"),
-        };
+        let header = OpenHeader::parse(&buf).expect("parsing the OPEN header");
         assert_eq!(
             header.framing,
             MeshFraming::Tcp,

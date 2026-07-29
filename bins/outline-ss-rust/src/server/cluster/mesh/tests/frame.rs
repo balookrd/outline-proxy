@@ -4,13 +4,13 @@ use super::*;
 
 fn sample(peer_addr: Option<SocketAddr>) -> OpenHeader {
     OpenHeader {
-        carrier: CarrierKind::VlessTcp,
+        framing: MeshFraming::Tcp,
+        protocol: MeshProtocol::Ss,
         session_id: [0xAB; 16],
         resume_capable: true,
         ack_prefix: true,
         symmetric_replay: false,
         client_down_acked: 123_456,
-        path: "/vless".to_string(),
         peer_addr,
     }
 }
@@ -34,30 +34,6 @@ fn round_trip_with_ipv6_peer() {
 }
 
 #[test]
-fn round_trip_all_carrier_kinds() {
-    for carrier in [
-        CarrierKind::SsTcp,
-        CarrierKind::SsUdp,
-        CarrierKind::VlessTcp,
-        CarrierKind::VlessUdp,
-        CarrierKind::SsXhttp,
-        CarrierKind::VlessXhttp,
-        CarrierKind::SsUdpXhttp,
-    ] {
-        let mut h = sample(None);
-        h.carrier = carrier;
-        assert_eq!(OpenHeader::parse(&h.encode()).unwrap().carrier, carrier);
-    }
-}
-
-#[test]
-fn round_trip_empty_path() {
-    let mut h = sample(None);
-    h.path = String::new();
-    assert_eq!(OpenHeader::parse(&h.encode()).unwrap(), h);
-}
-
-#[test]
 fn parse_rejects_truncated() {
     let bytes = sample(None).encode();
     // Every proper prefix shorter than the whole header must be rejected, not
@@ -75,29 +51,22 @@ fn parse_rejects_bad_version() {
 }
 
 #[test]
-fn parse_rejects_overlong_path() {
-    // Hand-build a header claiming a path far past the cap.
-    let mut bytes = sample(None).encode();
-    // path_len is the u16 right after version(1)+carrier(1)+flags(1)+
-    // down_acked(8)+session_id(16) = offset 27.
-    bytes[27] = 0xFF;
-    bytes[28] = 0xFF;
-    assert!(OpenHeader::parse(&bytes).is_err());
-}
-
-#[test]
 fn close_reason_code_round_trips() {
     for reason in [
         CloseReason::Fin,
         CloseReason::Abort,
         CloseReason::Budget,
         CloseReason::Capacity,
-        CloseReason::NoRoute,
+        CloseReason::NoSession,
     ] {
         assert_eq!(CloseReason::from_code(reason.code()), reason);
     }
     // Unknown codes collapse to Abort.
     assert_eq!(CloseReason::from_code(999), CloseReason::Abort);
+    // Code 4 is the retired `NoRoute`: no home performs that route lookup any
+    // more, so a straggler still sending it must read as a plain abort rather
+    // than as some other reason that happened to inherit the number.
+    assert_eq!(CloseReason::from_code(4), CloseReason::Abort);
 }
 
 #[test]
@@ -148,24 +117,8 @@ fn no_session_close_reason_roundtrips_on_the_wire() {
 }
 
 #[test]
-fn v5_header_roundtrips_without_peer_addr() {
-    let header = OpenHeaderV5 {
-        framing: MeshFraming::Tcp,
-        protocol: MeshProtocol::Ss,
-        session_id: [7u8; 16],
-        resume_capable: true,
-        ack_prefix: true,
-        symmetric_replay: false,
-        client_down_acked: 4096,
-        peer_addr: None,
-    };
-    let parsed = OpenHeaderV5::parse(&header.encode()).expect("v5 header parses");
-    assert_eq!(parsed, header);
-}
-
-#[test]
-fn v5_header_roundtrips_with_peer_addr() {
-    let header = OpenHeaderV5 {
+fn a_udp_vless_header_roundtrips_at_the_field_extremes() {
+    let header = OpenHeader {
         framing: MeshFraming::Udp,
         protocol: MeshProtocol::Vless,
         session_id: [9u8; 16],
@@ -175,47 +128,24 @@ fn v5_header_roundtrips_with_peer_addr() {
         client_down_acked: u64::MAX,
         peer_addr: Some("198.51.100.7:443".parse().unwrap()),
     };
-    let parsed = OpenHeaderV5::parse(&header.encode()).expect("v5 header parses");
+    let parsed = OpenHeader::parse(&header.encode()).expect("the header parses");
     assert_eq!(parsed, header);
 }
 
+/// v4 is retired: every edge in a cluster running this build speaks v5. A
+/// straggler still sending a v4 OPEN gets a clean refusal — never a misparse —
+/// so it serves its client locally, which is the documented "version skew costs
+/// continuity, not traffic" behaviour.
 #[test]
-fn v5_parser_refuses_a_v4_frame_and_vice_versa() {
-    let v5 = OpenHeaderV5 {
-        framing: MeshFraming::Tcp,
-        protocol: MeshProtocol::Ss,
-        session_id: [1u8; 16],
-        resume_capable: false,
-        ack_prefix: false,
-        symmetric_replay: false,
-        client_down_acked: 0,
-        peer_addr: None,
-    };
-    let mut encoded = v5.encode();
+fn a_v4_frame_is_refused_outright() {
+    let header = sample(None);
+    let mut encoded = header.encode();
     encoded[0] = 4;
-    OpenHeaderV5::parse(&encoded).expect_err("a v4 frame is not a v5 frame");
-    // ...and the v4 parser refuses a v5 frame, which is what makes a mixed
-    // cluster degrade to a lost resume rather than a misparsed stream.
-    OpenHeader::parse(&v5.encode()).expect_err("a v5 frame is not a v4 frame");
-}
-
-#[test]
-fn peek_open_version_reads_the_leading_byte_without_consuming() {
-    let v5 = OpenHeaderV5 {
-        framing: MeshFraming::Udp,
-        protocol: MeshProtocol::Vless,
-        session_id: [2u8; 16],
-        resume_capable: false,
-        ack_prefix: false,
-        symmetric_replay: false,
-        client_down_acked: 0,
-        peer_addr: None,
-    };
-    let encoded = v5.encode();
-    assert_eq!(peek_open_version(&encoded).unwrap(), 5);
-    // The frame is still fully parseable afterwards.
-    assert_eq!(OpenHeaderV5::parse(&encoded).unwrap(), v5);
-    assert!(peek_open_version(&[]).is_err(), "an empty buffer has no version");
+    let err = OpenHeader::parse(&encoded).expect_err("a v4 frame must be refused");
+    assert!(err.to_string().contains("version"), "got: {err}");
+    // The very same bytes under the current version still parse, so the refusal
+    // is about the version byte and nothing else.
+    assert_eq!(OpenHeader::parse(&header.encode()).unwrap(), header);
 }
 
 #[test]
@@ -225,12 +155,12 @@ fn mesh_framing_covers_only_the_two_shapes() {
     assert!(MeshFraming::from_u8(2).is_err());
 }
 
-/// The protocol rides a spare flag bit, so a v5 peer built before the bit
-/// existed — necessarily an SS edge — must still parse, and its cleared bit must
-/// read as Shadowsocks rather than as "unknown".
+/// The protocol rides a spare flag bit, so a peer built before the bit existed —
+/// necessarily an SS edge — must still parse, and its cleared bit must read as
+/// Shadowsocks rather than as "unknown".
 #[test]
-fn a_v5_header_without_the_vless_flag_reads_as_shadowsocks() {
-    let vless = OpenHeaderV5 {
+fn a_header_without_the_vless_flag_reads_as_shadowsocks() {
+    let vless = OpenHeader {
         framing: MeshFraming::Tcp,
         protocol: MeshProtocol::Vless,
         session_id: [3u8; 16],
@@ -244,7 +174,7 @@ fn a_v5_header_without_the_vless_flag_reads_as_shadowsocks() {
     // Byte 2 is the flag byte; clearing FLAG_VLESS is exactly what an older
     // edge's encoder produces.
     encoded[2] &= !FLAG_VLESS;
-    let parsed = OpenHeaderV5::parse(&encoded).expect("an older v5 header still parses");
+    let parsed = OpenHeader::parse(&encoded).expect("an older header still parses");
     assert_eq!(parsed.protocol, MeshProtocol::Ss);
     assert_eq!(parsed.session_id, vless.session_id, "the rest of the header is unaffected");
 }
@@ -295,8 +225,7 @@ fn for_each_close_reason(mut visit: impl FnMut(CloseReason)) {
             CloseReason::Fin => Some(CloseReason::Abort),
             CloseReason::Abort => Some(CloseReason::Budget),
             CloseReason::Budget => Some(CloseReason::Capacity),
-            CloseReason::Capacity => Some(CloseReason::NoRoute),
-            CloseReason::NoRoute => Some(CloseReason::NoSession),
+            CloseReason::Capacity => Some(CloseReason::NoSession),
             CloseReason::NoSession => None,
         };
     }
@@ -329,7 +258,7 @@ fn close_intent_codes_never_collide_with_a_close_reason() {
     });
     // Guards the chain itself: an arm rewired to skip a variant shows up here
     // rather than as a silently narrower sweep above.
-    assert_eq!(reasons, 6, "every CloseReason variant must be swept");
+    assert_eq!(reasons, 5, "every CloseReason variant must be swept");
 }
 
 #[test]
