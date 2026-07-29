@@ -1415,15 +1415,14 @@ git commit -m "feat(cluster): route relayed plaintext UDP through NAT on the hom
 **Two items inherited from Task 7's review land here, because this task is when
 v5 SS-UDP traffic first flows for real:**
 
-- **A latent cancel-safety defect on the shared UDP relay loop.**
-  `transport/udp.rs:691` selects `T::recv(&mut reader)` against
-  `in_flight.next()`. For `MeshUdpCarrier`, `recv` → `read_datagram` is a
-  multi-step read (4-byte length prefix, then payload) and is **not**
-  cancel-safe: losing the race mid-read drops bytes from the QUIC stream and
-  desyncs every datagram after it — the same class as the production incident
-  that started this work. Task 7 fixed its own v5 pump the right way (construct
-  the future once, `tokio::pin!`, poll only via `&mut`); apply the same shape
-  here. Not live today only because `[cluster] enabled = false` fleet-wide.
+- ~~**A latent cancel-safety defect on the shared UDP relay loop.**~~ **Done
+  ahead of this task**, in its own commit: `run_udp_relay` now builds its
+  `T::recv` once, `tokio::pin!`s it and polls it through `&mut` from an inner
+  select whose other arm drains `in_flight` — the shape Task 7's v5 pump uses.
+  A 64-datagram burst test over a carrier framed like `MeshUdpCarrier`
+  (`a_burst_of_datagrams_stays_framed_under_concurrent_relays` in
+  `transport/tests/udp.rs`) fails against the unpinned loop. Nothing is left
+  here for this item.
 - **No test covers a relayed park later resumed by a *direct* carrier**, in
   either direction. Task 7's `Plaintext → Generate` server-session-id mapping is
   what makes that handover seal correctly; cover it now that both sides exist.
