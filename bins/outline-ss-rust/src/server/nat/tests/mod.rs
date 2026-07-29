@@ -10,10 +10,10 @@ use futures_util::future::BoxFuture;
 
 use super::super::constants::MAX_UDP_PAYLOAD_SIZE;
 use super::reader::record_oversized_socket_response_drop;
-use super::{NatKey, NatLimits, NatTable, ResponseSender, UdpResponseSender};
+use super::{NatKey, NatLimits, NatTable, ResponseSender, ServerSessionId, UdpResponseSender};
 use crate::{
     config::{CipherKind, Config},
-    crypto::{UdpCipherMode, UserKey},
+    crypto::UserKey,
     metrics::{Metrics, Protocol},
 };
 
@@ -92,7 +92,7 @@ async fn drops_oversized_socket_udp_response_and_records_metric() -> Result<()> 
     assert!(record_oversized_socket_response_drop(
         Some(&sender),
         metrics.as_ref(),
-        &user,
+        &user.id_arc(),
         SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 53)),
         MAX_UDP_PAYLOAD_SIZE + 1,
     ));
@@ -155,14 +155,14 @@ fn ignores_non_socket_or_in_range_udp_response_sizes() -> Result<()> {
     assert!(!record_oversized_socket_response_drop(
         Some(&ws_sender),
         metrics.as_ref(),
-        &user,
+        &user.id_arc(),
         SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 53)),
         MAX_UDP_PAYLOAD_SIZE + 1,
     ));
     assert!(!record_oversized_socket_response_drop(
         Some(&ws_sender),
         metrics.as_ref(),
-        &user,
+        &user.id_arc(),
         SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 53)),
         MAX_UDP_PAYLOAD_SIZE,
     ));
@@ -226,13 +226,10 @@ async fn deduplicates_concurrent_nat_entry_creation() -> Result<()> {
     let mut tasks = Vec::new();
     for _ in 0..8 {
         let nat_table = Arc::clone(&nat_table);
-        let user = user.clone();
         let key = key.clone();
         let metrics = Arc::clone(&metrics);
         tasks.push(tokio::spawn(async move {
-            nat_table
-                .get_or_create(key, &user, UdpCipherMode::Legacy, metrics)
-                .await
+            nat_table.get_or_create(key, ServerSessionId::Omit, metrics).await
         }));
     }
 
@@ -314,7 +311,7 @@ async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
             scope: None,
         };
         nat_table
-            .get_or_create(key, &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+            .get_or_create(key, ServerSessionId::Omit, Arc::clone(&metrics))
             .await?;
     }
     assert_eq!(nat_table.len(), 2);
@@ -327,7 +324,7 @@ async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
         scope: None,
     };
     let rejected = nat_table
-        .get_or_create(overflow_key, &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .get_or_create(overflow_key, ServerSessionId::Omit, Arc::clone(&metrics))
         .await;
     assert!(rejected.is_err(), "a new target must be rejected at capacity");
     assert_eq!(nat_table.len(), 2, "a rejected datagram must not add an entry");
@@ -340,7 +337,7 @@ async fn caps_live_entries_and_records_capacity_drop() -> Result<()> {
         scope: None,
     };
     nat_table
-        .get_or_create(live_key, &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .get_or_create(live_key, ServerSessionId::Omit, Arc::clone(&metrics))
         .await?;
     assert_eq!(nat_table.len(), 2);
 
@@ -374,30 +371,25 @@ async fn caps_live_entries_per_user_without_starving_other_users() -> Result<()>
 
     for port in [7001u16, 7002] {
         nat_table
-            .get_or_create(
-                nat_key(&noisy, port),
-                &noisy,
-                UdpCipherMode::Legacy,
-                Arc::clone(&metrics),
-            )
+            .get_or_create(nat_key(&noisy, port), ServerSessionId::Omit, Arc::clone(&metrics))
             .await?;
     }
 
     let rejected = nat_table
-        .get_or_create(nat_key(&noisy, 7003), &noisy, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .get_or_create(nat_key(&noisy, 7003), ServerSessionId::Omit, Arc::clone(&metrics))
         .await;
     assert!(rejected.is_err(), "a new target beyond the per-user cap must be rejected");
     assert_eq!(nat_table.len(), 2, "a rejected datagram must not add an entry");
 
     // The other user is unaffected — the table itself is nowhere near full.
     nat_table
-        .get_or_create(nat_key(&quiet, 7003), &quiet, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .get_or_create(nat_key(&quiet, 7003), ServerSessionId::Omit, Arc::clone(&metrics))
         .await?;
     assert_eq!(nat_table.len(), 3);
 
     // An already-live target of the capped user still resolves to its entry.
     nat_table
-        .get_or_create(nat_key(&noisy, 7001), &noisy, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .get_or_create(nat_key(&noisy, 7001), ServerSessionId::Omit, Arc::clone(&metrics))
         .await?;
     assert_eq!(nat_table.len(), 3, "an existing entry must not consume a fresh slot");
 
@@ -418,11 +410,11 @@ async fn per_user_slots_are_reclaimed_by_idle_eviction() -> Result<()> {
     let user = UserKey::new("solo", "secret-s", None, CipherKind::Chacha20IetfPoly1305, None)?;
 
     let entry = nat_table
-        .get_or_create(nat_key(&user, 7101), &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .get_or_create(nat_key(&user, 7101), ServerSessionId::Omit, Arc::clone(&metrics))
         .await?;
     assert!(
         nat_table
-            .get_or_create(nat_key(&user, 7102), &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+            .get_or_create(nat_key(&user, 7102), ServerSessionId::Omit, Arc::clone(&metrics))
             .await
             .is_err(),
         "the user is at its per-user cap",
@@ -439,7 +431,7 @@ async fn per_user_slots_are_reclaimed_by_idle_eviction() -> Result<()> {
     // Eviction must give the slot back, otherwise the user stays locked out
     // forever once the counter drifts up.
     nat_table
-        .get_or_create(nat_key(&user, 7102), &user, UdpCipherMode::Legacy, Arc::clone(&metrics))
+        .get_or_create(nat_key(&user, 7102), ServerSessionId::Omit, Arc::clone(&metrics))
         .await?;
     assert_eq!(nat_table.len(), 1);
     Ok(())

@@ -42,7 +42,10 @@
 //! the edge replays only the uplink the target never received. It is gated on
 //! the ACK-PREFIX flag the edge itself set in the OPEN, so its presence is never
 //! ambiguous, and it precedes the replay suffix for the same reason the direct
-//! path emits its v1 frame before the v2 "ORDR" one.
+//! path emits its v1 frame before the v2 "ORDR" one. The gate is on the flag
+//! alone, not on the framing: a [`MeshFraming::Udp`] relay sends the frame too
+//! and reports `0`, because a datagram session acknowledges no uplink byte
+//! offset — so the stream head parses identically on both framings.
 //!
 //! Teardown carries the other v5-only signal. The edge always ends its uplink
 //! half with a QUIC FIN — a reset would drop still-unacked request-body bytes —

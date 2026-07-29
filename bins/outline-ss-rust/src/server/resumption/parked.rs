@@ -8,9 +8,10 @@
 //! - `VlessMux` — atomic park of an entire VLESS mux session, including
 //!   every TCP and UDP sub-connection multiplexed inside it.
 //!
-//! Direct SS-UDP and SS-over-raw-QUIC are non-goals per the spec; the
-//! SS-UDP-over-WS variant requires NAT-table API changes and is left
-//! for a follow-up revision.
+//! - `SsUdpStream` — an SS-UDP-over-WS stream, preserved as the set of
+//!   NAT keys it was the registered responder of.
+//!
+//! Direct SS-UDP and SS-over-raw-QUIC are non-goals per the spec.
 
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, sync::atomic::AtomicU64};
 
