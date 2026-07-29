@@ -203,7 +203,7 @@ pub(crate) struct ParkedVlessUdpSingle {
 /// `entry.detach_session_for_stream(stream_id)` so upstream-bound
 /// packets fall on the floor while no client is attached.
 /// Resume behaviour: on the next authenticated packet, the relay
-/// calls `entry.register_session(new_sender, session, new_stream_id)`
+/// calls `entry.register_session(new_sender, coding, new_stream_id)`
 /// for each preserved key — re-pointing the NAT entry's sender slot
 /// at the new client without re-binding the UDP socket.
 pub(crate) struct ParkedSsUdpStream {

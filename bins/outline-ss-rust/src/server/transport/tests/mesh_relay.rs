@@ -1397,6 +1397,36 @@ fn counter_value(rendered: &str, prefix: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// Sum of every rendered series of counter family `family` whose labels name
+/// `user`. Zero covers both "registered but never incremented" (rendered as `0`)
+/// and "never registered" (not rendered at all) — for a `user`-labelled series
+/// the two are the same claim: this node accounted nothing for that user.
+fn per_user_total(rendered: &str, family: &str, user: &str) -> u64 {
+    let prefix = format!("{family}{{");
+    let label = format!("user=\"{user}\"");
+    rendered
+        .lines()
+        .filter(|line| line.starts_with(&prefix) && line.contains(&label))
+        .filter_map(|line| line.rsplit(' ').next())
+        .filter_map(|value| value.parse::<u64>().ok())
+        .sum()
+}
+
+/// Polls a mesh counter until it reads `want`, panicking after 5 s. The home
+/// increments its downlink counters right after the mesh write returns, which
+/// may land just after the edge has already read the datagram.
+async fn wait_for_counter(metrics: &Arc<Metrics>, prefix: &str, want: u64) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rendered = metrics.render_prometheus();
+        if counter_value(&rendered, prefix) == want {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{prefix} never reached {want}:\n{rendered}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 fn rejected(rendered: &str, reason: &str) -> u64 {
     counter_value(
         rendered,
@@ -2332,6 +2362,58 @@ async fn the_home_routes_plaintext_datagrams_without_decrypting() {
     );
 }
 
+/// Per-user byte and request accounting belongs to the node that terminates the
+/// client session — the edge on a v5 relay — exactly as the byte-stream splice
+/// has it by dropping `ParkedTcp::user_counters`. A home that also counted would
+/// double every relayed user's `outline_ss_udp_*{user=…}` series once the SS-UDP
+/// edge lands, and would do it under `protocol="http3"`, where the duplicate is
+/// indistinguishable from genuine direct H3 traffic on the same node and so
+/// cannot be subtracted back out.
+///
+/// The traffic is not unaccounted, only attributed to the hop that actually
+/// happened here: the `role="home"` mesh counters, asserted below so this test
+/// cannot pass by the relay simply not running.
+#[tokio::test]
+async fn the_home_leaves_per_user_udp_accounting_to_the_edge() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([43u8; 16]);
+    let mut target = spawn_udp_echo().await;
+    park_test_udp_session(&harness, id, "beerloga", &[target.addr]).await;
+
+    let mut session = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    session.edge_send_datagram(&socks5_wrap(target.addr, b"ping")).await;
+    let _ = target.next_source().await;
+    assert_eq!(session.edge_recv_datagram().await, socks5_wrap(target.addr, b"ping"));
+
+    // A full round trip crossed the home in both directions...
+    wait_for_counter(
+        harness.metrics(),
+        "outline_ss_mesh_datagrams_total{role=\"home\",direction=\"up\"}",
+        1,
+    )
+    .await;
+    wait_for_counter(
+        harness.metrics(),
+        "outline_ss_mesh_datagrams_total{role=\"home\",direction=\"down\"}",
+        1,
+    )
+    .await;
+
+    // ...and not one byte of it landed on a per-user series here.
+    let rendered = harness.metrics().render_prometheus();
+    for family in [
+        "outline_ss_udp_payload_bytes_total",
+        "outline_ss_udp_requests_total",
+        "outline_ss_udp_response_datagrams_total",
+    ] {
+        assert_eq!(
+            per_user_total(&rendered, family, "beerloga"),
+            0,
+            "{family} must stay empty for a user this node only relays:\n{rendered}",
+        );
+    }
+}
+
 /// The property whose loss over XHTTP caused the production incident that
 /// started this work. Two datagrams in, two out — never one coalesced blob, in
 /// either direction.
@@ -2444,6 +2526,43 @@ async fn a_datagram_cannot_reach_another_sessions_nat_entry() {
         shared.next_source().await.port(),
         foreign_port,
         "a session must never send out of another session's NAT socket",
+    );
+    assert_eq!(
+        session.edge_recv_datagram().await,
+        socks5_wrap(shared.addr, b"mine"),
+        "the session still reaches the target — through an entry of its own",
+    );
+}
+
+/// Refuse foreign, part one and a half: the same rule across *users*, not just
+/// across sessions of one user. The key mechanism is identical — `user_id` is a
+/// field of [`NatKey`] like `scope` is — but the rule was stated as "another
+/// session **or** user", and the cross-user half is the one with a real trust
+/// boundary behind it, so it is pinned rather than inferred.
+#[tokio::test]
+async fn a_datagram_cannot_reach_another_users_nat_entry() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([44u8; 16]);
+    let mine = spawn_udp_echo().await;
+    let mut shared = spawn_udp_echo().await;
+    park_test_udp_session(&harness, id, "beerloga", &[mine.addr]).await;
+    // Another *user*, under this very session id, already talking to the target
+    // our datagram will name — so only `user_id` separates the two keys.
+    let theirs = udp_nat_key("someone-else", id, shared.addr);
+    harness
+        .nat_table()
+        .get_or_create(theirs.clone(), ServerSessionId::Generate, Arc::clone(harness.metrics()))
+        .await
+        .expect("binding the other user's NAT entry");
+    let foreign_port = nat_socket_port(&harness, &theirs);
+
+    let mut session = harness.serve_v5_ok(v5_udp_header(id), "beerloga").await;
+    session.edge_send_datagram(&socks5_wrap(shared.addr, b"mine")).await;
+
+    assert_ne!(
+        shared.next_source().await.port(),
+        foreign_port,
+        "a session must never send out of another user's NAT socket",
     );
     assert_eq!(
         session.edge_recv_datagram().await,
