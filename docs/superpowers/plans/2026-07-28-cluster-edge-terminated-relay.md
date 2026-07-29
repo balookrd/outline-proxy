@@ -45,17 +45,19 @@ cargo test --workspace --exclude sockudo-ws
 | `server/resumption/registry.rs` | Read-only `has_park(id)` probe for the phase-1 ACK | 3 |
 | `server/transport/mesh_relay.rs` | T3 adds the v5 two-phase accept + plaintext splice beside v4; T7 deletes the v4 path and its route lookup | 3, 7 |
 | `server/transport/tests/mesh_relay.rs` | Home-side hit/miss/owner-mismatch | 3 |
-| `server/transport/upstream_source.rs` | `UpstreamSource` enum (`Direct` / `Mesh`) shared by all three carriers | 4 |
-| `server/transport/tcp.rs` | Edge SS-TCP: authenticate, send USER, relay over mesh upstream, never park | 4 |
-| `server/transport/vless/mod.rs`, `vless/tcp.rs` | Same for VLESS | 5 |
-| `server/transport/udp.rs` | Same for SS-UDP (datagram framing) | 6 |
-| `server/tests/resumption/cluster.rs` | Cross-node continuity with asymmetric paths and credentials | 8 |
-| `server/config/` (validator), `metrics/registry.rs` | Shared-user-namespace validation; `no_session`/`unknown_user` labels registered | 9 |
-| `docs/CLUSTER.md` + `.ru.md`, `docs/CLUSTER-DEPLOY.md` + `.ru.md` | Per-node paths/creds documented; §3a symmetry requirement replaced | 9 |
+| `server/transport/upstream_source.rs` | `UpstreamSource` enum (`Direct` / `Mesh`) shared by all three carriers | 5 |
+| `server/cluster/mesh/frame.rs` (v5 only) | T4 adds the acked-offset and close-intent fields v4 had and v5 lacked | 4 |
+| `server/transport/tcp.rs` | Edge SS-TCP: authenticate, send USER, relay over mesh upstream, never park | 5 |
+| `server/transport/vless/mod.rs`, `vless/tcp.rs` | Same for VLESS | 6 |
+| `server/transport/udp.rs` | Edge SS-UDP (datagram framing) | 8 |
+| `server/transport/udp.rs`, `server/nat/` | Identity-supplied UDP entry point so the home routes plaintext datagrams | 7 |
+| `server/tests/resumption/cluster.rs` | Cross-node continuity with asymmetric paths and credentials | 10 |
+| `server/config/` (validator), `metrics/registry.rs` | Shared-user-namespace validation; `no_session`/`unknown_user` labels registered | 11 |
+| `docs/CLUSTER.md` + `.ru.md`, `docs/CLUSTER-DEPLOY.md` + `.ru.md` | Per-node paths/creds documented; §3a symmetry requirement replaced | 11 |
 
-**Milestone:** after Task 4 the feature works end-to-end for SS-TCP — the largest carrier on the fleet. Tasks 5–6 extend it to VLESS and SS-UDP, Task 7 removes the superseded v4 path. The branch is deployable (behind `[cluster] enabled`, currently `false` fleet-wide) after Task 7.
+**Milestone:** after Task 5 the feature works end-to-end for SS-TCP — the largest carrier on the fleet. Tasks 6–8 extend it to VLESS and SS-UDP, Task 9 removes the superseded v4 path. The branch is deployable (behind `[cluster] enabled`, currently `false` fleet-wide) after Task 9.
 
-**Why the home speaks two versions for a while:** 24 end-to-end cluster tests exercise the live v4 relay across all three carriers. Switching the home and the edges in one step would leave those red for four consecutive tasks, which no CI gate can pass and which hides a Task 3 defect until Task 6. So Task 3 adds v5 beside v4, Tasks 4–6 move one carrier at a time, and Task 7 deletes v4. Every commit stays green, and version-skew tolerance — which the design promises — ends up genuinely tested.
+**Why the home speaks two versions for a while:** 24 end-to-end cluster tests exercise the live v4 relay across all three carriers. Switching the home and the edges in one step would leave those red for four consecutive tasks, which no CI gate can pass and which hides a Task 3 defect until Task 6. So Task 3 adds v5 beside v4, Tasks 5–8 move one carrier at a time, and Task 9 deletes v4. Every commit stays green, and version-skew tolerance — which the design promises — ends up genuinely tested.
 
 ---
 
@@ -793,7 +795,168 @@ git commit -m "feat(cluster): home serves v5 relays alongside v4 during the edge
 
 ---
 
-### Task 4: Edge side — SS-TCP (milestone: end-to-end)
+### Task 4: v5 resume-continuity fields
+
+v4 carried two things v5 currently does not, and the edge tasks would be written
+against an incomplete protocol without them. Both were found by review of Task 3.
+
+- **Acked uplink offset.** `OpenHeaderV5.ack_prefix` is parsed and never used;
+  the v4 path uses its equivalent at `mesh_relay.rs:875`. Without it a v5→v5
+  resume cannot recover uplink bytes the home consumed from the mesh but had not
+  yet written to the upstream when the carrier dropped — a silent hole in the
+  request body at the target.
+- **"Client gone for good" vs "carrier ended".** A mesh FIN is currently always
+  read as a carrier switch, so the home re-parks. A client that finished for
+  good therefore leaves a live upstream parked: the target never sees the
+  request-body FIN (half-close-then-read protocols hang until `orphan_ttl_tcp`),
+  and the dead session occupies one of the user's `orphan_per_user_cap` slots
+  (default 4, `config/resolved.rs:219`) where it can evict a real park.
+
+**Files:**
+- Modify: `bins/outline-ss-rust/src/server/cluster/mesh/frame.rs` (v5 only — v4 stays frozen)
+- Modify: `bins/outline-ss-rust/src/server/transport/mesh_relay.rs`
+- Test: `bins/outline-ss-rust/src/server/cluster/mesh/tests/frame.rs`, `bins/outline-ss-rust/src/server/transport/tests/mesh_relay.rs`
+
+**Interfaces:**
+- Consumes: the v5 home path from Task 3.
+- Produces:
+  - A home→edge **acked-offset** signal on the v5 stream, carrying `upstream_bytes_acked` so a later resume knows where the upstream really got to. Follow how v4 conveys the same fact (`mesh_relay.rs:875` and the v1 ORDR payload built in `transport/tcp.rs:782-798`) rather than inventing a second convention.
+  - An edge→home **close intent** on the v5 stream distinguishing "the client is done" from "the carrier ended, expect a resume".
+  - Home behaviour: on *client done*, half-close the upstream and do **not** re-park; on *carrier ended*, re-park exactly as today.
+
+- [ ] **Step 1: Write the failing tests**
+
+In `tests/mesh_relay.rs`, using the existing `MeshHomeHarness`:
+
+```rust
+#[tokio::test]
+async fn a_client_done_close_does_not_park_and_finishes_the_upstream() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([21u8; 16]);
+    park_test_session(harness.registry(), id, "beerloga").await;
+    let mut session = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    session.close_with_client_done().await;
+
+    assert!(
+        session.upstream_saw_eof().await,
+        "a finished client must let the target see the request-body FIN"
+    );
+    assert!(
+        !harness.registry().has_park(id),
+        "a session the client finished must not occupy an orphan slot"
+    );
+}
+
+#[tokio::test]
+async fn a_carrier_ended_close_still_parks() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([22u8; 16]);
+    park_test_session(harness.registry(), id, "beerloga").await;
+    let mut session = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    session.close_with_carrier_ended().await;
+
+    assert!(harness.registry().has_park(id), "a carrier switch must keep the park");
+}
+
+#[tokio::test]
+async fn the_home_reports_the_acked_uplink_offset_to_the_edge() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([23u8; 16]);
+    park_test_session(harness.registry(), id, "beerloga").await;
+    let mut session = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+
+    session.edge_write(b"twelve bytes").await;
+    session.await_upstream_read(12).await;
+
+    assert_eq!(
+        session.acked_uplink_offset().await,
+        12,
+        "the edge must learn how far the upstream actually got"
+    );
+}
+
+#[tokio::test]
+async fn a_resume_replays_uplink_from_the_acked_offset_without_duplicating() {
+    // The hole this task exists to close: bytes consumed from the mesh but not
+    // yet written to the upstream must be recoverable, and already-written
+    // bytes must not be sent twice.
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([24u8; 16]);
+    park_test_session(harness.registry(), id, "beerloga").await;
+
+    let mut first = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+    first.edge_write(b"AAAABBBB").await;
+    first.await_upstream_read(8).await;
+    let acked = first.acked_uplink_offset().await;
+    first.close_with_carrier_ended().await;
+
+    let mut second = harness.serve_v5_ok(v5_header(id), "beerloga").await;
+    second.edge_write_from_offset(b"AAAABBBBCCCC", acked).await;
+
+    assert_eq!(
+        second.upstream_read_all().await,
+        b"AAAABBBBCCCC",
+        "the upstream must see each byte exactly once across the switch"
+    );
+}
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `cargo test -p outline-ss-rust --lib transport::mesh_relay cluster::mesh::frame`
+Expected: FAIL — no close-intent or acked-offset exists on the v5 stream.
+
+- [ ] **Step 3: Extend the v5 wire format**
+
+Add both signals to the v5 protocol in `frame.rs`, leaving every v4 item frozen.
+Keep them bounded and explicit; do not overload an existing field's meaning. A
+close intent is a small enum (`ClientDone` / `CarrierEnded`) and the acked
+offset is a `u64`. Decide deliberately whether each rides the existing frames or
+a new one, and record the layout in the module doc the way `OpenHeaderV5`
+already documents its own.
+
+- [ ] **Step 4: Use them on the home**
+
+In `mesh_relay.rs`: report the acked offset from `upstream_bytes_acked` (already
+exact per write after Task 3), and branch the end-of-splice on the close intent
+— `ClientDone` half-closes the upstream and skips the park, `CarrierEnded` keeps
+today's re-park. The existing `SpliceEnd::stream_close` decision is the natural
+place for the branch; extend it rather than adding a second close path.
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `cargo test -p outline-ss-rust --lib transport::mesh_relay cluster::mesh::frame`
+Expected: PASS — 4 new tests plus the 37 already there.
+
+Then the v4 evidence:
+
+Run: `cargo test -p outline-ss-rust --lib resumption::cluster`
+Expected: PASS — all 24 end-to-end cluster tests. **Any failure means v4 was disturbed.**
+
+- [ ] **Step 6: Run the full gate and commit**
+
+```bash
+cargo fmt --check -p outline-ss-rust -p outline-ws-rust -p outline-metrics -p outline-net -p outline-routing -p outline-transport -p outline-tun -p outline-uplink -p outline-wire -p shadowsocks-crypto -p socks5-proto
+```
+
+```bash
+cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps -- -D warnings
+```
+
+```bash
+cargo test --workspace --exclude sockudo-ws
+```
+
+```bash
+git add bins/outline-ss-rust/src/server/cluster/mesh/ bins/outline-ss-rust/src/server/transport/mesh_relay.rs bins/outline-ss-rust/src/server/transport/tests/mesh_relay.rs
+git commit -m "feat(cluster): carry acked uplink offset and close intent on the v5 mesh stream"
+```
+
+---
+
+### Task 5: Edge side — SS-TCP (milestone: end-to-end)
 
 **Files:**
 - Create: `bins/outline-ss-rust/src/server/transport/upstream_source.rs`
@@ -946,7 +1109,7 @@ git commit -m "feat(cluster): edge terminates SS-TCP crypto and relays plaintext
 
 ---
 
-### Task 5: Edge side — VLESS
+### Task 6: Edge side — VLESS
 
 **Files:**
 - Modify: `bins/outline-ss-rust/src/server/transport/vless/mod.rs` (`run_vless_relay` at `:46`, auth at `:454`), `vless/tcp.rs` (connect at `:404`, resume at `:177`)
@@ -1015,7 +1178,156 @@ git commit -m "feat(cluster): edge terminates VLESS crypto and relays plaintext 
 
 ---
 
-### Task 6: Edge side — SS-UDP
+### Task 7: v5 plaintext UDP home path
+
+Task 3 refuses `MeshFraming::Udp` deliberately, because the UDP home path is not
+a splice like TCP's. A parked SS-UDP session holds only NAT keys and an owner
+(`resumption/parked.rs:208-215`) — no socket — and the live UDP handler is driven
+by `packet.user` / `packet.session` (`transport/udp.rs:328`, `:333`, `:402-415`),
+which are products of the decryption v5 moves to the edge. So the home needs a
+way to route datagrams it cannot decrypt.
+
+It has everything required: the **identity** (user, session) arrives once per
+stream in OPEN/USER, and the **target** rides inside each plaintext datagram,
+because what the edge forwards is the SOCKS5-wrapped payload the SS-UDP body
+already contains. Routing is therefore possible without any crypto on the home.
+
+**Files:**
+- Modify: `bins/outline-ss-rust/src/server/transport/udp.rs`
+- Modify: `bins/outline-ss-rust/src/server/transport/mesh_relay.rs` (replace the refusal with the splice)
+- Modify: `bins/outline-ss-rust/src/server/nat/` as needed for an identity-supplied entry point
+- Test: `bins/outline-ss-rust/src/server/transport/tests/udp.rs`, `bins/outline-ss-rust/src/server/transport/tests/mesh_relay.rs`
+
+**Interfaces:**
+- Consumes: the v5 home path (Task 3), the continuity fields (Task 4).
+- Produces: a home-side UDP path taking `(user_id, session_id, SOCKS5-wrapped datagram)` instead of a decrypted packet, reattaching the parked `nat_keys`, and a `MeshFraming::Udp` splice that replaces the refusal.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[tokio::test]
+async fn the_home_routes_plaintext_datagrams_without_decrypting() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([31u8; 16]);
+    let target = spawn_udp_echo().await;
+    park_test_udp_session(harness.registry(), id, "beerloga", &[nat_key_for(target)]).await;
+
+    let mut session = harness.serve_v5_udp_ok(v5_udp_header(id), "beerloga").await;
+    session.edge_send_datagram(&socks5_wrap(target, b"ping")).await;
+
+    assert_eq!(
+        session.edge_recv_datagram().await,
+        socks5_wrap(target, b"ping"),
+        "the echo must come back through the same session, still plaintext"
+    );
+}
+
+#[tokio::test]
+async fn datagram_boundaries_survive_the_mesh() {
+    // The property whose loss over XHTTP caused the production incident that
+    // started this work. Two datagrams in, two out — never one coalesced blob.
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([32u8; 16]);
+    let target = spawn_udp_echo().await;
+    park_test_udp_session(harness.registry(), id, "beerloga", &[nat_key_for(target)]).await;
+
+    let mut session = harness.serve_v5_udp_ok(v5_udp_header(id), "beerloga").await;
+    session.edge_send_datagram(&socks5_wrap(target, b"first")).await;
+    session.edge_send_datagram(&socks5_wrap(target, b"second")).await;
+
+    let got = vec![session.edge_recv_datagram().await, session.edge_recv_datagram().await];
+    assert_eq!(got, vec![socks5_wrap(target, b"first"), socks5_wrap(target, b"second")]);
+}
+
+#[tokio::test]
+async fn a_udp_session_reattaches_its_parked_nat_keys() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([33u8; 16]);
+    let target = spawn_udp_echo().await;
+    let key = nat_key_for(target);
+    park_test_udp_session(harness.registry(), id, "beerloga", &[key.clone()]).await;
+
+    let session = harness.serve_v5_udp_ok(v5_udp_header(id), "beerloga").await;
+
+    assert!(
+        harness.nat_table().owner_of(&key).is_some_and(|o| o == "beerloga"),
+        "the resumed session must own its parked NAT entries, not fresh ones"
+    );
+    drop(session);
+}
+
+#[tokio::test]
+async fn a_udp_datagram_for_an_unowned_nat_key_is_dropped() {
+    // The home trusts the edge's user attestation, but not an arbitrary target:
+    // a session must not be able to reach a NAT entry it does not own.
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([34u8; 16]);
+    let mine = spawn_udp_echo().await;
+    let other = spawn_udp_echo().await;
+    park_test_udp_session(harness.registry(), id, "beerloga", &[nat_key_for(mine)]).await;
+
+    let mut session = harness.serve_v5_udp_ok(v5_udp_header(id), "beerloga").await;
+    session.edge_send_datagram(&socks5_wrap(other, b"nope")).await;
+
+    assert!(session.edge_recv_datagram_timeout().await.is_none());
+}
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `cargo test -p outline-ss-rust --lib transport::udp transport::mesh_relay`
+Expected: FAIL — `MeshFraming::Udp` is still refused and no identity-supplied UDP entry point exists.
+
+- [ ] **Step 3: Add the identity-supplied UDP entry point**
+
+Factor the existing datagram handling in `transport/udp.rs` so the part after
+decryption — target parsing, NAT lookup/creation, send, and the response path —
+can be driven from `(user_id, session_id, socks5_datagram)` supplied by the
+caller rather than derived from `packet.*`. Reuse `NatTable`/`NatEntry`
+(`nat/table.rs:169`, `nat/entry.rs:149`) rather than a parallel table; if their
+signatures demand a `UserKey`/`UdpCipherMode` the home no longer has, change the
+API to take what it genuinely needs. Keep the existing v4 caller working — it
+must keep passing its decrypted values through the same seam.
+
+- [ ] **Step 4: Splice UDP on the mesh**
+
+Replace the refusal in `mesh_relay.rs` with a splice that reattaches
+`ParkedSsUdpStream.nat_keys` and pumps datagrams both ways over `MeshUdpCarrier`
+(`transport/mesh_carrier.rs:227`), which already preserves per-datagram
+boundaries. Apply the same close-intent and bounded-resource rules the TCP
+splice follows. Drop datagrams whose target resolves to a NAT entry this session
+does not own.
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `cargo test -p outline-ss-rust --lib transport::udp transport::mesh_relay`
+Expected: PASS — 4 new tests.
+
+Run: `cargo test -p outline-ss-rust --lib resumption::cluster`
+Expected: PASS — all 24 end-to-end cluster tests still green on v4.
+
+- [ ] **Step 6: Run the full gate and commit**
+
+```bash
+cargo fmt --check -p outline-ss-rust -p outline-ws-rust -p outline-metrics -p outline-net -p outline-routing -p outline-transport -p outline-tun -p outline-uplink -p outline-wire -p shadowsocks-crypto -p socks5-proto
+```
+
+```bash
+cargo clippy --workspace --exclude sockudo-ws --all-targets --no-deps -- -D warnings
+```
+
+```bash
+cargo test --workspace --exclude sockudo-ws
+```
+
+```bash
+git add bins/outline-ss-rust/src/server/transport/udp.rs bins/outline-ss-rust/src/server/transport/mesh_relay.rs bins/outline-ss-rust/src/server/nat/ bins/outline-ss-rust/src/server/transport/tests/
+git commit -m "feat(cluster): route relayed plaintext UDP through NAT on the home"
+```
+
+---
+
+### Task 8: Edge side — SS-UDP
 
 **Files:**
 - Modify: `bins/outline-ss-rust/src/server/transport/udp.rs` (`run_udp_relay` at `:489`, auth at `:328`, NAT scope at `:219`)
@@ -1086,7 +1398,7 @@ git commit -m "feat(cluster): edge terminates SS-UDP crypto and relays plaintext
 
 ---
 
-### Task 7: Retire v4 on the home
+### Task 9: Retire v4 on the home
 
 Every edge speaks v5 after Tasks 4–6, so the v4 branch is now dead weight. This
 is the contract half of the expand/contract: delete it, and let v5 become the
@@ -1179,7 +1491,7 @@ git commit -m "refactor(cluster): retire the v4 mesh relay path now every edge s
 
 ---
 
-### Task 8: Cross-node continuity — the proof of the goal
+### Task 10: Cross-node continuity — the proof of the goal
 
 **Files:**
 - Modify: `bins/outline-ss-rust/src/server/tests/resumption/cluster.rs`
@@ -1367,7 +1679,7 @@ git commit -m "test(cluster): session continuity across nodes with different pat
 
 ---
 
-### Task 9: Validation, metrics and documentation
+### Task 11: Validation, metrics and documentation
 
 **Files:**
 - Modify: `bins/outline-ss-rust/src/server/config/` (cluster validation)
