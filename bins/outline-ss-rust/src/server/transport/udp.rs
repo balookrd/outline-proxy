@@ -21,7 +21,9 @@ use crate::{
     },
     metrics::{AppProtocol, Metrics, Protocol, Transport},
     protocol::parse_target_addr,
-    server::nat::{NatKey, NatScope, NatTable, UdpResponseSender},
+    server::nat::{
+        NatKey, NatScope, NatTable, ServerSessionId, UdpResponseCoding, UdpResponseSender,
+    },
     server::replay::{self, ReplayCheck, ReplayStore},
 };
 
@@ -45,7 +47,7 @@ use super::ws_writer;
 /// concurrently-reconnected stream's sender.
 static SS_UDP_STREAM_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-fn next_ss_udp_stream_id() -> u64 {
+pub(in crate::server::transport) fn next_ss_udp_stream_id() -> u64 {
     SS_UDP_STREAM_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -111,14 +113,14 @@ const NAT_KEYS_RECONCILE_FLOOR: usize = 64;
 /// capped by `udp_nat_max_entries`) plus the keys inserted since the last
 /// reconcile.
 #[derive(Default)]
-struct StreamNatKeys {
+pub(in crate::server::transport) struct StreamNatKeys {
     keys: HashSet<NatKey>,
     /// Set size that arms the next reconcile pass.
     reconcile_at: usize,
 }
 
 impl StreamNatKeys {
-    fn new() -> Self {
+    pub(in crate::server::transport) fn new() -> Self {
         Self {
             keys: HashSet::new(),
             reconcile_at: NAT_KEYS_RECONCILE_FLOOR,
@@ -139,12 +141,12 @@ impl StreamNatKeys {
 
     /// Adopts keys re-pointed at this stream by a resume hit. Their entries
     /// were just confirmed live by the resume path, so no reconcile is needed.
-    fn adopt(&mut self, keys: impl IntoIterator<Item = NatKey>) {
+    pub(in crate::server::transport) fn adopt(&mut self, keys: impl IntoIterator<Item = NatKey>) {
         self.keys.extend(keys);
     }
 
     /// Drains every tracked key (park-on-drop).
-    fn take(&mut self) -> HashSet<NatKey> {
+    pub(in crate::server::transport) fn take(&mut self) -> HashSet<NatKey> {
         self.reconcile_at = NAT_KEYS_RECONCILE_FLOOR;
         std::mem::take(&mut self.keys)
     }
@@ -153,6 +155,69 @@ impl StreamNatKeys {
     fn len(&self) -> usize {
         self.keys.len()
     }
+}
+
+/// Re-points every parked NAT entry that is still live at `sender`, under
+/// `coding` and this stream's `stream_id`, and returns the keys that actually
+/// had one. Keys whose entry was idle-evicted while the session was parked are
+/// reported (at debug) and dropped — there is nothing left to address.
+///
+/// Shared by the direct SS-UDP resume (`resolve_nat_scope`) and the v5 mesh
+/// splice, which differ only in the coding they re-point the slot with: the
+/// direct path seals responses itself, the relayed one hands plaintext to its
+/// edge.
+pub(in crate::server::transport) fn reattach_parked_nat_keys(
+    nat_table: &NatTable,
+    keys: impl IntoIterator<Item = NatKey>,
+    sender: &UdpResponseSender,
+    coding: &UdpResponseCoding,
+    stream_id: u64,
+) -> Vec<NatKey> {
+    let mut reattached = Vec::new();
+    for key in keys {
+        match nat_table.try_get(&key) {
+            Some(entry) => {
+                entry.register_session(sender.clone(), coding.clone(), stream_id);
+                reattached.push(key);
+            },
+            None => {
+                debug!(
+                    user = %key.user_id,
+                    target = %key.target,
+                    "ss-udp resume: parked NAT entry already evicted; skipping"
+                );
+            },
+        }
+    }
+    reattached
+}
+
+/// Releases this stream's response sender from every NAT entry it registered on
+/// and returns the keys it was still the owner of — the set a park may preserve.
+///
+/// The detach is what keeps a departed carrier's writer task from being held
+/// open by a NAT entry's sender clone; see [`release_ss_udp_stream_on_drop`].
+/// Entries a newer stream has already taken over (`stream_id` mismatch) are left
+/// alone and excluded: they are not ours to clear, nor ours to park.
+pub(in crate::server::transport) fn detach_stream_nat_keys(
+    nat_table: &NatTable,
+    stream_id: u64,
+    keys: HashSet<NatKey>,
+) -> Vec<NatKey> {
+    let mut detached = Vec::with_capacity(keys.len());
+    for key in keys {
+        if let Some(entry) = nat_table.try_get(&key) {
+            if entry.detach_session_for_stream(stream_id) {
+                detached.push(key);
+            } else {
+                debug!(
+                    target = %key.target,
+                    "ss-udp teardown: NAT entry already taken over by another stream; skipping"
+                );
+            }
+        }
+    }
+    detached
 }
 
 /// Per-session mutable state shared across concurrent datagram tasks. Shared as
@@ -220,7 +285,7 @@ async fn resolve_nat_scope(
     server: &UdpServerCtx,
     session: &UdpSessionState,
     user_id: &Arc<str>,
-    udp_session: &crate::crypto::UdpCipherMode,
+    coding: &UdpResponseCoding,
     sender: &UdpResponseSender,
     path: &str,
 ) -> Option<NatScope> {
@@ -251,24 +316,14 @@ async fn resolve_nat_scope(
     // Every parked key of one session shares its scope; adopt it so this
     // carrier's own datagrams line up with the re-pointed entries.
     let parked_scope = parked.nat_keys.first().and_then(|key| key.scope);
-    let mut reattached = 0usize;
-    let mut keys_for_self = Vec::with_capacity(parked.nat_keys.len());
-    for key in parked.nat_keys {
-        match server.nat_table.try_get(&key) {
-            Some(entry) => {
-                entry.register_session(sender.clone(), udp_session.clone(), session.stream_id);
-                keys_for_self.push(key);
-                reattached += 1;
-            },
-            None => {
-                debug!(
-                    user = %user_id,
-                    target = %key.target,
-                    "ss-udp resume: parked NAT entry already evicted; skipping"
-                );
-            },
-        }
-    }
+    let keys_for_self = reattach_parked_nat_keys(
+        &server.nat_table,
+        parked.nat_keys,
+        sender,
+        coding,
+        session.stream_id,
+    );
+    let reattached = keys_for_self.len();
     if reattached > 0 {
         session.nat_keys.lock().adopt(keys_for_self);
         info!(
@@ -359,10 +414,6 @@ async fn handle_udp_datagram_common(
             },
         }
     }
-    let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
-        return Err(anyhow!("udp packet is missing a complete target address"));
-    };
-    let payload = &packet.payload[consumed..];
     if session.session_recorded.swap(true, Ordering::Relaxed) {
         server.metrics.record_client_last_seen(Arc::clone(&user_id));
     } else {
@@ -380,16 +431,10 @@ async fn handle_udp_datagram_common(
         "udp shadowsocks user authenticated"
     );
 
-    let resolved =
-        resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream).await?;
-    debug!(
-        user = packet.user.id(),
-        fwmark = ?packet.user.fwmark(),
-        path = %route.path,
-        target = %target,
-        resolved = %resolved,
-        "udp datagram relay"
-    );
+    let coding = UdpResponseCoding::Ss {
+        user: packet.user.clone(),
+        session: packet.session.clone(),
+    };
 
     // Resolve this stream's NAT scope before keying the entry — on the first
     // datagram this also runs the first-frame resume (re-pointing every
@@ -399,88 +444,157 @@ async fn handle_udp_datagram_common(
     let scope = *session
         .nat_scope
         .get_or_init(|| {
-            resolve_nat_scope(
-                server,
-                session,
-                &user_id,
-                &packet.session,
-                &response_sender,
-                &route.path,
-            )
+            resolve_nat_scope(server, session, &user_id, &coding, &response_sender, &route.path)
         })
         .await;
 
+    relay_socks5_datagram(
+        server,
+        &UdpDatagramCtx {
+            user_id,
+            fwmark: packet.user.fwmark(),
+            scope,
+            stream_id: session.stream_id,
+            coding,
+            nat_keys: &session.nat_keys,
+            protocol: route.protocol,
+            path: &route.path,
+            started_at,
+        },
+        &packet.payload,
+        response_sender,
+    )
+    .await
+}
+
+/// Everything the post-decryption half of the UDP relay needs and cannot read
+/// out of the datagram itself.
+///
+/// The split exists because a **v5 mesh home** has no decrypted packet to derive
+/// any of it from: the edge terminated the client's crypto, so the identity
+/// arrives once per stream in the OPEN/USER exchange while only the *target*
+/// still rides inside each datagram. Everything here is therefore supplied by
+/// the caller, and that is also the ownership rule — `user_id`, `fwmark` and
+/// `scope` come from the session, never from the datagram, so a datagram can
+/// only ever reach a NAT entry keyed to the session that sent it.
+pub(in crate::server::transport) struct UdpDatagramCtx<'a> {
+    /// Authenticated user the NAT entry is keyed to. The direct path reads it
+    /// off the packet it just opened; the v5 home takes the edge's attestation.
+    pub(in crate::server::transport) user_id: Arc<str>,
+    /// Routing mark applied to the NAT socket, a per-user config property.
+    pub(in crate::server::transport) fwmark: Option<u32>,
+    /// Session discriminator every key of this stream shares; see [`NatScope`].
+    pub(in crate::server::transport) scope: Option<NatScope>,
+    pub(in crate::server::transport) stream_id: u64,
+    /// How the NAT entry must encode responses back to this carrier.
+    pub(in crate::server::transport) coding: UdpResponseCoding,
+    /// Keys this stream owns, for park-on-drop.
+    pub(in crate::server::transport) nat_keys: &'a Mutex<StreamNatKeys>,
+    pub(in crate::server::transport) protocol: Protocol,
+    /// Route path (direct) or a stable relay label (mesh); logs and nothing else.
+    pub(in crate::server::transport) path: &'a str,
+    /// When this datagram entered the relay, for the request-latency histogram.
+    pub(in crate::server::transport) started_at: std::time::Instant,
+}
+
+/// Relays one SOCKS5-wrapped datagram — `TargetAddr || payload`, the body of an
+/// SS-UDP packet — to its target through the NAT table, and registers this
+/// carrier as the entry's responder.
+///
+/// The identity-supplied entry point both UDP paths share: the direct path
+/// reaches it with values it decrypted itself, the v5 mesh splice with values
+/// the edge attested. Nothing below this line knows which.
+pub(in crate::server::transport) async fn relay_socks5_datagram(
+    server: &UdpServerCtx,
+    ctx: &UdpDatagramCtx<'_>,
+    datagram: &[u8],
+    response_sender: UdpResponseSender,
+) -> Result<()> {
+    let Some((target, consumed)) = parse_target_addr(datagram)? else {
+        return Err(anyhow!("udp packet is missing a complete target address"));
+    };
+    let payload = &datagram[consumed..];
+
+    let resolved =
+        resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream).await?;
+    debug!(
+        user = %ctx.user_id,
+        fwmark = ?ctx.fwmark,
+        path = ctx.path,
+        target = %target,
+        resolved = %resolved,
+        "udp datagram relay"
+    );
+
     let nat_key = NatKey {
-        user_id: Arc::clone(&user_id),
-        fwmark: packet.user.fwmark(),
+        user_id: Arc::clone(&ctx.user_id),
+        fwmark: ctx.fwmark,
         target: resolved,
-        scope,
+        scope: ctx.scope,
     };
     let entry = server
         .nat_table
         .get_or_create(
             nat_key.clone(),
-            &packet.user,
-            packet.session.clone(),
+            ServerSessionId::for_coding(&ctx.coding),
             Arc::clone(&server.metrics),
         )
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
-    entry.register_session(response_sender, packet.session.clone(), session.stream_id);
+    entry.register_session(response_sender, ctx.coding.clone(), ctx.stream_id);
     // Track the NAT key as one this stream owns, for park-on-drop. Insertion is
     // a no-op on duplicates; past the reconcile threshold the set is swept
     // against the live NAT table so idle-evicted targets do not accumulate.
-    session
-        .nat_keys
+    ctx.nat_keys
         .lock()
         .track(nat_key, |key| server.nat_table.contains(key));
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
         server.metrics.record_udp_oversized_datagram_dropped(
-            Arc::clone(&user_id),
-            route.protocol,
+            Arc::clone(&ctx.user_id),
+            ctx.protocol,
             AppProtocol::Shadowsocks,
             "up",
         );
         warn!(
-            user = packet.user.id(),
-            path = %route.path,
+            user = %ctx.user_id,
+            path = ctx.path,
             target = %resolved,
             plaintext_bytes = payload.len(),
             max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
             "dropping oversized udp datagram before upstream send"
         );
         server.metrics.record_udp_request(
-            Arc::clone(&user_id),
-            route.protocol,
+            Arc::clone(&ctx.user_id),
+            ctx.protocol,
             AppProtocol::Shadowsocks,
             "error",
-            started_at.elapsed().as_secs_f64(),
+            ctx.started_at.elapsed().as_secs_f64(),
         );
         return Ok(());
     }
     entry
         .user_counters()
-        .udp_in(AppProtocol::Shadowsocks, route.protocol)
+        .udp_in(AppProtocol::Shadowsocks, ctx.protocol)
         .increment(payload.len() as u64);
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
         server.metrics.record_udp_request(
-            Arc::clone(&user_id),
-            route.protocol,
+            Arc::clone(&ctx.user_id),
+            ctx.protocol,
             AppProtocol::Shadowsocks,
             "error",
-            started_at.elapsed().as_secs_f64(),
+            ctx.started_at.elapsed().as_secs_f64(),
         );
         return Err(error).with_context(|| format!("failed to send UDP datagram to {resolved}"));
     }
     entry.touch();
     server.metrics.record_udp_request(
-        user_id,
-        route.protocol,
+        Arc::clone(&ctx.user_id),
+        ctx.protocol,
         AppProtocol::Shadowsocks,
         "success",
-        started_at.elapsed().as_secs_f64(),
+        ctx.started_at.elapsed().as_secs_f64(),
     );
 
     Ok(())
@@ -745,23 +859,7 @@ async fn release_ss_udp_stream_on_drop(
     if nat_keys.is_empty() {
         return;
     }
-    // Detach our sender from each NAT entry. Skips entries where a
-    // newer stream has already taken the slot (`stream_id` doesn't
-    // match) — they're not ours to clear.
-    let mut detached_keys = Vec::with_capacity(nat_keys.len());
-    for key in nat_keys {
-        if let Some(entry) = server.nat_table.try_get(&key) {
-            let detached = entry.detach_session_for_stream(session.stream_id);
-            if detached {
-                detached_keys.push(key);
-            } else {
-                debug!(
-                    target = %key.target,
-                    "ss-udp teardown: NAT entry already taken over by another stream; skipping"
-                );
-            }
-        }
-    }
+    let detached_keys = detach_stream_nat_keys(&server.nat_table, session.stream_id, nat_keys);
     let Some((session_id, owner)) = park_target else {
         return;
     };

@@ -125,6 +125,33 @@ SS bytes as-is and tunnels them to the home, which does the crypto and owns the
 upstream. Those carriers stay on the older relay version until the home learns
 to serve their park shapes over the plaintext path.
 
+For SS-UDP the home half of that plaintext path already exists, so the edge can
+migrate without further home work. It routes a relayed datagram with no key at
+all: the **identity** (user, session) arrives once per stream in the setup
+exchange, and the **target** rides inside each datagram, because what a plaintext
+edge forwards is the SOCKS5-wrapped body (`TargetAddr || payload`) the SS-UDP
+packet already contains. Responses take the mirror route — the home wraps the
+upstream datagram and the edge seals it under the client's key, which it must,
+since an SS-2022 response is sealed against the client session id that only the
+decrypting node ever sees. The NAT entry therefore carries the response encoding
+on the *attachment* rather than on the entry, so one upstream socket can be
+served by a decrypting carrier and a relayed one in turn across a session's life.
+
+The identity is also the access rule, and it is worth stating because a relayed
+datagram is otherwise unattested content: `user`, routing mark and session scope
+come from the park, never from the datagram, so a session reattaches the NAT
+entries it parked with, may create entries for targets it has not reached before,
+and can address an entry belonging to another session or user by no path at all —
+a foreign entry lives under a key the session cannot construct. Two sessions
+naming the same target is the ordinary case (one DNS resolver, many clients) and
+gets two entries, not a refusal.
+
+**VLESS-UDP and VLESS-mux have no plaintext home path.** Their park shapes are
+indistinguishable from VLESS-TCP in the relay setup — the edge must choose the
+framing before the client's first frame reveals the command — so admitting them
+would consume parks the home cannot serve. They keep the decrypting boundary
+until the relay setup can name them.
+
 On that older path the "application bytes" include the **carrier padding
 layer**: the edge carries the padding-wrapped ciphertext through untouched, and
 home does both the padding decode and the AEAD (on the server the two are fused

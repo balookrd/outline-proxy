@@ -15,16 +15,46 @@ use tracing::debug;
 
 use crate::{
     clock,
-    crypto::{UdpCipherMode, UserKey},
+    crypto::UdpCipherMode,
     fwmark::apply_fwmark_if_needed,
     metrics::Metrics,
     outbound::{OutboundIpv6, set_ipv6_freebind},
 };
 
 use super::{
-    entry::{NatEntry, NatKey, random_session_id},
+    entry::{NatEntry, NatKey, UdpResponseCoding, random_session_id},
     reader::{NatReaderCtx, nat_reader_task},
 };
+
+/// Whether a freshly created NAT entry allocates the server session id that
+/// SS-2022 UDP responses carry. Per entry, not per attachment: it identifies the
+/// *socket* to the client and must not change under it.
+///
+/// A client-terminating carrier reads the answer off the datagram that created
+/// the entry ([`Self::for_coding`]). A v5 relayed carrier cannot — it never
+/// decrypts one — so it asks for [`Self::Generate`] unconditionally. That is 8
+/// random bytes the plaintext coding never reads, and exactly what a later
+/// *direct* carrier resuming the same session needs in order to seal SS-2022
+/// responses out of this socket; omitting them would make that resume fail every
+/// response with `InvalidHeader`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ServerSessionId {
+    Omit,
+    Generate,
+}
+
+impl ServerSessionId {
+    /// What the coding that creates an entry implies: SS-2022 seals need a
+    /// server session id, the legacy cipher has no field for one, and a
+    /// plaintext (relayed) attachment keeps its options open — see the type
+    /// docs.
+    pub(crate) fn for_coding(coding: &UdpResponseCoding) -> Self {
+        match coding {
+            UdpResponseCoding::Ss { session: UdpCipherMode::Legacy, .. } => Self::Omit,
+            UdpResponseCoding::Ss { .. } | UdpResponseCoding::Plaintext => Self::Generate,
+        }
+    }
+}
 
 /// Create the NAT upstream UDP socket. When `outbound_ipv6` is configured and
 /// the target is IPv6, the socket is bound to a random address from the pool
@@ -166,11 +196,18 @@ impl NatTable {
     /// Returns the existing NAT entry for `key`, or creates a new one: binds a
     /// UDP socket, applies `fwmark` if set, and starts a background reader task
     /// that delivers upstream responses to the registered client session.
+    ///
+    /// Everything the entry needs is either in `key` (owner, routing mark,
+    /// target) or in `server_session` — deliberately, so a v5 relayed carrier,
+    /// which holds no [`UserKey`] and no [`UdpCipherMode`] because the edge
+    /// terminated the client's crypto, can create entries through the same call
+    /// as the direct paths. The key material a response is sealed with arrives
+    /// later, on the attachment, via
+    /// [`NatEntry::register_session`](super::entry::NatEntry::register_session).
     pub(crate) async fn get_or_create(
         &self,
         key: NatKey,
-        user: &UserKey,
-        udp_session: UdpCipherMode,
+        server_session: ServerSessionId,
         metrics: Arc<Metrics>,
     ) -> Result<Arc<NatEntry>> {
         // Fast path: read-lock the shard for an existing entry — the hot case
@@ -215,10 +252,9 @@ impl NatTable {
         // without counting them as evictions (they never incremented the
         // active-entries metric) and returns their per-user slot, so no second
         // lock is needed to clean up.
-        let create_user = user.clone();
         let outbound = self.outbound_ipv6.clone();
         cell.get_or_try_init(|| async move {
-            Self::create_entry(&key, create_user, udp_session, metrics, outbound).await
+            Self::create_entry(&key, server_session, metrics, outbound).await
         })
         .await
         .map(Arc::clone)
@@ -258,8 +294,7 @@ impl NatTable {
 
     async fn create_entry(
         key: &NatKey,
-        user: UserKey,
-        udp_session: UdpCipherMode,
+        server_session: ServerSessionId,
         metrics: Arc<Metrics>,
         outbound_ipv6: Option<Arc<OutboundIpv6>>,
     ) -> Result<Arc<NatEntry>> {
@@ -272,18 +307,16 @@ impl NatTable {
         let active = Arc::new(Mutex::new(None));
         let last_active_secs = Arc::new(AtomicU64::new(clock::current_unix_secs()));
         let next_packet_id = Arc::new(AtomicU64::new(0));
-        let server_session_id = match udp_session {
-            UdpCipherMode::Legacy => None,
-            UdpCipherMode::Aes2022 { .. } | UdpCipherMode::Chacha2022 { .. } => {
-                Some(random_session_id()?)
-            },
+        let server_session_id = match server_session {
+            ServerSessionId::Omit => None,
+            ServerSessionId::Generate => Some(random_session_id()?),
         };
 
         let user_counters = metrics.user_counters(&key.user_id);
         let reader_task = tokio::spawn(nat_reader_task(NatReaderCtx {
             socket: Arc::clone(&socket),
             active: Arc::clone(&active),
-            user: user.clone(),
+            user_id: Arc::clone(&key.user_id),
             target: key.target,
             server_session_id,
             metrics: Arc::clone(&metrics),

@@ -76,12 +76,26 @@ pub(crate) enum ResumeOutcome {
 pub(crate) enum ParkProbe {
     /// No park and no park in flight.
     Missing,
-    /// A byte-stream park a v5 mesh splice can serve — or a park still landing,
-    /// whose shape is not knowable yet and is optimistically admitted.
+    /// A park of the shape the caller asked for — or a park still landing, whose
+    /// shape is not knowable yet and is optimistically admitted.
     Splicable,
-    /// A park of a shape no mesh splice carries today: VLESS-UDP, VLESS-mux or
-    /// the SS-UDP stream. The caller must refuse *without* consuming it.
+    /// A park of some other shape: one no v5 splice carries today (VLESS-UDP or
+    /// VLESS-mux), or one whose shape disagrees with the OPEN's framing. The
+    /// caller must refuse *without* consuming it.
     OtherShape,
+}
+
+/// The park shape a v5 relay can splice onto, as its OPEN framing names it.
+///
+/// A one-to-one mapping from `MeshFraming`, kept in the resumption module so the
+/// registry can answer a shape question without depending on the mesh wire
+/// types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParkShape {
+    /// `MeshFraming::Tcp` — a byte-stream park ([`Parked::Tcp`]).
+    Stream,
+    /// `MeshFraming::Udp` — an SS-UDP park ([`Parked::SsUdpStream`]).
+    Datagram,
 }
 
 /// Internal envelope wrapping a payload with bookkeeping fields.
@@ -185,16 +199,22 @@ impl OrphanRegistry {
     }
 
     /// What is parked under `id`, in the only terms the mesh phase-1 ack can
-    /// act on: nothing, something a v5 splice can serve, or something it cannot.
+    /// act on: nothing, something the `want` splice can serve, or something it
+    /// cannot.
     ///
     /// The shape half of the answer is load-bearing, not diagnostic. Phase 2
     /// consumes the park with [`Self::take_for_resume`] *before* the splice
     /// discovers it holds the wrong shape, so a phase 1 that admitted any shape
-    /// would destroy the park it then refuses. Only VLESS can reach that state —
-    /// SS byte streams always park as [`Parked::Tcp`], while VLESS multiplexes
-    /// TCP, UDP and mux onto one carrier and parks three different shapes under
-    /// ids an edge cannot tell apart — which is why this check arrives with the
-    /// VLESS edge.
+    /// would destroy the park it then refuses.
+    ///
+    /// `want` comes from the OPEN's framing, which is the *only* shape signal a
+    /// v5 relay carries. It separates the two splices that exist —
+    /// [`ParkShape::Stream`] for `Parked::Tcp`, [`ParkShape::Datagram`] for
+    /// `Parked::SsUdpStream` — and refuses everything else. VLESS is why the
+    /// remainder is not empty: it multiplexes TCP, UDP and mux onto one carrier
+    /// and parks three different shapes under a framing an edge picks before it
+    /// can read the client's command, so a VLESS-UDP or mux park is refused here
+    /// rather than admitted to a splice that cannot serve it.
     ///
     /// One lookup answers both halves, so the refusal path takes no second lock
     /// and the two outcomes still reach the operator as distinct metric reasons.
@@ -218,10 +238,11 @@ impl OrphanRegistry {
     /// Losing continuity in that narrow window is the accepted cost: widening
     /// the reservation to carry a shape would trade it for a worse race — a
     /// redial arriving during a park landing would miss instead of waiting.
-    pub(crate) fn probe_park(&self, id: SessionId) -> ParkProbe {
+    pub(crate) fn probe_park(&self, id: SessionId, want: ParkShape) -> ParkProbe {
         match self.by_id.get(&id) {
-            Some(entry) => match entry.parked {
-                Parked::Tcp(_) => ParkProbe::Splicable,
+            Some(entry) => match (&entry.parked, want) {
+                (Parked::Tcp(_), ParkShape::Stream)
+                | (Parked::SsUdpStream(_), ParkShape::Datagram) => ParkProbe::Splicable,
                 _ => ParkProbe::OtherShape,
             },
             None if self.reservations.contains_key(&id) => ParkProbe::Splicable,

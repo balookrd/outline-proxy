@@ -38,11 +38,12 @@ use anyhow::{Context, Result, bail};
 use axum::extract::ws::WebSocketUpgrade;
 use axum::response::Response;
 use bytes::Bytes;
+use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use metrics::Counter;
 use outline_wire::cluster::ShardId;
 use quinn::{Connection, RecvStream, SendStream, VarInt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, mpsc};
 use tracing::{debug, warn};
 
 use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
@@ -54,10 +55,11 @@ use crate::server::cluster::mesh::{
     read_datagram, write_datagram, write_open_ack,
 };
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
+use crate::server::nat::{NatKey, ResponseSender, UdpResponseCoding, UdpResponseSender};
 use crate::server::resumption::downlink_ring::ReplayOutcome;
 use crate::server::resumption::{
-    OrphanRegistry, ParkProbe, Parked, ParkedTcp, ResumeMiss, ResumeOutcome, SessionId,
-    TcpProtocolContext,
+    OrphanRegistry, ParkProbe, ParkShape, Parked, ParkedSsUdpStream, ParkedTcp, ResumeMiss,
+    ResumeOutcome, SessionId, TcpProtocolContext,
 };
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::state::{
@@ -65,12 +67,16 @@ use crate::server::state::{
     empty_vless_transport_route,
 };
 
+use super::super::constants::UDP_MAX_CONCURRENT_RELAY_TASKS;
 use super::carrier_padding;
 use super::mesh_carrier::{MeshCarrier, MeshUdpCarrier};
 use super::resume_headers::{EdgeResumeAdvert, ResumeContext, ResumeResponseEcho};
 use super::tcp::{WsTcpRouteCtx, run_tcp_relay};
 use super::throughput_monitor::ThrottleDetectParams;
-use super::udp::{UdpRouteCtx, run_udp_relay};
+use super::udp::{
+    StreamNatKeys, UdpDatagramCtx, UdpRouteCtx, UdpServerCtx, detach_stream_nat_keys,
+    next_ss_udp_stream_id, reattach_parked_nat_keys, relay_socks5_datagram, run_udp_relay,
+};
 use super::upstream_source::{MeshUpstreamSetup, UpstreamSource};
 use super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
@@ -1089,6 +1095,15 @@ fn protocol_matches(relayed: MeshProtocol, parked: &TcpProtocolContext) -> bool 
     )
 }
 
+/// A park whose shape agrees with the framing of the relay asking for it — the
+/// two the v5 home splices today. Narrowing [`Parked`] to it right after phase 2
+/// keeps the framing/shape agreement in one `match` instead of one late check
+/// per splice.
+enum SplicableParked {
+    Tcp(ParkedTcp),
+    SsUdp(ParkedSsUdpStream),
+}
+
 /// Serves one v5 relayed session: the two-phase resume hand-off.
 ///
 /// Where [`serve_relayed`] admits a still-encrypted carrier and re-runs the
@@ -1113,28 +1128,22 @@ async fn serve_relayed_v5(
 ) -> Result<()> {
     let session_id = SessionId::from_bytes(header.session_id);
     let registry = &services.orphan_registry;
+    // The OPEN's framing is the only shape signal a v5 relay carries, and it
+    // names exactly one of the two splices below.
+    let want = match header.framing {
+        MeshFraming::Tcp => ParkShape::Stream,
+        MeshFraming::Udp => ParkShape::Datagram,
+    };
 
-    if header.framing == MeshFraming::Udp {
-        // The home's plaintext SS-UDP path (NAT + park against SOCKS5-wrapped
-        // datagrams) lands with the SS-UDP edge; until then no peer sends this
-        // framing, so a stream carrying it is a peer running ahead of this
-        // build. Refuse before consuming anything, and never take the park.
-        cluster.metrics.record_mesh_relay_rejected("udp_unsupported");
-        cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
-        warn!("refusing a v5 SS-UDP relay: this home does not serve UDP framing yet");
-        refuse_relay(stream, CloseReason::Abort);
-        return Ok(());
-    }
-
-    // Phase 1: does a park exist under this id, and is it the byte-stream shape
-    // this splice can serve? The user is not known yet, so the owner check is
-    // deliberately deferred; an in-flight park counts as present (see
+    // Phase 1: does a park exist under this id, and is it the shape this
+    // framing's splice can serve? The user is not known yet, so the owner check
+    // is deliberately deferred; an in-flight park counts as present (see
     // `OrphanRegistry::probe_park`).
     //
     // The shape half of the question is load-bearing, not defensive: phase 2
-    // below *consumes* the park before the `Parked::Tcp` match can reject it, so
-    // admitting a UDP- or mux-shaped park here would destroy it and leave the
-    // client resuming an id that is admitted and destroyed on every attempt.
+    // below *consumes* the park before the shape match can reject it, so
+    // admitting a mismatched park here would destroy it and leave the client
+    // resuming an id that is admitted and destroyed on every attempt.
     //
     // Both refusals look identical on the wire — the edge serves its client a
     // fresh local session either way — and both are ordinary, so neither is a
@@ -1142,7 +1151,7 @@ async fn serve_relayed_v5(
     // operator: `no_session` is a park that expired or never existed, while
     // `park_shape` is a VLESS-UDP or mux session asking for a splice this home
     // does not have yet, which no amount of config will change.
-    match registry.probe_park(session_id) {
+    match registry.probe_park(session_id, want) {
         ParkProbe::Splicable => {},
         ParkProbe::Missing => {
             cluster.metrics.record_mesh_relay_rejected("no_session");
@@ -1155,8 +1164,8 @@ async fn serve_relayed_v5(
             cluster.metrics.record_mesh_relay_rejected("park_shape");
             cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
             debug!(
-                "the parked session under a relayed resume id is not byte-stream shaped \
-                 (VLESS-UDP or mux); refusing the relay without consuming it",
+                "the parked session under a relayed resume id is not the shape this relay's \
+                 framing splices (VLESS-UDP or mux); refusing the relay without consuming it",
             );
             refuse_relay(stream, CloseReason::NoSession);
             return Ok(());
@@ -1227,18 +1236,48 @@ async fn serve_relayed_v5(
             return Ok(());
         },
     };
-    let Parked::Tcp(parked) = parked else {
+    let parked = match (header.framing, parked) {
+        (MeshFraming::Tcp, Parked::Tcp(parked)) => SplicableParked::Tcp(parked),
+        (MeshFraming::Udp, Parked::SsUdpStream(parked)) => SplicableParked::SsUdp(parked),
         // The OPEN's framing disagrees with what is actually parked under the
         // id. Phase 1 (`probe_park`) rejects a committed park of the wrong
         // shape, so what is left here is the reservation window — a park that
         // was still landing when phase 1 looked and committed as some other
         // shape by now — or a forged peer. Refuse rather than panic; the park is
         // already consumed, so the client loses continuity but nothing else.
-        cluster.metrics.record_mesh_relay_rejected("framing_mismatch");
-        cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
-        warn!("relayed TCP framing does not match the parked session kind; aborting the relay");
-        refuse_relay(stream, CloseReason::Abort);
-        return Ok(());
+        (framing, _) => {
+            cluster.metrics.record_mesh_relay_rejected("framing_mismatch");
+            cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+            warn!(
+                ?framing,
+                "relayed framing does not match the parked session kind; aborting the relay"
+            );
+            refuse_relay(stream, CloseReason::Abort);
+            return Ok(());
+        },
+    };
+    let parked = match parked {
+        SplicableParked::Tcp(parked) => parked,
+        SplicableParked::SsUdp(parked) => {
+            // An SS-UDP park is Shadowsocks by construction — there is no other
+            // way to mint one — so a relay claiming VLESS over it is the same
+            // cross-protocol confusion the byte-stream arm refuses below.
+            if header.protocol != MeshProtocol::Ss {
+                cluster.metrics.record_mesh_relay_rejected("protocol_mismatch");
+                cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+                warn!(
+                    relayed = header.protocol.label(),
+                    "refusing a relayed SS-UDP resume claimed under another proxy protocol",
+                );
+                refuse_relay(stream, CloseReason::Abort);
+                return Ok(());
+            }
+            let _relay_active = cluster.metrics.open_mesh_relay();
+            return splice_plaintext_udp(
+                stream, parked, &header, session_id, &user.user, cluster, services,
+            )
+            .await;
+        },
     };
     // Cross-protocol resume, refused exactly as the two direct paths refuse it
     // (`transport::tcp` and `transport::vless::tcp`): an SS-authenticated carrier
@@ -1995,6 +2034,454 @@ async fn splice_plaintext_tcp(
         Some(error) => Err(error),
         None => Ok(()),
     }
+}
+
+/// The identity every NAT key of a relayed SS-UDP session is built from, taken
+/// from the park and cross-checked against the user the edge attested.
+///
+/// This is the whole of the ownership rule. A relayed datagram supplies exactly
+/// one thing — its target — and the home supplies the rest from here, so a
+/// session can reattach the entries it parked, create entries for targets it has
+/// not met before (both under its own `scope`), and reach an entry belonging to
+/// another session or user by no path at all: a foreign entry lives under a
+/// different key, which this session can never construct.
+#[derive(Clone)]
+struct RelayedUdpIdentity {
+    user_id: Arc<str>,
+    fwmark: Option<u32>,
+    scope: Option<crate::server::nat::NatScope>,
+}
+
+impl RelayedUdpIdentity {
+    /// Derives the identity from a park, and returns the parked keys that belong
+    /// to it.
+    ///
+    /// The template comes from the first key the attested `user` owns; every
+    /// other key must match it exactly or it is dropped rather than reattached.
+    /// `take_for_resume` has already matched the park's *owner* against the same
+    /// attestation, so a disagreement here means the key set itself straddles
+    /// identities — impossible from this build's park path, and precisely the
+    /// case where reattaching would hand a session a socket that is not its own.
+    ///
+    /// `None` when no key names the attested user (including an empty key set,
+    /// which the park path never produces): there is no identity to serve under,
+    /// and inventing one — an unmarked `fwmark`, say — would route the session's
+    /// traffic outside the policy route its user is configured for.
+    fn from_park(parked: &ParkedSsUdpStream, user: &str) -> Option<(Self, Vec<NatKey>, usize)> {
+        let template = parked.nat_keys.iter().find(|key| key.user_id.as_ref() == user)?;
+        let identity = Self {
+            user_id: Arc::clone(&template.user_id),
+            fwmark: template.fwmark,
+            scope: template.scope,
+        };
+        let owned: Vec<NatKey> = parked
+            .nat_keys
+            .iter()
+            .filter(|key| identity.owns(key))
+            .cloned()
+            .collect();
+        let foreign = parked.nat_keys.len() - owned.len();
+        Some((identity, owned, foreign))
+    }
+
+    /// Whether `key` is one this session may address.
+    fn owns(&self, key: &NatKey) -> bool {
+        key.user_id == self.user_id && key.fwmark == self.fwmark && key.scope == self.scope
+    }
+}
+
+/// Downlink sender for a v5 relayed SS-UDP session.
+///
+/// Every NAT entry the session owns holds a clone; each upstream response
+/// arrives here already SOCKS5-wrapped and *unsealed* (the entry's
+/// [`UdpResponseCoding::Plaintext`] attachment) and goes onto a bounded channel
+/// the splice's downlink pump frames onto the mesh stream.
+///
+/// No carrier padding and no throttle monitor, unlike the v4
+/// `MeshUdpResponseSender` beside it: with the client's crypto terminated on the
+/// edge, the carrier the client actually reads is the edge's, so padding and
+/// last-mile throttle detection belong there and applying them here would pad
+/// bytes the client never sees in that form.
+struct RelayedUdpSender {
+    tx: mpsc::Sender<Bytes>,
+}
+
+impl ResponseSender for RelayedUdpSender {
+    fn send_bytes(&self, data: Bytes) -> futures_util::future::BoxFuture<'_, bool> {
+        Box::pin(async move { self.tx.send(data).await.is_ok() })
+    }
+
+    fn protocol(&self) -> Protocol {
+        // The mesh is QUIC; the client-facing protocol is the edge's business.
+        Protocol::Http3
+    }
+
+    fn app_protocol(&self) -> AppProtocol {
+        AppProtocol::Shadowsocks
+    }
+}
+
+/// Path label for a relayed SS-UDP session's logs and NAT bookkeeping. The v5
+/// home resolves no route — the request path is a local matter of the edge — so
+/// one stable, low-cardinality label stands in for it.
+const RELAYED_UDP_PATH: &str = "mesh";
+
+/// Splices a relayed plaintext SS-UDP session onto the NAT entries it parked.
+///
+/// Not a byte splice like [`splice_plaintext_tcp`]: a parked SS-UDP session owns
+/// no socket of its own, only a set of NAT keys, and the entries behind them are
+/// addressed per datagram by the target that rides inside each one. So the two
+/// pumps here are a *router*, not a copy loop:
+///
+/// * **Uplink** — one mesh datagram is one SOCKS5-wrapped packet. It is routed
+///   through [`relay_socks5_datagram`], the same entry point the direct SS-UDP
+///   path reaches after decrypting; the identity it is keyed under comes from
+///   [`RelayedUdpIdentity`], never from the datagram.
+/// * **Downlink** — every NAT entry the session owns holds a
+///   [`RelayedUdpSender`]; the pump drains that channel and frames each response
+///   back onto the mesh.
+///
+/// Datagram boundaries are the point (an SS-UDP packet is atomic, and two
+/// coalescing into one decrypt is the production incident this migration
+/// started from), so both directions use the length framing of
+/// [`super::mesh_carrier::MeshUdpCarrier`] — [`read_datagram`] /
+/// [`write_datagram`] — rather than any byte splice. The halves are held
+/// directly instead of behind that carrier only because the close-intent
+/// handling below needs `reset`/`finish`/`stopped` on the raw stream.
+///
+/// Bounded on every axis a peer could push: at most
+/// [`UDP_MAX_CONCURRENT_RELAY_TASKS`] in-flight datagrams per relay (plus the
+/// process-wide relay semaphore), one bounded downlink channel, a read that
+/// caps each datagram at the framing's own maximum, and `cluster.relay_budget`
+/// on every mesh write.
+///
+/// Continuity mirrors the TCP splice where it applies and is deliberately silent
+/// where it does not: an `ack_prefix` OPEN still gets its
+/// [`UpstreamAckFrame`] — the prologue is present exactly when the flag is set,
+/// on both framings — but reports `0`, because a datagram session has no uplink
+/// byte offset to be short of. `symmetric_replay` likewise has nothing to
+/// replay: UDP is lossy by contract and no ring is kept.
+#[allow(clippy::too_many_arguments)]
+async fn splice_plaintext_udp(
+    stream: MeshStream,
+    parked: ParkedSsUdpStream,
+    header: &OpenHeaderV5,
+    session_id: SessionId,
+    user: &str,
+    cluster: &ClusterCtx,
+    services: &Services,
+) -> Result<()> {
+    let MeshStream { mut send, mut recv } = stream;
+    let registry = &services.orphan_registry;
+    let server = Arc::clone(&services.udp_server);
+
+    let Some((identity, owned_keys, foreign_keys)) = RelayedUdpIdentity::from_park(&parked, user)
+    else {
+        cluster.metrics.record_mesh_relay_rejected("park_identity");
+        cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+        warn!(
+            user,
+            "refusing a relayed SS-UDP resume: no parked NAT key belongs to the attested user",
+        );
+        refuse_relay(MeshStream { send, recv }, CloseReason::Abort);
+        return Ok(());
+    };
+    if foreign_keys > 0 {
+        // Not fatal — the session keeps the keys that are its own — but nothing
+        // in this build parks a mixed-identity key set, so it is worth saying.
+        warn!(
+            user,
+            foreign_keys,
+            "dropping parked SS-UDP NAT keys that do not belong to the resuming session",
+        );
+    }
+
+    let stream_id = next_ss_udp_stream_id();
+    let (tx, mut downlink_rx) = mpsc::channel::<Bytes>(server.ws_data_channel_capacity);
+    let response_sender = UdpResponseSender::new(Arc::new(RelayedUdpSender { tx }));
+
+    // Reattach: re-point every surviving parked entry at this carrier, under the
+    // plaintext coding — the entry keeps its socket, and therefore its source
+    // port and any upstream state pinned to it, across the node switch.
+    let nat_keys = Arc::new(parking_lot::Mutex::new(StreamNatKeys::new()));
+    let reattached = reattach_parked_nat_keys(
+        &server.nat_table,
+        owned_keys,
+        &response_sender,
+        &UdpResponseCoding::Plaintext,
+        stream_id,
+    );
+    debug!(
+        user,
+        reattached = reattached.len(),
+        "relayed ss-udp session reattached its parked NAT entries",
+    );
+    nat_keys.lock().adopt(reattached);
+
+    // Uplink continuity, for symmetry with the byte-stream splice: the frame is
+    // present exactly when the OPEN asked for it. Zero is the truthful answer —
+    // a datagram session acknowledges no byte offset.
+    if header.ack_prefix {
+        let frame = UpstreamAckFrame { upstream_acked: 0 };
+        if let Err(error) = send.write_all(&frame.encode()).await {
+            cluster.metrics.record_mesh_relay_outcome("hit", CLOSE_NONE);
+            release_relayed_udp(&server, stream_id, &nat_keys);
+            return Err(
+                anyhow::Error::new(error).context("sending the upstream-ack frame over the mesh")
+            );
+        }
+    }
+
+    let up_bytes = cluster.metrics.mesh_bytes_counter("home", "up", "udp");
+    let up_datagrams = cluster.metrics.mesh_datagrams_counter("home", "up");
+    let down_bytes = cluster.metrics.mesh_bytes_counter("home", "down", "udp");
+    let down_datagrams = cluster.metrics.mesh_datagrams_counter("home", "down");
+    let budget = cluster.relay_budget;
+    let stop_downlink = Notify::new();
+
+    let SpliceOutcome { end, stream_finished, observed_intent } = {
+        let recv = &mut recv;
+        let send = &mut send;
+        let stop = &stop_downlink;
+        let server = &server;
+        let identity = &identity;
+        let nat_keys = &nat_keys;
+        let response_sender = &response_sender;
+
+        // Uplink: mesh → NAT. Datagrams are relayed concurrently, as the direct
+        // path relays them, so one slow DNS resolution does not stall the
+        // session behind it — bounded by the same per-carrier and process-wide
+        // caps.
+        let uplink = async move {
+            let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
+            let mut buf = Vec::new();
+            loop {
+                // The read is pinned for the whole wait and only ever *polled*
+                // by the inner select, never dropped by it. `read_datagram` is
+                // not cancel-safe — it consumes a 4-byte length prefix and then
+                // the body, so dropping it part-way leaves the stream mid-
+                // datagram and every later read is mis-framed. Draining
+                // `in_flight` concurrently is still required (a
+                // `FuturesUnordered` advances only while polled, so an
+                // otherwise idle session would stall its own DNS and sends
+                // until the next datagram arrived), and this is how the two
+                // coexist.
+                let read = {
+                    let read = read_datagram(recv, &mut buf);
+                    tokio::pin!(read);
+                    loop {
+                        tokio::select! {
+                            Some(()) = in_flight.next(), if !in_flight.is_empty() => {},
+                            result = &mut read => break result,
+                        }
+                    }
+                };
+                let len = match read.context("relayed uplink datagram read from the mesh") {
+                    // The edge finished the stream: the client carrier is gone.
+                    // The NAT entries are deliberately left alone — the caller
+                    // re-parks them for the next carrier.
+                    Ok(None) => break,
+                    Ok(Some(len)) => len,
+                    Err(error) => {
+                        // Drain what is already in flight before returning, so a
+                        // datagram the home accepted still reaches its target
+                        // rather than being dropped mid-send.
+                        while in_flight.next().await.is_some() {}
+                        return Err(SpliceFault::mesh(error));
+                    },
+                };
+                up_bytes.increment(len as u64);
+                up_datagrams.increment(1);
+                if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+                    server.metrics.record_udp_relay_drop(
+                        Transport::Udp,
+                        Protocol::Http3,
+                        AppProtocol::Shadowsocks,
+                        "concurrency_limit",
+                    );
+                    warn!("relayed udp concurrent relay limit reached, dropping datagram");
+                    continue;
+                }
+                let global_permit = match server
+                    .relay_semaphore
+                    .as_ref()
+                    .map(|sem| Arc::clone(sem).try_acquire_owned())
+                {
+                    Some(Ok(permit)) => Some(permit),
+                    Some(Err(_)) => {
+                        server.metrics.record_udp_relay_drop(
+                            Transport::Udp,
+                            Protocol::Http3,
+                            AppProtocol::Shadowsocks,
+                            "global_concurrency_limit",
+                        );
+                        warn!("global udp concurrent relay limit reached, dropping datagram");
+                        continue;
+                    },
+                    None => None,
+                };
+                let datagram = std::mem::take(&mut buf);
+                let server = Arc::clone(server);
+                let identity = identity.clone();
+                let nat_keys = Arc::clone(nat_keys);
+                let response_sender = response_sender.clone();
+                in_flight.push(
+                    async move {
+                        let ctx = UdpDatagramCtx {
+                            user_id: identity.user_id,
+                            fwmark: identity.fwmark,
+                            scope: identity.scope,
+                            stream_id,
+                            coding: UdpResponseCoding::Plaintext,
+                            nat_keys: &nat_keys,
+                            protocol: Protocol::Http3,
+                            path: RELAYED_UDP_PATH,
+                            started_at: std::time::Instant::now(),
+                        };
+                        if let Err(error) =
+                            relay_socks5_datagram(&server, &ctx, &datagram, response_sender).await
+                        {
+                            warn!(?error, "relayed udp datagram failed");
+                        }
+                        drop(global_permit);
+                    }
+                    .boxed(),
+                );
+            }
+            while in_flight.next().await.is_some() {}
+            Ok(())
+        };
+
+        // Downlink: NAT responses → mesh, one datagram per frame. The ONLY
+        // writer to the mesh stream.
+        let downlink = async move {
+            loop {
+                let response = tokio::select! {
+                    // Biased so a pending stop wins over one more response: the
+                    // uplink has ended, and a response written into a stream the
+                    // caller is about to close is worth nothing. Both branches
+                    // are cancel-safe.
+                    biased;
+                    () = stop.notified() => return Ok(DownlinkEnd::Stopped),
+                    // Never `None`: this scope holds `response_sender`, and with
+                    // it a live sender clone, for the whole splice.
+                    Some(response) = downlink_rx.recv() => response,
+                    else => return Ok(DownlinkEnd::Stopped),
+                };
+                let len = response.len();
+                match tokio::time::timeout(budget, write_datagram(send, &response)).await {
+                    Ok(Ok(())) => {},
+                    Ok(Err(error)) => {
+                        // A `ClientDone` stop lands here as a write failure, the
+                        // same signal the byte-stream splice reads: the client
+                        // is finished, so the uplink must go on draining to its
+                        // FIN while the downlink stands down.
+                        if let Some(quinn::WriteError::Stopped(code)) =
+                            error.downcast_ref::<quinn::WriteError>()
+                            && CloseIntent::from_code(code.into_inner()) == CloseIntent::ClientDone
+                        {
+                            return Ok(DownlinkEnd::ClientDone);
+                        }
+                        return Err(SpliceFault::mesh(
+                            error.context("relayed downlink datagram write to the mesh"),
+                        ));
+                    },
+                    Err(_elapsed) => {
+                        return Err(SpliceFault::stalled_mesh(anyhow::anyhow!(
+                            "relayed downlink stalled past the health budget"
+                        )));
+                    },
+                }
+                down_bytes.increment(len as u64);
+                down_datagrams.increment(1);
+            }
+        };
+
+        tokio::pin!(uplink, downlink);
+        let mut downlink_ended: Option<Result<DownlinkEnd, SpliceFault>> = None;
+        loop {
+            tokio::select! {
+                result = &mut uplink => {
+                    let downlink_end = match downlink_ended {
+                        Some(ended) => ended,
+                        None => {
+                            stop.notify_one();
+                            downlink.as_mut().await
+                        },
+                    };
+                    break splice_end(result, downlink_end);
+                },
+                result = &mut downlink, if downlink_ended.is_none() => match result {
+                    Ok(ended) => downlink_ended = Some(Ok(ended)),
+                    Err(fault) => break SpliceOutcome {
+                        end: fault.into_end(),
+                        stream_finished: false,
+                        observed_intent: CloseIntent::CarrierEnded,
+                    },
+                },
+            }
+        }
+    };
+
+    let intent = resolve_close_intent(&end, observed_intent, &send);
+    cluster
+        .metrics
+        .record_mesh_relay_outcome("hit", intent.metric_label());
+
+    match end.stream_close(stream_finished, intent) {
+        StreamClose::Reset(reason) => {
+            let _ = send.reset(VarInt::from_u32(reason.code()));
+        },
+        StreamClose::Finish => {
+            let _ = send.finish();
+        },
+    }
+
+    // Release the response sender from every entry we still own, exactly as the
+    // direct path does at teardown: the entry holds a clone of it, and with it a
+    // clone of the downlink channel, so leaving it in place would keep feeding a
+    // carrier that is gone until the entry idle-expires.
+    let detached = release_relayed_udp(&server, stream_id, &nat_keys);
+
+    // Re-park unless the client said it was done. `SpliceEnd::reparks` also
+    // gates on an upstream health verdict that a datagram session cannot fail:
+    // the NAT entries are owned by the table, not by this carrier, and a mesh
+    // fault leaves them untouched and worth handing to the next carrier.
+    if end.reparks(intent) && registry.enabled() && !detached.is_empty() {
+        debug!(
+            user,
+            keys = detached.len(),
+            "re-parking a relayed ss-udp session after the mesh carrier ended",
+        );
+        registry.park(
+            session_id,
+            Parked::SsUdpStream(ParkedSsUdpStream {
+                nat_keys: detached,
+                owner: identity.user_id,
+            }),
+        );
+    } else {
+        // Nothing parked: the entries keep ageing on their own idle timer with
+        // no responder attached, which is what an SS-UDP session without a
+        // client has always done.
+        debug!(user, ?intent, "not re-parking a relayed ss-udp session");
+    }
+
+    match end {
+        SpliceEnd::Graceful { .. } => Ok(()),
+        SpliceEnd::Faulted { error, .. } => Err(error),
+    }
+}
+
+/// Detaches a relayed SS-UDP session's response sender from every NAT entry it
+/// still owns, and hands back the keys that were still its own.
+fn release_relayed_udp(
+    server: &UdpServerCtx,
+    stream_id: u64,
+    nat_keys: &parking_lot::Mutex<StreamNatKeys>,
+) -> Vec<NatKey> {
+    let keys = nat_keys.lock().take();
+    detach_stream_nat_keys(&server.nat_table, stream_id, keys)
 }
 
 #[cfg(test)]

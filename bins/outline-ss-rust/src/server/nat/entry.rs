@@ -15,7 +15,7 @@ use tokio::net::UdpSocket;
 use crate::server::abort::AbortOnDrop;
 use crate::{
     clock,
-    crypto::UdpCipherMode,
+    crypto::{UdpCipherMode, UserKey},
     metrics::{AppProtocol, PerUserCounters, Protocol},
 };
 
@@ -61,6 +61,33 @@ pub(crate) trait ResponseSender: Send + Sync {
     fn app_protocol(&self) -> AppProtocol;
 }
 
+/// How a NAT entry's reader must encode an upstream response before handing it
+/// to the active session's sender.
+///
+/// It is a property of the *attachment*, not of the entry, because one NAT
+/// socket outlives the carriers that address it and those carriers do not all
+/// terminate the client's crypto:
+///
+/// - A client-terminating carrier — the direct SS-UDP listeners, and the v4
+///   mesh home — seals the response itself, so it hands over the user key and
+///   the live [`UdpCipherMode`] the client's own datagram carried.
+/// - A **v5 mesh home** cannot: the seal needs the client session id that rides
+///   inside a datagram the edge decrypted and this node never saw. It therefore
+///   emits the SOCKS5-wrapped plaintext (`TargetAddr(source) || payload`) that
+///   is exactly the body the sealed arm would have encrypted, and the edge seals
+///   it under the client's key.
+///
+/// Keeping the [`UserKey`] here rather than on the entry is what lets the same
+/// NAT socket serve both: a session parked by a relayed carrier and resumed by a
+/// direct one (or the reverse) re-points the slot and the coding together.
+#[derive(Clone)]
+pub(crate) enum UdpResponseCoding {
+    /// Shadowsocks AEAD, sealed for `user` under the client's `session`.
+    Ss { user: UserKey, session: UdpCipherMode },
+    /// SOCKS5-wrapped plaintext, sealed downstream by a cluster edge.
+    Plaintext,
+}
+
 /// A cloneable handle to the outbound path of the currently active client
 /// session.
 #[derive(Clone)]
@@ -90,7 +117,9 @@ impl UdpResponseSender {
 
 pub(crate) struct ActiveSession {
     pub(crate) sender: UdpResponseSender,
-    pub(crate) session: UdpCipherMode,
+    /// How this attachment needs upstream responses encoded; see
+    /// [`UdpResponseCoding`].
+    pub(crate) coding: UdpResponseCoding,
     /// Identifies the registering WS-stream so a resumption-driven
     /// `detach_session_for_stream` only clears the slot when we are
     /// still the registered owner — not when a newer stream has
@@ -102,10 +131,11 @@ pub(crate) struct ActiveSession {
 pub(crate) struct NatEntry {
     socket: Arc<UdpSocket>,
     /// The currently active client session: where to deliver upstream responses
-    /// and which `UdpCipherMode` (carrying the live `client_session_id` for SS-2022)
-    /// to use when encrypting them. Replaced atomically on every reconnect so
-    /// the NAT socket — and therefore the source port and server_session_id —
-    /// survives client session changes.
+    /// and how to encode them ([`UdpResponseCoding`] — for a client-terminating
+    /// carrier the user key plus the live `client_session_id`, for a v5 relayed
+    /// one plaintext). Replaced atomically on every reconnect so the NAT socket
+    /// — and therefore the source port and server_session_id — survives client
+    /// session changes.
     active: Arc<Mutex<Option<ActiveSession>>>,
     /// Pre-resolved per-user metrics counters, shared with the reader task.
     /// Lets the per-datagram client→upstream and upstream→client paths skip the
@@ -139,8 +169,8 @@ impl NatEntry {
     }
 
     /// Set the active client session that should receive upstream responses,
-    /// along with the `UdpCipherMode` used to encrypt them. The previous session
-    /// (if any) is replaced; its channel may be closed.
+    /// along with the [`UdpResponseCoding`] its carrier needs them encoded in.
+    /// The previous session (if any) is replaced; its channel may be closed.
     ///
     /// `stream_id` identifies the registering WS-stream (or
     /// shadowsocks plain-UDP session). It is matched by
@@ -149,10 +179,10 @@ impl NatEntry {
     pub(crate) fn register_session(
         &self,
         sender: UdpResponseSender,
-        session: UdpCipherMode,
+        coding: UdpResponseCoding,
         stream_id: u64,
     ) {
-        *self.active.lock() = Some(ActiveSession { sender, session, stream_id });
+        *self.active.lock() = Some(ActiveSession { sender, coding, stream_id });
     }
 
     /// Atomically clears the active session slot iff its `stream_id`
