@@ -305,6 +305,18 @@ fn test_route_ctx(user: &UserKey) -> Arc<UdpRouteCtx> {
     })
 }
 
+/// A route serving several credentials, as a multi-user path does: any of them
+/// authenticates a datagram, and which one did is only known after decryption.
+fn multi_user_route_ctx(users: &[UserKey]) -> Arc<UdpRouteCtx> {
+    Arc::new(UdpRouteCtx {
+        users: Arc::from(users.to_vec()),
+        protocol: Protocol::Http1,
+        path: Arc::from("/udp"),
+        candidate_users: users.iter().map(|user| Arc::from(user.id())).collect(),
+        padding: PaddingScheme::disabled(),
+    })
+}
+
 /// One SS-UDP packet for `target`, encrypted for `user`.
 fn client_datagram(user: &UserKey, target: SocketAddr, payload: &[u8]) -> Result<Bytes> {
     let mut plaintext = TargetAddr::from(target).to_wire_bytes()?;
@@ -766,6 +778,10 @@ struct UdpEdgeHarness {
     route: Arc<UdpRouteCtx>,
     registry: Arc<OrphanRegistry>,
     user: UserKey,
+    /// A second credential configured on the *same* path, as a multi-user route
+    /// has. Nothing but the identity-guard test authenticates as it; every other
+    /// test's client keeps using [`Self::user`].
+    other_user: UserKey,
     session_id: SessionId,
     _home_endpoint: MeshEndpoint,
 }
@@ -816,6 +832,8 @@ impl UdpEdgeHarness {
             .with_cluster(obfuscation.clone(), ShardId::new(2).unwrap()),
         );
         let user = UserKey::new(user, secret, None, CipherKind::Aes256Gcm, None).unwrap();
+        let other_user =
+            UserKey::new("bystander", "other-secret", None, CipherKind::Aes256Gcm, None).unwrap();
         let server = Arc::new(UdpServerCtx {
             metrics: Arc::clone(&metrics),
             nat_table: NatTable::new(Duration::from_secs(60)),
@@ -832,9 +850,10 @@ impl UdpEdgeHarness {
                 cluster,
                 shard,
                 server,
-                route: test_route_ctx(&user),
+                route: multi_user_route_ctx(&[user.clone(), other_user.clone()]),
                 registry,
                 user,
+                other_user,
                 // A resume id the *home* shard minted, as if on a prior connect.
                 session_id: SessionId::random_with_shard(&SystemRandom::new(), &obfuscation, shard)
                     .unwrap(),
@@ -901,6 +920,12 @@ impl UdpEdgeHarness {
     /// One SS-UDP packet for `target`, encrypted for this edge's user.
     fn client_packet(&self, target: SocketAddr, payload: &[u8]) -> Bytes {
         client_datagram(&self.user, target, payload).expect("encrypting a client datagram")
+    }
+
+    /// The same, under the *other* credential this path serves: a datagram the
+    /// edge authenticates just as happily, but for a different user.
+    fn other_user_packet(&self, target: SocketAddr, payload: &[u8]) -> Bytes {
+        client_datagram(&self.other_user, target, payload).expect("encrypting a client datagram")
     }
 
     /// Starts the real relay over a scripted client carrier, exactly as an
@@ -1114,6 +1139,52 @@ async fn udp_edge_seals_the_homes_plaintext_response_for_the_client() -> Result<
         opened.payload,
         socks5_wrap(target, b"pong"),
         "the response must name the source the home reported, byte for byte",
+    );
+
+    relay.abort();
+    Ok(())
+}
+
+/// One carrier attests exactly one user, and the home routes everything on it
+/// under that user's NAT identity and fwmark without re-authenticating — it
+/// holds no key. So a datagram opened under a second valid credential must not
+/// ride the same carrier: it would egress as the attested user, under the
+/// attested user's policy routing, and be billed to them.
+#[tokio::test]
+async fn udp_edge_drops_a_datagram_from_a_user_it_did_not_attest() -> Result<()> {
+    const SLOT: usize = 7;
+    let (harness, mut home) =
+        UdpEdgeHarness::with_credentials("beerloga", "edge-secret", UdpHomeAnswer::Park).await;
+    let edge = harness.open_relay().await.expect("the home holds a park");
+    let (client, _downlink, relay) = harness.spawn_relay::<SLOT>(edge);
+
+    let target: SocketAddr = "203.0.113.7:5353".parse().unwrap();
+    client.send(harness.client_packet(target, b"first")).await?;
+    assert_eq!(
+        home.user_frame().await.user,
+        "beerloga",
+        "the first authenticated datagram is what the carrier attests",
+    );
+    assert_eq!(home.datagrams_received(1).await, vec![socks5_wrap(target, b"first")]);
+
+    // The second credential's datagram, on the very same carrier — and then one
+    // the attested user is allowed to send, so the assertion below waits on a
+    // real event instead of on a timeout. The edge forwards inline, in read
+    // order, so an unguarded edge would deliver the intruder's datagram first.
+    client.send(harness.other_user_packet(target, b"intruder")).await?;
+    client.send(harness.client_packet(target, b"third")).await?;
+
+    assert_eq!(
+        home.datagrams_received(1).await,
+        vec![socks5_wrap(target, b"third")],
+        "a datagram from a user this carrier never attested must not reach the target",
+    );
+    assert!(
+        harness.server.metrics.render_prometheus().contains(
+            "outline_ss_udp_relay_drops_total{transport=\"udp\",protocol=\"http1\",\
+             app_protocol=\"shadowsocks\",reason=\"relayed_user_mismatch\"} 1"
+        ),
+        "the drop must be observable, and named for what it was",
     );
 
     relay.abort();

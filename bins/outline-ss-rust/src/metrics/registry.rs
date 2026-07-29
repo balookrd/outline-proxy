@@ -162,7 +162,8 @@ pub(super) fn register_descriptions() {
     );
     describe_counter!(
         "outline_ss_udp_relay_drops_total",
-        "UDP datagrams dropped before relay because of transport backpressure or concurrency limits."
+        "UDP datagrams dropped before relay because of transport backpressure, concurrency limits, \
+         or an identity the carrier never attested to its cluster home."
     );
     describe_counter!(
         "outline_ss_udp_oversized_datagrams_dropped_total",
