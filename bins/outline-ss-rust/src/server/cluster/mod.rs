@@ -83,9 +83,23 @@ impl ClusterCtx {
 }
 
 // The mesh transport is wired into both the home listener and the edge relay,
-// but a few items (the health-budget close codes / progress plumbing) stay dead
-// until phase 6, so keep the module-level allow. `pub(in crate::server)` so the
-// transport-side carrier adapter can reach `MeshStream`.
+// but some of it is dormant rather than used, so keep the module-level allow.
+// Two groups, both deliberate:
+//
+// * Protocol surface kept whole for symmetry — `CloseReason::from_code` (the
+//   decoder half of a code only ever *written* here), `MeshEndpoint::shutdown`,
+//   `pump`.
+// * The edge→home THROTTLE_HINT machinery, whose *sender* went with the retired
+//   v4 relay: every edge now terminates its client's crypto and signals its own
+//   client directly. `parse_control_datagram` and the receiver task stay so a
+//   straggler peer's hint is decoded and counted rather than logged as a
+//   malformed datagram, but nothing registers a monitor for it to reach, so
+//   `ThrottleRegistry::register`, `PooledRelay::connection` and
+//   `encode_throttle_hint` (still exercised by `control`'s round-trip tests)
+//   have no production caller. Retiring the receiver half is a follow-up: it
+//   also owns two metrics, a dashboard panel and a config knob.
+//
+// `pub(in crate::server)` so the transport-side relay can reach `MeshStream`.
 #[allow(dead_code)]
 pub(in crate::server) mod mesh;
 

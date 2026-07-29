@@ -16,10 +16,8 @@ use outline_wire::cluster::ShardId;
 use quinn::Connection;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
-use super::endpoint::{
-    MeshEndpoint, MeshStream, open_relay_stream, open_relay_stream_v5, read_open_ack,
-};
-use super::frame::{OpenHeader, OpenHeaderV5};
+use super::endpoint::{MeshEndpoint, MeshStream, open_relay_stream, read_open_ack};
+use super::frame::OpenHeader;
 
 /// A relay stream plus the pool permit that keeps it counted against the
 /// concurrency cap until it is dropped.
@@ -42,8 +40,8 @@ impl PooledRelay {
     ///
     /// This is what turns a home-side refusal into a *fast, explicit* failure on
     /// the edge: the caller awaits it before upgrading the client carrier, so a
-    /// home that cannot serve the relayed path (asymmetric cluster config) sends
-    /// its `NoRoute` reset while the edge can still fall back to a fresh local
+    /// home that holds no park under the relayed resume id sends its
+    /// `NoSession` reset while the edge can still fall back to a fresh local
     /// session. The timeout bounds a home that neither acks nor resets — it
     /// costs one mesh RTT on the happy path.
     pub(in crate::server) async fn await_ack(&mut self, timeout: Duration) -> Result<()> {
@@ -103,18 +101,6 @@ impl MeshPeerPool {
     ) -> Result<PooledRelay> {
         let (conn, permit) = self.reserve(shard).await?;
         let stream = open_relay_stream(&conn, header).await?;
-        Ok(PooledRelay { stream, conn, _permit: permit })
-    }
-
-    /// v5 twin of [`Self::open_relay`]: same connection reuse and same
-    /// concurrency cap, a different OPEN header on the stream.
-    pub(in crate::server) async fn open_relay_v5(
-        &self,
-        shard: ShardId,
-        header: &OpenHeaderV5,
-    ) -> Result<PooledRelay> {
-        let (conn, permit) = self.reserve(shard).await?;
-        let stream = open_relay_stream_v5(&conn, header).await?;
         Ok(PooledRelay { stream, conn, _permit: permit })
     }
 

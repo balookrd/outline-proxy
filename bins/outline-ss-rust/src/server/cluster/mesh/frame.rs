@@ -1,35 +1,31 @@
 //! Mesh stream framing.
 //!
-//! Each relayed session is one QUIC bidirectional stream. The stream opens
-//! with a single [`OpenHeader`] — the metadata the home needs to admit the
-//! relayed carrier into its normal accept path — after which the still-encrypted
-//! application bytes flow through in both directions. The body framing depends
-//! on the carrier kind: the TCP-shaped carriers (`SsTcp` / `VlessTcp` and their
-//! `*Xhttp` variants) relay as a transparent byte stream (chunk boundaries are
-//! irrelevant; the QUIC stream *is* the channel, there is no per-chunk data
-//! frame), whereas `SsUdp` frames each datagram as `u32 BE length | payload`
-//! because an SS-UDP packet is atomic and must not be coalesced or split — see
-//! [`super::datagram`]. The stream closes with a QUIC `finish` (graceful) or
-//! `reset` whose error code is a [`CloseReason`].
+//! Each relayed session is one QUIC bidirectional stream. The stream opens with
+//! a single [`OpenHeader`] — the metadata the home needs to find the park the
+//! edge is resuming — after which application **plaintext** flows through in
+//! both directions: the edge terminates the client's crypto, so the home never
+//! decrypts anything and needs no request path (routing and padding are a local
+//! matter of the edge). Only [`MeshFraming`] says how the body is delimited, and
+//! [`MeshProtocol`] says which protocol's park may be spliced onto it; the user
+//! arrives in a second-phase [`UserFrame`].
 //!
-//! Two header versions coexist while the fleet migrates: [`OpenHeader`] (v4,
-//! described above and below) and [`OpenHeaderV5`], where the edge terminates
-//! the client's crypto and the mesh carries plaintext. A v5 home needs no
-//! request path (routing is a local matter of the edge) and never decodes the
-//! body — only [`MeshFraming`] says how it is delimited, and [`MeshProtocol`]
-//! says which protocol's park may be spliced onto it — and it learns the user
-//! from a second-phase [`UserFrame`]. [`RelayOpen::parse`] routes a frame to the
-//! matching parser by its leading version byte.
+//! The body framing depends on [`MeshFraming`]: `Tcp` relays as a transparent
+//! byte stream (chunk boundaries are irrelevant; the QUIC stream *is* the
+//! channel, there is no per-chunk data frame), whereas `Udp` frames each
+//! datagram as `u32 BE length | payload` because an SS-UDP packet is atomic and
+//! must not be coalesced or split — see [`super::datagram`]. The stream closes
+//! with a QUIC `finish` (graceful) or `reset` whose error code is a
+//! [`CloseReason`].
 //!
-//! # v5 stream layout
+//! # Stream layout
 //!
-//! A v5 stream is a fixed setup sequence followed by the relayed body, and each
+//! A stream is a fixed setup sequence followed by the relayed body, and each
 //! element sits at a position both peers can compute from what they have
 //! already exchanged — there is no in-band framing over the body, so nothing
 //! may be inserted once it starts:
 //!
 //! ```text
-//! edge → home:  OPEN(v5)                        length-prefixed OpenHeaderV5
+//! edge → home:  OPEN                            length-prefixed OpenHeader
 //! home → edge:  ack(1)                          OPEN_ACK_ACCEPTED
 //! edge → home:  USER                            UserFrame
 //! home → edge:  UPSTREAM-ACK(8)                 iff OPEN set the ACK-PREFIX flag
@@ -37,7 +33,7 @@
 //! both ways:    body …                          plaintext, framed per MeshFraming
 //! ```
 //!
-//! [`UpstreamAckFrame`] is the resume-continuity half of the v5 protocol: it
+//! [`UpstreamAckFrame`] is the resume-continuity half of the protocol: it
 //! tells the resuming edge how far the home's upstream socket actually got, so
 //! the edge replays only the uplink the target never received. It is gated on
 //! the ACK-PREFIX flag the edge itself set in the OPEN, so its presence is never
@@ -47,7 +43,7 @@
 //! and reports `0`, because a datagram session acknowledges no uplink byte
 //! offset — so the stream head parses identically on both framings.
 //!
-//! Teardown carries the other v5-only signal. The edge always ends its uplink
+//! Teardown carries the other resume-continuity signal. The edge always ends its uplink
 //! half with a QUIC FIN — a reset would drop still-unacked request-body bytes —
 //! and says *why* by stopping the home's downlink half with a [`CloseIntent`]
 //! code. FIN alone therefore keeps its old meaning ("the carrier ended, expect a
@@ -59,90 +55,47 @@
 //! ends that half early; the home still drains the uplink to its FIN, so a
 //! finished client's request body reaches the target whole.
 //!
-//! The edge never decrypts, so the header carries only carrier metadata the
-//! edge can see before the payload: the resume id, the carrier kind, the
-//! resume capability bits the client advertised, the request path (for the
-//! home's padding-scheme selection) and an optional client address hint. The
-//! authenticated user is *not* here — the home authenticates it from the
-//! relayed byte stream itself (SS salt / VLESS UUID), exactly as for a direct
-//! carrier. See `docs/CLUSTER.md`.
+//! The edge owns the client's crypto, so the header carries only what the home
+//! still has to decide on: the resume id, how the body is framed, which proxy
+//! protocol the park must have been authenticated under, the resume capability
+//! bits the client advertised and an optional client address hint. The
+//! authenticated user is *not* here — the edge cannot know it before it answers
+//! the client's upgrade — so it follows in the [`UserFrame`]. See
+//! `docs/CLUSTER.md`.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use anyhow::{Result, bail};
 
-/// Wire-format version of the [`OpenHeader`]. Bump on any layout change so a
-/// peer on an older build fails cleanly instead of misparsing.
+/// Wire-format version of an [`OpenHeader`]. Bump on any layout change so a peer
+/// on an older build fails cleanly instead of misparsing.
 ///
-/// v2 added the `SsXhttp` / `VlessXhttp` carrier kinds.
-/// v3 added the `SsUdpXhttp` carrier kind (SS-UDP over XHTTP).
-/// v4 added the [`OPEN_ACK_ACCEPTED`] setup acknowledgement: the home now
-/// prefixes the downlink with one ack byte, which an older edge would misread as
-/// carrier payload — so the version gate is what keeps the two apart.
-const OPEN_VERSION: u8 = 4;
+/// v5 is the only version this build speaks, and the only one it ever will
+/// again: it is where client crypto moved to the edge. Its predecessors relayed
+/// the client's *still-encrypted* bytes and made the home re-run its whole
+/// accept path against them — v2 added the `SsXhttp` / `VlessXhttp` carrier
+/// kinds, v3 the `SsUdpXhttp` one and v4 the [`OPEN_ACK_ACCEPTED`] setup
+/// acknowledgement — so their header carried a request path and a carrier kind
+/// that a plaintext relay has no use for. All of it is retired: [`parse`]
+/// refuses any version byte other than `5`, which costs a straggler peer its
+/// session continuity (the edge serves its client locally) and never
+/// misinterprets its bytes.
+///
+/// [`parse`]: OpenHeader::parse
+const OPEN_VERSION: u8 = 5;
 
 /// The home's setup acknowledgement, sent as the first downlink byte of an
-/// admitted relay stream (v4+) and consumed by the edge before it splices the
-/// client carrier. It answers the one question the edge cannot decide alone:
-/// whether this home can actually serve the relayed path and carrier. A refusal
-/// is not a byte value but a stream reset carrying a [`CloseReason`], so an edge
-/// waiting for the ack learns of it immediately either way.
+/// admitted relay stream and consumed by the edge before it splices the client
+/// carrier. It answers the one question the edge cannot decide alone: whether
+/// this home actually holds the park being resumed. A refusal is not a byte
+/// value but a stream reset carrying a [`CloseReason`], so an edge waiting for
+/// the ack learns of it immediately either way.
 pub(in crate::server) const OPEN_ACK_ACCEPTED: u8 = 1;
-
-/// Upper bound on the request path length carried in an OPEN header. Guards the
-/// parser against an oversized allocation from a malformed peer.
-const MAX_PATH_LEN: usize = 512;
 
 /// Upper bound on the user name carried in a [`UserFrame`]. Guards the parser
 /// against an oversized allocation from a malformed peer; a single length byte
 /// is enough because names are short identifiers.
 pub(in crate::server) const MAX_USER_LEN: usize = 64;
-
-/// Which carrier a relayed stream is, so the home dispatches it into the right
-/// accept path. Combined-SS path-kind is already resolved into the Tcp/Udp
-/// split here. The `*Xhttp` kinds differ from the WS kinds only in which route
-/// table the home resolves the path against (`xhttp_ss` / `xhttp_vless` /
-/// `xhttp_ss_udp` vs the WS `tcp` / `vless` / `udp` tables); the crypto is the
-/// same. Body framing depends on the kind: the TCP-shaped carriers relay as a
-/// byte stream, whereas `SsUdp` and `SsUdpXhttp` are datagram-framed (see
-/// [`super::datagram`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::server) enum CarrierKind {
-    SsTcp,
-    SsUdp,
-    VlessTcp,
-    VlessUdp,
-    SsXhttp,
-    VlessXhttp,
-    SsUdpXhttp,
-}
-
-impl CarrierKind {
-    fn to_u8(self) -> u8 {
-        match self {
-            CarrierKind::SsTcp => 0,
-            CarrierKind::SsUdp => 1,
-            CarrierKind::VlessTcp => 2,
-            CarrierKind::VlessUdp => 3,
-            CarrierKind::SsXhttp => 4,
-            CarrierKind::VlessXhttp => 5,
-            CarrierKind::SsUdpXhttp => 6,
-        }
-    }
-
-    fn from_u8(v: u8) -> Result<Self> {
-        Ok(match v {
-            0 => CarrierKind::SsTcp,
-            1 => CarrierKind::SsUdp,
-            2 => CarrierKind::VlessTcp,
-            3 => CarrierKind::VlessUdp,
-            4 => CarrierKind::SsXhttp,
-            5 => CarrierKind::VlessXhttp,
-            6 => CarrierKind::SsUdpXhttp,
-            other => bail!("unknown mesh carrier kind {other}"),
-        })
-    }
-}
 
 /// Why a relayed stream was closed. Encoded as the QUIC stream reset error
 /// code; a graceful end uses `finish` and maps to [`CloseReason::Fin`].
@@ -159,13 +112,6 @@ pub(in crate::server) enum CloseReason {
     /// home is full" from a generic failure; a peer on an older build maps it to
     /// `Abort` through [`CloseReason::from_code`], which is the right fallback.
     Capacity,
-    /// The home refused the stream: the relayed path and carrier resolve to no
-    /// configured users here, so it holds no key that could authenticate a
-    /// single packet on it. Only reachable under an asymmetric cluster config
-    /// (the homes and edges disagree on paths or users); the edge degrades to a
-    /// fresh local session rather than relaying into a black hole. A peer on an
-    /// older build maps it to `Abort`, which is the right fallback.
-    NoRoute,
     /// The home refused the stream: it holds no parked session under the
     /// relayed resume id, or the id's owner is not the user the edge
     /// authenticated. An ordinary outcome — parks expire and are evicted — so
@@ -182,44 +128,27 @@ impl CloseReason {
             CloseReason::Abort => 1,
             CloseReason::Budget => 2,
             CloseReason::Capacity => 3,
-            CloseReason::NoRoute => 4,
             CloseReason::NoSession => 5,
         }
     }
 
     /// Maps a received QUIC reset code back to a reason. Unknown codes are
     /// treated as [`CloseReason::Abort`] (a reset is a reset).
+    ///
+    /// Code `4` is deliberately unmapped: it was the retired `NoRoute` refusal a
+    /// pre-v5 home sent when the relayed request path resolved to no configured
+    /// users. No home performs that lookup any more, so a straggler still
+    /// sending the code lands on `Abort`, which is the right reading — the edge
+    /// serves its client locally either way.
     pub(in crate::server) fn from_code(code: u32) -> Self {
         match code {
             0 => CloseReason::Fin,
             2 => CloseReason::Budget,
             3 => CloseReason::Capacity,
-            4 => CloseReason::NoRoute,
             5 => CloseReason::NoSession,
             _ => CloseReason::Abort,
         }
     }
-}
-
-/// Metadata prefixing a relayed session stream.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::server) struct OpenHeader {
-    pub(in crate::server) carrier: CarrierKind,
-    /// The resume id the client presented (shard already routes to this home).
-    pub(in crate::server) session_id: [u8; 16],
-    /// Client advertised `X-Outline-Resume-Capable`.
-    pub(in crate::server) resume_capable: bool,
-    /// Client advertised the Ack-Prefix (v1) capability.
-    pub(in crate::server) ack_prefix: bool,
-    /// Client advertised Symmetric Downlink Replay (v2).
-    pub(in crate::server) symmetric_replay: bool,
-    /// Client-reported downstream-acked offset (v2), else 0.
-    pub(in crate::server) client_down_acked: u64,
-    /// Request path the client used (WS/XHTTP), for the home's padding-scheme
-    /// selection and routing. Bounded by [`MAX_PATH_LEN`].
-    pub(in crate::server) path: String,
-    /// Optional client address hint (for logging / routing scope).
-    pub(in crate::server) peer_addr: Option<SocketAddr>,
 }
 
 // Flag bits packed into the header's flag byte.
@@ -227,99 +156,11 @@ const FLAG_RESUME_CAPABLE: u8 = 0x01;
 const FLAG_ACK_PREFIX: u8 = 0x02;
 const FLAG_SYMMETRIC_REPLAY: u8 = 0x04;
 const FLAG_HAS_PEER_ADDR: u8 = 0x08;
-/// v5 only: the edge terminated VLESS rather than Shadowsocks for this stream.
-/// A spare bit rather than a new field, so a v5 peer built before the flag
-/// existed — necessarily an SS edge, since SS migrated to v5 first — still
-/// parses, and its cleared bit reads as [`MeshProtocol::Ss`], which is what it
-/// is. Never set by [`OpenHeader`] (v4), which carries the protocol in its
-/// [`CarrierKind`] byte instead.
+/// The edge terminated VLESS rather than Shadowsocks for this stream. A spare
+/// bit rather than a new field, so a peer built before the flag existed —
+/// necessarily an SS edge, since SS migrated to v5 first — still parses, and its
+/// cleared bit reads as [`MeshProtocol::Ss`], which is what it is.
 const FLAG_VLESS: u8 = 0x10;
-
-impl OpenHeader {
-    /// Serializes the header. Layout (all integers big-endian):
-    /// `version(1) | carrier(1) | flags(1) | down_acked(8) | session_id(16) |
-    ///  path_len(2) | path | [peer_addr]`, where peer_addr (present iff the
-    /// flag is set) is `family(1: 4|6) | addr(4|16) | port(2)`.
-    pub(in crate::server) fn encode(&self) -> Vec<u8> {
-        let mut flags = 0u8;
-        if self.resume_capable {
-            flags |= FLAG_RESUME_CAPABLE;
-        }
-        if self.ack_prefix {
-            flags |= FLAG_ACK_PREFIX;
-        }
-        if self.symmetric_replay {
-            flags |= FLAG_SYMMETRIC_REPLAY;
-        }
-        if self.peer_addr.is_some() {
-            flags |= FLAG_HAS_PEER_ADDR;
-        }
-
-        let path = self.path.as_bytes();
-        let mut out = Vec::with_capacity(29 + path.len() + 19);
-        out.push(OPEN_VERSION);
-        out.push(self.carrier.to_u8());
-        out.push(flags);
-        out.extend_from_slice(&self.client_down_acked.to_be_bytes());
-        out.extend_from_slice(&self.session_id);
-        out.extend_from_slice(&(path.len() as u16).to_be_bytes());
-        out.extend_from_slice(path);
-        if let Some(addr) = self.peer_addr {
-            match addr.ip() {
-                IpAddr::V4(v4) => {
-                    out.push(4);
-                    out.extend_from_slice(&v4.octets());
-                },
-                IpAddr::V6(v6) => {
-                    out.push(6);
-                    out.extend_from_slice(&v6.octets());
-                },
-            }
-            out.extend_from_slice(&addr.port().to_be_bytes());
-        }
-        out
-    }
-
-    /// Parses a header from the stream prefix. Rejects an unknown version, an
-    /// over-long path, or a truncated buffer.
-    pub(in crate::server) fn parse(buf: &[u8]) -> Result<Self> {
-        let mut r = Reader::new(buf);
-        let version = r.u8()?;
-        if version != OPEN_VERSION {
-            bail!("unsupported mesh OPEN version {version}");
-        }
-        let carrier = CarrierKind::from_u8(r.u8()?)?;
-        let flags = r.u8()?;
-        let client_down_acked = r.u64()?;
-        let session_id = r.array16()?;
-        let path_len = r.u16()? as usize;
-        if path_len > MAX_PATH_LEN {
-            bail!("mesh OPEN path too long: {path_len}");
-        }
-        let path = String::from_utf8(r.bytes(path_len)?.to_vec())
-            .map_err(|_| anyhow::anyhow!("mesh OPEN path is not valid UTF-8"))?;
-        let peer_addr = if flags & FLAG_HAS_PEER_ADDR != 0 {
-            let ip = match r.u8()? {
-                4 => IpAddr::V4(Ipv4Addr::from(r.array4()?)),
-                6 => IpAddr::V6(Ipv6Addr::from(r.array16()?)),
-                fam => bail!("unknown mesh OPEN address family {fam}"),
-            };
-            Some(SocketAddr::new(ip, r.u16()?))
-        } else {
-            None
-        };
-        Ok(Self {
-            carrier,
-            session_id,
-            resume_capable: flags & FLAG_RESUME_CAPABLE != 0,
-            ack_prefix: flags & FLAG_ACK_PREFIX != 0,
-            symmetric_replay: flags & FLAG_SYMMETRIC_REPLAY != 0,
-            client_down_acked,
-            path,
-            peer_addr,
-        })
-    }
-}
 
 /// Second-phase frame: the user the edge authenticated, sent after the home's
 /// setup ack.
@@ -362,18 +203,7 @@ impl UserFrame {
     }
 }
 
-/// Wire-format version of an [`OpenHeaderV5`]. Coexists with [`OPEN_VERSION`]
-/// (v4) while the edges migrate: the home dispatches on the leading byte via
-/// [`peek_open_version`], so a v4 edge and a v5 edge can both be served.
-///
-/// v5 is where client crypto moves to the edge. The home no longer decrypts
-/// anything, so the header loses the request path (routing and padding become a
-/// local matter of the edge) and the carrier byte narrows to the only
-/// distinctions the home still needs — how the relayed body is framed, and
-/// which protocol's park may be spliced onto it.
-const OPEN_VERSION_V5: u8 = 5;
-
-/// How a relayed v5 stream is framed. The edge owns the client crypto, so
+/// How a relayed stream is framed. The edge owns the client crypto, so
 /// WS-vs-XHTTP never reaches the home — only the framing does: TCP-shaped
 /// carriers relay as a byte stream, UDP as length-delimited datagrams (see
 /// [`super::datagram`]).
@@ -383,7 +213,7 @@ pub(in crate::server) enum MeshFraming {
     Udp,
 }
 
-/// Which proxy protocol the edge terminated for a relayed v5 stream.
+/// Which proxy protocol the edge terminated for a relayed stream.
 ///
 /// The home never speaks it — the mesh carries application plaintext — but the
 /// park it is about to splice does: [`crate::server::resumption::ParkedTcp`]
@@ -426,7 +256,7 @@ impl MeshFraming {
     }
 }
 
-/// Metadata prefixing a v5 relayed session stream: everything the home needs to
+/// Metadata prefixing a relayed session stream: everything the home needs to
 /// find the park the edge is resuming, and nothing about the client's crypto.
 ///
 /// The authenticated user is deliberately absent — the edge cannot know it when
@@ -434,7 +264,7 @@ impl MeshFraming {
 /// client's first encrypted frame), so it arrives in the second-phase
 /// [`UserFrame`] after the home's ack. See `docs/CLUSTER.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::server) struct OpenHeaderV5 {
+pub(in crate::server) struct OpenHeader {
     /// How the relayed body is framed on this stream.
     pub(in crate::server) framing: MeshFraming,
     /// Which proxy protocol the edge terminated. Not used to decode anything —
@@ -455,13 +285,12 @@ pub(in crate::server) struct OpenHeaderV5 {
     pub(in crate::server) peer_addr: Option<SocketAddr>,
 }
 
-impl OpenHeaderV5 {
+impl OpenHeader {
     /// Serializes the header. Layout (all integers big-endian):
     /// `version(1) | framing(1) | flags(1) | down_acked(8) | session_id(16) |
     ///  [peer_addr]`, where peer_addr (present iff the flag is set) is
-    /// `family(1: 4|6) | addr(4|16) | port(2)`. Identical to v4 minus the
-    /// length-prefixed path, so the flag bits and address encoding are shared;
-    /// the protocol rides [`FLAG_VLESS`] in that same flag byte.
+    /// `family(1: 4|6) | addr(4|16) | port(2)`. The protocol rides
+    /// [`FLAG_VLESS`] in the flag byte rather than taking a field of its own.
     pub(in crate::server) fn encode(&self) -> Vec<u8> {
         let mut flags = 0u8;
         if self.resume_capable {
@@ -481,7 +310,7 @@ impl OpenHeaderV5 {
         }
 
         let mut out = Vec::with_capacity(27 + 19);
-        out.push(OPEN_VERSION_V5);
+        out.push(OPEN_VERSION);
         out.push(self.framing.to_u8());
         out.push(flags);
         out.extend_from_slice(&self.client_down_acked.to_be_bytes());
@@ -502,13 +331,14 @@ impl OpenHeaderV5 {
         out
     }
 
-    /// Parses a v5 header from the stream prefix. Rejects any version byte that
-    /// is not `5` — including a v4 frame, which is what makes a mixed cluster
-    /// degrade to a lost resume instead of a misparsed stream.
+    /// Parses a header from the stream prefix. Rejects any version byte that is
+    /// not [`OPEN_VERSION`] — including a retired v4 frame from a straggler
+    /// peer, which is what makes a mixed cluster degrade to a lost resume
+    /// instead of a misparsed stream.
     pub(in crate::server) fn parse(buf: &[u8]) -> Result<Self> {
         let mut r = Reader::new(buf);
         let version = r.u8()?;
-        if version != OPEN_VERSION_V5 {
+        if version != OPEN_VERSION {
             bail!("unsupported mesh OPEN version {version}");
         }
         let framing = MeshFraming::from_u8(r.u8()?)?;
@@ -527,7 +357,7 @@ impl OpenHeaderV5 {
         };
         Ok(Self {
             framing,
-            // A cleared bit is Shadowsocks, which is also what a v5 peer built
+            // A cleared bit is Shadowsocks, which is also what a peer built
             // before the flag existed can only have been relaying.
             protocol: if flags & FLAG_VLESS != 0 {
                 MeshProtocol::Vless
@@ -544,18 +374,18 @@ impl OpenHeaderV5 {
     }
 }
 
-/// Length of an [`UpstreamAckFrame`] on the wire. Fixed, so a v5 peer reads it
+/// Length of an [`UpstreamAckFrame`] on the wire. Fixed, so a peer reads it
 /// with a single `read_exact` and can never be driven into an unbounded read.
 pub(in crate::server) const UPSTREAM_ACK_FRAME_LEN: usize = 8;
 
-/// Home→edge resume-continuity frame (v5 only): how many uplink bytes the parked
+/// Home→edge resume-continuity frame: how many uplink bytes the parked
 /// upstream socket has actually taken over this session's whole life.
 ///
-/// It answers the question a v5→v5 resume cannot otherwise answer. The home may
+/// It answers the question a relayed resume cannot otherwise answer. The home may
 /// have consumed uplink bytes off a dying mesh carrier that the upstream socket
 /// never took; without this offset the resuming edge would either skip them (a
 /// silent hole in the request body at the target) or resend from zero (a
-/// duplicate). It is the v5 spelling of what the direct path sends its client as
+/// duplicate). It is the mesh spelling of what the direct path sends its client as
 /// the Ack-Prefix v1 control frame — same number, same meaning, same position at
 /// the head of the resumed session — except that here the edge is the one that
 /// owns the client's crypto and re-emits it downstream.
@@ -583,7 +413,7 @@ impl UpstreamAckFrame {
     }
 }
 
-/// Why the edge ended its half of a v5 relay stream — the distinction the home
+/// Why the edge ended its half of a relay stream — the distinction the home
 /// needs to decide whether the session has a future.
 ///
 /// Carried as the QUIC `STOP_SENDING` error code the edge applies to the home's
@@ -664,34 +494,6 @@ impl CloseIntent {
         match self {
             CloseIntent::CarrierEnded => "carrier_ended",
             CloseIntent::ClientDone => "client_done",
-        }
-    }
-}
-
-/// Reads the version byte a mesh OPEN frame starts with, without consuming it,
-/// so the accept loop can route the frame to the matching parser.
-pub(in crate::server) fn peek_open_version(buf: &[u8]) -> Result<u8> {
-    buf.first()
-        .copied()
-        .ok_or_else(|| anyhow::anyhow!("empty mesh OPEN frame"))
-}
-
-/// A parsed mesh OPEN frame, in whichever version the peer sent. The home
-/// dispatches on this: v4 keeps the legacy still-encrypted relay path, v5 takes
-/// the plaintext one. Both are served for as long as the fleet runs a mix.
-pub(in crate::server) enum RelayOpen {
-    V4(OpenHeader),
-    V5(OpenHeaderV5),
-}
-
-impl RelayOpen {
-    /// Parses a frame by its leading version byte. An unknown version is an
-    /// error, exactly as an unparsable header has always been.
-    pub(in crate::server) fn parse(buf: &[u8]) -> Result<Self> {
-        match peek_open_version(buf)? {
-            OPEN_VERSION => Ok(RelayOpen::V4(OpenHeader::parse(buf)?)),
-            OPEN_VERSION_V5 => Ok(RelayOpen::V5(OpenHeaderV5::parse(buf)?)),
-            other => bail!("unsupported mesh OPEN version {other}"),
         }
     }
 }

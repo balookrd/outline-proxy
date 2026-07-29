@@ -28,7 +28,6 @@ use super::state::{AppState, empty_transport_route, empty_vless_transport_route}
 
 pub(in crate::server) mod carrier_padding;
 mod fallback;
-mod mesh_carrier;
 pub(in crate::server) mod mesh_relay;
 mod proxy_protocol;
 mod resume_headers;
@@ -100,7 +99,7 @@ async fn tcp_upgrade_for_path(
     let edge = match state.cluster.as_deref() {
         Some(cluster) => {
             match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
-                (RouteDecision::Relay(shard), Some(advert)) => mesh_relay::open_edge_relay_v5(
+                (RouteDecision::Relay(shard), Some(advert)) => mesh_relay::open_edge_relay(
                     cluster,
                     shard,
                     &advert,
@@ -200,7 +199,7 @@ pub(super) async fn vless_websocket_upgrade(
     let edge = match state.cluster.as_deref() {
         Some(cluster) => {
             match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
-                (RouteDecision::Relay(shard), Some(advert)) => mesh_relay::open_edge_relay_v5(
+                (RouteDecision::Relay(shard), Some(advert)) => mesh_relay::open_edge_relay(
                     cluster,
                     shard,
                     &advert,
@@ -359,7 +358,7 @@ async fn udp_upgrade_for_path(
     let edge = match state.cluster.as_deref() {
         Some(cluster) => {
             match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
-                (RouteDecision::Relay(shard), Some(advert)) => mesh_relay::open_edge_relay_v5(
+                (RouteDecision::Relay(shard), Some(advert)) => mesh_relay::open_edge_relay(
                     cluster,
                     shard,
                     &advert,

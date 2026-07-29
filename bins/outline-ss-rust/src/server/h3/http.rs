@@ -24,7 +24,7 @@ use super::super::{
         XhttpRoute, edge_route, finish_ws_session, generate_anonymous_xhttp_session_id,
         h3_fallback_handle, handle_tcp_h3_connection, handle_udp_h3_connection,
         handle_vless_h3_connection, handle_xhttp_h3_request, is_normal_h3_shutdown,
-        mesh_relay::{edge_echo, edge_udp_echo, edge_upstream, open_edge_relay_v5},
+        mesh_relay::{edge_echo, edge_udp_echo, edge_upstream, open_edge_relay},
     },
 };
 use super::H3ConnectionCtx;
@@ -246,7 +246,7 @@ async fn handle_h3_request(
             && let (RouteDecision::Relay(shard), Some(advert)) =
                 edge_route(request.headers(), orphan_registry.cluster_identity())
         {
-            edge = open_edge_relay_v5(cluster, shard, &advert, framing, protocol, peer_addr)
+            edge = open_edge_relay(cluster, shard, &advert, framing, protocol, peer_addr)
                 .await
                 .map(|pooled| {
                     edge_upstream(pooled, &advert, cluster, framing, metrics, orphan_registry)

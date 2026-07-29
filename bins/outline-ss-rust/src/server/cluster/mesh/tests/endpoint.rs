@@ -2,19 +2,9 @@ use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 
-use super::super::frame::{CarrierKind, OpenHeader, RelayOpen};
+use super::super::frame::{MeshFraming, MeshProtocol, OpenHeader};
 use super::super::tls::MeshIdentity;
 use super::*;
-
-/// Unwraps the v4 header these transport-level tests always send. The accept
-/// path now returns a versioned frame; the version dispatch itself is covered
-/// in `frame.rs` and by the home-side relay tests.
-fn expect_v4(open: RelayOpen) -> OpenHeader {
-    match open {
-        RelayOpen::V4(header) => header,
-        RelayOpen::V5(_) => panic!("expected a v4 mesh OPEN header"),
-    }
-}
 
 fn identity(psk: &[u8]) -> MeshIdentity {
     MeshIdentity::derive(psk).unwrap()
@@ -22,13 +12,13 @@ fn identity(psk: &[u8]) -> MeshIdentity {
 
 fn header() -> OpenHeader {
     OpenHeader {
-        carrier: CarrierKind::SsTcp,
+        framing: MeshFraming::Tcp,
+        protocol: MeshProtocol::Ss,
         session_id: [7u8; 16],
         resume_capable: true,
         ack_prefix: false,
         symmetric_replay: false,
         client_down_acked: 0,
-        path: "/tcp".to_string(),
         peer_addr: None,
     }
 }
@@ -48,8 +38,7 @@ async fn relay_round_trips_open_header_and_payload() {
     // is delivered before the connection drops.
     let server = async {
         let conn = home.accept().await.unwrap().unwrap();
-        let (open, mut stream) = accept_relay(&conn).await.unwrap();
-        let hdr = expect_v4(open);
+        let (hdr, mut stream) = accept_relay(&conn).await.unwrap();
         let mut buf = [0u8; 5];
         stream.recv.read_exact(&mut buf).await.unwrap();
         stream.send.write_all(&buf).await.unwrap();
@@ -71,10 +60,58 @@ async fn relay_round_trips_open_header_and_payload() {
 
     let (hdr, echo) = tokio::join!(server, client);
     assert_eq!(&echo, b"01234", "payload must round-trip through the relay");
-    assert_eq!(hdr.carrier, CarrierKind::SsTcp);
+    assert_eq!(hdr.framing, MeshFraming::Tcp);
+    assert_eq!(hdr.protocol, MeshProtocol::Ss);
     assert_eq!(hdr.session_id, [7u8; 16]);
     assert!(hdr.resume_capable);
-    assert_eq!(hdr.path, "/tcp");
+}
+
+/// A peer whose OPEN this build cannot parse — a straggler still sending the
+/// retired v4 header — is refused *explicitly*, with a reset on both halves,
+/// rather than left to quinn's drop semantics. That is what turns version skew
+/// into a lost resume the edge can act on immediately instead of a stream that
+/// hangs until a timeout.
+#[tokio::test]
+async fn a_v4_open_is_refused_with_a_reset() {
+    let psk = b"mesh-endpoint-v4-psk";
+    let home = MeshEndpoint::bind(loopback(), &identity(psk)).unwrap();
+    let home_addr = home.local_addr().unwrap();
+    let edge = MeshEndpoint::bind(loopback(), &identity(psk)).unwrap();
+
+    let server = async {
+        let conn = home.accept().await.unwrap().unwrap();
+        let refused = matches!(accept_relay(&conn).await, Err(AcceptRelayError::Stream(_)));
+        // Handed back so `join!` keeps the connection alive until the client has
+        // read its half: dropping it here would close the whole connection and
+        // the dialer would see that instead of the per-stream reset.
+        (refused, conn)
+    };
+
+    let client = async {
+        let conn = edge.connect(home_addr).await.unwrap();
+        // A well-formed frame of this build, re-stamped with the retired
+        // version byte: exactly what a node on an older build puts on the wire.
+        let mut open = header().encode();
+        open[0] = 4;
+        let (mut send, mut recv) = conn.open_bi().await.unwrap();
+        send.write_all(&(open.len() as u32).to_be_bytes()).await.unwrap();
+        send.write_all(&open).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), recv.read_to_end(64))
+            .await
+            .expect("the home must answer a v4 OPEN, not leave it hanging")
+            .expect_err("the home must reset a relay stream it cannot parse")
+    };
+
+    let ((refused, _conn), error) = tokio::join!(server, client);
+    assert!(refused, "an unparsable OPEN is a per-stream failure, not a connection one");
+    let abort = quinn::VarInt::from_u32(CloseReason::Abort.code());
+    assert!(
+        matches!(
+            error,
+            quinn::ReadToEndError::Read(quinn::ReadError::Reset(code)) if code == abort
+        ),
+        "expected an Abort reset, got {error:?}",
+    );
 }
 
 #[tokio::test]

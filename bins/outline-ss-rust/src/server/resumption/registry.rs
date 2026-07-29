@@ -218,11 +218,10 @@ impl OrphanRegistry {
     ///
     /// One lookup answers both halves, so the refusal path takes no second lock
     /// and the two outcomes still reach the operator as distinct metric reasons.
-    /// That distinction matters now rather than later: with VLESS on v5, every
-    /// VLESS-UDP or mux resume that lands on an edge takes the
-    /// [`ParkProbe::OtherShape`] path, and folding those into "no such session"
-    /// would bury a config-independent, expected condition in the same series an
-    /// asymmetric cluster shows up in.
+    /// That distinction matters: every VLESS-UDP or mux resume that lands on an
+    /// edge takes the [`ParkProbe::OtherShape`] path, and folding those into "no
+    /// such session" would bury an expected, config-independent condition in the
+    /// same series that an expired or never-minted park shows up in.
     ///
     /// An in-flight reservation counts as [`ParkProbe::Splicable`], as it did
     /// when this probe was shape-agnostic: the park-miss race it exists to close
