@@ -14,10 +14,12 @@
 //!
 //! Two header versions coexist while the fleet migrates: [`OpenHeader`] (v4,
 //! described above and below) and [`OpenHeaderV5`], where the edge terminates
-//! the client's crypto and the mesh carries plaintext. A v5 home needs neither
-//! the request path nor the carrier's protocol — only [`MeshFraming`] — and
-//! learns the user from a second-phase [`UserFrame`]. [`RelayOpen::parse`]
-//! routes a frame to the matching parser by its leading version byte.
+//! the client's crypto and the mesh carries plaintext. A v5 home needs no
+//! request path (routing is a local matter of the edge) and never decodes the
+//! body — only [`MeshFraming`] says how it is delimited, and [`MeshProtocol`]
+//! says which protocol's park may be spliced onto it — and it learns the user
+//! from a second-phase [`UserFrame`]. [`RelayOpen::parse`] routes a frame to the
+//! matching parser by its leading version byte.
 //!
 //! # v5 stream layout
 //!
@@ -222,6 +224,13 @@ const FLAG_RESUME_CAPABLE: u8 = 0x01;
 const FLAG_ACK_PREFIX: u8 = 0x02;
 const FLAG_SYMMETRIC_REPLAY: u8 = 0x04;
 const FLAG_HAS_PEER_ADDR: u8 = 0x08;
+/// v5 only: the edge terminated VLESS rather than Shadowsocks for this stream.
+/// A spare bit rather than a new field, so a v5 peer built before the flag
+/// existed — necessarily an SS edge, since SS migrated to v5 first — still
+/// parses, and its cleared bit reads as [`MeshProtocol::Ss`], which is what it
+/// is. Never set by [`OpenHeader`] (v4), which carries the protocol in its
+/// [`CarrierKind`] byte instead.
+const FLAG_VLESS: u8 = 0x10;
 
 impl OpenHeader {
     /// Serializes the header. Layout (all integers big-endian):
@@ -357,17 +366,44 @@ impl UserFrame {
 /// v5 is where client crypto moves to the edge. The home no longer decrypts
 /// anything, so the header loses the request path (routing and padding become a
 /// local matter of the edge) and the carrier byte narrows to the only
-/// distinction the home still needs — how the relayed body is framed.
+/// distinctions the home still needs — how the relayed body is framed, and
+/// which protocol's park may be spliced onto it.
 const OPEN_VERSION_V5: u8 = 5;
 
 /// How a relayed v5 stream is framed. The edge owns the client crypto, so
-/// SS-vs-VLESS and WS-vs-XHTTP never reach the home — only the framing does:
-/// TCP-shaped carriers relay as a byte stream, UDP as length-delimited
-/// datagrams (see [`super::datagram`]).
+/// WS-vs-XHTTP never reaches the home — only the framing does: TCP-shaped
+/// carriers relay as a byte stream, UDP as length-delimited datagrams (see
+/// [`super::datagram`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::server) enum MeshFraming {
     Tcp,
     Udp,
+}
+
+/// Which proxy protocol the edge terminated for a relayed v5 stream.
+///
+/// The home never speaks it — the mesh carries application plaintext — but the
+/// park it is about to splice does: [`crate::server::resumption::ParkedTcp`]
+/// keeps the protocol its session was authenticated under, and both direct
+/// resume paths refuse to reattach across that boundary. The home needs the same
+/// answer to apply the same rule, so the protocol travels in the OPEN (where the
+/// edge already knows it, unlike the user).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::server) enum MeshProtocol {
+    Ss,
+    Vless,
+}
+
+impl MeshProtocol {
+    /// Stable label for structured logs. Matches
+    /// `resumption::TcpProtocolContext::label`, so an operator reads the same
+    /// two words on both sides of the refusal.
+    pub(in crate::server) fn label(self) -> &'static str {
+        match self {
+            MeshProtocol::Ss => "ss",
+            MeshProtocol::Vless => "vless",
+        }
+    }
 }
 
 impl MeshFraming {
@@ -398,6 +434,10 @@ impl MeshFraming {
 pub(in crate::server) struct OpenHeaderV5 {
     /// How the relayed body is framed on this stream.
     pub(in crate::server) framing: MeshFraming,
+    /// Which proxy protocol the edge terminated. Not used to decode anything —
+    /// the body is plaintext either way — only to keep a park from being
+    /// resumed across a protocol boundary, as both direct resume paths do.
+    pub(in crate::server) protocol: MeshProtocol,
     /// The resume id the client presented (shard already routes to this home).
     pub(in crate::server) session_id: [u8; 16],
     /// Client advertised `X-Outline-Resume-Capable`.
@@ -417,7 +457,8 @@ impl OpenHeaderV5 {
     /// `version(1) | framing(1) | flags(1) | down_acked(8) | session_id(16) |
     ///  [peer_addr]`, where peer_addr (present iff the flag is set) is
     /// `family(1: 4|6) | addr(4|16) | port(2)`. Identical to v4 minus the
-    /// length-prefixed path, so the flag bits and address encoding are shared.
+    /// length-prefixed path, so the flag bits and address encoding are shared;
+    /// the protocol rides [`FLAG_VLESS`] in that same flag byte.
     pub(in crate::server) fn encode(&self) -> Vec<u8> {
         let mut flags = 0u8;
         if self.resume_capable {
@@ -431,6 +472,9 @@ impl OpenHeaderV5 {
         }
         if self.peer_addr.is_some() {
             flags |= FLAG_HAS_PEER_ADDR;
+        }
+        if self.protocol == MeshProtocol::Vless {
+            flags |= FLAG_VLESS;
         }
 
         let mut out = Vec::with_capacity(27 + 19);
@@ -480,6 +524,13 @@ impl OpenHeaderV5 {
         };
         Ok(Self {
             framing,
+            // A cleared bit is Shadowsocks, which is also what a v5 peer built
+            // before the flag existed can only have been relaying.
+            protocol: if flags & FLAG_VLESS != 0 {
+                MeshProtocol::Vless
+            } else {
+                MeshProtocol::Ss
+            },
             session_id,
             resume_capable: flags & FLAG_RESUME_CAPABLE != 0,
             ack_prefix: flags & FLAG_ACK_PREFIX != 0,

@@ -104,19 +104,34 @@ later resumes from that client — through any edge — point back to that home.
 So the home is chosen where the client first established the session, normally
 the nearest working server.
 
-## Mesh transport (relay boundary = raw application bytes)
+## Mesh transport (relay boundary depends on the carrier)
 
-The edge terminates **only the carrier** (WS frames / H3 stream),
-extracts the application bytes (the still-encrypted SS/VLESS stream as-is) and
-tunnels them to home. **Crypto and the upstream connection live only on home.**
-The edge never holds keys and never sees plaintext.
+Two relay boundaries are in service while the fleet migrates, and they differ in
+what the edge sees.
 
-The "application bytes" include the **carrier padding layer**: the edge carries
-the padding-wrapped ciphertext through untouched, and home does both the
-padding decode and the AEAD (on the server the two are fused — the padding
-decoder recovers straight into the AEAD ciphertext buffer). This is why the
-edge can stay padding-unaware and why the throttle `OCTL` cover frame (below)
-survives the relay.
+**Byte streams (SS-TCP and VLESS-TCP, over WS / XHTTP / H3) — the edge
+terminates the client's crypto.** It holds the SS keys and VLESS UUIDs of its
+own configuration, authenticates the client against them, and relays
+**application plaintext** to the home; the home keeps only the upstream socket
+and the park, and neither decrypts nor re-encrypts anything. This is what makes
+a session survive a node switch without the two nodes having to share client
+credentials. The plaintext never travels in the clear: the mesh is the
+mutually-authenticated TLS 1.3 QUIC tunnel described below, between two nodes
+that already proved possession of the `cluster_psk`.
+
+**SS-UDP (and every non-TCP park shape) — the home still decrypts.** The edge
+terminates only the carrier (WS frames / H3 stream), extracts the still-encrypted
+SS bytes as-is and tunnels them to the home, which does the crypto and owns the
+upstream. Those carriers stay on the older relay version until the home learns
+to serve their park shapes over the plaintext path.
+
+On that older path the "application bytes" include the **carrier padding
+layer**: the edge carries the padding-wrapped ciphertext through untouched, and
+home does both the padding decode and the AEAD (on the server the two are fused
+— the padding decoder recovers straight into the AEAD ciphertext buffer). This
+is why such an edge can stay padding-unaware and why the throttle `OCTL` cover
+frame (below) survives the relay. A byte-stream edge owns the padding layer
+itself, along with the crypto above it.
 
 - **Link:** long-lived **QUIC** connections between cluster members. QUIC
   mandates a TLS 1.3 handshake (quinn on rustls, aws-lc-rs — the single crypto
@@ -407,10 +422,15 @@ the next detection window if lost.
   silent). An observer cannot distinguish "no such shard" from "home is down".
 - **Shard is obfuscated** under the cluster key, so the session id stays
   wire-random for DPI.
-- **The edge never sees plaintext** (boundary = encrypted application bytes),
-  so compromising an edge does not expose other sessions' traffic — only
-  metadata (a session id; the target is inside the SS/VLESS stream the edge
-  does not parse).
+- **What an edge sees depends on the carrier** (see the mesh-transport section
+  above). For a byte stream (SS-TCP / VLESS-TCP) the edge terminates the
+  client's crypto, so it does see that client's plaintext and does hold the
+  credentials its own configuration gives it — the same exposure any entry node
+  has for the sessions it serves directly, and no more: it holds nothing for
+  sessions it is not carrying, and the plaintext crosses the mesh only inside
+  the mutually-authenticated TLS 1.3 QUIC tunnel. For SS-UDP the boundary is
+  still encrypted application bytes, and the edge sees only metadata (a session
+  id; the target is inside the SS stream it does not parse).
 
 ## Configuration
 

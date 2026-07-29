@@ -16,7 +16,7 @@ use super::super::{
     },
     cluster::{
         RouteDecision,
-        mesh::{CarrierKind, MeshFraming},
+        mesh::{CarrierKind, MeshFraming, MeshProtocol},
     },
     state::{RoutesSnapshot, empty_transport_route, empty_vless_transport_route},
     transport::{
@@ -222,19 +222,25 @@ async fn handle_h3_request(
     // terminating crypto on the edge.
     let mut edge = None;
     if path_is_tcp || path_is_vless {
-        let server_metrics = if path_is_tcp {
-            (&ctx.tcp_server.metrics, &ctx.tcp_server.orphan_registry)
+        let (metrics, orphan_registry, protocol) = if path_is_tcp {
+            (&ctx.tcp_server.metrics, &ctx.tcp_server.orphan_registry, MeshProtocol::Ss)
         } else {
-            (&ctx.vless_server.metrics, &ctx.vless_server.orphan_registry)
+            (
+                &ctx.vless_server.metrics,
+                &ctx.vless_server.orphan_registry,
+                MeshProtocol::Vless,
+            )
         };
-        let (metrics, orphan_registry) = server_metrics;
         if let Some(cluster) = ctx.cluster.as_deref()
             && let (RouteDecision::Relay(shard), Some(advert)) =
                 edge_route(request.headers(), orphan_registry.cluster_identity())
         {
-            edge = open_edge_relay_v5(cluster, shard, &advert, MeshFraming::Tcp, peer_addr)
-                .await
-                .map(|pooled| edge_upstream(pooled, &advert, cluster, metrics, orphan_registry));
+            edge =
+                open_edge_relay_v5(cluster, shard, &advert, MeshFraming::Tcp, protocol, peer_addr)
+                    .await
+                    .map(|pooled| {
+                        edge_upstream(pooled, &advert, cluster, metrics, orphan_registry)
+                    });
         }
     }
 

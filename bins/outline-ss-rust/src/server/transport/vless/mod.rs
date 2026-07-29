@@ -540,9 +540,11 @@ where
 /// the USER frame is what makes the home consume its park — so the home keeps
 /// whatever it was holding, and a later carrier can still resume it. That is the
 /// second of two independent barriers: the home's own phase-1 check
-/// (`OrphanRegistry::has_tcp_park`) already refuses a committed park of the
-/// wrong shape, and this closes the reservation window that check cannot see
-/// into.
+/// (`OrphanRegistry::probe_park`, answering with a [`ParkProbe`]) already
+/// refuses a committed park of the wrong shape, and this closes the reservation
+/// window that check cannot see into.
+///
+/// [`ParkProbe`]: crate::server::resumption::ParkProbe
 fn release_mesh_upstream(state: &mut VlessRelayState, command: &'static str) {
     if let Some(setup) = state.mesh_upstream.take() {
         setup.refuse();
