@@ -1412,6 +1412,22 @@ git commit -m "feat(cluster): route relayed plaintext UDP through NAT on the hom
 
 ### Task 8: Edge side — SS-UDP
 
+**Two items inherited from Task 7's review land here, because this task is when
+v5 SS-UDP traffic first flows for real:**
+
+- **A latent cancel-safety defect on the shared UDP relay loop.**
+  `transport/udp.rs:691` selects `T::recv(&mut reader)` against
+  `in_flight.next()`. For `MeshUdpCarrier`, `recv` → `read_datagram` is a
+  multi-step read (4-byte length prefix, then payload) and is **not**
+  cancel-safe: losing the race mid-read drops bytes from the QUIC stream and
+  desyncs every datagram after it — the same class as the production incident
+  that started this work. Task 7 fixed its own v5 pump the right way (construct
+  the future once, `tokio::pin!`, poll only via `&mut`); apply the same shape
+  here. Not live today only because `[cluster] enabled = false` fleet-wide.
+- **No test covers a relayed park later resumed by a *direct* carrier**, in
+  either direction. Task 7's `Plaintext → Generate` server-session-id mapping is
+  what makes that handover seal correctly; cover it now that both sides exist.
+
 **Files:**
 - Modify: `bins/outline-ss-rust/src/server/transport/udp.rs` (`run_udp_relay` at `:489`, auth at `:328`, NAT scope at `:219`)
 - Test: `bins/outline-ss-rust/src/server/transport/tests/udp.rs`
