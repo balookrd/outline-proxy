@@ -21,7 +21,7 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, DisconnectReason, Metrics, Transport, WebSocketSessionGuard};
 
 use super::cluster::RouteDecision;
-use super::cluster::mesh::CarrierKind;
+use super::cluster::mesh::{CarrierKind, MeshFraming};
 use super::h3::vendored::H3WsError;
 use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
@@ -37,6 +37,7 @@ pub(in crate::server) mod sni_fallback;
 mod tcp;
 pub(in crate::server) mod throughput_monitor;
 mod udp;
+pub(in crate::server) mod upstream_source;
 mod vless;
 mod vless_mux;
 mod vless_udp;
@@ -50,6 +51,7 @@ pub(in crate::server) use fallback::{
 pub(in crate::server) use resume_headers::{ResumeContext, ResumeResponseEcho, edge_route};
 pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
+pub(in crate::server) use upstream_source::UpstreamSource;
 pub(in crate::server) use vless::{VlessWsRouteCtx, VlessWsServerCtx, handle_vless_h3_connection};
 pub(in crate::server) use xhttp::{
     XhttpAppProtocol, XhttpAxumState, XhttpH3Ctx, XhttpRegistry, XhttpRegistryLimits, XhttpRoute,
@@ -90,38 +92,35 @@ async fn tcp_upgrade_for_path(
 ) -> Response {
     let protocol = protocol_from_http_version(version);
     let server = Arc::clone(&state.services.tcp_server);
-    // Cluster edge: a resume id whose shard is a foreign home is relayed there
-    // over the mesh rather than served locally. Checked before any local route
-    // setup so the relay path does the minimum work; on relay failure the
-    // upgrade is handed back and we fall through to a fresh local session.
-    let ws = if let Some(cluster) = state.cluster.as_deref() {
-        match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
-            (RouteDecision::Relay(shard), Some(advert)) => {
-                match mesh_relay::try_relay_edge(
-                    ws,
+    // Cluster edge: a resume id whose shard is a foreign home means the session
+    // being resumed lives there. The client is still authenticated *here*, with
+    // this node's own credentials — only the upstream is taken over the mesh.
+    // The home is asked before the `101`, so a refusal (no such park) still
+    // leaves this node free to serve a fresh local session instead.
+    let edge = match state.cluster.as_deref() {
+        Some(cluster) => {
+            match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
+                (RouteDecision::Relay(shard), Some(advert)) => mesh_relay::open_edge_relay_v5(
                     cluster,
-                    &server.metrics,
-                    mesh_relay::EdgeRelay {
-                        shard,
-                        advert,
-                        carrier: CarrierKind::SsTcp,
-                        path: Arc::clone(&path),
-                        peer_addr,
-                        protocol,
-                        app_protocol: AppProtocol::Shadowsocks,
-                        kind: "tcp",
-                    },
+                    shard,
+                    &advert,
+                    MeshFraming::Tcp,
+                    peer_addr,
                 )
                 .await
-                {
-                    Ok(response) => return response,
-                    Err(ws) => ws,
-                }
-            },
-            _ => ws,
-        }
-    } else {
-        ws
+                .map(|pooled| {
+                    mesh_relay::edge_upstream(
+                        pooled,
+                        &advert,
+                        cluster,
+                        &server.metrics,
+                        &server.orphan_registry,
+                    )
+                }),
+                _ => None,
+            }
+        },
+        None => None,
     };
     let routes_snap = state.routes.load();
     let route = routes_snap
@@ -135,14 +134,22 @@ async fn tcp_upgrade_for_path(
         server
             .metrics
             .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Shadowsocks);
-    let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
     // Captured by value before `resume` moves into the upgrade closure.
     // The echoed Session ID MUST be the one the relay later parks under —
     // re-parsing the headers would mint a different ID and silently
     // desynchronise the wire-side response from the server-side park
     // lookup. The v1/v2 capability echoes were already gated at parse
-    // time; the actual control-frame emits gate on the resume hit.
-    let echo = resume.response_echo();
+    // time; the actual control-frame emits gate on the resume hit. On a
+    // relayed session the id echoed is the one the client presented, because
+    // the home parks under exactly that one.
+    let (resume, echo, upstream) = match edge {
+        Some(edge) => (edge.resume, edge.echo, edge.source),
+        None => {
+            let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
+            let echo = resume.response_echo();
+            (resume, echo, UpstreamSource::Direct)
+        },
+    };
     let mut response = ws.on_upgrade(move |socket| async move {
         let padding = carrier_padding::scheme_for_path(&path);
         let route_ctx = WsTcpRouteCtx {
@@ -153,8 +160,15 @@ async fn tcp_upgrade_for_path(
             peer_user_cache: Arc::clone(&route.peer_user_cache),
             padding,
         };
-        let result =
-            tcp::handle_tcp_connection(socket, server, route_ctx, resume, Some(peer_addr)).await;
+        let result = tcp::handle_tcp_connection(
+            socket,
+            server,
+            route_ctx,
+            resume,
+            Some(peer_addr),
+            upstream,
+        )
+        .await;
         finish_ws_session(session, result, "tcp");
     });
     echo.apply(response.headers_mut());

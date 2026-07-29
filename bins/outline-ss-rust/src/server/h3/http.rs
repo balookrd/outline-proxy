@@ -14,14 +14,21 @@ use super::super::{
         build_root_http_auth_success_response, parse_failed_root_auth_attempts,
         parse_root_http_auth_password, password_matches_any_user,
     },
-    cluster::{RouteDecision, mesh::CarrierKind},
+    cluster::{
+        RouteDecision,
+        mesh::{CarrierKind, MeshFraming},
+    },
     state::{RoutesSnapshot, empty_transport_route, empty_vless_transport_route},
     transport::{
-        ResumeContext, ResumeResponseEcho, UdpRouteCtx, VlessWsRouteCtx, WsTcpRouteCtx, XhttpH3Ctx,
-        XhttpRoute, edge_route, finish_ws_session, generate_anonymous_xhttp_session_id,
-        h3_fallback_handle, handle_tcp_h3_connection, handle_udp_h3_connection,
-        handle_vless_h3_connection, handle_xhttp_h3_request, is_normal_h3_shutdown,
-        mesh_relay::{edge_relay_h3, edge_relay_h3_udp, edge_throttle_ctx, open_edge_relay},
+        ResumeContext, ResumeResponseEcho, UdpRouteCtx, UpstreamSource, VlessWsRouteCtx,
+        WsTcpRouteCtx, XhttpH3Ctx, XhttpRoute, edge_route, finish_ws_session,
+        generate_anonymous_xhttp_session_id, h3_fallback_handle, handle_tcp_h3_connection,
+        handle_udp_h3_connection, handle_vless_h3_connection, handle_xhttp_h3_request,
+        is_normal_h3_shutdown,
+        mesh_relay::{
+            edge_relay_h3, edge_relay_h3_udp, edge_throttle_ctx, edge_upstream, open_edge_relay,
+            open_edge_relay_v5,
+        },
     },
 };
 use super::H3ConnectionCtx;
@@ -204,63 +211,63 @@ async fn handle_h3_request(
         return Ok(());
     }
 
-    // Cluster edge: relay a foreign-shard SS-TCP / VLESS resume to its home
-    // over the mesh (combined-SS was already split to a tcp/udp leg above; the
-    // SS-UDP leg is handled by the datagram-framed block below). Checked before
-    // the local resume context; on relay failure we fall through to a fresh
-    // local session (this edge becomes home).
-    if path_is_tcp || path_is_vless {
-        let registry = if path_is_tcp {
-            &ctx.tcp_server.orphan_registry
-        } else {
-            &ctx.vless_server.orphan_registry
-        };
-        if let Some(cluster) = ctx.cluster.as_deref()
-            && let (RouteDecision::Relay(shard), Some(advert)) =
-                edge_route(request.headers(), registry.cluster_identity())
-        {
-            let (carrier, app_protocol, kind) = if path_is_tcp {
-                (CarrierKind::SsTcp, AppProtocol::Shadowsocks, "tcp")
-            } else {
-                (CarrierKind::VlessTcp, AppProtocol::Vless, "vless")
-            };
-            if let Some(pooled) =
-                open_edge_relay(cluster, shard, &advert, carrier, &ws_req.path, peer_addr).await
-            {
-                // Continuity: echo the id the client presented (the home parks
-                // the relayed upstream under exactly that id).
-                let mut response = build_extended_connect_response(None, None);
-                ResumeResponseEcho {
-                    session_id: Some(advert.session_id),
-                    ..Default::default()
-                }
-                .apply(response.headers_mut());
-                stream
-                    .send_response(response)
-                    .await
-                    .context("failed to send HTTP/3 websocket response")?;
-                let socket = vendored::server_ws_stream(stream, ctx.ws_config.clone());
-                let metrics = if path_is_tcp {
-                    &ctx.tcp_server.metrics
-                } else {
-                    &ctx.vless_server.metrics
-                };
-                let session =
-                    metrics.open_websocket_session(Transport::Tcp, Protocol::Http3, app_protocol);
-                let detect = edge_throttle_ctx(&pooled, advert.session_id, &ws_req.path);
-                let result = edge_relay_h3(
-                    socket,
+    // Cluster edge, SS-TCP (v5): the session being resumed lives on another
+    // node, but the client is authenticated *here*, so only the upstream is
+    // taken over the mesh. Asked before the CONNECT response, so a home holding
+    // no such park still leaves this node free to serve a fresh local session.
+    let mut ss_edge = None;
+    if path_is_tcp
+        && let Some(cluster) = ctx.cluster.as_deref()
+        && let (RouteDecision::Relay(shard), Some(advert)) =
+            edge_route(request.headers(), ctx.tcp_server.orphan_registry.cluster_identity())
+    {
+        ss_edge = open_edge_relay_v5(cluster, shard, &advert, MeshFraming::Tcp, peer_addr)
+            .await
+            .map(|pooled| {
+                edge_upstream(
                     pooled,
-                    cluster.relay_budget,
-                    detect,
-                    Arc::clone(metrics),
+                    &advert,
+                    cluster,
+                    &ctx.tcp_server.metrics,
+                    &ctx.tcp_server.orphan_registry,
                 )
-                .await;
-                finish_ws_session(session, result, kind);
-                return Ok(());
-            }
-            // Relay unavailable: fall through to a fresh local session.
+            });
+    }
+
+    // Cluster edge: relay a foreign-shard VLESS resume to its home over the mesh
+    // (still v4 — the VLESS edge migrates with its own task). Checked before the
+    // local resume context; on relay failure we fall through to a fresh local
+    // session (this edge becomes home).
+    if path_is_vless
+        && let Some(cluster) = ctx.cluster.as_deref()
+        && let (RouteDecision::Relay(shard), Some(advert)) =
+            edge_route(request.headers(), ctx.vless_server.orphan_registry.cluster_identity())
+        && let Some(pooled) =
+            open_edge_relay(cluster, shard, &advert, CarrierKind::VlessTcp, &ws_req.path, peer_addr)
+                .await
+    {
+        // Continuity: echo the id the client presented (the home parks
+        // the relayed upstream under exactly that id).
+        let mut response = build_extended_connect_response(None, None);
+        ResumeResponseEcho {
+            session_id: Some(advert.session_id),
+            ..Default::default()
         }
+        .apply(response.headers_mut());
+        stream
+            .send_response(response)
+            .await
+            .context("failed to send HTTP/3 websocket response")?;
+        let socket = vendored::server_ws_stream(stream, ctx.ws_config.clone());
+        let metrics = &ctx.vless_server.metrics;
+        let session =
+            metrics.open_websocket_session(Transport::Tcp, Protocol::Http3, AppProtocol::Vless);
+        let detect = edge_throttle_ctx(&pooled, advert.session_id, &ws_req.path);
+        let result =
+            edge_relay_h3(socket, pooled, cluster.relay_budget, detect, Arc::clone(metrics)).await;
+        finish_ws_session(session, result, "vless");
+        return Ok(());
+        // Relay unavailable: falls through to a fresh local session.
     }
 
     // Cluster edge: relay a foreign-shard SS-UDP resume to its home over the
@@ -313,14 +320,34 @@ async fn handle_h3_request(
     // point at the same underlying `Arc<OrphanRegistry>`); we pick the
     // one that matches the path so the receiving relay queries the
     // intended registry.
-    let resume = if path_is_tcp {
-        ResumeContext::from_request_headers(request.headers(), &ctx.tcp_server.orphan_registry)
-    } else if path_is_udp {
-        ResumeContext::from_request_headers(request.headers(), &ctx.udp_server.orphan_registry)
-    } else if path_is_vless {
-        ResumeContext::from_request_headers(request.headers(), &ctx.vless_server.orphan_registry)
-    } else {
-        ResumeContext::default()
+    //
+    // A relayed SS-TCP session brings its own instead: the id echoed is the one
+    // the client presented (the home parks under exactly that one), nothing is
+    // resumed or parked locally, and the Ack-Prefix capability still rides
+    // through because this node re-emits the home's acked offset to the client.
+    let (resume, edge_echo, upstream) = match ss_edge {
+        Some(edge) => (edge.resume, Some(edge.echo), edge.source),
+        None => {
+            let resume = if path_is_tcp {
+                ResumeContext::from_request_headers(
+                    request.headers(),
+                    &ctx.tcp_server.orphan_registry,
+                )
+            } else if path_is_udp {
+                ResumeContext::from_request_headers(
+                    request.headers(),
+                    &ctx.udp_server.orphan_registry,
+                )
+            } else if path_is_vless {
+                ResumeContext::from_request_headers(
+                    request.headers(),
+                    &ctx.vless_server.orphan_registry,
+                )
+            } else {
+                ResumeContext::default()
+            };
+            (resume, None, UpstreamSource::Direct)
+        },
     };
     let mut response = build_extended_connect_response(None, None);
     // Mirror the h1/h2 upgrade paths: SS-WS and VLESS-WS confirm the v1/v2
@@ -328,10 +355,10 @@ async fn handle_h3_request(
     // relay already emits them on a resume hit regardless of carrier — an
     // unconfirmed client would misread the control frames as payload). The
     // UDP datagram path echoes only the Session ID, as on h1/h2.
-    let echo = if path_is_udp {
-        resume.session_echo()
-    } else {
-        resume.response_echo()
+    let echo = match edge_echo {
+        Some(echo) => echo,
+        None if path_is_udp => resume.session_echo(),
+        None => resume.response_echo(),
     };
     echo.apply(response.headers_mut());
 
@@ -372,6 +399,7 @@ async fn handle_h3_request(
             route_ctx,
             resume,
             Some(peer_addr),
+            upstream,
         )
         .await;
         finish_ws_session(session, result, "tcp");

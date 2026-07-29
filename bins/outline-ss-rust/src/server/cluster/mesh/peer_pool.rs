@@ -16,8 +16,10 @@ use outline_wire::cluster::ShardId;
 use quinn::Connection;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
-use super::endpoint::{MeshEndpoint, MeshStream, open_relay_stream, read_open_ack};
-use super::frame::OpenHeader;
+use super::endpoint::{
+    MeshEndpoint, MeshStream, open_relay_stream, open_relay_stream_v5, read_open_ack,
+};
+use super::frame::{OpenHeader, OpenHeaderV5};
 
 /// A relay stream plus the pool permit that keeps it counted against the
 /// concurrency cap until it is dropped.
@@ -99,6 +101,27 @@ impl MeshPeerPool {
         shard: ShardId,
         header: &OpenHeader,
     ) -> Result<PooledRelay> {
+        let (conn, permit) = self.reserve(shard).await?;
+        let stream = open_relay_stream(&conn, header).await?;
+        Ok(PooledRelay { stream, conn, _permit: permit })
+    }
+
+    /// v5 twin of [`Self::open_relay`]: same connection reuse and same
+    /// concurrency cap, a different OPEN header on the stream.
+    pub(in crate::server) async fn open_relay_v5(
+        &self,
+        shard: ShardId,
+        header: &OpenHeaderV5,
+    ) -> Result<PooledRelay> {
+        let (conn, permit) = self.reserve(shard).await?;
+        let stream = open_relay_stream_v5(&conn, header).await?;
+        Ok(PooledRelay { stream, conn, _permit: permit })
+    }
+
+    /// Takes a concurrency permit and a live connection to `shard`'s home, in
+    /// that order: the permit is what bounds concurrent relay streams, so it is
+    /// acquired before anything that could dial.
+    async fn reserve(&self, shard: ShardId) -> Result<(Connection, OwnedSemaphorePermit)> {
         let Some(&addr) = self.peers.get(&shard) else {
             bail!("no mesh peer configured for shard {}", shard.get());
         };
@@ -106,8 +129,7 @@ impl MeshPeerPool {
             .try_acquire_owned()
             .context("mesh relay stream cap exhausted")?;
         let conn = self.connection_for(shard, addr).await?;
-        let stream = open_relay_stream(&conn, header).await?;
-        Ok(PooledRelay { stream, conn, _permit: permit })
+        Ok((conn, permit))
     }
 
     /// Returns a live connection to `addr` for `shard`, dialing if there is no

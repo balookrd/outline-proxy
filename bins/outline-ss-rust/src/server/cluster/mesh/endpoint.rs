@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use anyhow::{Context, Result, bail};
 use quinn::{Connection, ConnectionError, Endpoint, RecvStream, SendStream};
 
-use super::frame::{OPEN_ACK_ACCEPTED, OpenHeader, RelayOpen};
+use super::frame::{OPEN_ACK_ACCEPTED, OpenHeader, OpenHeaderV5, RelayOpen};
 use super::tls::{
     MESH_SERVER_NAME, MeshIdentity, build_mesh_client_quic_config, build_mesh_server_quic_config,
 };
@@ -79,12 +79,25 @@ pub(in crate::server) async fn open_relay_stream(
     conn: &Connection,
     header: &OpenHeader,
 ) -> Result<MeshStream> {
+    open_relay_stream_encoded(conn, &header.encode()).await
+}
+
+/// v5 twin of [`open_relay_stream`]. The framing on the wire is identical — a
+/// length prefix and the encoded header — and the home tells the versions apart
+/// by the header's leading byte.
+pub(in crate::server) async fn open_relay_stream_v5(
+    conn: &Connection,
+    header: &OpenHeaderV5,
+) -> Result<MeshStream> {
+    open_relay_stream_encoded(conn, &header.encode()).await
+}
+
+async fn open_relay_stream_encoded(conn: &Connection, open: &[u8]) -> Result<MeshStream> {
     let (mut send, recv) = conn.open_bi().await.context("opening mesh relay stream")?;
-    let open = header.encode();
     send.write_all(&(open.len() as u32).to_be_bytes())
         .await
         .context("writing mesh OPEN length")?;
-    send.write_all(&open).await.context("writing mesh OPEN header")?;
+    send.write_all(open).await.context("writing mesh OPEN header")?;
     Ok(MeshStream { send, recv })
 }
 
