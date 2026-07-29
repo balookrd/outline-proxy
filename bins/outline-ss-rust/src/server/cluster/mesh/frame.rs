@@ -552,6 +552,16 @@ impl UpstreamAckFrame {
 /// The home therefore closes a stopped half itself, with
 /// [`CloseReason::Fin`], rather than letting the drop do it; see
 /// `transport::mesh_relay`'s `SpliceEnd::stream_close`.
+///
+/// One window escapes that step, and a reader must tolerate it: when the home
+/// has already finished the stream on upstream EOF and a `STOP_SENDING` lands
+/// afterwards — anywhere in the remaining uplink drain — quinn's drop still
+/// resets with the received code, so a `CloseIntent` value can appear as a
+/// `RESET_STREAM` code. RFC 9000 §3.5 permits exactly this (in "Data Sent" the
+/// endpoint MAY defer the reset and SHOULD copy the `STOP_SENDING` code), and
+/// it is harmless: the code travels only back to the peer that sent the
+/// `STOP_SENDING`, which has already abandoned its receive half. Treat an
+/// observed `0x50xx` reset code as this echo, not as a protocol violation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::server) enum CloseIntent {
     /// The mesh carrier ended but the client has not: it is switching carriers

@@ -266,8 +266,9 @@ pub(super) fn register_descriptions() {
          before any close). A hit is recorded when its splice ends, which is when \
          the close is known — use outline_ss_mesh_relay_active for relays still \
          running. Every v5 relay stream that reaches the v5 handler records \
-         exactly one outcome, so the series reconciles against the v5 relays \
-         actually served — the direct signal that cluster relaying works, which \
+         exactly one outcome when it ends, so the served total is \
+         sum(outcome_total) + outline_ss_mesh_relay_active — the direct signal \
+         that cluster relaying works, which \
          byte counters alone never gave, while the client_done/carrier_ended \
          ratio shows whether edges emit the close intent at all. Scoped to v5: \
          streams refused before the handler (see the capacity reason on \
