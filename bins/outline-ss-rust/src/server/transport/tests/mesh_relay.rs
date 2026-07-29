@@ -1306,9 +1306,19 @@ async fn v5_home_refuses_udp_framing() {
     assert_eq!(outcome(&rendered, "miss"), 1, "{rendered}");
 }
 
-/// A TCP-framed v5 OPEN whose id resolves to a park of another kind is a forged
-/// or mismatched peer. It must be refused — and counted, so a home that keeps
-/// hitting this is visible rather than silently dropping relays.
+/// A TCP-framed v5 OPEN whose id resolves to a park of another kind must be
+/// refused in **phase 1** — before the ack, and critically before
+/// `take_for_resume` consumes anything, so the session survives for a carrier
+/// this home can serve.
+///
+/// Earlier this refusal came one phase too late: phase 1 asked only whether *a*
+/// park existed, so the park was taken and only then found to be the wrong
+/// shape. That was unreachable while every byte-stream carrier parked as
+/// `Parked::Tcp`; the VLESS edge makes it reachable, because VLESS multiplexes
+/// TCP, UDP and mux onto one carrier and parks three shapes under ids an edge
+/// cannot tell apart. The park assertion below is the one that would catch a
+/// regression back to the late check — the metric reason alone would not, since
+/// both spellings refuse.
 #[tokio::test]
 async fn v5_home_refuses_a_park_of_the_wrong_kind() {
     let harness = MeshHomeHarness::new().await;
@@ -1317,10 +1327,18 @@ async fn v5_home_refuses_a_park_of_the_wrong_kind() {
 
     let outcome_seen = harness.serve_v5(v5_header(id)).await;
 
-    assert!(outcome_seen.acked(), "phase 1 only asks whether a park exists");
-    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
+    assert!(!outcome_seen.acked(), "the refusal replaces the ack");
+    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::NoSession));
+    assert!(
+        harness.registry().has_park(id),
+        "refusing on shape must leave the park for a carrier this home can serve",
+    );
     let rendered = harness.metrics().render_prometheus();
-    assert_eq!(rejected(&rendered, "framing_mismatch"), 1, "{rendered}");
+    // Counted apart from `no_session`: an expired park and a park this home has
+    // no splice for are different problems, and with VLESS on v5 the latter is
+    // an ordinary, expected event rather than a symptom.
+    assert_eq!(rejected(&rendered, "park_shape"), 1, "{rendered}");
+    assert_eq!(rejected(&rendered, "no_session"), 0, "{rendered}");
     assert_eq!(outcome(&rendered, "miss"), 1, "{rendered}");
 }
 

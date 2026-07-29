@@ -56,7 +56,7 @@ use crate::server::cluster::mesh::{
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::server::resumption::downlink_ring::ReplayOutcome;
 use crate::server::resumption::{
-    OrphanRegistry, Parked, ParkedTcp, ResumeMiss, ResumeOutcome, SessionId,
+    OrphanRegistry, ParkProbe, Parked, ParkedTcp, ResumeMiss, ResumeOutcome, SessionId,
 };
 use crate::server::shutdown::ShutdownSignal;
 use crate::server::state::{
@@ -73,9 +73,6 @@ use super::udp::{UdpRouteCtx, run_udp_relay};
 use super::upstream_source::{MeshUpstreamSetup, UpstreamSource};
 use super::vless::{VlessWsRouteCtx, run_vless_relay};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
-
-/// Read granularity for the mesh→client direction on the edge.
-const MESH_EDGE_CHUNK: usize = 256 * 1024;
 
 /// Read granularity of the home's v5 plaintext splice, in both directions. Also
 /// the size of the single upstream read buffer the splice allocates once per
@@ -236,113 +233,21 @@ impl StallTracker {
     }
 }
 
-/// Edge-side relay: splice a client carrier to a mesh relay stream, forwarding
-/// the still-encrypted application bytes both ways. The edge does not decode
-/// the SS/VLESS layer — it moves the WS binary payload verbatim (padding +
-/// ciphertext) so the home strips both. Exactly one writer per direction, so
-/// backpressure rides the QUIC / WS windows (mirrors [`super::mesh_carrier`]
-/// on the home side). Validated end to end by the phase-8 test.
-///
-/// Known v1 limitation (h1/h2 client carriers only): the edge drops the
-/// client's keepalive `Ping` rather than answering `Pong`, because a single
-/// writer owns the client downlink and interleaving a control reply would
-/// break that invariant. A fully idle session therefore relies on the client's
-/// own reconnect; an H3 client carrier is unaffected (QUIC keep-alive holds
-/// liveness and the client swallows its own Ping).
-///
-/// Health budget: `budget` bounds a single uplink write to the mesh. When the
-/// home stops draining (hung or the cross-country interconnect stalls), the
-/// QUIC send window fills and the write blocks; exceeding `budget` means a
-/// stalled relay, so we reset the mesh stream with [`CloseReason::Budget`] and
-/// fail — the client reconnects and gets a fresh session (the home parks the
-/// upstream, which then TTL-expires). It measures *progress*, not RTT: a high
-/// but flowing RTT keeps completing writes, so this only fires on a full stall.
-/// It never false-fires on an idle session — an idle uplink blocks on `recv`,
-/// not on a write. Pure-download stalls (no uplink to push) are left to the
-/// mesh QUIC idle timeout. See `docs/CLUSTER.md` § Health budget.
-pub(in crate::server::transport) async fn edge_relay<T: WsSocket>(
-    client: T,
-    mut mesh_send: SendStream,
-    mut mesh_recv: RecvStream,
-    budget: Duration,
-    detect: Option<EdgeThrottleCtx>,
-    metrics: Arc<Metrics>,
-) -> Result<()> {
-    let (mut reader, mut writer) = client.split_io();
-    // `role="edge"` byte counters: up = client→mesh (toward home), down =
-    // mesh→client. Resolved once; incremented per relayed chunk in each leg.
-    let up_bytes = metrics.mesh_bytes_counter("edge", "up", "tcp");
-    let down_bytes = metrics.mesh_bytes_counter("edge", "down", "tcp");
-
-    // Uplink: the ONLY writer to `mesh_send`.
-    let uplink = async {
-        while let Some(msg) = T::recv(&mut reader).await? {
-            match T::classify(msg) {
-                WsFrame::Binary(data) => {
-                    match tokio::time::timeout(budget, mesh_send.write_all(&data)).await {
-                        Ok(result) => result.context("mesh edge uplink write")?,
-                        Err(_elapsed) => {
-                            // Stalled past the budget: the home is not draining.
-                            let _ = mesh_send.reset(VarInt::from_u32(CloseReason::Budget.code()));
-                            bail!("mesh relay stalled past the health budget");
-                        },
-                    }
-                    up_bytes.increment(data.len() as u64);
-                },
-                WsFrame::Close => break,
-                // The edge does not interpret the carrier; drop control frames.
-                WsFrame::Ping(_) | WsFrame::Pong | WsFrame::Text => {},
-            }
-        }
-        let _ = mesh_send.finish();
-        Ok::<(), anyhow::Error>(())
-    };
-
-    // Downlink: the ONLY writer to the client `writer`. When detection is on,
-    // time each client-facing send: a send that blocks means the client isn't
-    // draining (edge→client throttle).
-    let downlink = async {
-        let mut detector = detect.map(|ctx| EdgeThrottleDetector::new(ctx, Arc::clone(&metrics)));
-        while let Some(chunk) = mesh_recv
-            .read_chunk(MESH_EDGE_CHUNK, true)
-            .await
-            .context("mesh edge downlink read")?
-        {
-            let bytes = chunk.bytes.len();
-            let msg = T::binary_msg(chunk.bytes);
-            match detector.as_mut() {
-                Some(d) => {
-                    let started = tokio::time::Instant::now();
-                    T::send(&mut writer, msg)
-                        .await
-                        .context("edge client downlink write")?;
-                    d.observe_send(started.elapsed(), bytes);
-                },
-                None => {
-                    T::send(&mut writer, msg)
-                        .await
-                        .context("edge client downlink write")?;
-                },
-            }
-            down_bytes.increment(bytes as u64);
-        }
-        T::finish(&mut writer).await;
-        Ok::<(), anyhow::Error>(())
-    };
-
-    tokio::try_join!(uplink, downlink)?;
-    Ok(())
-}
-
-/// Edge-side relay for SS-UDP: like [`edge_relay`] but preserves datagram
-/// boundaries. An SS-UDP packet is atomic — one client `Binary` frame is one
+/// Edge-side relay for SS-UDP: the last v4 splice, and the only carrier still
+/// using one. The edge does not decode the SS layer — it moves the WS binary
+/// payload verbatim (padding + ciphertext) so the home strips both — but unlike
+/// a byte stream it preserves datagram boundaries. An SS-UDP packet is atomic — one client `Binary` frame is one
 /// AEAD-sealed packet with no length prefix — so a raw byte splice would let
 /// QUIC coalesce or split packets and the home's per-packet AEAD open would then
 /// fail on a mis-boundaried buffer. Each direction therefore length-frames the
 /// datagram onto the mesh stream ([`write_datagram`]) and de-frames it off the
 /// other side ([`read_datagram`]). One writer per direction, so backpressure
 /// rides the QUIC / WS windows. The health `budget` bounds a single uplink
-/// datagram write exactly as in [`edge_relay`].
+/// datagram write: when the home stops draining, the QUIC send window fills and
+/// the write blocks, and exceeding `budget` resets the stream with
+/// [`CloseReason::Budget`] so the client reconnects rather than hanging. It
+/// measures *progress*, not RTT — a peer that keeps taking bytes keeps renewing
+/// it. See `docs/CLUSTER.md` § Health budget.
 pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
     client: T,
     mut mesh_send: SendStream,
@@ -385,7 +290,8 @@ pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
     };
 
     // Downlink: the ONLY writer to the client `writer`. One datagram = one Binary.
-    // When detection is on, time each client-facing send (see [`edge_relay`]).
+    // When detection is on, time each client-facing send: a send that blocks
+    // means the client isn't draining (edge→client throttle).
     let downlink = async {
         let mut detector = detect.map(|ctx| EdgeThrottleDetector::new(ctx, Arc::clone(&metrics)));
         let mut buf = Vec::new();
@@ -574,8 +480,8 @@ pub(in crate::server) struct EdgeUpstream {
     pub(in crate::server) echo: ResumeResponseEcho,
 }
 
-/// Builds the edge-side pieces of a v5 relayed SS session from an accepted
-/// relay.
+/// Builds the edge-side pieces of a v5 relayed byte-stream session — SS or
+/// VLESS — from an accepted relay.
 ///
 /// Two deliberate choices are encoded here.
 ///
@@ -627,7 +533,7 @@ pub(in crate::server) fn edge_upstream(
     }
 }
 
-/// The session id an SS byte-stream edge records and echoes for this carrier.
+/// The session id a byte-stream edge records and echoes for this carrier.
 ///
 /// `Some(edge)` — the home admitted the relay — yields the id the client
 /// presented, because the home parks the upstream under exactly that id; that is
@@ -640,11 +546,11 @@ pub(in crate::server) fn edge_upstream(
 /// locally again: a session that can never resume. The id the client is told
 /// must be the id something is actually parked under.
 ///
-/// Every SS byte-stream entry point resolves its echoed id through here — the
-/// axum WS upgrade, the h3 extended-CONNECT upgrade (both via
-/// [`ss_edge_echo`]) and the two XHTTP handlers — so the invariant cannot hold
-/// on one carrier and lapse on another.
-pub(in crate::server) fn ss_edge_session_id(
+/// Every byte-stream entry point resolves its echoed id through here — SS and
+/// VLESS alike, over the axum WS upgrade, the h3 extended-CONNECT upgrade (both
+/// via [`edge_echo`]) and the XHTTP handlers — so the invariant cannot hold on
+/// one carrier and lapse on another.
+pub(in crate::server) fn edge_session_id(
     edge: Option<&EdgeUpstream>,
     local: &ResumeContext,
 ) -> Option<SessionId> {
@@ -654,13 +560,13 @@ pub(in crate::server) fn ss_edge_session_id(
     }
 }
 
-/// The full response echo for an SS byte-stream edge: the relay's own echo when
-/// the home admitted it, the local negotiation otherwise.
+/// The full response echo for a byte-stream edge: the relay's own echo when the
+/// home admitted it, the local negotiation otherwise.
 ///
 /// The relayed echo is deliberately *not* the local one with a different id: it
 /// also withholds the v2 Symmetric Downlink Replay confirmation, which a relayed
 /// session cannot honour (see [`edge_upstream`]).
-pub(in crate::server) fn ss_edge_echo(
+pub(in crate::server) fn edge_echo(
     edge: Option<&EdgeUpstream>,
     local: &ResumeContext,
 ) -> ResumeResponseEcho {
@@ -670,23 +576,11 @@ pub(in crate::server) fn ss_edge_echo(
     }
 }
 
-/// Splices an h3 client carrier to an already-opened mesh relay. The h3 accept
-/// path holds the carrier directly (not behind an `on_upgrade` closure), so it
-/// calls this after sending the extended-CONNECT response. Wraps the stream in
-/// the `H3Ws` `WsSocket` and holds the pool permit for the relay's lifetime.
-pub(in crate::server) async fn edge_relay_h3(
-    socket: H3WebSocketStream<H3Stream<H3Transport>>,
-    pooled: PooledRelay,
-    budget: Duration,
-    detect: Option<EdgeThrottleCtx>,
-    metrics: Arc<Metrics>,
-) -> Result<()> {
-    let (send, recv, _permit) = pooled.into_parts();
-    edge_relay::<H3Ws>(H3Ws(socket), send, recv, budget, detect, metrics).await
-}
-
-/// SS-UDP twin of [`edge_relay_h3`]: splices an h3 client carrier to a mesh
-/// relay with datagram framing, so per-packet SS-UDP boundaries survive the hop.
+/// Splices an h3 client carrier to an already-opened mesh relay with datagram
+/// framing, so per-packet SS-UDP boundaries survive the hop. The h3 accept path
+/// holds the carrier directly (not behind an `on_upgrade` closure), so it calls
+/// this after sending the extended-CONNECT response; the pool permit is held for
+/// the relay's lifetime.
 pub(in crate::server) async fn edge_relay_h3_udp(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     pooled: PooledRelay,
@@ -698,8 +592,9 @@ pub(in crate::server) async fn edge_relay_h3_udp(
     edge_relay_udp::<H3Ws>(H3Ws(socket), send, recv, budget, detect, metrics).await
 }
 
-/// Describes a carrier the edge is about to relay to its home. Bundled so the
-/// TCP and VLESS upgrade call sites stay readable.
+/// Describes a carrier the edge is about to relay to its home over **v4**. Only
+/// SS-UDP still does: every byte-stream carrier terminates its client crypto on
+/// the edge and relays plaintext instead (see [`edge_upstream`]).
 pub(in crate::server::transport) struct EdgeRelay {
     /// Home shard the resume id decoded to.
     pub(in crate::server::transport) shard: ShardId,
@@ -719,64 +614,15 @@ pub(in crate::server::transport) struct EdgeRelay {
     pub(in crate::server::transport) kind: &'static str,
 }
 
-/// Edge side: relay a foreign-shard carrier to its home over the mesh.
-///
-/// The mesh relay is opened **before** the WebSocket `101` handshake so the
-/// echoed session id reflects the real outcome. On success the returned
-/// response upgrades the client carrier and splices it byte-for-byte to the
-/// home, echoing the id the client already holds (the home parks the upstream
-/// under exactly that id — continuity across the edge switch). On failure the
-/// [`WebSocketUpgrade`] is handed back so the caller serves a fresh local
-/// session instead (this edge becomes the new home and mints its own id).
-pub(in crate::server::transport) async fn try_relay_edge(
-    ws: WebSocketUpgrade,
-    cluster: &ClusterCtx,
-    metrics: &Arc<Metrics>,
-    relay: EdgeRelay,
-) -> std::result::Result<Response, WebSocketUpgrade> {
-    let EdgeRelay {
-        shard,
-        advert,
-        carrier,
-        path,
-        peer_addr,
-        protocol,
-        app_protocol,
-        kind,
-    } = relay;
-    let Some(pooled) = open_edge_relay(cluster, shard, &advert, carrier, &path, peer_addr).await
-    else {
-        return Err(ws);
-    };
-    let session = metrics.open_websocket_session(Transport::Tcp, protocol, app_protocol);
-    let budget = cluster.relay_budget;
-    // Edge throttle detection (built before `pooled` moves into the closure; it
-    // clones the mesh connection, so it is independent of the relay streams).
-    let detect = edge_throttle_ctx(&pooled, advert.session_id, &path);
-    // Continuity: echo the id the client presented — the home parks the relayed
-    // upstream under exactly that id, so the client keeps resuming it.
-    let echo = ResumeResponseEcho {
-        session_id: Some(advert.session_id),
-        ..Default::default()
-    };
-    let relay_metrics = Arc::clone(metrics);
-    let mut response = ws.on_upgrade(move |socket| async move {
-        // Hold the pool permit for the relay's whole lifetime (drops here).
-        let (send, recv, _permit) = pooled.into_parts();
-        let result =
-            edge_relay::<AxumWs>(AxumWs(socket), send, recv, budget, detect, relay_metrics).await;
-        super::finish_ws_session(session, result, kind);
-    });
-    echo.apply(response.headers_mut());
-    Ok(response)
-}
-
 /// Edge side: relay a foreign-shard SS-UDP carrier to its home over the mesh.
 ///
-/// The UDP twin of [`try_relay_edge`]: same open-before-`101` continuity dance
-/// (echo the id the client already holds so the home parks under it), but the
-/// carrier is spliced with [`edge_relay_udp`] to preserve datagram boundaries
-/// and metrics are labelled UDP. Takes the same [`EdgeRelay`] bundle (with
+/// The mesh relay is opened **before** the WebSocket `101` handshake so the
+/// echoed session id reflects the real outcome: on success the response upgrades
+/// the client carrier and echoes the id the client already holds (the home parks
+/// under exactly that one), and on failure the [`WebSocketUpgrade`] is handed
+/// back so the caller serves a fresh local session instead. The carrier is
+/// spliced with [`edge_relay_udp`] to preserve datagram boundaries and metrics
+/// are labelled UDP. Takes the [`EdgeRelay`] bundle (with
 /// `carrier` = [`CarrierKind::SsUdp`]); `peer_addr` is a client hint carried in
 /// the OPEN header that the UDP relay does not need for routing.
 pub(in crate::server::transport) async fn try_relay_edge_udp(
@@ -1151,6 +997,8 @@ async fn serve_relayed(
                 &route_ctx,
                 resume,
                 throttle_monitor.clone(),
+                // v4: the home owns the upstream and connects out itself.
+                UpstreamSource::Direct,
             )
             .await
         },
@@ -1256,17 +1104,41 @@ async fn serve_relayed_v5(
         return Ok(());
     }
 
-    // Phase 1: does a park exist under this id? The user is not known yet, so
-    // this is deliberately the weaker check; an in-flight park counts as present
-    // (see `OrphanRegistry::has_park`).
-    if !registry.has_park(session_id) {
-        cluster.metrics.record_mesh_relay_rejected("no_session");
-        cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
-        // An ordinary outcome — parks expire and are evicted — so this is not a
-        // warning. The edge simply serves its client a fresh local session.
-        debug!("no parked session for a relayed resume id; refusing the relay");
-        refuse_relay(stream, CloseReason::NoSession);
-        return Ok(());
+    // Phase 1: does a park exist under this id, and is it the byte-stream shape
+    // this splice can serve? The user is not known yet, so the owner check is
+    // deliberately deferred; an in-flight park counts as present (see
+    // `OrphanRegistry::probe_park`).
+    //
+    // The shape half of the question is load-bearing, not defensive: phase 2
+    // below *consumes* the park before the `Parked::Tcp` match can reject it, so
+    // admitting a UDP- or mux-shaped park here would destroy it and leave the
+    // client resuming an id that is admitted and destroyed on every attempt.
+    //
+    // Both refusals look identical on the wire — the edge serves its client a
+    // fresh local session either way — and both are ordinary, so neither is a
+    // warning. They are counted apart because they mean different things to an
+    // operator: `no_session` is a park that expired or never existed, while
+    // `park_shape` is a VLESS-UDP or mux session asking for a splice this home
+    // does not have yet, which no amount of config will change.
+    match registry.probe_park(session_id) {
+        ParkProbe::Splicable => {},
+        ParkProbe::Missing => {
+            cluster.metrics.record_mesh_relay_rejected("no_session");
+            cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+            debug!("no parked session for a relayed resume id; refusing the relay");
+            refuse_relay(stream, CloseReason::NoSession);
+            return Ok(());
+        },
+        ParkProbe::OtherShape => {
+            cluster.metrics.record_mesh_relay_rejected("park_shape");
+            cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
+            debug!(
+                "the parked session under a relayed resume id is not byte-stream shaped \
+                 (VLESS-UDP or mux); refusing the relay without consuming it",
+            );
+            refuse_relay(stream, CloseReason::NoSession);
+            return Ok(());
+        },
     }
     // Admitted so far. The ack releases the edge to upgrade its client carrier
     // and echo continuity, and is the first downlink byte of the stream.
@@ -1335,8 +1207,11 @@ async fn serve_relayed_v5(
     };
     let Parked::Tcp(parked) = parked else {
         // The OPEN's framing disagrees with what is actually parked under the
-        // id — a forged or mismatched peer. Refuse rather than panic; the park
-        // is already consumed, so the client loses continuity but nothing else.
+        // id. Phase 1 (`has_tcp_park`) rejects a committed park of the wrong
+        // shape, so what is left here is the reservation window — a park that
+        // was still landing when phase 1 looked and committed as some other
+        // shape by now — or a forged peer. Refuse rather than panic; the park is
+        // already consumed, so the client loses continuity but nothing else.
         cluster.metrics.record_mesh_relay_rejected("framing_mismatch");
         cluster.metrics.record_mesh_relay_outcome("miss", CLOSE_NONE);
         warn!("relayed TCP framing does not match the parked session kind; aborting the relay");

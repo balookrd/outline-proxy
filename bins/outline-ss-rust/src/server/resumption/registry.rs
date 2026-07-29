@@ -70,6 +70,20 @@ pub(crate) enum ResumeOutcome {
     Miss(ResumeMiss),
 }
 
+/// What a shape-aware, non-consuming lookup found under a resume id. See
+/// [`OrphanRegistry::probe_park`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParkProbe {
+    /// No park and no park in flight.
+    Missing,
+    /// A byte-stream park a v5 mesh splice can serve — or a park still landing,
+    /// whose shape is not knowable yet and is optimistically admitted.
+    Splicable,
+    /// A park of a shape no mesh splice carries today: VLESS-UDP, VLESS-mux or
+    /// the SS-UDP stream. The caller must refuse *without* consuming it.
+    OtherShape,
+}
+
 /// Internal envelope wrapping a payload with bookkeeping fields.
 struct ParkedEntry {
     owner: Arc<str>,
@@ -161,8 +175,53 @@ impl OrphanRegistry {
     /// reservation counts as present — otherwise a fast redial arriving while
     /// the park is still landing would be told "no session" and would lose
     /// continuity, which is the very race `take_for_resume` already waits out.
+    ///
+    /// Production code asks the shape-aware [`Self::probe_park`] instead; this
+    /// stays as the shape-agnostic probe the resumption tests assert park
+    /// lifecycle with.
+    #[cfg(test)]
     pub(crate) fn has_park(&self, id: SessionId) -> bool {
         self.by_id.contains_key(&id) || self.reservations.contains_key(&id)
+    }
+
+    /// What is parked under `id`, in the only terms the mesh phase-1 ack can
+    /// act on: nothing, something a v5 splice can serve, or something it cannot.
+    ///
+    /// The shape half of the answer is load-bearing, not diagnostic. Phase 2
+    /// consumes the park with [`Self::take_for_resume`] *before* the splice
+    /// discovers it holds the wrong shape, so a phase 1 that admitted any shape
+    /// would destroy the park it then refuses. Only VLESS can reach that state —
+    /// SS byte streams always park as [`Parked::Tcp`], while VLESS multiplexes
+    /// TCP, UDP and mux onto one carrier and parks three different shapes under
+    /// ids an edge cannot tell apart — which is why this check arrives with the
+    /// VLESS edge.
+    ///
+    /// One lookup answers both halves, so the refusal path takes no second lock
+    /// and the two outcomes still reach the operator as distinct metric reasons.
+    /// That distinction matters now rather than later: with VLESS on v5, every
+    /// VLESS-UDP or mux resume that lands on an edge takes the
+    /// [`ParkProbe::OtherShape`] path, and folding those into "no such session"
+    /// would bury a config-independent, expected condition in the same series an
+    /// asymmetric cluster shows up in.
+    ///
+    /// An in-flight reservation counts as [`ParkProbe::Splicable`], as it did
+    /// when this probe was shape-agnostic: the park-miss race it exists to close
+    /// is unchanged by the narrowing, and a reservation cannot report a shape —
+    /// the payload does not exist yet. That leaves one window where a non-TCP
+    /// park is admitted here, and the *edge* closes it: it resets the mesh stream
+    /// as soon as the VLESS command it authenticated turns out not to be TCP,
+    /// strictly before the USER frame that would trigger phase 2. Widening the
+    /// reservation to carry a shape would trade that race for a worse one — a
+    /// redial arriving during a park landing would miss instead of waiting.
+    pub(crate) fn probe_park(&self, id: SessionId) -> ParkProbe {
+        match self.by_id.get(&id) {
+            Some(entry) => match entry.parked {
+                Parked::Tcp(_) => ParkProbe::Splicable,
+                _ => ParkProbe::OtherShape,
+            },
+            None if self.reservations.contains_key(&id) => ParkProbe::Splicable,
+            None => ParkProbe::Missing,
+        }
     }
 
     /// Per-session downlink ring buffer capacity in bytes. `0` means

@@ -21,6 +21,9 @@ use super::super::super::{
     resumption::{OrphanRegistry, SessionId},
 };
 use super::super::resume_headers::ResumeContext;
+use super::super::upstream_source::{
+    HarvestedUpstream, MeshUpstreamSetup, UpstreamSource, UpstreamWriter,
+};
 use super::super::vless_mux::{MuxRouteCtx, MuxServerCtx, MuxState};
 
 pub(in crate::server::transport) const MAX_VLESS_HEADER_BUFFER: usize = 512;
@@ -32,10 +35,11 @@ pub(in crate::server::transport) const MAX_VLESS_HEADER_BUFFER: usize = 512;
 pub(in crate::server::transport) enum VlessRelayOutcome {
     /// Upstream EOF or sink error; reader is consumed.
     Closed,
-    /// TCP cancel: the caller fired the notify; the harvested
-    /// `OwnedReadHalf` is returned for hand-off into the orphan
-    /// registry.
-    Cancelled(tokio::net::tcp::OwnedReadHalf),
+    /// TCP cancel: the caller fired the notify; the harvested upstream is
+    /// returned for hand-off into the orphan registry. Only
+    /// [`HarvestedUpstream::Tcp`] carries anything — a cluster edge's upstream
+    /// lives on the home, so there is nothing here to park.
+    Cancelled(HarvestedUpstream),
     /// UDP cancel: nothing to harvest because the `Arc<UdpSocket>`
     /// already lives in `UpstreamSession::Udp`. The variant exists so
     /// the park path can tell "we asked it to stop" from "the upstream
@@ -112,7 +116,9 @@ pub(in crate::server::transport) type VlessRelayTaskOutput = Result<VlessRelayOu
 /// state — none of these fields are meaningful for UDP or Mux, so
 /// packing them here lets the type system enforce the invariant.
 pub(in crate::server::transport) struct TcpUpstream {
-    pub(in crate::server::transport) writer: tokio::net::tcp::OwnedWriteHalf,
+    /// Where client plaintext goes: this node's own socket to the target, or —
+    /// on a cluster edge — the mesh stream to the home that owns that socket.
+    pub(in crate::server::transport) writer: UpstreamWriter,
     /// `AbortOnDrop` ensures the upstream→client task is cancelled on
     /// every exit path of the owning `run_vless_relay` future,
     /// including `?`-returns and panics.
@@ -123,7 +129,10 @@ pub(in crate::server::transport) struct TcpUpstream {
     /// Human-readable target host:port. Used for logging and to
     /// populate `ParkedTcp::target_display` on park.
     pub(in crate::server::transport) target_display: Arc<str>,
-    pub(in crate::server::transport) guard: TcpUpstreamGuard,
+    /// Upstream-connection gauge, held for the socket's lifetime. `None` on a
+    /// cluster edge: that gauge counts real upstream sockets, and the edge holds
+    /// none — the home opened it and still counts it.
+    pub(in crate::server::transport) guard: Option<TcpUpstreamGuard>,
 }
 
 /// Single-target VLESS-UDP upstream. UDP-only counterpart of
@@ -213,6 +222,16 @@ pub(in crate::server::transport) struct VlessRelayState {
     /// fires. Cloned into each relay task spawn.
     pub(in crate::server::transport) throttle_monitor:
         Option<Arc<crate::server::transport::throughput_monitor::ThroughputMonitor>>,
+    /// Cluster edge: the mesh relay this session's upstream lives behind, taken
+    /// once the client authenticates — which is the first moment the home can be
+    /// told *who* it is resuming. `None` on a direct carrier: this node connects
+    /// out itself and owns the socket.
+    ///
+    /// Only a `VlessCommand::Tcp` session can consume it. A `Udp` or `Mux`
+    /// command needs an upstream shape the v5 splice does not carry, so the
+    /// dispatch [`MeshUpstreamSetup::refuse`]s it and serves the session
+    /// locally — before the USER frame, so the home's park survives untouched.
+    pub(in crate::server::transport) mesh_upstream: Option<MeshUpstreamSetup>,
 }
 
 pub(in crate::server::transport) struct VlessWsOutbound<'a, Msg> {
@@ -227,6 +246,7 @@ impl VlessRelayState {
         throttle_monitor: Option<
             Arc<crate::server::transport::throughput_monitor::ThroughputMonitor>,
         >,
+        upstream: UpstreamSource,
     ) -> Self {
         Self {
             header_buffer: Vec::with_capacity(128),
@@ -243,6 +263,10 @@ impl VlessRelayState {
             // On resume hit it is restored from `ParkedTcp::downlink_ring`.
             downlink_ring: None,
             throttle_monitor,
+            mesh_upstream: match upstream {
+                UpstreamSource::Direct => None,
+                UpstreamSource::Mesh(setup) => Some(setup),
+            },
         }
     }
 }
