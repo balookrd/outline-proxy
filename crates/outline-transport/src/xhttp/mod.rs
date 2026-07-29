@@ -29,9 +29,15 @@
 
 use anyhow::{Result, bail};
 use bytes::Bytes;
+use futures_util::future::BoxFuture;
+use http::{HeaderMap, HeaderValue};
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
 use rand::RngCore;
 use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use url::Url;
@@ -82,8 +88,90 @@ pub(crate) use stream::XhttpStream;
 pub(super) use outline_wire::resume::{
     ACK_PREFIX_HEADER, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER,
 };
+pub(super) use outline_wire::xhttp::{FIN_HEADER, UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER};
 pub use outline_wire::xhttp::{SsPathKind, XhttpSubmode};
-pub(super) use outline_wire::xhttp::{UDP_RECORDS_ENABLED, UDP_RECORDS_HEADER};
+
+/// Deadline for the closing FIN POST (see [`fin_post_headers`]). Much shorter
+/// than a data POST's `POST_TIMEOUT`: the session is already closing, the FIN
+/// only spares the server an idle-eviction wait, and the carrier's connection
+/// is held open until this returns. If it cannot be delivered quickly the
+/// server falls back to the idle sweep, which is where it was before the FIN
+/// existed.
+pub(super) const FIN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Sends the session's closing FIN POST when the driver's POST loop ends —
+/// *including* when the driver task is aborted, which is how most callers tear a
+/// carrier down. Dropping the transport aborts the driver (`XhttpStream`'s
+/// `AbortOnDrop`), and the TUN data plane's flow teardown is drop-only: it never
+/// calls `Sink::close` first. So `Drop` is the one hook that sees every close,
+/// and the POST it starts has to be detached — the task that would otherwise
+/// await it is the one going away.
+///
+/// The detached POST holds a clone of the carrier's request handle, which keeps
+/// the connection under it alive until the POST finishes or [`FIN_TIMEOUT`]
+/// expires. That is a deliberate, bounded stay of execution for a connection
+/// that would otherwise close immediately.
+pub(super) struct FinOnDrop {
+    /// Shared with the driver's POST loop: the seq the next data POST would
+    /// take, which is exactly the seq the FIN takes.
+    next_seq: Arc<AtomicU64>,
+    /// Builds the FIN POST future for a given seq. `None` once fired or
+    /// disarmed.
+    emit: Option<Box<dyn FnOnce(u64) -> BoxFuture<'static, ()> + Send>>,
+}
+
+impl FinOnDrop {
+    pub(super) fn new(
+        next_seq: Arc<AtomicU64>,
+        emit: impl FnOnce(u64) -> BoxFuture<'static, ()> + Send + 'static,
+    ) -> Self {
+        Self { next_seq, emit: Some(Box::new(emit)) }
+    }
+
+    /// Cancels the FIN. Used when the loop ends on a broken carrier: there is
+    /// nothing to tell a server we can no longer reach, and the POST would only
+    /// hold a dead connection open for its own timeout.
+    pub(super) fn disarm(&mut self) {
+        self.emit = None;
+    }
+}
+
+impl Drop for FinOnDrop {
+    fn drop(&mut self) {
+        let Some(emit) = self.emit.take() else {
+            return;
+        };
+        let seq = self.next_seq.load(Ordering::Relaxed);
+        // Nothing was ever POSTed on this session, so there is no server-side
+        // state to collapse — and seq 0 is the session-*creating* shape, so a
+        // FIN there could conjure the very session it means to end.
+        if seq == 0 {
+            return;
+        }
+        // Drop can run outside a runtime (a caller tearing the transport down
+        // from a blocking context); with no handle there is nowhere to spawn,
+        // and the server falls back to its idle sweep.
+        if let Ok(handle) = Handle::try_current() {
+            handle.spawn(emit(seq));
+        }
+    }
+}
+
+/// Headers for the session's closing FIN POST: the per-session POST template
+/// plus the `X-Xhttp-Fin` hint.
+///
+/// Packet-up has no transport-level end-of-stream — every request is its own,
+/// and a client that simply stops POSTing is indistinguishable from one that
+/// went quiet — so this header is the only way to tell the server the carrier is
+/// finished. Without it the server holds the session (and, on an SS-UDP path,
+/// its NAT entries and the park a cross-transport resume would take over) until
+/// the 180 s idle sweep. The WS carriers get the same signal for free from the
+/// Close frame.
+pub(super) fn fin_post_headers(base: &HeaderMap) -> HeaderMap {
+    let mut headers = base.clone();
+    headers.insert(http::HeaderName::from_static(FIN_HEADER), HeaderValue::from_static("1"));
+    headers
+}
 
 /// Extracts the submode from a `?mode=...` query parameter on the
 /// dial URL. The mode is not threaded through the dial-dispatcher
