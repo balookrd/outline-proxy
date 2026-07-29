@@ -607,7 +607,6 @@ async fn edge_authenticates_with_its_own_credentials_then_sends_the_user_frame()
             &harness.route,
             edge.resume,
             Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 40404))),
-            None,
             edge.source,
         )
         .await;
@@ -659,7 +658,6 @@ async fn edge_seals_the_downlink_under_its_own_key() -> Result<()> {
             &harness.route,
             edge.resume,
             Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 40404))),
-            None,
             edge.source,
         )
         .await;
@@ -870,7 +868,6 @@ async fn edge_never_parks_a_relayed_session() -> Result<()> {
             &harness.route,
             edge.resume,
             Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 40404))),
-            None,
             edge.source,
         ),
     )
@@ -928,7 +925,6 @@ async fn edge_forwards_the_homes_acked_offset_to_the_client() -> Result<()> {
             &harness.route,
             edge.resume,
             Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 40404))),
-            None,
             edge.source,
         )
         .await;
@@ -976,7 +972,7 @@ async fn client_reset_cancels_upstream_relay_task() -> Result<()> {
     );
     let resume = ResumeContext::from_request_headers(&HeaderMap::new(), &server.orphan_registry);
 
-    run_tcp_relay::<MockWs>(socket, &server, &route, resume, None, None, UpstreamSource::Direct)
+    run_tcp_relay::<MockWs>(socket, &server, &route, resume, None, UpstreamSource::Direct)
         .await
         .expect_err("a client reset must surface as an error");
 
@@ -1014,15 +1010,7 @@ async fn client_eof_without_close_does_not_hang_teardown() -> Result<()> {
 
     tokio::time::timeout(
         Duration::from_secs(5),
-        run_tcp_relay::<MockWs>(
-            socket,
-            &server,
-            &route,
-            resume,
-            None,
-            None,
-            UpstreamSource::Direct,
-        ),
+        run_tcp_relay::<MockWs>(socket, &server, &route, resume, None, UpstreamSource::Direct),
     )
     .await
     .map_err(|_| anyhow!("teardown hung joining the upstream→client relay task"))??;
