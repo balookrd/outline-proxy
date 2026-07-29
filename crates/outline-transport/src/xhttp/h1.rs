@@ -23,6 +23,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -290,7 +291,7 @@ async fn open_h1_get(
 }
 
 async fn driver_loop_h1(
-    mut up_send: http1::SendRequest<RequestBody>,
+    up_send: http1::SendRequest<RequestBody>,
     target: Arc<XhttpTarget>,
     in_tx: InboundSender,
     mut out_rx: OutboundReceiver,
@@ -331,13 +332,30 @@ async fn driver_loop_h1(
             return;
         },
     };
-    let uri_prefix = target.uri_seq_prefix();
+    let base_headers = Arc::new(base_headers);
+    let uri_prefix: Arc<str> = Arc::from(target.uri_seq_prefix());
+    // The closing FIN has to be issuable after this task is gone (a dropped
+    // transport aborts it), and `http1::SendRequest` is not `Clone` — so the
+    // uplink handle is shared instead. Uncontended in practice: the POST loop
+    // below is the only holder until the FIN, and h1 pays an HTTP round-trip
+    // per POST anyway.
+    let up_send = Arc::new(tokio::sync::Mutex::new(up_send));
 
     // POST loop: strictly serialised on the uplink connection.
     // h1 only allows one in-flight request per socket, and pipelining
     // is too unreliable through CDN/proxy intermediaries to risk —
     // await each POST to completion before starting the next.
-    let mut next_seq: u64 = 0;
+    let next_seq = Arc::new(AtomicU64::new(0));
+    // Ends the session's uplink on every exit from this loop — see the h2
+    // sibling and [`super::FinOnDrop`].
+    let mut fin = {
+        let up_send = Arc::clone(&up_send);
+        let uri_prefix = Arc::clone(&uri_prefix);
+        let base_headers = Arc::clone(&base_headers);
+        super::FinOnDrop::new(Arc::clone(&next_seq), move |seq| {
+            Box::pin(send_fin(up_send, uri_prefix, base_headers, seq))
+        })
+    };
     loop {
         let queued = match out_rx.recv().await {
             Some(queued) => queued,
@@ -358,14 +376,15 @@ async fn driver_loop_h1(
             Message::Close(_) => break,
             _ => continue,
         };
-        let seq = next_seq;
-        next_seq = next_seq.saturating_add(1);
-        if let Err(error) = up_send.ready().await {
+        let seq = next_seq.fetch_add(1, Ordering::Relaxed);
+        let mut send = up_send.lock().await;
+        if let Err(error) = send.ready().await {
             warn!(?error, "xhttp h1 uplink connection lost while waiting for capacity");
             let _ = in_tx.send_control(Err(io_ws_err("xhttp/h1 uplink not ready"))).await;
+            fin.disarm();
             break;
         }
-        if let Err(error) = post_one(&mut up_send, &uri_prefix, &base_headers, seq, bytes).await {
+        if let Err(error) = post_one(&mut send, &uri_prefix, &base_headers, seq, bytes).await {
             warn!(?error, seq, "xhttp/h1 POST failed");
             let _ = in_tx
                 .send_control(Err(io_ws_err("xhttp/h1 uplink POST failed")))
@@ -374,10 +393,36 @@ async fn driver_loop_h1(
             // (hyper's connection task will exit on the next read), so
             // breaking the driver loop here matches reality — we
             // can't recover the in-flight stream without re-dialing.
+            fin.disarm();
             break;
         }
     }
+    // The uplink is serialised here, so the loop exit *is* the point where every
+    // earlier POST has been answered — dropping `fin` now puts the FIN last, as
+    // the server's uplink-collapsing semantics require.
+    drop(fin);
     debug!("xhttp/h1 driver exiting");
+}
+
+/// Closes the session's uplink with an empty `X-Xhttp-Fin` POST — the h1 twin of
+/// the h2 sibling's `send_fin`; see [`super::FinOnDrop`].
+async fn send_fin(
+    up_send: Arc<tokio::sync::Mutex<http1::SendRequest<RequestBody>>>,
+    uri_prefix: Arc<str>,
+    base_headers: Arc<HeaderMap>,
+    seq: u64,
+) {
+    let mut send = up_send.lock().await;
+    if send.ready().await.is_err() {
+        return;
+    }
+    let headers = super::fin_post_headers(&base_headers);
+    let post = post_one(&mut send, &uri_prefix, &headers, seq, bytes::Bytes::new());
+    match timeout(super::FIN_TIMEOUT, post).await {
+        Ok(Ok(())) => {},
+        Ok(Err(error)) => debug!(?error, seq, "xhttp/h1 FIN POST failed"),
+        Err(_) => debug!(seq, "xhttp/h1 FIN POST timed out"),
+    }
 }
 
 /// Header map shared by every packet-up POST in an h1 session: `Host`,
