@@ -30,7 +30,7 @@ use crate::server::abort::AbortOnDrop;
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     CloseReason, MeshEndpoint, MeshFraming, MeshIdentity, MeshPeerPool, MeshProtocol,
-    OPEN_ACK_ACCEPTED, RelayOpen, ThrottleRegistry, UpstreamAckFrame, UserFrame, read_datagram,
+    OPEN_ACK_ACCEPTED, OpenHeader, ThrottleRegistry, UpstreamAckFrame, UserFrame, read_datagram,
     write_datagram,
 };
 use crate::server::dns_cache::DnsCache;
@@ -41,7 +41,7 @@ use crate::server::resumption::{
 };
 use crate::server::tests::sample_config;
 use crate::server::transport::mesh_relay::{
-    EdgeUpstream, edge_udp_echo, edge_upstream, open_edge_relay_v5,
+    EdgeUpstream, edge_udp_echo, edge_upstream, open_edge_relay,
 };
 use crate::server::transport::resume_headers::{
     ACK_PREFIX_HEADER, EdgeResumeAdvert, RESUME_CAPABLE_HEADER, RESUME_REQUEST_HEADER,
@@ -542,8 +542,8 @@ async fn teardown_with_resumption_still_parks_the_nat_keys() -> Result<()> {
 // ── Read cancellation ────────────────────────────────────────────────────────
 
 /// A carrier whose `recv` is **not** cancel-safe, exactly as the mesh SS-UDP
-/// carrier's is not: it reads a length prefix and then the body with the very
-/// framing [`crate::server::transport::mesh_carrier::MeshUdpCarrier`] uses, so a
+/// relay's datagram read is not: it reads a length prefix and then the body with
+/// the very framing [`crate::server::cluster::mesh::read_datagram`] uses, so a
 /// read dropped part-way leaves the stream mid-datagram and every later read is
 /// mis-framed. The relay loop is shared by four carriers and must not cancel any
 /// of their reads, so a carrier that *notices* the cancellation is what pins the
@@ -896,7 +896,7 @@ impl UdpEdgeHarness {
         let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 40404));
         let pooled = timeout(
             Duration::from_secs(5),
-            open_edge_relay_v5(
+            open_edge_relay(
                 &self.cluster,
                 self.shard,
                 &advert,
@@ -977,10 +977,7 @@ fn spawn_fake_udp_home(endpoint: MeshEndpoint, answer: UdpHomeAnswer) -> FakeUdp
         recv.read_exact(&mut len).await.expect("reading the OPEN length");
         let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
         recv.read_exact(&mut buf).await.expect("reading the OPEN header");
-        let header = match RelayOpen::parse(&buf).expect("parsing the OPEN header") {
-            RelayOpen::V5(header) => header,
-            RelayOpen::V4(_) => panic!("an SS-UDP edge must open v5, not v4"),
-        };
+        let header = OpenHeader::parse(&buf).expect("parsing the OPEN header");
         assert_eq!(
             header.framing,
             MeshFraming::Udp,

@@ -8,9 +8,12 @@ For the design, see [`CLUSTER.md`](CLUSTER.md).
 
 - **Two or more server nodes.** A one-node cluster is pointless — there is no
   peer to relay to. Nodes are usually in different countries.
-- **All nodes on the same build.** The mesh wire protocol has a version
-  (`OPEN_VERSION`); mixing builds can break the mesh handshake or OPEN parsing.
-  Roll out one binary everywhere.
+- **All nodes on the same build**, ideally. The mesh wire protocol has a single
+  version (`OPEN_VERSION`), and a node that does not speak it is refused at relay
+  setup — explicitly, before any data — so a mixed fleet costs *continuity*, not
+  traffic: those sessions are served locally on the edge instead of resuming on
+  their home. Upgrade order does not matter; just do not leave the fleet mixed
+  for long. Roll out one binary everywhere.
 - The mesh interconnect uses **QUIC over UDP**. Make sure UDP between the nodes
   is allowed (see §4).
 
@@ -65,34 +68,35 @@ Validation is fail-fast at startup: `shard_id` required and `< 16`;
 duplicate `peers` shard is an error. `enabled = false` (or omitting the whole
 section) means standalone — byte-for-byte the current behaviour.
 
-### 3a. Paths and users must be identical on every node
+### 3a. Paths and credentials are per-node; only user *names* are shared
 
-The `[cluster]` block is not the whole contract. A relayed session is resolved
-on the home against **the path the edge saw**, so every node must also agree on:
+The `[cluster]` block is very nearly the whole contract. The edge terminates the
+client's crypto and relays plaintext, so **nothing about a relayed session is
+resolved on the home**: no path lookup, no route table, no user key. Paths and
+credentials are therefore deliberately **per-node** — node A can serve `/tcp`
+where node B serves `/a1b2`, with different `password` / `method` / `vless_id`
+per user, and relays between them work. Rotating a node's credentials or paths is
+a node-local operation that needs no fleet-wide coordination.
 
-- `[websocket]` `ws_path_*` / `xhttp_path_*`, the `[padding] paths` list, and any
-  per-user path overrides;
-- the users that may be relayed — same ids and the same `password`, `method` and
-  `vless_id` (the edge never decrypts; the home authenticates with *its own* copy).
+What *must* agree across nodes is the **user name** — the identifier parks are
+keyed to. The home checks the name the edge attests against the park's owner
+before handing the session over, so if `beerloga` denotes different people on two
+nodes, resumes between them are refused
+(`outline_ss_mesh_relay_rejected_total{reason="unknown_user"}`). That refusal is
+the desired behaviour, not something to configure around. The same holds across
+proxy protocols: a park authenticated under SS is never handed to a VLESS carrier
+or the reverse (`reason="protocol_mismatch"`).
 
-Differ in either and relays between those nodes cannot work: the home resolves an
-empty route, refuses the stream (`no_route`) and every relayed session falls back
-to a fresh local one. This is a config error, not a transport fault — a node that
-must keep per-node paths or credentials should run standalone
-(`[cluster] enabled = false`) instead of joining the cluster.
+> **This reverses an earlier requirement.** While the home did the decryption,
+> paths *and* per-user credentials had to be byte-identical fleet-wide, and any
+> asymmetry produced a silent black hole (a relay onto a route holding no key).
+> Moving the crypto to the edge removed both the requirement and the failure
+> mode; the `no_route` refusal that reported it is gone with the route lookup
+> itself. Config-comparison rituals across nodes are no longer needed.
 
-No node can check this for itself (it never sees a peer's config), so verify it
-out of band before rollout — e.g. compare the relevant fields across nodes:
-
-```bash
-for h in nodeA nodeB; do ssh "$h" "sudo grep -E '^(ws_path_|xhttp_path_|id|method) ' /etc/outline-ss-rust/config.toml" | sha256sum; done
-```
-
-Identical digests (extend the pattern to the secret fields you rotate together)
-mean the relay half of the config matches. After rollout, a non-zero
-`outline_ss_mesh_relay_rejected_total{reason="no_route"}` on any node — or
-`outline_ss_mesh_relay_opened_total{outcome="refused"}` on its peers — means it
-does not.
+After rollout, watch `outline_ss_mesh_relay_rejected_total{reason="unknown_user"}`
+instead: a non-zero rate means user names disagree across the cluster (or it is a
+genuine security event).
 
 ## 4. Network / firewall
 
@@ -195,28 +199,36 @@ See the "UDP cross-node migration" note in
     edges degrade to fresh local sessions). Expect zero; anything sustained means
     the cluster is pushing more concurrent relayed sessions at one home than it
     is sized for.
-  - `outline_ss_mesh_relay_rejected_total{reason="no_route"}` rising ⇒ **the
-    cluster config is asymmetric** (§3a): an edge is relaying a path or carrier
-    this home does not serve, so no relayed session can authenticate here. Its
-    peers show the same event as
-    `outline_ss_mesh_relay_opened_total{outcome="refused"}`. Expect a flat zero;
-    anything else is a config bug to fix, and until it is, every affected session
-    falls back to a fresh local one.
+  - `outline_ss_mesh_relay_rejected_total{reason="no_session"}` is the **ordinary**
+    refusal: the home holds no park under the relayed resume id (it expired, or
+    this home never minted it). Its peers count the same event as
+    `outline_ss_mesh_relay_opened_total{outcome="refused"}`. A healthy cluster
+    shows a steady low rate; only a ratio near 100% of opens means something is
+    wrong upstream of it.
+  - `outline_ss_mesh_relay_rejected_total{reason="unknown_user"}` rising ⇒ **user
+    names disagree across the cluster** (§3a) — the park under that id belongs to
+    someone else. Expect a flat zero. `reason="protocol_mismatch"` is the same
+    class (one name used for an SS user on one node and a VLESS user on another).
+  - `outline_ss_mesh_relay_rejected_total{reason="park_shape"}` is expected, not a
+    fault: a VLESS-UDP or VLESS-mux park has no home splice yet, so the relay is
+    refused *without consuming the park* and that client is served locally.
   - **Cluster traffic** (how much data actually crosses the mesh, not just how
     many relays open): `outline_ss_mesh_bytes_total{role,direction,transport}`
     and `outline_ss_mesh_datagrams_total{role,direction}`. `role="edge"` is the
     traffic this node forwards into the cluster; `role="home"` is what it serves
     for foreign edges — the same relayed session counted from opposite ends. Zero
     on both means no traffic is crossing the mesh (all sessions are local). A
-    sustained `direction="up"` with `direction="down"` pinned at zero is the
-    signature of relayed traffic that never authenticates — check the `no_route`
-    counter above. Panels *Mesh Throughput — edge/home* and *Mesh Datagram Rate*.
-  - `outline_ss_mesh_throttle_hints_sent_total` /
-    `outline_ss_mesh_throttle_hints_received_total{outcome}` /
-    `outline_ss_mesh_control_datagram_errors_total` track edge→home throttle
-    signalling; a steady `received{outcome="dropped"}` or `control_datagram_errors`
-    rate points at edge/home config/version skew. Panel *Mesh Throttle Hints &
-    Control Errors*.
+    sustained `direction="up"` with `direction="down"` pinned at zero means
+    relayed uplink is reaching a home that answers nothing — check the upstream
+    the home is dialling. Panels *Mesh Throughput — edge/home* and *Mesh Datagram
+    Rate*.
+  - `outline_ss_mesh_throttle_hints_received_total{outcome}` /
+    `outline_ss_mesh_control_datagram_errors_total`. Throttle detection is now
+    local to the edge, so **nothing on this build sends a hint**: a steady zero on
+    the received counter is the expected reading once every node is upgraded, and
+    a non-zero one simply means some peer still runs a pre-v5 build. The home
+    decodes and counts such a hint but no longer acts on it. Panel *Mesh Throttle
+    Hints & Control Errors*.
   - On the **client** (ws-rust dashboard, *Cluster / Soft-switch* row):
     `outline_ws_soft_switch_total{outcome}` — operator soft-switch
     migrations, dominated by `migrated` on a healthy switch; and
@@ -241,8 +253,14 @@ See the "UDP cross-node migration" note in
 
 - **Double-hop RTT:** the edge → home hop between countries adds latency on long
   bulk transfers. The health budget catches *hangs*, not slowness.
-- **Throttle detection:** keep it **off** at first — the home-side detector
-  cannot tell the mesh interconnect apart from the client last mile and can fire
-  spuriously (see `CLUSTER.md`).
-- **UDP carriers** are not relayed yet — those legs fall back to a
-  fresh local session on a foreign shard (safe, just no cross-edge resume).
+- **Throttle detection:** keep it **off** at first. It now runs on the edge,
+  which does see the client last mile, but its floors are still heuristics (see
+  `CLUSTER.md`).
+- **VLESS-UDP and VLESS-mux** have no home splice yet: those sessions fall back to
+  a fresh local one on a foreign shard (safe, just no cross-edge resume), and the
+  home leaves the park intact for a carrier it can serve.
+- **Rolling upgrades cost continuity, not traffic.** There is one mesh wire
+  version, and a node on a build the cluster has moved past is refused outright
+  at relay setup; that edge then serves its client a fresh local session. Upgrade
+  order does not matter, but expect a burst of `{outcome="refused"}` on the edges
+  while the fleet is mixed.

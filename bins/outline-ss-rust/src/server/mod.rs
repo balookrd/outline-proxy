@@ -217,14 +217,13 @@ pub async fn run(config: Config) -> Result<()> {
             serve_metrics_listener(metrics_listener, metrics_app, shutdown).await
         });
     }
-    // Mesh cluster listener (home side): accept relayed carriers from edge
-    // peers and serve them through the normal accept path. Only when clustered.
+    // Mesh cluster listener (home side): accept relayed sessions from edge peers
+    // and splice them onto the parks this node owns. Only when clustered.
     if let Some(cluster) = built.cluster.clone() {
         let services = Arc::clone(&built.services);
-        let routes = Arc::clone(&built.routes);
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move {
-            transport::mesh_relay::run_mesh_listener(cluster, services, routes, shutdown).await
+            transport::mesh_relay::run_mesh_listener(cluster, services, shutdown).await
         });
     }
 

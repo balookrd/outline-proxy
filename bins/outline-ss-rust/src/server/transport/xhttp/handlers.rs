@@ -9,7 +9,6 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::{
     body::Body,
@@ -25,19 +24,13 @@ use tracing::{debug, warn};
 use outline_wire::xhttp::{SsPathKind, decode_kind};
 
 use crate::metrics::{AppProtocol, Protocol, Transport};
-use crate::server::cluster::mesh::{CarrierKind, MeshFraming, MeshProtocol, PooledRelay};
+use crate::server::cluster::mesh::{MeshFraming, MeshProtocol};
 use crate::server::cluster::{ClusterCtx, RouteDecision};
-use crate::server::resumption::{OrphanRegistry, SessionId};
-use outline_wire::cluster::ShardId;
+use crate::server::resumption::SessionId;
 
 use super::super::super::state::{AppState, Services, TransportRoute, VlessTransportRoute};
-use super::super::mesh_relay::{
-    EdgeThrottleCtx, EdgeUpstream, edge_session_id, edge_throttle_ctx, edge_upstream,
-    open_edge_relay, open_edge_relay_v5,
-};
-use super::super::resume_headers::{
-    EdgeResumeAdvert, ResumeContext, ResumeResponseEcho, edge_route,
-};
+use super::super::mesh_relay::{EdgeUpstream, edge_session_id, edge_upstream, open_edge_relay};
+use super::super::resume_headers::{ResumeContext, ResumeResponseEcho, edge_route};
 use super::super::tcp::{WsTcpRouteCtx, run_tcp_relay};
 use super::super::udp::{UdpRouteCtx, run_udp_relay};
 use super::super::upstream_source::UpstreamSource;
@@ -808,44 +801,6 @@ pub(in crate::server::transport::xhttp) fn apply_udp_records_echo(
     }
 }
 
-/// The edge relay decision for a session-creating XHTTP request: relay a
-/// foreign-shard resume to its home over the mesh. Carries the shard the id
-/// decoded to and the raw advertisement to forward.
-///
-/// **v4 only, and unreachable since the SS-UDP edge moved to v5** — every XHTTP
-/// carrier now terminates its client crypto here and opens its relay through
-/// [`open_edge_relay_v5`]. Kept, unchanged, for the task that removes the v4
-/// wire version wholesale; the home half of v4 is still served for a mixed-
-/// version fleet.
-#[allow(dead_code)]
-pub(in crate::server::transport) struct EdgeRelayPlan {
-    cluster: Arc<ClusterCtx>,
-    shard: ShardId,
-    advert: EdgeResumeAdvert,
-}
-
-/// Computes the edge relay plan for a session-creating request: `Some` when
-/// clustered and the resume id targets a foreign home shard, else `None` (serve
-/// locally). Mirrors the WS/h3 edge routing.
-///
-/// v4 only; see [`EdgeRelayPlan`].
-#[allow(dead_code)]
-pub(in crate::server::transport::xhttp) fn xhttp_edge_plan(
-    cluster: Option<&Arc<ClusterCtx>>,
-    orphan_registry: &OrphanRegistry,
-    headers: &HeaderMap,
-) -> Option<EdgeRelayPlan> {
-    let cluster = cluster?;
-    match edge_route(headers, orphan_registry.cluster_identity()) {
-        (RouteDecision::Relay(shard), Some(advert)) => Some(EdgeRelayPlan {
-            cluster: Arc::clone(cluster),
-            shard,
-            advert,
-        }),
-        _ => None,
-    }
-}
-
 /// The edge decision a session-creating XHTTP request has already committed to
 /// by the time it answers.
 ///
@@ -853,7 +808,7 @@ pub(in crate::server::transport::xhttp) fn xhttp_edge_plan(
 /// VLESS and SS-UDP alike: the echo has to say which id the client should come
 /// back with, and only the home's answer settles that.
 pub(in crate::server::transport) struct XhttpEdge {
-    /// A v5 upstream on the home. `None` when this request is not relaying one:
+    /// An upstream on the home. `None` when this request is not relaying one:
     /// not clustered, an own-shard id, or a home that refused (no such park —
     /// the ordinary answer now that fresh sessions are never created over the
     /// mesh).
@@ -889,8 +844,8 @@ impl XhttpEdge {
     }
 }
 
-/// Resolves the edge decision for one XHTTP request, opening the **v5** mesh
-/// relay before the caller answers.
+/// Resolves the edge decision for one XHTTP request, opening the mesh relay
+/// before the caller answers.
 ///
 /// Every carrier terminates its client crypto here, so the home is asked only
 /// for the park behind the resume id — and it is asked *now*, not from inside the
@@ -948,31 +903,10 @@ pub(in crate::server::transport::xhttp) async fn xhttp_edge(
             MeshFraming::Udp,
         ),
     };
-    let stream = open_edge_relay_v5(cluster, shard, &advert, framing, protocol, peer_addr)
+    let stream = open_edge_relay(cluster, shard, &advert, framing, protocol, peer_addr)
         .await
         .map(|pooled| edge_upstream(pooled, &advert, cluster, framing, metrics, orphan_registry));
     XhttpEdge { stream }
-}
-
-/// Opens the mesh relay for an XHTTP edge plan, returning the pooled relay and
-/// the health budget on success, or `None` (not clustered / home unreachable)
-/// so the caller serves a fresh local session over the same duplex.
-///
-/// v4 only; see [`EdgeRelayPlan`].
-#[allow(dead_code)]
-async fn open_xhttp_mesh(
-    edge: Option<EdgeRelayPlan>,
-    carrier: CarrierKind,
-    path: &str,
-    peer_addr: SocketAddr,
-) -> Option<(PooledRelay, Duration, Option<EdgeThrottleCtx>)> {
-    let plan = edge?;
-    let pooled =
-        open_edge_relay(&plan.cluster, plan.shard, &plan.advert, carrier, path, peer_addr).await?;
-    // Build detection before the caller consumes `pooled` (it clones the mesh
-    // connection). `None` when throttle detection is off for this path.
-    let detect = edge_throttle_ctx(&pooled, plan.advert.session_id, path);
-    Some((pooled, plan.cluster.relay_budget, detect))
 }
 
 /// Spawn the per-session relay task for whichever protocol this base

@@ -561,11 +561,12 @@ impl Metrics {
     /// Counts an edge's attempt to open a mesh relay to a home shard. `outcome`
     /// is `ok` when the relay stream was established and acknowledged, `fail`
     /// when the home was unreachable / at its relay cap, or `refused` when a
-    /// reachable home declined the relay because it does not serve that
-    /// path/carrier. Either failure degrades to a fresh local session. The
-    /// `fail` rate is the direct signal that a cluster peer is unreachable (mesh
-    /// port blocked, peer down, PSK mismatch); `refused` instead means the peer
-    /// is healthy and the cluster config is asymmetric.
+    /// reachable home declined the relay because it holds no park behind the
+    /// relayed resume id. Either failure degrades to a fresh local
+    /// session. The `fail` rate is the direct signal that a cluster peer is
+    /// unreachable (mesh port blocked, peer down, PSK mismatch); `refused`
+    /// instead means the peer is healthy but holds no such park — the ordinary
+    /// answer for an expired session, so only a rate near 100% is a symptom.
     pub fn record_mesh_relay_opened(&self, outcome: &'static str) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_mesh_relay_opened_total", "outcome" => outcome).increment(1);
@@ -575,15 +576,12 @@ impl Metrics {
     /// Counts a relay stream this home refused before serving it. `reason` is
     /// `capacity` when the node is already at its relayed-session cap — a rising
     /// rate means edges are being pushed back to local sessions and the cap (or
-    /// the node's share of the cluster) needs review — or `no_route` when the
-    /// relayed path and carrier resolve to no configured users here, which is a
-    /// cluster-config asymmetry: any non-zero rate needs the config fixed, not
-    /// the cap. The v5 path adds `no_session` (nothing parked under the relayed
-    /// resume id), `unknown_user` (the park belongs to someone else),
-    /// `park_shape`, `protocol_mismatch`, `park_identity` (an SS-UDP park holds
-    /// no NAT key for the attested user), `framing_mismatch` and `bad_setup`
-    /// (the peer was acked but its USER frame was malformed or never arrived).
-    /// Low cardinality: a fixed set of static labels.
+    /// the node's share of the cluster) needs review — `no_session` (nothing
+    /// parked under the relayed resume id), `unknown_user` (the park belongs to
+    /// someone else), `park_shape`, `protocol_mismatch`, `park_identity` (an
+    /// SS-UDP park holds no NAT key for the attested user), `framing_mismatch`
+    /// or `bad_setup` (the peer was acked but its USER frame was malformed or
+    /// never arrived). Low cardinality: a fixed set of static labels.
     pub fn record_mesh_relay_rejected(&self, reason: &'static str) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_mesh_relay_rejected_total", "reason" => reason).increment(1);
@@ -654,14 +652,6 @@ impl Metrics {
                 "direction" => direction
             )
         })
-    }
-
-    /// Counts one THROTTLE_HINT the edge sent to the home after detecting a
-    /// stalled client segment on a relayed carrier.
-    pub fn record_mesh_throttle_hint_sent(&self) {
-        with_local_recorder(&self.recorder, || {
-            counter!("outline_ss_mesh_throttle_hints_sent_total").increment(1);
-        });
     }
 
     /// Counts one THROTTLE_HINT the home received. `outcome` is `delivered` when

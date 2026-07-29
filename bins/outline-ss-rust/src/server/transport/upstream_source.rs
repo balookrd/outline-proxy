@@ -121,7 +121,7 @@ pub(in crate::server::transport) struct MeshUpstreamHalves {
 /// The datagram-shaped halves of an attached mesh upstream: the SS-UDP edge's
 /// stand-in for a NAT socket.
 ///
-/// Handed over raw rather than behind [`super::mesh_carrier::MeshUdpCarrier`]
+/// Handed over raw rather than behind a `WsSocket`-shaped carrier adapter
 /// because the two directions are driven by different owners — the relay loop
 /// writes the uplink inline, a pump task reads the downlink — and because the
 /// edge closes each half deliberately (`finish` on the uplink,

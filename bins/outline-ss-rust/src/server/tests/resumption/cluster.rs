@@ -326,8 +326,7 @@ async fn boot_ws_node(parts: ClusterParts) -> Result<(ClusterNode, UserKey)> {
     let registry = Arc::clone(&services.orphan_registry);
     let ws_task =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
-    let mesh_task =
-        tokio::spawn(run_mesh_listener(cluster, services, routes, ShutdownSignal::never()));
+    let mesh_task = tokio::spawn(run_mesh_listener(cluster, services, ShutdownSignal::never()));
 
     Ok((
         ClusterNode {
@@ -977,9 +976,9 @@ async fn cluster_relay_streams_large_transfer_sha256() -> Result<()> {
     Ok(())
 }
 
-/// When the edge has no mesh route to the resume id's home shard, `open_relay`
-/// fails and the edge must degrade to a fresh local session rather than drop
-/// the client. The echo target sees a fresh upstream connect.
+/// When the edge has no mesh route to the resume id's home shard, opening the
+/// relay fails and the edge must degrade to a fresh local session rather than
+/// drop the client. The echo target sees a fresh upstream connect.
 #[tokio::test]
 async fn cluster_unreachable_home_falls_back_to_local_session() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-fallback-psk";
@@ -2134,11 +2133,10 @@ async fn cluster_udp_concurrent_carriers_do_not_share_response_slot() -> Result<
 /// client's next reconnect straight to the home that just refused it, be refused
 /// again, and be served locally again: a session that can never resume.
 ///
-/// The v4 refusal this replaced (`CloseReason::NoRoute`, an asymmetric-config
-/// home resolving the edge's path to an empty route table) is still covered on
-/// the v4 path by `transport::mesh_relay`'s
-/// `a_relayed_carrier_with_no_home_route_is_refused` and
-/// `an_edge_relay_refused_for_no_route_falls_back_to_a_local_session`.
+/// This replaced the v4 `CloseReason::NoRoute` refusal — an asymmetric-config
+/// home resolving the edge's request path to an empty route table — which went
+/// with the route lookup itself when v4 was retired: a home resolves no path at
+/// all now, so "no park under this id" is the only setup refusal left.
 #[tokio::test]
 async fn cluster_udp_relay_falls_back_locally_when_the_home_holds_no_park() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-udp-nopark-psk";
@@ -2339,10 +2337,10 @@ async fn ss2022_roundtrip(
 
 /// SS-UDP over XHTTP relays through the mesh. The client drives the real
 /// `UdpWsTransport` (packet-up h2) against the edge with a home-shard resume id;
-/// the edge relays the datagram carrier to the home with datagram framing
-/// (`SsUdpXhttp` → `edge_relay_udp::<XhttpDuplex>`), the home resolves the user
-/// on its `xhttp_ss_udp` table and forwards to the target. Proves the XHTTP
-/// datagram edge path end to end, byte-exact.
+/// the edge terminates the client's crypto and relays plaintext datagrams to the
+/// home with `MeshFraming::Udp`, and the home routes them to the target from the
+/// park's own NAT keys. Proves the XHTTP datagram edge path end to end,
+/// byte-exact.
 #[tokio::test]
 async fn cluster_udp_xhttp_relays_to_home() -> Result<()> {
     const PSK: &[u8] = b"cluster-e2e-udp-xhttp-psk";
@@ -2401,8 +2399,7 @@ async fn cluster_udp_xhttp_relays_to_home() -> Result<()> {
 
 /// SS-UDP relays over the HTTP/3 carrier too. An h3 client CONNECTs `/udp` on an
 /// h3 edge with a home-shard resume id; the edge splices the h3 WebSocket to the
-/// mesh with datagram framing (`edge_relay_h3_udp`), and the home forwards to
-/// the target. A byte-exact echo proves the h3 SS-UDP accept branch end to end
+/// mesh with `MeshFraming::Udp`, and the home forwards to the target. A byte-exact echo proves the h3 SS-UDP accept branch end to end
 /// (the `H3Ws` carrier, a different `WsSocket` impl than the h1/h2 path).
 #[tokio::test]
 async fn cluster_udp_h3_relays_to_home() -> Result<()> {
@@ -3064,12 +3061,12 @@ async fn cluster_vless_mux_releases_the_relay_and_preserves_the_park() -> Result
 /// client-facing send block; the edge detects the stall and injects an `OCTL`
 /// cover frame, which the client decodes as `ThrottleSwitchUplink`.
 ///
-/// The detection is **local to the edge** here, and no `THROTTLE_HINT` datagram
-/// is involved: with client crypto terminating on the edge, the node that owns
-/// the throttled last mile is also the node that owns the padded writer, so it
-/// signals its own client directly. The mesh hint mechanism still serves the
-/// carriers whose edge relays ciphertext (VLESS, SS-UDP), and keeps its own
-/// coverage in `transport::mesh_relay`'s tests.
+/// The detection is **local to the edge**, and no `THROTTLE_HINT` datagram is
+/// involved on any carrier any more: with client crypto terminating on the edge,
+/// the node that owns the throttled last mile is also the node that owns the
+/// padded writer, so it signals its own client directly. The mesh hint went with
+/// the v4 relay it belonged to; only the home's receiver remains, for a peer
+/// still running a pre-v5 build.
 ///
 /// Padding is a process-global; it is scoped to this test's own path so the
 /// other cluster tests' `/tcp` carriers stay unpadded (and nothing else in the
@@ -3085,11 +3082,12 @@ async fn cluster_vless_mux_releases_the_relay_and_preserves_the_park() -> Result
 /// re-deriving before this can be relied on. Left in place, retargeted and
 /// honestly labelled rather than deleted: the wire path it walks is real.
 ///
-/// The pieces are covered deterministically elsewhere: the mesh hint itself
-/// (still used by the VLESS / SS-UDP edges) by `mesh_relay`'s
-/// `edge_detector_signals_throttle_hint_over_the_mesh` plus the `StallTracker`
-/// unit tests, the rate-based window by the `throughput_monitor` tests, and the
-/// signal→OCTL half by the `ThrottleRegistry` and `ws_writer` tests.
+/// The pieces are covered deterministically elsewhere: the rate-based window by
+/// the `throughput_monitor` tests, and the signal→OCTL half by the
+/// `ThrottleRegistry` and `ws_writer` tests. The edge→home THROTTLE_HINT
+/// datagram itself went with the v4 relay — every edge now terminates the
+/// client's crypto and signals its own client directly — so only the home's
+/// receiver survives, for a peer still running a pre-v5 build.
 #[tokio::test]
 #[ignore = "known-red: throttle tunables need re-deriving for edge-local detection (see doc)"]
 async fn cluster_edge_throttle_hint_injects_octl_to_client() -> Result<()> {
