@@ -3,30 +3,37 @@ use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::WebSocket;
 use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use metrics::Counter;
 use outline_wire::padding::{PaddingDecoder, PaddingScheme};
 use parking_lot::Mutex;
-use tokio::sync::{OnceCell, Semaphore, mpsc};
+use quinn::{RecvStream, SendStream, VarInt};
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore, mpsc};
 use tracing::{debug, info, warn};
 
 use super::carrier_padding;
 use crate::server::h3::vendored::{H3Stream, H3Transport, H3WebSocketStream};
 use crate::{
     crypto::{
-        CryptoError, SessionKeyCache, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet,
+        CryptoError, SessionKeyCache, UdpCipherMode, UdpPacket, UserKey,
+        decrypt_udp_packet_with_hint, diagnose_udp_packet, encrypt_udp_packet_for_response,
     },
-    metrics::{AppProtocol, Metrics, Protocol, Transport},
+    metrics::{AppProtocol, Metrics, PerUserCounters, Protocol, Transport},
     protocol::parse_target_addr,
     server::nat::{
         NatKey, NatScope, NatTable, ServerSessionId, UdpResponseCoding, UdpResponseSender,
+        random_session_id,
     },
     server::replay::{self, ReplayCheck, ReplayStore},
 };
 
+use super::super::abort::AbortOnDrop;
+use super::super::cluster::mesh::{CloseIntent, read_datagram, write_datagram};
 use super::super::connect::resolve_udp_target;
 use super::super::constants::{
     MAX_UDP_PAYLOAD_SIZE, UDP_CACHED_USER_INDEX_EMPTY, UDP_MAX_CONCURRENT_RELAY_TASKS,
@@ -37,6 +44,7 @@ use super::super::resumption::{
     OrphanRegistry, Parked, ParkedSsUdpStream, ResumeOutcome, SessionId,
 };
 use super::resume_headers::ResumeContext;
+use super::upstream_source::{MeshDatagramHalves, MeshUpstreamSetup, UpstreamSource};
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
 
@@ -341,25 +349,31 @@ async fn resolve_nat_scope(
     }
 }
 
-/// Relays one inbound SS-UDP datagram. `response_sender` is the stream's
-/// downlink handle (see [`run_udp_relay`]): a clone of one `Arc` shared by every
-/// datagram of the stream, re-registered on the NAT entry alongside this
-/// datagram's `UdpCipherMode`.
-async fn handle_udp_datagram_common(
+/// Opens and vets one inbound SS-UDP datagram: everything both upstream shapes
+/// do before they diverge — cipher selection, SS-2022 replay defence, the
+/// per-session client metrics and the one-time user capture.
+///
+/// `Ok(None)` is a datagram legitimately dropped here (a replay, or the replay
+/// store at capacity); the caller must not forward it. `Err` is a datagram this
+/// route cannot authenticate.
+///
+/// Split out of the direct relay because a **cluster edge** needs exactly this
+/// half and none of the next one: it terminates the client's crypto but owns no
+/// NAT entry, so what it does with the opened packet is forward its plaintext to
+/// the home that does.
+fn authenticate_udp_datagram(
     server: &UdpServerCtx,
     route: &UdpRouteCtx,
     session: &UdpSessionState,
-    data: Bytes,
-    response_sender: UdpResponseSender,
-) -> Result<()> {
-    let started_at = std::time::Instant::now();
+    data: &[u8],
+) -> Result<Option<UdpPacket>> {
     let preferred_user_index = match session.cached_user_index.load(Ordering::Relaxed) {
         UDP_CACHED_USER_INDEX_EMPTY => None,
         index => Some(index),
     };
     let (packet, user_index) = match decrypt_udp_packet_with_hint(
         route.users.as_ref(),
-        &data,
+        data,
         preferred_user_index,
         Some(server.session_key_cache.as_ref()),
     ) {
@@ -368,7 +382,7 @@ async fn handle_udp_datagram_common(
             debug!(
                 path = %route.path,
                 candidates = ?route.candidate_users,
-                attempts = ?diagnose_udp_packet(route.users.as_ref(), &data),
+                attempts = ?diagnose_udp_packet(route.users.as_ref(), data),
                 "udp authentication failed for all path candidates"
             );
             return Err(anyhow!(
@@ -398,7 +412,7 @@ async fn handle_udp_datagram_common(
                     packet_id = pid,
                     "dropping replayed ss-2022 udp datagram"
                 );
-                return Ok(());
+                return Ok(None);
             },
             ReplayCheck::StoreFull => {
                 server
@@ -410,7 +424,7 @@ async fn handle_udp_datagram_common(
                     packet_id = pid,
                     "dropping ss-2022 udp datagram: replay store at capacity"
                 );
-                return Ok(());
+                return Ok(None);
             },
         }
     }
@@ -430,6 +444,25 @@ async fn handle_udp_datagram_common(
         path = %route.path,
         "udp shadowsocks user authenticated"
     );
+    Ok(Some(packet))
+}
+
+/// Relays one inbound SS-UDP datagram through this node's own NAT table.
+/// `response_sender` is the stream's downlink handle (see [`run_udp_relay`]): a
+/// clone of one `Arc` shared by every datagram of the stream, re-registered on
+/// the NAT entry alongside this datagram's `UdpCipherMode`.
+async fn handle_udp_datagram_common(
+    server: &UdpServerCtx,
+    route: &UdpRouteCtx,
+    session: &UdpSessionState,
+    data: Bytes,
+    response_sender: UdpResponseSender,
+) -> Result<()> {
+    let started_at = std::time::Instant::now();
+    let Some(packet) = authenticate_udp_datagram(server, route, session, &data)? else {
+        return Ok(());
+    };
+    let user_id = packet.user.id_arc();
 
     let coding = UdpResponseCoding::Ss {
         user: packet.user.clone(),
@@ -602,13 +635,407 @@ pub(in crate::server::transport) async fn relay_socks5_datagram(
     Ok(())
 }
 
+// ── Cluster edge (v5): the home owns the NAT, this node owns the crypto ───────
+
+/// The client crypto a v5 SS-UDP edge seals relayed responses under.
+///
+/// The home never sees the client's key — that is the whole point of terminating
+/// crypto on the edge — so it hands back the SOCKS5-wrapped plaintext its NAT
+/// reader produced ([`UdpResponseCoding::Plaintext`]) and the edge seals it here.
+/// Mirrors the `ActiveSession` snapshot the direct path's NAT reader takes: the
+/// keys are refreshed by every uplink datagram, because an SS-2022 client may
+/// rotate its session id mid-stream, and read once per response.
+struct EdgeSeal {
+    /// `None` only in the window before the first authenticated datagram, which
+    /// no response can precede — the mesh relay is not even attached yet.
+    keys: Mutex<Option<SealKeys>>,
+    /// One server session id per relayed carrier, where the direct path has one
+    /// per NAT entry. Required by the SS-2022 arms of
+    /// [`encrypt_udp_packet_for_response`] and ignored by the legacy one; `None`
+    /// only if the RNG failed, in which case an SS-2022 response cannot be
+    /// sealed and is dropped rather than sent malformed.
+    ///
+    /// Per carrier is safe — and strictly gentler on the client than per target
+    /// — because a client re-arms its downlink replay window whenever the server
+    /// session id changes, and this carrier numbers every response from one
+    /// monotonic counter under one id.
+    server_session_id: Option<[u8; 8]>,
+    /// Packet counter within `server_session_id`; strictly increasing, which is
+    /// exactly what the client's replay window requires.
+    next_packet_id: AtomicU64,
+}
+
+/// The per-datagram half of [`EdgeSeal`]: what the client's own packets said its
+/// key and cipher session are.
+#[derive(Clone)]
+struct SealKeys {
+    user: UserKey,
+    session: UdpCipherMode,
+}
+
+impl EdgeSeal {
+    fn new() -> Self {
+        Self {
+            keys: Mutex::new(None),
+            // A failure here is not fatal to the session: a legacy-cipher client
+            // never needs the id, and an SS-2022 one loses its responses (logged
+            // at the seal site) rather than the whole carrier.
+            server_session_id: random_session_id().ok(),
+            next_packet_id: AtomicU64::new(0),
+        }
+    }
+
+    /// Records the crypto the latest authenticated client datagram carried.
+    fn observe(&self, packet: &UdpPacket) {
+        *self.keys.lock() = Some(SealKeys {
+            user: packet.user.clone(),
+            session: packet.session.clone(),
+        });
+    }
+
+    /// Seals one relayed response — `TargetAddr(source) || payload`, exactly the
+    /// body the direct path's NAT reader would have encrypted — for the client.
+    /// `None` when the datagram is unusable (no keys yet, a malformed wrapper, or
+    /// an SS-2022 seal with no server session id to name).
+    fn seal(&self, wrapped: &[u8]) -> Option<SealedResponse> {
+        let keys = self.keys.lock().clone()?;
+        let (source, consumed) = match parse_target_addr(wrapped) {
+            Ok(Some(parsed)) => parsed,
+            other => {
+                warn!(?other, "dropping a relayed udp response with no target address");
+                return None;
+            },
+        };
+        let payload = &wrapped[consumed..];
+        match encrypt_udp_packet_for_response(
+            &keys.user,
+            &source,
+            payload,
+            &keys.session,
+            self.server_session_id,
+            self.next_packet_id.fetch_add(1, Ordering::Relaxed),
+        ) {
+            Ok(bytes) => Some(SealedResponse { bytes, payload_len: payload.len() }),
+            Err(error) => {
+                warn!(%error, "failed to seal a relayed udp response for the client");
+                None
+            },
+        }
+    }
+}
+
+/// One sealed downlink datagram, plus the length of the payload the *target*
+/// actually sent — the figure the direct path bills the user for, with the
+/// home's SOCKS5 wrapper excluded as the transport framing it is.
+struct SealedResponse {
+    bytes: Vec<u8>,
+    payload_len: usize,
+}
+
+/// Owns the mesh downlink half so that dropping the pump says *why* the edge
+/// stopped reading.
+///
+/// The `STOP_SENDING(CarrierEnded)` this sends is what makes the home re-park
+/// the session instead of tearing it down — the same signal the byte-stream
+/// [`super::upstream_source::MeshUpstream`] emits on drop, spelled out here so it
+/// stays deliberate rather than incidental (quinn's own drop would send code `0`,
+/// which [`CloseIntent::from_code`] reads the same way).
+struct EdgeDownlinkHalf(RecvStream);
+
+impl Drop for EdgeDownlinkHalf {
+    fn drop(&mut self) {
+        // Fails only on a stream already finished or reset, where there is
+        // nothing left to tell the home.
+        let _ = self.0.stop(VarInt::from_u32(CloseIntent::CarrierEnded.code()));
+    }
+}
+
+/// Everything the downlink pump needs; bundled so the spawn site stays readable.
+struct EdgeDownlinkCtx {
+    seal: Arc<EdgeSeal>,
+    sender: UdpResponseSender,
+    metrics: Arc<Metrics>,
+    user_id: Arc<str>,
+    user_counters: Arc<PerUserCounters>,
+    protocol: Protocol,
+    down_bytes: Counter,
+    down_datagrams: Counter,
+    /// Keeps the relay's pool slot counted for as long as this half lives.
+    _permit: Arc<OwnedSemaphorePermit>,
+}
+
+/// Drains relayed responses off the mesh and seals each one for the client.
+///
+/// One datagram in is one datagram out — the length framing on the mesh is what
+/// preserves the boundary an SS-UDP packet's AEAD depends on, and coalescing two
+/// would decrypt as garbage on the client. Bounded on every axis: the read caps
+/// each datagram at the framing's own maximum, one reusable buffer serves the
+/// whole pump, and the client-facing send rides the carrier's bounded channel.
+///
+/// Per-user accounting happens **here**, not on the home: this is the node that
+/// terminates the client session, and the home deliberately stays silent on the
+/// `user`-labelled series for a `Plaintext` attachment (see
+/// [`UdpResponseCoding::terminates_client_session`]).
+async fn run_edge_udp_downlink(mut recv: EdgeDownlinkHalf, ctx: EdgeDownlinkCtx) {
+    let mut buf = Vec::new();
+    loop {
+        let len = match read_datagram(&mut recv.0, &mut buf).await {
+            // The home finished the stream: the relayed session is over.
+            Ok(None) => break,
+            Ok(Some(len)) => len,
+            Err(error) => {
+                debug!(?error, "relayed udp downlink read from the mesh ended");
+                break;
+            },
+        };
+        ctx.down_bytes.increment(len as u64);
+        ctx.down_datagrams.increment(1);
+        let Some(sealed) = ctx.seal.seal(&buf[..len]) else {
+            continue;
+        };
+        ctx.user_counters
+            .udp_out(AppProtocol::Shadowsocks, ctx.protocol)
+            .increment(sealed.payload_len as u64);
+        ctx.metrics.record_udp_response_datagrams(
+            Arc::clone(&ctx.user_id),
+            ctx.protocol,
+            AppProtocol::Shadowsocks,
+            1,
+        );
+        if !ctx.sender.send_bytes(Bytes::from(sealed.bytes)).await {
+            debug!("relayed udp response dropped: the client carrier is gone");
+            break;
+        }
+    }
+}
+
+/// The edge half of a v5 relayed SS-UDP session: the mesh stream that stands in
+/// for this node's NAT table.
+///
+/// The relay must **never park** such a session — the entries it would hand on
+/// live on the home — which [`super::mesh_relay::edge_upstream`] already enforces
+/// by issuing no session id.
+struct MeshUdpEdge {
+    /// Consumed by the first authenticated datagram: the second phase attests a
+    /// user, and the edge learns one only by decrypting. `None` afterwards.
+    setup: Option<MeshUpstreamSetup>,
+    /// What the downlink pump seals with; shared with it from before it starts.
+    seal: Arc<EdgeSeal>,
+    /// Present once the hand-off completed.
+    attached: Option<AttachedMeshUdp>,
+}
+
+/// The live half of [`MeshUdpEdge`], after the USER frame was accepted.
+struct AttachedMeshUdp {
+    /// The ONLY writer to the mesh stream: the relay loop forwards inline rather
+    /// than fanning out, so datagrams cannot interleave mid-frame. Nothing here
+    /// blocks long enough to want concurrency — the edge resolves no DNS and
+    /// binds no socket; the home does both.
+    send: SendStream,
+    budget: Duration,
+    up_bytes: Counter,
+    up_datagrams: Counter,
+    user_counters: Arc<PerUserCounters>,
+    /// The downlink pump. Aborted on drop as a backstop; the ordinary path is
+    /// [`AttachedMeshUdp::shutdown`], which also *waits* for it.
+    pump: AbortOnDrop<()>,
+}
+
+impl AttachedMeshUdp {
+    /// Ends the relay: FIN on the uplink so the home re-parks the session, then
+    /// stop the downlink pump and wait for it.
+    ///
+    /// The wait is load-bearing, not tidiness. The pump holds a clone of the
+    /// response sender, and with it a clone of the carrier writer's data channel;
+    /// returning while it still lived would leave that channel open and the
+    /// writer task would never observe its close — the same hang
+    /// [`release_ss_udp_stream_on_drop`] exists to prevent on the NAT side.
+    async fn shutdown(mut self) {
+        let _ = self.send.finish();
+        let pump = self.pump.into_inner();
+        pump.abort();
+        let _ = pump.await;
+    }
+}
+
+impl MeshUdpEdge {
+    fn new(setup: MeshUpstreamSetup) -> Self {
+        Self {
+            setup: Some(setup),
+            seal: Arc::new(EdgeSeal::new()),
+            attached: None,
+        }
+    }
+
+    /// Forwards one authenticated client datagram to the home.
+    ///
+    /// `Err` means the mesh itself is unusable — the edge has no other upstream,
+    /// so the caller tears the carrier down and the client redials (the home
+    /// still holds the park). Everything a single datagram can get wrong — a
+    /// missing target address, an oversized payload — is handled here and
+    /// reported, exactly as the direct path reports it, without ending the
+    /// session.
+    async fn forward(
+        &mut self,
+        server: &UdpServerCtx,
+        route: &UdpRouteCtx,
+        packet: &UdpPacket,
+        response_sender: &UdpResponseSender,
+        started_at: std::time::Instant,
+    ) -> Result<()> {
+        self.seal.observe(packet);
+        let user_id = packet.user.id_arc();
+        if self.attached.is_none() {
+            let setup = self
+                .setup
+                .take()
+                .context("the mesh relay setup was already consumed")?;
+            self.attached =
+                Some(self.attach(setup, server, route, response_sender, &user_id).await?);
+        }
+        let attached = self
+            .attached
+            .as_mut()
+            .expect("the hand-off above populates it or returns");
+
+        // Everything below mirrors `relay_socks5_datagram`'s bookkeeping, which
+        // the home no longer does for a relayed session: per-user accounting
+        // belongs to the node that terminates the client, and that is this one.
+        let record_request = |result: &'static str| {
+            server.metrics.record_udp_request(
+                Arc::clone(&user_id),
+                route.protocol,
+                AppProtocol::Shadowsocks,
+                result,
+                started_at.elapsed().as_secs_f64(),
+            );
+        };
+        let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
+            record_request("error");
+            return Err(anyhow!("udp packet is missing a complete target address"));
+        };
+        let payload_len = packet.payload.len() - consumed;
+        if payload_len > MAX_UDP_PAYLOAD_SIZE {
+            server.metrics.record_udp_oversized_datagram_dropped(
+                Arc::clone(&user_id),
+                route.protocol,
+                AppProtocol::Shadowsocks,
+                "up",
+            );
+            warn!(
+                user = %user_id,
+                path = %route.path,
+                target = %target,
+                plaintext_bytes = payload_len,
+                max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
+                "dropping oversized udp datagram before relaying it to the home"
+            );
+            record_request("error");
+            return Ok(());
+        }
+        attached
+            .user_counters
+            .udp_in(AppProtocol::Shadowsocks, route.protocol)
+            .increment(payload_len as u64);
+
+        // One client packet is one mesh datagram: the boundary the home's router
+        // keys on, and the one a byte splice would destroy. Bounded by the health
+        // budget — a home that stops draining fills the QUIC send window, and a
+        // write stuck past the budget is a dead relay, not a slow one.
+        let write = write_datagram(&mut attached.send, &packet.payload);
+        match tokio::time::timeout(attached.budget, write).await {
+            Ok(Ok(())) => {},
+            Ok(Err(error)) => {
+                record_request("error");
+                return Err(error.context("relaying an ss-udp datagram to the home"));
+            },
+            Err(_elapsed) => {
+                record_request("error");
+                return Err(anyhow!("the mesh relay stalled past the health budget"));
+            },
+        }
+        attached.up_bytes.increment(packet.payload.len() as u64);
+        attached.up_datagrams.increment(1);
+        record_request("success");
+        Ok(())
+    }
+
+    /// Runs the second phase of the v5 hand-off and starts the downlink pump.
+    async fn attach(
+        &self,
+        setup: MeshUpstreamSetup,
+        server: &UdpServerCtx,
+        route: &UdpRouteCtx,
+        response_sender: &UdpResponseSender,
+        user_id: &Arc<str>,
+    ) -> Result<AttachedMeshUdp> {
+        let MeshDatagramHalves {
+            send,
+            recv,
+            budget,
+            up_bytes,
+            up_datagrams,
+            down_bytes,
+            down_datagrams,
+            permit,
+        } = setup
+            .attach_datagrams(user_id)
+            .await
+            .context("attesting the ss-udp user to the home")?;
+        let user_counters = server.metrics.user_counters(user_id);
+        debug!(
+            user = %user_id,
+            path = %route.path,
+            "ss-udp session relayed to its home; this node terminates the client crypto",
+        );
+        let pump = tokio::spawn(run_edge_udp_downlink(
+            EdgeDownlinkHalf(recv),
+            EdgeDownlinkCtx {
+                seal: Arc::clone(&self.seal),
+                sender: response_sender.clone(),
+                metrics: Arc::clone(&server.metrics),
+                user_id: Arc::clone(user_id),
+                user_counters: Arc::clone(&user_counters),
+                protocol: route.protocol,
+                down_bytes,
+                down_datagrams,
+                _permit: permit,
+            },
+        ));
+        Ok(AttachedMeshUdp {
+            send,
+            budget,
+            up_bytes,
+            up_datagrams,
+            user_counters,
+            pump: AbortOnDrop::new(pump),
+        })
+    }
+
+    /// Ends the relay, if one was ever established.
+    async fn shutdown(self) {
+        if let Some(attached) = self.attached {
+            attached.shutdown().await;
+        }
+    }
+}
+
 pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     socket: T,
     server: Arc<UdpServerCtx>,
     route: Arc<UdpRouteCtx>,
     resume: ResumeContext,
     injected_monitor: Option<Arc<super::throughput_monitor::ThroughputMonitor>>,
+    upstream: UpstreamSource,
 ) -> Result<()> {
+    // Cluster edge (v5): the session being served lives on another node, so this
+    // relay owns the client's crypto and nothing else — no NAT entry, no park.
+    // `Direct` is every other case, including a v4 relayed carrier on the *home*
+    // (which decrypts and owns its NAT exactly as a local session does).
+    let mut mesh = match upstream {
+        UpstreamSource::Direct => None,
+        UpstreamSource::Mesh(setup) => Some(MeshUdpEdge::new(setup)),
+    };
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) =
         mpsc::channel::<T::Msg>(server.ws_data_channel_capacity);
@@ -745,6 +1172,34 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
                     "up",
                     data.len(),
                 );
+                // Cluster edge: forward inline instead of fanning out. The edge
+                // resolves no DNS and binds no socket — the home does both — so
+                // the only awaited work is the mesh write, and doing it in the
+                // read loop is what keeps one client packet one mesh datagram
+                // (concurrent writers would interleave mid-frame). Backpressure
+                // rides the QUIC send window, exactly as the v4 splice's single
+                // uplink writer did.
+                if let Some(edge) = mesh.as_mut() {
+                    let started_at = std::time::Instant::now();
+                    match authenticate_udp_datagram(&server, &route, &session, &data) {
+                        Ok(Some(packet)) => {
+                            if let Err(error) = edge
+                                .forward(&server, &route, &packet, &response_sender, started_at)
+                                .await
+                            {
+                                // The mesh is this carrier's only upstream, so a
+                                // broken one ends the session: the client redials
+                                // and the home still holds the park.
+                                loop_result = Err(error);
+                                break;
+                            }
+                        },
+                        // Dropped on purpose (a replay, or the replay store full).
+                        Ok(None) => {},
+                        Err(error) => warn!(?error, "udp datagram relay failed"),
+                    }
+                    continue;
+                }
                 if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
                     server.metrics.record_udp_relay_drop(
                         Transport::Udp,
@@ -821,6 +1276,14 @@ pub(in crate::server::transport) async fn run_udp_relay<T: WsSocket>(
     }
 
     while in_flight.next().await.is_some() {}
+
+    // Cluster edge: end the relay before the writer is drained. The downlink
+    // pump holds a clone of the response sender — and with it a clone of the
+    // writer's data channel — so it has to be gone before the drops below can
+    // close that channel.
+    if let Some(edge) = mesh.take() {
+        edge.shutdown().await;
+    }
 
     // Release-on-drop: detach our sender from every NAT entry this stream
     // registered on and, when the stream issued a Session ID, park the bundle in
@@ -900,9 +1363,12 @@ pub(super) async fn handle_udp_connection(
     server: Arc<UdpServerCtx>,
     route: Arc<UdpRouteCtx>,
     resume: ResumeContext,
+    upstream: UpstreamSource,
 ) -> Result<()> {
-    // Direct carrier: no injected monitor — local detection runs (`None`).
-    run_udp_relay::<AxumWs>(AxumWs(socket), server, route, resume, None).await
+    // Client-facing carrier either way: no injected monitor, so local throttle
+    // detection runs — this node owns the last mile whether the upstream is its
+    // own NAT or a home's.
+    run_udp_relay::<AxumWs>(AxumWs(socket), server, route, resume, None, upstream).await
 }
 
 pub(in crate::server) async fn handle_udp_h3_connection(
@@ -910,8 +1376,9 @@ pub(in crate::server) async fn handle_udp_h3_connection(
     server: Arc<UdpServerCtx>,
     route: Arc<UdpRouteCtx>,
     resume: ResumeContext,
+    upstream: UpstreamSource,
 ) -> Result<()> {
-    run_udp_relay::<H3Ws>(H3Ws(socket), server, route, resume, None).await
+    run_udp_relay::<H3Ws>(H3Ws(socket), server, route, resume, None, upstream).await
 }
 
 #[cfg(test)]

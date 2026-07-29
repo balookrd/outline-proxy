@@ -19,7 +19,9 @@ pub use session_cache::SessionKeyCache;
 #[cfg(test)]
 pub use stream::StreamResponseContext;
 pub use stream::{AeadStreamDecryptor, AeadStreamEncryptor};
-pub use udp::{UdpCipherMode, decrypt_udp_packet_with_hint, encrypt_udp_packet_for_response};
+pub use udp::{
+    UdpCipherMode, UdpPacket, decrypt_udp_packet_with_hint, encrypt_udp_packet_for_response,
+};
 
 #[cfg(test)]
 pub use udp::{decrypt_udp_packet, encrypt_udp_packet};

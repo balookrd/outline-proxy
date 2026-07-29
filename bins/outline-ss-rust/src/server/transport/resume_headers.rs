@@ -172,16 +172,6 @@ impl ResumeContext {
             symmetric_replay: self.symmetric_replay_requested,
         }
     }
-
-    /// Session-ID-only echo, for paths that do not (yet) confirm the
-    /// v1/v2 capabilities in their responses: the UDP-WS upgrade and the
-    /// h3 CONNECT / XHTTP-h3 handlers.
-    pub(in crate::server) fn session_echo(&self) -> ResumeResponseEcho {
-        ResumeResponseEcho {
-            session_id: self.issued_session_id,
-            ..ResumeResponseEcho::default()
-        }
-    }
 }
 
 /// The client's raw resume advertisement, read straight from the request

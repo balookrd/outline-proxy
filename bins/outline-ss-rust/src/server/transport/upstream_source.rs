@@ -29,8 +29,8 @@ use tokio::sync::OwnedSemaphorePermit;
 use crate::crypto::MAX_CHUNK_SIZE;
 use crate::metrics::Metrics;
 use crate::server::cluster::mesh::{
-    CloseIntent, CloseReason, MAX_USER_LEN, MeshStream, PooledRelay, UPSTREAM_ACK_FRAME_LEN,
-    UpstreamAckFrame, UserFrame,
+    CloseIntent, CloseReason, MAX_USER_LEN, MeshFraming, MeshStream, PooledRelay,
+    UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame,
 };
 use crate::server::relay::UpstreamRead;
 
@@ -49,7 +49,7 @@ use crate::server::relay::UpstreamRead;
 /// `server::tests::relay::a_mesh_sized_chunk_survives_an_ss2022_relay`.
 pub(in crate::server) const MESH_UPSTREAM_CHUNK: usize = MAX_CHUNK_SIZE;
 
-/// Where a TCP-shaped relay takes its upstream from.
+/// Where a relay takes its upstream from — byte stream or datagram alike.
 pub(in crate::server) enum UpstreamSource {
     /// Connect out to the target from this node.
     Direct,
@@ -77,8 +77,35 @@ pub(in crate::server) struct MeshUpstreamSetup {
     /// Bounds every mesh operation: the setup exchange below, and each uplink
     /// write once the relay runs.
     budget: Duration,
+    counters: MeshRelayCounters,
+}
+
+/// The `role="edge"` counter handles one relay feeds, resolved once at setup.
+///
+/// `up` is client→mesh (toward the home) and `down` is mesh→client, the same
+/// series the v4 splice fed — so a relay that never carries downlink is still
+/// visible as `down = 0`. The datagram pair is incremented only by the SS-UDP
+/// framing; a byte-stream relay leaves it untouched.
+struct MeshRelayCounters {
     up_bytes: Counter,
     down_bytes: Counter,
+    up_datagrams: Counter,
+    down_datagrams: Counter,
+}
+
+impl MeshRelayCounters {
+    fn new(framing: MeshFraming, metrics: &Metrics) -> Self {
+        let transport = match framing {
+            MeshFraming::Tcp => "tcp",
+            MeshFraming::Udp => "udp",
+        };
+        Self {
+            up_bytes: metrics.mesh_bytes_counter("edge", "up", transport),
+            down_bytes: metrics.mesh_bytes_counter("edge", "down", transport),
+            up_datagrams: metrics.mesh_datagrams_counter("edge", "up"),
+            down_datagrams: metrics.mesh_datagrams_counter("edge", "down"),
+        }
+    }
 }
 
 /// The halves of an attached mesh upstream, plus what the home said about it.
@@ -91,14 +118,39 @@ pub(in crate::server::transport) struct MeshUpstreamHalves {
     pub(in crate::server::transport) upstream_acked: u64,
 }
 
+/// The datagram-shaped halves of an attached mesh upstream: the SS-UDP edge's
+/// stand-in for a NAT socket.
+///
+/// Handed over raw rather than behind [`super::mesh_carrier::MeshUdpCarrier`]
+/// because the two directions are driven by different owners — the relay loop
+/// writes the uplink inline, a pump task reads the downlink — and because the
+/// edge closes each half deliberately (`finish` on the uplink,
+/// `STOP_SENDING(CarrierEnded)` on the downlink) rather than through a carrier's
+/// control frames.
+pub(in crate::server::transport) struct MeshDatagramHalves {
+    pub(in crate::server::transport) send: SendStream,
+    pub(in crate::server::transport) recv: RecvStream,
+    /// Bounds one mesh write, as on the byte-stream half.
+    pub(in crate::server::transport) budget: Duration,
+    pub(in crate::server::transport) up_bytes: Counter,
+    pub(in crate::server::transport) up_datagrams: Counter,
+    pub(in crate::server::transport) down_bytes: Counter,
+    pub(in crate::server::transport) down_datagrams: Counter,
+    /// Pool permit for the relay stream, released once **both** halves are
+    /// dropped — the relay's real lifetime, since the two end independently.
+    pub(in crate::server::transport) permit: Arc<OwnedSemaphorePermit>,
+}
+
 impl MeshUpstreamSetup {
     /// Wraps an opened relay. `ack_prefix` must be the flag the OPEN carried —
     /// it decides whether the home's prologue is on the wire at all, so reading
-    /// it wrong desynchronises the stream.
+    /// it wrong desynchronises the stream. `framing` must likewise be the OPEN's,
+    /// so the counters this relay feeds name the transport actually on the wire.
     pub(in crate::server) fn new(
         pooled: PooledRelay,
         ack_prefix: bool,
         budget: Duration,
+        framing: MeshFraming,
         metrics: &Metrics,
     ) -> Self {
         let (send, recv, permit) = pooled.into_parts();
@@ -107,11 +159,7 @@ impl MeshUpstreamSetup {
             permit: Arc::new(permit),
             ack_prefix,
             budget,
-            // `role="edge"` byte counters: up = client→mesh (toward the home),
-            // down = mesh→client. Same series the v4 splice fed, so a relay that
-            // never carries downlink is still visible as `down = 0`.
-            up_bytes: metrics.mesh_bytes_counter("edge", "up", "tcp"),
-            down_bytes: metrics.mesh_bytes_counter("edge", "down", "tcp"),
+            counters: MeshRelayCounters::new(framing, metrics),
         }
     }
 
@@ -141,23 +189,19 @@ impl MeshUpstreamSetup {
         let _ = recv.stop(code);
     }
 
-    /// Completes the v5 hand-off: attests `user` to the home and consumes the
-    /// continuity prologue it answers with.
+    /// The second phase both framings share: attests `user` to the home and
+    /// consumes the continuity prologue it answers with, leaving the stream
+    /// positioned on the first body byte (or datagram).
     ///
     /// Bounded by the health budget in both directions — an unresponsive home
     /// must not pin a client carrier that has already been upgraded.
-    pub(in crate::server::transport) async fn attach(
-        self,
+    async fn exchange(
+        send: &mut SendStream,
+        recv: &mut RecvStream,
         user: &str,
-    ) -> Result<MeshUpstreamHalves> {
-        let MeshUpstreamSetup {
-            stream: MeshStream { mut send, mut recv },
-            permit,
-            ack_prefix,
-            budget,
-            up_bytes,
-            down_bytes,
-        } = self;
+        ack_prefix: bool,
+        budget: Duration,
+    ) -> Result<u64> {
         // The frame's length is a single byte, so an over-long name would wrap
         // rather than fail. The home rejects anything past this bound anyway.
         if user.len() > MAX_USER_LEN {
@@ -169,32 +213,79 @@ impl MeshUpstreamSetup {
             .context("timed out sending the mesh USER frame")?
             .context("sending the mesh USER frame")?;
 
-        let upstream_acked = if ack_prefix {
-            let mut buf = [0u8; UPSTREAM_ACK_FRAME_LEN];
-            tokio::time::timeout(budget, recv.read_exact(&mut buf))
-                .await
-                .context("timed out reading the mesh upstream-ack frame")?
-                .context("reading the mesh upstream-ack frame")?;
-            UpstreamAckFrame::parse(&buf)?.upstream_acked
-        } else {
-            0
-        };
+        if !ack_prefix {
+            return Ok(0);
+        }
+        let mut buf = [0u8; UPSTREAM_ACK_FRAME_LEN];
+        tokio::time::timeout(budget, recv.read_exact(&mut buf))
+            .await
+            .context("timed out reading the mesh upstream-ack frame")?
+            .context("reading the mesh upstream-ack frame")?;
+        Ok(UpstreamAckFrame::parse(&buf)?.upstream_acked)
+    }
+
+    /// Completes the v5 hand-off for a byte-stream relay: attests `user` to the
+    /// home and consumes the continuity prologue it answers with.
+    pub(in crate::server::transport) async fn attach(
+        self,
+        user: &str,
+    ) -> Result<MeshUpstreamHalves> {
+        let MeshUpstreamSetup {
+            stream: MeshStream { mut send, mut recv },
+            permit,
+            ack_prefix,
+            budget,
+            counters,
+        } = self;
+        let upstream_acked = Self::exchange(&mut send, &mut recv, user, ack_prefix, budget).await?;
 
         Ok(MeshUpstreamHalves {
             writer: UpstreamWriter::Mesh {
                 send,
                 budget,
-                bytes: up_bytes,
+                bytes: counters.up_bytes,
                 _permit: Arc::clone(&permit),
             },
             reader: MeshUpstream {
                 recv: tokio::sync::Mutex::new(recv),
                 pending: parking_lot::Mutex::new(None),
                 eof: AtomicBool::new(false),
-                bytes: down_bytes,
+                bytes: counters.down_bytes,
                 _permit: permit,
             },
             upstream_acked,
+        })
+    }
+
+    /// Completes the v5 hand-off for a **datagram** relay (SS-UDP), yielding the
+    /// raw stream halves the edge frames packets onto.
+    ///
+    /// Identical second phase to [`Self::attach`] — the same USER frame, and the
+    /// same `ack_prefix`-gated prologue, which must be consumed whenever the flag
+    /// was set or the very first datagram's length prefix would be read out of
+    /// the frame's bytes. The reported offset is discarded: a datagram session
+    /// acknowledges no uplink byte offset, and the home says so by reporting `0`.
+    pub(in crate::server::transport) async fn attach_datagrams(
+        self,
+        user: &str,
+    ) -> Result<MeshDatagramHalves> {
+        let MeshUpstreamSetup {
+            stream: MeshStream { mut send, mut recv },
+            permit,
+            ack_prefix,
+            budget,
+            counters,
+        } = self;
+        let _acked = Self::exchange(&mut send, &mut recv, user, ack_prefix, budget).await?;
+        Ok(MeshDatagramHalves {
+            send,
+            recv,
+            budget,
+            up_bytes: counters.up_bytes,
+            up_datagrams: counters.up_datagrams,
+            down_bytes: counters.down_bytes,
+            down_datagrams: counters.down_datagrams,
+            permit,
         })
     }
 }

@@ -96,6 +96,7 @@ const CLOSE_NONE: &str = "none";
 /// mesh connection to send the control datagram on, the relayed session id to
 /// key it, and the detection tunables. Built only when throttle detection is
 /// enabled for the path (`None` otherwise, leaving the splice untouched).
+#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
 pub(in crate::server) struct EdgeThrottleCtx {
     conn: Connection,
     session_id: [u8; 16],
@@ -129,6 +130,7 @@ pub(in crate::server) fn edge_throttle_ctx(
 /// [`super::throughput_monitor::ThroughputMonitor`] because a slow mesh shows up
 /// as a *read* stall (waiting on `mesh_recv`), not a *send* stall — only the
 /// throttled client segment blocks the writer.
+#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
 struct EdgeThrottleDetector {
     ctx: EdgeThrottleCtx,
     tracker: StallTracker,
@@ -174,6 +176,7 @@ impl EdgeThrottleDetector {
 /// reset — if delivery climbs past the floor it can still fire.
 ///
 /// [`observe`]: StallTracker::observe
+#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
 struct StallTracker {
     window_secs: f64,
     sustain_windows: u32,
@@ -240,8 +243,17 @@ impl StallTracker {
     }
 }
 
-/// Edge-side relay for SS-UDP: the last v4 splice, and the only carrier still
-/// using one. The edge does not decode the SS layer — it moves the WS binary
+/// Edge-side relay for SS-UDP over **v4**, and with it the whole v4 edge side:
+/// every carrier now terminates its client crypto on the edge and relays
+/// plaintext instead (see [`edge_upstream`] and `transport::udp`'s
+/// `MeshUdpEdge`). Nothing constructs one any more, so this and the helpers it
+/// pulls in — [`EdgeRelay`], [`try_relay_edge_udp`], [`edge_relay_h3_udp`],
+/// [`open_edge_relay`] and the edge throttle detector — carry an explicit
+/// `allow(dead_code)` rather than being deleted piecemeal: the v4 *home* half
+/// below is still served for a mixed-version fleet, and the whole wire version
+/// goes in one later change. Left byte-for-byte as it shipped.
+///
+/// The edge does not decode the SS layer — it moves the WS binary
 /// payload verbatim (padding + ciphertext) so the home strips both — but unlike
 /// a byte stream it preserves datagram boundaries. An SS-UDP packet is atomic —
 /// one client `Binary` frame is one AEAD-sealed packet with no length prefix —
@@ -256,6 +268,7 @@ impl StallTracker {
 /// [`CloseReason::Budget`] so the client reconnects rather than hanging. It
 /// measures *progress*, not RTT — a peer that keeps taking bytes keeps renewing
 /// it. See `docs/CLUSTER.md` § Health budget.
+#[allow(dead_code)] // See the note above: v4 only, and no edge builds one now.
 pub(in crate::server::transport) async fn edge_relay_udp<T: WsSocket>(
     client: T,
     mut mesh_send: SendStream,
@@ -514,10 +527,16 @@ pub(in crate::server) struct EdgeUpstream {
 /// a frame header. Left unconfirmed, the same bytes are exactly what the client
 /// is missing, in order, and it consumes them as ordinary stream continuation.
 /// Continuity is preserved; only the explicit truncation signal is not.
+///
+/// `framing` must be the one the OPEN carried. It picks the transport label the
+/// relay's `role="edge"` counters are published under, and it is what makes this
+/// one constructor serve the datagram (SS-UDP) edge as well as the byte-stream
+/// ones — the resume story is identical on both, which is the point.
 pub(in crate::server) fn edge_upstream(
     pooled: PooledRelay,
     advert: &EdgeResumeAdvert,
     cluster: &ClusterCtx,
+    framing: MeshFraming,
     metrics: &Metrics,
     registry: &OrphanRegistry,
 ) -> EdgeUpstream {
@@ -529,6 +548,7 @@ pub(in crate::server) fn edge_upstream(
             pooled,
             advert.ack_prefix,
             cluster.relay_budget,
+            framing,
             metrics,
         )),
         resume: ResumeContext {
@@ -592,11 +612,32 @@ pub(in crate::server) fn edge_echo(
     }
 }
 
+/// The response echo a **datagram** edge answers with: the session id
+/// [`edge_session_id`] resolved, and nothing else.
+///
+/// The v1/v2 capability confirmations are stream features that no SS-UDP path
+/// has ever echoed — direct or relayed — so the only thing a relay changes here
+/// is *which* id goes back, and that is exactly the thing that must come from
+/// the mesh rather than from the request: the id the client is told is the id
+/// the home parks under. Every SS-UDP entry point (the axum WS upgrade, the h3
+/// extended CONNECT and the XHTTP handlers) resolves its echo through here, so
+/// the rule cannot hold on one carrier and lapse on another.
+pub(in crate::server) fn edge_udp_echo(
+    edge: Option<&EdgeUpstream>,
+    local: &ResumeContext,
+) -> ResumeResponseEcho {
+    ResumeResponseEcho {
+        session_id: edge_session_id(edge, local),
+        ..Default::default()
+    }
+}
+
 /// Splices an h3 client carrier to an already-opened mesh relay with datagram
 /// framing, so per-packet SS-UDP boundaries survive the hop. The h3 accept path
 /// holds the carrier directly (not behind an `on_upgrade` closure), so it calls
 /// this after sending the extended-CONNECT response; the pool permit is held for
 /// the relay's lifetime.
+#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
 pub(in crate::server) async fn edge_relay_h3_udp(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     pooled: PooledRelay,
@@ -611,6 +652,7 @@ pub(in crate::server) async fn edge_relay_h3_udp(
 /// Describes a carrier the edge is about to relay to its home over **v4**. Only
 /// SS-UDP still does: every byte-stream carrier terminates its client crypto on
 /// the edge and relays plaintext instead (see [`edge_upstream`]).
+#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
 pub(in crate::server::transport) struct EdgeRelay {
     /// Home shard the resume id decoded to.
     pub(in crate::server::transport) shard: ShardId,
@@ -641,6 +683,7 @@ pub(in crate::server::transport) struct EdgeRelay {
 /// are labelled UDP. Takes the [`EdgeRelay`] bundle (with
 /// `carrier` = [`CarrierKind::SsUdp`]); `peer_addr` is a client hint carried in
 /// the OPEN header that the UDP relay does not need for routing.
+#[allow(dead_code)] // v4 only; see `edge_relay_udp`.
 pub(in crate::server::transport) async fn try_relay_edge_udp(
     ws: WebSocketUpgrade,
     cluster: &ClusterCtx,
@@ -1040,6 +1083,8 @@ async fn serve_relayed(
                 route_ctx,
                 resume,
                 throttle_monitor.clone(),
+                // v4: the home owns the NAT entries and connects out itself.
+                UpstreamSource::Direct,
             )
             .await
         },

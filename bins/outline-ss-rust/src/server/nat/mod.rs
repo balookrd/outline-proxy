@@ -21,7 +21,9 @@ mod entry;
 mod reader;
 mod table;
 
-pub(crate) use entry::{NatKey, NatScope, ResponseSender, UdpResponseCoding, UdpResponseSender};
+pub(crate) use entry::{
+    NatKey, NatScope, ResponseSender, UdpResponseCoding, UdpResponseSender, random_session_id,
+};
 pub(crate) use table::{NatLimits, NatTable, ServerSessionId, bind_nat_udp_socket};
 
 #[cfg(test)]

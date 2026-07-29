@@ -21,7 +21,7 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, DisconnectReason, Metrics, Transport, WebSocketSessionGuard};
 
 use super::cluster::RouteDecision;
-use super::cluster::mesh::{CarrierKind, MeshFraming, MeshProtocol};
+use super::cluster::mesh::{MeshFraming, MeshProtocol};
 use super::h3::vendored::H3WsError;
 use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
@@ -48,7 +48,7 @@ mod xhttp;
 pub(in crate::server) use fallback::{
     HttpFallbackContext, h3_fallback_handle, http_fallback_handler,
 };
-pub(in crate::server) use resume_headers::{ResumeContext, ResumeResponseEcho, edge_route};
+pub(in crate::server) use resume_headers::{ResumeContext, edge_route};
 pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
 pub(in crate::server) use upstream_source::UpstreamSource;
@@ -114,6 +114,7 @@ async fn tcp_upgrade_for_path(
                         pooled,
                         &advert,
                         cluster,
+                        MeshFraming::Tcp,
                         &server.metrics,
                         &server.orphan_registry,
                     )
@@ -213,6 +214,7 @@ pub(super) async fn vless_websocket_upgrade(
                         pooled,
                         &advert,
                         cluster,
+                        MeshFraming::Tcp,
                         &server.metrics,
                         &server.orphan_registry,
                     )
@@ -348,39 +350,38 @@ async fn udp_upgrade_for_path(
     let ws = ws.write_buffer_size(0);
     let protocol = protocol_from_http_version(version);
     let server = Arc::clone(&state.services.udp_server);
-    // Cluster edge: a resume id whose shard is a foreign home is relayed there
-    // over the mesh rather than served locally. Checked before any local route
-    // setup; on relay failure the upgrade is handed back and we fall through to
-    // a fresh local session (this edge becomes the new home). Mirrors the TCP
-    // leg but splices with datagram framing (`try_relay_edge_udp`).
-    let ws = if let Some(cluster) = state.cluster.as_deref() {
-        match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
-            (RouteDecision::Relay(shard), Some(advert)) => {
-                match mesh_relay::try_relay_edge_udp(
-                    ws,
+    // Cluster edge: a resume id whose shard is a foreign home means the parked
+    // NAT entries live there. The client is still authenticated *here*, against
+    // this node's own SS keys — only the datagrams' upstream is taken over the
+    // mesh, with datagram framing so per-packet boundaries survive the hop. The
+    // home is asked before the `101`, so a refusal (no such park) still leaves
+    // this node free to serve a fresh local session. Same shape as the TCP leg.
+    let edge = match state.cluster.as_deref() {
+        Some(cluster) => {
+            match resume_headers::edge_route(&headers, server.orphan_registry.cluster_identity()) {
+                (RouteDecision::Relay(shard), Some(advert)) => mesh_relay::open_edge_relay_v5(
                     cluster,
-                    &server.metrics,
-                    mesh_relay::EdgeRelay {
-                        shard,
-                        advert,
-                        carrier: CarrierKind::SsUdp,
-                        path: Arc::clone(&path),
-                        peer_addr,
-                        protocol,
-                        app_protocol: AppProtocol::Shadowsocks,
-                        kind: "udp",
-                    },
+                    shard,
+                    &advert,
+                    MeshFraming::Udp,
+                    MeshProtocol::Ss,
+                    peer_addr,
                 )
                 .await
-                {
-                    Ok(response) => return response,
-                    Err(ws) => ws,
-                }
-            },
-            _ => ws,
-        }
-    } else {
-        ws
+                .map(|pooled| {
+                    mesh_relay::edge_upstream(
+                        pooled,
+                        &advert,
+                        cluster,
+                        MeshFraming::Udp,
+                        &server.metrics,
+                        &server.orphan_registry,
+                    )
+                }),
+                _ => None,
+            }
+        },
+        None => None,
     };
     let routes_snap = state.routes.load();
     let route = routes_snap
@@ -394,10 +395,18 @@ async fn udp_upgrade_for_path(
         server
             .metrics
             .open_websocket_session(Transport::Udp, protocol, AppProtocol::Shadowsocks);
-    let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
-    // UDP-WS only echoes the Session ID — the v1/v2 replay protocols are
-    // TCP-stream features and are not confirmed on datagram paths.
-    let echo = resume.session_echo();
+    // Captured by value before `resume` moves into the upgrade closure — see the
+    // matching note in `tcp_upgrade_for_path`. UDP-WS only echoes the Session ID
+    // (the v1/v2 replay protocols are TCP-stream features and are not confirmed
+    // on datagram paths), but *which* id it echoes still depends on the relay:
+    // the one the client presented when the home admitted it, the locally minted
+    // one otherwise.
+    let local = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
+    let echo = mesh_relay::edge_udp_echo(edge.as_ref(), &local);
+    let (resume, upstream) = match edge {
+        Some(edge) => (edge.resume, edge.source),
+        None => (local, UpstreamSource::Direct),
+    };
     let mut response = ws.on_upgrade(move |socket| async move {
         // Resolve the per-path padding scheme before `path` is moved into the
         // ctx. For a combined-SS base this is the base path (the combined UDP
@@ -411,7 +420,7 @@ async fn udp_upgrade_for_path(
             candidate_users: Arc::clone(&route.candidate_users),
             padding,
         });
-        let result = udp::handle_udp_connection(socket, server, route_ctx, resume).await;
+        let result = udp::handle_udp_connection(socket, server, route_ctx, resume, upstream).await;
         finish_ws_session(session, result, "udp");
     });
     echo.apply(response.headers_mut());
