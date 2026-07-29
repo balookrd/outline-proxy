@@ -229,10 +229,37 @@ async fn connect_ws_h1(
     WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Option<SessionId>,
 )> {
+    let (socket, issued, _) =
+        connect_ws_h1_ack_prefix(listen_addr, path, resume, capable, false).await?;
+    Ok((socket, issued))
+}
+
+/// [`connect_ws_h1`] plus the Ack-Prefix (v1) advertisement, and the third
+/// thing the response can say: whether the server confirmed the capability.
+///
+/// A client that advertises v1 is promising to read a 14-byte `"ORSM"` control
+/// frame at the head of the resumed session, so the confirmation and the frame
+/// have to be asserted together — which is why the flag comes back here rather
+/// than being re-derived from the headers by each caller.
+async fn connect_ws_h1_ack_prefix(
+    listen_addr: SocketAddr,
+    path: &str,
+    resume: Option<SessionId>,
+    capable: bool,
+    ack_prefix: bool,
+) -> Result<(
+    WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    Option<SessionId>,
+    bool,
+)> {
     let mut req = format!("ws://{listen_addr}{path}").into_client_request()?;
     if capable {
         req.headers_mut()
             .insert("x-outline-resume-capable", HeaderValue::from_static("1"));
+    }
+    if ack_prefix {
+        req.headers_mut()
+            .insert("x-outline-resume-ack-prefix", HeaderValue::from_static("1"));
     }
     if let Some(id) = resume {
         req.headers_mut()
@@ -244,7 +271,12 @@ async fn connect_ws_h1(
         .get("x-outline-session")
         .and_then(|v| v.to_str().ok())
         .and_then(SessionId::parse_hex);
-    Ok((socket, issued))
+    let ack_prefix_confirmed = response
+        .headers()
+        .get("x-outline-resume-ack-prefix")
+        .and_then(|v| v.to_str().ok())
+        == Some("1");
+    Ok((socket, issued, ack_prefix_confirmed))
 }
 
 /// Wire-level outcome of the HTTP/2 CONNECT WebSocket handshake.

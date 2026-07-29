@@ -32,8 +32,8 @@ use crate::protocol::TargetAddr;
 use crate::server::abort::AbortOnDrop;
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
-    CloseReason, MeshEndpoint, MeshFraming, MeshIdentity, MeshPeerPool, OPEN_ACK_ACCEPTED,
-    RelayOpen, ThrottleRegistry, UpstreamAckFrame, UserFrame,
+    CloseReason, MeshEndpoint, MeshFraming, MeshIdentity, MeshPeerPool, MeshProtocol,
+    OPEN_ACK_ACCEPTED, RelayOpen, ThrottleRegistry, UpstreamAckFrame, UserFrame,
 };
 use crate::server::nat::UdpResponseSender;
 use crate::server::peer_user_cache::PeerUserCache;
@@ -427,7 +427,14 @@ impl EdgeHarness {
         let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 40404));
         let pooled = tokio::time::timeout(
             Duration::from_secs(5),
-            open_edge_relay_v5(&self.cluster, self.shard, &advert, MeshFraming::Tcp, peer),
+            open_edge_relay_v5(
+                &self.cluster,
+                self.shard,
+                &advert,
+                MeshFraming::Tcp,
+                MeshProtocol::Ss,
+                peer,
+            ),
         )
         .await
         .expect("the home must answer the OPEN, not hang the upgrade")?;
@@ -470,6 +477,12 @@ fn spawn_fake_home(endpoint: MeshEndpoint, answer: HomeAnswer) -> FakeHome {
             header.framing,
             MeshFraming::Tcp,
             "an SS byte-stream carrier is TCP-framed on the mesh",
+        );
+        assert_eq!(
+            header.protocol,
+            MeshProtocol::Ss,
+            "an SS edge must name its protocol, or the home cannot keep a VLESS park \
+             from being spliced onto it",
         );
         let acked_uplink = match answer {
             HomeAnswer::Park { acked_uplink } => acked_uplink,

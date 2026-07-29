@@ -208,10 +208,15 @@ impl OrphanRegistry {
     /// when this probe was shape-agnostic: the park-miss race it exists to close
     /// is unchanged by the narrowing, and a reservation cannot report a shape —
     /// the payload does not exist yet. That leaves one window where a non-TCP
-    /// park is admitted here, and the *edge* closes it: it resets the mesh stream
-    /// as soon as the VLESS command it authenticated turns out not to be TCP,
-    /// strictly before the USER frame that would trigger phase 2. Widening the
-    /// reservation to carry a shape would trade that race for a worse one — a
+    /// park is admitted here, and what happens next depends on the command the
+    /// edge then reads. A `Udp` or `Mux` command closes the window: the edge
+    /// resets the mesh stream strictly before the USER frame that would trigger
+    /// phase 2, so the park survives. A `Tcp` command does not — it is exactly
+    /// the shape a splice carries, so the edge legitimately sends the USER
+    /// frame, and phase 2 consumes the park before discovering it committed as
+    /// some other shape (`transport::mesh_relay`'s `framing_mismatch` arm).
+    /// Losing continuity in that narrow window is the accepted cost: widening
+    /// the reservation to carry a shape would trade it for a worse race — a
     /// redial arriving during a park landing would miss instead of waiting.
     pub(crate) fn probe_park(&self, id: SessionId) -> ParkProbe {
         match self.by_id.get(&id) {

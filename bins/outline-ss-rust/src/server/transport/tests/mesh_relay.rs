@@ -24,8 +24,8 @@ use crate::metrics::{AppProtocol, Metrics, Protocol};
 use crate::server::cluster::ClusterCtx;
 use crate::server::cluster::mesh::{
     CarrierKind, CloseIntent, CloseReason, ControlDatagram, MeshEndpoint, MeshFraming,
-    MeshIdentity, MeshPeerPool, OPEN_ACK_ACCEPTED, OpenHeader, OpenHeaderV5, ThrottleRegistry,
-    UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame, parse_control_datagram,
+    MeshIdentity, MeshPeerPool, MeshProtocol, OPEN_ACK_ACCEPTED, OpenHeader, OpenHeaderV5,
+    ThrottleRegistry, UPSTREAM_ACK_FRAME_LEN, UpstreamAckFrame, UserFrame, parse_control_datagram,
 };
 use crate::server::dns_cache::DnsCache;
 use crate::server::nat::NatTable;
@@ -838,10 +838,12 @@ async fn wait_for_park(registry: &OrphanRegistry, id: SessionId) {
     }
 }
 
-/// A v5 OPEN header for a TCP-framed relayed session under `id`.
+/// A v5 OPEN header for a TCP-framed relayed session under `id`. Shadowsocks,
+/// matching what [`park_test_session`] parks (`TcpProtocolContext::Ss`).
 fn v5_header(id: SessionId) -> OpenHeaderV5 {
     OpenHeaderV5 {
         framing: MeshFraming::Tcp,
+        protocol: MeshProtocol::Ss,
         session_id: *id.as_bytes(),
         resume_capable: true,
         ack_prefix: true,
@@ -1340,6 +1342,45 @@ async fn v5_home_refuses_a_park_of_the_wrong_kind() {
     assert_eq!(rejected(&rendered, "park_shape"), 1, "{rendered}");
     assert_eq!(rejected(&rendered, "no_session"), 0, "{rendered}");
     assert_eq!(outcome(&rendered, "miss"), 1, "{rendered}");
+}
+
+/// A relayed resume never crosses the proxy-protocol boundary, whatever the
+/// user says.
+///
+/// Both direct resume paths (`transport::tcp` and `transport::vless::tcp`)
+/// refuse to reattach an SS carrier to a VLESS-authenticated park and vice
+/// versa. The v5 splice must apply the same rule: it became reachable the moment
+/// VLESS-TCP edges started speaking v5, because from then on an SS edge and a
+/// VLESS edge can present the same id, and phase 2's owner check confines that
+/// to one user rather than ruling it out.
+///
+/// Without the check the home splices the park onto the relay instead of
+/// refusing it, so the assertions below fail on both counts: no refusal reason
+/// is counted, and the relay is a live `hit`.
+#[tokio::test]
+async fn v5_home_refuses_a_park_of_another_proxy_protocol() {
+    let harness = MeshHomeHarness::new().await;
+    let id = SessionId::from_bytes([41u8; 16]);
+    // Parked by the SS path: `TcpProtocolContext::Ss`.
+    let mut upstream = park_test_session(harness.registry(), id, "beerloga").await;
+
+    // Same id, same user, but the edge terminated VLESS.
+    let mut header = v5_header(id);
+    header.protocol = MeshProtocol::Vless;
+    let outcome_seen = harness.serve_v5(header).await;
+
+    // Phase 1 admits it — the park is TCP-shaped and the protocol is not part of
+    // that question — so the refusal lands after the ack, like the owner check.
+    assert!(outcome_seen.acked(), "the shape question is answered before the protocol one");
+    assert_eq!(outcome_seen.close_reason(), Some(CloseReason::Abort));
+    assert!(
+        upstream.saw_eof().await,
+        "the refused park must not be left half-spliced onto the relay",
+    );
+    let rendered = harness.metrics().render_prometheus();
+    assert_eq!(rejected(&rendered, "protocol_mismatch"), 1, "{rendered}");
+    assert_eq!(outcome(&rendered, "miss"), 1, "{rendered}");
+    assert_eq!(outcome(&rendered, "hit"), 0, "{rendered}");
 }
 
 /// Accounting completeness: every terminal path through the v5 handler records
