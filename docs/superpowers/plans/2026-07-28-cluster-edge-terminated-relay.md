@@ -1496,46 +1496,20 @@ git commit -m "feat(cluster): edge terminates SS-UDP crypto and relays plaintext
 
 ---
 
-### Task 9: VLESS-UDP over v5 (home and edge)
+### Task 9: Retire v4 (moved ahead of the VLESS tasks)
 
-`Parked::VlessUdpSingle` (`vless/udp.rs:81`) cannot be admitted from the home
-alone: its v5 OPEN is byte-identical to a VLESS-TCP one, because the edge must
-send OPEN before the client's first frame reveals the VLESS command. So this
-task owns both halves plus whatever wire discriminator they need.
+**Reordered once v4 turned out to be dead already.** Every edge speaks v5 after
+Task 8, and the compiler proves it: that task had to annotate
+`try_relay_edge_udp`, `edge_relay_udp`, `edge_relay_h3_udp`, `EdgeRelay`, the
+edge throttle detector and XHTTP's `EdgeRelayPlan` / `xhttp_edge_plan` /
+`open_xhttp_mesh` with `#[allow(dead_code)]` or `-D warnings` fails. The VLESS
+tasks no longer gate this: v4 does not give VLESS-UDP or mux cross-node
+continuity either, because Task 6 moved the VLESS edge to v5 and it resets and
+serves locally on `Udp`/`Mux`. Removing v4 first deletes that dead-code debt and
+drops the "do not touch v4" constraint from the two tasks that follow.
 
-**Files:** `server/cluster/mesh/frame.rs` (v5 only), `server/transport/mesh_relay.rs`, `server/transport/vless/`, `server/transport/vless_udp.rs`, tests alongside each.
-
-**Interfaces:** consumes the v5 home and edge paths (Tasks 3-7). Produces a way for the edge to name the park shape it needs *after* it reads the VLESS command — the constraint that makes this its own task — plus the home-side plaintext path for `VlessUdpSingle`.
-
-- [ ] **Step 1: Decide and document the discriminator.** The edge knows the command only after the `101`, and OPEN precedes it. Either the shape moves to the second phase alongside `UserFrame`, or the edge re-opens once it knows. Write the choice and its cost into the module doc before implementing; `probe_park` must still refuse a shape mismatch **before** anything is consumed.
-- [ ] **Step 2: Write the failing tests** — a VLESS-UDP session parked on the home and resumed through an edge with different paths and credentials keeps one upstream; a shape mismatch leaves the park intact; datagram boundaries survive.
-- [ ] **Step 3: Run them to verify they fail.**
-- [ ] **Step 4: Implement**, reusing `MeshUdpCarrier` for boundaries and the `SpliceEnd`/`stream_close` and cooperative-stop patterns from the TCP splice.
-- [ ] **Step 5: Restore the withdrawn claim.** `cluster_vless_udp_survives_edge_switch` had its "one upstream across an edge switch" assertion withdrawn in Task 6 — put it back, and remove the doc-comment note explaining the withdrawal.
-- [ ] **Step 6: Run the full gate and commit** (`fmt` → `clippy` → `test`; `resumption::cluster` must not drop).
-
----
-
-### Task 10: VLESS-mux over v5 (home and edge)
-
-`Parked::VlessMux` (`vless/mod.rs:348`) has the same indistinguishable-OPEN
-problem as Task 9, and additionally carries sub-connections
-(`ParkedMuxSubKind::{Tcp, Udp}`, `resumption/parked.rs:157-166`) that each hold
-their own upstream. Task 6 left mux sub-connections on `Direct` deliberately.
-
-**Files:** `server/cluster/mesh/frame.rs` (v5 only), `server/transport/mesh_relay.rs`, `server/transport/vless/mod.rs`, `server/transport/vless_mux/`, tests alongside each.
-
-**Interfaces:** consumes Task 9's discriminator — do not invent a second one. Produces the home-side plaintext path for `VlessMux`, including how each sub-connection re-attaches.
-
-- [ ] **Step 1: Write the failing tests** — a mux session with both a TCP and a UDP sub-connection, parked on the home and resumed through an edge with different paths and credentials, keeps every sub-connection's upstream; a partially-reattachable park is refused whole rather than half-spliced.
-- [ ] **Step 2: Run them to verify they fail.**
-- [ ] **Step 3: Implement**, reusing Task 9's discriminator and the established splice patterns.
-- [ ] **Step 4: Decide sub-connection scope explicitly.** Task 6 kept mux sub-connections on `Direct` with a test pinning it. Either migrate them and replace that test, or state in the module doc why they stay direct — do not leave it implicit.
-- [ ] **Step 5: Run the full gate and commit** (`fmt` → `clippy` → `test`; `resumption::cluster` must not drop).
-
----
-
-### Task 11: Retire v4 on the home
+Delete the `#[allow(dead_code)]` annotations along with the code they cover —
+none of them may survive this task.
 
 Every edge speaks v5 after Tasks 4–6, so the v4 branch is now dead weight. This
 is the contract half of the expand/contract: delete it, and let v5 become the
@@ -1625,6 +1599,45 @@ cargo test --workspace --exclude sockudo-ws
 git add bins/outline-ss-rust/src/server/cluster/mesh/frame.rs bins/outline-ss-rust/src/server/cluster/mesh/tests/frame.rs bins/outline-ss-rust/src/server/transport/mesh_relay.rs
 git commit -m "refactor(cluster): retire the v4 mesh relay path now every edge speaks v5"
 ```
+
+---
+
+### Task 10: VLESS-UDP over v5 (home and edge)
+
+`Parked::VlessUdpSingle` (`vless/udp.rs:81`) cannot be admitted from the home
+alone: its v5 OPEN is byte-identical to a VLESS-TCP one, because the edge must
+send OPEN before the client's first frame reveals the VLESS command. So this
+task owns both halves plus whatever wire discriminator they need.
+
+**Files:** `server/cluster/mesh/frame.rs` (v5 only), `server/transport/mesh_relay.rs`, `server/transport/vless/`, `server/transport/vless_udp.rs`, tests alongside each.
+
+**Interfaces:** consumes the v5 home and edge paths (Tasks 3-7). Produces a way for the edge to name the park shape it needs *after* it reads the VLESS command — the constraint that makes this its own task — plus the home-side plaintext path for `VlessUdpSingle`.
+
+- [ ] **Step 1: Decide and document the discriminator.** The edge knows the command only after the `101`, and OPEN precedes it. Either the shape moves to the second phase alongside `UserFrame`, or the edge re-opens once it knows. Write the choice and its cost into the module doc before implementing; `probe_park` must still refuse a shape mismatch **before** anything is consumed.
+- [ ] **Step 2: Write the failing tests** — a VLESS-UDP session parked on the home and resumed through an edge with different paths and credentials keeps one upstream; a shape mismatch leaves the park intact; datagram boundaries survive.
+- [ ] **Step 3: Run them to verify they fail.**
+- [ ] **Step 4: Implement**, reusing `MeshUdpCarrier` for boundaries and the `SpliceEnd`/`stream_close` and cooperative-stop patterns from the TCP splice.
+- [ ] **Step 5: Restore the withdrawn claim.** `cluster_vless_udp_survives_edge_switch` had its "one upstream across an edge switch" assertion withdrawn in Task 6 — put it back, and remove the doc-comment note explaining the withdrawal.
+- [ ] **Step 6: Run the full gate and commit** (`fmt` → `clippy` → `test`; `resumption::cluster` must not drop).
+
+---
+
+### Task 11: VLESS-mux over v5 (home and edge)
+
+`Parked::VlessMux` (`vless/mod.rs:348`) has the same indistinguishable-OPEN
+problem as Task 9, and additionally carries sub-connections
+(`ParkedMuxSubKind::{Tcp, Udp}`, `resumption/parked.rs:157-166`) that each hold
+their own upstream. Task 6 left mux sub-connections on `Direct` deliberately.
+
+**Files:** `server/cluster/mesh/frame.rs` (v5 only), `server/transport/mesh_relay.rs`, `server/transport/vless/mod.rs`, `server/transport/vless_mux/`, tests alongside each.
+
+**Interfaces:** consumes Task 10's discriminator — do not invent a second one. Produces the home-side plaintext path for `VlessMux`, including how each sub-connection re-attaches.
+
+- [ ] **Step 1: Write the failing tests** — a mux session with both a TCP and a UDP sub-connection, parked on the home and resumed through an edge with different paths and credentials, keeps every sub-connection's upstream; a partially-reattachable park is refused whole rather than half-spliced.
+- [ ] **Step 2: Run them to verify they fail.**
+- [ ] **Step 3: Implement**, reusing Task 10's discriminator and the established splice patterns.
+- [ ] **Step 4: Decide sub-connection scope explicitly.** Task 6 kept mux sub-connections on `Direct` with a test pinning it. Either migrate them and replace that test, or state in the module doc why they stay direct — do not leave it implicit.
+- [ ] **Step 5: Run the full gate and commit** (`fmt` → `clippy` → `test`; `resumption::cluster` must not drop).
 
 ---
 
