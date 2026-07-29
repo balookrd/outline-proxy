@@ -12,6 +12,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use outline_wire::padding::PaddingScheme;
+use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -21,6 +22,7 @@ use crate::config::CipherKind;
 use crate::crypto::{SessionKeyCache, UserKey, encrypt_udp_packet};
 use crate::metrics::{AppProtocol, Metrics, Protocol};
 use crate::protocol::TargetAddr;
+use crate::server::cluster::mesh::{read_datagram, write_datagram};
 use crate::server::dns_cache::DnsCache;
 use crate::server::nat::{NatKey, NatTable, ResponseSender, UdpResponseSender};
 use crate::server::replay::ReplayStore;
@@ -499,5 +501,159 @@ async fn teardown_with_resumption_still_parks_the_nat_keys() -> Result<()> {
         },
         ResumeOutcome::Miss(_) => panic!("the stream must park its NAT keys for a later resume"),
     }
+    Ok(())
+}
+
+// ── Read cancellation ────────────────────────────────────────────────────────
+
+/// A carrier whose `recv` is **not** cancel-safe, exactly as the mesh SS-UDP
+/// carrier's is not: it reads a length prefix and then the body with the very
+/// framing [`crate::server::transport::mesh_carrier::MeshUdpCarrier`] uses, so a
+/// read dropped part-way leaves the stream mid-datagram and every later read is
+/// mis-framed. The relay loop is shared by four carriers and must not cancel any
+/// of their reads, so a carrier that *notices* the cancellation is what pins the
+/// property down.
+struct FramedCarrier(DuplexStream);
+
+struct FramedReader(ReadHalf<DuplexStream>);
+
+struct FramedWriter(WriteHalf<DuplexStream>);
+
+impl WsSocket for FramedCarrier {
+    type Msg = CountingMsg;
+    type Reader = FramedReader;
+    type Writer = FramedWriter;
+
+    fn split_io(self) -> (Self::Reader, Self::Writer) {
+        let (reader, writer) = tokio::io::split(self.0);
+        (FramedReader(reader), FramedWriter(writer))
+    }
+
+    async fn recv(reader: &mut Self::Reader) -> Result<Option<Self::Msg>> {
+        let mut buf = Vec::new();
+        Ok(read_datagram(&mut reader.0, &mut buf)
+            .await?
+            .map(|_| CountingMsg::Binary(Bytes::from(buf))))
+    }
+
+    async fn send(writer: &mut Self::Writer, msg: Self::Msg) -> Result<()> {
+        if let CountingMsg::Binary(bytes) = msg {
+            write_datagram(&mut writer.0, &bytes).await?;
+        }
+        Ok(())
+    }
+
+    async fn finish(_writer: &mut Self::Writer) {}
+
+    async fn flush(_writer: &mut Self::Writer) -> Result<()> {
+        Ok(())
+    }
+
+    fn is_h3() -> bool {
+        true
+    }
+
+    fn classify(msg: Self::Msg) -> WsFrame {
+        match msg {
+            CountingMsg::Binary(b) => WsFrame::Binary(b),
+            CountingMsg::Control => WsFrame::Pong,
+        }
+    }
+
+    fn binary_msg(data: Bytes) -> Self::Msg {
+        CountingMsg::Binary(data)
+    }
+    fn close_msg() -> Self::Msg {
+        CountingMsg::Control
+    }
+    fn close_try_again_msg() -> Self::Msg {
+        CountingMsg::Control
+    }
+    fn ping_msg() -> Self::Msg {
+        CountingMsg::Control
+    }
+    fn pong_msg(_payload: Bytes) -> Self::Msg {
+        CountingMsg::Control
+    }
+    fn binary_len(msg: &Self::Msg) -> Option<usize> {
+        match msg {
+            CountingMsg::Binary(b) => Some(b.len()),
+            CountingMsg::Control => None,
+        }
+    }
+    fn msg_len(msg: &Self::Msg) -> usize {
+        match msg {
+            CountingMsg::Binary(b) => b.len(),
+            CountingMsg::Control => 0,
+        }
+    }
+    fn make_udp_response_sender(
+        tx: mpsc::Sender<Self::Msg>,
+        protocol: Protocol,
+        app_protocol: AppProtocol,
+        _scheme: PaddingScheme,
+        _monitor: Option<Arc<crate::server::transport::throughput_monitor::ThroughputMonitor>>,
+    ) -> UdpResponseSender {
+        UdpResponseSender::new(Arc::new(CountingResponseSender { tx, protocol, app_protocol }))
+    }
+}
+
+/// A burst keeps every datagram whole. The relay loop drains its in-flight
+/// relays concurrently with reading the next frame, and a carrier's `recv` need
+/// not be cancel-safe — the mesh SS-UDP carrier's is not, since it consumes a
+/// length prefix and then a body — so a loop that let the drain cancel a
+/// part-way read would leave the carrier mid-datagram and mis-frame everything
+/// after it. Two datagrams rarely interleave; a burst does.
+#[tokio::test]
+async fn a_burst_of_datagrams_stays_framed_under_concurrent_relays() -> Result<()> {
+    const BURST: usize = 64;
+
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let user = UserKey::new("alice", "secret", None, CipherKind::Aes256Gcm, None)?;
+
+    // A pipe far narrower than one datagram, so a read pends part-way through
+    // nearly every frame — which is when a cancellation costs bytes.
+    let (home, edge) = tokio::io::duplex(16);
+    let relay = tokio::spawn(run_udp_relay::<FramedCarrier>(
+        FramedCarrier(home),
+        test_server_ctx(),
+        test_route_ctx(&user),
+        ResumeContext::default(),
+        None,
+    ));
+
+    let datagrams = (0..BURST)
+        .map(|index| client_datagram(&user, upstream_addr, format!("packet-{index:04}").as_bytes()))
+        .collect::<Result<Vec<_>>>()?;
+    // The burst goes out from its own task: the pipe holds only a fraction of a
+    // datagram, so writing it blocks on the relay reading, while this task
+    // collects what reaches the target.
+    let burst = tokio::spawn(async move {
+        let mut edge = edge;
+        for datagram in datagrams {
+            write_datagram(&mut edge, &datagram).await?;
+        }
+        Ok::<_, anyhow::Error>(edge)
+    });
+
+    let mut got = Vec::with_capacity(BURST);
+    let mut buf = [0_u8; 256];
+    for _ in 0..BURST {
+        let (len, _) = timeout(Duration::from_secs(10), upstream.recv_from(&mut buf)).await??;
+        got.push(buf[..len].to_vec());
+    }
+    got.sort();
+    let mut want: Vec<Vec<u8>> = (0..BURST)
+        .map(|index| format!("packet-{index:04}").into_bytes())
+        .collect();
+    want.sort();
+    assert_eq!(
+        got, want,
+        "every datagram of a burst must cross the carrier whole and exactly once"
+    );
+
+    let _edge = timeout(Duration::from_secs(10), burst).await??;
+    relay.abort();
     Ok(())
 }
