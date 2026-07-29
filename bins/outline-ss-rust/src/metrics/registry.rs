@@ -259,10 +259,17 @@ pub(super) fn register_descriptions() {
         "Relayed sessions a home node resolved, by outcome (hit = the parked \
          session was found and spliced onto the relay; miss = no park matched, so \
          the edge serves its client a fresh local session; error = setup failed \
-         before any park could be resolved). Every v5 relay stream that reaches \
-         the v5 handler records exactly one outcome, so the series reconciles \
-         against the v5 relays actually served — the direct signal that cluster \
-         relaying works, which byte counters alone never gave. Scoped to v5: \
+         before any park could be resolved) and by close (client_done = the edge \
+         said its client is finished, so the upstream was half-closed instead of \
+         re-parked; carrier_ended = the edge only switched carriers, so the \
+         session went back into the registry; none = no splice ran, or it failed \
+         before any close). A hit is recorded when its splice ends, which is when \
+         the close is known — use outline_ss_mesh_relay_active for relays still \
+         running. Every v5 relay stream that reaches the v5 handler records \
+         exactly one outcome, so the series reconciles against the v5 relays \
+         actually served — the direct signal that cluster relaying works, which \
+         byte counters alone never gave, while the client_done/carrier_ended \
+         ratio shows whether edges emit the close intent at all. Scoped to v5: \
          streams refused before the handler (see the capacity reason on \
          outline_ss_mesh_relay_rejected_total) and legacy v4 relays record none."
     );
