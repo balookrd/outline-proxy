@@ -220,3 +220,54 @@ fn mesh_framing_covers_only_the_two_shapes() {
     assert_eq!(MeshFraming::from_u8(1).unwrap(), MeshFraming::Udp);
     assert!(MeshFraming::from_u8(2).is_err());
 }
+
+#[test]
+fn upstream_ack_frame_roundtrips() {
+    for acked in [0u64, 1, 12, 65_536, u64::MAX] {
+        let frame = UpstreamAckFrame { upstream_acked: acked };
+        let encoded = frame.encode();
+        assert_eq!(encoded.len(), UPSTREAM_ACK_FRAME_LEN, "the frame is fixed-size");
+        assert_eq!(UpstreamAckFrame::parse(&encoded).unwrap(), frame);
+    }
+}
+
+#[test]
+fn upstream_ack_frame_refuses_a_truncated_buffer() {
+    let encoded = UpstreamAckFrame { upstream_acked: 42 }.encode();
+    UpstreamAckFrame::parse(&encoded[..7]).expect_err("a short frame must be refused");
+}
+
+#[test]
+fn close_intent_roundtrips_on_the_wire() {
+    for intent in [CloseIntent::CarrierEnded, CloseIntent::ClientDone] {
+        assert_eq!(CloseIntent::from_code(u64::from(intent.code())), intent);
+    }
+}
+
+#[test]
+fn an_unknown_close_intent_reads_as_a_carrier_switch() {
+    // The conservative reading: re-park and let the TTL decide. Code 0 matters
+    // in particular — that is what an ordinary quinn `RecvStream` drop sends.
+    for code in [0u64, 1, 5, 0x5000, 0x5003, u64::from(u32::MAX), u64::MAX] {
+        assert_eq!(CloseIntent::from_code(code), CloseIntent::CarrierEnded, "code {code}");
+    }
+}
+
+#[test]
+fn close_intent_codes_never_collide_with_a_close_reason() {
+    // They ride different QUIC frames on the same stream (STOP_SENDING vs
+    // RESET_STREAM), so an overlap would only ever confuse a reader — but a
+    // disjoint range is what makes a stray code obviously one or the other.
+    for reason in [
+        CloseReason::Fin,
+        CloseReason::Abort,
+        CloseReason::Budget,
+        CloseReason::Capacity,
+        CloseReason::NoRoute,
+        CloseReason::NoSession,
+    ] {
+        for intent in [CloseIntent::CarrierEnded, CloseIntent::ClientDone] {
+            assert_ne!(reason.code(), intent.code());
+        }
+    }
+}

@@ -19,6 +19,41 @@
 //! learns the user from a second-phase [`UserFrame`]. [`RelayOpen::parse`]
 //! routes a frame to the matching parser by its leading version byte.
 //!
+//! # v5 stream layout
+//!
+//! A v5 stream is a fixed setup sequence followed by the relayed body, and each
+//! element sits at a position both peers can compute from what they have
+//! already exchanged — there is no in-band framing over the body, so nothing
+//! may be inserted once it starts:
+//!
+//! ```text
+//! edge → home:  OPEN(v5)                        length-prefixed OpenHeaderV5
+//! home → edge:  ack(1)                          OPEN_ACK_ACCEPTED
+//! edge → home:  USER                            UserFrame
+//! home → edge:  UPSTREAM-ACK(8)                 iff OPEN set the ACK-PREFIX flag
+//! home → edge:  [downlink replay suffix]        iff OPEN set SYMMETRIC-REPLAY
+//! both ways:    body …                          plaintext, framed per MeshFraming
+//! ```
+//!
+//! [`UpstreamAckFrame`] is the resume-continuity half of the v5 protocol: it
+//! tells the resuming edge how far the home's upstream socket actually got, so
+//! the edge replays only the uplink the target never received. It is gated on
+//! the ACK-PREFIX flag the edge itself set in the OPEN, so its presence is never
+//! ambiguous, and it precedes the replay suffix for the same reason the direct
+//! path emits its v1 frame before the v2 "ORDR" one.
+//!
+//! Teardown carries the other v5-only signal. The edge always ends its uplink
+//! half with a QUIC FIN — a reset would drop still-unacked request-body bytes —
+//! and says *why* by stopping the home's downlink half with a [`CloseIntent`]
+//! code. FIN alone therefore keeps its old meaning ("the carrier ended, expect a
+//! resume"), which is the safe default when no code arrives.
+//!
+//! The two frames are emitted together and the home reads the code once it has
+//! seen the FIN, so an ordinary close delivers both in one flight. A
+//! [`CloseIntent::ClientDone`] that lands while the home is mid-downlink-write
+//! ends that half early; the home still drains the uplink to its FIN, so a
+//! finished client's request body reaches the target whole.
+//!
 //! The edge never decrypts, so the header carries only carrier metadata the
 //! edge can see before the payload: the resume id, the carrier kind, the
 //! resume capability bits the client advertised, the request path (for the
@@ -452,6 +487,99 @@ impl OpenHeaderV5 {
             client_down_acked,
             peer_addr,
         })
+    }
+}
+
+/// Length of an [`UpstreamAckFrame`] on the wire. Fixed, so a v5 peer reads it
+/// with a single `read_exact` and can never be driven into an unbounded read.
+pub(in crate::server) const UPSTREAM_ACK_FRAME_LEN: usize = 8;
+
+/// Home→edge resume-continuity frame (v5 only): how many uplink bytes the parked
+/// upstream socket has actually taken over this session's whole life.
+///
+/// It answers the question a v5→v5 resume cannot otherwise answer. The home may
+/// have consumed uplink bytes off a dying mesh carrier that the upstream socket
+/// never took; without this offset the resuming edge would either skip them (a
+/// silent hole in the request body at the target) or resend from zero (a
+/// duplicate). It is the v5 spelling of what the direct path sends its client as
+/// the Ack-Prefix v1 control frame — same number, same meaning, same position at
+/// the head of the resumed session — except that here the edge is the one that
+/// owns the client's crypto and re-emits it downstream.
+///
+/// Sent immediately after the home has taken the park (so the number is final
+/// for the previous carrier) and before any replayed or fresh downlink byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::server) struct UpstreamAckFrame {
+    pub(in crate::server) upstream_acked: u64,
+}
+
+impl UpstreamAckFrame {
+    /// Layout: `upstream_acked(8)`, big-endian. Positional rather than tagged —
+    /// its presence and offset both follow from the OPEN both peers already
+    /// exchanged, exactly as the one-byte [`OPEN_ACK_ACCEPTED`] does.
+    pub(in crate::server) fn encode(&self) -> [u8; UPSTREAM_ACK_FRAME_LEN] {
+        self.upstream_acked.to_be_bytes()
+    }
+
+    /// Parses the frame. Rejects a truncated buffer; every 8-byte value is a
+    /// legal offset.
+    pub(in crate::server) fn parse(buf: &[u8]) -> Result<Self> {
+        let mut r = Reader::new(buf);
+        Ok(Self { upstream_acked: r.u64()? })
+    }
+}
+
+/// Why the edge ended its half of a v5 relay stream — the distinction the home
+/// needs to decide whether the session has a future.
+///
+/// Carried as the QUIC `STOP_SENDING` error code the edge applies to the home's
+/// downlink half, alongside the FIN it sends on the uplink half either way. The
+/// FIN is what keeps the request body intact (a `RESET_STREAM` would drop
+/// still-unacked bytes), and it carries no code of its own — hence the
+/// companion signal on the other half rather than an in-band trailer, which a
+/// transparent byte stream has no way to delimit.
+///
+/// The codes live in their own `0x50xx` range so they can never be confused with
+/// a [`CloseReason`], which travels as a `RESET_STREAM` code on the same stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::server) enum CloseIntent {
+    /// The mesh carrier ended but the client has not: it is switching carriers
+    /// and will resume this session. The home re-parks the upstream.
+    CarrierEnded,
+    /// The client is done for good. The home must half-close the upstream so the
+    /// target sees the end of the request body, and must **not** re-park —
+    /// a park nobody will claim holds one of the user's `orphan_per_user_cap`
+    /// slots until its TTL, where it can evict a park that is still wanted.
+    ClientDone,
+}
+
+const CLOSE_INTENT_CARRIER_ENDED: u32 = 0x5001;
+const CLOSE_INTENT_CLIENT_DONE: u32 = 0x5002;
+
+impl CloseIntent {
+    /// The `STOP_SENDING` error code for this intent.
+    pub(in crate::server) fn code(self) -> u32 {
+        match self {
+            CloseIntent::CarrierEnded => CLOSE_INTENT_CARRIER_ENDED,
+            CloseIntent::ClientDone => CLOSE_INTENT_CLIENT_DONE,
+        }
+    }
+
+    /// Maps a received `STOP_SENDING` code back to an intent. Takes a `u64`
+    /// because that is what a QUIC `VarInt` holds, while our own codes fit a
+    /// `u32`.
+    ///
+    /// Anything unrecognised is [`CloseIntent::CarrierEnded`] — deliberately the
+    /// conservative reading, and the one an ordinary quinn `RecvStream` drop
+    /// produces (code `0`). Guessing "client done" from an unknown code would
+    /// tear down a session the client still wants; guessing "carrier ended"
+    /// only costs a park that expires on its TTL, which is what every pre-v5
+    /// build did with every close.
+    pub(in crate::server) fn from_code(code: u64) -> Self {
+        match u32::try_from(code) {
+            Ok(CLOSE_INTENT_CLIENT_DONE) => CloseIntent::ClientDone,
+            _ => CloseIntent::CarrierEnded,
+        }
     }
 }
 
