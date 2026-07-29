@@ -141,14 +141,13 @@ async fn tcp_upgrade_for_path(
     // lookup. The v1/v2 capability echoes were already gated at parse
     // time; the actual control-frame emits gate on the resume hit. On a
     // relayed session the id echoed is the one the client presented, because
-    // the home parks under exactly that one.
-    let (resume, echo, upstream) = match edge {
-        Some(edge) => (edge.resume, edge.echo, edge.source),
-        None => {
-            let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
-            let echo = resume.response_echo();
-            (resume, echo, UpstreamSource::Direct)
-        },
+    // the home parks under exactly that one; a home that refused leaves the
+    // local negotiation — and its locally minted id — in force.
+    let local = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
+    let echo = mesh_relay::ss_edge_echo(edge.as_ref(), &local);
+    let (resume, upstream) = match edge {
+        Some(edge) => (edge.resume, edge.source),
+        None => (local, UpstreamSource::Direct),
     };
     let mut response = ws.on_upgrade(move |socket| async move {
         let padding = carrier_padding::scheme_for_path(&path);

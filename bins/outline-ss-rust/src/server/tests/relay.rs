@@ -13,8 +13,9 @@ use bytes::Bytes;
 use parking_lot::Mutex;
 
 use crate::config::CipherKind;
-use crate::crypto::{AeadStreamDecryptor, AeadStreamEncryptor, UserKey};
+use crate::crypto::{AeadStreamDecryptor, AeadStreamEncryptor, StreamResponseContext, UserKey};
 use crate::metrics::{AppProtocol, Metrics, Protocol};
+use crate::server::transport::upstream_source::MESH_UPSTREAM_CHUNK;
 
 use super::super::relay::{UpstreamRead, UpstreamSink, relay_upstream_to_client};
 use super::super::resumption::downlink_ring::{DownlinkRing, ReplayOutcome};
@@ -164,4 +165,62 @@ async fn relay_captures_plaintext_into_the_ring_before_encrypting() {
         panic!("expected the whole plaintext to still be available, got {outcome:?}");
     };
     assert_eq!(bytes, b"ring-me", "the ring holds plaintext, not ciphertext");
+}
+
+/// An SS-2022 (AES) user. The chunk ceiling below is enforced only by the
+/// SS-2022 encryptor: a legacy cipher splits an over-long chunk instead of
+/// rejecting it, which is why the existing multi-megabyte ChaCha20 tests never
+/// caught this.
+fn ss2022_user_key() -> UserKey {
+    UserKey::new(
+        "relay-test-user",
+        "MDEyMzQ1Njc4OWFiY2RlZg==",
+        None,
+        CipherKind::Aes128Gcm2022,
+        None,
+    )
+    .expect("valid ss2022 test user key")
+}
+
+#[tokio::test]
+async fn a_mesh_sized_chunk_survives_an_ss2022_relay() {
+    // A cluster edge hands the relay one whole mesh chunk at a time — its
+    // `try_read_buf` `put_slice`s the chunk in full rather than filling the
+    // spare capacity the relay reserved, which is the bound that keeps a direct
+    // TCP upstream inside `crypto::MAX_CHUNK_SIZE`. So the plaintext buffer
+    // handed to `encrypt_chunk` is exactly `MESH_UPSTREAM_CHUNK` long, and one
+    // byte over the ceiling fails the whole relay task on an SS-2022 cipher:
+    // with the previous `64 * 1024` this call returns
+    // `CryptoError::InvalidChunkSize(65536)`.
+    let upstream = ScriptedUpstream {
+        chunks: vec![vec![0x5a; MESH_UPSTREAM_CHUNK]].into(),
+    };
+    let sink = RecordingSink::default();
+    let recorded = sink.recorded();
+    let mut encryptor = AeadStreamEncryptor::new(
+        &ss2022_user_key(),
+        Some(StreamResponseContext::for_test(&[7_u8; 16])),
+    )
+    .expect("valid ss2022 test encryptor");
+
+    relay_upstream_to_client(
+        upstream,
+        sink,
+        &mut encryptor,
+        test_metrics(),
+        Protocol::Http1,
+        AppProtocol::Shadowsocks,
+        Arc::from("beerloga"),
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("a full mesh chunk must fit one SS-2022 chunk");
+
+    assert_eq!(
+        recorded.lock().unwrap().len(),
+        1,
+        "the chunk goes out whole; a split would mean the ceiling was hit",
+    );
 }
